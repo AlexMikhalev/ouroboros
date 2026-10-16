@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { apiClient } from '../modules/api_client.js';
 import { SETTINGS_INPUT_FIELDS, SECRET_KEYS, renderSettingsPage } from '../modules/settings_ui.js';
-import { CallSession, callAvailability, mediaFailure, mountRoomCall, statePresentation } from '../modules/call.js';
+import { CallSession, callAvailability, mediaFailure, mountCall, mountRoomCall, reasonWords, statePresentation } from '../modules/call.js';
 import { decodeFrame, encodeFrame, newerEpoch, pcm16, PlaybackBuffer, playedMilliseconds,
     MAX_FRAME_PAYLOAD, MAX_BUFFER_SECONDS } from '../modules/call_worklet.js';
 
@@ -172,11 +172,13 @@ test('room admission, hello, states, actual-rate mic frames, mute and teardown s
         assert.equal(socket.sent.length, sent);
         f.session.setMuted(false); f.session.onAudio(old);
         assert.equal(socket.sent.at(-1).type, 'mute');
-        f.session.receive(JSON.stringify({ type: 'state', state: 'reconnecting', reason: 'Session rollover' }));
-        assert.equal(f.views.at(-1).reason, 'Session rollover');
+        f.session.receive(JSON.stringify({ type: 'state', state: 'reconnecting', reason: 'session_cap' }));
+        assert.deepEqual([f.views.at(-1).reason, f.views.at(-1).code], ['Starting a fresh voice session.', 'session_cap']);
         f.session.receive(JSON.stringify({ type: 'state', state: 'live' }));
-        f.session.receive(JSON.stringify({ type: 'state', state: 'closed', reason: 'Duration reached' }));
-        assert.equal(f.session.state, 'closed'); assert.equal(f.views.at(-1).reason, 'Duration reached');
+        assert.deepEqual([f.views.at(-1).reason, f.views.at(-1).code], ['', '']);
+        f.session.receive(JSON.stringify({ type: 'state', state: 'closed', reason: 'max_minutes' }));
+        assert.equal(f.session.state, 'closed');
+        assert.deepEqual([f.views.at(-1).reason, f.views.at(-1).code], ['The call reached its time limit in Settings.', 'max_minutes']);
         assert.equal(f.tracks[0].stopped, true); assert.equal(f.contexts[0].closed, true);
         assert.equal(socket.closed, true); assert.equal(f.nodes[0].disconnected, true);
     } finally { f.session.stop(); }
@@ -304,4 +306,71 @@ test('a room that only leaves the screen keeps its call; destroying the room han
     assert.deepEqual(calls, ['room-leave']);
     roomWork.destroy();
     assert.deepEqual(calls, ['room-leave', 'call-destroy', 'room-destroy']);
+});
+
+test('server reason codes read as short owner words; no code reaches the owner raw', () => {
+    assert.equal(reasonWords('closed', 'engine_error:invalid_request'), 'The voice service refused the call setup.');
+    assert.equal(reasonWords('closed', 'engine_error:authentication'), 'The voice service refused the API key; check it in Settings.');
+    assert.equal(reasonWords('closed', 'engine_error:something_new'), 'The voice service reported an error.');
+    assert.equal(reasonWords('reconnecting', 'transport_lost:session_limit'), 'The voice connection dropped.');
+    assert.equal(reasonWords('closing', 'budget_exceeded'), 'The spending limit is reached; raise it in Settings to call.');
+    assert.equal(reasonWords('closed', 'owner_stop'), 'You stopped the call.');
+    assert.equal(reasonWords('closed', 'finished'), '');
+    assert.equal(reasonWords('closed', ''), '');
+    assert.equal(reasonWords('closed', 'a_reason_this_page_does_not_know'), 'The call ended.');
+    assert.equal(reasonWords('reconnecting', 'a_reason_this_page_does_not_know'), 'Restoring the voice connection.');
+    assert.equal(reasonWords('closed', 'toString'), 'The call ended.');
+    for (const code of ['owner_stop', 'owner_bye', 'peers_left', 'max_minutes', 'budget_exceeded', 'engine_unavailable',
+        'reconnect_failed', 'session_cap', 'go_away', 'context_length', 'transport_lost:x', 'engine_error:provider'])
+        assert.doesNotMatch(reasonWords('closed', code), /_|engine_error/, code);
+});
+
+test('the call strip shows owner words for a server reason and keeps the code in the title', async () => {
+    const f = fixture();
+    const elements = [];
+    const element = (name) => {
+        const listeners = {};
+        const node = { name, className: '', dataset: {}, hidden: false, textContent: '', title: '', value: '', disabled: false, listeners,
+            children: new Map(), setAttribute() {}, addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+            removeEventListener() {}, after() {}, prepend() {}, append() {}, remove() {}, focus() {},
+            closest: selector => element(selector),
+            querySelector(selector) {
+                if (!this.children.has(selector)) this.children.set(selector, element(selector));
+                return this.children.get(selector);
+            } };
+        elements.push(node);
+        return node;
+    };
+    const doc = { head: element('head'), querySelector: () => null, createElement: tag => element(tag),
+        addEventListener() {}, removeEventListener() {} };
+    const page = element('page');
+    Object.assign(page, { ownerDocument: doc, id: 'room-71' });
+    const env = { ...f.env, addEventListener() {}, removeEventListener() {} };
+    const sockets = [];
+    const installed = {};
+    const install = (name, value) => {
+        installed[name] = Object.getOwnPropertyDescriptor(globalThis, name);
+        Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    };
+    install('fetch', async () => ({ ok: true, json: async () => ({ call_id: 'c', ws_path: '/ws/call/c' }) }));
+    install('location', { href: 'https://app.test/', origin: 'https://app.test' });
+    install('WebSocket', class { constructor(url) { this.url = url; this.readyState = 1; this.sent = []; sockets.push(this); }
+        send(data) { this.sent.push(data); } close() { this.readyState = 3; } });
+    const call = mountCall({ page, chatId: 71, env });
+    try {
+        const button = elements.find(node => node.className.includes('call-button'));
+        button.listeners.click[0]();
+        while (!sockets.length) await new Promise(resolve => setImmediate(resolve));
+        sockets[0].onopen();
+        sockets[0].onmessage({ data: JSON.stringify({ type: 'state', state: 'closed', reason: 'engine_error:invalid_request' }) });
+        const reason = elements.find(node => node.name === '.call-reason');
+        assert.equal(reason.textContent, 'The voice service refused the call setup.');
+        assert.equal(reason.title, 'engine_error:invalid_request');
+        assert.equal(reason.hidden, false);
+    } finally {
+        call.destroy();
+        for (const [name, descriptor] of Object.entries(installed)) {
+            if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
+        }
+    }
 });

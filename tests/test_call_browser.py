@@ -154,9 +154,10 @@ def test_call_fake_media_in_main_and_project(direct_server_with_data, engine):
             assert page.evaluate("__callTest.frames.length") == count
             main.locator(".call-mute").click()
             page.wait_for_function("count => __callTest.frames.length > count", arg=count)
-            _socket(page, "socket.receive({type: 'state', state: 'reconnecting', reason: 'Provider reconnecting'});")
+            _socket(page, "socket.receive({type: 'state', state: 'reconnecting', reason: 'engine_error:transport'});")
             expect(main.locator(".call-state")).to_have_text("Reconnecting…")
-            expect(main.locator(".call-reason")).to_have_text("Provider reconnecting")
+            expect(main.locator(".call-reason")).to_have_text("The voice connection dropped.")
+            expect(main.locator(".call-reason")).to_have_attribute("title", "engine_error:transport")
             _socket(page, "socket.receive({type: 'state', state: 'live'});")
             for width in [1280, 390]:
                 page.set_viewport_size({"width": width, "height": 900})

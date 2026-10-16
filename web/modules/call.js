@@ -25,10 +25,48 @@ export function callAvailability(env = globalThis) {
     return { supported: true, reason: '' };
 }
 
-export function statePresentation(state, reason = '', muted = false) {
+// The call service's reasons are codes; the owner reads these words and the code stays in the title.
+const REASON_WORDS = {
+    finished: '',
+    owner_stop: 'You stopped the call.',
+    owner_bye: 'The call was left from another screen.',
+    peers_left: 'Everyone left the call.',
+    max_minutes: 'The call reached its time limit in Settings.',
+    budget_exceeded: 'The spending limit is reached; raise it in Settings to call.',
+    engine_unavailable: 'The voice service could not be reached; the log has the details.',
+    reconnect_failed: 'The voice connection was lost and could not be restored.',
+    admission_failed: 'The call could not start; the log has the details.',
+    session_cap: 'Starting a fresh voice session.',
+    go_away: 'The voice service is moving the session.',
+    context_length: 'Fitting the conversation to the voice model.',
+    transport_lost: 'The voice connection dropped.',
+};
+const ENGINE_ERROR_WORDS = {
+    authentication: 'The voice service refused the API key; check it in Settings.',
+    invalid_request: 'The voice service refused the call setup.',
+    rate_limit: 'The voice service asked to slow down.',
+    context_length: 'The conversation does not fit the voice model.',
+    transport: 'The voice connection dropped.',
+    protocol: 'The voice service sent a message the call could not read.',
+    backpressure: 'The voice connection fell behind.',
+    provider: 'The voice service failed.',
+};
+
+/** Owner words for a server reason code (`kind` or `kind:detail`); an unknown code still reads as words. */
+export function reasonWords(state, code = '') {
+    const value = String(code || '');
+    if (!value) return '';
+    const colon = value.indexOf(':');
+    const kind = colon < 0 ? value : value.slice(0, colon);
+    if (kind === 'engine_error') return ENGINE_ERROR_WORDS[value.slice(colon + 1)] || 'The voice service reported an error.';
+    if (Object.hasOwn(REASON_WORDS, kind)) return REASON_WORDS[kind];
+    return state === 'reconnecting' ? 'Restoring the voice connection.' : 'The call ended.';
+}
+
+export function statePresentation(state, reason = '', muted = false, code = '') {
     const labels = { idle: 'Call', connecting: 'Connecting…', live: muted ? 'Muted' : 'Listening',
         reconnecting: 'Reconnecting…', closing: 'Leaving…', closed: 'Call ended', failed: 'Call failed' };
-    return { label: labels[state] || 'Call state unavailable', reason,
+    return { label: labels[state] || 'Call state unavailable', reason, code,
         active: ['connecting', 'live', 'reconnecting', 'closing'].includes(state),
         tone: state === 'failed' ? 'danger' : state === 'live' ? 'ok'
             : state === 'reconnecting' ? 'warn' : 'muted' };
@@ -53,6 +91,7 @@ export class CallSession {
         this.caption = caption;
         this.state = 'idle';
         this.reason = '';
+        this.reasonCode = '';
         this.generation = 0;
         this.captureGeneration = 0;
         this.items = new Map();
@@ -62,10 +101,11 @@ export class CallSession {
         this.muted = false;
     }
 
-    setState(state, reason = '') {
+    setState(state, reason = '', code = '') {
         this.state = state;
         this.reason = reason;
-        this.changed(statePresentation(state, reason, this.muted));
+        this.reasonCode = code;
+        this.changed(statePresentation(state, reason, this.muted, code));
     }
 
     send(message) {
@@ -129,7 +169,7 @@ export class CallSession {
             };
             socket.onerror = () => { if (current()) this.fail('The call connection failed. Check your connection and try again.'); };
             socket.onclose = () => { if (current()) this.fail('The call connection closed. Start a new call to reconnect.'); };
-        } catch (error) { if (current()) this.fail(mediaFailure(error)); }
+        } catch (error) { if (current()) this.fail(mediaFailure(error), String(error?.body?.code || '')); }
     }
 
     /** A leave during admission still closes the admitted turn when its address arrives. */
@@ -154,7 +194,7 @@ export class CallSession {
         this.muted = muted;
         this.capture();
         this.send({ type: 'mute', muted });
-        this.changed(statePresentation(this.state, this.reason, muted));
+        this.changed(statePresentation(this.state, this.reason, muted, this.reasonCode));
     }
 
     onAudio(data) {
@@ -192,8 +232,9 @@ export class CallSession {
             if (!['connecting', 'live', 'reconnecting', 'closing', 'closed'].includes(msg.state))
                 throw new Error('The server sent an unknown call state.');
             this.env.clearTimeout(this.timer);
-            if (msg.state === 'closed') { this.stop('closed', msg.reason || ''); return; }
-            this.setState(msg.state, String(msg.reason || ''));
+            const code = String(msg.reason || '');
+            if (msg.state === 'closed') { this.stop('closed', reasonWords(msg.state, code), code); return; }
+            this.setState(msg.state, reasonWords(msg.state, code), code);
             this.capture();
             if (msg.state === 'closing') this.node?.port.postMessage({ type: 'flush', epoch: (this.epoch + 1) & 65535 });
         } else if (msg.type === 'flush') {
@@ -220,9 +261,9 @@ export class CallSession {
         this.node?.port.postMessage({ type: 'flush', epoch });
     }
 
-    fail(reason) { this.stop('failed', reason); }
+    fail(reason, code = '') { this.stop('failed', reason, code); }
 
-    stop(state = 'closed', reason = '') {
+    stop(state = 'closed', reason = '', code = '') {
         this.generation++;
         this.env.clearTimeout(this.timer);
         for (const track of this.media?.getTracks() || []) { track.onended = null; track.enabled = false; track.stop(); }
@@ -240,7 +281,7 @@ export class CallSession {
         }
         this.items.clear(); this.played.clear();
         if (microphoneOwner === this) microphoneOwner = null;
-        this.setState(state, reason);
+        this.setState(state, reason, code);
     }
 }
 
@@ -289,7 +330,7 @@ export function mountCall({ page, chatId, env = globalThis }) {
         if (destroyed) return;
         strip.hidden = view.label === 'Call ended' && !view.reason;
         status.textContent = view.label; status.dataset.tone = view.tone;
-        reason.textContent = view.reason; reason.hidden = !view.reason;
+        reason.textContent = view.reason; reason.hidden = !view.reason; reason.title = view.code || '';
         button.disabled = !available.supported || view.active;
         chooser.disabled = !available.supported || view.active;
         mute.hidden = leave.hidden = !view.active;
