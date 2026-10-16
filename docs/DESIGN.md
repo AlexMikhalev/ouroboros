@@ -1201,17 +1201,23 @@ Anatomy, top to bottom:
    word that answers "is there an unanswered question for me?":
    `Waiting for your answer` needs positive wait evidence (the task's live wait
    record, or the original required flag before any record exists); a resumed
-   wait (owner input or other mail woke the task, or the bound closed) reads
-   `Unanswered · task continued`; an open question without wait evidence reads
-   `Unanswered`; `Unanswered · task finished` keeps the neutral dot and
-   answerability; `You answered` uses the ok dot, `Replaced by a newer question`
-   and `Question closed` the disabled dot; an unreadable source reads
-   `Status unavailable`, never an invented invitation. No answer-deadline
-   countdown: task completion closes its mailbox, not the question's
-   answerability. While the card takes an answer the head ends with one quiet ×
-   (`Close question without answering`): one tap closes it, no reason to type,
-   and it waits while an answer is typed, so a mis-tap never discards the
-   owner's words.
+   wait — owner input or other mail woke the task, or the bound closed — reads
+   `Unanswered · task continued`; an open question without any wait evidence
+   reads `Unanswered`; `Unanswered · task finished` keeps the neutral dot and
+   answerability (a late answer arrives as the owner's message); `You answered` uses the ok dot;
+   `Replaced by a newer question` and `Question closed` use the disabled dot; an unreadable source
+   reads `Status unavailable`, never an invented invitation. No answer-deadline
+   countdown: task completion closes its mailbox, not the question's answerability.
+   Pressing immediately shows `Sending…` and the brand-marked choice, keeping the
+   full form and focus; inert controls use subdued ink and submitted fields become
+   read-only. No success before canonical confirmation. `Not confirmed` means unknown,
+   not failed: only then show Check status, Retry same answer and Forget unconfirmed
+   local answer. Recovery first reads exact-quiz truth; explicit retry sends identical
+   bytes. Forget cannot cancel or retract a server answer; answered-with-delivery-owed
+   remains recorded.
+   While the card takes an answer the head ends with one quiet × (`Close question
+   without answering`): one tap closes it, no reason to type, and it waits while an
+   answer is typed, so a mis-tap never discards the owner's words.
 2. **Question** — the one primary thing, by position and ink: readable
    `--type-body` text in `--text-primary`, regular weight. Its emphasis is the
    asker's own (authored headings and `**…**` are semibold), so a question of
@@ -1240,11 +1246,13 @@ Anatomy, top to bottom:
    card's own ink and surface tokens (never the legacy chat input), is capped
    by the shared Python↔JS constant (`MAX_DECISION_COMMENT`), and disappears
    the moment the card settles.
-   A settled card instead carries what the owner said as a second primary
-   line (`Owner's answer: …`, `--type-body`, `--text-primary`) under the
-   options — beside the highlighted option when one was chosen, and as the
-   whole answer when none was. Its line breaks stay visible; the recorded
-   answer remains literal text.
+   Origin-local drafts and frozen attempts persist across closure only with a
+   persistent browser profile (older private WebViews erase them: Appearance above).
+   Restore reads, never resends; storage failure warns to keep/copy words.
+   **Clear local draft** removes unsent words, not submitted answers. Canonical
+   settlement clears the copy; winning bytes appear literally as `Owner's answer: …`
+   under the options, beside the highlighted choice or as the whole answer if none,
+   retaining line breaks (`--type-body`/`--text-primary`).
 6. **Assumption or waiting** — the signature line (`Continuing meanwhile: …`
    for optional clarification, an explicit waiting statement for required input),
    `--type-meta`, `--text-meta`, parted by space. While the card is

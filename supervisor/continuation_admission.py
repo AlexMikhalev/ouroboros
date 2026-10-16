@@ -117,6 +117,7 @@ def _replay(q: Any, predecessor: str, nonce: str, successor: str) -> Optional[Di
 # writer census: the owner's Continue. Every other consumer (Pause, Resume,
 # money, sleep, restart) keeps the whole observation.
 CONTINUE_PURPOSE = "owner_continue"
+CONTINUE_TITLE_PREFIX = "Continue: "
 
 
 def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
@@ -331,7 +332,10 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
     deadline_at = str(binding.get("deadline_at") or "")
     text = work_order_text(predecessor, verdict["cause"], sources, deadline_at=deadline_at,
                            authority_source=authority_source, checkout=recorded_system_checkout(result))
-    title = str(result.get("title") or result.get("suggested_name") or result.get("objective") or predecessor)[:80]
+    title = str(result.get("title") or result.get("suggested_name") or result.get("objective") or predecessor)
+    while title.startswith(CONTINUE_TITLE_PREFIX):
+        title = title[len(CONTINUE_TITLE_PREFIX):]
+    title = (title or predecessor)[:80]
     original = sources.get("original") or {}
     origin_ref = original.get("origin_message_ref")
     from ouroboros.settings_scales import EFFORT_SCALE
@@ -353,7 +357,7 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
         **({"context_requires_self_body_docs": self_body_docs} if isinstance(self_body_docs, bool) else {}),
         "id": binding["successor_task_id"], "type": "task", "chat_id": binding.get("chat_id"),
         "project_id": str(binding.get("project_id") or ""), "text": text, "objective": text,
-        "title": f"Continue: {title}", "suggested_name": f"Continue: {title}",
+        "title": f"{CONTINUE_TITLE_PREFIX}{title}", "suggested_name": f"{CONTINUE_TITLE_PREFIX}{title}",
         "root_task_id": binding["successor_task_id"], "depth": 0, "delegation_role": "root",
         **({"deadline_at": deadline_at} if deadline_at else {}),
         **{key: binding[key] for key in ("workspace_root", "workspace_mode") if binding.get(key)},
