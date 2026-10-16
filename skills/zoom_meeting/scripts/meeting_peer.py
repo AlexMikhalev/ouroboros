@@ -7,12 +7,14 @@ peer on ``WS /call/{call_id}/peer``, speaking the frozen live-call wire
 control messages). The companion runs outside the core's import path, so the frame
 layout is mirrored here; a test pins it byte for byte to the core's codec.
 
-Meeting audio goes up at the rate the SDK actually delivers. The call's voice comes
+Meeting audio goes up at the rate the SDK actually delivers, stamped with the hub's
+current output epoch: the hub names it in the ``flush`` it sends on attach and after
+every interruption, and refuses input of any other epoch. The call's voice comes
 down already resampled by the core hub to the rate this peer declared, and goes into
 the Zoom virtual microphone in exact 20 ms frames, paced in real time: the SDK plays
 what it is given, so sending ahead would compress speech, and a frame cut short would
-click. A ``flush`` (the call was interrupted) drops everything queued, and frames of
-an older output epoch are dropped on arrival.
+click. A ``flush`` (the call was interrupted) drops everything queued both ways, and
+frames of an older output epoch are dropped on arrival.
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ PARTICIPANT_PAUSE_SEC = 0.6
 MAX_QUEUED_VOICE_SEC = 30
 # Meeting audio waiting for the socket is bounded to about two seconds of 10 ms buffers.
 MAX_QUEUED_UPLINK_BUFFERS = 200
+# Meeting facts waiting for the socket are bounded like the hub's own control queue.
+MAX_QUEUED_CONTROLS = 128
 _DOOR_TIMEOUT_SEC = 30.0
 
 
@@ -311,7 +315,10 @@ class PeerSession:
 
     Every outbound message goes through one sender thread, so neither the SDK's audio
     callbacks nor the GLib loop ever wait on the socket. Control messages go before
-    queued audio; audio beyond the bound drops the oldest buffer first and is counted.
+    queued audio; either queue beyond its bound drops its oldest entry first and counts
+    it. Audio is stamped with the epoch of the hub's latest ``flush`` (a call starts at
+    0); a flush that moves the epoch drops the audio still queued under the old one,
+    which the hub would refuse as stale.
     """
 
     def __init__(self, ws: Any, *, rate: int, on_audio: Callable[[bytes, int], None],
@@ -328,9 +335,11 @@ class PeerSession:
         self._closed_reported = False
         self._server_reason = ""
         self._seq = 0
+        self._epoch = 0
         self._threads: List[threading.Thread] = []
         self.sent_frames = 0
         self.dropped_uplink = 0
+        self.stale_uplink = 0
         self.received_frames = 0
         self.ignored_frames = 0
         self.dropped_controls = 0
@@ -365,7 +374,7 @@ class PeerSession:
                     self._audio.popleft()
                     self.dropped_uplink += 1
                 self._seq = (self._seq + 1) & 0xFFFFFFFF
-                self._audio.append(encode_frame(FRAME_AUDIO_IN, 0, self._seq, rate, 0,
+                self._audio.append(encode_frame(FRAME_AUDIO_IN, self._epoch, self._seq, rate, 0,
                                                 pcm[start:start + MAX_FRAME_PAYLOAD]))
             self._cond.notify()
 
@@ -377,6 +386,9 @@ class PeerSession:
             return
         with self._cond:
             if self._closing is None:
+                if len(self._controls) >= MAX_QUEUED_CONTROLS:
+                    self._controls.popleft()
+                    self.dropped_controls += 1
                 self._controls.append(text)
                 self._cond.notify()
 
@@ -443,9 +455,19 @@ class PeerSession:
         if not isinstance(control, dict):
             return
         if control.get("type") == "flush":
-            self._on_flush(int(control.get("epoch") or 0))
+            epoch = control.get("epoch")
+            if type(epoch) is int and 0 <= epoch <= 0xFFFF:
+                self._flushed(epoch)
         elif control.get("type") == "state" and control.get("state") in ("closing", "closed"):
             self._server_reason = str(control.get("reason") or "")
+
+    def _flushed(self, epoch: int) -> None:
+        with self._cond:
+            if epoch != self._epoch:
+                self.stale_uplink += len(self._audio)
+                self._audio.clear()
+                self._epoch = epoch
+        self._on_flush(epoch)
 
     def _report_closed(self, reason: str) -> None:
         with self._cond:

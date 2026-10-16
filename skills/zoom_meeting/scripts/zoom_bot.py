@@ -502,7 +502,9 @@ class ZoomBot:
             if peer is not None:
                 stats.update(audio_frames_up=getattr(peer, "sent_frames", 0),
                              audio_frames_down=getattr(peer, "received_frames", 0),
-                             audio_buffers_dropped_up=getattr(peer, "dropped_uplink", 0))
+                             audio_buffers_dropped_up=getattr(peer, "dropped_uplink", 0),
+                             audio_buffers_stale_up=getattr(peer, "stale_uplink", 0),
+                             facts_dropped_up=getattr(peer, "dropped_controls", 0))
             return {
                 "state": self.state, "message": message, "since": self._since,
                 "meeting_number": join.get("meeting_number", ""), "display_name": join.get("display_name", ""),

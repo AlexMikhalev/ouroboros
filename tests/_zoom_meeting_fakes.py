@@ -5,7 +5,8 @@ holders accept only the binding's keyword names and the join parameters only its
 fields, so a misspelt SDK call fails in a test instead of on a server. ``ManualLoop``
 is the GLib loop's interface on virtual time. ``start_fake_door`` serves the Host
 Service door (``/identity``, ``POST /call/open``, ``WS /call/{id}/peer``) as a real
-Starlette app on a loopback port.
+Starlette app on a loopback port; ``serve_app`` serves any app that way, the real Host
+Service included.
 """
 
 from __future__ import annotations
@@ -470,7 +471,6 @@ class FakeCompanion:
 
 def start_fake_door(token: str = HOST_TOKEN):
     """The Host Service door on a free loopback port; returns ``(state, stop)``."""
-    import uvicorn
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
     from starlette.routing import Route, WebSocketRoute
@@ -522,20 +522,28 @@ def start_fake_door(token: str = HOST_TOKEN):
 
     app = Starlette(routes=[Route("/identity", identity), Route("/call/open", call_open, methods=["POST"]),
                             WebSocketRoute("/call/{call_id}/peer", peer)])
+    state.url, stop = serve_app(app, "zoom-fake-door")
+    state.send, state.close = send, close
+    return state, stop
+
+
+def serve_app(app, name: str):
+    """Serve an ASGI app on a free loopback port; returns ``(url, stop)``."""
+    import uvicorn
+
     with socket.socket() as probe_socket:
         probe_socket.bind(("127.0.0.1", 0))
         port = probe_socket.getsockname()[1]
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, name="zoom-fake-door", daemon=True)
+    thread = threading.Thread(target=server.run, name=name, daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
     while not server.started:
-        assert thread.is_alive() and time.monotonic() < deadline, "fake door did not start"
+        assert thread.is_alive() and time.monotonic() < deadline, f"{name} did not start"
         time.sleep(0.02)
-    state.url, state.send, state.close = f"http://127.0.0.1:{port}", send, close
 
     def stop():
         server.should_exit = True
         thread.join(10)
 
-    return state, stop
+    return f"http://127.0.0.1:{port}", stop

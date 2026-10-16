@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import types
+import uuid
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ from tests._zoom_meeting_fakes import (
     FakeZoom,
     ManualLoop,
     _libc,
+    serve_app,
     start_fake_door,
 )
 
@@ -533,6 +535,81 @@ def test_pacer_flush_drops_queued_voice_and_stale_epochs(zoom):
     assert pacer.take_frame() == b"\x05\x00" * 640
     assert peer_mod.epoch_is_newer(0, 0xFFFF) and not peer_mod.epoch_is_newer(0xFFFF, 0)
     assert peer_mod.OutboundPacer(lambda frame: None, rate=16000).frame_bytes == 640
+
+
+def test_meeting_audio_keeps_reaching_the_real_hub_across_interruptions(zoom, tmp_path):
+    """The real Host door and hub: Zoom attaches after the call's epoch moved, and its
+    microphone still reaches the call after each interruption, the 16-bit wrap included."""
+    from ouroboros.call_peers import close_hub, open_hub
+    from ouroboros.gateway.host_service import create_host_service_app
+    from tests.test_call_gateway import seed_skill
+
+    seed_skill(tmp_path, name="zoom_meeting", token=HOST_TOKEN)
+    hub = open_hub(cp.CallSpec(uuid.uuid4().hex, 1, "openai", "test-model"))
+    while hub.epoch != 0xFFFF:  # interrupted before Zoom attached; the next flush wraps to 0
+        hub.flush()
+    url, stop = serve_app(create_host_service_app(tmp_path), "zoom-real-door")
+    flushes, closed, peer = [], [], None
+
+    def wait_for(condition, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            assert time.monotonic() < deadline, "condition not reached"
+            time.sleep(0.01)
+
+    def heard(timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if isinstance(hub.next_event(0.05), cp.PeerAudio):
+                return True
+        return False
+
+    try:
+        opened = zoom.meeting_peer.open_call(url, HOST_TOKEN, {"call_id": hub.call_id, "role": "meeting",
+                                                               "mic": True, "speaker": True})
+        hello = {"type": "hello", "protocol": 1, "role": "meeting", "mic": True, "speaker": True,
+                 "rate": 32000, "label": "Zoom meeting Weekly sync"}
+        peer = zoom.meeting_peer.PeerSession.attach(url, HOST_TOKEN, opened["peer_path"], hello,
+                                                    on_audio=lambda pcm, epoch: None, on_flush=flushes.append,
+                                                    on_closed=closed.append)
+        wait_for(lambda: flushes == [0xFFFF])
+        peer.send_audio(b"\x01\x00" * 320, 32000)
+        assert heard()
+        for expected in (0, 1):  # a barge-in flushes the call; the wrap first
+            assert hub.flush() == expected
+            wait_for(lambda: flushes[-1:] == [expected])
+            peer.send_audio(b"\x02\x00" * 320, 32000)
+            assert heard()
+        assert hub.stats()["stale_frames"] == 0 and closed == []
+    finally:
+        if peer is not None:
+            peer.close("left the meeting")
+            peer.join()
+        close_hub(hub.call_id)
+        stop()
+
+
+def test_a_flush_drops_uplink_of_the_old_epoch_and_meeting_facts_stay_bounded(zoom):
+    peer_mod = zoom.meeting_peer
+    flushes = []
+    peer = peer_mod.PeerSession(None, rate=32000, on_audio=lambda *_: None, on_flush=flushes.append,
+                                on_closed=lambda *_: None)
+    peer.send_audio(b"\x01\x00" * 320, 32000)
+    peer.send_audio(b"\x01\x00" * 320, 32000)
+    assert [cp.decode_frame(frame).epoch for frame in peer._audio] == [0, 0]
+    peer._handle(cp.encode_control({"type": "flush", "epoch": 0}))  # a fresh call's attach flush
+    assert len(peer._audio) == 2 and peer.stale_uplink == 0
+    peer._handle(cp.encode_control({"type": "flush", "epoch": 7}))
+    assert not peer._audio and peer.stale_uplink == 2 and flushes == [0, 7]
+    peer.send_audio(b"\x02\x00" * 320, 32000)
+    frame = cp.decode_frame(peer._audio[-1])
+    assert (frame.epoch, frame.seq) == (7, 3)
+    peer._handle(json.dumps({"type": "flush", "epoch": "8"}))  # not the hub's shape: no epoch change
+    assert flushes == [0, 7] and cp.decode_frame(peer._audio[-1]).epoch == 7
+    for index in range(peer_mod.MAX_QUEUED_CONTROLS + 5):
+        peer.send_control({"type": "context", "text": f"fact {index}", "source": "zoom_chat"})
+    assert len(peer._controls) == peer_mod.MAX_QUEUED_CONTROLS and peer.dropped_controls == 5
+    assert json.loads(peer._controls[0])["text"] == "fact 5"
 
 
 def test_frames_match_the_frozen_core_codec_byte_for_byte(zoom):
