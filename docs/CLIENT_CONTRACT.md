@@ -226,6 +226,7 @@ A few `chat` frames are transient notices that history never shows, for example 
 Send `{"type": "chat", "content": "...", "client_message_id": "<unique id>", "chat_id": <thread>}`:
 - **Threads.** `chat_id` 1 is Main. A project's thread is its `chat_id` from `GET /api/projects`. Add `project_id` for a project thread.
 - **Attachments.** First upload each file with `POST /api/chat/upload` (multipart field `file`). Then reference it in `attachments` as `{filename: <stored id from the upload>, display_name, mime}`. The core measures size and checksum itself.
+- **Replies.** Add `reply_to: "<row_address>"` (or `task:<task_id>` for a work card) to say which row the message means. The core stores the resolved reference on the owner row and gives it to Ouroboros as a fact; it routes nothing.
 - **What "sent" means.** A successful socket send only means the socket took the frame. The message is accepted when the core echoes it back as a `chat` frame from `role: "user"` with your `client_message_id` and `ingress_accepted: true`.
   - `ingress_pending` and `ingress_dispatched` describe what this core process knows of it.
   - Those flags are lost if the core restarts.
@@ -246,6 +247,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 `GET /api/chat/history?chat_id=<thread>` returns `ChatHistoryResponse`. The selected conversation rows are oldest first; replay evidence can follow them regardless of its timestamp and recur on other pages. Apply that evidence to the keyed card or question rather than counting it as another conversation message. Each row of `messages` is a `ChatHistoryMessage`:
 - **Always present:** `text` (live frames call it `content`), `role` (`user`, `assistant` or `system`), `ts`, `is_progress`, `system_type` (the row's kind; `""` for an ordinary message) and `task_id`.
 - **Identity:** stored rows carry `history_id`, `history_position` and a stable `row_address` computed before projection (rows without a persisted source carry none). Reply sends that address or `task:<current-id>`; the host stores `reply_to`, with a whitespace-collapsed 160-character snippet or `unresolved: true`. `client_message_id` correlates messages; owner authorship follows `role`. Relay forwards carry `relay`; return rows carry `reply_to_relay`.
+- **References:** `reply_to` on an owner row (the row he replied to) or an Ouroboros answer (the owner message its turn answers) is `{address, chat_id, role, author_label, kind, snippet, ts, task_id}` or `{address, unresolved: true}`; a `relay_entry` row carries `relay` (the owner's words passed into the room; `source` = where and when he wrote them).
 - **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
 - **Progress rows** (`is_progress: true`) carry the same task-progress facts live `chat` progress frames carry (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:

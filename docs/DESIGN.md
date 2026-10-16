@@ -607,12 +607,12 @@ therefore about intents.
   id. It claims no activity (an entry's status chip does). Its accessible name
   says in words what the glyph and the arrow say in pixels (`Open project
   <name>`), and nothing depends on hover.
-- **Its form follows the surface's job.** It is a Project work entry's
-  destination row and a bound task card's wide footer (the body stays the
-  task's); under a mirrored answer, the owner's routed message or a System
-  lifecycle row, a reading-size capsule in the shared `createSystemMessageActions`
-  row (token spacing, wrapping, focus-ring clearance, never a clipped line: a
-  composition, not a card framework or global button-margin rule); in a question
+- **Its form follows the surface's job.** It is a bound work card's wide footer (the body stays the
+  work's); under a mirrored answer or a System lifecycle row, a reading-size capsule in the
+  shared `createSystemMessageActions` row (token spacing, wrapping, focus-ring
+  clearance, never a clipped line: a composition, not a card framework or global
+  button-margin rule); at the end of the owner's routed message's one receipt line
+  ("Passed on to «work» in", "Started as a task in"), the same capsule; in a question
   head, a meta capsule. Long names: two lines in entry/footer, ellipsis in
   capsules, no smaller type; accessible names stay whole.
 - A **command** is a button: it changes or confirms something, or goes to a
@@ -1004,10 +1004,9 @@ exact real task that owns their presentation. Harness and neutral API marks
 identify the delivery channel alongside explicit execution evidence; they are
 not child-task cards and never prove execution by themselves.
 
-- A collapsed task card shows only a quiet `Reviews N` count, docked on the
-  metadata row (it wraps under the metadata on a narrow card), optionally with an
-  active count; a collapsed nested child card docks it on its metadata row the
-  same way. It has no aggregate pass/fail alert, no synthesized verdict, and
+- A collapsed task card shows only a quiet `Reviews N` count at the start of its
+  one action row, under the metadata line (the card's controls right-aligned on the
+  same row), optionally with an active count; a collapsed nested child card the same way. It has no aggregate pass/fail alert, no synthesized verdict, and
   no review dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group
   (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group
@@ -1163,30 +1162,24 @@ Unavailable canonical refresh retains text, references and drafts but disables a
 
 Human-required Project waits expose their existing controls, including children's; activity counts stay root-only. Reuse revision-bound model-access and Resume/Stop controls: sign-in, unobservable automatic access, disabled automatic continuation, budget pauses and Resume-only holds (a sleep held, or an owner Resume interrupted, by a stop). Viable automatic account/quota recovery, queues, self-waking sleep, background scope verification and own Pause stay quiet. Deduplicate the same quiz/wait identity, not all waits on a task. Missing action evidence stays unavailable; visibility never authorizes login, budget changes or automatic Resume.
 
-**Project work entries.** Creation, transfer and manual conversion share one compact
-Project-colour card, live and on replay. The selectable work title leads at weight
-500, status beside it (above when narrow). Below, the sole Project reference fills
-a row beside the event time and Copy (work title and full Project name), above them
-when narrow. Only here does free area press the reference; text stays reading (a
-double click selects a word), controls keep their press, and a drag, a selection
-that press made, a repeat or a modifier never navigates. The entry adds no role, tab
-stop or name.
-A converted card gains its transfer time from the matching receipt, never the clock
-or an unrelated task; missing time stays absent. Finished or not, it keeps
-Project colour, with no System heading or created/transferred caption.
-Structured `task_name` names the work; older history uses its retained task result.
-Creation and transfer keep their event identities and publication eligibility; each
-card follows its work, never the Project's latest unrelated task. Binding proves no
-activity. Task cards, entries and Project indicators share per-task status facts and
-motion ("Sidebar activity dots"; pausing stays still too), across reload. A known
-outcome leads beside quiet finalization; an answered/resumed question is not a wait.
-Manual conversion opens its room; agent handoffs do not steal focus. Converted cards
-stay visible, several from one owner message included; their durable receipt folds
-under the visible anchor and returns when it leaves the feed. Matching Started and
-routing references fold only while that anchor is mounted; records and non-browser
-plain text remain. An undurable Main receipt keeps a dashed border and a plain warning;
-the binding holds. Genuine initiator work and failures remain visible; folding never
-lends another task's outcome. The later final answer stays a separate message.
+**Work portal.** A work that lives in a Project room keeps its one Main card at
+the request's place, whoever moved it (Turn into project, the mind's move, a
+binding); a Project start or transfer row only says where it went and is never a
+second entry. The card becomes the work's portal: status chip and quiet fact,
+title, one latest line (two lines, cut on a word), the meta line (tool calls ·
+money · updated) and one action row `[Reply] [Resume] [Stop…]` with one primary,
+the Project reference as its full-width footer. Timeline, Reviews and children
+live in the room; the summary is reading content, not a disclosure. The room's
+census row supplies the present (its last line, tool calls, `in background` for
+detached work); a missing fact leaves the card as it was, never a guessed line or
+count. When the work ends the line goes and the chip states the outcome from the
+final's typed outcome or the durable detail. An undurable Main receipt keeps a
+dashed border and a plain warning; the binding holds. The owner's routing line
+under his message steps aside while the portal of that work stands in the feed;
+words passed on to the work later keep theirs. A Continue is the same card: the
+admitted successor takes the work's place and first name, each episode one meta
+line (`Episode 1 · 17:33–18:15 · Failed: <cause>`), the current one owning the
+chip.
 
 **Project completion mirror.** Eligible managed/transferred Project finals reach Main as Markdown in Ouroboros's voice, host-stamped only for a model-authored final, so the browser never infers authorship; ordinary Project-native replies stay local. A long answer folds to about seven lines of complete selectable text, faded only where text is hidden; **Show full**/**Show less** toggles it in place, and folded text has no keyboard stops. A nonclean final carries one compact factual limitation from recorded outcome/acceptance beside the answer, wrapping legibly at narrow widths; a clean final has no status caption. Copy copies the answer alone. The Project reference, **Files** and the fold toggle sit below. **Available files** lazily opens the complete retained inventory in Main: folders expand to every addressed member, text/Markdown opens the existing reader, images keep previews, other files download; ZIPs supplement per-file access, and unavailable members/archives never hide healthy siblings. Availability is not delivery or owner receipt. Full reviews, logs and progress stay in their sources. Durable rows/wire frames stay `role="system"` with unchanged plain text, so the Telegram mirror and Ouroboros's own context behave as before; no-answer endings and historical rows without an authored answer keep System voice and reference/files access. One logical identity joins retries/history and keeps one-ending-one-notification; external transport stays at-least-once.
 
@@ -1249,7 +1242,7 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   field stays focusable (read-only, not disabled) while files upload, so a phone
   keeps its keyboard. `/restart` typed with staged files stays the Restart
   command (the files ride its row); any other words are a message. A sent
-  attachment message is not yet saved: if the socket
+  message (words or files; a bare slash command is a command) is not yet saved: if the socket
   closes, or the host refuses the frame, before its "Input saved" echo, the
   bubble says "Not confirmed as saved" with "Send again", which resends the same
   frame and id (the host rejoins it if it was saved after all — never a second
@@ -1267,9 +1260,30 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   reached the agent (its write failed before dispatch, in the running host)
   says "Saved, not delivered." and keeps Send again: the host hands that row
   over once. A kept message whose saved row a host process before a restart
-  took says "Saved; delivery not confirmed." without Send
-  again: nothing is known, so nothing is replayed. Rows nobody kept stay plain
+  took says "Saved; delivery not confirmed." with Send as new, which puts
+  the words back in the composer as a new message and sends nothing: nothing is replayed. Rows nobody kept stay plain
   history ("Input saved").
+
+### Replies
+
+A reply is a reference: the owner says which row he means, Ouroboros decides what
+to do, and nothing routes by it. Every saved row offers Reply — beside Copy on a
+bubble, first in a root work card's action row, in the row menu — never on hover
+only. Reply stages one strip above the composer (`Replying to`, the quoted author,
+one line, ×; Esc cancels); the sent message carries only the row's address and the
+host makes the snippet. A question card that still takes an answer answers in its
+own field. The quote panel is one component (bubble, strip, relay): above the
+text, a 2 px bar and a tint in the quoted author's ink, one line cut on a word (a
+photo leads with its thumbnail); pressing it goes to the quoted row when loaded.
+An Ouroboros answer quotes the message it answers only when that message is not
+directly above it (its own card does not count). A relay arrives in the work's
+room as one Ouroboros bubble: the owner's complete words with where and when he
+wrote them (six lines, then Show all; files named), then Ouroboros's note; his
+Main message keeps one receipt line naming the work and its room. The row menu —
+right-click, Shift+F10 or the ContextMenu key on the focused row, a long press on
+touch — offers the row's own doors: Reply, Copy, Open project, and on a work card
+Resume, Pause and Stop… exactly when the card does; Esc or an outside press closes
+it and focus returns to the row. Words the owner selected keep the browser's menu.
 
 ### Conversation activity block
 
@@ -1329,8 +1343,8 @@ error. Typed tool evidence after task terminal updates counts and diagnostics
 on both root and child cards, preserving terminal task phase and controls.
 The row keeps its live position; history admits carrier evidence before summaries,
 progress or references choose their presentation. Block
-presence is consistent across reload and reconnect. A turn moved into a Project
-with `ensure_project_scope` lives there; Main retains its compact Project work entry.
+presence is consistent across reload and reconnect. A work moved into a Project
+lives there; Main keeps its card as the work's portal ("Work portal").
 `N notes` in the collapsed header counts timeline items, the evidence row
 among them. A threshold crossing names its bound and threshold without strategic
 advice; distinct bounds and thresholds have distinct rows. Historical producers
@@ -1358,7 +1372,8 @@ headline; a finished card with neither reads `Task activity`, a running one
 stays untitled because its status chip already says Working), the status chip, Stop
 while the host attests it, and `Turn into project` in Main unless its origin is
 already bound (a direct turn's later rows then route to the Project room like a
-turn that called `ensure_project_scope`). A nested child card is work inside
+work that called `move_to_project`); its meta line and one action row ([Reply] first, then Turn into
+project, Resume, Stop…, one primary) form the card's foot. A nested child card is work inside
 its root's block, never a block of its own: it carries neither control, and its
 root's conversion is the conversion of the whole work. A block that exists only for open
 attention — a model wait, a pending or host-offered Stop — or only for a
@@ -1385,7 +1400,7 @@ was open attention leaves when that attention closes: a wait-only block
 disappears when the wait resolves, and the resolved episode's no-reopen ledger
 survives with the record, so a stale revision cannot bring the block back.
 
-An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task`, `ensure_project_scope` —
+An addressing call (`start_task`, `move_to_project`, `tell_task` —
 the routing-verb family `ouroboros/tool_capabilities.py::ROUTING_VERBS` owns) is stamped by
 the host on its live tool-call frames (`routing_action`) and counted in the
 task metrics (`routing_tool_calls`); its receipt is the typed routing

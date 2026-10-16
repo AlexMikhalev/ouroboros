@@ -73,7 +73,7 @@ Nonclean answers carry one `completion_reason` (verdict/outcome plus preparation
 
 `project_handoff.py` owes Main a transfer receipt through the terminal outbox after durable binding. `handoff_id` binds captured ingress/Project: retries share it, independent requests do not. `RECEIPT_STATES`: `durable`/`already_delivered` prove Main owed/delivered; `origin_unproven` writes none, other states disclose gaps. Main is never default. `/api/projects/from-task` returns `handoff_receipt`/`handoff_id`; nondurability warns, inventing no history.
 
-`project_handoff.js` owns creation/transfer layout and free-area press (`isFreePress`), live or replayed, with `formatMsgTime`/Copy. Folding supplies the matching receipt time; anchors and task outcomes stay separate. Structured `task_name` follows producers, bus and history. `task_phase_chip.censusTaskPhase`/`paintTaskPhase` share outcome and motion with tasks and Project summaries (DESIGN "Project work entries"). Only explicit technical retry follows work; Continue is a new root; reconnect re-proves activity.
+`work_portal.js` binds a Main card to its Project from Turn into project (`/api/projects/from-task`), `task_bindings`, a census row's `project_id`, or a `project_started`/`project_handoff` row (data, never an entry): the same node becomes the portal and reads its present from the all-chat `active_chat_activities` (`last_line`, `last_line_at`, `tool_calls`, `detached`); a completion row settles it from `outcome_axes`, else the durable detail. Structured `task_name` names it. `task_episodes.js` folds an admitted `continued_by`/`continuation_offer` chain into one card (DESIGN "Work portal"); reconnect re-proves activity.
 
 #### Composer, attachments and delivered media
 
