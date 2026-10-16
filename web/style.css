@@ -8873,6 +8873,7 @@ textarea.chat-input {
 /* A Project entry is the Project's voice: its tint, one resting object in every shell it replaces (a task card, a
    history row); an unsaved entry keeps its dashed edge, which is a state, not an outline. */
 :root[data-theme="light"] :is(.chat-live-card, .chat-bubble).project-handoff {
+    padding: var(--space-3) var(--space-4);
     border-color: transparent;
     background: var(--project-08);
     border-radius: var(--radius-object);
