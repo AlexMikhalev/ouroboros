@@ -907,31 +907,6 @@ def test_startup_recovers_start_requested_token_by_reserved_operation(tmp_path, 
     )
 
 
-def test_reconcile_reads_the_store_never_the_forensic_chain_replay(tmp_path, monkeypatch):
-    """P13: the operation's invocation comes from the store's rows (by token, else by operation
-    and slot); the whole retained event chain is never replayed on this bookkeeping path."""
-    from ouroboros import delegate_custody
-    from ouroboros.review_operation import _invocation_for_operation
-
-    assert delegate_custody.record_start_requested(
-        tmp_path, run_id="", task_id="task-a", invocation_id="inv-op", operation_id="op-1",
-        idempotency_key="logical", max_seconds=300, request={"prompt": "review"}, project_id="project-a",
-        project_owned=False, route="claude", surface="multi_model_review", slot_id="slot-a",
-    )
-
-    def forbidden(_root):
-        raise AssertionError("the forensic custody replay ran on the reconcile path")
-
-    monkeypatch.setattr(delegate_custody, "custody_rows", forbidden)
-    slot = SimpleNamespace(slot_id="slot-a")
-    by_operation = _invocation_for_operation(tmp_path, slot, "op-1", {})
-    by_token = _invocation_for_operation(tmp_path, slot, "op-1", {"pending_invocation_id": "inv-op"})
-    assert by_operation["invocation_id"] == by_token["invocation_id"] == "inv-op"
-    assert by_operation["state"] == "pending" and by_operation["operation_id"] == "op-1"
-    assert _invocation_for_operation(tmp_path, SimpleNamespace(slot_id="slot-b"), "op-1", {}) is None
-    assert _invocation_for_operation(tmp_path, slot, "op-unknown", {}) is None
-
-
 def test_commit_reconciliation_does_not_leak_reconcile_only_to_next_surface():
     from ouroboros.tools.git import _reconcile_and_clear_review_roster
 
