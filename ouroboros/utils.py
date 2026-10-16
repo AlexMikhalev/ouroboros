@@ -653,8 +653,7 @@ def append_jsonl(
 
 
 def jsonl_window(handle: Any, size: int, tail_bytes: Optional[int] = None) -> bytes:
-    """The lines of the last ``tail_bytes`` of a ``size``-byte file in ONE read (a cut window drops
-    its partial first line): a buffered line walk hands the interpreter lock away per block."""
+    """The whole lines of the last ``tail_bytes`` of a ``size``-byte file in ONE read (no per-block GIL hand-off)."""
     if tail_bytes is None or size <= tail_bytes:
         return handle.read(size)
     handle.seek(size - tail_bytes - 1)
@@ -670,8 +669,7 @@ def iter_jsonl_objects(
     gap_reasons: Optional[set[str]] = None,
     _handle: Any = None,  # Internal borrowed stream; its caller owns closing.
 ) -> Iterator[Any]:
-    """Yield parseable JSONL entries; max_entries applies to raw tail lines.
-    A bounded tail is read in one call (``jsonl_window``); a whole file streams."""
+    """Yield parseable JSONL entries; max_entries applies to raw tail lines; a tail is one read."""
     path = pathlib.Path(path)
     if (max_entries is not None and max_entries <= 0) or (tail_bytes is not None and tail_bytes <= 0):
         return
@@ -776,28 +774,32 @@ _CLOSED_SEGMENTS: Dict[str, tuple] = {}  # chain path -> (live identity, archive
 
 
 def _closed_segments(path: pathlib.Path, live_stat: Any, *, strict: bool) -> List[Tuple[pathlib.Path, Any]]:
-    """A chain's rotated segments with their stats, oldest first, without the live file's alias,
-    reused while the live inode and ``archive/``'s mtime hold (a rotation changes both; a closed
-    archive never changes) with only the newest re-stat'ed (an unlocked append can still grow it)."""
+    """A chain's rotated segments with their stats, oldest first, without the live file's alias; a complete
+    listing is reused while the live inode and ``archive/``'s mtime hold, the newest archive re-stat'ed."""
     try:
         key = (live_stat.st_dev, live_stat.st_ino, os.stat(path.parent.parent / "archive").st_mtime_ns)
     except (AttributeError, OSError):
         key = None
-    cached = _CLOSED_SEGMENTS.get(str(path))
-    if key is not None and cached is not None and cached[0] == key:
+    if key is not None and (cached := _CLOSED_SEGMENTS.get(str(path))) is not None and cached[0] == key:
         with contextlib.suppress(OSError):
             return [*cached[1][:-1], *((segment, segment.stat()) for segment, _stat in cached[1][-1:])]
-    closed = []
-    for segment in jsonl_archive_segments(path, strict=strict):
+    try:  # a listing that skipped anything is never reused
+        segments, complete, closed = jsonl_archive_segments(path, strict=True), True, []
+    except JsonlChainUnreadable:
+        if strict:
+            raise
+        segments, complete, closed = [], False, []
+    for segment in segments:
         try:
             stat = segment.stat()
         except OSError as exc:
             if strict and not isinstance(exc, FileNotFoundError):
                 raise JsonlChainUnreadable(f"cannot stat {segment}: {exc}") from exc
+            complete = False
             continue
         if key is None or (stat.st_dev, stat.st_ino) != key[:2]:
             closed.append((segment, stat))
-    if key is not None:
+    if key is not None and complete:
         _CLOSED_SEGMENTS[str(path)] = (key, tuple(closed))
     return closed
 

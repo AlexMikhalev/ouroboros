@@ -301,8 +301,8 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
 
     ``rooms`` is the room rule (``projects_registry.RoomResolver``), the same one
     the live bus addresses by, so a task's rows replay in the room its frames went
-    to. ``gateway.history_segments.room_segment_lens`` mirrors the Project
-    admissions below to skip archives; change both together.
+    to. ``room_index.room_spec`` names a superset of the Project admissions
+    below (the rows a room read considers); change both together.
 
     Presentation-only hiding and cross-room question pointers belong to the UI
     caller. A room source retains the actual cognitive result as well.

@@ -265,6 +265,10 @@ def test_chat_history_reads_bounded_progress_tail_with_zero_artifact_work(
         with chain_handles(*args, **kwargs) as handles:
             yield [(path, CountedHandle(path, handle)) for path, handle in handles]
 
+    from ouroboros import room_index
+
+    room_index.catch_up(tmp_path)  # the server's keeper indexed the file before this read
+    monkeypatch.setattr(room_index, "room_rows", room_index.room_rows.passive)
     monkeypatch.setattr(jsonl_tail, "jsonl_chain_handles", counted_handles)
     artifact_counters = _install_artifact_counters(monkeypatch)
 
@@ -275,7 +279,7 @@ def test_chat_history_reads_bounded_progress_tail_with_zero_artifact_work(
     progress_reads = [(start, size) for path, start, size in reads if path.name == "progress.jsonl"]
     assert progress_reads  # the bounded reader actually served the endpoint
     assert all(start >= progress_size - 512 * 1024 - 1 and size > 0 for start, size in progress_reads)
-    # One alignment lookahead and one parsed window, plus newline probes.
+    # The room's rows of the newest window, read in runs, plus the frozen boundary's newline probe.
     assert sum(size for _start, size in progress_reads) <= 2 * 512 * 1024 + 2 < progress_size
     progress_rows = [row for row in messages if row.get("is_progress")]
     assert len(progress_rows) == 60

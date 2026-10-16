@@ -328,13 +328,17 @@ def _fingerprint_matches(entry: Dict[str, Any], *, require_measured: bool = Fals
     return True
 
 
+# Session maintenance children that run on a cadence and read the repo: stopped like services.
+_MAINTENANCE_SERVICES = ("evidence_packer", "room_index")
+
+
 def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
     """Keep dead-leader evidence while a group member can still execute."""
     purpose = str(entry.get("purpose") or "")
     scope = str(entry.get("scope") or "")
     pgid = int(entry.get("pgid") or 0)
     return bool(
-        (purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer")
+        (purpose.startswith(("service:", "workspace_service:")) or purpose in _MAINTENANCE_SERVICES)
         and scope in {"task", "session"}
         and pgid > 0
         and process_group_has_live_members(pgid)
@@ -788,7 +792,7 @@ def quiesce_custodied_services(
     blockers: List[str] = []
     for entry in entries:
         purpose = str(entry.get("purpose") or "")
-        is_service = purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer"
+        is_service = purpose.startswith(("service:", "workspace_service:")) or purpose in _MAINTENANCE_SERVICES
         leader_matches = _fingerprint_matches(entry)
         if (
             is_service

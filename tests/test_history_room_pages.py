@@ -2,16 +2,13 @@
 
 Opening a room returns its newest rows however many other rooms' archives were
 written since; every older page returns the next older rows of the same room and
-is never empty while history remains; archives a Project's lens rules out are
-skipped by their summaries (``history_segments``), never at the cost of a row.
+is never empty while history remains; a room reads its own rows where the room
+index (``room_index``) names them, never the other rooms' archives, never at the
+cost of a row.
 """
 
-import os
-
 from ouroboros.gateway import history_paging
-from ouroboros.gateway.history_segments import SegmentSummary, room_segment_lens, segment_summary
 from tests.test_chat_history_paging import isolated_runtime, pages, request, row, write  # noqa: F401
-from tests._room_shared import RoomsFromBindings
 
 
 def foreign_archives(root, stamp, count=3):
@@ -110,26 +107,43 @@ def test_the_read_ceiling_bounds_each_request_but_loses_nothing(tmp_path, monkey
         f"human-{index}" for index in range(40))
 
 
-def test_main_and_rooms_sharing_its_lens_never_skip_an_archive():
-    assert room_segment_lens(1, {7}, [], RoomsFromBindings({"task": 7})) is None
-    assert room_segment_lens(42, {7}, [], RoomsFromBindings({"task": 7})) is None
-    may_hold = room_segment_lens(7, {7}, [], RoomsFromBindings({"task": 7, "other": 8}))
-    assert may_hold(SegmentSummary(frozenset({7}), frozenset(), frozenset()))
-    assert may_hold(SegmentSummary(frozenset({1}), frozenset({"task"}), frozenset()))
-    assert not may_hold(SegmentSummary(frozenset({1, 8}), frozenset({"other"}), frozenset()))
+def _chat_reads(monkeypatch):
+    """Every byte range a history read takes from the chat chain."""
+    reads, real = [], history_paging.HistorySource._read
+    monkeypatch.setattr(history_paging.HistorySource, "_read", lambda self, start, end: (
+        reads.append((start, end)) if self.source == "chat" else None, real(self, start, end))[1])
+    return reads
 
 
-def test_a_rewritten_archive_gets_a_fresh_summary(tmp_path):
-    path = tmp_path / "chat_20260901T000000.jsonl"
-    write(path, [row(0, chat_id=5)])
-    assert segment_summary(path, os.stat(path)).chat_ids == frozenset({5})
-    write(path, [row(0, chat_id=6), row(1, chat_id=6)])
-    assert segment_summary(path, os.stat(path)).chat_ids == frozenset({6})
+def _foreign_bytes(root, own, reads):
+    """The ranges that touched the other rooms' archives (between the room's archive and the live file)."""
+    live_base = sum(path.stat().st_size for path in (root / "archive").glob("chat_*.jsonl"))
+    return [(start, end) for start, end in reads if end > own.stat().st_size and start < live_base]
 
 
-def test_a_replayed_page_skips_the_archives_its_first_read_ruled_out(tmp_path, monkeypatch):
+def test_a_room_reads_its_own_rows_and_never_the_other_rooms_archives(tmp_path, monkeypatch):
+    from ouroboros.projects_registry import create_project
+
+    project = create_project(tmp_path, "quiet", name="Quiet")
+    chat = project["chat_id"]
+    own = tmp_path / "archive" / "chat_20260901T000000.jsonl"
+    write(own, [row(index, chat_id=chat) for index in range(3)])
+    foreign_archives(tmp_path, "20260902T00000", count=4)
+    write(tmp_path / "logs" / "chat.jsonl", [row(9, text="foreign live")])
+    request(tmp_path, chat_id="1")  # Main holds the foreign rows: it reads them, and the index is current
+    reads = _chat_reads(monkeypatch)
+    status, page = request(tmp_path, chat_id=str(chat))
+    assert status == 200 and [message["text"] for message in page["messages"]] == [f"human-{i}" for i in range(3)]
+    assert reads and not _foreign_bytes(tmp_path, own, reads), reads
+    assert page["window"]["complete"] is True
+    reads.clear()
+    status, main = request(tmp_path, chat_id="1")  # the same reader in a room that holds them reads them
+    assert status == 200 and _foreign_bytes(tmp_path, own, reads)
+
+
+def test_a_replayed_page_reads_only_its_own_rows_again(tmp_path, monkeypatch):
     """A page re-read by its frozen handle (a released page coming back) costs what its
-    first read did: the same room view rules the same archives out."""
+    first read did: the same room's rows, never the other rooms' archives."""
     from ouroboros.projects_registry import create_project
 
     project = create_project(tmp_path, "replay", name="Replay")
@@ -140,13 +154,9 @@ def test_a_replayed_page_skips_the_archives_its_first_read_ruled_out(tmp_path, m
     write(tmp_path / "logs" / "chat.jsonl", [row(9, text="foreign live")])
     status, first = request(tmp_path, chat_id=str(chat))
     assert status == 200 and len(first["messages"]) == 3
-    parsed, entries = [], history_paging.HistorySource._entries
-    monkeypatch.setattr(history_paging.HistorySource, "_entries", lambda self, start, end, gaps: (
-        parsed.append((self.source, start, end)), entries(self, start, end, gaps))[1])
+    reads = _chat_reads(monkeypatch)
     status, again = request(tmp_path, chat_id=str(chat), cursor=first["page_cursor"])
     assert status == 200
     assert [message["history_id"] for message in again["messages"]] == [
         message["history_id"] for message in first["messages"]]
-    live_base = sum(path.stat().st_size for path in (tmp_path / "archive").glob("chat_*.jsonl"))
-    assert parsed and all(end <= own.stat().st_size or start >= live_base
-                          for source, start, end in parsed if source == "chat"), parsed
+    assert reads and not _foreign_bytes(tmp_path, own, reads), reads

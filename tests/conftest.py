@@ -637,6 +637,26 @@ def pytest_runtest_call(item):  # noqa: ARG001
 
 
 @pytest.fixture(autouse=True)
+def _room_index_caught_up(monkeypatch):
+    """A history read finds the room index caught up with the chains, as the server's keeper
+    (``room_index.keeper``) keeps it; a test of the reader's own lag restores ``room_rows``."""
+    from ouroboros import room_index
+
+    passive = room_index.room_rows
+
+    def caught_up(root, room):
+        try:  # like the keeper, a pass that cannot run leaves the index as it is
+            room_index.catch_up(root)
+            room_index.backfill(root)
+        except Exception:  # noqa: BLE001
+            pass
+        return passive(root, room)
+
+    caught_up.passive = passive
+    monkeypatch.setattr(room_index, "room_rows", caught_up)
+
+
+@pytest.fixture(autouse=True)
 def _rebind_runtime_roots_between_tests():
     _bind_pytest_runtime_roots()
     yield

@@ -88,3 +88,43 @@ def test_a_changed_room_view_or_a_long_absence_takes_the_newest_page_again(tmp_p
     status, refused = _read(tmp_path, page["after_cursor"])
     assert status == 409 and refused["reason_code"] == "history_delta_reset"
     assert _read(tmp_path)[0] == 200
+
+
+def test_a_new_owner_message_annotation_takes_the_newest_page_again(tmp_path):
+    """Annotations change older owner rows in place (no new row): a window cannot be brought up
+    to date by new arrivals once they changed, so ``after`` refuses and the newest page answers."""
+    from ouroboros.project_dialogue import append_chat_annotation
+
+    _append(tmp_path, "chat", [{"ts": TS.format(0), "direction": "in", "chat_id": 1, "text": "route me",
+                                "client_message_id": "msg-1"}])
+    _, page = _read(tmp_path)
+    status, quiet = _read(tmp_path, page["after_cursor"])
+    assert status == 200 and quiet["messages"] == []  # nothing changed: the delta answers
+    append_chat_annotation(tmp_path, "msg-1", action="promote_chat_to_task", status="scheduled")
+    status, refused = _read(tmp_path, quiet["after_cursor"])
+    assert status == 409 and refused["reason_code"] == "history_delta_reset"
+    status, fresh = _read(tmp_path)
+    assert status == 200 and fresh["messages"][0]["chat_annotation"]["status"] == "scheduled"
+    assert _read(tmp_path, fresh["after_cursor"])[0] == 200
+
+
+def test_new_arrivals_in_a_project_name_their_newest_message(tmp_path):
+    from ouroboros.projects_registry import create_project
+
+    chat = create_project(tmp_path, "arrivals", name="Arrivals")["chat_id"]
+
+    def project_read(cursor=None):
+        params = {"chat_id": str(chat), **({"cursor": cursor} if cursor else {})}
+        response = asyncio.run(make_chat_history_endpoint(tmp_path)(SimpleNamespace(query_params=params)))
+        return response.status_code, json.loads(response.body)
+
+    _append(tmp_path, "chat", [{"ts": TS.format(0), "direction": "out", "chat_id": chat, "text": "first answer"}])
+    _, page = project_read()
+    status, quiet = project_read(page["after_cursor"])
+    assert status == 200 and "latest_message" not in quiet["window"]  # no new message: the window keeps its own
+    _append(tmp_path, "chat", [{"ts": TS.format(1), "direction": "out", "chat_id": chat, "text": "second answer"},
+                               {"ts": TS.format(2), "direction": "in", "chat_id": chat, "text": "owner reply"}])
+    status, delta = project_read(quiet["after_cursor"])
+    newest = next(row for row in delta["messages"] if row["text"] == "second answer")
+    assert status == 200 and delta["window"]["latest_message"] == {"history_id": newest["history_id"],
+                                                                     "out_of_order": False}

@@ -28,9 +28,9 @@ from ouroboros.gateway._helpers import coerce_int, read_rotated_jsonl_entries
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
-    replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, PROJECTION_FAILED,
+    replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp, PROJECTION_FAILED,
 )
-from ouroboros.gateway.history_segments import room_segment_lens
+from ouroboros.room_index import room_spec
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
@@ -1419,6 +1419,7 @@ def _assemble_history_response(
     Room lenses, source reads, projection, terminal truth and JSON encoding all
     stay off the event loop. Both selectors use the same row transformers.
     """
+    notes = notes_stamp(data_dir)  # before the annotations are read: a later change refuses ``after``
     project_chat_ids, project_source_refs, chat_annotations, bindings_by_task, rooms, classified = (
         _project_history_context(data_dir, thread_id)
     )
@@ -1434,7 +1435,8 @@ def _assemble_history_response(
                                {"chat": _chat_quota_predicate(row_matches_thread),
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
-                               room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms))
+                               room_spec(data_dir, thread_id, project_chat_ids, project_source_refs, bindings_by_task),
+                               notes)
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1453,7 +1455,7 @@ def _assemble_history_response(
     combined.extend(progress_rows)
     candidates = list(combined)
     combined = _fold_task_bound_skill_reviews(combined)
-    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor else None
+    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor or page["after"] else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
     result_cache: Dict[Any, Any] = {}  # every task result below is read once per request, in batches
@@ -1486,7 +1488,7 @@ def _assemble_history_response(
     # Annotate only emitted rows; an absent summary must not strand a card.
     deferred_lineage: set = set()
     evidence_anchors = {}
-    if recent:  # current work has no history position: its evidence lands at the page end
+    if recent or page["after"]:  # current work has no history position: its evidence lands at the page end
         from ouroboros.gateway.state import current_work_in_room
         evidence_anchors = dict.fromkeys(current_work_in_room(
             data_dir, bindings_by_task, row_matches_thread.evidence_matches), "")

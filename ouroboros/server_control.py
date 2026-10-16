@@ -343,6 +343,9 @@ def execute_panic_stop(
         from ouroboros.evidence_packer import packer
 
         attempt("evidence-packer", packer.stop, native=True)
+        from ouroboros.room_index import keeper
+
+        attempt("room-index", keeper.stop, native=True)
         import multiprocessing
 
         from ouroboros.claudexor_daemon import get_owned_daemon
