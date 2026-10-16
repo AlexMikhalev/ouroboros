@@ -327,15 +327,15 @@ def _census(**over):
 
 
 @pytest.mark.parametrize("alive", [True, False])
-def test_restart_census_refuses_a_packer_exit_until_confirmed(tmp_path, monkeypatch, alive):
+def test_restart_census_refuses_a_maintenance_exit_until_confirmed(tmp_path, monkeypatch, alive):
     import server
-    from ouroboros import evidence_packer
+    from ouroboros import evidence_packer, maintenance
 
     root = tmp_path / "data"
     root.mkdir()
     signals, switches = [], []
     child = SimpleNamespace(poll=lambda: None if alive else 0, kill=lambda: signals.append("kill"))
-    packer = evidence_packer.EvidencePacker()
+    packer = maintenance.MaintenanceChild()
     packer._process = child
     monkeypatch.setattr(evidence_packer, "packer", packer)
     monkeypatch.setattr(server, "DATA_DIR", root)
@@ -361,10 +361,10 @@ def test_restart_census_refuses_a_packer_exit_until_confirmed(tmp_path, monkeypa
         assert outcome["status"] == "switched" and len(switches) == 1
 
 
-def test_packer_census_covers_a_spawn_before_the_child_handle_is_published():
-    from ouroboros.evidence_packer import EvidencePacker
+def test_maintenance_census_covers_a_spawn_before_the_child_handle_is_published():
+    from ouroboros.maintenance import MaintenanceChild
 
-    packer = EvidencePacker()
+    packer = MaintenanceChild()
     alive = [True]
     packer._thread = SimpleNamespace(is_alive=lambda: alive[0])
     packer.stop()

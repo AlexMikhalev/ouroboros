@@ -361,6 +361,9 @@ def _periodic_supervisor_maintenance(
         elif not _start_maintenance_thread(latch, "reconcile-maintenance", _run_periodic_reconcile_sweep,
                                            (last_review_reconcile, stop_event, latch)):
             last_review_reconcile[0] = time.time()  # a start that failed still waits out a cadence
+    from ouroboros.maintenance import child as maintenance_child
+    if maintenance_child.owed():  # a process's first look, or a job scheduled since: reserve the slot only
+        _tick_maintenance_child()
     # Every tick, as the inline pass ran before; a pass still running (a slow preparation) skips this one.
     if _SCHEDULE_SWEEP_LOCK.acquire(blocking=False):
         _start_maintenance_thread(_SCHEDULE_SWEEP_LOCK, "schedule-admission", _run_schedule_duty,
@@ -1030,17 +1033,23 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
         if _stop_requested(stop_event):
             return
         _run_drive_custody_pass(stop_event)
-        if not _stop_requested(stop_event):  # settled evidence packs: a supervised child, never at boot
-            from ouroboros.config import REPO_DIR
-            from ouroboros.evidence_packer import packer
-
-            packer.tick(pathlib.Path(DATA_DIR), pathlib.Path(REPO_DIR))
+        if not _stop_requested(stop_event):  # history-sized named jobs: the one maintenance child, never here
+            _tick_maintenance_child()
         _step_recovered("reconcile_sweep")
     except Exception:
         _step_failed("reconcile_sweep", "Periodic %s failed")
     finally:
         marker[0] = time.time()
         (latch or _RECONCILE_SWEEP_LOCK).release()
+
+
+def _tick_maintenance_child() -> None:
+    """The maintenance dispatcher: reserve the one child slot (``ouroboros/maintenance.py``); its
+    thread reads the job facts and spawns the child only when one is due."""
+    from ouroboros.config import REPO_DIR
+    from ouroboros.maintenance import child
+
+    child.tick(pathlib.Path(DATA_DIR), pathlib.Path(REPO_DIR))
 
 
 def _run_drive_custody_pass(stop_event: Any = None) -> None:

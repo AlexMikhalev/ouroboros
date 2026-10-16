@@ -196,6 +196,12 @@ the version/tier/filesystem WAL gate; FULL is unchanged on both journal modes.
 
 Apply ARCHITECTURE §10 invariant 10; enforcement: "Invariant: Projection over replay (hot readers of growing stores)" below.
 
+Once per process is not once per installation. A fact of the installation (a migration done, a scan
+that found nothing, a cursor) is a durable row, never a module-level set, dict or flag that a restart
+forgets. History-sized work is a named job with a durable cursor in the maintenance child
+(`ouroboros/maintenance.py`, facts in `ouroboros/maintenance_jobs.py`), never a boot step, a request
+step or a server thread; a second run over unchanged inputs decodes no history body and commits nothing.
+
 ### Generality and emergence (P13)
 
 Every non-trivial change picks a level: patch the case in front of you, solve its
