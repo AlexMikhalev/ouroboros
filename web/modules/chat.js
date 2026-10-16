@@ -534,12 +534,15 @@ export function createChatInstance({
         }
     }
 
-    function setStatus(kind, text) {
+    function setStatus({ kind, text, tone = 'online', dots = 'one' }) {
         // replay frames never touch the badge; the reducer
-        // (syncChatStatus) writes it once after the batch.
+        // (syncChatStatus) writes it once after the batch. Word, tone and dots come from one producer
+        // (computeDerivedChatStatus); the room's status control paints them and derives nothing.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
+        statusBadge.dataset.tone = tone;
+        statusBadge.dataset.dots = dots;
         roomWork?.update();
     }
 
@@ -3150,7 +3153,7 @@ export function createChatInstance({
         // Late panels missed socket open; seed from the socket and latest snapshot.
         hostReady = supervisorReady(stateSnapshots.latest?.()) ?? hostReady;
         const seed = computeDerivedChatStatus({ supervisorStarting: !hostReady });
-        if (ws.isConnected?.()) setStatus(seed.kind, seed.text);
+        if (ws.isConnected?.()) setStatus(seed);
     } else headerControlInterval = setInterval(refreshHeaderControlState, 3000);
     // Both Main and late panels hydrate once; each instance filters its chat.
     refreshHeaderControlState(true);
@@ -3368,7 +3371,7 @@ export function createChatInstance({
 
     function syncChatStatus() {
         const derived = deriveChatStatus();
-        setStatus(derived.kind, derived.text);
+        setStatus(derived);
         return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
     }
 

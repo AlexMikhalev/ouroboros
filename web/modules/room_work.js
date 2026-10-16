@@ -379,9 +379,8 @@ export function createRoomWork({
         const word = element('span', 'rw-word');
         const secondary = element('span', 'rw-secondary');
         const where = element('span', 'rw-where');
-        const place = element('span', 'rw-place');
         const chev = decorative(element('span', 'rw-chev'));
-        where.append(place, chev);
+        where.append(chev);
         state.append(rowDots, rowLead, word, secondary, where);
         main.append(nameEl, state);
         const verb = element('span', 'rw-verb');
@@ -390,7 +389,7 @@ export function createRoomWork({
         detail.id = `${uid}-detail-${(detailSequence += 1)}`;
         detail.hidden = true;
         el.append(main, verb, moreSlot, detail);
-        view = { el, main, nameEl, dots: rowDots, lead: rowLead, word, secondary, where, place, chev, verb, moreSlot,
+        view = { el, main, nameEl, dots: rowDots, lead: rowLead, word, secondary, where, chev, verb, moreSlot,
             detail, question: null, resume: null, more: null, row: null, full: null, detailKey: '', attempt: undefined };
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
@@ -430,11 +429,12 @@ export function createRoomWork({
         Object.assign(el.dataset, {
             id: row.id,
             slot: row.slot, kind: row.kind, tone: row.tone, settled: row.settled ? '1' : '0', open: isOpen ? '1' : '0',
-            // A moving, loaded row says its word on the name's line; every exception says it under the name.
-            flow: row.group === 'progress' && navigable && !row.settled ? 'moving' : 'exception',
         });
         const full = row.fullName || row.name;
-        const state = [row.view.text, row.view.secondary].filter(Boolean).join(' · ');
+        // Every row says its state under its name (5A). A row whose message is not loaded says so in its name for
+        // assistive technology and in its details; it is not a visible line of its own.
+        const place = !row.loaded && row.kind !== 'pending' ? tr('room_work.place.unloaded', 'Not in loaded messages') : '';
+        const state = [row.view.text, row.view.secondary, place].filter(Boolean).join(' · ');
         if (navigable || detailable) {
             main.setAttribute('role', 'button');
             main.tabIndex = 0;
@@ -463,10 +463,8 @@ export function createRoomWork({
         const secondary = String(row.view.secondary || '');
         if (view.secondary.textContent !== secondary) view.secondary.textContent = secondary;
         view.secondary.hidden = !secondary;
-        const place = !row.loaded && row.kind !== 'pending' ? tr('room_work.place.unloaded', 'Not in loaded messages') : '';
-        if (view.place.textContent !== place) view.place.textContent = place;
         view.chev.hidden = !detailable;
-        view.where.hidden = !place && !detailable;
+        view.where.hidden = !detailable;
         view.detail.hidden = !isOpen;
         if (isOpen) {
             const lines = describe(row);
@@ -652,26 +650,24 @@ export function createRoomWork({
     function paintTrigger() {
         const text = clean(statusBadge.textContent);
         const current = rows.filter((row) => !row.settled && !row.latest);
-        const tones = new Set(current.map((row) => row.tone));
         const listed = rows.length > 0;
-        // The badge's own class (setStatus) names the connection; its exceptions outrank work colours.
-        const kind = (String(statusBadge.className).match(/\b(online|starting|offline|error|thinking)\b/) || [])[1] || '';
-        const connection = ['offline', 'error', 'starting'].includes(kind) ? kind : '';
-        const tone = connection || (tones.has('live') ? 'live' : tones.has('wait') ? 'wait' : tones.has('queued') ? 'queued'
-            : tones.has('unknown') ? 'unknown' : kind === 'thinking' ? 'live' : kind || 'online');
+        // Word, tone and dots come together from the chat's producer (computeDerivedChatStatus via setStatus);
+        // the control paints them and never ranks row tones or reads a class name for a second opinion.
+        const tone = statusBadge.dataset.tone || 'online';
+        const dotsMode = statusBadge.dataset.dots || 'one';
         trigger.disabled = !listed;
         trigger.dataset.tone = tone;
         trigger.dataset.open = open ? '1' : '0';
         trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
         trigger.title = text;  // the whole status word, never clipped away (an extra, not the only path)
         caret.hidden = !listed;
-        // Owner 15.10 (3C): live work keeps the three moving dots in the header; a single fact is one dot.
-        const dotted = tone === 'live' || tone === 'queued';
-        dots.hidden = !dotted;
-        dots.dataset.state = tone === 'live' ? 'working' : 'queued';
-        lead.hidden = dotted;
-        // A second, amber dot means one thing: while work runs, a question waits for the owner's answer.
-        const mixed = !connection && tones.has('live') && current.some((row) => row.question);
+        // Owner 15.10 (3C): live work keeps three moving dots, queued work three still dots; a fact is one dot.
+        dots.hidden = dotsMode === 'one';
+        dots.dataset.state = dotsMode === 'moving' ? 'working' : 'queued';
+        lead.hidden = !dots.hidden;
+        // A second, amber dot means one thing (4A): a question waits for the owner's answer and the word does not
+        // already say so — beside Working, Queued, a pause or an access wait alike.
+        const mixed = !['offline', 'starting', 'wait'].includes(tone) && current.some((row) => row.question);
         amber.hidden = !mixed;
         waitNote.hidden = !mixed;
         if (!listed && open) close({ restoreFocus: false });

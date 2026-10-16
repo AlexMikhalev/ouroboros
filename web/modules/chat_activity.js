@@ -1093,28 +1093,37 @@ export function computeDerivedChatStatus({
     supervisorStarting = false,
     modelActivity = null,
 } = {}) {
-    if (!isConnected) return { kind: 'offline', text: 'Reconnecting…', showDots: false };
-    // The header says the room's state in the card chip's word family; the model call's own phase (Sending
-    // request…, Response received…) is detail for the work list and the card, never the header's word.
-    // The call's own short word (the card chip's family: Sending, Working, Queued…); a stop
-    // policy's word (Cancelling…, Finalizing…) passes through unchanged.
-    const observed = modelActivity && { kind: modelActivity.waiting ? 'online' : 'thinking',
-        text: modelActivity.text, showDots: modelActivity.motion };
-    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: !hasActiveLiveCard };
+    // One producer for the header: the word (the card chip's family), its tone and its dots travel together, so
+    // the status control paints what it is given and never re-derives a tone. Tones: live (moving dots), queued
+    // (still dots), wait (amber: only the owner's own question), held (a pause, an access wait, a hold), unknown,
+    // starting, offline, online. `showDots` stays the transcript's typing row, a separate surface.
+    const view = (kind, text, tone, showDots = false) => ({ kind, text, tone, showDots,
+        dots: tone === 'live' ? 'moving' : tone === 'queued' ? 'still' : 'one' });
+    if (!isConnected) return view('offline', 'Reconnecting…', 'offline');
+    const working = () => taskActivityPresentation({ phase: 'working' }).text;
+    // The call's own short word (Sending, Working, Queued…); a stop policy's word (Cancelling…, Finalizing…)
+    // passes through unchanged. The operation, not the word, chooses the tone.
+    const observed = modelActivity && view(modelActivity.waiting ? 'online' : 'thinking', modelActivity.text,
+        modelActivity.operation === 'unknown' ? 'unknown' : modelActivity.waiting ? 'queued' : 'live', modelActivity.motion);
+    if (hasActiveLiveCard || activeManagedCount > 0) {
+        return (activeManagedCount > 0 && observed) || view('thinking', working(), 'live', !hasActiveLiveCard);
+    }
     // Sent work still finishing under the owner's Pause: settling, not working.
-    if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
-    if (activeDirectCount > 0) return observed || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: true };
-    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending…', showDots: true };
-    if (finalizingCount > 0 || hasFinalizingLiveCard) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'finalizing' }).text, showDots: true };
-    if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-    if (queuedManagedCount > 0) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'queued' }).text, showDots: true };
-    if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
-    if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
+    if (pausingManagedCount > 0) return view('thinking', pausePhaseLabel('budget_pausing'), 'held', true);
+    if (activeDirectCount > 0) return observed || view('thinking', working(), 'live', true);
+    if (pendingSubmissionsCount > 0) return view('thinking', tr('task.chip.sending', 'Sending'), 'live', true);
+    if (finalizingCount > 0 || hasFinalizingLiveCard) {
+        return view('thinking', taskActivityPresentation({ phase: 'finalizing' }).text, 'live', true);
+    }
+    if (waitingModelCount > 0) return view('online', tr('task.chip.waiting_for_access', 'Waiting for access'), 'held');
+    if (queuedManagedCount > 0) return view('thinking', taskActivityPresentation({ phase: 'queued' }).text, 'queued', true);
+    if (waitingOwnerCount > 0) return view('online', tr('task.chip.waiting_for_answer', 'Waiting for your answer'), 'wait');
+    if (unknownActivityCount > 0) return view('online', tr('task.chip.activity_unconfirmed', 'Activity unconfirmed'), 'unknown');
     // Mixed or unknown causes stay generic; paused work never claims Running.
-    if (pausedManagedCount > 0) return { kind: 'online', text: pausePhaseLabel('budget_paused', pausedCause), showDots: false };
-    if (projectWaitLabel) return { kind: 'online', text: projectWaitLabel, showDots: false };
-    if (supervisorStarting) return { kind: 'starting', text: 'Starting…', showDots: false };
-    return { kind: 'online', text: 'Online', showDots: false };
+    if (pausedManagedCount > 0) return view('online', pausePhaseLabel('budget_paused', pausedCause), 'held');
+    if (projectWaitLabel) return view('online', projectWaitLabel, 'held');
+    if (supervisorStarting) return view('starting', 'Starting…', 'starting');
+    return view('online', 'Online', 'online');
 }
 
 // Count census activity and unfinished cards; parked/waiting rows retain their own state.

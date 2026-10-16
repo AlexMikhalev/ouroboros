@@ -1035,20 +1035,18 @@ body.keyboard-open .main-attention-body {
 
 /* === design-system:migrated-begin (chat: page header, budget pill, load-older) === */
 
-/* Main's header is one bar like a Project's: title, the room's status leading the trailing controls, then
-   the agent's commands. Its rows follow the page's own width (a container query), never a label's length,
-   so no status word can wrap, stretch or move anything: below the breakpoint the commands take their own
-   second row and the title row keeps the status. */
-#page-chat { container: chatpage / inline-size; }
-#page-chat > .chat-page-header {
+/* Main's header is one bar like a Project's: the title with the room's status right after it, then the agent's
+   commands. The title block's flex basis, never a word, decides whether the commands share its row: below that
+   width they wrap onto their own row, still at the trailing edge, so no status word can wrap, stretch or move
+   anything (the title and the word ellipsize inside the block instead). */
+.chat-page-header {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
     z-index: 5;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: "leading title toolbar";
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
     column-gap: var(--space-3);
     row-gap: calc(var(--space-2) + var(--chrome-inset));
@@ -1060,17 +1058,9 @@ body.keyboard-open .main-attention-body {
     mask-image: none;
     overflow: visible;
 }
-#page-chat > .chat-page-header > .app-page-actions { grid-area: toolbar; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
-#page-chat > .chat-page-header .chat-header-actions { flex-wrap: nowrap; max-width: none; }
-@container chatpage (max-width: 46rem) {
-    #page-chat > .chat-page-header > .app-page-actions,
-    #page-chat > .chat-page-header .chat-header-actions { flex-wrap: wrap; }
-    #page-chat > .chat-page-header {
-        grid-template-columns: auto minmax(0, 1fr);
-        grid-template-areas: "leading title" "toolbar toolbar";
-    }
-    #page-chat > .chat-page-header > .app-page-actions { justify-content: flex-start; }
-}
+.chat-page-header > .app-page-leading { flex: 0 0 auto; }
+.chat-page-header > .app-page-title-block { flex: 999 1 20rem; min-width: 0; }
+.chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-end; }
 
 /* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
    of controls, the history note) that fades only in the band below it, so moving messages never show

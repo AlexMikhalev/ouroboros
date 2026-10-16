@@ -30,9 +30,13 @@
 .rw-trigger[hidden] { display: none; }
 .rw-trigger:disabled { cursor: default; opacity: 1; }
 .rw-trigger:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
-/* Variant D: the status follows the title in the title row; the title yields its ellipsis first. */
-.app-page-title-row > .rw-trigger { flex: 0 0 auto; margin-left: var(--space-1); }
-.app-page-title-row > .app-page-title { flex: 0 1 auto; min-width: 3ch; }
+/* Variant D: the status follows the room's title in its bar. The title keeps a readable floor and yields its
+   ellipsis first; past that floor the status word ellipsizes inside its own cap. Neither moves the bar's other
+   controls: the bar decides its rows by the title block's basis, never by these words. */
+:is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger { flex: 0 1 auto; min-width: 0; margin-left: var(--space-1); }
+:is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {
+    flex: 0 1 auto; min-width: min(8ch, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .project-panel-bar .app-page-title-block { flex: 1 1 0; min-width: 0; }
 /* The real badge (setStatus writes it) is bare text inside the control. */
 .rw-trigger .status-badge {
@@ -52,14 +56,14 @@
 }
 /* (0,5,0) outranks the light theme's connection colours (0,4,0): the tone below owns the word's ink. */
 :root .rw-trigger[data-tone] .status-badge.status-badge { color: inherit; }
+/* Tones (one producer, chat_activity.js): crimson is live work, amber only the owner's own question, green the
+   room at rest; a pause, an access wait, a hold, starting and reconnecting are neutral facts. */
 .rw-trigger[data-tone="live"] { --rw-dot: var(--accent); color: var(--accent-light); }
 .rw-trigger[data-tone="wait"] { --rw-dot: var(--amber); color: var(--status-warn-fg); }
-.rw-trigger[data-tone="queued"] { --rw-dot: var(--text-meta); color: var(--text-meta); }
+.rw-trigger:is([data-tone="queued"], [data-tone="held"], [data-tone="starting"]) { --rw-dot: var(--text-meta); color: var(--text-meta); }
 .rw-trigger[data-tone="unknown"] { color: var(--status-neutral-fg); }
 .rw-trigger[data-tone="online"] { --rw-dot: var(--green); color: var(--status-ok-fg); }
-.rw-trigger[data-tone="starting"] { --rw-dot: var(--amber); color: var(--status-warn-fg); }
 .rw-trigger[data-tone="offline"] { color: var(--text-secondary); }
-.rw-trigger[data-tone="error"] { --rw-dot: var(--red); color: var(--status-error-fg); }
 .rw-trigger:not(:disabled):hover { background: rgba(var(--neutral-rgb), 0.07); }
 .rw-trigger[data-open="1"] { background: rgba(var(--neutral-rgb), 0.11); }
 
@@ -207,7 +211,6 @@
 .rw-secondary::before { content: '· '; }
 /* "Not in loaded messages" is said in the row's details and its name; only the chevron shows, beside the state. */
 .rw-where { display: inline-flex; align-items: center; gap: 6px; }
-.rw-place { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .rw-chev { color: var(--text-primary); }
 .rw-row[data-tone="live"] { --rw-dot: var(--accent); }
 .rw-row:is([data-tone="wait"], [data-tone="caution"]) { --rw-dot: var(--amber); }
