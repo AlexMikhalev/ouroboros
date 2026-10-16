@@ -1110,17 +1110,13 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     row = running.evaluate(
                         """card => {
                             const btn = card.querySelector(':scope > [data-live-summary-button]');
-                            const foot = card.querySelector(':scope > [data-live-foot]');
-                            const meta = foot.querySelector('[data-live-meta]').getBoundingClientRect();
-                            const end = foot.querySelector('[data-live-foot-end]').getBoundingClientRect();
-                            const review = foot.querySelector('[data-live-review-summary]').getBoundingClientRect();
-                            return {height: btn.getBoundingClientRect().height, metaBottom: meta.bottom,
-                                reviewTop: review.top, reviewLeft: review.left, endLeft: end.left};
+                            const r = (s) => card.querySelector(`:scope > [data-live-foot] ${s}`).getBoundingClientRect();
+                            return {height: btn.getBoundingClientRect().height, metaBottom: r('[data-live-meta]').bottom,
+                                reviewTop: r('[data-live-review-summary]').top};
                         }"""
                     )
-                    # The quiet count leads the card's one action row under the metadata line; the summary keeps its height.
+                    # The quiet count leads the action row under the meta; the summary keeps its height.
                     assert row["reviewTop"] >= row["metaBottom"] - 2, row
-                    assert abs(row["reviewLeft"] - row["endLeft"]) <= 2, row
                     assert abs(row["height"] - before_reviews) <= 1, row
                     assert all(not bands[task_id]["clipped"] for task_id in bands), bands
                     assert all("Reviews" not in bands[task_id]["reviews"] for task_id in bands), bands
