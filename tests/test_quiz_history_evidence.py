@@ -295,6 +295,8 @@ def test_history_recovers_evicted_answer_without_an_extra_bubble(runtime):
         qid = f"history-{index}"
         _ask(runtime, qid)
         assert _answer(runtime, qid, request_id=qid, index=1, comment=f"choice-{index}")[0] == 200
+        _read(runtime, qid)  # only settled answers can leave the projection
+    assert "history-0" not in quiz_states(runtime.root, runtime.task["id"])  # history must recover it
     cleanup_task_mailbox(runtime.root, runtime.task["id"])
     response = asyncio.run(make_chat_history_endpoint(runtime.root)(
         SimpleNamespace(query_params={"n_human": "100", "thread": "1"})))
