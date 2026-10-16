@@ -207,7 +207,7 @@ async def api_command(request: Request) -> JSONResponse:
             # SPA heal/repair posts) would otherwise masquerade as ordinary web
             # frames. The honest stamp names the ENDPOINT — the host cannot know
             # the true caller here (disclosed non-goal).
-            send_kwargs["task_metadata"] = {"client_surface": {"channel": "api_command"}}
+            send_kwargs["task_metadata"] = {"client_surface": {"channel": "api_command"}, "reply_to": body.get("reply_to", "")}
             # Publication precedes readiness. Bind the independent owner, keeping
             # this transport's metadata if the supervisor becomes ready meanwhile.
             if bridge is None or str(cmd).strip().lower() == "/restart":

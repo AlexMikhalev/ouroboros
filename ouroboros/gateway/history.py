@@ -300,7 +300,9 @@ def _chat_quota_predicate(row_matches_thread):
 
 
 def _history_identity(entry):
-    return {key: entry[key] for key in ("history_id", "history_position") if key in entry}
+    from ouroboros.chat_references import projection_fields
+    return {**({"row_address": entry["row_address"]} if entry.get("row_address") else projection_fields(entry)),
+            **{key: entry[key] for key in ("history_id", "history_position", "reply_to", "relay") if key in entry}}
 
 
 def _read_progress_history_entries(live, adir, want, counts_toward_quota, *, include_gaps=False):

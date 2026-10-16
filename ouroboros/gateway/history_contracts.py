@@ -60,6 +60,9 @@ class ChatHistoryMessage(TypedDict, total=False):
     is_progress: Required[bool]
     system_type: Required[str]  # the row's kind; "" for an ordinary message
     task_id: Required[str]
+    row_address: str
+    reply_to: Dict[str, Any]
+    relay: Dict[str, Any]
     history_id: str  # "<source>:<offset>": the stored row's identity in this core's retained history
     history_position: ChatHistoryPosition
     markdown: bool

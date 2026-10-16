@@ -548,6 +548,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     # internal producers: scheduler, skill schedules); absence stays honest.
     from ouroboros.client_surface import owner_client_fact
 
+    if _meta.get("reply_reference"):
+        runtime_data["reply_to"] = _meta["reply_reference"]
     _owner_client = owner_client_fact(_meta)
     if _owner_client:
         runtime_data["owner_client"] = dict(_owner_client)

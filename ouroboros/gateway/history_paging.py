@@ -164,7 +164,8 @@ class HistorySource(JsonlChainSnapshot):
         lines = Lines()
         rows = []
         for entry in _helpers.iter_jsonl_objects(self.path, _handle=lines, gap_reasons=gaps):
-            rows.append({**entry, "history_id": f"{stream}:{lines.row_start}",
+            from ouroboros.chat_references import projection_fields
+            rows.append({**entry, **projection_fields(entry), "history_id": f"{stream}:{lines.row_start}",
                          "history_position": {"source": stream, "offset": lines.row_start},
                          "_history_end": lines.row_end})
         return rows

@@ -48,9 +48,7 @@ class ChatInbound(TypedDict):
     # Multi-project chat routing: the owner stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
-    # Per-message sending-surface observables (additive-optional): raw facts the SPA measures at send
-    # time (pywebview bridge presence, ua, viewport, matchMedia booleans, captured_at), normalized by
-    # the closed-key `client_surface.normalize_client_surface`; absence is an honest gap, never defaulted.
+    reply_to: NotRequired[str]  # Host resolves the selected row/card at acceptance.
     client_surface: NotRequired[dict]
 
 
@@ -96,6 +94,9 @@ class ChatOutbound(TypedDict):
     role: Literal["user", "assistant", "system"]
     content: str
     ts: str
+    row_address: NotRequired[str]
+    reply_to: NotRequired[dict]
+    relay: NotRequired[dict]
     ingress_accepted: NotRequired[bool]  # Canonical inbound row saved; not processing/start proof.
     ingress_dispatched: NotRequired[bool]  # This live host process accepted the row and entered its dispatch.
     ingress_pending: NotRequired[bool]  # This live host process accepted the row and has entered or refused neither yet.

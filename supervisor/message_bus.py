@@ -329,91 +329,11 @@ class LocalChatBridge:
         project_id: str = "",
         dispatch=None,
     ) -> None:
-        # Web ownership stays user_id=1; positive chat_id selects Main/Project.
-        # Negative A2A ids are not web destinations and fall back to Main.
-        try:
-            thread_id = int(chat_id or 1)
-        except (TypeError, ValueError):
-            thread_id = 1
-        if thread_id < 1:
-            thread_id = 1
-        clean_text = str(text or "").strip()
-        if self.panic.request(clean_text):
-            return
-        if not clean_text and not image_base64 and not (task_metadata or {}).get("chat_attachment_uploads"):
-            return
-        import uuid
-
-        from ouroboros.project_dialogue import build_owner_message_ref
-
-        ts = utc_now_iso()
-        message_id = client_message_id or f"web-{uuid.uuid4().hex}"
-        metadata = dict(task_metadata or {})
-        if str(project_id or "").strip():
-            metadata.setdefault("project_id", str(project_id).strip())
-        from ouroboros.chat_uploads import attachment_placeholder
-
-        log_text = clean_text or str(image_caption or "").strip() or attachment_placeholder(image_base64, metadata)
-        placeholder = not clean_text  # a web caption is the gateway's own ``[user attachment: …]`` label
-        # The canonical row precedes echo/dispatch: neither WS nor Queue survives
-        # restart. Its returned witness lets dequeue validation avoid a chat scan.
-        with _INGRESS_LOCK:
-            row = _accepted_web_message(thread_id, client_message_id)
-            if row is not None:
-                # A redelivered frame names the accepted message: the same words AND the same
-                # ordered attachment content rejoin it (no second row); anything else under that id
-                # is refused, claiming none of its uploads. A rejoin dispatches only by taking this
-                # process's proof that the row never entered dispatch (once); unknown never replays.
-                if row.get("source") != "web":
-                    raise ValueError("client_message_id is already bound to another source")
-                if not same_message(row, log_text, stored_refs(metadata.get("chat_attachments"))):
-                    raise ValueError("client_message_id was already used for a different message")
-                ts, attachments = str(row.get("ts") or ts), row.get("attachments")
-                log_text, placeholder = str(row.get("text") or log_text), row.get("text_placeholder") is True
-                if handed := _take_undispatched((thread_id, client_message_id)):
-                    claim_refs(metadata.get("chat_attachments"), DATA_DIR)  # the copies it stages are kept
-            else:
-                handed = True
-                attachments = claim_refs(metadata.get("chat_attachments"), DATA_DIR)  # DELETE refuses them now
-                row = _write_marked((thread_id, client_message_id), lambda: log_chat(
-                    "in", thread_id, 1, log_text, ts=ts, source="web",
-                    sender_session_id=sender_session_id, client_message_id=message_id,
-                    client_surface=(metadata.get("client_surface") if isinstance(metadata.get("client_surface"), dict) else None),
-                    require_write=True, ensure_record_boundary=True,
-                    message_meta={"attachments": attachments, "text_placeholder": placeholder},
-                ))
-            if handed:
-                ref = build_owner_message_ref(chat_id=thread_id, client_message_id=message_id, ts=ts, text=log_text)
-                message = dict(
-                    chat_id=thread_id, user_id=1, source="web",
-                    sender_session_id=sender_session_id, client_message_id=message_id,
-                    image_base64=image_base64, image_mime=image_mime,
-                    image_caption=image_caption, task_metadata=metadata,
-                    accepted_source_ref=ref, accepted_source_row=row,
-                )
-                if dispatch is None:
-                    _enter_dispatch(row)
-                    self.enqueue_local_message(clean_text, **message)
-        try:
-            if self._broadcast_fn:
-                # The echo is the accepted row as history replays it (text, time, views, placeholder
-                # mark); a rejoin re-echoes it, so every tab keys it as the same saved bubble.
-                echo = {
-                    "type": "chat", "role": "user", "content": log_text,
-                    "ts": ts, "source": "web", "chat_id": thread_id, "attachments": attachment_views(attachments),
-                    "sender_session_id": sender_session_id, "client_message_id": message_id,
-                    "ingress_accepted": True,  # Canonical row exists; execution is not promised.
-                }
-                if placeholder:
-                    echo["text_placeholder"] = True
-                # Positive call-entry evidence, never the acceptance stamp alone; a deferred dispatch is still pending.
-                echo.update(delivery_facts(row, thread_id))
-                stamp_project_thread(DATA_DIR, echo)
-                self._broadcast_fn(echo)
-        finally:
-            if dispatch is not None and handed:
-                _enter_dispatch(row)
-                dispatch(clean_text, **message)  # Accepted work survives an echo/disconnect failure.
+        from supervisor.message_ingress import handle_web_message
+        return handle_web_message(self, text, sender_session_id=sender_session_id,
+            client_message_id=client_message_id, image_base64=image_base64, image_mime=image_mime,
+            image_caption=image_caption, task_metadata=task_metadata, chat_id=chat_id,
+            project_id=project_id, dispatch=dispatch)
 
     def enqueue_local_message(
         self,
@@ -1412,6 +1332,9 @@ def log_chat(
         # Speech rows persist only the compact identity required to route a
         # child final after progress retention/rotation has removed its cards.
         meta = dict(message_meta or {})
+        for key in ("reply_to", "relay"):
+            if isinstance(meta.get(key), dict) and meta[key]:
+                record[key] = dict(meta[key])
         if meta.get("late_answer"):
             from ouroboros.owner_quiz import late_answer_ref
             accepted_answer = late_answer_ref(meta["late_answer"])
@@ -1524,6 +1447,9 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     if narration is not None:
         meta["narration"] = bool(narration)
     meta.setdefault("narration", False)
+    from ouroboros.chat_references import origin_reply, projection_fields
+    if reply := origin_reply(DATA_DIR, task_id):
+        meta.setdefault("reply_to", reply)
     progress_meta = meta
     if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:
         # The one room rule (A4) at the one send seam: a task-addressed host row
@@ -1576,6 +1502,8 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             ensure_record_boundary=ensure_record_boundary,
         )
 
+    if not is_progress and stored:
+        meta.update(projection_fields(stored))
     if _text.strip() in ("", "\u200b"):
         return
     if not is_progress and stored and not is_task_card_message(progress_meta):  # only stored feed rows count
