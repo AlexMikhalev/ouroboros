@@ -176,6 +176,7 @@ class Memory:
     def __init__(self, drive_root: pathlib.Path, repo_dir: Optional[pathlib.Path] = None):
         self.drive_root = drive_root
         self.repo_dir = repo_dir
+        self._logs: Dict[str, pathlib.Path] = {}
 
     def _memory_path(self, rel: str) -> pathlib.Path:
         return (self.drive_root / "memory" / rel).resolve()
@@ -186,7 +187,8 @@ class Memory:
     def world_path(self) -> pathlib.Path: return self._memory_path("WORLD.md")
     def journal_path(self) -> pathlib.Path: return self._memory_path("scratchpad_journal.jsonl")
     def identity_journal_path(self) -> pathlib.Path: return self._memory_path("identity_journal.jsonl")
-    def logs_path(self, name: str) -> pathlib.Path: return (self.drive_root / "logs" / name).resolve()
+    def logs_path(self, name: str) -> pathlib.Path:  # once per instance: a resolve lstat's every component
+        return self._logs.get(name) or self._logs.setdefault(name, (self.drive_root / "logs" / name).resolve())
 
     @staticmethod
     def scratchpad_journal_source_ref(entry_id: str = "") -> Dict[str, Any]:

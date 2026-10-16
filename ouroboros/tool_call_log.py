@@ -194,15 +194,16 @@ def logical_calls(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def replay_evidence(drive_root: pathlib.Path, task_id: str, want: int = 200, *, iter_objects=None,
-                    list_archives=None) -> Dict[str, Any]:
+                    list_archives=None, memory=None) -> Dict[str, Any]:
     """Bounded canonical invocation facts for history, independent of frozen wait metrics.
 
-    ``iter_objects`` and ``list_archives`` are the reader's parser and archive-listing seams."""
+    ``iter_objects`` and ``list_archives`` are the reader's parser and archive-listing seams;
+    ``memory`` a ``Memory`` of ``drive_root`` shared by one read's tasks."""
     from ouroboros.memory import Memory
     from ouroboros.tool_capabilities import routing_action_for_tool
 
-    rows, coverage = Memory(drive_root).read_task_recent("tools.jsonl", task_id, want, iter_objects=iter_objects,
-                                                         list_archives=list_archives)
+    rows, coverage = (memory or Memory(drive_root)).read_task_recent(
+        "tools.jsonl", task_id, want, iter_objects=iter_objects, list_archives=list_archives)
     observations = []
     legacy = {"calls": 0, "errors": 0, "wait_ended": False, "unknown": False}
     for call in logical_calls(rows):
@@ -297,5 +298,8 @@ def replay_evidence_for_tasks(drive_root: pathlib.Path, task_ids: Iterable[str])
             gap_reasons.update(gaps)
         return iter(rows)
 
-    return {task_id: replay_evidence(drive_root, task_id, iter_objects=parse, list_archives=list_archives)
+    from ouroboros.memory import Memory
+
+    memory = Memory(drive_root)  # one log path resolution for every task of the read
+    return {task_id: replay_evidence(drive_root, task_id, iter_objects=parse, list_archives=list_archives, memory=memory)
             for task_id in selected}

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
-from functools import partial
+from functools import lru_cache, partial
 import time
 from datetime import datetime, timezone
 from contextlib import nullcontext
@@ -277,6 +277,13 @@ def execution_owner_record(drive_root: Any, task: Dict[str, Any], kind: str) -> 
             "task_attempt": int(task.get("_attempt") or task.get("task_attempt") or 0)}
 
 
+@lru_cache(maxsize=64)
+def _resolved_root(root: str) -> pathlib.Path:
+    """A data root's resolved path, once per process: a page observes each of its tasks, and
+    resolving walks every component of the path (an ``lstat`` each, a GIL hand-off each)."""
+    return pathlib.Path(root).resolve()
+
+
 def task_execution_observation(
     drive_root: Any, result: Dict[str, Any], *, queue_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -286,7 +293,7 @@ def task_execution_observation(
     are root-bound. The direct fragment lists addressable turns, not every live
     stack, so absence cannot settle a task. No observation authorizes replay.
     """
-    root = pathlib.Path(drive_root).resolve()
+    root = _resolved_root(str(drive_root))
     tid = str(result.get("task_id") or result.get("id") or "")
     owner = result.get("execution_owner")
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
@@ -328,7 +335,7 @@ def task_execution_observation(
             return {**observation, "kind": "presence", "state": "active", "source": "local_presence", "reason": "local_execution"}
         entry = get_direct_activity_registry().get(tid)
         actor_root = getattr(getattr(getattr(entry, "actor", None), "env", None), "drive_root", None)
-        if actor_root is not None and pathlib.Path(actor_root).resolve() == root:
+        if actor_root is not None and _resolved_root(str(actor_root)) == root:
             return {**observation, "kind": "direct", "state": "active", "source": "local_direct", "reason": "local_execution"}
     except Exception:
         pass  # absence of a positive witness is never a negative observation
