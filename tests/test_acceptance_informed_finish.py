@@ -164,7 +164,7 @@ def test_stop_still_requires_reason(full_loop, monkeypatch, door):  # noqa: F811
                 "author_action": "stop", "claim": ANSWER, "goal": "Report"}
             return {"content": "", "tool_calls": [call(
                 "finish_task" if door == "finish_task" else "task_acceptance_review", args, "invalid-stop")]}, 0.0
-        assert "requires" in str(messages) and "rationale" in str(messages)
+        assert "COMPLETION_ARGUMENT: stop requires a rationale naming unfinished work" in str(messages)
         return _finish("finish_task"), 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
@@ -319,3 +319,153 @@ def test_changed_criteria_do_not_reuse_old_feedback_as_authority(full_loop, monk
     assert len(hosts) == 2 and hosts[0]["superseded_by_revision"]
     assert hosts[0]["subject_hash"] != hosts[1]["subject_hash"]
     assert trace["acceptance_decision"]["reviewer_binding_hash"] == hosts[1]["binding_hash"]
+
+
+REWRITE = ANSWER + " Rewritten after reading the review."
+
+
+def _finish_text(text, *, rationale=None, identifier="finish", **extra):
+    args = {"action": "finish", "answer": text, **extra, **({"rationale": rationale} if rationale is not None else {})}
+    return {"content": "", "tool_calls": [call("finish_task", args, identifier)]}
+
+
+@pytest.mark.parametrize("door", ["finish_task", "author_action"])
+def test_whitespace_rationale_takes_the_default_instead_of_a_false_incident(full_loop, monkeypatch, door):  # noqa: F811
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch)
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step == 2, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        _assert_exposed(f)
+        return _finish(door, rationale=" \n\t "), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    decision = trace["acceptance_decision"]
+    assert result == ANSWER and len(f.review_sends) == 1
+    assert (decision["reason"], decision.get("origin")) == ("author_finish", None), decision
+    assert decision["author_disposition"]["rationale"] == "Explicit completion selection."
+    assert (trace.get("acceptance_preparation") or {}).get("status") != "failed"
+
+
+@pytest.mark.parametrize("rationale", [None, "The approval covers the original; finishing it."])
+@pytest.mark.parametrize("sibling", ["read", "write"])
+def test_superseded_clean_return_to_reviewed_answer_is_an_author_finish(full_loop, monkeypatch, rationale, sibling):  # noqa: F811
+    """A clean PASS on A, a held finish of B, then an informed finish of A again (A->B->A)."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch, "clean")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step <= 3, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        if f.model_step == 2:
+            _assert_exposed(f)
+            response = _finish_text(REWRITE)
+            response["tool_calls"].append(call("read_file", {"root": "task_drive", "path": "notes.txt"}, "late-read")
+                                          if sibling == "read" else
+                                          call("write_file", {"root": "task_drive", "path": "late.txt",
+                                                              "content": "New evidence"}, "late-write"))
+            return response, 0.0
+        return _finish_text(ANSWER, rationale=rationale), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert trace["completion_refusals"][0]["reason"].startswith("unobserved_tool_results")
+    decision = trace["acceptance_decision"]
+    assert result == ANSWER and f.model_step == 3 and len(f.review_sends) == 1, decision
+    assert (decision["reason"], decision["status"]) == ("author_finish", "finalized_unaccepted"), decision
+    assert decision["author_disposition"]["reviewer_signal"] == "PASS"
+
+
+@pytest.mark.parametrize("rationale", [None, "Covered the new requirement myself."])
+def test_clean_feedback_cannot_defer_a_rewrite_after_owner_input(full_loop, monkeypatch, rationale):  # noqa: F811
+    """Sticky text-rewrite supersession is not the delivery rejoin: changed premises end as author_finish."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch, "clean")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step <= 4, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        if f.model_step == 2:
+            _assert_exposed(f)
+            response = _finish_text(REWRITE)
+            response["tool_calls"].append(call("read_file", {"root": "task_drive", "path": "notes.txt"}, "late-read"))
+            return response, 0.0
+        if f.model_step == 3:
+            f.ctx._owner_directives.append({"source": "owner", "content": "Also mention the restore drill."})
+            return {"content": "", "tool_calls": [call("send_user_message", {
+                "text": "Considering the new requirement."}, "interim")]}, 0.0
+        return _finish_text(REWRITE, rationale=rationale, acceptance_subject={
+            "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"]}), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    decision = trace["acceptance_decision"]
+    assert result == REWRITE and len(f.review_sends) == 1, (f.model_step, decision, trace.get("completion_refusals"))
+    assert (decision["reason"], decision["status"]) == ("author_finish", "finalized_unaccepted"), decision
+
+
+def test_clean_text_only_rewrite_still_rejoins_previous_revision(full_loop, monkeypatch):  # noqa: F811
+    """Survivor: unchanged material and premises keep the free previous_revision_accepted rejoin."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch, "clean")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step == 2, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        _assert_exposed(f)
+        return _finish_text(REWRITE), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    decision = trace["acceptance_decision"]
+    assert result == REWRITE and len(f.review_sends) == 1
+    assert (decision["status"], decision["reason"]) == ("accepted", "previous_revision_accepted"), decision
+
+
+def test_finish_over_a_newer_running_panel_keeps_it_in_flight(full_loop, monkeypatch):  # noqa: F811
+    """pending_review=finish over a re-nominated revision's running panel belongs to delivery's
+    early release, never to an author_finish bound to the older exposed panel."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    _feedback(f, monkeypatch)
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return _nominate(), 0.0
+        assert f.model_step <= 3, (f.progress, f.ctx._execution_trace.get("acceptance_decision"))
+        if f.model_step == 2:
+            _assert_exposed(f)
+            f.release.clear()
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": REWRITE}, "renominate")]}, 0.0
+        with f.condition:
+            assert f.condition.wait_for(lambda: len(f.review_sends) == 2, timeout=10), f.progress
+        assert not f.release.is_set()
+        return _finish_text(REWRITE, pending_review="finish"), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    decision = trace["acceptance_decision"]
+    assert result == REWRITE and f.model_step == 3 and len(f.review_sends) == 2, decision
+    assert decision["review_pending"] is True, decision
+    assert decision["author_disposition"]["reviewer_signal"] == ""
+    assert trace["review_decision"]["eligibility"] == "review_in_flight"

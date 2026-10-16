@@ -722,12 +722,9 @@ def merge_agent_acceptance_stance(trace: Dict[str, Any], decision: dict, ctx: An
     action = str(decision.get("author_action") or "finish")
     merged["author_action"] = action
     merged.pop("agent_finish_intent", None)
-    feedback = next((run for run in reversed(trace.get("review_runs") or [])
-                     if isinstance(run, dict) and run.get("authority") == "host_root"
-                     and run.get("feedback_delivered")), None)
-    outcome = trace.get("acceptance_review_outcome") or {}
-    if not feedback and outcome.get("feedback_delivered"):
-        feedback = outcome
+    from ouroboros.loop_delivery import completion_feedback
+
+    feedback = completion_feedback(trace) or None
     if isinstance(observed, dict):
         feedback = observed.get("feedback") or None
     explicit = (ctx is not None and decision.get("explicit_finish") is True

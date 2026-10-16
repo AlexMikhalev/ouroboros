@@ -601,7 +601,7 @@ def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
     stance = ctx.llm_trace.get("acceptance_decision") or {}
     author = build_author_disposition(
         disposition=str(stance.get("agent_disposition") or ""), action="finish",
-        rationale=str(selected.get("rationale") or stance.get("agent_rationale") or "Explicit completion selection."),
+        rationale=str(selected.get("rationale") or stance.get("agent_rationale") or "").strip() or "Explicit completion selection.",
         subject_hash=delivery_subject_hash(tool_ctx, ctx.llm_trace, ctx.content),
         reviewer_signal="" if pending else str(getattr(result, "aggregate_signal", "") or ""),
         enforcement="advisory", source=str(selected.get("source") or "finish_task"),
@@ -629,27 +629,32 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     action = str(intent.get("author_action") or "finish")
     if action != "stop" and review_enforcement_blocks(_loop().get_review_enforcement()):
         return False
-    feedback = next((run for run in reversed(ctx.llm_trace.get("review_runs") or [])
-                     if isinstance(run, dict) and run.get("authority") == "host_root"
-                     and run.get("feedback_delivered")), None)
+    from ouroboros.loop_delivery import completion_feedback
+
     outcome = ctx.llm_trace.get("acceptance_review_outcome") or {}
-    if not feedback and outcome.get("feedback_delivered"):
-        feedback = outcome
+    feedback = completion_feedback(ctx.llm_trace) or None
     disposition = str(stance.get("agent_disposition") or "")
     if not intent or (disposition and disposition not in {"accepted", "rejected", "partial", "deferred"}):
         return False
-    # Finish binds feedback and fresh evidence. Stop grants nothing: teardown
-    # may change the fingerprint, but must not turn unfinished work into Done.
+    # Only a FINISH binds to the reviewed feedback and to the three freshness
+    # facts. A stop grants nothing, so nothing about it has to be fresh (TZ-2
+    # C4): the service teardown before the panel changes the evidence
+    # fingerprint, and rejecting the stop for that bought a panel whose
+    # advisory author_finish then read as Done over "not ready".
     if action != "stop":
         from ouroboros.acceptance_settlement import acceptance_wait_chosen, panel_awaiting_this_turn
 
         awaited = panel_awaiting_this_turn(ctx.tools._ctx, ctx.llm_trace)
+        if awaited is not None and acceptance_run_pending(awaited):
+            return False  # Delivery owns a running panel: wait, or release while the author stays for criticism.
         waiting = awaited or feedback
-        # No-panel outcome exposure is settled feedback; only physical critics
-        # can still be pending or unread.
+        # A no-panel host outcome (refused launch, unavailable review) has no
+        # reviewer left to settle: its exposure is the settled feedback. Only a
+        # physical panel can still be pending or unread.
         if acceptance_wait_chosen(ctx.tools._ctx) and waiting and waiting is not outcome and (
                 acceptance_run_pending(waiting) or not waiting.get("settled_feedback_delivered")):
             return False
+        from ouroboros.acceptance_settlement import delivery_approves_clean_feedback
         from ouroboros.loop_delivery import delivery_evidence_fingerprint
         from ouroboros.tool_capabilities import completion_observation_calls
 
@@ -658,18 +663,12 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
                 or intent.get("owner_directives") != len(getattr(ctx.tools._ctx, "_owner_directives", []) or [])
                 or intent.get("evidence_fingerprint") != delivery_evidence_fingerprint(ctx.tools._ctx, ctx.llm_trace)):
             return False
-        from types import SimpleNamespace
-
-        from ouroboros.review_substrate import task_acceptance_is_clean
-
-        if ((not feedback.get("superseded_by_revision")
-             or feedback.get("superseded_reason") == "delivery_candidate_replaced")
-                and task_acceptance_is_clean(SimpleNamespace(**feedback))):
-            return False  # Clean/current or text-only rewrite: let ordinary approval/rejoin decide.
+        if delivery_approves_clean_feedback(ctx.tools._ctx, ctx.llm_trace, feedback, ctx.review_binding["binding_hash"]):
+            return False  # Clean approval stays clean: ordinary delivery approves it at $0.
     from ouroboros.review_records import build_author_disposition
 
     author = build_author_disposition(
-        disposition=disposition, rationale=str(stance.get("agent_rationale") or "Explicit completion selection."),
+        disposition=disposition, rationale=str(stance.get("agent_rationale") or "").strip() or "Explicit completion selection.",
         subject_hash=ctx.review_binding["binding_hash"],
         reviewer_signal=str((feedback or {}).get("aggregate_signal") or ""),
         enforcement="blocking" if review_enforcement_blocks(_loop().get_review_enforcement()) else "advisory",
@@ -686,7 +685,9 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
         return True
     ctx.tools._ctx._task_acceptance_reviewed = True
     if action == "stop":
-        # Stop binds no subject; only a new author act or owner input reopens it.
+        # A stop binds no subject, so an earlier panel's cannot reopen review on the next
+        # delivery pass; only the author's next decision (merge_agent_acceptance_stance)
+        # or owner input does.
         ctx.tools._ctx._task_acceptance_reviewed_subject = ""
     ctx.tools._ctx._task_acceptance_pending = ""
     _loop()._mark_root_acceptance_checkpoint(
