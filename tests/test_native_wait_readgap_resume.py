@@ -256,6 +256,13 @@ def test_technical_resume_rejoins_native_work_without_monetary_selection(restart
     monkeypatch.setattr(state, "budget_remaining", lambda *_args, **_kwargs: 100.0)
     workers.assign_tasks()
     assert not env.sent and not env.task["_budget_pause_hold"]["selected"]
+    # Assignment independently rechecks the sibling before Resume touches the root.
+    [revalidated] = [row for row in workers.PENDING if row["id"] != case.task_id]
+    assert siblings[0]["_project_admission_restore_hold"]["reason"] == "project_routing_fence_lookup_failed"
+    assert revalidated["_project_admission_restore_hold"]["reason"] == "project_dispatch_unconfirmed"
+    assert revalidated == {**siblings[0],
+                           "_project_admission_restore_hold": revalidated["_project_admission_restore_hold"]}
+    siblings = copy.deepcopy([revalidated])
     assert queue.resume_budget_paused_task(case.task_id)["ok"]
     assert "_budget_pause_hold" not in env.task and not env.task.get("_budget_pause_resume")
     assert env.task["_owner_wait_resume"] == env.carrier
