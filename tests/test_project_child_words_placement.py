@@ -23,7 +23,6 @@ import json
 import os
 import pathlib
 import shutil
-import subprocess
 from collections import deque
 from types import SimpleNamespace
 
@@ -37,6 +36,7 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.utils import append_jsonl
 from supervisor import events_chat_delivery as delivery
 from supervisor import message_bus
+from tests.group_run import run_in_group
 
 pytestmark = pytest.mark.serial  # Access is read from the process environment
 
@@ -221,10 +221,9 @@ def test_a_routing_notice_for_a_child_stands_alone_and_the_childs_words_stay_in_
                                    "running_history": notice_read["messages"]}), encoding="utf-8")
     node = shutil.which("node")
     assert node, "node is required for the real chat.js live/replay consumer"
-    result = subprocess.run([node, "--test", "--test-reporter=tap", "--test-name-pattern=child words",
-                             "web/tests/chat_card_row_placement.test.js"],
-                            cwd=REPO, env={**os.environ, "CHILD_WORDS_PROJECTION": str(fixture)},
-                            capture_output=True, text=True, timeout=60)
+    result = run_in_group([node, "--test", "--test-reporter=tap", "--test-name-pattern=child words",
+                           "web/tests/chat_card_row_placement.test.js"],
+                          cwd=REPO, env={**os.environ, "CHILD_WORDS_PROJECTION": str(fixture)}, timeout=60)
     assert result.returncode == 0 and "# pass 7\n" in result.stdout, result.stdout + result.stderr
 
 
