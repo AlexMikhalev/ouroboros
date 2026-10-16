@@ -446,12 +446,14 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
                     + "; owner input and a new question from your own executors always do."}
 
 
-def begin(ctx: Any) -> None:
-    """A warm sleep or owner Pause starts: excluded until the task runs again."""
+def begin(ctx: Any, *, started_at: float | None = None) -> None:
+    """Open a sleep, or restore its known wall start onto this process's monotonic clock."""
+    now = time.time()
+    started = now if started_at is None else started_at
     waiter = getattr(ctx, "model_wait_context", None)
     if waiter is not None:
-        waiter.sleep_started_monotonic = time.monotonic()
-    ctx._model_sleep_started = time.time()
+        waiter.sleep_started_monotonic = time.monotonic() - max(0.0, now - started)
+    ctx._model_sleep_started = started
 
 
 def end(ctx: Any) -> float:
