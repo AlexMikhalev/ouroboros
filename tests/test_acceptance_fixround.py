@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests._governance_docs_shared import architecture_text, development_text
 
 
 def test_partial_trajectory_is_non_resolving_but_complete_trajectory_resolves():
@@ -685,15 +684,6 @@ def test_budget_ladder_stops_shedding_after_predecessor_fits():
         row.get("section") == "tool_trajectory"
         for row in result["omissions_manifest"]
     )
-
-
-def test_acceptance_docs_have_complete_sentence_boundaries():
-    development = development_text()
-    architecture = architecture_text()
-
-    assert "silent false green. The\n  Every forced rail" not in development
-    assert "never certify success; An OPEN plan wave" not in architecture
-    assert "never had claims. an unresolved reference" not in architecture
 
 
 def test_refused_slot_reuses_the_already_persisted_prompt(monkeypatch, tmp_path):

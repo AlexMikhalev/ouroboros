@@ -145,8 +145,9 @@ Track assets with a continuing purpose (product, contributors, verification, leg
 requirements, evidence for public claims). Plans, campaign backlog, review packets and
 run receipts belong in the external work area or durable task evidence, not the
 tracked tree; a test preserving their presence gives them no product role. Retire
-campaign tooling when its purpose ends. Review enforces this, without automatic
-deletion or filename matching.
+campaign tooling when its purpose ends. Name a new test module for the behaviour or
+owner it protects, not a round, batch, issue, PR or version. Review enforces this,
+without automatic deletion or filename matching.
 
 Both are reference books: an entrypoint plus one chapter file per subject under
 `docs/architecture/` or `docs/development/`. The entrypoint's ordered `## Chapters`

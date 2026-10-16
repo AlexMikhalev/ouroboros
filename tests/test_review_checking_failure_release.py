@@ -176,7 +176,7 @@ def test_late_bytes_after_unknown_failure_are_recaptured_before_release(
     assert (saved / rc.EVIDENCE_DIRNAME / "late.log").read_bytes() == b"written after the first snapshot\x00\n"
     assert (saved / "check.py").read_bytes() == REVIEWER_EDIT + b"late edit\n"
     assert {key: value for key, value in _generations(home).items() if key in earlier} == earlier
-    marker = json.loads((home / "checking.json").read_text())
+    marker = json.loads((home / "checking.json").read_text(encoding="utf-8"))
     assert str(rc._capture_directory(home, marker)) == final["evidence_dir"]
     assert actor["status"] == "error" and "failed" in actor["error"]
     monkeypatch.setattr(rc, "_directory_delta", forbidden)
@@ -379,12 +379,12 @@ def test_settled_failed_turn_lets_next_turn_refresh_the_same_thread_copy(author,
     assert _generations(rc.seat_dir(drive, "task-1", "op-1")) == first_generation
 
 
-@pytest.mark.parametrize("state", FAILURES)
-@pytest.mark.parametrize("scope", [ABSENT, None, UNSETTLED, NO_CENSUS, {**SETTLED, "settled": "true"}],
-                         ids=["absent", "null", "unsettled", "no-census", "settled-string"])
-def test_unknown_failed_turn_keeps_thread_copy_and_refuses_next_turn(author, tmp_path, scoped, state, scope):  # noqa: F811
+def test_unknown_failed_turn_keeps_thread_copy_and_refuses_next_turn(author, tmp_path, scoped):  # noqa: F811
+    # test_unknown_scope_keeps_failed_copy covers every failure × unknown-scope
+    # row at the real release predicate. This case owns its real thread-copy consumer:
+    # retain the bytes and refuse a fresh paid turn before touching the same copy.
     drive = tmp_path / "drive"
-    evidence = _fail_first_turn(author, drive, scoped, state, scope).checking_evidence
+    evidence = _fail_first_turn(author, drive, scoped, "failed", None).checking_evidence
     assert evidence["refresh_safe"] is False
     assert evidence["retention_reason"] == "writer_quiescence_unverified"
     area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"

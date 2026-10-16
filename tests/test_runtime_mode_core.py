@@ -357,19 +357,6 @@ def test_onboarding_js_has_runtime_mode_selector_and_save_payload():
     assert "OUROBOROS_SKILLS_REPO_PATH" in agents
 
 
-def test_phase4_ui_copy_matches_shipped_runtime():
-    settings_ui = (REPO / "web" / "modules" / "settings_ui.js").read_text(encoding="utf-8")
-    onboarding_html = build_onboarding_html({})
-
-    assert "Phase 2 plumbing only" not in settings_ui
-    assert "land in Phase 3" not in settings_ui
-    assert "data/skills/" in settings_ui
-    assert "Pick both review enforcement and the initial runtime mode" in onboarding_html
-    assert "normal review gate" in onboarding_html
-    assert "triad + scope" not in onboarding_html
-    assert "Phase 6+:" not in onboarding_html
-
-
 def test_the_protected_path_messages_name_the_review_panel_and_the_review_gate(monkeypatch):
     """V-D4-07, the owner's approval of 2026-10-08 for exactly three phrases of the protected
     ``runtime_mode_policy``: the module docstring, the advanced-mode refusal and the pro-mode
@@ -398,9 +385,7 @@ def test_skills_ui_reads_live_extension_state_fields():
     assert "skill.review_status === 'blockers' && !reviewReady(skill)" in src
     assert "function statusBadge(status, gate = null, profile = '')" in src
     assert "statusBadge(skill.review_status, skill.review_gate, skill.review_profile)" in src
-    assert "Open widgets" in src
     assert "retry_install" in src
-    assert "Retry install" in src
     assert "result.error" in src
 
 

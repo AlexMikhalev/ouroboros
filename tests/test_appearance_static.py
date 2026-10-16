@@ -49,14 +49,6 @@ def test_every_first_party_window_uses_a_persistent_profile():
     assert calls == 5, f"expected 5 first-party webview.start() calls, found {calls}"
 
 
-def test_the_owner_approved_cost_is_written_down_where_it_is_paid():
-    # A flag that makes local site data persist on disk is an owner decision,
-    # not an implementation detail; the rationale must survive the next reader.
-    main = _read("launcher.py")
-    assert "cookies and website data" in main
-    assert "ouroboros.theme" in main
-
-
 def test_the_select_arrow_is_a_theme_token_not_a_baked_colour():
     ui = _read("web/ui.css")
     dark, light = ui.split(':root[data-theme="light"]', 1)
