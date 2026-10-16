@@ -696,8 +696,10 @@ def _collect_chat_rows(
     selected_entries: Optional[list] = None,
     entry_gaps: Optional[set] = None,
     replay_evidence: Optional[list] = None,
+    reads: Any = None,
 ) -> tuple[list, int] | tuple[list, int, set[str]]:
-    """Project selected chat entries (or the legacy recent read), with quota/gaps."""
+    """Project selected chat entries (or the legacy recent read), with quota/gaps; ``reads``: the
+    request's ``TaskReads``, which reads every asking task's questions in one batch."""
     from supervisor.message_ingress import delivery_facts
 
     # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time ("open"); the durable
@@ -710,7 +712,10 @@ def _collect_chat_rows(
         if task_id not in quiz_projection_cache:
             from ouroboros.task_results import load_task_result
 
-            data = load_task_result(chat_path.parent.parent, task_id) or {}
+            if reads is not None:
+                reads.prefetch(row.get("task_id") for row in _chat_entries if row.get("type") == "quiz")
+            data = (reads.load(chat_path.parent.parent, task_id) if reads is not None
+                    else load_task_result(chat_path.parent.parent, task_id)) or {}
             quiz_projection_cache[task_id] = {
                 "quizzes": data.get("owner_quiz") if isinstance(data.get("owner_quiz"), dict) else {},
                 "wait": data.get("owner_wait") if isinstance(data.get("owner_wait"), dict) else {},
@@ -1441,11 +1446,14 @@ def _assemble_history_response(
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
     replay_evidence: list = []
+    from ouroboros.task_reads import TaskReads
+
+    result_cache: Dict[Any, Any] = {_READS: TaskReads(data_dir)}  # every task result is read once, in batches
     combined, chat_quota_rows, chat_gaps = _collect_chat_rows(
         chat_path, archive_dir, n_human, row_matches_thread, chat_annotations,
         include_gaps=True, historical_terminals=historical_terminals,
         selected_entries=selections["chat"][0], entry_gaps=selections["chat"][2],
-        replay_evidence=replay_evidence,
+        replay_evidence=replay_evidence, reads=result_cache[_READS],
     )
     progress_rows, progress_quota_rows, progress_gaps = _collect_progress_rows(
         progress_path, archive_dir, n_progress, row_matches_thread,
@@ -1458,11 +1466,7 @@ def _assemble_history_response(
     lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor or page["after"] else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
-    result_cache: Dict[Any, Any] = {}  # every task result below is read once per request, in batches
     try:
-        from ouroboros.task_reads import TaskReads
-
-        result_cache[_READS] = TaskReads(data_dir)
         result_cache[_READS].prefetch(row.get("task_id") for row in combined)
     except StoreMigrating:
         raise
