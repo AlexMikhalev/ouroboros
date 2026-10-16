@@ -123,7 +123,7 @@ Card `Reviews` projects independent skill, plan, acceptance and repository-revie
 
 #### Stop and cancel controls
 
-Cancel appears only on unfinished, unconverted root cards whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
+Cancel appears only on unfinished root cards, a moved work's Main portal included, whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
 
 #### Turning a card into a Project
 

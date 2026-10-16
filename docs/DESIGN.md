@@ -1281,8 +1281,9 @@ text, a 2 px bar and a tint in the quoted author's ink, one line cut on a word (
 photo leads with its thumbnail); pressing it goes to the quoted row when loaded.
 An Ouroboros answer quotes the message it answers only when that message is not
 directly above it (its own card does not count). A relay arrives in the work's
-room as one Ouroboros bubble: the owner's complete words with where and when he
-wrote them (six lines, then Show all; files named), then Ouroboros's note; his
+room as one Ouroboros bubble: each owner message it passes on, his complete words
+with where and when he wrote them (six lines, then Show all; files named, a
+captionless file by name alone), then Ouroboros's note (Telegram: plain text); his
 Main message keeps one receipt line naming the work and its room. The row menu —
 right-click, Shift+F10 or the ContextMenu key on the focused row, a long press on
 touch — offers the row's own doors: Reply, Copy, Open project, and on a work card
