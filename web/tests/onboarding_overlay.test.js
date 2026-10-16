@@ -229,6 +229,38 @@ test('an unconfigured install still frames the one onboarding host', async () =>
     }
 });
 
+test('the copied client can recover a broken selected setup without its iframe JavaScript', async () => {
+    const dom = installDom();
+    let requests = 0;
+    let reloads = 0;
+    try {
+        globalThis.fetch = async () => { requests += 1; return { status: 200, ok: true }; };
+        globalThis.window.location.reload = () => { reloads += 1; };
+        await dom.init();
+        const overlay = overlayIn(dom.body);
+        const frame = overlay.querySelector('.onboarding-frame');
+        const recovery = overlay.querySelector('[data-onboarding-recovery]');
+        assert.equal(frame.src, '/onboarding', 'the selected view is the normal first choice');
+        assert.equal(recovery.textContent, 'Open built-in setup');
+        assert.equal(recovery.type, 'button');
+        assert.equal(frame.querySelector('[data-onboarding-recovery]'), null, 'recovery belongs to the parent');
+        assert.equal(recovery.parentElement.parentElement, frame.parentElement);
+        recovery.click();
+        assert.equal(frame.src, '/onboarding?builtin=1');
+        assert.equal(overlay.querySelector('.onboarding-frame'), frame, 'navigate the same frame');
+        assert.equal(requests, 1, 'recovery saves no settings and starts no second readiness loop');
+        assert.equal(overlayIn(dom.body), overlay, 'opening builtin setup is not completion');
+
+        for (const handler of dom.listeners) handler({
+            origin: window.location.origin, data: { type: 'ouroboros:onboarding-complete', restart_required: false },
+        });
+        assert.equal(overlayIn(dom.body), null, 'the existing completion path still works after recovery');
+        assert.equal(reloads, 1);
+    } finally {
+        dom.restore();
+    }
+});
+
 // --- Signed out, and a core that comes back -------------------------------
 // A separately hosted page reaches the app without the gate's login page, and an
 // open page outlives its session: the gate's 401 hands over to its own sign-in.

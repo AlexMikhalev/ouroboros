@@ -68,6 +68,8 @@ function setOverlayContent(overlay, node) {
 }
 
 function showSetupFrame(overlay) {
+    const surface = document.createElement('div');
+    surface.className = 'onboarding-surface';
     const frame = document.createElement('iframe');
     frame.className = 'onboarding-frame';
     frame.title = 'Ouroboros Setup';
@@ -76,7 +78,18 @@ function showSetupFrame(overlay) {
     // inlined srcdoc document. A srcdoc string cannot import web/modules/*,
     // and the wizard's steps need those ordinary ES modules.
     frame.src = '/onboarding';
-    return setOverlayContent(overlay, frame);
+    const actions = document.createElement('div');
+    actions.className = 'onboarding-recovery';
+    const recovery = document.createElement('button');
+    recovery.type = 'button';
+    recovery.className = 'btn btn-default';
+    recovery.textContent = 'Open built-in setup';
+    recovery.setAttribute('data-onboarding-recovery', '');
+    recovery.addEventListener('click', () => { frame.src = '/onboarding?builtin=1'; });
+    actions.appendChild(recovery);
+    surface.appendChild(frame);
+    surface.appendChild(actions);
+    return setOverlayContent(overlay, surface);
 }
 
 /**
