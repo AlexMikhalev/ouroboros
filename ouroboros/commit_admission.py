@@ -425,12 +425,12 @@ def preflight_test_workload(
 ) -> tuple:
     """Effective runner inputs, with generated paths and probe names normalized."""
     import sys
-    import tempfile
     from ouroboros import preflight_runner as pr
     from ouroboros.preflight_node import candidate_node_tests, resolve_node
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
+    from ouroboros.test_environment import default_temp_parent
 
-    base = pathlib.Path(tempfile.gettempdir()) / "ouroboros-preflight-contract"
+    base = default_temp_parent() / "ouroboros-preflight-contract"
     env = pr._preflight_env(base, base / "repo", create=False)
     # Containment membership stays in the child env (an outer reap must see the
     # tree), but its keys are per-launch nonces, not test inputs.
