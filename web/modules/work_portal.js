@@ -143,7 +143,6 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
             return card.finish(record.groupId, facts.outcome);
         }
         record.portalActivity = row;
-        record.detached = row.detached === true;
         const startedSec = Number(row.started_at);
         if (Number.isFinite(startedSec) && startedSec > 0) record.startedAt = startedSec * 1000;
         card.restore(record, row.project_admission_hold);

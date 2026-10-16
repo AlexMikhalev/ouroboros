@@ -205,6 +205,7 @@ export function syncParkedPhase(record, phase = '', activity = {}) {
     record.censusPhase = phase;
     record.modelActivity = activity.model_activity || null;
     record.finishingReviews = parked === 'budget_paused' && Boolean(activity.finishing_reviews);
+    record.detached = activity.detached === true;  // a detached work's census row (CONTRACTS K7/K8), in any room
     const desired = desiredLiveCardPhase(record);
     return setLiveCardPhase(record, desired.phase, desired.text, desired.className, desired.secondary);
 }
