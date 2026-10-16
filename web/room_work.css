@@ -30,12 +30,15 @@
 .rw-trigger[hidden] { display: none; }
 .rw-trigger:disabled { cursor: default; opacity: 1; }
 .rw-trigger:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
-/* Variant D: the status follows the room's title in its bar. The title keeps a readable floor and yields its
-   ellipsis first; past that floor the status word ellipsizes inside its own cap. Neither moves the bar's other
-   controls: the bar decides its rows by the title block's basis, never by these words. */
-:is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger { flex: 0 1 auto; min-width: 0; margin-left: var(--space-1); }
+/* Variant D: the status follows the room's title in its bar. The status never shrinks while the title can: the title
+   yields its ellipsis first and keeps an 8ch floor, because the status may never take more than the row less 8ch;
+   only past that floor does the status word ellipsize inside its cap. Neither moves the bar's other controls: the
+   bar decides its rows by the title block's basis, never by these words. */
+:is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {
+    flex: 0 0 auto; min-width: 0; max-width: calc(100% - 8ch); margin-left: var(--space-1);
+}
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {
-    flex: 0 1 auto; min-width: min(8ch, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .project-panel-bar .app-page-title-block { flex: 1 1 0; min-width: 0; }
 /* The real badge (setStatus writes it) is bare text inside the control. */
@@ -328,3 +331,15 @@
     .rw-shade, .rw-row { animation: none; }
     .rw-caret::before, .rw-chev::before { transition: none; }
 }
+
+/* ---- Airy dopamine (light): the Shade is a floating sheet; its controls are the shared capsule tones ------------- */
+:root[data-theme="light"] .rw-shade, :root[data-theme="light"] .chat-page-header .rw-shade {
+    border-bottom-color: transparent;
+    border-radius: 0 0 var(--radius-sheet) var(--radius-sheet);
+}
+:root[data-theme="light"] .rw-row { border-radius: var(--radius-inner); }
+:root[data-theme="light"] .rw-row .rw-pill { border-color: transparent; border-radius: var(--pill-radius); }
+:root[data-theme="light"] .rw-row .rw-pill-question { background: var(--tone-amber); color: var(--status-warn-fg); }
+:root[data-theme="light"] .rw-row .rw-pill-question:hover { background: var(--tone-amber-hover); }
+:root[data-theme="light"] .rw-row .rw-pill-resume { background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest); }
+:root[data-theme="light"] .rw-row .rw-pill-resume:hover { background: var(--surface-object); box-shadow: var(--elev-float); }

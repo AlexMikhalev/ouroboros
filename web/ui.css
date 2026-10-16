@@ -217,19 +217,19 @@
     --text-meta: #555d69;
     --text-secondary: #626977;
     --text-disabled: #89909b;
-    --accent-light: #a82c3b;
+    --accent-light: #bf2f40;
     --project: #8f2499;
     --user-sender: #24558d;
     --user-text: #233b58;
     --system-sender: #805000;
     --system-text: #58451f;
-    --assistant-sender: #a82c3b;
+    --assistant-sender: #bf2f40;
     --assistant-text: #35272c;
     --status-ok-fg: #176b49;
     --status-warn-fg: #805300;
     --status-error-fg: #b42332;
     --status-info-fg: #24558d;
-    --focus-accent-border: #a82c3b;
+    --focus-accent-border: #bf2f40;
     --chart-grid: rgba(var(--neutral-rgb), 0.14);
     --chart-text: #4a515d;
     --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='M3 5l4 4 4-4' fill='none' stroke='%2320232b' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -240,6 +240,30 @@
     --diagram-line: #66606e;
     --diagram-secondary: #edf0f5;
     --diagram-tertiary: #f5f6f8;
+    /* Airy dopamine (DESIGN.md, design bible): objects float on two shadow levels instead of outlines, radii
+       follow the role, each voice tints its own objects and every control is a capsule in three tones.
+       Light values; the dark theme keeps today's recipes until its values are derived. */
+    --elev-rest: 0 1px 2px rgba(28, 33, 51, 0.05), 0 6px 18px rgba(28, 33, 51, 0.06);
+    --elev-float: 0 2px 6px rgba(28, 33, 51, 0.06), 0 18px 44px rgba(28, 33, 51, 0.11);
+    --chrome-shade-shadow: var(--elev-float);
+    --radius-object: 18px;
+    --radius-inner: 12px;
+    --radius-sheet: 24px;
+    --surface-object: #ffffff;
+    --surface-tray: rgba(var(--neutral-rgb), 0.03);
+    --surface-side: #fafbfc;
+    --voice-owner: #e9eef9;
+    --voice-ouroboros: #fdf2f4;
+    --voice-ouroboros-card: #fff8f9;
+    --tone-crimson: rgba(201, 53, 69, 0.10);
+    --tone-crimson-hover: rgba(201, 53, 69, 0.16);
+    --tone-green: rgba(34, 197, 94, 0.14);
+    --tone-green-hover: rgba(34, 197, 94, 0.22);
+    --tone-red: rgba(220, 38, 38, 0.10);
+    --tone-red-hover: rgba(220, 38, 38, 0.16);
+    --tone-amber: rgba(245, 158, 11, 0.18);
+    --tone-amber-hover: rgba(245, 158, 11, 0.26);
+    --tone-quiet-hover: rgba(28, 33, 51, 0.06);
 }
 
 .ouro-ui { font-family: var(--font-sans); color-scheme: var(--native-color-scheme); }
@@ -661,4 +685,45 @@ textarea.ui-control { resize: vertical; }
     line-height: 1;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+}
+
+/* ---- One control, three tones (DESIGN.md design bible; light theme) ---------------------------------------------
+   Every pressable control is a capsule without an outline: neutral (white on the rest shadow, lifting to the float
+   shadow on hover), tonal (its hue's tint and ink: crimson for the primary action and the chosen place, green for
+   save, red for danger, amber for the owner's turn) or quiet (no fill). A press sinks every tone the same way.
+   `.ui-chrome-control` stays geometry only (a floating control's own tone is its page's): page styles map their
+   controls onto these tones and add no fourth recipe and no outline. */
+:root[data-theme="light"] .btn { border-color: transparent; border-radius: var(--pill-radius); font-weight: 600; }
+:root[data-theme="light"] :is(.btn-default, .btn-secondary) {
+    border-color: transparent;
+    background: var(--surface-object);
+    color: var(--text-primary);
+    box-shadow: var(--elev-rest);
+}
+:root[data-theme="light"] :is(.btn-default, .btn-secondary):not(:disabled):hover {
+    border-color: transparent;
+    background: var(--surface-object);
+    box-shadow: var(--elev-float);
+}
+:root[data-theme="light"] .btn-ghost { border-color: transparent; background: transparent; box-shadow: none; }
+:root[data-theme="light"] .btn-ghost:not(:disabled):hover { background: var(--tone-quiet-hover); }
+:root[data-theme="light"] .btn-primary { background: var(--tone-crimson); color: var(--accent-light); box-shadow: none; }
+:root[data-theme="light"] .btn-primary:not(:disabled):hover { background: var(--tone-crimson-hover); }
+:root[data-theme="light"] .btn-save { background: var(--tone-green); color: var(--status-ok-fg); box-shadow: none; }
+:root[data-theme="light"] .btn-save:not(:disabled):hover { background: var(--tone-green-hover); }
+:root[data-theme="light"] .btn-danger {
+    border-color: transparent; background: var(--tone-red); color: var(--status-error-fg); box-shadow: none;
+}
+:root[data-theme="light"] .btn-danger:not(:disabled):hover {
+    border-color: transparent; background: var(--tone-red-hover);
+}
+:root[data-theme="light"] .btn:not(:disabled):hover { transform: none; }
+:root[data-theme="light"] .btn:not(:disabled):active {
+    transform: scale(0.97);
+    box-shadow: none;
+    transition: transform 60ms ease;
+}
+:root[data-theme="light"] :is(.ui-chip, .status-badge) { border-color: transparent; }
+@media (prefers-reduced-motion: reduce) {
+    :root[data-theme="light"] .btn:active { transform: none; }
 }

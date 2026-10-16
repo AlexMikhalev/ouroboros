@@ -3159,15 +3159,16 @@ body.keyboard-open .main-attention-body {
         width: min(86vw, 320px);
         max-width: 320px;
         transform: translateX(-105%);
-        transition: transform 0.18s ease;
-        box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
         padding-top: calc(64px + env(safe-area-inset-top, 0px));
         background:
             linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86));
     }
 
+    /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
     #primary-sidebar.open {
         transform: translateX(0);
+        box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
     }
 
     .unread-badge {
@@ -8814,3 +8815,142 @@ textarea.chat-input {
 :root[data-theme="light"] .status-badge.online { color: var(--status-ok-fg); }
 :root[data-theme="light"] .status-badge.starting { color: var(--status-warn-fg); }
 :root[data-theme="light"] .status-badge.error { color: var(--status-error-fg); }
+
+/* ---- Airy dopamine (DESIGN.md design bible; light theme) ---------------------------------------------------------
+   The room is plain; objects float on the rest shadow without outlines; what floats over moving content takes the
+   float shadow; each voice tints its own objects; every control is one of ui.css's three capsule tones. The dark
+   theme keeps today's recipes until its values are derived from the same rules. */
+
+/* The room: white, the sidebar one near-white step, no wash behind the page. */
+:root[data-theme="light"] #primary-sidebar { background: var(--surface-side); border-right-color: rgba(28, 33, 51, 0.05); }
+@media (max-width: 980px) {
+    :root[data-theme="light"] #primary-sidebar { background: var(--surface-side); }
+    :root[data-theme="light"] #primary-sidebar.open { box-shadow: var(--elev-float); }
+}
+/* A scrollbar is the room's furniture: neutral, never the accent. */
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(var(--neutral-rgb), 0.16); }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(var(--neutral-rgb), 0.28); }
+:root[data-theme="light"] .app-page-glass { background: none; }
+
+/* Voices: the owner lavender-blue, Ouroboros blush (a task card a lighter blush), each a resting object. */
+:root[data-theme="light"] :is(#chat-messages, .chat-messages) { gap: 14px; }
+:root[data-theme="light"] .chat-bubble { padding: 12px 18px 10px; border-radius: var(--radius-object); }
+:root[data-theme="light"] .chat-bubble.user {
+    background: var(--voice-owner); border-color: transparent; box-shadow: var(--elev-rest);
+}
+:root[data-theme="light"] .chat-bubble.assistant {
+    background: var(--voice-ouroboros); border-color: transparent; box-shadow: var(--elev-rest);
+}
+:root[data-theme="light"] :is(.chat-live-card, .chat-live-card[data-finished="1"]) {
+    border-color: transparent;
+    background: var(--voice-ouroboros-card);
+    border-radius: var(--radius-object);
+    box-shadow: var(--elev-rest);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+:root[data-theme="light"] .chat-live-summary-button { padding: 16px 20px 12px; }
+:root[data-theme="light"] .chat-live-actions { padding: 0 20px 16px; gap: var(--space-2); }
+:root[data-theme="light"] :is(.chat-live-phase, .chat-live-line-phase) { border-color: transparent; }
+
+/* Objects and trays. A card on the room is an object: white on the rest shadow with the object radius. Inside an
+   object a group or row is a tray: the soft neutral fill with the inner radius and no shadow; a tray inside a tray
+   drops its fill, so fills never stack and its rows part by space alone. A status sentence stays a dot and a word,
+   never a box. */
+:root[data-theme="light"] :is(.ui-card, .settings-shell .form-section, .settings-card, .settings-provider-card, .skills-card,
+    .marketplace-card, .widgets-card, .updates-card, .costs-budget-card, .stat-card, .log-task-card, .evo-runtime-card,
+    .evo-chart-wrap) {
+    border-color: transparent;
+    background: var(--surface-object);
+    border-radius: var(--radius-object);
+    box-shadow: var(--elev-rest);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+:root[data-theme="light"] :is(.agent-family-card, .harness-account-row, .harness-login-card, .settings-effort-card,
+    .settings-model-card, .settings-custom-secret-row, .settings-extension-section, .mcp-server-card) {
+    border-color: transparent; background: var(--surface-tray); border-radius: var(--radius-inner); box-shadow: none;
+}
+:root[data-theme="light"] :is(.agent-family-card, .harness-login-card, .settings-effort-card, .settings-model-card,
+    .settings-extension-section, .mcp-server-card) :is(.harness-account-row, .harness-login-card, .settings-effort-card,
+    .settings-model-card, .settings-custom-secret-row) {
+    background: transparent;
+}
+:root[data-theme="light"] .agents-service-banner { border-color: transparent; background: transparent; padding-inline: 0; }
+:root[data-theme="light"] .settings-footer { background: var(--surface-object); }
+
+/* Sheets: what floats over moving content (menus, the composer's field) takes the float shadow. */
+:root[data-theme="light"] :is(.ui-popup[role="menu"], .ui-model-options, .chat-header-menu, .task-control-menu) {
+    border-color: transparent; border-radius: var(--radius-object); box-shadow: var(--elev-float);
+}
+:root[data-theme="light"] .chat-text-row {
+    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="light"] .chat-text-row:focus-within {
+    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float), 0 0 0 2px var(--focus-accent-border);
+}
+
+/* Controls: ui.css's three tones mapped onto the page's own controls. The bars' controls (the Project bar's close and
+   the phone's menu button among them) are neutral capsules; Panic is danger, the budget amber (it is the owner's
+   money), a mode that is on crimson. The room's status beside the title is not a control: it stays a bare sentence
+   (room_work.css). */
+:root[data-theme="light"] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle) {
+    border-color: transparent; background: var(--surface-object); color: var(--text-primary); box-shadow: var(--elev-rest);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+    transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+:root[data-theme="light"] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle):hover {
+    border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float);
+}
+:root[data-theme="light"] :is(.project-panel-close, .mobile-nav-toggle) { border-radius: var(--pill-radius); }
+:root[data-theme="light"] .chat-header-btn.danger.ui-chrome-control { background: var(--tone-red); color: var(--status-error-fg); box-shadow: none; }
+:root[data-theme="light"] .chat-header-btn.danger.ui-chrome-control:hover { background: var(--tone-red-hover); box-shadow: none; }
+:root[data-theme="light"] .chat-budget-pill.ui-chrome-control { border-color: transparent; background: var(--tone-amber); box-shadow: none; }
+:root[data-theme="light"] .chat-budget-pill.ui-chrome-control:hover { border-color: transparent; background: var(--tone-amber-hover); }
+:root[data-theme="light"] .chat-header-btn.on.ui-chrome-control {
+    border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); box-shadow: none;
+}
+/* The composer: Swarm, Context and Effort are neutral capsules whose names take the secondary ink at the control
+   weight (owner 16.10: the old bold names and dark crimson values read too dark); a value and a ring's lit arc take
+   the crimson ink on a light rail. Send is the primary action's crimson tone. */
+:root[data-theme="light"] .chat-input-wrap { --composer-control-shadow: var(--elev-rest); }
+:root[data-theme="light"] :is(.chat-swarm, .chat-capsule) {
+    border-color: transparent; background: var(--surface-object); color: var(--text-secondary); font-weight: 600;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="light"] .chat-swarm:hover { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); }
+:root[data-theme="light"] .chat-swarm[data-armed="true"] { border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); }
+:root[data-theme="light"] .chat-capsule[data-open="true"] { border-color: transparent; box-shadow: var(--elev-float); }
+:root[data-theme="light"] :is(.chat-effort-glyph-rail, .chat-context-arc) { stroke: rgba(var(--neutral-rgb), 0.16); }
+:root[data-theme="light"] .chat-send-inline {
+    border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); opacity: 1; box-shadow: none;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+:root[data-theme="light"] .chat-send-inline:hover { border-color: transparent; background: var(--tone-crimson-hover); }
+/* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen one is the crimson tone. Their strip
+   scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping it. Filters are
+   quiet until chosen. */
+:root[data-theme="light"] .app-tab-strip { padding: 6px 16px 24px; margin: 0 -16px -16px; }
+:root[data-theme="light"] :is(.app-tab, .theme-choice) {
+    border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-object); box-shadow: var(--elev-rest);
+}
+:root[data-theme="light"] :is(.app-tab, .theme-choice):hover { border-color: transparent; background: var(--surface-object); box-shadow: var(--elev-float); }
+:root[data-theme="light"] :is(.app-tab.active, .app-tab.is-active, .theme-choice[aria-checked="true"]) {
+    border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); box-shadow: none;
+}
+:root[data-theme="light"] .filter-chip { border-color: transparent; border-radius: var(--pill-radius); background: transparent; }
+:root[data-theme="light"] .filter-chip:hover { background: var(--tone-quiet-hover); }
+:root[data-theme="light"] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--accent-light); }
+/* A press sinks every capsule the same way. */
+:root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
+    .chat-send-inline, .app-tab, .theme-choice, .filter-chip):not(:disabled):active {
+    transform: scale(0.97); box-shadow: none; transition-duration: 60ms;
+}
+@media (prefers-reduced-motion: reduce) {
+    :root[data-theme="light"] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm,
+        .chat-send-inline, .app-tab, .theme-choice, .filter-chip):active { transform: none; }
+}
+
+/* The sidebar's places are rows of one list: the inner radius. */
+:root[data-theme="light"] :is(.nav-row, .nav-section-toggle) { border-radius: var(--radius-inner); }
