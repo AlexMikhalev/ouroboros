@@ -7,6 +7,7 @@ import sqlite3
 
 from ouroboros import delegate_custody as custody
 from ouroboros import delegate_custody_current as current
+from ouroboros import delegate_invocation as inv
 from ouroboros import store, store_import
 
 
@@ -66,6 +67,8 @@ def _reduced(rows):
                      conn.execute("SELECT run_id, facts, state FROM custody_runs")},
             "open": txn.set_rows("custody_open"), "refused": txn.set_rows("custody_refused"),
             "marks": txn.set_rows("custody_marks"),
+            "invocations": txn.set_rows(inv.INVOCATIONS), "operations": txn.set_rows(inv.OPERATIONS),
+            "event_ordinals": txn.set_rows(inv.EVENTS), "ordinal": txn.meta(inv.ORDINAL),
         }), _normalise(txn.set_rows("delegated_runs"))
 
 

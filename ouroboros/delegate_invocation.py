@@ -6,9 +6,146 @@ of the store reducer so imports and live publication can be compared directly.
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, Dict, List, Optional
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
+
+INVOCATIONS = "custody_invocations"
+OPERATIONS = "custody_operation_invocations"
+EVENTS = "custody_event_ordinals"
+ORDINAL = "custody_append_ordinal"
+COMPLETE = "custody_invocations_complete"
+LEGACY_GAP = "legacy_gap"
+
+
+def operation_key(operation_id: str, slot_id: str) -> str:
+    return json.dumps([operation_id, slot_id], ensure_ascii=False)
+
+
+def event_ordinal(txn, event: dict) -> int:
+    """The event's durable place in the serialized custody commits, never its clock."""
+    prior = txn.get_row(EVENTS, str(event.get("event_id") or "")) if event.get("event_id") else None
+    return int(prior["ordinal"]) if prior else max(int(txn.meta(ORDINAL) or 0) + 1,
+                                                 int(event.get("custody_ordinal") or 0))
+
+
+def bound_runs(txn, invocation_id: str) -> dict:
+    # Spell out the predicate of the partial index; equality alone cannot use it.
+    return txn.custody_rows("invocation_id<>'' AND invocation_id=?", (invocation_id,))
+
+
+def advance(record: dict, event: dict, ordinal: int) -> dict:
+    """Invocation transition; the independent ``rows=`` oracle below defines its meaning."""
+    from ouroboros.delegate_custody import START_REQUESTED, STARTED, START_FAILED
+
+    record = dict(record or {"state": "pending", "run_id": ""})
+    kind = event.get("type")
+    if kind == START_REQUESTED and not record.get("request"):
+        record.update(request=dict(event), request_ordinal=ordinal)
+    elif kind == STARTED:
+        record.update(state="started", run_id=str(event.get("run_id") or ""), started_ordinal=ordinal)
+    elif kind == START_FAILED and event.get("definite") is True and record["state"] != "started":
+        record["state"] = "failed_definite"
+    return record
+
+
+def legacy_record(txn, invocation_id: str, bound: Optional[dict] = None) -> Optional[dict]:
+    """Named legacy path: only this invocation's stored facts, never the event chain.
+
+    One STARTED and a retained original request suffice (including the F1 refusal).
+    Multiple starts without ordinals, missing request facts or conflicting requests
+    cannot prove the fold's answer and stay explicitly ``legacy_gap`` until repair.
+    """
+    requested = txn.get_row("custody_open", f"invocation:{invocation_id}")
+    refused = txn.get_row("custody_refused", invocation_id)
+    bound = bound_runs(txn, invocation_id) if bound is None else bound
+    if not (requested or refused or bound):
+        return None
+    requests = [row["request"] for row in (requested, refused) if row and row.get("request")]
+    requests.extend(facts["request_event"] for facts in bound.values() if facts.get("request_event"))
+    gap = {"state": LEGACY_GAP, "run_id": "", "reason": "invocation_request_missing"}
+    if not requests:
+        return gap
+    if any(request != requests[0] for request in requests[1:]):
+        return {**gap, "reason": "original_request_unknown"}
+    request = requests[0]
+    started = {rid: facts for rid, facts in bound.items()
+               if facts.get("started_ts") or facts.get("_invocation_started_ordinal")}
+    if len(started) > 1 and not all(row.get("_invocation_started_ordinal") for row in started.values()):
+        return {**gap, "request": request, "reason": "last_started_order_unknown"}
+    if bound and not started:
+        return {**gap, "request": request, "reason": "start_facts_missing"}
+    rid = max(started, key=lambda key: started[key].get("_invocation_started_ordinal", 0)) if started else ""
+    return {"request": request, "state": "started" if rid else "failed_definite" if refused else "pending",
+            "run_id": rid}
+
+
+def reduce_event(txn, event: dict, ordinal: int) -> Optional[dict]:
+    from ouroboros.delegate_custody import START_REQUESTED, STARTED, START_FAILED
+
+    iid, kind = str(event.get("invocation_id") or ""), event.get("type")
+    if kind == START_REQUESTED:
+        key = operation_key(str(event.get("operation_id") or ""), str(event.get("slot_id") or ""))
+        if txn.get_row(OPERATIONS, key) is None:
+            txn.put_row(OPERATIONS, key, {"invocation_id": iid, "request_ordinal": ordinal})
+    if not iid or kind not in (START_REQUESTED, STARTED, START_FAILED):
+        return None
+    record = txn.get_row(INVOCATIONS, iid)
+    if record is None:
+        record = legacy_record(txn, iid)
+        if record and record["state"] == LEGACY_GAP:
+            record["legacy_gap"] = record["reason"]
+    record = advance(record, event, ordinal)
+    txn.put_row(INVOCATIONS, iid, record)
+    return record
+
+
+def _read(txn, invocation_id: str) -> Optional[dict]:
+    record = txn.get_row(INVOCATIONS, invocation_id)
+    bound = bound_runs(txn, invocation_id)
+    # A rollback writer knows neither the invocation row nor the new run fact.
+    # Its addressed rows remain usable only when the legacy path can prove the answer.
+    if record is None or any(facts.get("started_ts") and not facts.get("_invocation_started_ordinal")
+                             for facts in bound.values()):
+        return legacy_record(txn, invocation_id, bound)
+    if record.get("legacy_gap"):
+        return {**record, "state": LEGACY_GAP, "reason": record["legacy_gap"], "run_id": ""}
+    if record.get("state") == "pending" and txn.get_row("custody_open", f"invocation:{invocation_id}") is None:
+        return legacy_record(txn, invocation_id, bound)
+    return record
+
+
+def _answer(root, record: Optional[dict], request_facts) -> Optional[dict]:
+    if record is None:
+        return None
+    if record["state"] == LEGACY_GAP:
+        return {"state": LEGACY_GAP, "run_id": "", "reason": record["reason"]}
+    if not record.get("request"):
+        return None  # A complete modern fold without REQUESTED has no invocation.
+    return {**request_facts(root, record["request"]), "state": record["state"], "run_id": record["run_id"]}
+
+
+def read(root, invocation_id: str, request_facts) -> Optional[dict]:
+    from ouroboros import store
+
+    with store.open_store(root, write=False) as txn:
+        record = _read(txn, invocation_id)
+    return _answer(root, record, request_facts)
+
+
+def operation_record(root, operation_id: str, slot_id: str) -> Optional[dict]:
+    """The first matching REQUESTED in chain order, addressed by (operation, slot)."""
+    from ouroboros import store
+
+    with store.open_store(root, write=False) as txn:
+        if not txn.meta(COMPLETE):
+            return {"state": LEGACY_GAP, "run_id": "", "reason": "request_order_not_backfilled"}
+        first = txn.get_row(OPERATIONS, operation_key(str(operation_id), str(slot_id)))
+        iid = str((first or {}).get("invocation_id") or "")
+        record = _read(txn, iid) if iid else None
+    answer = _answer(root, record, _request_facts)
+    return {**answer, "invocation_id": iid} if answer is not None else None
 
 
 def invocation_record(drive_root: Any, invocation_id: str, *,
@@ -31,8 +168,9 @@ def invocation_record(drive_root: Any, invocation_id: str, *,
     context wrote a durable record contradicting the body it actually POSTed.
     First-request lineage, usage attribution (category/source/skill/wave/slot),
     and isolation facts are likewise replayed rather than re-derived.
-    ``rows`` folds a caller's chain snapshot; otherwise the store answers from the
-    pending invocation row, the bound run's row or the definite-refusal row.
+    ``rows`` folds a caller's chain snapshot; otherwise an addressed store row
+    retains the first request and last STARTED. Legacy rows use ``legacy_record``;
+    insufficient stored evidence returns ``legacy_gap``, never an absent run.
     """
     from ouroboros.delegate_custody import START_REQUESTED, STARTED, START_FAILED, _unique_rows
 
