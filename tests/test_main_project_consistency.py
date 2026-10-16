@@ -177,8 +177,8 @@ def test_corrupt_registry_keeps_main_dialogue_available(tmp_path, monkeypatch, p
 
 @pytest.mark.parametrize("project_room", [False, True])
 def test_main_steers_healthy_foreign_task_despite_corrupt_registry(host, monkeypatch, project_room):  # noqa: F811
-    from ouroboros.owner_mailbox import drain_owner_messages
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.tools.control import _tell_task
     from tests.test_steer_relay import _live_tool_ctx, _supervisor_ctx
 
     project = registry.create_project(host.root, "target")
@@ -190,8 +190,8 @@ def test_main_steers_healthy_foreign_task_despite_corrupt_registry(host, monkeyp
         issuer.current_chat_id = project["chat_id"]
         issuer.task_metadata["origin_message_ref"]["chat_id"] = project["chat_id"]
     registry._registry_path(host.root).write_text("{torn", encoding="utf-8")
-    _steer_task(issuer, "t-target", "Continue original task")
-    assert drain_owner_messages(host.root, "t-target") == ([] if project_room else ["Continue original task"])
+    _tell_task(issuer, "t-target", "Continue original task")
+    assert [e["text"] for e in drain_owner_entries(host.root, "t-target")] == ["Continue original task"]
 
 
 @pytest.mark.parametrize("producer", ["promotion", "api"])
@@ -467,8 +467,8 @@ def test_external_owner_main_dialogue_survives_registry_fault(tmp_path, monkeypa
 @pytest.mark.parametrize("fault", ["torn", "missing", "fresh"])
 @pytest.mark.parametrize("sender", ["external_owner", "unbound_external", "project_room"])
 def test_external_owner_steers_despite_registry_fault(host, monkeypatch, sender, fault):  # noqa: F811
-    from ouroboros.owner_mailbox import drain_owner_messages
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.tools.control import _tell_task
     from tests.test_steer_relay import _live_tool_ctx, _supervisor_ctx
 
     chat_id = _sender_chat(sender, _committed_room(host.root, fault))
@@ -480,7 +480,7 @@ def test_external_owner_steers_despite_registry_fault(host, monkeypatch, sender,
     issuer.current_chat_id = chat_id
     issuer.task_metadata["origin_message_ref"]["chat_id"] = chat_id
     _registry_fault(host.root, fault)
-    _steer_task(issuer, "t-target", "Continue original task")
-    delivered = drain_owner_messages(host.root, "t-target")
+    _tell_task(issuer, "t-target", "Continue original task")
+    delivered = [e["text"] for e in drain_owner_entries(host.root, "t-target")]
     allowed = sender == "external_owner" or fault == "fresh"
-    assert delivered == (["Continue original task"] if allowed else [])
+    assert delivered == ["Continue original task"]

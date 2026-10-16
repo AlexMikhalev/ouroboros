@@ -91,3 +91,51 @@ def test_unknown_or_malformed_quote_refusal_names_the_held_handles(tmp_path, han
     row, handle = source(tmp_path)
     quotes, refusal = quote_rows(context(tmp_path, row), handles)
     assert not quotes and "QUOTE_NOT_HELD" in refusal and handle in refusal
+
+
+def test_continue_retains_an_unanswered_return_address(tmp_path):
+    from ouroboros.task_results import write_task_result, load_task_result
+    from ouroboros.owner_continue import owner_sources
+    from ouroboros.owner_relay import inject_relay, relay_envelope
+    row, handle = source(tmp_path)
+    ctx = context(tmp_path, row)
+    write_task_result(tmp_path, "teller", "running", origin_message_text=row["text"],
+                      origin_message_ref=ctx.task_metadata["origin_message_ref"])
+    quotes, _ = quote_rows(ctx, [handle])
+    relay = relay_envelope("return", quotes, chat_id=1)
+    inject_relay(ctx, {"relay": relay, "owner_rows": [row], "text": "context"}, [])
+    sources = owner_sources(tmp_path, load_task_result(tmp_path, "teller"), "teller")
+    successor = context(tmp_path)
+    successor.task_metadata = {"continuation": {"owner_sources": sources}}
+    held_owner_messages(successor)
+    assert successor._open_relays["return"] == relay
+
+
+# Shared host doubles used by the registry-corruption tests too.
+def _supervisor_ctx(tmp_path, notices):
+    return SimpleNamespace(DRIVE_ROOT=tmp_path,
+        RUNNING={"t-target": {"task": {"id": "t-target", "chat_id": 1}}}, PENDING=[],
+        send_with_budget=lambda _chat, text, **kw: notices.append(text))
+
+
+def _live_tool_ctx(tmp_path, supervisor_ctx, emitted, *, task_id="turn-1", metadata=None):
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from supervisor.steering import _handle_steer_task
+    ctx = context(tmp_path)
+    ctx.is_direct_chat = True
+    ctx.task_id = task_id
+    ctx.task_metadata = dict(metadata or {})
+    if ctx.task_metadata.get("client_message_id"):
+        ctx.task_metadata["origin_message_ref"] = build_owner_message_ref(chat_id=1,
+            client_message_id=ctx.task_metadata["client_message_id"], ts="2026-10-01T00:00:00Z", text=ctx.task_metadata.get("origin_message_text", ""))
+    def dispatch(event):
+        emitted.append(event)
+        _handle_steer_task(event, supervisor_ctx)
+    ctx.event_queue = SimpleNamespace(put_nowait=dispatch)
+    return ctx
+
+
+def held_quote(tmp_path, text, chat_id=1):
+    from supervisor.message_bus import log_chat
+    row = log_chat("in", chat_id, 1, text, client_message_id="quoted-owner", drive_root=tmp_path)
+    return quote_rows(context(tmp_path, row), [format_address(row_address(row))])[0]

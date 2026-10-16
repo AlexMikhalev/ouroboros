@@ -194,6 +194,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
     copy with recorded attachments renders as its row does (views, source, mark).
     """
     from ouroboros.project_dialogue import project_origin_rows
+    from ouroboros.chat_references import origin_projection
 
     origin_rows = project_origin_rows(data_dir, thread_id)
     if not origin_rows:
@@ -223,7 +224,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "client_message_id": cmid,
             "task_id": "",
             "origin_projected": True,
-            "origin_id": row["origin_id"],
+            "origin_id": row["origin_id"], **origin_projection(data_dir, ref),
             **({"attachments": attachment_views(row["attachments"], data_dir)} if row.get("attachments") else {}),
             **({"text_placeholder": True} if row.get("text_placeholder") is True else {}),
         })
@@ -302,7 +303,7 @@ def _chat_quota_predicate(row_matches_thread):
 def _history_identity(entry):
     from ouroboros.chat_references import projection_fields
     return {**({"row_address": entry["row_address"]} if entry.get("row_address") else projection_fields(entry)),
-            **{key: entry[key] for key in ("history_id", "history_position", "reply_to", "relay") if key in entry}}
+            **{key: entry[key] for key in ("history_id", "history_position", "reply_to", "relay", "reply_to_relay") if key in entry}}
 
 
 def _read_progress_history_entries(live, adir, want, counts_toward_quota, *, include_gaps=False):
@@ -1523,7 +1524,6 @@ def _assemble_history_response(
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
-    # Wake-ups have their own task/result and need no replay special case.
     # Retired "bg-consciousness" progress has no task_result: replay treats it
     # like any missing-result row; the client's durable task-detail read shows
     # "Outcome unavailable". Never stamp it terminal here: no result is not Done.

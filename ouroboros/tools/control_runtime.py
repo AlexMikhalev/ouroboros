@@ -471,6 +471,8 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
     })
     if relay:
         ctx._open_relays.pop(relay["relay_id"], None)
+        from ouroboros.owner_relay import persist_held_state
+        persist_held_state(ctx)
     if target == "main":
         return "OK: notice sent to the main chat." if mode == "live" else "OK: notice queued for delivery to the main chat."
     if mode == "live":

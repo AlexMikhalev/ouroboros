@@ -96,3 +96,62 @@ def test_empty_return_is_ambiguous_but_omitted_route_remains_ordinary(tmp_path):
     assert not ctx.pending_events
     _send_user_message(ctx, "ordinary")
     assert ctx.pending_events[0]["chat_id"] == 1
+
+
+def test_return_survives_teller_end_and_refuses_ambiguous_or_hidden_sender(tmp_path):
+    from ouroboros.tools.control_runtime import _send_user_message
+    row, handle = source(tmp_path)
+    recipient = context(tmp_path)
+    recipient.current_chat_id = 42
+    recipient.task_metadata = {"origin_suppressed": True}
+    relay = {"relay_id": "r", "source": {"chat_id": 1, "address": handle}}
+    recipient._open_relays = {"r": relay, "s": {**relay, "relay_id": "s"}}
+    assert "RELAY_RETURN_UNRESOLVED" in _send_user_message(recipient, "answer", reply_to_relay="")
+    assert not recipient.pending_events
+    recipient.current_chat_id = 0
+    assert "hidden" in _send_user_message(recipient, "answer", reply_to_relay="r")
+    assert not recipient.pending_events and len(recipient._open_relays) == 2
+    recipient.current_chat_id = 42
+    assert _send_user_message(recipient, "answer", reply_to_relay="r").startswith("OK:")
+    [event] = recipient.pending_events
+    assert event["chat_id"] == 1 and event["system_type"] == "relay_reply"
+    assert event["progress_meta"]["reply_to"]["snippet"] == "exact owner words"
+    assert event["progress_meta"]["reply_to_relay"] == "r"
+    assert "r" not in recipient._open_relays and "s" in recipient._open_relays
+
+
+def test_saved_ack_updates_each_quoted_owner_row(tmp_path):
+    from ouroboros.owner_relay import retain_owner_message
+    from ouroboros.project_dialogue import latest_chat_annotations
+    row, handle = source(tmp_path)
+    sender = context(tmp_path, row)
+    second = {**row, "client_message_id": "owner-2", "text": "second exact words"}
+    retain_owner_message(sender, second)
+    quotes, error = quote_rows(sender, [handle, format_address(row_address(second))])
+    assert not error
+    write_relay(tmp_path, "receiver", relay_id="both", note="context", quotes=quotes,
+                chat_id=1, teller_task_id="teller")
+    receiver = context(tmp_path)
+    receiver.task_id = "receiver"
+    events = queue.Queue()
+    _drain_incoming_messages([], queue.Queue(), tmp_path, "receiver", events, set(), owner_ctx=receiver)
+    annotations = latest_chat_annotations(tmp_path)
+    assert all(annotations[key]["status"] == "read" for key in ("owner-1", "owner-2"))
+    assert all(annotations[key]["target_task_ids"] == ["receiver"] for key in ("owner-1", "owner-2"))
+    assert events.get_nowait()["relay_ack"]["relay_id"] == "both"
+
+
+def test_retained_current_quotes_extend_owner_corpus_without_the_note(tmp_path):
+    from ouroboros.task_results import write_task_result
+    from ouroboros.owner_words import task_owner_words
+    row, handle = source(tmp_path)
+    quotes, _ = quote_rows(context(tmp_path, row), [handle])
+    write_task_result(tmp_path, "receiver", "running", origin_message_text="Original task")
+    write_relay(tmp_path, "receiver", relay_id="r", note="NOT OWNER", quotes=quotes,
+                chat_id=1, teller_task_id="teller")
+    receiver = context(tmp_path)
+    receiver.task_id = "receiver"
+    _drain_incoming_messages([], queue.Queue(), tmp_path, "receiver", None, set(), owner_ctx=receiver)
+    words, absent = task_owner_words(tmp_path, "receiver")
+    assert not absent and [r["text"] for r in words] == ["Original task", row["text"]]
+    assert "NOT OWNER" not in str(words)

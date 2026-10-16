@@ -548,7 +548,9 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     def panel(*_args, **_kwargs):
         panel_calls["count"] += 1
         if panel_calls["count"] == 1:
+            from tests.test_steer_relay import held_quote
             events_mod._handle_steer_task({
+                "quotes": held_quote(tmp_path, "also satisfy the newly added criterion", chat_id),
                 "target_task_id": root_id,
                 "message": "also satisfy the newly added criterion",
                 "chat_id": chat_id,

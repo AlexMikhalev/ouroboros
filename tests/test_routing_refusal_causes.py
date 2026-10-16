@@ -165,7 +165,7 @@ def test_producer_literals_are_all_covered_or_exempt():
 
 def test_origin_addressed_notice_types_cover_admission_and_steering():
     assert ORIGIN_ADDRESSED_NOTICE_TYPES == frozenset({
-        "task_not_started", "task_start_unconfirmed", "steer_not_delivered",
+        "task_not_started", "task_start_unconfirmed", "steer_not_delivered", "relay_reply",
     })
 
 

@@ -118,14 +118,14 @@ def test_a_steer_with_no_owner_rail_is_refused_readably_not_unconfirmed(tmp_path
     before the handler had even run, and the model saw STEER_UNCONFIRMED for a
     steer the host had REFUSED. The act now keys its own synthetic receipt."""
     from ouroboros.project_dialogue import latest_chat_annotations
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     notices, emitted = [], []
     ctx = _live_tool_ctx(tmp_path, _supervisor_ctx(tmp_path, notices), emitted, metadata={})
 
-    out = _steer_task(ctx, "t-gone", "pick the smaller PR")
+    out = _tell_task(ctx, "t-gone", "pick the smaller PR")
 
-    assert out.startswith("⚠️ STEER_REJECTED: task t-gone was not steered (target_unknown)")
+    assert out.startswith("TELL_REJECTED: t-gone: target_unknown")
     assert "UNCONFIRMED" not in out
     receipt_id = emitted[0]["client_message_id"]
     assert receipt_id == f"agent-steer:{emitted[0]['routing_token']}"
@@ -143,7 +143,7 @@ def test_a_task_authored_steer_refused_by_a_pending_cancel_reports_the_cause(
     reason the owner and the model need to act on."""
     import ouroboros.cancel_intents as cancel_intents
     from ouroboros.project_dialogue import latest_chat_annotations
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     monkeypatch.setattr(
         cancel_intents, "cancel_pending", lambda _root, task_id, **_k: task_id == "t-target",
@@ -154,9 +154,9 @@ def test_a_task_authored_steer_refused_by_a_pending_cancel_reports_the_cause(
     )
     ctx = _live_tool_ctx(tmp_path, supervisor, emitted, metadata={})
 
-    out = _steer_task(ctx, "t-target", "stop after the current file")
+    out = _tell_task(ctx, "t-target", "stop after the current file")
 
-    assert out.startswith("⚠️ STEER_REJECTED: task t-target was not steered (cancel_pending)")
+    assert out.startswith("TELL_REJECTED: t-target: cancel_pending")
     receipt_id = emitted[0]["client_message_id"]
     assert latest_chat_annotations(tmp_path)[receipt_id]["status"] == "rejected"
 
@@ -168,7 +168,7 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
     was WRITTEN (wave 2: it lands as a task message, never as owner text)."""
     import supervisor.queue as queue
     from ouroboros.owner_mailbox import KIND_TASK_MESSAGE, drain_owner_entries
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
     notices, emitted = [], []
@@ -177,13 +177,13 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
     )
     ctx = _live_tool_ctx(tmp_path, supervisor, emitted, metadata={})
 
-    out = _steer_task(ctx, "t-target", "keep the PR small")
+    out = _tell_task(ctx, "t-target", "keep the PR small")
 
-    assert out.startswith("✉️ Message to task t-target written to its mailbox (durably confirmed")
+    assert out.startswith("Message written to t-target")
     assert "UNCONFIRMED" not in out
     [entry] = drain_owner_entries(tmp_path, "t-target")
-    assert (entry["text"], entry["kind"], entry["provenance"], entry["source_task_id"]) == (
-        "keep the PR small", KIND_TASK_MESSAGE, "independent_task", "turn-1",
+    assert (entry["text"], entry["kind"], entry["source_task_id"]) == (
+        "keep the PR small", "relay_entry", "turn-1",
     )
 
 
@@ -192,13 +192,13 @@ def test_an_unconfirmed_act_is_kept_by_its_exact_ids_and_a_settled_one_is_not(tm
     keeps its exact identity, so a later acting round reports the recorded outcome
     (``loop_model_call._append_routing_receipts``), and the text says so instead of inviting
     a second delivery. A refused act is settled and kept nowhere."""
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     ctx = _tool_ctx(tmp_path, metadata={}, unconfirmed_routing_acts=[])
-    out = _steer_task(ctx, "t-target", "keep the PR small")
-    assert out.startswith("⚠️ STEER_UNCONFIRMED: mailbox delivery to task t-target was not durably confirmed")
-    assert "Do not report the message as delivered." in out
-    assert "[ROUTING_RECEIPTS]" in out and "second delivery" in out
+    out = _tell_task(ctx, "t-target", "keep the PR small")
+    assert out.startswith("TELL_UNCONFIRMED: t-target:")
+    assert "The request may still land." in out
+    assert "Check its receipt" in out and "sending the words again" in out
     [event] = ctx.pending_events
     assert ctx.unconfirmed_routing_acts == [{
         "action": "steer_task", "client_message_id": event["client_message_id"],
@@ -206,7 +206,7 @@ def test_an_unconfirmed_act_is_kept_by_its_exact_ids_and_a_settled_one_is_not(tm
     notices, emitted = [], []
     live = _live_tool_ctx(tmp_path, _supervisor_ctx(tmp_path, notices), emitted, metadata={})
     live.unconfirmed_routing_acts = []
-    assert _steer_task(live, "t-gone", "pick the smaller PR").startswith("⚠️ STEER_REJECTED")
+    assert _tell_task(live, "t-gone", "pick the smaller PR").startswith("TELL_REJECTED")
     assert live.unconfirmed_routing_acts == []
 
 

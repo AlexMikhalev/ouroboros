@@ -538,7 +538,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "options",
         "attachment_manifest",
         "suppress_bubble",
-        "ts",
+        "ts", "project_name", "target_task_ids", "target_titles"
     }
 
 

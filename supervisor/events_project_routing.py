@@ -76,7 +76,7 @@ def _emit_routing_receipt(
     project_address = _routing_project_address(ctx, target, status)
     if evt.get("relay_id"):
         from ouroboros.owner_relay import relay_target_facts
-        project_address.update(relay_target_facts(ctx.DRIVE_ROOT, target))
+        project_address.update(relay_target_facts(ctx.DRIVE_ROOT, target, evt.get("relay_target")))
     # Q3=A: the owner-facing sentence for a REFUSED act (host table; "" for a
     # landed row or the picker), computed once for the durable row and the ack.
     cause = routing_refusal_cause(action, status, reason, options)
@@ -185,7 +185,7 @@ def _publish_routing_ack(
             }
             if evt.get("relay_id"):
                 from ouroboros.owner_relay import relay_target_facts
-                ack_kwargs.update(relay_target_facts(ctx.DRIVE_ROOT, target))
+                ack_kwargs.update(relay_target_facts(ctx.DRIVE_ROOT, target, evt.get("relay_target")))
             if options is not None:
                 ack_kwargs["options"] = options
             if attachment_manifest is not None:

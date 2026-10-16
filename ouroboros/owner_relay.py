@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from pathlib import Path
 
 from ouroboros.chat_chain import format_address, row_address
@@ -36,6 +37,8 @@ def held_owner_messages(ctx) -> dict:
         metadata = getattr(ctx, "task_metadata", None) or {}
         # Continue carries host-retained rows; it does not acquire arbitrary history.
         inherited = (metadata.get("continuation") or {}).get("owner_sources") or {}
+        if not hasattr(ctx, "_open_relays"):
+            ctx._open_relays = copy.deepcopy(inherited.get("open_relays") or {})
         held.update(copy.deepcopy(inherited.get("held_owner_messages") or metadata.get("held_owner_messages") or {}))
         from ouroboros.project_dialogue import resolve_owner_message_source
         from ouroboros.tool_access import canonical_data_root
@@ -43,6 +46,7 @@ def held_owner_messages(ctx) -> dict:
             row = resolve_owner_message_source(canonical_data_root(ctx), ref)
             if _owner_row(row):
                 held[format_address(row_address(row))] = row
+        persist_held_state(ctx)
     return held
 
 
@@ -56,18 +60,25 @@ def retain_owner_message(ctx, row=None, *, client_message_id="") -> None:
                                     client_message_id)
     if _owner_row(row):
         held_owner_messages(ctx)[format_address(row_address(row))] = copy.deepcopy(row)
-        if getattr(ctx, "task_id", "") and getattr(ctx, "drive_root", None):
-            from ouroboros.task_store import patch_document
-            from ouroboros.tool_access import canonical_data_root
-            patch_document(canonical_data_root(ctx), ctx.task_id, lambda current: {
-                **current, "held_owner_messages": {**current.get("held_owner_messages", {}),
-                                                  **copy.deepcopy(ctx._held_owner_messages)}} if current else current)
+        persist_held_state(ctx)
+
+
+def persist_held_state(ctx) -> None:
+    """Retain sources and return addresses on an existing canonical task record."""
+    if getattr(ctx, "task_id", "") and getattr(ctx, "drive_root", None):
+        from ouroboros.task_store import patch_document
+        from ouroboros.tool_access import canonical_data_root
+        patch_document(canonical_data_root(ctx), ctx.task_id, lambda current: {
+            **current, "held_owner_messages": copy.deepcopy(getattr(ctx, "_held_owner_messages", {})),
+            "open_relays": copy.deepcopy(getattr(ctx, "_open_relays", {}))} if current else None)
 
 
 def quote_rows(ctx, handles) -> tuple[list, str]:
     held = held_owner_messages(ctx)
     if not isinstance(handles, list) or any(not isinstance(h, str) or h not in held for h in handles):
         return [], "QUOTE_NOT_HELD: choose only held owner handles: " + json.dumps(list(held), ensure_ascii=False)
+    if not handles:
+        return [], ""
     from ouroboros.projects_registry import list_reserved_projects
     from ouroboros.tool_access import canonical_data_root
     labels = {int(p["chat_id"]): p["name"] for p in list_reserved_projects(canonical_data_root(ctx))}
@@ -147,6 +158,7 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
         if not isinstance(relays, dict):
             ctx._open_relays = relays = {}
         relays[relay["relay_id"]] = copy.deepcopy(relay)
+        persist_held_state(ctx)
 
 
 def select_return(ctx, relay_id: str) -> tuple[dict, str]:
@@ -220,6 +232,9 @@ def publish_relay(root, target: str, entry: dict, bridge, task=None) -> None:
                               task_id=target, record_type=KIND_RELAY, client_message_id=entry["msg_id"],
                               message_meta={"relay": entry["relay"]}, drive_root=root, require_write=True)
     if bridge is not None and stored["chat_id"]:
-        bridge.send_message(stored["chat_id"], stored["text"], task_id=target, ts=stored["ts"],
-                            system_type=KIND_RELAY,
-                            progress_meta={"kind": KIND_RELAY, **projection_fields(stored)})
+        try:
+            bridge.send_message(stored["chat_id"], stored["text"], task_id=target, ts=stored["ts"],
+                                system_type=KIND_RELAY,
+                                progress_meta={"kind": KIND_RELAY, **projection_fields(stored)})
+        except Exception:
+            logging.getLogger(__name__).warning("Relay %s saved; live publication failed", entry["msg_id"], exc_info=True)

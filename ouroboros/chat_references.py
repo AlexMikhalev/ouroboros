@@ -48,6 +48,8 @@ def resolve_reply(root, address: str) -> dict:
     else:
         try:
             row, _resolution = resolve_row(root, address)
+            if row is None:
+                row = resolve_progress_row(root, address)
         except ValueError:
             row = None
         if row:
@@ -72,3 +74,20 @@ def origin_reply(root, task_id: str, metadata=None) -> dict:
         return {}
     row = resolve_owner_message_source(root, ref)
     return reference_from_row(row) if row else {}
+
+
+def resolve_progress_row(root, address):
+    """Progress uses the same persisted-row hash; reuse the chain's exact resolver."""
+    from pathlib import Path
+    from ouroboros.chat_chain import _search, _normalized, _chat_log_signature
+    root = Path(root)
+    paths = [*sorted((root / "archive").glob("progress_*.jsonl")), root / "logs/progress.jsonl"]
+    generations = [(p, str(_chat_log_signature(p).get("first_line_sha256") or "")) for p in paths if p.exists()]
+    return _search(root, generations, _normalized(address))[0]
+
+
+def origin_projection(root, ref):
+    """A projected origin keeps its real source address, never hashes view fields."""
+    from ouroboros.project_dialogue import resolve_owner_message_source
+    row = resolve_owner_message_source(root, ref)
+    return projection_fields(row) if row else {}

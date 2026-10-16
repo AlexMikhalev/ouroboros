@@ -235,7 +235,7 @@ def test_live_author_receives_an_answer_whose_card_address_is_unknown_once(runti
     [row] = [row for row in rows if row.get("type") == "quiz_answer"]
     assert row["chat_id"] == 1 and row["quiz"]["comment"] == " exact words "
     assert not [row for row in rows if row.get("client_message_id") == "quiz_late_answer:task-quiz:q"]
-    assert runtime.bridge._inbox.empty() and len(mailbox()) == 1
+    assert runtime.bridge._inbox.empty() and mailbox() == []  # saved ACK excludes read mail
 
 
 def test_owner_closure_reaches_a_live_author_while_its_row_waits_for_an_address(runtime):

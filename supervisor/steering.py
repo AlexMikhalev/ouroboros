@@ -220,6 +220,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         )
 
     target_label = ""
+    evt = {**evt, "relay_target": task}
     if isinstance(task, dict):
         from ouroboros.project_dialogue import routing_target_label
 

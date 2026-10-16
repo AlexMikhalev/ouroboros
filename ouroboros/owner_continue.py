@@ -371,6 +371,7 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         else:
             gaps.append("owner_source_provenance_unknown")  # never promoted to owner text
     return {"original": original, "later": later, "peer_context": peers, "gaps": list(dict.fromkeys(gaps)),
+            "open_relays": result.get("open_relays", chained.get("open_relays", {})),
             "held_owner_messages": {**chained.get("held_owner_messages", {}), **result.get("held_owner_messages", {})},
             "predecessor_note": {"task_id": task_id, "reader": "get_task_result",
                                  "kind": "predecessor_authored_note"}}

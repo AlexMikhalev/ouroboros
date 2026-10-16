@@ -119,8 +119,11 @@ def _drain_incoming_messages(
     controls: Dict[str, Any] = {}
 
     def ack_saved(entry: Dict[str, Any]) -> None:
-        if acknowledge_transcript_entry(drive_root, task_id, entry) and entry.get("relay") and event_queue is not None:
-            event_queue.put_nowait({"type": "owner_message_injected", "task_id": task_id, "relay_ack": entry["relay"]})
+        if not acknowledge_transcript_entry(drive_root, task_id, entry) or event_queue is None:
+            return
+        if entry.get("relay") or entry.get("quiz_delivery"):
+            event_queue.put_nowait({"type": "owner_message_injected", "task_id": task_id,
+                                   "relay_ack": entry.get("relay"), "quiz_ack": entry.get("quiz_delivery")})
 
     def ack_content(entry: Dict[str, Any]) -> None:
         if defer_content_ack and owner_ctx is not None:

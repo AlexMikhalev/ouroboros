@@ -300,7 +300,7 @@ def test_the_roster_note_includes_direct_roots_but_skips_subagents_and_discloses
         "incomplete": True,
     })
     assert "…and 5 more not shown." in rendered and "roster incomplete" in rendered
-    assert 'owner direct turn sends owner steering' in rendered
+    assert 'your note' in rendered
     assert 'Project room (Main may address any listed root)' in rendered
     assert 'a task speaks as itself' in rendered
     assert "Presence's existing authority restrictions still apply" in rendered

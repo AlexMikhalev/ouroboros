@@ -1351,6 +1351,9 @@ def log_chat(
         # Speech rows persist only the compact identity required to route a
         # child final after progress retention/rotation has removed its cards.
         meta = dict(message_meta or {})
+        if direction == "out" and task_id and record_type != "relay_entry" and "reply_to" not in meta:
+            from ouroboros.chat_references import origin_reply
+            meta["reply_to"] = origin_reply(root, task_id)
         for key in ("reply_to", "relay"):
             if isinstance(meta.get(key), dict) and meta[key]:
                 record[key] = dict(meta[key])

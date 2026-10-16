@@ -555,7 +555,8 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
             claimed = claim_quiz_delivery(drive_root, task_id, quiz_id, force=not _recovery)
             attempt_delivery = bool(claimed)
             block = claimed or quiz_states(drive_root, task_id).get(quiz_id) or block
-            if attempt_delivery and task is None and refusal != "task_not_reading":
+            if (attempt_delivery and task is None and refusal != "task_not_reading"
+                    and not (block.get("delivery") or {}).get("read_at")):
                 block = record_answer_delivery_after_terminal(drive_root, task_id, quiz_id)
                 late_delivery = True
         if attempt_delivery:

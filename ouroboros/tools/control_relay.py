@@ -8,7 +8,7 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
     from ouroboros.owner_relay import quote_rows
     from ouroboros.dialogue_provenance import presence_caller_binding, presence_sender_origin
     from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
-    from ouroboros.tools.control_routing import _routing_issuer, _emit_and_wait_for_routing
+    from ouroboros.tools.control_routing import _routing_issuer, _emit_and_wait_for_routing, _attach_client_surface
     from ouroboros.tools.tool_result import ToolResult, publish_no_effect
     from ouroboros.utils import utc_now_iso
 
@@ -16,7 +16,7 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
     quotes, error = quote_rows(ctx, [] if quote is None else quote)
     if error or not target or not isinstance(note, str) or (not note.strip() and not quotes):
         return publish_no_effect(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", meta={"reason_code": "QUOTE_NOT_HELD" if error else "argument_invalid"},
-            text=error or "tell_task needs a task_id and a note or held owner quote."))
+            text=error or "TOOL_ARG_ERROR: tell_task needs a task_id and a note or held owner quote."))
     relay_id = uuid.uuid4().hex
     message_id = next((q["source"]["client_message_id"] for q in quotes if q["source"]["client_message_id"]), "")
     event = {"type": "steer_task", "routing_token": relay_id, "relay_id": relay_id,
@@ -25,6 +25,7 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
              "client_message_id": message_id or f"{AGENT_RECEIPT_ID_PREFIX}{relay_id}",
              "issuer": {**_routing_issuer(ctx), "task_id": str(getattr(ctx, "task_id", "") or "")},
              "ts": utc_now_iso()}
+    _attach_client_surface(ctx, event)
     if (binding := presence_caller_binding(ctx)) is not None:
         event.update(presence_binding_id=binding, sender_origin=presence_sender_origin(ctx))
     mode, receipt = _emit_and_wait_for_routing(ctx, event)

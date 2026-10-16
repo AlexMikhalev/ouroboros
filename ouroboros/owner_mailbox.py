@@ -734,7 +734,7 @@ def drain_owner_entries(
                     drained["client_message_id"] = str(entry["client_message_id"])
                 # Same for a late quiz answer's typed provenance: the drain
                 # rebuilds the card frame for the model from it.
-                for relay_field in ("relay", "owner_rows", "source_task_id", "source_row", "quiz_delivery", "relay_canonical_root"):
+                for relay_field in ("relay", "owner_rows", "source_task_id", "source_row", "quiz_delivery", "relay_canonical_root", "sender_origin"):
                     if relay_field in entry:
                         drained[relay_field] = entry[relay_field]
                 if isinstance(entry.get("late_answer"), dict):

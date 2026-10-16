@@ -2659,7 +2659,7 @@ def test_handle_steer_task_stale_target_notifies_visibly(tmp_path, monkeypatch):
     assert drain_owner_entries(tmp_path, "sub") == []
 
 
-def test_chat_running_tasks_lists_same_chat_pooled_only(tmp_path):
+def test_chat_running_tasks_lists_pooled_and_restored_direct_roots(tmp_path):
     """The structural snapshot lists the chat's pooled RUNNING root tasks (so the
     decision turn can pick a steer target) and excludes direct/subagent/other-chat."""
     import server
@@ -2675,7 +2675,7 @@ def test_chat_running_tasks_lists_same_chat_pooled_only(tmp_path):
         },
     )
     rows = server._chat_running_tasks(ctx, 1)
-    assert {r["task_id"] for r in rows} == {"a", "b"}
+    assert {r["task_id"] for r in rows} == {"a", "b", "direct"}
     assert all(r["steerable"] for r in rows)
     by_id = {r["task_id"]: r for r in rows}
     assert by_id["a"]["objective"] == "build racer"

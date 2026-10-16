@@ -237,9 +237,13 @@ def task_owner_words(drive_root: Any, task_id: str, *,
                      task: Mapping[str, Any] | None = None) -> Tuple[List[Dict[str, str]], str]:
     """The words for a task: its carried field, else the first carrier of its root that yields a row."""
     record = dict(task) if isinstance(task, Mapping) else _task_record(drive_root, task_id)
+    from ouroboros.owner_relay import owner_text, _owner_row as held_owner_row
+    held = [_row(owner_text(row), source="owner_mailbox", carrier="held", task_id=task_id,
+                 ts=row.get("ts"), ref=address) for address, row in (record.get("held_owner_messages") or {}).items()
+            if held_owner_row(row)]
     rows, absent = task_governing_words(record)
     if rows or absent:
-        return rows, absent
+        return _deduped(rows + held), "" if rows or held else absent
     task_id = str(task_id or "")
     root_id = str(record.get("root_task_id") or _mapping(record.get("metadata")).get("root_task_id") or task_id)
     if root_id != task_id:
@@ -247,8 +251,8 @@ def task_owner_words(drive_root: Any, task_id: str, *,
     for carrier in (_origin_carrier, _binding_carrier, _annotation_carrier, _mailbox_carrier):
         rows = _deduped(carrier(drive_root, task_id, record))
         if rows:
-            return rows, ""
-    return [], _absent_marker(record)
+            return _deduped(rows + held), ""
+    return _deduped(held), "" if held else _absent_marker(record)
 
 
 def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_id: str = "", indent: str = "") -> str:

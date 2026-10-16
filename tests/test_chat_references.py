@@ -55,3 +55,28 @@ def test_skill_ingress_shares_reply_and_address_with_web(tmp_path, monkeypatch):
         client_message_id="skill-reply", text="yes", ts=accepted["ts"])
     assert echoes[-1]["row_address"] == format_address(row_address(accepted))
     assert echoes[-1]["reply_to"] == accepted["reply_to"]
+
+
+def test_progress_address_resolves_without_hashing_projection_fields(tmp_path):
+    from ouroboros.chat_references import projection_fields
+    from ouroboros.utils import append_jsonl
+    row = {"chat_id": 1, "ts": "2026-10-01T01:00:00Z", "task_id": "worker", "text": "Testing"}
+    append_jsonl(tmp_path / "logs/progress.jsonl", row)
+    address = projection_fields(row)["row_address"]
+    assert resolve_reply(tmp_path, address)["snippet"] == "Testing"
+    assert resolve_reply(tmp_path, address + "0")["unresolved"] is True
+
+
+def test_answer_row_uses_the_turns_host_origin(tmp_path, monkeypatch):
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from ouroboros.task_results import write_task_result
+    bridge, echoes = _web_bridge(tmp_path, monkeypatch)
+    origin = message_bus.log_chat("in", 1, 1, "Original request", client_message_id="origin")
+    write_task_result(tmp_path, "work", "running", origin_message_ref=build_owner_message_ref(
+        chat_id=1, client_message_id="origin", text=origin["text"], ts=origin["ts"]))
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
+    message_bus.send_with_budget(1, "Answer", task_id="work")
+    row = json.loads((tmp_path / "logs/chat.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert row["reply_to"]["address"] == format_address(row_address(origin))
+    assert echoes[-1]["row_address"] == format_address(row_address(row))
+    assert echoes[-1]["reply_to"] == row["reply_to"]
