@@ -49,7 +49,7 @@ from tests._zoom_meeting_fakes import (
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "zoom_meeting"
 SCRIPTS = SKILL_DIR / "scripts"
-_SCRIPT_MODULES = ("companion_link", "glib_loop", "zoom_session", "meeting_peer", "zoom_bot", "probe")
+_SCRIPT_MODULES = ("companion_link", "glib_loop", "raw_audio", "zoom_session", "meeting_peer", "zoom_bot", "probe")
 
 
 _LIVE_BOTS: list = []
@@ -462,6 +462,34 @@ def test_call_opens_through_a_real_door_with_the_true_rate_and_carries_audio_bot
     assert bot.state == "idle" and fake.calls[-3:] == ["Leave", "unSubscribe", "CleanUPSDK"]
 
 
+def test_a_zoom_reconnect_while_the_call_opens_keeps_the_call(zoom, tmp_path):
+    fake = FakeZoom()
+    release, asked = threading.Event(), []
+
+    def slow_open(url, token, body):
+        asked.append(body)
+        assert release.wait(5)
+        return {"call_id": "call-7", "peer_path": "/call/call-7/peer"}
+
+    bot, loop, peers, _bodies = make_bot(zoom, tmp_path, fake, open_call=slow_open)
+    bot.handle_control("join", join_args(zoom))
+    drive_to_audio(fake, loop)
+    fake.mixed(b"\x01\x00" * 320)  # the first meeting audio opens the call
+    loop.pump(lambda: bool(asked))
+    fake.status("MEETING_STATUS_RECONNECTING")
+    fake.status("MEETING_STATUS_RECONNECTING")  # a repeated notice keeps the state to return to
+    loop.run_ready()
+    assert bot.state == "reconnecting"
+    release.set()
+    loop.pump(lambda: bot.snapshot()["call_id"] == "call-7")
+    assert bot.state == "reconnecting" and peers[0].closed is None
+    fake.status("MEETING_STATUS_INMEETING")  # Zoom's reconnect finished
+    loop.run_ready()
+    assert bot.state == "in_call" and peers[0].closed is None and len(asked) == 1
+    fake.mixed(b"\x02\x00" * 320)
+    assert peers[0].audio == [(b"\x02\x00" * 320, 32000)]
+
+
 def test_hello_and_voice_pacing_follow_the_rate_zoom_actually_delivers(zoom, tmp_path):
     fake = FakeZoom()
     pacers = []
@@ -817,10 +845,13 @@ def test_probe_reports_pass_fail_and_not_run_without_printing_a_secret(zoom, cap
     assert {name: status for name, (status, _detail) in steps.items()} == dict.fromkeys(probe.STEPS, "PASS")
     assert fake.calls == ["InitSDK", "CreateAuthService", "AuthService.SetEvent", "SDKAuth", "CleanUPSDK"]
     assert "Join" not in fake.calls and zoom.companion_link.app_account_id(CLIENT_ID) in steps["credentials"][1]
-    missing = run(FakeZoom(), env={"HOME": str(tmp_path / "nowhere")}, platform_name=lambda: "darwin-arm64")
+    missing = run(FakeZoom(), env={"HOME": str(tmp_path / "nowhere")}, platform_name=lambda: "darwin-arm64",
+                  uid=1001, user_runtime_root=tmp_path / "run-user")
     assert missing["platform"][0] == "FAIL" and missing["credentials"][0] == "FAIL"
-    assert missing["audio_raw"][0] == "FAIL" and "system.audio.type=default" in missing["audio_raw"][1]
-    assert "PulseAudio" in missing["audio_raw"][1]
+    assert missing["audio_raw"] == ("FAIL", (
+        f"{tmp_path / 'nowhere' / '.config' / 'zoomus.conf'} does not exist (it needs system.audio.type=default); "
+        f"PULSE_SERVER and XDG_RUNTIME_DIR are not set, and {tmp_path / 'run-user' / '1001'} does not exist "
+        "(this user has no login session or lingering user manager)"))
     assert (missing["init_sdk"][0], missing["authenticate"][0], missing["cleanup"][0]) == ("PASS", "NOT_RUN", "PASS")
     absent = run(None)
     assert absent["import_sdk"][0] == "FAIL" and {absent[s][0] for s in ("glib", "init_sdk", "authenticate",
@@ -841,6 +872,72 @@ def test_probe_reports_pass_fail_and_not_run_without_printing_a_secret(zoom, cap
     printed = capsys.readouterr().out
     assert json.loads(printed)["result"] == "PASS"
     assert CLIENT_SECRET not in printed and CLIENT_ID not in printed
+
+
+def test_raw_audio_names_each_missing_piece_and_adopts_the_user_runtime_dir(zoom, tmp_path):
+    raw = zoom.raw_audio
+    home, runtime_root = tmp_path / "home", tmp_path / "run" / "user"
+    conf, socket_path = home / ".config" / "zoomus.conf", runtime_root / "1001" / "pulse" / "native"
+    env = {}
+    assert raw.check(env, home=str(home), uid=1001, user_runtime_root=runtime_root) == ("FAIL", (
+        f"{conf} does not exist (it needs system.audio.type=default); PULSE_SERVER and XDG_RUNTIME_DIR are not "
+        f"set, and {runtime_root / '1001'} does not exist (this user has no login session or lingering user manager)"))
+    assert env == {}
+    conf.parent.mkdir(parents=True)
+    conf.write_text("system.audio.type=pulse\n", encoding="utf-8")
+    (runtime_root / "1001").mkdir(parents=True)
+    # A lingering user manager's runtime dir is adopted for the SDK, and its missing socket named.
+    assert raw.check(env, home=str(home), uid=1001, user_runtime_root=runtime_root) == ("FAIL", (
+        f"{conf} does not set system.audio.type=default; PULSE_SERVER is not set and {socket_path} does not exist "
+        "(no PulseAudio or PipeWire pulse server runs for this user)"))
+    assert env == {"XDG_RUNTIME_DIR": str(runtime_root / "1001")}
+    conf.write_text("[General]\nsystem.audio.type=default\n", encoding="utf-8")
+    socket_path.parent.mkdir()
+    socket_path.write_text("", encoding="utf-8")
+    assert raw.check(env, home=str(home), uid=1001, user_runtime_root=runtime_root) == (
+        "PASS", f"{conf} sets system.audio.type=default; PulseAudio server: {socket_path}")
+    # PULSE_SERVER wins, as in libpulse; an XDG_RUNTIME_DIR the environment set is never replaced.
+    named = {"PULSE_SERVER": "unix:/srv/aika/pulse/native", "XDG_RUNTIME_DIR": str(tmp_path / "elsewhere")}
+    assert raw.check(named, home=str(home), uid=1001, user_runtime_root=runtime_root)[1].endswith(
+        "PulseAudio server: PULSE_SERVER (unix:/srv/aika/pulse/native)")
+    explicit = {"XDG_RUNTIME_DIR": str(tmp_path / "elsewhere")}
+    assert raw.check(explicit, home=str(home), uid=1001, user_runtime_root=runtime_root) == ("FAIL", (
+        f"PULSE_SERVER is not set and {tmp_path / 'elsewhere' / 'pulse' / 'native'} does not exist "
+        "(no PulseAudio or PipeWire pulse server runs for this user)"))
+    assert explicit == {"XDG_RUNTIME_DIR": str(tmp_path / "elsewhere")}
+
+
+def test_the_companion_publishes_its_own_audio_check_and_the_tools_show_a_failure(zoom, plugin, tmp_path):
+    fake = FakeZoom()
+    detail = "PULSE_SERVER and XDG_RUNTIME_DIR are not set, and /run/user/1001 does not exist"
+    bot, _loop, _peers, _bodies = make_bot(zoom, tmp_path, fake, audio={"status": "FAIL", "detail": detail})
+    status = zoom.companion_link.read_status(tmp_path)
+    assert status["audio"] == bot.snapshot()["audio"] == {"status": "FAIL", "detail": detail}
+    assert plugin.render_status(status).splitlines()[-1] == (
+        f"meeting audio may not arrive here: {detail} (SKILL.md, Setup, says how to provide it)")
+    assert "meeting audio" not in plugin.render_status({**status, "audio": {"status": "PASS", "detail": "ok"}})
+
+
+def test_off_linux_the_companion_stays_idle_and_refuses_typed_without_a_posix_lock(zoom, tmp_path, monkeypatch):
+    bot_mod = zoom.zoom_bot
+    assert bot_mod.platform_refusal("linux") == ""
+    reason = bot_mod.platform_refusal("win32")
+    assert reason == "the Zoom Meeting SDK runs on Linux x86_64 only; this host is win32"
+    monkeypatch.setattr(bot_mod, "platform_refusal", lambda platform=None: reason)
+    monkeypatch.setattr(bot_mod, "acquire_singleton", lambda *a, **k: pytest.fail("a POSIX lock off Linux"))
+    monkeypatch.setattr(bot_mod, "load_sdk", lambda: pytest.fail("an SDK import off Linux"))
+    monkeypatch.setattr(bot_mod.raw_audio, "check", lambda *a, **k: pytest.fail("an audio check off Linux"))
+    monkeypatch.setattr(bot_mod, "watch_parent", lambda on_orphaned: None)
+    monkeypatch.setattr(bot_mod.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(bot_mod.logging, "basicConfig", lambda **kwargs: None)
+    monkeypatch.setenv("OUROBOROS_SKILL_STATE_DIR", str(tmp_path))
+    replies = []
+    monkeypatch.setattr(bot_mod.ZoomBot, "wait_for_shutdown", lambda bot: replies.append(
+        zoom.companion_link.control_request(tmp_path, "join", join_args(zoom))))
+    assert bot_mod.main() == 0
+    assert (replies[0]["ok"], replies[0]["code"], replies[0]["error"]) == (False, "ZOOM_SDK_UNAVAILABLE", reason)
+    status = zoom.companion_link.read_status(tmp_path)
+    assert status["state"] == "idle" and status["sdk"] == {"available": False, "detail": reason, "loop": ""}
 
 
 def test_ctypes_glib_loop_runs_callbacks_on_its_own_thread_and_releases_them(zoom):

@@ -3,10 +3,14 @@
 It answers one question before anyone asks the install to join a meeting: can this
 host run the Zoom Meeting SDK with these app credentials? It checks the platform,
 imports the binding, finds GLib, looks for the audio prerequisites Zoom documents for
-raw audio on Linux (a PulseAudio server and ``~/.config/zoomus.conf`` with
-``system.audio.type=default``), starts the SDK and authenticates the app. It never joins
-a meeting and never prints a secret; the credentials appear only as the Presence account
-digest a binding names.
+raw audio on Linux (``raw_audio``: a PulseAudio server and ``~/.config/zoomus.conf``
+with ``system.audio.type=default``), starts the SDK and authenticates the app. It never
+joins a meeting and never prints a secret; the credentials appear only as the Presence
+account digest a binding names.
+
+The audio step reads this shell's environment by the companion's rule, naming each
+missing piece. The companion runs with the environment Ouroboros starts it with, which
+can differ; ``zoom_status`` shows the companion's own result of the same check.
 
     <skill>/.ouroboros_env/python/bin/python <skill>/scripts/probe.py [--settings PATH] [--json]
 
@@ -23,13 +27,13 @@ import importlib
 import json
 import os
 import platform
-import re
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import glib_loop
+import raw_audio
 from companion_link import app_account_id
 from zoom_session import WEB_DOMAIN, build_sdk_jwt, sdk_name
 
@@ -56,29 +60,6 @@ def _import_sdk() -> Tuple[Any, str]:
         return module, "zoom_meeting_sdk imported"
 
 
-def audio_raw_prerequisites(env: Mapping[str, str], home: str) -> Tuple[str, str]:
-    """Zoom's Linux raw-audio prerequisites: a PulseAudio server and zoomus.conf.
-
-    Source: Zoom Developer Docs, Meeting SDK for Linux, "Use raw data". The server is
-    found by its socket (PulseAudio or PipeWire's pulse service), without running any
-    program.
-    """
-    problems = []
-    conf = Path(home or "~").expanduser() / ".config" / "zoomus.conf"
-    try:
-        text = conf.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        text = ""
-    if not re.search(r"^\s*system\.audio\.type\s*=\s*default\s*$", text, re.MULTILINE):
-        problems.append(f"{conf} does not set system.audio.type=default")
-    runtime = env.get("XDG_RUNTIME_DIR", "")
-    if not env.get("PULSE_SERVER") and not (runtime and (Path(runtime) / "pulse" / "native").exists()):
-        problems.append("no PulseAudio server socket (PULSE_SERVER or $XDG_RUNTIME_DIR/pulse/native)")
-    if problems:
-        return FAIL, "; ".join(problems)
-    return PASS, f"{conf} and a PulseAudio server"
-
-
 def load_credentials(env: Mapping[str, str], settings_path: Optional[str]) -> Tuple[str, str, str]:
     """``(client_id, client_secret, where)``; values never leave this process."""
     if settings_path:
@@ -97,7 +78,8 @@ def run_probe(*, env: Mapping[str, str], settings_path: Optional[str] = None,
               make_loop: Callable[[], Any] = glib_loop.make_loop,
               platform_name: Callable[[], str] = _platform_name,
               clock: Callable[[], float] = time.time,
-              auth_timeout_ms: int = AUTH_TIMEOUT_MS) -> List[Dict[str, str]]:
+              auth_timeout_ms: int = AUTH_TIMEOUT_MS, uid: Optional[int] = raw_audio.current_uid(),
+              user_runtime_root: Path = raw_audio.USER_RUNTIME_ROOT) -> List[Dict[str, str]]:
     results: Dict[str, Tuple[str, str]] = {}
     plat = platform_name()
     results["platform"] = (PASS if plat == SUPPORTED_PLATFORM else FAIL,
@@ -111,7 +93,8 @@ def run_probe(*, env: Mapping[str, str], settings_path: Optional[str] = None,
             results["glib"] = (PASS, f"{loop.backend} ({loop.library})")
         except glib_loop.GLibUnavailable as exc:
             results["glib"] = (FAIL, str(exc))
-    results["audio_raw"] = audio_raw_prerequisites(env, env.get("HOME", ""))
+    results["audio_raw"] = raw_audio.check(dict(env), home=env.get("HOME", ""), uid=uid,
+                                           user_runtime_root=user_runtime_root)
     client_id, client_secret, where = load_credentials(env, settings_path)
     if client_id and client_secret:
         results["credentials"] = (PASS, f"from the {where}; Presence account {app_account_id(client_id)}")

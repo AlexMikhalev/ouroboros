@@ -86,6 +86,16 @@ Zoom Meeting SDK app can use it.
   `system.audio.type=default`; without them the SDK joins but delivers no audio.
   Source: Zoom Developer Docs, Meeting SDK for Linux, "Use raw data",
   https://developers.zoom.us/docs/meeting-sdk/linux/custom-ui/advanced-features/raw-data/.
+  The companion finds the server through `PULSE_SERVER` or
+  `$XDG_RUNTIME_DIR/pulse/native`; Ouroboros passes both variables on from its own
+  environment, and the companion uses `/run/user/<uid>` when `XDG_RUNTIME_DIR` is
+  unset. A service user without a login session provides a server in one of two
+  ways, neither of which the skill does for it: a lingering user manager
+  (`loginctl enable-linger <user>`, an administrator's command) creates
+  `/run/user/<uid>` and runs the user's PipeWire or PulseAudio service there; or a
+  PulseAudio server started as that user, named by `PULSE_SERVER` (for example
+  `unix:/path/to/native`) in the environment Ouroboros starts with. `zoom_status`
+  says exactly what the companion found missing.
 - A Zoom Meeting SDK app of the install's own (Zoom App Marketplace, with the Meeting
   SDK enabled). Save its client id and secret as `ZOOM_CLIENT_ID` and
   `ZOOM_CLIENT_SECRET` in Settings → Secrets and grant them to this skill. The
@@ -130,8 +140,11 @@ On the server, run the probe with the skill's isolated Python, which holds the b
 `ZOOM_CLIENT_ID` and `ZOOM_CLIENT_SECRET` in the environment or with
 `--settings <path to settings.json>`. It checks the platform, imports the binding, finds
 GLib, looks for the raw-audio prerequisites above, starts the SDK and authenticates the
-app without joining any meeting, and prints PASS, FAIL or NOT_RUN for each step. It
-never prints a secret; `--json` gives the same result as one JSON object.
+app without joining any meeting, and prints PASS, FAIL or NOT_RUN for each step, naming
+each missing prerequisite. It never prints a secret; `--json` gives the same result as
+one JSON object. The probe reads the shell it runs in; the companion runs with the
+environment Ouroboros starts it with, and `zoom_status` shows its own result of the same
+audio check.
 
 ## Limits
 

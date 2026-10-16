@@ -15,7 +15,10 @@ state dir (``companion_link``). Between a join and a leave it:
    says ``bye``, closes the socket, leaves the meeting and cleans the SDK up.
 
 A crash or a restart never re-joins by itself: a new companion starts idle and reports
-what the previous one was doing when it stopped.
+what the previous one was doing when it stopped. Off Linux it starts idle too, with the
+platform as the reason every join is refused, rather than crashing into its restart
+limit. At start it checks Zoom's raw-audio prerequisites in its own environment
+(``raw_audio``) and publishes the result with its state.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from typing import Any, Callable, Dict, Optional
 import companion_link as link
 import glib_loop
 import meeting_peer as peer_mod
+import raw_audio
 from zoom_session import JoinRequest, SessionTiming, ZoomSession
 
 log = logging.getLogger("zoom_bot")
@@ -111,7 +115,8 @@ class ZoomBot:
                  attach_peer: Callable[..., Any] = peer_mod.PeerSession.attach,
                  identity_name: Callable[[str, str], str] = peer_mod.identity_name,
                  pacer_factory: Optional[Callable[..., Any]] = None,
-                 register_secret: Callable[[str], None] = lambda _value: None) -> None:
+                 register_secret: Callable[[str], None] = lambda _value: None,
+                 audio: Optional[Dict[str, str]] = None) -> None:
         self._state_dir = Path(state_dir)
         self._loop = loop
         self._sdk = sdk if loop is not None else None
@@ -125,6 +130,7 @@ class ZoomBot:
         self._identity_name = identity_name
         self._pacer_factory = pacer_factory or (lambda send, rate: peer_mod.OutboundPacer(send, rate=rate))
         self._register_secret = register_secret
+        self._audio = dict(audio or {})
         self._account_id = link.app_account_id(self._client_id) if self._client_id else ""
         self._lock = threading.RLock()
         self._publish_lock = threading.Lock()
@@ -230,7 +236,8 @@ class ZoomBot:
     def session_state(self, state: str) -> None:
         with self._lock:
             if state == "reconnecting":
-                self._before_reconnect = self.state
+                if self.state != "reconnecting":  # a repeated notice keeps the state to return to
+                    self._before_reconnect = self.state
             elif state == "reconnected":
                 state = self._before_reconnect or ("in_call" if self._peer is not None else "in_meeting")
             if self.state == "leaving" and state != "leaving":
@@ -343,7 +350,9 @@ class ZoomBot:
             self._leave_later(join, f"the call could not open: {type(exc).__name__}; {name} left the meeting")
             return
         with self._lock:
-            if self._join.get("join_id") != join["join_id"] or self.state != "audio_ready":
+            # Zoom may reconnect while the call opens: the call still belongs to this meeting.
+            reconnecting = self.state == "reconnecting" and self._before_reconnect == "audio_ready"
+            if self._join.get("join_id") != join["join_id"] or not (self.state == "audio_ready" or reconnecting):
                 peer.close("the meeting ended before the call started")
                 return
             self._peer, self._call_id = peer, opened["call_id"]
@@ -351,7 +360,10 @@ class ZoomBot:
             self._pacer_stop = threading.Event()
             self._pacer = self._pacer_factory(self._mic_send, rate)
             self._start_thread(lambda pacer=self._pacer, stop=self._pacer_stop: pacer.run(stop), "zoom-voice")
-            self._set_state("in_call")
+            if reconnecting:
+                self._before_reconnect = "in_call"  # the reconnect ends in the open call
+            else:
+                self._set_state("in_call")
         log.info("call %s open", opened["call_id"])
         self._publish()
         self._loop.idle_add(self._start_sweeps)
@@ -516,7 +528,7 @@ class ZoomBot:
                         else self._unavailable_reason(),
                         "loop": getattr(self._loop, "backend", "")},
                 "microphone": {"ready": self._mic_sender is not None, "sending": self._mic_sending},
-                "pid": os.getpid(), "stats": stats,
+                "audio": dict(self._audio), "pid": os.getpid(), "stats": stats,
             }
 
     def _publish(self) -> None:
@@ -542,8 +554,19 @@ class ZoomBot:
             self.last_outcome = previous["last_outcome"]
 
 
+def platform_refusal(platform: Optional[str] = None) -> str:
+    """Why this host cannot run the Zoom Meeting SDK at all; ``""`` on Linux."""
+    platform = sys.platform if platform is None else platform
+    if platform.startswith("linux"):
+        return ""
+    return f"the Zoom Meeting SDK runs on Linux x86_64 only; this host is {platform}"
+
+
 def acquire_singleton(state_dir: Path, *, timeout_sec: float = 8.0) -> int:
-    """One companion generation owns the SDK; a stopping predecessor gets a few seconds."""
+    """One companion generation owns the SDK; a stopping predecessor gets a few seconds.
+
+    Linux only (POSIX ``fcntl``): elsewhere no SDK loads, so there is nothing to own.
+    """
     import fcntl
 
     fd = os.open(str(state_dir / ".zoom_bot.lock"), os.O_RDWR | os.O_CREAT, 0o600)
@@ -593,16 +616,26 @@ def main() -> int:
         return 2
     state_dir = Path(state_raw)
     state_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        lock_fd = acquire_singleton(state_dir)
-    except RuntimeError as exc:
-        log.error("%s", exc)
-        return 1
+    unsupported = platform_refusal()
+    lock_fd = None
+    if not unsupported:
+        try:
+            lock_fd = acquire_singleton(state_dir)
+        except RuntimeError as exc:
+            log.error("%s", exc)
+            return 1
     client_secret = os.environ.get("ZOOM_CLIENT_SECRET", "")
     host_token = os.environ.get("HOST_SERVICE_TOKEN", "")
     redactor.add(client_secret)
     redactor.add(host_token)
-    sdk, sdk_error = load_sdk()
+    audio: Dict[str, str] = {}
+    if not unsupported:
+        # Before the SDK loads: the check sets XDG_RUNTIME_DIR the way libpulse will need it.
+        status, detail = raw_audio.check(os.environ, home=os.environ.get("HOME", ""), uid=raw_audio.current_uid())
+        audio = {"status": status, "detail": detail}
+        if status != raw_audio.PASS:
+            log.warning("raw meeting audio may not arrive: %s", detail)
+    sdk, sdk_error = (None, unsupported) if unsupported else load_sdk()
     loop = None
     if sdk is not None:
         try:
@@ -612,7 +645,7 @@ def main() -> int:
     bot = ZoomBot(state_dir=state_dir, loop=loop, sdk=sdk, sdk_error=sdk_error,
                   client_id=os.environ.get("ZOOM_CLIENT_ID", ""), client_secret=client_secret,
                   host_url=os.environ.get("HOST_SERVICE_URL", ""), host_token=host_token,
-                  register_secret=redactor.add)
+                  register_secret=redactor.add, audio=audio)
     server = link.ControlServer(state_dir, bot.handle_control)
     server.start()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -629,8 +662,9 @@ def main() -> int:
     finally:
         bot.close()
         server.close()
-        with contextlib.suppress(OSError):
-            os.close(lock_fd)
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_fd)
     return 0
 
 

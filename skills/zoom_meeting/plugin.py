@@ -150,6 +150,10 @@ def render_status(status: Dict[str, Any]) -> str:
         ("call_id", "call"), ("since", "since"), ("account_id", "Presence account")) if status.get(key)]
     if facts:
         lines.append(" · ".join(facts))
+    audio = status.get("audio") if isinstance(status.get("audio"), dict) else {}
+    if audio.get("status") == "FAIL":
+        lines.append(f"meeting audio may not arrive here: {audio.get('detail') or 'unknown reason'} "
+                     "(SKILL.md, Setup, says how to provide it)")
     outcome = status.get("last_outcome") if isinstance(status.get("last_outcome"), dict) else None
     if outcome and outcome.get("message") and status.get("state") == "idle":
         lines.append(f"last: {outcome['message']} ({outcome.get('at', '')})")
