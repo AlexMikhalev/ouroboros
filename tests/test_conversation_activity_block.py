@@ -181,8 +181,8 @@ def test_the_routing_verb_table_is_the_one_owner_of_the_family():
     from ouroboros.tool_capabilities import ROUTING_VERBS, routing_action_for_tool
     from ouroboros.tools.control_events import _emit_control_event
 
-    assert set(ROUTING_VERBS) == {"promote_chat_to_task", "route_to_project", "steer_task", "ensure_project_scope"}
-    assert routing_action_for_tool(" steer_task ") == "steer_task"
+    assert set(ROUTING_VERBS) == {"promote_chat_to_task", "route_to_project", "tell_task", "ensure_project_scope"}
+    assert routing_action_for_tool(" tell_task ") == "tell_task"
     assert routing_action_for_tool("read_file") == "" and routing_action_for_tool(None) == ""
     # The typed action on task_done is keyed by the events those same tools emit.
     for tool, events in ROUTING_VERBS.items():
@@ -227,7 +227,7 @@ def test_task_metrics_count_the_addressing_calls_from_the_same_table(tmp_path):
     from supervisor.events_worker_reports import _handle_task_metrics
 
     metrics = task_tool_metrics({"tool_calls": [
-        {"tool": "promote_chat_to_task"}, {"tool": "read_file"}, {"tool": "steer_task", "is_error": True},
+        {"tool": "promote_chat_to_task"}, {"tool": "read_file"}, {"tool": "tell_task", "is_error": True},
     ]})
     assert (metrics["tool_calls"], metrics["tool_errors"], metrics["routing_tool_calls"]) == (3, 1, 2)
     assert task_tool_metrics({"tool_calls": [], "loop_evidence_unavailable": True})["routing_tool_calls"] is None

@@ -65,6 +65,12 @@ D19 = "Frozen contracts (ABI)"
 D20 = "Presence"
 
 [modules]
+"ouroboros/chat_references.py" = "D11"
+"ouroboros/gateway/reference_contracts.py" = "D19"
+"ouroboros/owner_relay.py" = "D01"
+"ouroboros/question_answers.py" = "D11"
+"ouroboros/room_reader.py" = "D11"
+"ouroboros/tools/control_relay.py" = "D05"
 "ouroboros/openrouter_cost.py" = "D02"
 "ouroboros/obligations.py" = "D11"
 "ouroboros/startup_migrations.py" = "D11"
@@ -938,6 +944,7 @@ allowed = [
   "D11->D12",
   "D11->D13",
   "D11->D14",
+  "D11->D15",
   "D11->D16",
   "D11->D17",
   "D11->D18",
@@ -1071,7 +1078,6 @@ lazy_only = [
   "D10->D14",
   "D10->D15",
   "D11->D06",
-  "D11->D15",
   "D12->D01",
   "D12->D05",
   "D12->D06",

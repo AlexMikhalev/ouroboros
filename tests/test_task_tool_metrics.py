@@ -23,7 +23,7 @@ def _history(root):
 @pytest.mark.parametrize("names, failed, expected", [
     (["promote_chat_to_task"], [], {"promote_chat_to_task": 1}),
     (["read_file", "promote_chat_to_task"], [], {"read_file": 1, "promote_chat_to_task": 1}),
-    (["steer_task", "steer_task", "route_to_project"], [1], {"steer_task": 2, "route_to_project": 1}),
+    (["tell_task", "tell_task", "route_to_project"], [1], {"tell_task": 2, "route_to_project": 1}),
     ([" read_file ", "new_extension_tool"], [], {"read_file": 1, "new_extension_tool": 1}),
     (["finish_task"], [], {"finish_task": 1}),
     (["presence_finish", "read_file", "finish_task"], [2], {"presence_finish": 1, "read_file": 1, "finish_task": 1}),
@@ -62,7 +62,7 @@ def test_actual_metrics_summary_and_history_keep_complete_tool_census(tmp_path, 
     facts = next(json.loads(line) for line in (logs / "chat.jsonl").read_text().splitlines()
                  if json.loads(line).get("summary_kind") == "host_task_facts")
     replay = next(row for row in _history(tmp_path) if row["system_type"] == "task_summary")
-    addressing = sum(1 for name in names if name.strip() in ("promote_chat_to_task", "route_to_project", "steer_task"))
+    addressing = sum(1 for name in names if name.strip() in ("promote_chat_to_task", "route_to_project", "tell_task"))
     for row in (metric, evaluation, forwarded[0], facts, replay):
         assert row["tool_calls"] == len(names)
         assert row["tool_errors"] == len(failed)
@@ -80,7 +80,7 @@ def test_actual_metrics_summary_and_history_keep_complete_tool_census(tmp_path, 
 
 @pytest.mark.parametrize("trace, expected_total, expected_errors", [
     ({"tool_calls": [], "loop_evidence_unavailable": True}, None, None),
-    ({"tool_calls": [{"tool": "steer_task", "is_error": True}], "loop_evidence_unavailable": True}, None, None),
+    ({"tool_calls": [{"tool": "tell_task", "is_error": True}], "loop_evidence_unavailable": True}, None, None),
     ({"tool_calls": [], "recovered_post_task_synthesis": True}, 0, 0),
     ({}, 0, 0),
     ({"tool_calls": [{"tool": "promote_chat_to_task"}, {}]}, 2, 0),

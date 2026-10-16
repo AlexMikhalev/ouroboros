@@ -118,7 +118,7 @@ TOOL_POLICY: Dict[str, str] = {
     "promote_chat_to_task": POLICY_SKIP,
     "ensure_project_scope": POLICY_SKIP,
     "route_to_project": POLICY_SKIP,
-    "steer_task": POLICY_SKIP,
+    "tell_task": POLICY_SKIP,
     "update_scratchpad": POLICY_SKIP,
     "update_identity": POLICY_SKIP,
     "memory_update_registry": POLICY_SKIP,

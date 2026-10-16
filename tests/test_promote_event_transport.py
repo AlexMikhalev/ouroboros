@@ -524,7 +524,7 @@ def test_steer_tool_reports_delivery_only_after_mailbox_receipt(
     monkeypatch, tmp_path,
 ):
     import supervisor.queue as supervisor_queue
-    from ouroboros.owner_mailbox import drain_owner_messages
+    from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.tools import control, control_events
     from supervisor.events import _handle_steer_task
 
@@ -553,13 +553,13 @@ def test_steer_tool_reports_delivery_only_after_mailbox_receipt(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(control._steer_task, tool_ctx, "target01", "Use the new data")
+            future = executor.submit(control._tell_task, tool_ctx, "target01", "Use the new data")
             event = queue.get(timeout=10)
             _handle_steer_task(event, handler_ctx)
             text = future.result(timeout=15)
-        assert text.startswith("✉️ Steering task target01")
-        assert "durably confirmed" in text
-        assert drain_owner_messages(tmp_path, "target01") == ["Use the new data"]
+        assert text.startswith("Message written to target01")
+        assert "relay_id=" in text
+        assert [e["text"] for e in drain_owner_entries(tmp_path, "target01")] == ["Use the new data"]
     finally:
         queue.close()
         queue.cancel_join_thread()

@@ -494,6 +494,7 @@ def append_chat_annotation(
     require_latest_status: Any = None,
     require_latest_token: Any = None,
     reasoning_effort: str = "",
+    project_name: str = "", target_task_ids: Any = None, target_titles: Any = None,
 ) -> bool:
     """Append one compact UI annotation.
 
@@ -509,9 +510,6 @@ def append_chat_annotation(
     while the message's CURRENT latest status is in the set — the first-wins
     claim seam of the routing picker (#198). Absent/None keeps plain append.
 
-    ``reasoning_effort`` rides a picker row whose producer chose the explicit
-    start of a New task picked from it (#1539), and a closing row naming the
-    start that root was admitted with; a steered task never wears one.
     """
     message_id = str(client_message_id or "").strip()
     if not message_id:
@@ -524,6 +522,8 @@ def append_chat_annotation(
         "target": str(target or "")[:200],
         "status": str(status or "")[:80],
     }
+    if target_task_ids is not None:
+        row.update(project_name=project_name, target_task_ids=list(target_task_ids), target_titles=list(target_titles or []))
     if str(target_label or ""):
         row["target_label"] = str(target_label)[:200]
     if project_id and project_chat_id:
@@ -650,7 +650,6 @@ ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
     "target_unknown": "that task is no longer running",
     "direct_chat_turn": "that reply has already been given",
     "subagent_target": "that task is a helper of another task",
-    "chat_mismatch": "that task belongs to another chat",
     "cancel_pending": "that task is being stopped",
     "target_closed": "that task has already finished",
     "target_finished": "that task has already finished",
@@ -667,7 +666,7 @@ ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
 
 # Host routing refusals stay in the issuing chat regardless of the target's
 # Project binding (room_membership); they are never terminal task facts.
-ORIGIN_ADDRESSED_NOTICE_TYPES = frozenset({"task_not_started", "task_start_unconfirmed", "steer_not_delivered"})
+ORIGIN_ADDRESSED_NOTICE_TYPES = frozenset({"task_not_started", "task_start_unconfirmed", "steer_not_delivered", "relay_reply"})
 
 # A root's deliberate plain-text notice to Main (send_user_message
 # destination="main"); never a task's final answer.
@@ -681,10 +680,10 @@ MAIN_PINNED_ROW_TYPES = frozenset({"project_started", "project_handoff", "projec
 # (``message_bus.send_with_budget``) reads this one set; the readers above keep
 # each component's own reading.
 ROOM_FIXED_ROW_TYPES = MAIN_PINNED_ROW_TYPES | ORIGIN_ADDRESSED_NOTICE_TYPES | frozenset({
-    "acceptance_late_settlement", "project_question_pointer"})
+    "acceptance_late_settlement", "project_question_pointer", "relay_reply"})
 
 # Statuses of an act that LANDED (or is still in flight): no cause sentence.
-_LANDED_ROUTING_STATUSES = frozenset({"scheduled", "delivered", "pending", "dispatch_pending", "accepted"})
+_LANDED_ROUTING_STATUSES = frozenset({"scheduled", "delivered", "read", "pending", "dispatch_pending", "accepted"})
 
 
 def routing_refusal_cause(action: str, status: str, reason: str, options: Any = None) -> str:

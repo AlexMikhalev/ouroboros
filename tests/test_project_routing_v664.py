@@ -44,7 +44,7 @@ def _ctx(tmp_path, *, pending=None, running=None, direct=None):
     )
 
 
-def test_project_single_pending_root_gets_zero_call_mailbox_delivery(tmp_path, monkeypatch):
+def test_project_single_pending_root_starts_a_new_head(tmp_path, monkeypatch):
     import server
     from ouroboros.owner_mailbox import drain_owner_messages
     from ouroboros.project_dialogue import latest_chat_annotations
@@ -88,14 +88,9 @@ def test_project_single_pending_root_gets_zero_call_mailbox_delivery(tmp_path, m
     monkeypatch.setattr("supervisor.message_bus.log_chat", lambda *_a, **_k: None)
     server._process_bridge_updates(Bridge(), 0, ctx)
 
-    assert drain_owner_messages(tmp_path, "pending-root") == ["continue with the failing test"]
-    assert "direct" not in calls
-    assert calls[-1][1]["status"] == "delivered"
-    assert calls[-1][1]["target"] == "pending-root"
-    annotation = latest_chat_annotations(tmp_path)["owner-1"]
-    assert annotation["action"] == "mailbox_delivery"
-    assert annotation["target"] == "pending-root"
-    assert annotation["status"] == "delivered"
+    assert drain_owner_messages(tmp_path, "pending-root") == []
+    assert "direct" in calls
+    assert "owner-1" not in latest_chat_annotations(tmp_path)
 
 
 def test_project_fast_route_stages_attachment_in_actor_child_drive(tmp_path):
@@ -244,7 +239,7 @@ def test_project_zero_call_followup_advances_active_fence_then_falls_through_whe
         "delegation_role": "root",
         "drive_root": str(tmp_path),
     }]
-    ctx = _ctx(tmp_path, pending=pending)
+    ctx = _ctx(tmp_path, running={root_id: {"task": pending[0]}})
     monkeypatch.setattr(queue_mod, "ACCEPTANCE_FENCES", {
         root_id: {
             "token": "f" * 32,
@@ -808,7 +803,7 @@ def test_project_routing_facts_keep_host_scope_when_registry_recheck_is_unavaila
 
     assert metadata["routing_contract"]["source_lane"] == "project"
     assert metadata["routing_contract"]["valid_actions"] == [
-        "answer_inline", "steer_task", "promote_chat_to_task", "route_to_project", "needs_manual_target",
+        "answer_inline", "tell_task", "promote_chat_to_task", "route_to_project", "needs_manual_target",
     ]
     assert "main_routing_manifest" not in metadata
 
@@ -928,7 +923,7 @@ def test_routing_ack_carries_event_time_human_label_without_replacing_target(mon
     bridge.send_routing_ack(
         7,
         client_message_id="m-labelled",
-        action="steer_task",
+        action="tell_task",
         target="opaque-task-id",
         target_label="Проект 🚀 › Исправить тесты",
         status="delivered",
@@ -1217,7 +1212,7 @@ def test_manual_target_event_persists_concrete_options_in_latest_annotation(
         "client_message_id": "owner-choice-1",
         "requested_target": "ghost",
         "options": [
-            {"action": "steer_task", "task_id": "task-1", "title": "Fix tests"},
+            {"action": "tell_task", "task_id": "task-1", "title": "Fix tests"},
             {"action": "new_task_in_project", "project_id": "racer", "label": "New task in Project"},
         ],
     }

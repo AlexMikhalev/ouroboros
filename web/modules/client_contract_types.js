@@ -265,6 +265,10 @@
  * task-progress and outcome fields of a live `chat` frame (`ChatOutbound`). Replay-evidence rows
  * (`quiz_answer`, `quiz_closed`, `task_evidence`, or `summary_kind` + `historical_terminal`) are never shown.
  * @typedef {Object} ChatHistoryMessage
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
  * @property {string} text
  * @property {'user'|'assistant'|'system'} role
  * @property {string} ts  // the stored row's time: the same string its live frame carried

@@ -226,12 +226,15 @@ def _function_calls(tree: ast.AST, func_name: str) -> set[str]:
 def test_all_three_routing_producers_attach_client_surface():
     # tools/control.py re-exports them; the producers live in the routing leaf.
     tree = ast.parse((REPO / "ouroboros" / "tools" / "control_routing.py").read_text(encoding="utf-8"))
-    for producer in ("_promote_chat_to_task", "_route_to_project", "_steer_task"):
+    for producer in ("_promote_chat_to_task", "_route_to_project"):
         calls = _function_calls(tree, producer)
         assert "_attach_client_surface" in calls, (
             f"{producer} no longer attaches client_surface — the fact silently "
             "dies at this transition (the is_desktop dead-wire class)"
         )
+
+    relay = ast.parse((REPO / "ouroboros/tools/control_relay.py").read_text(encoding="utf-8"))
+    assert "_attach_client_surface" in _function_calls(relay, "_tell_task")
 
 
 def test_owner_surface_note_baseline_uses_the_shared_projection():
@@ -441,7 +444,7 @@ def test_steering_and_project_mailbox_writers_pass_client_surface():
     # separately so an unrelated extra forwarding site cannot hide a dropped one.
     writers = {
         "project mailbox": REPO / "ouroboros" / "server_owner_routing.py",
-        "inbound chat journal": REPO / "supervisor" / "message_bus.py",
+        "inbound chat journal": REPO / "supervisor" / "message_ingress.py",
     }
     assert "client_surface=" in steering, "steer mailbox write dropped client_surface"
     for owner, path in writers.items():

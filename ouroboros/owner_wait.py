@@ -187,6 +187,8 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "round_idx": round_idx, "tool_schemas": tool_schemas,
         "seen": sorted(seen), "owner_directives": getattr(ctx, "_owner_directives", []),
         "sleep_interaction_seen": dict(getattr(ctx, "_sleep_interaction_seen", None) or {}),
+        "held_owner_messages": dict(getattr(ctx, "_held_owner_messages", None) or {}),
+        "open_relays": dict(getattr(ctx, "_open_relays", None) or {}),
         # Own routing acts still unconfirmed: a resumed turn reports their outcomes too.
         "unconfirmed_routing_acts": list(getattr(ctx, "unconfirmed_routing_acts", None) or []),
         "route": {key: getattr(ctx, key, None) for key in (
@@ -960,6 +962,8 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     ctx._loop_mailbox_seen_ids = seen
     ctx._sleep_interaction_seen = dict(state.get("sleep_interaction_seen") or {})
     ctx._owner_directives = state["owner_directives"]
+    ctx._held_owner_messages = dict(state.get("held_owner_messages") or {})
+    ctx._open_relays = dict(state.get("open_relays") or {})
     ctx.unconfirmed_routing_acts = [dict(act) for act in state.get("unconfirmed_routing_acts") or [] if isinstance(act, dict)]
     # Match the agent's native handoff clock; a budget grant overrides it separately.
     ctx._budget_paused_sec = budget_paused_seconds(adopt_handoff_clock(

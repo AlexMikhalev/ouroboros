@@ -213,6 +213,7 @@
  */
 /**
  * @typedef {Object} ChatInbound
+ * @property {string=} reply_to
  * @property {"chat"} type
  * @property {string} content
  * @property {string=} sender_session_id
@@ -456,6 +457,11 @@
  * @property {string=} delivered_at  // a `reminder` row: when the host showed it (later than due after downtime)
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 /**
  * @typedef {Object} TypingOutbound
@@ -487,6 +493,11 @@
  * @property {number=} chat_id
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 /**
  * @typedef {Object} VideoOutbound
@@ -507,6 +518,11 @@
  * @property {number=} chat_id
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 /**
  * @typedef {Object} LinkAction
@@ -525,6 +541,11 @@
  * @property {string=} task_id
  * @property {boolean=} project_thread
  * @property {Object=} transport
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 
 /**
@@ -560,6 +581,11 @@
  * @property {string=} task_id
  * @property {boolean=} project_thread
  * @property {Object=} transport
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 
 /**
@@ -611,6 +637,11 @@
  * @property {string=} task_id
  * @property {number=} size_bytes
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
+ * @property {string=} row_address
+ * @property {Object=} reply_to
+ * @property {Object=} relay
+ * @property {string=} reply_to_relay
+ * @property {string=} kind
  */
 
 /**
@@ -647,6 +678,9 @@
  * @property {string=} reasoning_effort  // the explicit start a New task picked from this picker card requests
  * @property {boolean} suppress_bubble
  * @property {string=} ts
+ * @property {string=} project_name
+ * @property {string[]=} target_task_ids
+ * @property {string[]=} target_titles
  */
 
 /** Additive history fact: a project-owned Main mirror cannot grant cancel authority.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from ouroboros.cost_projection import CostPresentation
+from ouroboros.gateway.reference_contracts import ChatReferenceFields
 from ouroboros.storage import (  # noqa: F401 -- public re-exports
     StorageCategory, StorageError, StorageMeasurement, StorageResponse,
 )
@@ -48,9 +49,7 @@ class ChatInbound(TypedDict):
     # Multi-project chat routing: the owner stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
-    # Per-message sending-surface observables (additive-optional): raw facts the SPA measures at send
-    # time (pywebview bridge presence, ua, viewport, matchMedia booleans, captured_at), normalized by
-    # the closed-key `client_surface.normalize_client_surface`; absence is an honest gap, never defaulted.
+    reply_to: NotRequired[str]  # Host resolves the selected row/card at acceptance.
     client_surface: NotRequired[dict]
 
 
@@ -89,7 +88,7 @@ class TransportMetadata(TypedDict, total=False):
     sender_label: str
 
 
-class ChatOutbound(TypedDict):
+class ChatOutbound(ChatReferenceFields):
     """Outbound WS chat frame."""
 
     type: Literal["chat"]
@@ -117,7 +116,6 @@ class ChatOutbound(TypedDict):
     rounds: NotRequired[int]
     suggested_name: NotRequired[str]
     model_execution: NotRequired[Dict[str, Any]]
-    # Project question mirrored into Main as the Project's own form; the durable question stays in Project.
     quiz_id: NotRequired[str]
     quiz_state: NotRequired[str]
     project_chat_id: NotRequired[int]
@@ -266,7 +264,7 @@ class ChatOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class PhotoOutbound(TypedDict):
+class PhotoOutbound(ChatReferenceFields):
     """Outbound WS photo frame."""
 
     type: Literal["photo"]
@@ -296,7 +294,7 @@ class PhotoOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class VideoOutbound(TypedDict):
+class VideoOutbound(ChatReferenceFields):
     """Outbound WS video frame."""
 
     type: Literal["video"]
@@ -322,7 +320,7 @@ class VideoOutbound(TypedDict):
     project_thread: NotRequired[bool]
 
 
-class DocumentOutbound(TypedDict):
+class DocumentOutbound(ChatReferenceFields):
     """Outbound WS document/file frame."""
 
     type: Literal["document"]
@@ -356,7 +354,7 @@ class LinkAction(TypedDict):
     url: str
 
 
-class LinksOutbound(TypedDict):
+class LinksOutbound(ChatReferenceFields):
     """Outbound group of first-class external link buttons."""
 
     type: Literal["links"]
@@ -378,7 +376,7 @@ class QuizOption(TypedDict):
     recommended: NotRequired[bool]
 
 
-class QuizOutbound(TypedDict):
+class QuizOutbound(ChatReferenceFields):
     """Outbound owner quiz card: a typed question with option buttons.
 
     Optional questions continue under ``assumption``; ``wait_for_answer`` marks
@@ -509,6 +507,9 @@ class MessageAnnotationOutbound(TypedDict):
     suppress_bubble: bool
     chat_id: NotRequired[int]
     target: NotRequired[str]
+    project_name: NotRequired[str]
+    target_task_ids: NotRequired[list[str]]
+    target_titles: NotRequired[list[str]]
     target_label: NotRequired[str]
     project_id: NotRequired[str]
     project_chat_id: NotRequired[int]
