@@ -45,3 +45,21 @@ def test_room_intake_rechecks_the_current_task_under_the_queue_lock(tmp_path, mo
     result = _route_project_chat_to_running_task(ctx, room["chat_id"], "followup", "reader-race")
     assert result == ("" if hold_at_admission else "reader")
     assert [e["text"] for e in drain_owner_entries(tmp_path, "reader")] == ([] if hold_at_admission else ["followup"])
+
+
+def test_an_unheld_cold_sleep_reads_question_mail_but_never_room_intake(tmp_path):
+    from ouroboros.room_reader import unheld_cold_sleep
+
+    sleep = {"reason": "sleep", "sleep": {"sleep_id": "s"}}
+    task = {"id": "work", "_budget_pause": sleep}
+    assert is_reading(tmp_path, "work", task, running=False, fences={}) is False  # room intake: a new head
+    assert unheld_cold_sleep(tmp_path, "work", task, fences={}) is True
+    granted = {"id": "work", "_budget_pause_resume": {"selected_by": "sleep_wake", "pause": sleep}}
+    assert unheld_cold_sleep(tmp_path, "work", granted, fences={}) is True  # its capacity-delayed start
+    for blocked in ({"_owner_hold": True}, {"_project_admission_hold": {"reason": "verify"}},
+                    {"_budget_pause_hold": {"reason": "owner_restart_hold"}}):
+        assert unheld_cold_sleep(tmp_path, "work", {**task, **blocked}, fences={}) is False
+    assert unheld_cold_sleep(tmp_path, "work", task, fences={"work": {"status": "active"}}) is False  # money
+    for paused in ({"reason": "budget"}, {"reason": "sleep"}):  # money; an interrupted pause awaiting Resume
+        assert unheld_cold_sleep(tmp_path, "work", {"id": "work", "_budget_pause": paused}, fences={}) is False
+    assert unheld_cold_sleep(tmp_path, "work", {"id": "work"}, fences={}) is False  # plain queued work

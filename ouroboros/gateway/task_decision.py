@@ -66,7 +66,9 @@ def _live_root_task(task_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
     ``task_not_live`` is NOT a hard refusal for a quiz answer — the caller
     consults the durable projection for the honest late-answer state; nor is
     ``task_settled``, a RUNNING worker whose result already settled (its
-    mailbox is no longer drained, TZ-2 D15)."""
+    mailbox is no longer drained, TZ-2 D15). ``task_not_reading`` is alive
+    (queued, held, owner- or money-paused) but reads no question mail now; an
+    unheld cold sleep still reads it here, never in room intake (D6)."""
     from supervisor import queue as q
 
     with q._queue_lock:
@@ -110,10 +112,11 @@ def _live_root_task(task_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
         # drains the mailbox any more — the same fact that refuses owner mail
         # sends the answer down the late path instead of into a dead mailbox.
         return None, "task_settled"
-    from ouroboros.room_reader import is_reading
+    from ouroboros.room_reader import is_reading, unheld_cold_sleep
     from supervisor.workers import direct_chat_turn
+    drive = _task_drive_for_task(task, task_id)
     running = task_id in q.RUNNING or direct_chat_turn(task_id) is not None
-    if not is_reading(_task_drive_for_task(task, task_id), task_id, task, running=running):
+    if not (is_reading(drive, task_id, task, running=running) or unheld_cold_sleep(drive, task_id, task)):
         return None, "task_not_reading"
     return task, ""
 

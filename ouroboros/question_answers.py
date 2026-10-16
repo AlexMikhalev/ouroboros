@@ -95,6 +95,12 @@ def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fal
                 mark_discharged(root, asker, quiz_id)
                 return False, ""
             return False, "quiz_history_write_pending"
+    if previous and delivery.get("mailbox_at"):
+        # An unread copy stays owed to its recipient while that work exists:
+        # Pause, sleep or a hold moves it nowhere; only its end does (below).
+        current, reason = live_reader(previous)
+        if current is not None or reason == "task_not_reading":
+            return False, "awaiting_recipient_read"
     recipient, task = reading_recipient(root, asker, live_reader)
     attempted = set()
     while task is not None and recipient not in attempted:
