@@ -35,6 +35,23 @@ test('a relay receipt names the work by its title and the room by its reference,
     } finally { env.restore(); }
 });
 
+test('the work reading the relayed words keeps the receipt\'s work title and room reference', () => {
+    const env = installDomDouble();
+    try {
+        const bubble = owner(env);
+        const relay = { action: 'steer_task', project_id: 'p-1', project_name: 'Audit room',
+            target_task_ids: ['t-1'], target_titles: ['Audit the projects'] };
+        renderRoutingAnnotation(bubble, { ...relay, status: 'delivered' }, 1);
+        renderRoutingAnnotation(bubble, { ...relay, status: 'read' }, 1);
+        const line = note(bubble);
+        assert.ok(line.classList.contains('has-reference'), 'read is a stronger receipt, never a weaker line');
+        assert.equal(line.children[0].textContent, 'Passed on to «Audit the projects» in');
+        assert.equal(line.children[1].getAttribute('aria-label'), 'Open project Audit room');
+        assert.equal(line.dataset.annotationStatus, 'read');
+        assert.equal(line.dataset.destinationKey, 'p-1||t-1', 'the same work and room as the delivered receipt');
+    } finally { env.restore(); }
+});
+
 test('in its own room, refused or pending, the receipt is its words alone', () => {
     const env = installDomDouble();
     try {

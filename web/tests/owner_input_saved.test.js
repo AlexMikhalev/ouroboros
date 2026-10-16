@@ -52,7 +52,7 @@ test('the typed flag on my own echo says Input saved once, and Sending... stays'
     const f = fixture();
     try {
         await f.send('please look at the logs');
-        assert.equal(f.status(), 'Sending...');
+        assert.equal(f.status(), 'Sending');
         // A live echo of the running host always says what it did with the row (here: dispatched).
         f.echo({ content: 'please look at the logs', sender_session_id: ME, client_message_id: 'cm-1', ingress_accepted: true,
             ingress_dispatched: true });
@@ -61,7 +61,7 @@ test('the typed flag on my own echo says Input saved once, and Sending... stays'
         assert.equal(note.className, 'msg-pending', 'the quiet delivery-note style, no new chrome');
         const kids = f.bubble('cm-1').children;
         assert.equal(kids.indexOf(note), kids.findIndex((node) => node.classList.contains('msg-time')) - 1, 'above the time');
-        assert.equal(f.status(), 'Sending...', 'a saved row is not a started turn');
+        assert.equal(f.status(), 'Sending', 'a saved row is not a started turn');
         f.echo({ content: 'please look at the logs', sender_session_id: ME, client_message_id: 'cm-1', ingress_accepted: true,
             ingress_dispatched: true });
         assert.equal(f.notes('cm-1').length, 1, 'a repeated echo keeps one note');

@@ -74,7 +74,7 @@ def test_live_or_saved_custody_is_preserved(tmp_path):
 
 
 @pytest.mark.parametrize("claimed", [False, True])
-def test_startup_recovers_intent_only_after_worker_custody_proof(roots, monkeypatch, claimed):
+def test_startup_recovers_intent_only_after_worker_custody_proof(roots, monkeypatch, claimed):  # noqa: F811
     from ouroboros import server_maintenance
     from ouroboros.startup_migrations import prepare_startup_state
     from ouroboros.tools.control_task_results import _get_task_result

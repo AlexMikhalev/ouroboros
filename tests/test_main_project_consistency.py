@@ -485,5 +485,4 @@ def test_external_owner_steers_despite_registry_fault(host, monkeypatch, sender,
     _registry_fault(host.root, fault)
     _tell_task(issuer, "t-target", "Continue original task")
     delivered = [e["text"] for e in drain_owner_entries(host.root, "t-target")]
-    allowed = sender == "external_owner" or fault == "fresh"
     assert delivered == ["Continue original task"]

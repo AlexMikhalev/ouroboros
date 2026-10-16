@@ -255,7 +255,7 @@ def _steering_turn(root, supervisor_ctx, emitted):
 
 def test_presence_steer_reaches_pending_and_running_own_work_as_task_authored_text(tmp_path, monkeypatch):
     import supervisor.queue as queue
-    from ouroboros.owner_mailbox import deliver_task_message, drain_owner_entries
+    from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.tools.control import _tell_task
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
@@ -723,7 +723,7 @@ def _child_turn(root, row, supervisor_ctx, emitted):
 
 def test_a_presence_child_steers_only_its_bindings_work_through_the_supervisor(tmp_path, monkeypatch):
     import supervisor.queue as queue
-    from ouroboros.owner_mailbox import deliver_task_message, drain_owner_entries
+    from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
     from ouroboros.tools.control import _tell_task
     from supervisor.events import _handle_steer_task

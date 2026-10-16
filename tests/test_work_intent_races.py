@@ -15,7 +15,7 @@ class Crash(BaseException):
     """Leave the durable prefix intact, bypassing ordinary exception recovery."""
 
 
-def start_context(host):
+def start_context(host):  # noqa: F811
     class Transport(list):
         def append(self, event):
             # The producer's real emit boundary must already have complete bytes.
@@ -30,7 +30,7 @@ def start_context(host):
 
 
 @pytest.mark.parametrize("cut", ["emitted", "admitting", "admitted"])
-def test_start_crash_retains_intent_and_boot_never_admits_it(host, monkeypatch, cut):
+def test_start_crash_retains_intent_and_boot_never_admits_it(host, monkeypatch, cut):  # noqa: F811
     from ouroboros import server_maintenance
     from ouroboros.startup_migrations import prepare_startup_state
     from ouroboros.tools.control_task_results import _get_task_result
@@ -86,7 +86,7 @@ def test_start_crash_retains_intent_and_boot_never_admits_it(host, monkeypatch, 
         assert admission["status"] == "scheduled" and stored["status"] == "scheduled"
 
 
-def test_start_cannot_emit_until_intent_write_succeeds(host, monkeypatch):
+def test_start_cannot_emit_until_intent_write_succeeds(host, monkeypatch):  # noqa: F811
     from ouroboros import promotion_intent
 
     ctx = start_context(host)

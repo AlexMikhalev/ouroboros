@@ -61,8 +61,8 @@ export function normalizeReplyRef(raw) {
     return ref.address || ref.snippet ? ref : null;
 }
 
-/** The host's typed `relay` (the owner's words passed into a work) as a safe value, or null. */
-export function normalizeRelay(raw) {
+/** One quote of a relay (one of the owner's messages passed into a work) as a safe value, or null. */
+function normalizeRelayQuote(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const text = String(raw.text ?? '').trim();
     // His attachments travel with his words (a manifest per file); the panel names them, it does not re-serve them.
@@ -72,10 +72,18 @@ export function normalizeRelay(raw) {
     if (!text && !files.length) return null;
     const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
     const chatId = Number(source.chat_id);
-    return { text, files, where: oneSpace(source.label), ts: oneSpace(source.ts), relayId: oneSpace(raw.relay_id),
+    return { text, files, where: oneSpace(source.label), ts: oneSpace(source.ts),
         // The host's retained reference to the owner's original message (its row address), so the words a relay
         // carries can be replied to without minting a second owner message.
         address: oneSpace(source.address), chatId: Number.isInteger(chatId) ? chatId : 1 };
+}
+
+/** The host's typed `relay` (the owner's words passed into a work): every quote it carries, or null. */
+export function normalizeRelay(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    // `quotes` holds every message the turn passed on; an older stored envelope has only its first, in the singular fields.
+    const quotes = (Array.isArray(raw.quotes) && raw.quotes.length ? raw.quotes : [raw]).map(normalizeRelayQuote).filter(Boolean);
+    return quotes.length ? { quotes, relayId: oneSpace(raw.relay_id) } : null;
 }
 
 /**
@@ -168,27 +176,37 @@ export function clampWithToggle(text, host, { onDomWrite = (write) => write() } 
     return toggle;
 }
 
-/**
- * A relay's panel: the owner's complete words, labelled with where and when he wrote them (`You · Main · 00:37`),
- * clamped to six lines with `Show all` in the head. The words stay selectable text (not inside a button).
- */
-export function createRelayQuote(raw, { onDomWrite, formatTime = formatMsgTime } = {}) {
-    const relay = normalizeRelay(raw);
-    if (!relay) return null;
+/** One quoted message of a relay: who wrote it, where and when, his words (clamped) and the files that came with them. */
+function createRelayPanel(quote, relayId, { onDomWrite, formatTime }) {
     const author = authorOf('user');
-    const place = [relay.where, formatTime(relay.ts)?.short || ''].filter(Boolean);
+    const place = [quote.where, formatTime(quote.ts)?.short || ''].filter(Boolean);
     const root = node('div', 'chat-quote');
     root.dataset.author = 'user';
     root.dataset.mode = 'relay';
-    if (relay.relayId) root.dataset.relayId = relay.relayId;
+    if (relayId) root.dataset.relayId = relayId;
     root.setAttribute('role', 'group');
     root.setAttribute('aria-label', [tr('chat.quote.label', 'Quoted message'), author, ...place].join(', '));
     const head = node('div', 'chat-quote-head');
     head.append(node('span', 'chat-quote-author', author));
     if (place.length) head.append(node('span', 'chat-quote-when', `· ${place.join(' · ')}`));
-    const text = relay.text ? node('div', 'chat-quote-text', relay.text) : null;
+    const text = quote.text ? node('div', 'chat-quote-text', quote.text) : null;
     root.append(head, ...(text ? [text] : []));
-    if (relay.files.length) root.append(node('div', 'chat-quote-files', fmt('Attached: {names}', { names: relay.files.join(', ') })));
+    if (quote.files.length) root.append(node('div', 'chat-quote-files', fmt('Attached: {names}', { names: quote.files.join(', ') })));
     if (text) clampWithToggle(text, head, { onDomWrite });
     return root;
+}
+
+/**
+ * A relay's panel: the owner's complete words, labelled with where and when he wrote them (`You · Main · 00:37`),
+ * clamped to six lines with `Show all` in the head. The words stay selectable text (not inside a button). A relay
+ * that passes several of his messages shows one such panel per message, in the host's order, inside one block.
+ */
+export function createRelayQuote(raw, { onDomWrite, formatTime = formatMsgTime } = {}) {
+    const relay = normalizeRelay(raw);
+    if (!relay) return null;
+    const panels = relay.quotes.map((quote) => createRelayPanel(quote, relay.relayId, { onDomWrite, formatTime }));
+    if (panels.length === 1) return panels[0];
+    const group = node('div', 'chat-relay-quotes');
+    group.append(...panels);
+    return group;
 }

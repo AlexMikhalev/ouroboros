@@ -608,7 +608,7 @@ async def api_project_from_task(request: Request) -> JSONResponse:
     """Create/get a project from an existing task and bind the task to it."""
     try:
         from ouroboros.project_facts import explicit_project_id_ok, sanitize_project_id
-        from ouroboros.projects_registry import PROJECT_NAME_MAX, project_id_for_task, get_project
+        from ouroboros.projects_registry import PROJECT_NAME_MAX, project_id_for_task
         from ouroboros.project_placement import move_task_to_project, placement_basis
         from supervisor import workers
 

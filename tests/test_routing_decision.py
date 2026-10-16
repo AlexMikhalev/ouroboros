@@ -14,7 +14,6 @@ from ouroboros.gateway.routing_decision import (
 )
 from ouroboros.project_dialogue import (
     append_chat_annotation,
-    build_owner_message_ref,
     chat_annotation_receipt,
 )
 

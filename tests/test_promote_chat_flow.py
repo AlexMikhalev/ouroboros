@@ -10,7 +10,6 @@ import types
 import pytest
 
 from tests.test_swarm_host_admission import host as _swarm_host
-from tests._store_shared import delete_result, seed_result
 
 swarm_host = _swarm_host
 

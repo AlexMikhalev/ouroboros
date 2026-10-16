@@ -123,7 +123,7 @@ Card `Reviews` projects independent skill, plan, acceptance and repository-revie
 
 #### Stop and cancel controls
 
-Cancel appears only on unfinished, unconverted root cards whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
+Cancel appears only on unfinished root cards, a moved work's Main portal included, whose host attests `cancelable=true`; card shape grants no control, and native direct tasks follow §5 custody. The shared dropdown sends `cascade:true`; Wrap up, or a Stop now not yet confirmed, returns 202 pending. Completion wins and a missing live task reconciles from durable state. Reason lines: `log_events.taskReasonDetail` over `cancel_origin` (§3 Task cards, errors and reason lines).
 
 #### Turning a card into a Project
 
@@ -133,7 +133,7 @@ The Main-root `project_reference.js` opens/focuses the panel, never closes it; n
 
 #### Project rooms
 
-`room_work.js` opens Main's Group sheet and Project Shade over the room census, pending sends and card registry; it creates no cards/execution state or message-routing choice. New Project takes one source: no folder, managed genesis, an existing folder or Git URL. `project_create.js` browses server directories for web/Docker, requires Git worktrees for Git operations and discloses read/write/shell access for folder sources. Deletion fences admission, cancels/quiesces the subtree, then tombstones (§6): never early success or filesystem deletion; id, history, bindings, memory, provenance and working folder remain.
+`room_work.js` opens one Shade under each room's bar over the room census, pending sends and card registry; it creates no cards/execution state or message-routing choice. New Project takes one source: no folder, managed genesis, an existing folder or Git URL. `project_create.js` browses server directories for web/Docker, requires Git worktrees for Git operations and discloses read/write/shell access for folder sources. Deletion fences admission, cancels/quiesces the subtree, then tombstones (§6): never early success or filesystem deletion; id, history, bindings, memory, provenance and working folder remain.
 
 Project unread is `visible_revision > project_seen_revision` (DESIGN): standalone messages count, child media/questions included; card content does not. `chat_row_placement.js` keeps child words as separate nonterminal card lines and origin-addressed notices standalone, mirrored by history annotation/`history_paging`: a notice's target is not its speaker or lifecycle. `project_read_state.js` ACKs only covered history with the newest arrival visible; the server clamps/max-merges (`gateway/ui_preferences.py`). `app.js` keeps one Project instance, destroyed on close/switch except staged `File`s or in-flight uploads, hidden until settled. Unsent text stays in per-thread session storage; hidden rooms add no listeners or ACKs (DEVELOPMENT "UI resources carry a disposer").
 

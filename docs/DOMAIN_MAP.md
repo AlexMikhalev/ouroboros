@@ -13,10 +13,10 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 39 | 0 |
-| D06 | Review stack | 89 | 0 |
+| D06 | Review stack | 88 | 0 |
 | D07 | Delegation, subagents & Claudexor | 66 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 67 | 0 |
-| D09 | Cancellation, owner control & process custody | 22 | 0 |
+| D09 | Cancellation, owner control & process custody | 23 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
 | D11 | Gateway, server & Web UI | 84 | 0 |
 | D12 | Settings & configuration | 20 | 0 |
@@ -446,7 +446,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/reviewer_window.py`
 - `ouroboros/task_continuation.py`
 - `ouroboros/test_environment.py`
-- `ouroboros/test_parallelism.py`
 - `ouroboros/test_selection.py`
 - `ouroboros/tools/governance_context.py`
 - `ouroboros/tools/parallel_review.py`
@@ -637,6 +636,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/process_overload.py`
 - `ouroboros/process_scope.py`
 - `ouroboros/server_control.py`
+- `ouroboros/test_parallelism.py`
 - `supervisor/cancel_publication.py`
 - `supervisor/owner_stop.py`
 - `supervisor/steering.py`

@@ -10,15 +10,15 @@ from ouroboros.chat_chain import format_address, row_address
 from ouroboros.gateway.control import api_command
 from ouroboros.gateway.ws import ws_endpoint
 from supervisor import message_bus
-from tests.test_ws_ingress_off_loop import bridge, _OpenSocket
+from tests.test_ws_ingress_off_loop import bridge, _OpenSocket  # noqa: F401
 
 
-def original(bridge):
+def original(bridge):  # noqa: F811
     row = message_bus.log_chat("out", 1, 0, "Earlier answer", client_message_id="answer")
     return format_address(row_address(row))
 
 
-def test_http_reply_resolves_and_rejects_client_authored_previews(bridge):
+def test_http_reply_resolves_and_rejects_client_authored_previews(bridge):  # noqa: F811
     address = original(bridge)
     app = Starlette(routes=[Route("/api/command", api_command, methods=["POST"])])
     app.state.drive_root = bridge.drive
@@ -36,7 +36,7 @@ def test_http_reply_resolves_and_rejects_client_authored_previews(bridge):
     assert len(rows) == 2 and rows[-1]["reply_to"]["address"] == address
 
 
-def test_websocket_reply_keeps_the_host_preview_on_echo_and_queue(bridge):
+def test_websocket_reply_keeps_the_host_preview_on_echo_and_queue(bridge):  # noqa: F811
     address = original(bridge)
     echoes = []
     bridge._broadcast_fn = echoes.append
