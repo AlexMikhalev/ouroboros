@@ -97,7 +97,7 @@ _PENDING_FIELDS = (
     '_attempt', 'review_reason', 'review_source_task_id', '_budget_pause',
     'budget_resumed_at', '_terminalization_retry', '_cancel_intent_authority_hold', '_owner_wait_resume',
     '_budget_pause_resume', '_budget_pause_hold', '_continuation_prepared', '_admission_owner_token',
-    '_is_direct_chat',
+    '_is_direct_chat', 'detached_at', 'detached_by',
 )
 
 def persist_queue_snapshot(reason: str = "") -> bool:
@@ -397,6 +397,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
             "_attempt": attempt, "root_task_id": task_id, "depth": 0,
         }
         for key in ("origin_message_ref", "origin_message_text", "metadata", "project_id",
+                    "tool_profile", "detached_at", "detached_by",
                     "task_contract", "title", "text", "budget_drive_root"):
             if stored.get(key) not in (None, ""):
                 record[key] = stored[key]
