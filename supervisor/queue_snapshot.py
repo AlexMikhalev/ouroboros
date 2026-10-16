@@ -355,7 +355,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     from supervisor.events_budget import (BUDGET_HOLD_KEY, HOLD_OWNER_RESTART, HOLD_PANIC, HOLD_RESTORE_REFUSED_PREFIX,
                                           budget_hold_fact, hold_budget_row, hold_restored_budget_pause)
     from supervisor.restart_retention import (fresh_return_transaction, hold_after_stop, hold_for_owner_restart,
-                                              hold_stopped_queue, never_started, panic_recorded, pause_ids,
+                                              hold_stopped_queue, never_started, panic_recorded, park_saved_pause, pause_ids,
                                               recover_saved_running,
                                               retained_pending, saved_sleep_hold_reason, unseen_pause)
     from supervisor.schedule_occurrence import first_attempt, first_dispatch_unsent, restore_verdict
@@ -399,7 +399,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
         saved_pause = bool(stored and pause and pause.get("source_ref") and pause.get("is_direct_chat"))
         if not stored or not (saved_pause or stored.get("_is_direct_chat")):
             continue
-        attempt = int((pause or {}).get("task_attempt") or 1) if saved_pause else int(stored.get("task_attempt") or 1)
+        attempt = int(stored.get("task_attempt") or (pause or {}).get("task_attempt") or 1)
         record: dict = {
             "id": task_id, "type": "task", "chat_id": stored.get("chat_id"), "_is_direct_chat": True,
             "_attempt": attempt, "root_task_id": task_id, "depth": 0,
@@ -411,7 +411,7 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
         (direct_rows if saved_pause else direct_saved).append({"task": record, "attempt": attempt})
     before_park = {str(row["task"].get("id") or ""): pause_ids(row["task"]) for row in running_rows
                    if isinstance(row, dict) and isinstance(row.get("task"), dict)}
-    parked = _park_pausing_running_rows(list(running_rows) + direct_rows, snapshot_pending,
+    parked = _park_pausing_running_rows(list(running_rows) + direct_rows + direct_saved, snapshot_pending,
         sleep_hold_reason=sleep_hold_reason)
     taken = {str(task.get("id") or "") for task in list(snapshot_pending) + parked}
     # Interrupted work whose state was saved returns (or waits) under its own id
@@ -430,6 +430,26 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     retained = []
     consumed: list = []
     for task in list(snapshot_pending) + parked:
+        wait_allowed = False
+        if task.get("_owner_wait_resume"):
+            try:
+                wait_allowed = restore_owner_wait_allowed(_queue().DRIVE_ROOT, task)
+            except (OSError, ValueError, TypeError, RuntimeError) as exc:
+                retained.append(hold_restored_budget_pause(task, _queue().DRIVE_ROOT,
+                    reason=HOLD_RESTORE_REFUSED_PREFIX + "owner_wait_source_unavailable", detail=str(exc)))
+                continue  # unknown authority holds this row, not unrelated accepted work
+        if task.get("_owner_wait_resume") and (
+                task["_owner_wait_resume"].get("reason") == "owner_pause" or not wait_allowed):
+            # Older stop doors stamped warm pauses as question handoffs. Their
+            # own pause custody wins even if that transaction was acknowledged.
+            before = pause_ids(task)
+            paused = park_saved_pause(task, int(task.get("_attempt") or 1),
+                pathlib.Path(task.get("budget_drive_root") or _queue().DRIVE_ROOT),
+                pause_source="restart_owner_wait_handoff", sleep_hold_reason=sleep_hold_reason)
+            if paused is not None:
+                task = paused
+                if unseen_pause(task, before):
+                    unseen.add(str(task.get("id") or ""))
         retry = task.get("_terminalization_retry")
         if (isinstance(retry, dict) and retry.get("trigger") == "deadline"
                 and isinstance(retry.get("unsubmitted_launch"), dict)):
@@ -462,14 +482,27 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
                 hold_after_stop(retained[-1], _queue().DRIVE_ROOT, HOLD_OWNER_RESTART if owner_restart else HOLD_PANIC)
         elif task.get("_owner_wait_resume"):
             # An existing Project hold is custody; its revalidation reads the owner-wait authority.
-            if task.get("_project_admission_restore_hold") or restore_owner_wait_allowed(_queue().DRIVE_ROOT, task):
+            if budget_hold_fact(task) or wait_allowed:
                 retained.append(task)
             else:  # a refused cold handoff keeps its exact wait source, held for Resume
                 handoff = dict(task)
                 handoff.pop("_owner_wait_resume", None)
-                retained.extend(recover_saved_running(
+                recovered_wait = recover_saved_running(
                     [{"task": handoff, "attempt": int(task.get("_attempt") or 1)}], _queue().DRIVE_ROOT,
-                    transaction={}, cause=stop_cause))
+                    transaction={}, cause=stop_cause)
+                if recovered_wait:
+                    retained.extend(recovered_wait)
+                else:
+                    try:
+                        current = (load_task_result(_queue().DRIVE_ROOT, str(task.get("id") or ""),
+                                                    strict=True) or {}).get("owner_wait") or {}
+                    except (OSError, ValueError, TypeError, RuntimeError):
+                        current = None  # unreadable is not a closed or missing wait
+                    if current is None or (current.get("state") == "waiting"
+                            and current.get("wait_id") == task["_owner_wait_resume"].get("wait_id")):
+                        retained.append(hold_restored_budget_pause(
+                            task, _queue().DRIVE_ROOT, reason=HOLD_RESTORE_REFUSED_PREFIX + "owner_wait_source_unavailable",
+                            detail="the saved wait could not be restored; its original handoff is retained, not replayed"))
         else:
             # Age or an unavailable receipt cannot erase accepted Project work;
             # assignment still requires positive original no-dispatch authority.
@@ -980,9 +1013,9 @@ def restore_pending_from_snapshot(
                     existing = load_task_result(_queue().DRIVE_ROOT, str(task.get("id")), strict=True)
                     existing_status = str(existing.get("status") or "") if existing else ""
                 except Exception:
-                    if _exact_pause_row(task):
-                        # #1196: an unreadable result authority never terminalizes a
-                        # saved pause. The row stays PENDING under its ORIGINAL
+                    if _exact_pause_row(task) or task.get("_owner_wait_resume"):
+                        # Unreadable authority never terminalizes a saved pause or wait.
+                        # The row stays PENDING under its ORIGINAL
                         # locator and a typed hold (the earlier restore hold, if
                         # any, is kept); the next Resume re-reads the authority.
                         from ouroboros.budget_pause import RESTORE_REFUSAL_RECORD_UNREADABLE
@@ -997,7 +1030,7 @@ def restore_pending_from_snapshot(
                         acceptance_held.append(str(task.get("id") or ""))
                         log.warning("Snapshot restore retained paused row %s under a hold: its "
                                     "result authority is unreadable", task.get("id"), exc_info=True)
-                    if hold_unreadable_result(task) or _exact_pause_row(task):
+                    if hold_unreadable_result(task) or _exact_pause_row(task) or task.get("_owner_wait_resume"):
                         # A receipt read failure cannot select a terminal policy for conserved
                         # work: its pause, its Project hold, or accepted Project work held here.
                         _append_held_pending_row(task)
