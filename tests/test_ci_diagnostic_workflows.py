@@ -714,7 +714,9 @@ def test_ordinary_jobs_name_their_failures_without_owning_the_result(jobname, ar
     evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
     assert evidence["continue-on-error"] is True and "!cancelled()" in evidence["if"]
     assert evidence["with"] == {"name": artifact, "passes": " ".join(
-        f"{label}=${{{{ steps.tests_{label}.outcome }}}}" for label in PASSES)}
+        f"{label}=${{{{ " + (f"github.event_name == 'pull_request' && steps.tests_selected.outputs.{label}_outcome || "
+                             if jobname == "quick-test" and label != "size" else "")
+        + f"steps.tests_{label}.outcome }}}}" for label in PASSES)}
     assert job["steps"].index(evidence) > max(job["steps"].index(steps[f"tests_{label}"])
                                               for label in PASSES)
 

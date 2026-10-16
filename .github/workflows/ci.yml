@@ -116,7 +116,7 @@ jobs:
       # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py);
       # keeping the step here keeps gate and CI mirrored in both directions.
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
-        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && github.event_name != 'pull_request' }}
         shell: bash
         run: cd web && node --test tests/*.test.js
       # ESLint `no-undef` is the second, independent layer of the browser no-undef
@@ -139,13 +139,20 @@ jobs:
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
         timeout-minutes: 90
-        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
         run: python -m pytest tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
         timeout-minutes: 60
-        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
         run: python -m pytest tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
+      - name: Run PR tests (contract floor + affected modules and complete Node lane)
+        id: tests_selected
+        timeout-minutes: 150
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && steps.setup_node.outcome == 'success' && github.event_name == 'pull_request' }}
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/run_tests.py --selected --base "$PR_BASE" --sequential --evidence-dir="${{ runner.temp }}/ci-evidence"
       # Whom the reference-book rule binds (scripts/book_growth_mode.py): the size
       # lane below blocks, warns or passes a grown book by this mode.
       - name: Decide the reference-book growth mode
@@ -190,7 +197,62 @@ jobs:
         uses: ./.github/actions/test-evidence
         with:
           name: quick-test
-          passes: parallel=${{ steps.tests_parallel.outcome }} serial=${{ steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
+          passes: parallel=${{ github.event_name == 'pull_request' && steps.tests_selected.outputs.parallel_outcome || steps.tests_parallel.outcome }} serial=${{ github.event_name == 'pull_request' && steps.tests_selected.outputs.serial_outcome || steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
+
+  # ──────────────────────────────────────────────────────────────────
+  # Pull requests on Windows and macOS: the same selected scope as quick-test
+  # (contract floor, affected modules, complete Node lane), so a platform break
+  # in the changed area shows before the merge. The full matrix runs after it.
+  # ──────────────────────────────────────────────────────────────────
+  pr-selected-os:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'ouroboros' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS: "1"
+      OUROBOROS_PREFLIGHT_REQUIRE_NODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-python-env
+        id: setup_python
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ !cancelled() }}
+        id: setup_node
+        with:
+          node-version: '22'
+      - name: Set up Windows POSIX test utilities
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        id: posix_tools
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: MSYS
+          release: false
+          update: true
+          install: rsync
+      - name: Select Windows POSIX test utilities
+        id: select_posix_tools
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.posix_tools.outcome == 'success' }}
+        shell: pwsh
+        run: '"${{ steps.posix_tools.outputs.msys2-location }}\usr\bin" >> $env:GITHUB_PATH'
+      - name: Run PR tests (contract floor + affected modules and complete Node lane)
+        id: tests_selected
+        timeout-minutes: 150
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && steps.setup_node.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
+        run: python scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential --evidence-dir="${{ runner.temp }}/ci-evidence"
+      - name: Publish test evidence
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/test-evidence
+        with:
+          name: pr-selected-${{ matrix.os }}
+          passes: parallel=${{ steps.tests_selected.outputs.parallel_outcome }} serial=${{ steps.tests_selected.outputs.serial_outcome }}
 
   # ──────────────────────────────────────────────────────────────────
   # Benchmark methodology tests (owner decision R42). The devtools/benchmarks
@@ -255,7 +317,7 @@ jobs:
         run: /usr/bin/python3 -I -S scripts/safe_test.py --temp-parent "${{ runner.temp }}" -- .venv/bin/python -m pytest tests/test_store.py tests/test_store_import.py tests/test_store_switch.py tests/test_custody_store_rows.py tests/test_store_cutover.py tests/test_store_activation.py -q --tb=short --timeout=300 --timeout-method=thread
 
   # ──────────────────────────────────────────────────────────────────
-  # Tier 2: Windows/macOS for every PR and every landed `ouroboros` push (Ubuntu is
+  # Tier 2: Full Windows/macOS for every landed `ouroboros` push (Ubuntu is
   # quick-test there); full 3-OS matrix for stable, manual runs and tags. The landed
   # push is what tells a later PR that a Windows/macOS failure is inherited. It runs
   # in this repository only: an install that pushes its own commits to a private copy
@@ -266,7 +328,6 @@ jobs:
       github.ref == 'refs/heads/ouroboros-stable'
       || github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v')
-      || (github.event_name == 'pull_request' && github.base_ref == 'ouroboros')
       || (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros' && github.repository == 'razzant/ouroboros')
     # The growth-mode step reads the pull request's label events.
     permissions:
@@ -275,7 +336,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros')) && '["macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'push' && github.ref == 'refs/heads/ouroboros') && '["macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
         shard: [0]  # Unsharded macOS/Ubuntu; Windows alone is split by whole file.
         include:
           - {os: windows-latest, shard: 1}

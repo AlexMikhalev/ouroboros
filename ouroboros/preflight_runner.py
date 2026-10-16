@@ -1196,46 +1196,30 @@ def run_hermetic_pytest(
     max_output: int = 8000,
     phase: str = "post_commit",
     ctx=None,
+    selected: bool = False, base: str | None = None, extra_tests=(), full_tests=False, test_reason="",
 ) -> Optional[str]:
-    """Run pytest against the candidate diff in a disposable worktree.
+    """Run Node and both pytest lanes in one disposable candidate checkout.
 
-    Mirrors CI: the web node lane (``preflight_node``, on candidates carrying
-    ``web/tests/*.test.js``), then a parallel ``not serial`` pass, then a
-    ``serial`` pass — one worktree/env, ONE shared total budget. Fails fast on
-    the first red lane, so the output never truncates the failing section away.
+    A full run is the default; reviewed ordinary commits request ``selected``.
+    Selection uses the assembled candidate, HEAD before commit or HEAD~1 after,
+    plus authored widening. Only complete full runs may mint durable receipts.
+    Skip/no suite returns None without proof; failures return bounded diagnostics.
+    OUROBOROS_PREFLIGHT_TIMEOUT_SEC owns the shared total lane budget.
 
-    Returns ``None`` on success or when no suite applies, otherwise an error.
-    An optional caller ctx retains proof only of completed green lanes and
-    containment; a matching workload reuses it, or another process's unsigned
-    receipt of a complete default run (``preflight_receipts``), after the
-    baseline/assembly checks; only a complete default run mints that receipt.
-    ``OUROBOROS_PREFLIGHT_TIMEOUT_SEC`` overrides ``timeout`` for all callers.
-
-    ``phase`` selects the deleted-suite baseline (see ``_TESTS_BASELINE_REFS``):
-    the pre-commit review passes ``PRE_COMMIT_PHASE`` so it compares against HEAD
-    only, while the default post-commit verification also consults HEAD~1,
-    because by then the deletion it is looking for is already in HEAD.
-
-    The candidate is assembled as ONE hardened ``git diff --binary … HEAD``
-    capture (external drivers, textconv, colour and operator prefix configs
-    pinned off; payload kept as raw bytes end to end) applied to a clean
-    worktree at HEAD, plus a copy of the untracked files: an exact tracked
-    projection of the live worktree plus its safe non-ignored untracked
-    entries — for every source-index state, including a merge in progress,
-    whose unmerged entries the former staged+unstaged diff pair rendered as
-    stubs and ``--cc`` hunks that ``git apply`` dropped or rejected. The
-    untracked side keeps ``_copy_untracked``'s long-standing boundaries:
-    ignored files are absent, and untracked symlinks are dereferenced to
-    regular files (non-file entries skipped), so the candidate is not
-    literally byte-equal to the worktree in those corners. When the source index
-    is merged, its exact ``write-tree`` snapshot is also installed into the
-    disposable index (without updating files) and verified before tests run.
-    A genuinely unmerged source index retains the live-resolution projection.
+    Assembly captures one hardened, raw-byte worktree-vs-HEAD diff (including
+    live merge resolutions), applies it with LF preserved, and copies non-ignored
+    untracked files. Untracked symlinks are dereferenced, non-files skipped.
+    A merged source index is installed and verified without changing files; an
+    unmerged index retains the live-resolution projection. The phase also selects
+    the deleted-suite baseline: HEAD before commit, HEAD plus HEAD~1 afterwards.
+    Unconfirmed teardown retains the checkout and its Git registration.
     """
     previous_proof = getattr(ctx, "_preflight_test_proof", None)
+    previous_inventory = getattr(ctx, "_preflight_test_inventory", None)
     if ctx is not None:
         ctx._preflight_test_proof = None
         ctx._preflight_tests_passed = False
+        ctx._preflight_test_inventory = None
     timeout = _resolve_preflight_timeout(timeout)
     # Checked BEFORE anything runs. `_diagnosis` renders inside this budget, so a
     # non-positive one produced an empty string for a real failure — which the
@@ -1287,11 +1271,9 @@ def run_hermetic_pytest(
     worktree = temp_root / "repo"
     worktree_added = False
     unproven_teardown = ""
+    selection, subject, inventory = None, None, {}
     try:
-        # The probe is written BEFORE the specs are built, and the nonce name it
-        # returns is what the parallel pass loads. Building the specs first and
-        # discarding the name left `-p` pointing at a stem no file carries, which
-        # is a pytest usage error, not a run.
+        # Install before compiling specs: -p must name the actual nonce module.
         probe_module = _install_worker_probe(temp_root)
         passes = _preflight_pass_specs(pytest_args, probe_module=probe_module)
         # Before ANY candidate code is on disk, let alone imported.
@@ -1305,12 +1287,7 @@ def run_hermetic_pytest(
                     "\n".join(problems), max_output,
                 )
 
-        # `-c core.autocrlf=false -c core.eol=lf`: check HEAD out byte-for-byte so
-        # the hermetic worktree matches the bytes the `--binary` candidate diff was
-        # captured against. Without it a Windows runner (`core.autocrlf=true`)
-        # materializes HEAD with CRLF, and the LF candidate then applies onto a
-        # CRLF base — the capture is byte-faithful but the checkout it lands on is
-        # not. Paired with the same override on `_apply_diff`.
+        # Preserve HEAD's LF bytes on Windows too, paired with _apply_diff.
         add = _run_git(
             repo,
             ["-c", "core.autocrlf=false", "-c", "core.eol=lf",
@@ -1356,18 +1333,29 @@ def run_hermetic_pytest(
             )
         from ouroboros.commit_admission import (
             PreflightTestProof, capture_preflight_test_subject, log_preflight_test_proof,
-            preflight_test_workload_unchanged,
+            preflight_test_workload_unchanged, selected_workload_unchanged,
         )
         from ouroboros.preflight_receipts import FullGateReceipt
+        from ouroboros.preflight_inventory import selection_passes, read_inventory, inventory_problem
+        if selected:
+            from ouroboros.test_selection import select_tests
+            selection = select_tests(worktree, base=base or ("HEAD" if phase == PRE_COMMIT_PHASE else "HEAD~1"),
+                                     extra_tests=extra_tests, full_tests=full_tests, test_reason=test_reason)
+            if pytest_args is not None:
+                raise ValueError("selected scope cannot be combined with custom pytest arguments")
+            passes = selection_passes(selection, probe_module=probe_module, temp_root=temp_root)
 
         subject = capture_preflight_test_subject(
             worktree, timeout=timeout, pytest_args=pytest_args,
-            passes=passes, agent_python=agent_python, probe_module=probe_module,
+            passes=passes, agent_python=agent_python, probe_module=probe_module, selection=selection,
         ) if ctx is not None else None
+        if selection is not None and ctx is not None and subject is None:
+            raise ValueError("selected test subject could not be bound")
         can_reuse = isinstance(previous_proof, PreflightTestProof) and previous_proof.covers(subject)
         receipt = None if can_reuse else FullGateReceipt.prepare(ctx, subject, passes, probe_module, agent_python, temp_root, worktree)
         if can_reuse or receipt.covered():
             ctx._preflight_test_proof = previous_proof if can_reuse else subject
+            ctx._preflight_test_inventory = previous_inventory if can_reuse else None
             ctx._preflight_tests_passed = True
             log_preflight_test_proof(ctx, ctx._preflight_test_proof, reused=True, phase=phase, receipt=receipt and receipt.disclosure(),
                                      empty_lanes=receipt and receipt.empty_lanes)
@@ -1381,23 +1369,25 @@ def run_hermetic_pytest(
         empty_passes: list[str] = []
         timings: list[tuple[str, float]] = []
         for spec in passes:
-            # Keep the exact float remainder; rounding up would exceed the
-            # shared total budget (including the preceding node lane).
+            # Do not round the remaining shared budget up.
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 return (
                     f"⚠️ PRE_PUSH_TEST_ERROR: the {spec.label} pass never started — the "
                     f"total budget of {timeout} seconds was exhausted by the earlier pass(es)"
                 )
-            # `started` sizes the shared budget; the header reports THIS pass's
-            # own duration, or a fast serial pass would be blamed for the whole
-            # gate's wall-clock after a slow parallel one.
+            # Headers report this pass, not cumulative shared-budget time.
             pass_started = time.monotonic()
             unproven_teardown = f"the {spec.label} pass did not return, so its teardown is unconfirmed"
             returncode, output, reap_error = _execute_pytest_pass(
                 agent_python, worktree, temp_root, spec.args, remaining
             )
             unproven_teardown = reap_error
+            inventory_error = ""
+            if selection is not None:
+                inventory[spec.label], inventory_error = read_inventory(temp_root, spec.label)
+                if ctx is not None:
+                    ctx._preflight_test_inventory = inventory
             elapsed = time.monotonic() - pass_started
             timings.append((spec.label, round(elapsed, 1)))
             if reap_error:
@@ -1428,6 +1418,8 @@ def run_hermetic_pytest(
                     f"in the {spec.label} pass (total budget {timeout} seconds)",
                     output, max_output,
                 )
+            if inventory_error and returncode in (0, _PYTEST_EXIT_NO_TESTS):
+                return f"⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_INVENTORY: {spec.label}: {inventory_error}"
             if returncode == _PYTEST_EXIT_NO_TESTS:
                 empty_passes.append(spec.label)
                 continue
@@ -1467,17 +1459,23 @@ def run_hermetic_pytest(
                 "⚠️ PRE_PUSH_TEST_ERROR: no tests were collected in any preflight pass — "
                 "a repository with a tests/ directory must yield at least one runnable test"
             )
+        if selection and (problem := inventory_problem(selection, inventory)):
+            return f"⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_INVENTORY: {problem}"
         if ctx is not None:
             ctx._preflight_tests_passed = True
             # Missing node-lane execution cannot mint a complete proof. The
             # normal producer returns rc=0 only after its containment check.
             if (subject
-                    and preflight_test_workload_unchanged(subject, worktree, timeout=timeout, pytest_args=pytest_args)
+                    and (selected_workload_unchanged(subject, worktree, timeout=timeout, selection=selection) if selection
+                         else preflight_test_workload_unchanged(subject, worktree, timeout=timeout, pytest_args=pytest_args))
                     and (not subject.workload[4] or (node_result or {}).get("returncode") == 0)):
                 ctx._preflight_test_proof = subject
                 receipt.publish(ctx, temp_root, worktree, agent_python, empty_passes, phase, timings)
                 log_preflight_test_proof(ctx, subject, reused=False, phase=phase, passes=timings, receipt=receipt.disclosure(),
                                          empty_lanes=empty_passes)
+            if selection and ctx._preflight_test_proof is None:
+                ctx._preflight_tests_passed = False
+                raise ValueError("selected test scope changed during execution; no proof was minted")
         return None
     except subprocess.TimeoutExpired:
         failure = f"⚠️ PRE_PUSH_TEST_ERROR: pytest timed out after {timeout} seconds"
@@ -1486,5 +1484,7 @@ def run_hermetic_pytest(
     except Exception as exc:
         failure = f"⚠️ PRE_PUSH_TEST_ERROR: hermetic preflight failed: {exc}"
     finally:
+        from ouroboros.preflight_inventory import record_failed_attempt
+        record_failed_attempt(ctx, selection, subject, inventory)
         _release_hermetic_tree(repo, temp_root, worktree, worktree_added, unproven_teardown)
     return _with_retention_notice(failure, unproven_teardown, worktree, max_output)

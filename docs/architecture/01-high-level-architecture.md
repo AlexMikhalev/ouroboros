@@ -253,7 +253,8 @@ ouroboros/ — agent core and shared runtime (§6)
   review.py — Size and complexity inventory behind the shrink-only ceilings and the diff pulse (§6 Structural gates, Commit preflight)
   size_ratchet_manifest.py — Generated data-only size-debt manifest (`scripts/regenerate_size_ratchet.py`)
   review_execution_projection.py — Reviewer-execution projection; kinds `api` | `harness` | `native`, so the owner can tell a retrieving review from a packet review on the same model
-  preflight_runner.py, preflight_node.py, preflight_receipts.py, test_parallelism.py — Hermetic gate, Node lane, receipts and CPU/memory worker budget (§6; §8)
+  preflight_runner.py, preflight_node.py, preflight_receipts.py, test_parallelism.py — Hermetic gate, Node, receipts, worker budget (§6; §8)
+  test_selection.py, preflight_inventory.py, preflight_qualification.py — Scope, execution inventory, full adoption proof (§6)
   review_substrate.py — Review seat coordinator: independent seats, per-actor records that keep transport, parse, verdict, coverage and quorum distinct (§6 Review stack, Task acceptance)
   review_custody.py, review_source_closure.py, review_operation.py, review_live_join.py — Reviewer workers: no-resend custody, retained owner-bound inputs, panel waits/checkpoints, existing-producer collection/live joins (§6 Task acceptance)
   review_owner_custody.py — Paid attempts record `(server session, pid)` (§6 Paid stamp and owner custody)
@@ -264,7 +265,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_session_custody.py, review_checking.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private checking copies (§6 Review delivery)
   review_slot_cancel.py — A cancel outcome reports only what it proved; a succeeded run whose result read fails is the typed `ReviewSessionSucceededResultUnavailable`, never "may still be live"
   review_actor_aggregation.py, review_session_usage.py, review_thread_continuity.py — Completed-actor contract aggregation; delegated-session usage attribution; Claudexor thread operations for delegated plan reviewers
-  commit_admission.py — Deterministic commit-admission SSOT (release checks, staged-Python syntax, `run_tests_preflight_with_proof`); the commit gate delegates here (§6 Hermetic preflight proof)
+  commit_admission.py — Release/syntax admission and bound test proof (§6)
   reviewer_slot_config.py — The one review-pool builder, `review_pool_slots`, over enabled `review_eligible` catalog rows (§7 Review pool)
   review_pool_migration.py, review_pool_receipts.py — The review-lane → review-pool migration at the settings read seam and its durable receipts (the `state/review_migrations/` snapshot is the rollback source) (§11.4)
   review_run_isolation.py — Contributor review isolation before `config`: private whole-data root, pinned host settings and panel, cumulative cap, attach-only engine (§6 Delegated subagents; Monetary authority and projections)

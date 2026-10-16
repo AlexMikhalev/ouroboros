@@ -192,6 +192,18 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
     if current.get("phase") in _PENDING and current.get("phase") != "authorized":
         raise AdoptionRefused(
             "ADOPTION_PENDING", f"adoption {current.get('id')} is {current.get('phase')}; it must settle first.")
+    from ouroboros.preflight_qualification import qualify_commit
+
+    try:
+        qualification = qualify_commit(candidate, cand, data_dir, task_id=task_id)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise AdoptionRefused("ADOPTION_TESTS_REQUIRED", str(exc)) from exc
+    # Qualification may take a long time. Never replace a handoff that armed,
+    # or authorize against serving work/update state that changed while it ran.
+    if (read(data_dir) != current or active_update_tx()
+            or _git(serving, "rev-parse", "HEAD").stdout.strip() != old
+            or body_switch._dirty(str(serving), paths)):
+        raise AdoptionRefused("ADOPTION_STATE_CHANGED", "adoption state changed during full qualification; retry from current facts.")
     directory = helper_dir(data_dir)
     if directory.exists():
         _archive(data_dir, current, f"replaced:{current.get('phase')}" if current else "stale_helper")
@@ -203,6 +215,7 @@ def authorize_row(data_dir: pathlib.Path, row: Dict[str, Any], commit: str, *, r
         "candidate_path": str(candidate), "task_id": task_id, "reason": str(reason or ""),
         "switch": rows, "deps_command": _dependency_command(serving, rows), "authorized_at": utc_now_iso(),
         "unreviewed_commits": unreviewed, "attempts": 0, "events": [],
+        "tests": qualification,
     }
     # The helper is captured from the body that is running, never from the candidate.
     shutil.copyfile(pathlib.Path(body_switch.__file__), directory / "switch.py")

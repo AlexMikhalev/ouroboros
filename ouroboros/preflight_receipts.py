@@ -268,6 +268,8 @@ class FullGateReceipt:
 
         if subject is None:
             return cls(None, {}, "no tested subject (no caller ctx, or the checkout could not be bound)")
+        if subject.tier != "full":
+            return cls(None, {}, "selected evidence cannot mint a FullGateReceipt")
         if [spec.label for spec in passes] != ["parallel", "serial"] or probe_module not in passes[0].args:
             return cls(None, {}, "not the complete default recipe")
         root = canonical_data_root(ctx)
@@ -392,7 +394,7 @@ def execution_exhibit(ctx: Any, *, otherwise: str = "") -> dict:
             "the run completed but minted no proof of the tested subject" if completed
             else "no green hermetic run (disabled or no applicable suite)")}
     try:
-        bound = preflight_test_proof_matches(ctx, ctx.repo_dir)
+        bound = preflight_test_proof_matches(ctx, ctx.repo_dir, require_full=False)
     except Exception:
         bound = False
     if not bound:
@@ -406,7 +408,9 @@ def execution_exhibit(ctx: Any, *, otherwise: str = "") -> dict:
     recipe = (["node"] if proof.workload[4] else []) + [str(spec[0]) for spec in proof.workload[0]]
     empty = event.get("empty_lanes")
     empty = [lane for lane in recipe if lane in empty] if isinstance(empty, list) else None
-    return {"status": "passed", "authenticity": "unsigned", "evidence": evidence,
+    return {"status": "passed", "authenticity": "unsigned", "evidence": evidence, "tier": proof.tier,
+            **{key: event[key] for key in ("base", "policy", "rule", "files", "reasons", "extra_tests",
+                                           "full_tests", "test_reason", "expected_files", "omitted_files", "inventory") if key in event},
             "lanes": [lane for lane in recipe if lane not in empty] if empty is not None else [],
             **({"empty_lanes": empty} if empty else {}),
             "tested": {"head": proof.head, "tree": proof.tree, "index_tree": proof.index_tree},
@@ -448,7 +452,7 @@ def execution_section(exhibit: Any) -> str:
         if empty:
             observed += f"; lanes {', '.join(empty)} collected no tests, so no test ran there"
         return ("## Preflight test execution (host fact)\n"
-                f"The hermetic test gate passed{observed}.\n"
+                f"The {exhibit.get('tier', 'full')} hermetic test gate passed{observed}.\n"
                 f"Tested checkout: HEAD {tested.get('head')}, tree {tested.get('tree')}, index "
                 f"{tested.get('index_tree')}. Evidence: {how}.\n"
                 "Unsigned host fact, not a verdict: decide yourself which further checks this change needs.")

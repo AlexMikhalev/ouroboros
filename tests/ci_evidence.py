@@ -139,6 +139,14 @@ def render_summary(root: Path, *, producer_outcome: str, artifact_outcome: str,
     """Reporter failure cannot replace producer truth; missing reports stay unknown."""
     data, error = _final(root)
     available = not error
+    # The selected CLI writes scope beside the pass directories before execution.
+    # Its actual tier may escalate to full; never describe a subset as full.
+    try:
+        selection = json.loads((Path(root).parent / "selection.json").read_text(encoding="utf-8"))
+        if scope == "full" and selection.get("tier") in ("selected", "full"):
+            scope = selection["tier"]
+    except (OSError, ValueError, AttributeError):
+        pass
     lines = [
         "## CI test evidence" + (f" — {_cell(label)}" if label else "")
         + (" — PARTIAL DIAGNOSTIC" if scope != "full" else ""),

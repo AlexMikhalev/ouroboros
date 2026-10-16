@@ -365,6 +365,12 @@ def _evolution_publication_stopped_result(
         return ""
     _, authority = _git()._evolution_commit_authority(ctx, commit_sha=commit_sha)
     if authority.get("ok"):
+        from ouroboros.preflight_qualification import full_proof_error
+
+        error = test_warning or full_proof_error(ctx, ctx.repo_dir, commit_sha)
+        if error:
+            ctx.last_push_succeeded = False
+            return f"⚠️ EVOLUTION_PUBLICATION_STOPPED: {error}. The local commit is preserved; nothing was pushed."
         return ""
     ctx.last_push_succeeded = False
     containment = _git()._preserve_evolution_orphan(
