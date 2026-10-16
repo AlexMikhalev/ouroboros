@@ -140,8 +140,12 @@ class ToolBatchWorker:
                     if len(self.round_origins) >= limit:
                         result = round_limit_result(tc.call_id, limit)
                         self.executed[tc.call_id] = result
-                        self.claimed.pop(tc.call_id, None)
-                        await call._send(result)
+                        asked = self.claimed.pop(tc.call_id, epoch)
+                        if asked == call.epoch:
+                            await call._send(result)
+                        else:  # the session that asked is gone: the answer stays as context
+                            await call._send(ContextItem(text=f"[result of tool call {tc.call_id}]\n{result.output}",
+                                                         source="tool_result_retained"))
                         continue
                     self.round_origins.add(round_key)
                 batch.append((epoch, tc))

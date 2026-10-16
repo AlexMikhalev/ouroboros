@@ -209,9 +209,14 @@ def recover_call_context(ctx: Any, messages: List[Dict[str, Any]], schemas: List
         return False
     try:
         evidence = json.loads(error.message)
-        deficit = int(evidence["input_tokens"]) - int(evidence["limit_tokens"])
-        if evidence["field"] != "session.instructions" or int(evidence["limit_tokens"]) <= 0 or deficit <= 0:
+        if evidence["field"] != "session.instructions":
             return False
+        if "limit_tokens" in evidence or "input_tokens" in evidence:
+            deficit = int(evidence["input_tokens"]) - int(evidence["limit_tokens"])
+            if int(evidence["limit_tokens"]) <= 0 or deficit <= 0:
+                return False
+        else:
+            deficit = 1  # the provider refused the field without numbers: the next strictly smaller rung
     except (ValueError, TypeError, KeyError):
         return False
     return _select_smaller_projection(ctx, messages, schemas, evidence, deficit, trace_key="live_context_recovery")

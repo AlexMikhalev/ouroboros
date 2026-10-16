@@ -131,6 +131,17 @@ async def test_recorded_instruction_refusal_retains_only_capacity_evidence(valid
         assert event.kind == "provider"
 
 
+
+@run_async
+async def test_a_reworded_instruction_refusal_is_still_a_context_length_refusal():
+    engine, connection, events, collector = await opened("openai")
+    error = {"type": "invalid_request_error", "code": "invalid_value", "param": "session.instructions",
+             "message": "The instructions are too long for this session."}  # no numbers to read
+    await feed(engine, connection.sockets[0], {"type": "error", "error": error})
+    await finished(engine, collector)
+    event = selected(events, EngineError)[0]
+    assert event.kind == "context_length" and json.loads(event.message) == {"field": "session.instructions"}
+
 @run_async
 async def test_native_vad_cancel_racing_host_interrupt_keeps_session_open():
     engine, connection, events, collector = await opened("openai")

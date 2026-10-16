@@ -118,6 +118,7 @@ class _Spoken:
     interrupted: bool = False
     audio_ms: float = 0
     ack_at: float = 0
+    started_at: float = 0.0  # when its first audio went to the peers
 
 
 class _LiveCall:
@@ -162,6 +163,7 @@ class _LiveCall:
         self.speaking_item = ""
         self.cancelled_items: set = set()
         self.played_ms: Dict[str, int] = {}
+        self.playback_acked = False  # whether any peer reports what it played
         self.spoken: Dict[str, _Spoken] = {}
         self.counts = {"owner": 0, "ouroboros": 0, "heard": 0}
         self.muted_peers: set = set()
@@ -565,6 +567,7 @@ class _LiveCall:
         elif isinstance(event, PeerControl):
             kind = str(event.message.get("type") or "")
             if kind == "played":
+                self.playback_acked = True
                 item_id, played_ms = str(event.message.get("item_id") or ""), int(event.message.get("played_ms") or 0)
                 self.played_ms[item_id] = max(self.played_ms.get(item_id, 0), played_ms)
                 if item_id in self.spoken:
@@ -606,7 +609,9 @@ class _LiveCall:
                     # before its first frame, so played acknowledgements bind to it.
                     self.hub.send_caption(SPEAKER_OUROBOROS, "", False, event.item_id)
                 self.speaking_item = event.item_id
-                self.spoken.setdefault(event.item_id, _Spoken()).audio_ms += len(event.pcm) * 500 / event.rate
+                spoken = self.spoken.setdefault(event.item_id, _Spoken())
+                spoken.started_at = spoken.started_at or time.monotonic()
+                spoken.audio_ms += len(event.pcm) * 500 / event.rate
                 self.hub.play(event.pcm, event.item_id)
         elif isinstance(event, Caption):
             self.hub.send_caption(event.speaker, event.text, event.final, event.item_id)
@@ -666,6 +671,9 @@ class _LiveCall:
         # has caught up with the frames delivered so far.
         for item in tuple(self.spoken.keys() - self.cancelled_items):
             spoken, played = self.spoken[item], self.played_ms.get(item, 0)
+            if not self.playback_acked and spoken.started_at:
+                # No peer reports playback (a meeting-only call): its audio plays in real time.
+                played = max(played, int(min(spoken.audio_ms, (time.monotonic() - spoken.started_at) * 1000)))
             if spoken.final_at and played >= spoken.audio_ms:
                 continue
             self.cancelled_items.add(item)

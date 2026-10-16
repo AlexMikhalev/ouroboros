@@ -646,3 +646,39 @@ def test_ledger_writes_run_inside_the_turns_bound_context(harness, monkeypatch):
                             for name in ("record_transcription", "reserve_live_response", "settle_live_response")]
     h.stop()
     h.finish()
+
+
+def test_a_refusal_without_numbers_still_reopens_one_rung_smaller(harness):
+    from ouroboros.context_fit import ContextFitPlan, ContextFitProjection
+    from ouroboros.gateways.realtime_engine import EngineError
+
+    h = harness()
+    core = "Protected tier zero. "
+    full, addressed = core + "Reference text. " * 200, core + "Read the full reference source."
+    projection = lambda mode, text: ContextFitProjection(mode, json.dumps(text), len(text), len(text), 1)
+    h.ctx.context_fit_plan = ContextFitPlan("capture", "max", "max", "model", "openai", "route", "confirmed",
+        False, 128000, 32000, json.dumps("original input"), projection("max", full), projection("low", addressed),
+        nano_projection=projection("nano", addressed))
+    h.messages[0]["content"] = full
+    engine = h.start()
+    engine.push(EngineError("context_length", json.dumps({"field": "session.instructions"})))
+    assert _wait_for(lambda: len(h.llm.engines) == 2 and h.engine().config is not None)
+    assert h.engine().config.instructions == addressed and h.ctx.active_context_mode == "low"
+    h.stop()
+    h.finish()
+
+
+def test_a_meeting_only_call_counts_real_time_playback_at_a_barge_in(harness):
+    h = harness(spec=_spec(presence_binding_id="b" * 32, opened_by="skill"))
+    engine = h.start()
+    engine.push(AudioOut(bytes(4800), 24000, "done"))  # 100 ms, finished and long since played
+    engine.push(Caption(SPEAKER_OUROBOROS, "A short answer.", True, "done"))
+    engine.push(AudioOut(bytes(48000 * 4), 24000, "long"))  # 4 s delivered, still playing
+    assert _wait_for(lambda: len(h.hub.played) == 2)
+    time.sleep(0.3)  # no peer reports playback; the audio plays in real time meanwhile
+    engine.push(SpeechStarted())
+    assert _wait_for(lambda: engine.sent_of(Interrupt))
+    (cut,) = engine.sent_of(Interrupt)  # the finished answer is left alone
+    assert cut.item_id == "long" and 250 <= cut.played_ms < 4000  # cut where it is, not at zero
+    h.stop()
+    h.finish()
