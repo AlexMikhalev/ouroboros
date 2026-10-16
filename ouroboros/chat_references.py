@@ -11,6 +11,8 @@ from ouroboros.chat_chain import format_address, resolve_row, row_address
 def projection_fields(row: dict) -> dict:
     """Additive fields for live frames and history, from the same stored row."""
     fields = {key: row[key] for key in ("reply_to", "relay") if isinstance(row.get(key), dict)}
+    if row.get("reply_to_relay"):
+        fields["reply_to_relay"] = row["reply_to_relay"]
     fields["row_address"] = format_address(row_address(row))
     return fields
 
@@ -21,7 +23,7 @@ def reference_from_row(row: dict) -> dict:
             {"project_completion_summary", "task_summary"} else
             "system" if row.get("direction") == "system" else "message")
     role = {"in": "user", "out": "assistant", "system": "system"}.get(row.get("direction"), "system")
-    return {"address": format_address(row_address(row)), "chat_id": int(row.get("chat_id") or 1),
+    return {"address": format_address(row_address(row)), "chat_id": int(row.get("chat_id", 1)),
             "role": role, "author_label": str(row.get("sender_label") or
                                                {"user": "You", "assistant": "Ouroboros", "system": "System"}[role]),
             "kind": kind, "snippet": " ".join(str(row.get("text") or row.get("caption") or "").split())[:160],
@@ -37,7 +39,7 @@ def resolve_reply(root, address: str) -> dict:
     if address.startswith("task:"):
         from ouroboros.task_status import load_effective_task_result
         task_id = address[5:]
-        task = load_effective_task_result(root, task_id) if task_id else None
+        task = load_effective_task_result(root, task_id, materialize_artifacts=False) if task_id else None
         if task:
             return {"address": address, "chat_id": int(task.get("chat_id") or 1), "role": "assistant",
                     "author_label": "Ouroboros", "kind": "work_card",
@@ -58,13 +60,13 @@ def ingress_reply(root, metadata: dict) -> dict:
     return resolve_reply(root, metadata.get("reply_to", ""))
 
 
-def origin_reply(root, task_id: str) -> dict:
+def origin_reply(root, task_id: str, metadata=None) -> dict:
     """The answer's host reference to the owner message that began its turn."""
     if not task_id or not root:
         return {}
     from ouroboros.task_status import load_effective_task_result
     from ouroboros.project_dialogue import resolve_owner_message_source
-    task = load_effective_task_result(root, task_id) or {}
+    task = metadata or load_effective_task_result(root, task_id, materialize_artifacts=False) or {}
     ref = task.get("origin_message_ref") or (task.get("metadata") or {}).get("origin_message_ref")
     if not ref:
         return {}

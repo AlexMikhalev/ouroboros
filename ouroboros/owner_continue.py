@@ -292,6 +292,9 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         if kind in OWNER_SOURCE_KINDS | {"task_message"} and not isinstance(entry.get("text") or "", str):
             gaps.append("owner_mailbox_row_malformed")  # the writer stores text; never str() a body
             continue
+        if kind == "quiz_answer" and (entry.get("quiz_delivery") or {}).get("answer_snapshot"):
+            from ouroboros.owner_quiz import late_answer_owner_text
+            entry = {**entry, "text": late_answer_owner_text(entry["quiz_delivery"]["answer_snapshot"])}
         if msg_id and msg_id in seen:
             if seen[msg_id] != (str(entry.get("text") or ""), kind in OWNER_SOURCE_KINDS):
                 gaps.append("owner_message_identity_conflict")
@@ -308,10 +311,11 @@ def owner_sources(drive_root: Any, result: Dict[str, Any], task_id: str) -> Dict
         elif kind == "relay_entry":
             for row in entry.get("owner_rows") or []:
                 from ouroboros.chat_chain import format_address, row_address
+                from ouroboros.owner_relay import owner_text
                 address = format_address(row_address(row))
                 if address not in seen:
-                    later.append({"source": "owner_mailbox", "content": row.get("text", ""), "msg_id": address})
-                    seen[address] = (row.get("text", ""), True)
+                    later.append({"source": "owner_mailbox", "content": owner_text(row), "msg_id": address})
+                    seen[address] = (owner_text(row), True)
             peers.append({"msg_id": msg_id, "ts": str(entry.get("ts") or ""),
                           "source_task_id": str(entry.get("source_task_id") or ""),
                           "provenance": "independent_task", "text": str(entry.get("text") or "")})

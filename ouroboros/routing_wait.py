@@ -137,7 +137,7 @@ def wait_for_routing_annotation(
     while True:
         receipt = chat_annotation_receipt(root, client_message_id, routing_token)
         status = str(receipt.get("status") or "")
-        if status in {"delivered", "needs_manual_target", "rejected", "unconfirmed"}:
+        if status in {"delivered", "read", "needs_manual_target", "rejected", "unconfirmed"}:
             return receipt
         if time.monotonic() >= deadline:
             return {"status": "unconfirmed", "reason": "confirmation_timeout"}

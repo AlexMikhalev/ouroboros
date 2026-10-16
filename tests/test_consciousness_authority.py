@@ -7,7 +7,7 @@ for a consciousness-origin task the disabled list binds at DISPATCH ONLY so the
 wake's tool schemas and prompt prefix are byte-identical to an owner turn's
 (В31=B, the I3 comparison below). The origin (label, ledger category, level)
 is inherited by everything the wake starts; a wake speaks as a task through
-``steer_task`` (ISSUER, PLAN 5.2a); ``/evolve off`` is sticky against the agent
+``tell_task`` (ISSUER, PLAN 5.2a); ``/evolve off`` is sticky against the agent
 tool (В12); a Full-level campaign stays inside the consciousness tree.
 """
 
@@ -64,7 +64,7 @@ def test_levels_and_their_two_consequences():
     assert ca.OBSERVE_ARGUMENT_NARROWED.isdisjoint(observe)
     assert {"schedule_subagent", "delegate_start", "cancel_task"} <= ca.OBSERVE_ARGUMENT_NARROWED
     # The nanny of a running campaign is never withheld, at any level.
-    assert "steer_task" not in observe and "steer_task" not in ca.disabled_tools_for("act")
+    assert "tell_task" not in observe and "tell_task" not in ca.disabled_tools_for("act")
     # Observe is an EXCEPTION list: reading and talking stay available by default.
     for name in ("read_file", "web_search", "browse_page", "send_user_message", "escalate",
                  "knowledge_write", "update_scratchpad", "switch_model", "enable_tools"):
@@ -329,20 +329,21 @@ def test_routing_issuer_keeps_wake_relays_task_authored_and_explicit_owner_ingre
     assert _routing_issuer(client_id_only) == {"kind": ISSUER_TASK, "task_id": "c-root", "root_task_id": "c-root"}
 
 
-def test_steer_from_a_wake_is_written_as_an_independent_task_message(tmp_path, monkeypatch):
-    from ouroboros.tools import control_routing
+def test_tell_from_a_wake_carries_context_without_owner_authority(tmp_path, monkeypatch):
+    from ouroboros.tools import control_relay, control_routing
 
-    sent: list = []
-    monkeypatch.setattr(control_routing, "_send_task_message",
-                        lambda ctx, issuer, target, msg, chat_id: sent.append((issuer, target, msg)) or "WRITTEN")
+    sent = []
+    monkeypatch.setattr(control_routing, "_emit_and_wait_for_routing",
+                        lambda ctx, event: (sent.append(event) or "confirmed", {"status": "delivered"}))
     ctx = types.SimpleNamespace(
         pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
         task_id="wake-1", is_direct_chat=True, last_owner_delivery=None,
         task_metadata=dict(_wake_task("act")["metadata"]),
     )
-    assert control_routing._steer_task(ctx, task_id="r-1", message="please also check X") == "WRITTEN"
-    assert sent == [({"kind": "task", "task_id": "wake-1", "root_task_id": "wake-1"}, "r-1", "please also check X")]
-    assert ctx.pending_events == []
+    assert "Message written" in control_relay._tell_task(ctx, task_id="r-1", note="please also check X")
+    assert sent[0]["issuer"] == {"kind": "task", "task_id": "wake-1", "root_task_id": "wake-1"}
+    assert sent[0]["message"] == "please also check X" and sent[0]["quotes"] == []
+    assert sent[0]["type"] == "steer_task"
 
 
 # --- origin inheritance: promote / followup / subagent -------------------------
@@ -956,7 +957,7 @@ def test_a_wake_without_the_manifest_continues_a_settled_root_and_still_refuses_
     """The door judges the root, not the facts a wake was handed: with no manifest at all
     a wake continues a settled root on both verbs (the pointer is rebuilt from the durable
     result and equals the one the manifest would have shown), while a live root keeps its
-    typed refusal toward steer_task and emits nothing."""
+    typed refusal toward tell_task and emits nothing."""
     from ouroboros.projects_registry import create_project
     from ouroboros.tools.control_routing import _promote_chat_to_task, _route_to_project
 
@@ -981,5 +982,5 @@ def test_a_wake_without_the_manifest_continues_a_settled_root_and_still_refuses_
     })
     refused = _wake_routing_ctx(tmp_path)
     out = _route_to_project(refused, "racer", "Continue the racer", predecessor_task_id="racer-live")
-    assert out.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project)") and "steer_task" in out
+    assert out.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project)") and "tell_task" in out
     assert refused.pending_events == []

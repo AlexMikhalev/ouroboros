@@ -944,17 +944,17 @@ def test_an_unmet_swarm_obligation_follows_the_promoted_work(tmp_path, monkeypat
 
 
 def test_managed_swarm_can_steer_through_the_ordinary_receipt_path(tmp_path, monkeypatch):
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     monkeypatch.setattr(
         "ouroboros.tools.control_events._wait_for_routing_annotation",
         lambda *_args, **_kwargs: {"status": "delivered"},
     )
     ctx = _managed_swarm_ctx(tmp_path, task_id="swarm-root")
-    out = _steer_task(ctx, "existing-root", "do this there")
+    out = _tell_task(ctx, "existing-root", "do this there")
     # A Swarm root speaks for itself: its words are WRITTEN as a task message
     # (never the owner's), on the same receipt rail (wave 2 issuer fact).
-    assert out.startswith("✉️ Message to task existing-root written to its mailbox (durably confirmed")
+    assert out.startswith("Message written to existing-root")
     assert ctx.pending_events[0]["type"] == "steer_task"
     assert ctx.pending_events[0]["target_task_id"] == "existing-root"
     assert ctx.pending_events[0]["issuer"] == {
@@ -2285,7 +2285,7 @@ def test_journal_write_rejects_over_limit_instead_of_truncating(tmp_path, monkey
 def test_steer_task_tool_emits_event_with_target_and_client_id(tmp_path):
     """The agent's steer_task choice emits a transport event (target + message +
     chat + originating message id); the supervisor performs the actual delivery."""
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     events = []
     ctx = types.SimpleNamespace(
@@ -2294,24 +2294,25 @@ def test_steer_task_tool_emits_event_with_target_and_client_id(tmp_path):
         task_metadata={"client_message_id": "cm-42",
                        "origin_message_ref": {"chat_id": 1, "client_message_id": "cm-42"}},
     )
-    out = _steer_task(ctx, "abc12345", "also add the benchmarks slide")
-    assert out.startswith("⚠️ STEER_UNCONFIRMED")
+    out = _tell_task(ctx, "abc12345", "also add the benchmarks slide")
+    assert out.startswith("TELL_UNCONFIRMED")
     assert len(events) == 1
     evt = events[0]
     assert evt["type"] == "steer_task"
     assert evt["target_task_id"] == "abc12345"
     assert evt["message"] == "also add the benchmarks slide"
     assert evt["chat_id"] == 1
-    assert evt["client_message_id"] == "cm-42"
+    assert evt["client_message_id"].startswith("agent-steer:")
+    assert evt["quotes"] == []
     # The host-minted issuer fact replaces the routing-contract lane flag: a
     # chat turn is an owner turn, and the lane is the supervisor's registry answer.
-    assert evt["issuer"] == {"kind": "owner_turn"}
+    assert evt["issuer"] == {"kind": "owner_turn", "task_id": ""}
     assert "allow_global_root" not in evt
     assert ctx._typed_routing_action_emitted == "steer_task"
 
 
-def test_steer_task_uses_exact_ingress_owner_text(tmp_path):
-    from ouroboros.tools.control import _steer_task
+def test_tell_keeps_note_without_implicit_origin_substitution(tmp_path):
+    from ouroboros.tools.control import _tell_task
 
     events = []
     exact = "  exact owner text\nwith trailing space  "
@@ -2328,15 +2329,16 @@ def test_steer_task_uses_exact_ingress_owner_text(tmp_path):
         },
     )
 
-    _steer_task(ctx, "target-task", "model paraphrase")
+    _tell_task(ctx, "target-task", "model paraphrase")
 
-    assert events[0]["message"] == exact
+    assert events[0]["message"] == "model paraphrase"
+    assert events[0]["quotes"] == []
 
 
 def test_main_steer_can_address_project_bound_root_from_host_manifest(tmp_path, monkeypatch):
     import supervisor.queue as queue
-    from ouroboros.owner_mailbox import drain_owner_messages
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.tools.control import _tell_task
     from supervisor.events import _handle_steer_task
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
@@ -2353,8 +2355,8 @@ def test_main_steer_can_address_project_bound_root_from_host_manifest(tmp_path, 
             "routing_contract": {"source_lane": "main"},
         },
     )
-    _steer_task(tool_ctx, "project-root", "continue from Main")
-    assert emitted[0]["issuer"] == {"kind": "owner_turn"}
+    _tell_task(tool_ctx, "project-root", "continue from Main")
+    assert emitted[0]["issuer"] == {"kind": "owner_turn", "task_id": ""}
 
     supervisor_ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
@@ -2366,15 +2368,15 @@ def test_main_steer_can_address_project_bound_root_from_host_manifest(tmp_path, 
         },
     )
     _handle_steer_task(emitted[0], supervisor_ctx)
-    assert drain_owner_messages(tmp_path, "project-root") == ["continue from Main"]
+    assert [e["text"] for e in drain_owner_entries(tmp_path, "project-root")] == ["continue from Main"]
 
 
 def test_busy_direct_main_root_is_manifested_and_steerable_without_promotion(tmp_path):
     import threading
 
     import server
-    from ouroboros.owner_mailbox import drain_owner_messages
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.tools.control import _tell_task
     from supervisor.events import _handle_steer_task
 
     direct_agent = types.SimpleNamespace(
@@ -2417,7 +2419,7 @@ def test_busy_direct_main_root_is_manifested_and_steerable_without_promotion(tmp
             "routing_contract": metadata["routing_contract"],
         },
     )
-    _steer_task(tool_ctx, "direct-root", "Use FusionBrain images too")
+    _tell_task(tool_ctx, "direct-root", "Use FusionBrain images too")
     assert [event["type"] for event in emitted] == ["steer_task"]
 
     event_ctx = types.SimpleNamespace(
@@ -2427,7 +2429,7 @@ def test_busy_direct_main_root_is_manifested_and_steerable_without_promotion(tmp
         get_chat_agent=lambda: direct_agent,
     )
     _handle_steer_task(emitted[0], event_ctx)
-    assert drain_owner_messages(tmp_path, "direct-root") == ["Use FusionBrain images too"]
+    assert [e["text"] for e in drain_owner_entries(tmp_path, "direct-root")] == ["Use FusionBrain images too"]
 
 
 def test_direct_turn_closed_admission_returns_manual_target(tmp_path):
@@ -2472,11 +2474,11 @@ def test_direct_turn_closed_admission_returns_manual_target(tmp_path):
 
 
 def test_steer_task_tool_requires_args(tmp_path):
-    from ouroboros.tools.control import _steer_task
+    from ouroboros.tools.control import _tell_task
 
     ctx = types.SimpleNamespace(pending_events=[], event_queue=None, current_chat_id=1, task_metadata={})
-    assert "TOOL_ARG_ERROR" in _steer_task(ctx, "", "msg")
-    assert "TOOL_ARG_ERROR" in _steer_task(ctx, "t1", "")
+    assert "TOOL_ARG_ERROR" in _tell_task(ctx, "", "msg")
+    assert "TOOL_ARG_ERROR" in _tell_task(ctx, "t1", "")
     assert not ctx.pending_events
 
 
@@ -2501,56 +2503,6 @@ def test_handle_steer_task_delivers_once_to_running_task(tmp_path, monkeypatch):
     assert [e["text"] for e in entries] == ["steer me"]  # delivered exactly once
 
 
-@pytest.mark.parametrize("chat_id", [1, 0, None])
-def test_steering_delivers_text_and_keeps_the_attachment_report_on_receipt_and_mailbox_only(
-    tmp_path, monkeypatch, chat_id,
-):
-    import supervisor.queue as queue
-    from ouroboros.owner_mailbox import drain_owner_entries
-    from ouroboros.project_dialogue import latest_chat_annotations
-    from supervisor.events import _handle_steer_task
-
-    monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
-    good = tmp_path / "good.txt"
-    good.write_text("ok", encoding="utf-8")
-    notices = []
-    acks = []
-    bridge = types.SimpleNamespace(
-        send_routing_ack=lambda _chat_id, **payload: acks.append(payload),
-    )
-    ctx = types.SimpleNamespace(
-        DRIVE_ROOT=tmp_path,
-        RUNNING={"t-report": {"task": {"id": "t-report", "chat_id": chat_id or 0}}},
-        send_with_budget=lambda _cid, text, *a, **k: notices.append(text),
-        bridge=bridge,
-    )
-    exact = "urgent owner text  \n"
-    evt = {
-        "type": "steer_task",
-        "target_task_id": "t-report",
-        "message": exact,
-        "chat_id": chat_id,
-        "client_message_id": "cm-report",
-        "routing_token": "route-report",
-        "attachment_uploads": [
-            {"path": str(good), "label": "good"},
-            {"path": str(tmp_path / "missing.txt"), "label": "missing"},
-        ],
-    }
-
-    _handle_steer_task(evt, ctx)
-
-    delivered = drain_owner_entries(tmp_path, "t-report")[0]["text"]
-    assert delivered.startswith(exact)
-    report = delivered.split("[ATTACHMENTS]\n", 1)[1].split("\n[END_ATTACHMENTS]", 1)[0]
-    assert "read_file(" in report and "rejected (reason=" in report  # the model keeps its whole block
-    assert notices == []  # a landed act publishes no row, whatever the chat
-    annotation = latest_chat_annotations(tmp_path)["cm-report"]
-    assert annotation["attachment_manifest"] == acks[-1]["attachment_manifest"]
-    assert [row["status"] for row in annotation["attachment_manifest"]] == [
-        "staged", "rejected",
-    ]
-    assert annotation["detail"] == report
 
 
 def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
@@ -2591,6 +2543,7 @@ def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
         get_chat_agent=lambda: direct_agent,
         bridge=types.SimpleNamespace(
             send_routing_ack=lambda _chat_id, **payload: acks.append(payload),
+            send_message=lambda *a, **k: None,
         ),
         send_with_budget=lambda _chat_id, text, *args, **kwargs: notices.append(text),
         persist_queue_snapshot=lambda **_kwargs: None,
@@ -2612,7 +2565,7 @@ def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
 
     assert acks[-1]["target"] == "direct-live-opaque-id"
     assert acks[-1]["target_label"] == "Tower Defence › Fix nested delegation"
-    assert [row["status"] for row in acks[-1]["attachment_manifest"]] == ["staged"]
+    assert acks[-1]["status"] == "delivered"
     assert notices == []  # the receipt carries the identity; no staging row in the chat
 
 
@@ -2693,16 +2646,16 @@ def test_handle_steer_task_stale_target_notifies_visibly(tmp_path, monkeypatch):
     _handle_steer_task({"target_task_id": "gone", "message": "a", "chat_id": room}, ctx)   # not running
     _handle_steer_task({"target_task_id": "other", "message": "b", "chat_id": room}, ctx)  # wrong chat
     _handle_steer_task({"target_task_id": "sub", "message": "c", "chat_id": room}, ctx)    # subagent
-    assert len(notices) == 3
+    assert len(notices) == 2
     for (cid, text, kwargs), target, reason in zip(
-        notices, ("gone", "other", "sub"), ("target_unknown", "chat_mismatch", "subagent_target"),
+        notices, ("gone", "sub"), ("target_unknown", "subagent_target"),
     ):
         assert cid == room
         assert kwargs == {"role": "system", "system_type": "steer_not_delivered", "task_id": target}
         assert routing_refusal_cause("steer_task", "needs_manual_target", reason) in text
         assert "I'll" not in text and "Couldn't steer task" not in text
     assert drain_owner_entries(tmp_path, "gone") == []
-    assert drain_owner_entries(tmp_path, "other") == []
+    assert [e["text"] for e in drain_owner_entries(tmp_path, "other")] == ["b"]
     assert drain_owner_entries(tmp_path, "sub") == []
 
 
@@ -2960,26 +2913,6 @@ def _steer_refusal(tmp_path, monkeypatch, *, running: dict, chat_id: int = 1):
     return receipts[-1], sent
 
 
-def test_steer_refusal_names_the_room_when_the_task_belongs_to_another_chat(tmp_path, monkeypatch):
-    """Four refusals folded into one boolean told the owner the task "may have
-    finished" while it ran in its own project room for another half hour, and the
-    receipt said only `target_not_steerable`. The room is what the owner needs.
-    The refusing turn is itself a Project room (Main may address any root)."""
-    from ouroboros.projects_registry import create_project
-    from ouroboros.project_dialogue import routing_refusal_cause
-
-    create_project(tmp_path, "roomp", name="RoomP")
-    issuing_room = int(create_project(tmp_path, "rooma", name="RoomA")["chat_id"])
-    receipt, sent = _steer_refusal(tmp_path, monkeypatch, chat_id=issuing_room, running={
-        "target-1": {"task": {"id": "target-1", "chat_id": 777, "project_id": "roomp",
-                              "title": "Deploy the docs"}},
-    })
-
-    assert receipt["status"] == "needs_manual_target" and receipt["reason"] == "chat_mismatch"
-    assert len(sent) == 1
-    text, kwargs = sent[0]
-    assert text == "RoomP › Deploy the docs · " + routing_refusal_cause("steer_task", "needs_manual_target", "chat_mismatch")
-    assert kwargs == {"role": "system", "system_type": "steer_not_delivered", "task_id": "target-1"}
 
 
 @pytest.mark.parametrize("running, reason", [
@@ -3024,23 +2957,23 @@ def test_steer_reaches_a_queue_resident_direct_turn(tmp_path, monkeypatch):
     assert receipts[-1].get("status") == "delivered"
 
 
-def test_the_steer_tool_renders_the_typed_reason_and_still_defaults_without_one(monkeypatch):
+def test_the_steer_tool_renders_the_typed_reason_and_still_defaults_without_one(tmp_path, monkeypatch):
     """The fallback belongs to the RENDERER, not to the emitter: every refusal the
     handler emits now carries its own typed reason, and a receipt that carries
     none (another producer, an older row) still renders the documented default."""
-    from ouroboros.tools import control_routing
+    from ouroboros.tools import control_routing, control_relay
 
     answers = iter([
-        ("live", {"status": "needs_manual_target", "reason": "chat_mismatch"}),
+        ("live", {"status": "needs_manual_target", "reason": "target_finished"}),
         ("live", {"status": "needs_manual_target"}),
     ])
     monkeypatch.setattr(control_routing, "_emit_and_wait_for_routing",
                         lambda _ctx, _evt: next(answers))
     ctx = types.SimpleNamespace(pending_events=[], event_queue=None, current_chat_id=1,
-                                task_metadata={})
+                                task_metadata={}, drive_root=tmp_path)
 
-    assert "(chat_mismatch)" in control_routing._steer_task(ctx, "t1", "go")
-    assert "(target_not_steerable)" in control_routing._steer_task(ctx, "t1", "go")
+    assert "target_finished" in control_relay._tell_task(ctx, "t1", "go")
+    assert "target_not_steerable" in control_relay._tell_task(ctx, "t1", "go")
 
 
 def _repair_hint(**kwargs):

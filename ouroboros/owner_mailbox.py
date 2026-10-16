@@ -146,7 +146,7 @@ def acknowledged_task_message_ids(
                     continue
                 if (
                     isinstance(entry, dict)
-                    and str(entry.get("kind") or KIND_OWNER_TEXT) == KIND_OWNER_TEXT
+                    and str(entry.get("kind") or KIND_OWNER_TEXT) in {KIND_OWNER_TEXT, "relay_entry"}
                     and str(entry.get("msg_id") or "")
                 ):
                     legacy_owner_ids.add(str(entry["msg_id"]))
@@ -226,7 +226,7 @@ def acknowledge_transcript_entry(
     *,
     wake_id: str = "loop_delivery",
     attempt_key: Any = None,
-) -> None:
+) -> bool:
     """Durably acknowledge one mailbox entry after transcript injection."""
     if attempt_key is None:
         attempt_key = entry.get("_owner_attempt_key")

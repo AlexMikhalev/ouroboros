@@ -241,6 +241,9 @@ def _drain_incoming_messages(
                 from ouroboros.owner_quiz import late_answer_owner_text
                 answer = (entry.get("quiz_delivery") or {}).get("answer_snapshot")
                 owner_words = late_answer_owner_text(answer) if isinstance(answer, dict) else dmsg
+                if isinstance(answer, dict):
+                    from ouroboros.owner_relay import retain_owner_message
+                    retain_owner_message(owner_ctx, (answer.get("delivery") or {}).get("answer_row"))
                 _loop()._record_owner_directive(
                     owner_ctx, source="owner_quiz_answer", content=owner_words,
                     msg_id=str(entry.get("msg_id") or ""),

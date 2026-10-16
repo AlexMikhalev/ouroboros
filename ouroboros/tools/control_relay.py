@@ -21,7 +21,7 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
     message_id = next((q["source"]["client_message_id"] for q in quotes if q["source"]["client_message_id"]), "")
     event = {"type": "steer_task", "routing_token": relay_id, "relay_id": relay_id,
              "target_task_id": target, "message": note, "quotes": quotes,
-             "chat_id": int(getattr(ctx, "current_chat_id", 1) or 1),
+             "chat_id": int(quotes[0]["source"]["chat_id"] if quotes else getattr(ctx, "current_chat_id", 1)),
              "client_message_id": message_id or f"{AGENT_RECEIPT_ID_PREFIX}{relay_id}",
              "issuer": {**_routing_issuer(ctx), "task_id": str(getattr(ctx, "task_id", "") or "")},
              "ts": utc_now_iso()}
@@ -31,8 +31,13 @@ def _tell_task(ctx, task_id: str, note: str = "", quote: list | None = None) -> 
     status = receipt.get("status")
     if status in {"delivered", "read"}:
         return f"Message written to {target}; relay_id={relay_id}. Read acknowledgement follows when it drains."
-    reason = receipt.get("reason") or "confirmation_timeout"
+    reason = receipt.get("reason") or ("target_not_steerable" if status in {"rejected", "needs_manual_target"}
+                                      else "confirmation_timeout")
     if status in {"rejected", "needs_manual_target"}:
-        return f"TELL_REJECTED: {target}: {reason}. Nothing was delivered."
-    return (f"TELL_UNCONFIRMED: {target}: {reason} ({mode}); relay_id={relay_id}. "
-            "The request may still land. Check its receipt before sending the words again.")
+        return publish_no_effect(ctx, ToolResult(status="error", code="TOOL_REPORTED_FAILURE",
+            text=f"TELL_REJECTED: {target}: {reason}. Nothing was delivered.", meta={"reason_code": reason}))
+    from ouroboros.tools.tool_result import _publish_tool_result
+    return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_REPORTED_FAILURE",
+        text=(f"TELL_UNCONFIRMED: {target}: {reason} ({mode}); relay_id={relay_id}. "
+              "The request may still land. Check its receipt before sending the words again."),
+        meta={"reason_code": reason, "relay_id": relay_id}))

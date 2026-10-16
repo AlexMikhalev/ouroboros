@@ -107,6 +107,9 @@ def _addressable_root_tasks(ctx: Any, chat_id: Optional[int] = None) -> list:
         if isinstance(pending, dict):
             _add(pending.get("id"), pending, "pending", pending.get("queued_at"))
     for direct in _active_direct_roots(ctx):
+        if direct["task_id"] in seen and direct.get("room_reader"):
+            out[:] = [row for row in out if row["task_id"] != direct["task_id"]]
+            seen.discard(direct["task_id"])
         if direct["task_id"] not in seen and (
             chat_id is None or _task_belongs_to_chat(ctx, direct["task_id"], direct, chat_id)
         ):

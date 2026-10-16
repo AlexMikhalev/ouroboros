@@ -67,6 +67,11 @@ def test_live_answer_is_owed_until_saved_read_and_keeps_only_owner_words(tmp_pat
     assert debt(tmp_path)["state"] == "delivered"
     assert "Which database?" in str(messages) and "postgres" in str(messages)
     assert [r["content"] for r in ctx._owner_directives] == ["exact answer"]
+    from ouroboros.owner_relay import quote_rows
+    [handle] = ctx._held_owner_messages
+    [quoted], error = quote_rows(ctx, [handle])
+    assert not error and quoted["text"] == "exact answer"
+    assert "Which database?" in quoted["question_frame"]
     assert _inbox(bridge) == []
 
 

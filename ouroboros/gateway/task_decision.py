@@ -189,14 +189,14 @@ def _record_quiz_answer_history(
         raise ValueError(_reason or "publication_address_unknown")
     address["chat_id"] = published_chat
     index = block.get("answered_index")
-    log_chat(
+    stored = log_chat(
         "system", address.get("chat_id"), 0,
         _quiz_answer_frame(block, index if isinstance(index, int) else None, str(block.get("comment") or "")),
         ts=str(block["answered_at"]), source="owner_quiz_answer", task_id=task_id,
         client_message_id=source_id, record_type="quiz_answer", quiz=dict(block),
         message_meta=address, drive_root=drive_root, require_write=True,
     )
-    mark_quiz_history_written(drive_root, task_id, str(block["quiz_id"]))
+    mark_quiz_history_written(drive_root, task_id, str(block["quiz_id"]), source_row=stored)
 
 
 def _late_answer_destination(
@@ -571,6 +571,7 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
             from ouroboros.question_answers import deliver_answer
             forwarded, forward_reason = await run_sync_to_completion(
                 deliver_answer, drive_root, task_id, quiz_id, block, _live_root_task, _forward_late_quiz_answer)
+            late_delivery = late_delivery or bool(forwarded)
             forward_reason = pending_reason or forward_reason
             if forward_reason:
                 record_quiz_delivery_failure(drive_root, task_id, quiz_id, forward_reason)
@@ -621,7 +622,8 @@ async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = 
             record_quiz_delivery_failure(drive_root, task_id, quiz_id, "quiz_delivery_failed")
         except Exception:
             log.warning("Could not record quiz delivery failure for %s", quiz_id, exc_info=True)
-        return 503, {"error": str(exc)}
+        return _answer_pending(drive_root, task_id, quiz_id, "quiz_delivery_failed",
+                               "The answer was recorded. Delivery remains pending.")
     payload_ok = _quiz_decision_receipt(decision_id, outcome, block)
     if late_delivery:
         # The card outlived its author: say so, and say whether the answer

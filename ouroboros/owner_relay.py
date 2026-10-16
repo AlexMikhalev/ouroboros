@@ -17,7 +17,15 @@ KIND_RELAY = "relay_entry"
 
 def _owner_row(row) -> bool:
     from ouroboros.owner_words import _owner_row as attested
-    return attested(row)
+    return attested(row) or bool(row and row.get("type") == "quiz_answer"
+        and row.get("source") == "owner_quiz_answer" and (row.get("quiz") or {}).get("state") == "answered")
+
+
+def owner_text(row) -> str:
+    if row.get("type") == "quiz_answer":
+        from ouroboros.owner_quiz import late_answer_owner_text
+        return late_answer_owner_text(row["quiz"])
+    return "" if row.get("text_placeholder") else str(row.get("text") or "")
 
 
 def held_owner_messages(ctx) -> dict:
@@ -44,7 +52,7 @@ def retain_owner_message(ctx, row=None, *, client_message_id="") -> None:
     if row is None and client_message_id and getattr(ctx, "drive_root", None):
         from supervisor.message_ingress import accepted_chat_message
         from ouroboros.tool_access import canonical_data_root
-        row = accepted_chat_message(canonical_data_root(ctx), int(getattr(ctx, "current_chat_id", 1) or 1),
+        row = accepted_chat_message(canonical_data_root(ctx), int(getattr(ctx, "current_chat_id", 1)),
                                     client_message_id)
     if _owner_row(row):
         held_owner_messages(ctx)[format_address(row_address(row))] = copy.deepcopy(row)
@@ -53,7 +61,7 @@ def retain_owner_message(ctx, row=None, *, client_message_id="") -> None:
             from ouroboros.tool_access import canonical_data_root
             patch_document(canonical_data_root(ctx), ctx.task_id, lambda current: {
                 **current, "held_owner_messages": {**current.get("held_owner_messages", {}),
-                                                  **copy.deepcopy(ctx._held_owner_messages)}})
+                                                  **copy.deepcopy(ctx._held_owner_messages)}} if current else current)
 
 
 def quote_rows(ctx, handles) -> tuple[list, str]:
@@ -66,12 +74,15 @@ def quote_rows(ctx, handles) -> tuple[list, str]:
     quotes = []
     for handle in dict.fromkeys(handles):
         row = held[handle]
-        chat_id = int(row.get("chat_id") or 1)
-        quotes.append({"text": str(row.get("text") or ""), "attachments": copy.deepcopy(row.get("attachments") or []),
+        chat_id = int(row.get("chat_id", 1))
+        quotes.append({"text": owner_text(row), "attachments": copy.deepcopy(row.get("attachments") or []),
                        "source": {"chat_id": chat_id, "label": labels.get(chat_id, "Main"),
                                   "ts": str(row.get("ts") or ""), "address": handle,
                                   "client_message_id": str(row.get("client_message_id") or "")},
                        "owner_row": copy.deepcopy(row)})
+        if row.get("type") == "quiz_answer":
+            from ouroboros.owner_quiz import recorded_answer_frame
+            quotes[-1]["question_frame"] = recorded_answer_frame(row["quiz"])
     return quotes, ""
 
 
@@ -85,7 +96,7 @@ def relay_envelope(relay_id: str, quotes: list, *, chat_id: int) -> dict:
 
 
 def write_relay(root, task_id: str, *, relay_id: str, note: str, quotes: list, chat_id: int,
-                teller_task_id: str, canonical_root=None) -> tuple[dict, bool]:
+                teller_task_id: str, canonical_root=None, sender_origin=None) -> tuple[dict, bool]:
     """Mail lock: dedupe then append; caller bumps generation only on a new quote."""
     from ouroboros.owner_mailbox import _mailbox_path, mailbox_lines
     from ouroboros.task_custody import task_mail_lock
@@ -96,6 +107,8 @@ def write_relay(root, task_id: str, *, relay_id: str, note: str, quotes: list, c
              "text": note, "relay": relay_envelope(relay_id, quotes, chat_id=chat_id),
              "owner_rows": [q["owner_row"] for q in quotes], "source_task_id": teller_task_id,
              "relay_canonical_root": str(canonical_root or root)}
+    if sender_origin:
+        entry["sender_origin"] = copy.deepcopy(sender_origin)
     with task_mail_lock(root, task_id) as locked:
         if not locked:
             raise OSError("relay mailbox lock unavailable")
@@ -117,8 +130,11 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
     for row in entry.get("owner_rows") or []:
         retain_owner_message(ctx, row)
         address = format_address(row_address(row))
-        loop._record_owner_directive(ctx, source="owner_mailbox", content=row.get("text", ""), msg_id=address)
-        body = f"[Owner words quoted verbatim; handle {address}]\n{row.get('text', '')}"
+        loop._record_owner_directive(ctx, source="owner_mailbox", content=owner_text(row), msg_id=address)
+        body = f"[Owner words quoted verbatim; handle {address}]\n{owner_text(row)}"
+        if row.get("type") == "quiz_answer":
+            from ouroboros.owner_quiz import recorded_answer_frame
+            body += "\n[Host question frame]\n" + recorded_answer_frame(row["quiz"])
         if row.get("attachments"):
             body += "\n[Host-retained attachments]\n" + json.dumps(row["attachments"], ensure_ascii=False)
         loop._append_or_merge_user_message(messages, body, slot=ctx)
@@ -157,9 +173,9 @@ def relay_target_facts(root, target: str, task=None) -> dict:
     from ouroboros.projects_registry import project_chat_for_task, list_reserved_projects
     from ouroboros.task_results import load_task_result
     task = task or load_task_result(root, target) or {}
-    chat_id = project_chat_for_task(root, target) or task.get("chat_id") or 1
+    chat_id = project_chat_for_task(root, target) or task.get("chat_id", 1)
     project = next((p for p in list_reserved_projects(root) if p["chat_id"] == chat_id), {})
-    return {"project_id": str(project.get("id") or ""), "project_name": str(project.get("name") or "Main"),
+    return {"project_id": str(project.get("id") or ""), "project_name": str(project.get("name") or ("Main" if chat_id else "Hidden")),
             "project_chat_id": int(chat_id), "target_task_ids": [target],
             "target_titles": [str(task.get("title") or task.get("text") or target)]}
 
@@ -203,7 +219,7 @@ def publish_relay(root, target: str, entry: dict, bridge, task=None) -> None:
             stored = log_chat("out", facts["project_chat_id"], 0, entry["text"], ts=entry["ts"],
                               task_id=target, record_type=KIND_RELAY, client_message_id=entry["msg_id"],
                               message_meta={"relay": entry["relay"]}, drive_root=root, require_write=True)
-    if bridge is not None:
+    if bridge is not None and stored["chat_id"]:
         bridge.send_message(stored["chat_id"], stored["text"], task_id=target, ts=stored["ts"],
                             system_type=KIND_RELAY,
                             progress_meta={"kind": KIND_RELAY, **projection_fields(stored)})

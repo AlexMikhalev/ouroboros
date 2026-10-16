@@ -91,8 +91,10 @@ def deliver_answer(root, asker: str, quiz_id: str, block: dict, live_reader, fal
         roots = {Path(root), Path(delivery.get("recipient_drive") or root)}
         if delivery.get("read_at") or any(mail_read_state(r, previous, delivery["msg_id"]) is True for r in roots):
             _update_delivery(root, asker, quiz_id, {"read_at": utc_now_iso()})
-            mark_discharged(root, asker, quiz_id)
-            return False, ""
+            if delivery.get("history_at"):
+                mark_discharged(root, asker, quiz_id)
+                return False, ""
+            return False, "quiz_history_write_pending"
     recipient, task = reading_recipient(root, asker, live_reader)
     if task is not None:
         agent = get_direct_chat_agent(recipient)

@@ -196,6 +196,10 @@ def _route_project_chat_to_running_task(
                 ctx, task_drive, tid, task_metadata, image_data,
             )
             if direct_lock_held:
+                from ouroboros.room_reader import is_reading
+                if not is_reading(task_drive, tid, task_obj or candidate, running=True):
+                    _drop_staged_inputs()
+                    return ""
                 # AR2-6 (fable): the direct-agent lane used to skip the
                 # cancel-pending admission check the queue lane makes below — a
                 # direct turn whose cancellation is pending must not accept a

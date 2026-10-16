@@ -207,6 +207,7 @@ def _annotation_carrier(drive_root: Any, task_id: str, record: Mapping[str, Any]
 
 def _mailbox_carrier(drive_root: Any, task_id: str, record: Mapping[str, Any]) -> List[Dict[str, str]]:
     from ouroboros.owner_mailbox import KIND_OWNER_TEXT, drain_owner_entries
+    from ouroboros.owner_relay import owner_text, _owner_row as relay_owner_row
 
     try:
         entries = drain_owner_entries(pathlib.Path(drive_root), task_id, include_acknowledged=True)
@@ -214,9 +215,9 @@ def _mailbox_carrier(drive_root: Any, task_id: str, record: Mapping[str, Any]) -
         return []
     return [_row(entry.get("text"), source="owner_mailbox", carrier="mailbox", task_id=task_id, ts=entry.get("ts"),
                  ref=f"msg {entry.get('msg_id')}") for entry in entries if entry.get("kind") == KIND_OWNER_TEXT] + [
-        _row(row.get("text"), source="owner_mailbox", carrier="relay", task_id=task_id, ts=row.get("ts"),
+        _row(owner_text(row), source="owner_mailbox", carrier="relay", task_id=task_id, ts=row.get("ts"),
              ref=_chat_ref(row)) for entry in entries if entry.get("kind") == "relay_entry"
-        for row in entry.get("owner_rows") or [] if _owner_row(row)]
+        for row in entry.get("owner_rows") or [] if relay_owner_row(row)]
 
 
 def _task_record(drive_root: Any, task_id: str) -> Dict[str, Any]:

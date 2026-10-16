@@ -147,6 +147,13 @@ def _steer_receipt(
         status=status, reason=reason, detail=detail,
         attachment_manifest=attachment_manifest, publish=not task_issued or bool(owner_message_id),
     )
+    for quote in evt.get("quotes") or []:
+        source = quote.get("source") or {}
+        if source.get("client_message_id") and source["client_message_id"] != evt.get("client_message_id"):
+            _emit_routing_receipt(ctx, {**evt, "client_message_id": source["client_message_id"],
+                                       "chat_id": source["chat_id"]},
+                                  action="steer_task", target=target, target_label=target_label,
+                                  status=status, reason=reason, detail=detail)
     if task_issued:
         # One typed Logs row per task-authored act: true author, target, outcome
         # (7A). The receiving task's own timeline gets ``task_message_injected``
@@ -354,7 +361,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             relay_entry, newly_written = write_relay(
                 drive, target, relay_id=str(evt.get("relay_id") or routing_token or msg_id),
                 note=message, quotes=list(evt.get("quotes") or []), chat_id=chat_id,
-                teller_task_id=issuer_task_id, canonical_root=ctx.DRIVE_ROOT)
+                teller_task_id=issuer_task_id, canonical_root=ctx.DRIVE_ROOT, sender_origin=evt.get("sender_origin"))
             delivered = True
             if not newly_written or not evt.get("quotes"):
                 active_fence = None  # context alone supersedes no reviewed owner answer
@@ -397,9 +404,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         if fence_generation_changed:
             ctx.persist_queue_snapshot(reason="acceptance_fence_owner_message")
         log.info("steer_task: delivered to task %s (chat %s) on drive %s", target, chat_id, drive)
-        # A landed act publishes no row: the receipt on the owner's message keeps
-        # the staging manifest, the target's mailbox and the caller's tool result
-        # keep the model's [ATTACHMENTS] block (DESIGN "Chat authorship and System rows").
+        # The one visible forward is separate from the silent source receipt.
         from ouroboros.owner_relay import publish_relay
         publish_relay(ctx.DRIVE_ROOT, target, relay_entry, getattr(ctx, "bridge", None), task)
         _steer_receipt(

@@ -1354,6 +1354,8 @@ def log_chat(
         for key in ("reply_to", "relay"):
             if isinstance(meta.get(key), dict) and meta[key]:
                 record[key] = dict(meta[key])
+        if meta.get("reply_to_relay"):
+            record["reply_to_relay"] = str(meta["reply_to_relay"])
         if meta.get("late_answer"):
             from ouroboros.owner_quiz import late_answer_ref
             accepted_answer = late_answer_ref(meta["late_answer"])
@@ -1467,7 +1469,7 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         meta["narration"] = bool(narration)
     meta.setdefault("narration", False)
     from ouroboros.chat_references import origin_reply, projection_fields
-    if reply := origin_reply(DATA_DIR, task_id):
+    if not is_progress and (reply := origin_reply(DATA_DIR, task_id, meta if meta.get("origin_message_ref") else None)):
         meta.setdefault("reply_to", reply)
     progress_meta = meta
     if task_id and DATA_DIR and system_type not in ROOM_FIXED_ROW_TYPES and meta.get("_is_direct_chat") is not True:

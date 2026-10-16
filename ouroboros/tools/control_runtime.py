@@ -441,6 +441,8 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         from ouroboros.tool_access import canonical_data_root
         relay, error = select_return(ctx, reply_to_relay)
         error = error or owner_contact_refusal(ctx, chat_id)
+        if relay and relay["source"]["chat_id"] != chat_id:
+            error = error or _main_notice_refusal(ctx, chat_id)
         if error:
             return publish_no_effect(ctx, ToolResult(status="blocked", code="ACCESS_BLOCKED", text=error, meta={"reason_code": "RELAY_RETURN_UNRESOLVED"}))
         chat_id, system_type = relay["source"]["chat_id"], "relay_reply"

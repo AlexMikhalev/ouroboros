@@ -18,6 +18,7 @@ from ouroboros.tools import (
     control,
     control_events,
     control_routing,
+    control_relay,
     control_runtime,
     control_scheduling,
     control_subagent_spec,
@@ -30,6 +31,7 @@ REPO = pathlib.Path(__file__).parents[1]
 _LEAVES = (
     control_events,
     control_routing,
+    control_relay,
     control_runtime,
     control_scheduling,
     control_subagent_spec,
@@ -52,7 +54,7 @@ _MOVED_OWNERS = {
     "_list_projects": control_routing,
     "_promote_chat_to_task": control_routing,
     "_route_to_project": control_routing,
-    "_steer_task": control_routing,
+    "_tell_task": control_relay,
     # unrowed post-cutoff upstream family riding with its only readers
     # (promote/route): the predecessor-authority selector and its two helpers.
     "_MISSING_PREDECESSOR_SELECTOR": control_routing,
@@ -141,7 +143,7 @@ def test_control_catalog_handler_owners_point_at_the_carried_leaves():
         "promote_chat_to_task": (control_routing, "_promote_chat_to_task"),
         "list_projects": (control_routing, "_list_projects"),
         "route_to_project": (control_routing, "_route_to_project"),
-        "steer_task": (control_routing, "_steer_task"),
+        "tell_task": (control_relay, "_tell_task"),
         "set_tool_timeout": (control_runtime, "_set_tool_timeout"),
         "request_restart": (control_runtime, "_request_restart"),
         "promote_to_stable": (control_runtime, "_promote_to_stable"),

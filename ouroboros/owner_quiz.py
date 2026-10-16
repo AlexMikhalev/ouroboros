@@ -188,7 +188,8 @@ def record_quiz_delivery_failure(drive_root: Any, task_id: str, quiz_id: str, re
     _mutate_projection(drive_root, task_id, mutate)
 
 
-def mark_quiz_history_written(drive_root: Any, task_id: str, quiz_id: str, receipt: str = "history_at") -> None:
+def mark_quiz_history_written(drive_root: Any, task_id: str, quiz_id: str, receipt: str = "history_at",
+                              source_row: Optional[dict] = None) -> None:
     """Strict history append receipt; retries no longer fold history to find this fact.
     ``mailbox_at``: the live author's mailbox holds the answer or closure, which neither a
     retry nor the late path repeats while the history row alone stays owed."""
@@ -200,6 +201,8 @@ def mark_quiz_history_written(drive_root: Any, task_id: str, quiz_id: str, recei
         if delivery.get(receipt):
             return _KEEP
         delivery[receipt] = utc_now_iso()
+        if source_row is not None:
+            delivery["answer_row"] = dict(source_row)
         block["delivery"] = delivery
         return True
 
