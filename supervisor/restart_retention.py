@@ -51,6 +51,23 @@ RETAIN_OWNER_PAUSE = "saved_owner_pause_park"
 HOLD_SAVED_SLEEP_RECOVERY = "saved_sleep_recovery"
 
 
+def exact_pause_row(task: Any) -> bool:
+    """Whether a queue row carries an exact saved-pause locator, not an admission grant."""
+    pause = task.get("_budget_pause") if isinstance(task, dict) else None
+    # Marker writers stamp a boolean; a truthy string or malformed marker
+    # keeps ordinary drain/parent-interrupted settlement.
+    return isinstance(pause, dict) and pause.get("exact_continuation") is True
+
+
+def conserve_unreadable_pending(task: dict) -> bool:
+    """Live and restored saved work survives a failed result observation under its own hold."""
+    from ouroboros.project_admission import hold_unreadable_result
+
+    # Saved pauses already have their locator/hold; Project work needs
+    # its verification hold installed by the unreadable-result rule.
+    return bool(exact_pause_row(task) or hold_unreadable_result(task) or task.get("_owner_wait_resume"))
+
+
 def saved_sleep_hold_reason(result_root: Any, *, owner_restart: bool = False) -> str:
     """Read the existing stop carriers; an ordinary recovery asserts no owner action.
 

@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createChatInstance } from '../modules/chat.js';
-import { createChatMedia } from '../modules/chat_media.js';
-import { mountResultFilesReader } from '../modules/result_files.js';
 import { taskArtifactDownloadUrl } from '../modules/api_client.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
 import { createMainWaiting } from '../modules/main_waiting.js';
@@ -57,32 +55,6 @@ test('actual two-page history controller folds closure after canonical GC withou
         assert.ok(card.querySelectorAll('.chat-quiz-option').every(option => option.disabled));
         assert.equal(find(messages, node => node.dataset.historyId === closure.history_id), null);
     } finally { instance.destroy(); restoreDom(env.prior); globalThis.WebSocket = priorSocket; }
-});
-
-test('Main Files mounts the production reader for every nested member despite unavailable siblings and archive', async () => {
-    const env = installDom();
-    const media = createChatMedia({ chatSessionId: '', durableChatMediaUrl: value => value,
-        formatMsgTime: () => null, senderLabel: () => '', stampNodeTimestamp() {}, insertMessageNode() {} });
-    try {
-        const bubble = document.createElement('div'), actions = document.createElement('div');
-        env.mount.append(bubble); bubble.append(actions);
-        const artifacts = Array.from({ length: 25 }, (_, id) => ({ name: `part-${id}.txt`, relpath: `research/part-${id}.txt`, status: 'ready' }));
-        artifacts.push({ name: 'missing.txt', relpath: 'research/missing.txt', status: 'missing' },
-            { name: 'report.md', status: 'ready' }, { name: 'image.png', status: 'ready' });
-        const rendered = [];
-        const button = mountResultFilesReader(bubble, actions, 'task-1', async () => ({ task_id: 'task-1', artifacts,
-            artifact_archives: { research: { available: false } } }), row => {
-                const result = media.buildDocumentBubble(row); rendered.push({ row, html: result.innerHTML }); return result;
-            });
-        button.click(); await turn();
-        assert.equal(all(bubble, node => Object.hasOwn(node.dataset, 'resultFile')).length, 28);
-        assert.equal(all(bubble, node => node.tagName === 'DETAILS').length, 1);
-        assert.equal(rendered.length, 27);
-        assert.ok(rendered.filter(({ row }) => /\.(txt|md)$/.test(row.filename)).every(({ html }) => /is-read/.test(html)));
-        assert.equal(rendered[24].row.download_url, taskArtifactDownloadUrl('task-1', 'part-24.txt', 'research/part-24.txt'));
-        assert.ok(rendered.at(-1).html.includes('chat-file-thumb'));
-        assert.match(find(bubble, node => node.dataset.resultFile === 'research/missing.txt').textContent, /missing/);
-    } finally { media.destroy(); restoreDom(env.prior); }
 });
 
 test('nested text opens the existing document dialog and noncanonical addresses cannot enter its reader', async t => {

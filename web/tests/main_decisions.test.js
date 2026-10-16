@@ -7,7 +7,7 @@ import { createChatInstance } from '../modules/chat.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
 import { createMainWaiting } from '../modules/main_waiting.js';
 import { decorateProjectRow } from '../modules/project_answer.js';
-import { mountResultFilesReader, syncQuestionMaterials } from '../modules/result_files.js';
+import { syncQuestionMaterials } from '../modules/result_files.js';
 
 const question = (id, patch = {}) => ({ task_id: 'task-1', quiz_id: id, project_id: 'project-1',
     project_chat_id: 12, project_name: 'Build', quiz_state: 'open', question: `Question ${id}?`,
@@ -617,89 +617,27 @@ test('an interrupted owner Resume of a member offers the same Resume; the owner\
     } finally { main.destroy(); restoreDom(env.prior); }
 });
 
-test('Main Files reads the existing inventory lazily and exposes every available root file', async () => {
-    const env = installDom();
-    let calls = 0;
-    try {
-        const bubble = document.createElement('div');
-        const actions = document.createElement('div');
-        env.mount.append(bubble);
-        bubble.append(actions);
-        const button = mountResultFilesReader(bubble, actions, 'task-1', async () => {
-            calls++;
-            return { task_id: 'task-1', artifacts: Array.from({ length: 12 }, (_, id) =>
-                ({ name: `file-${id}.txt`, status: 'ready', size: 1 })) };
-        });
-        assert.equal(calls, 0);
-        button.click();
-        await turn();
-        const body = bubble.querySelector('.project-answer-files');
-        assert.equal(calls, 1);
-        assert.equal(body.querySelector('.msg-provenance').textContent, 'Available files');
-        assert.equal(body.children.filter(node => node.classList.contains('project-answer-file')).length, 12);
-        assert.ok(body.children.slice(1).every(node => node.children[0].href.startsWith('/api/tasks/task-1/artifacts/')));
-        button.click(); button.click();
-        assert.equal(calls, 1);
-    } finally { restoreDom(env.prior); }
-});
-
-test('a missing or foreign Main inventory is disclosed and retryable, never substituted', async () => {
-    const env = installDom();
-    let calls = 0;
-    try {
-        const bubble = document.createElement('div');
-        const actions = document.createElement('div');
-        env.mount.append(bubble);
-        bubble.append(actions);
-        const button = mountResultFilesReader(bubble, actions, 'task-1', async () => {
-            calls++;
-            return calls === 1 ? { task_id: 'foreign', artifacts: [{ name: 'wrong.txt' }] }
-                : { task_id: 'task-1', artifacts: [] };
-        });
-        button.click(); await turn();
-        assert.match(bubble.querySelector('.project-answer-files').textContent, /could not be loaded/);
-        button.click(); button.click(); await turn();
-        assert.equal(calls, 2);
-        assert.match(bubble.querySelector('.project-answer-files').querySelector('.msg-provenance').textContent, /No available files/);
-    } finally { restoreDom(env.prior); }
-});
-
-test('Main Files changes its height only through the stable-viewport writer its final row forwards', async t => {
+test('Main completion has one Project reference, its caveat and time, without result controls or reads', t => {
     const originalAfter = ElementStub.prototype.after;
     ElementStub.prototype.after = function(node) { return this.insertAdjacentElement('afterend', node); };
     t.after(() => { if (originalAfter) ElementStub.prototype.after = originalAfter; else delete ElementStub.prototype.after; });
     const env = installDom();
-    const reads = [], writes = [];
     try {
-        const bubble = document.createElement('div');
-        const message = document.createElement('div');
-        message.className = 'message';
-        bubble.append(message);
-        env.mount.append(bubble);
-        const body = () => bubble.querySelector('.project-answer-files');
-        const onDomWrite = (mutate, options) => {
-            const result = mutate();
-            writes.push({ hidden: body().hidden, text: body().textContent, rows: body().children.length, result, options });
-            return result;
-        };
-        const actions = decorateProjectRow(bubble, { role: 'assistant', projectId: 'project-1', projectName: 'Build',
-            systemType: 'project_completion_summary', taskId: 'task-1', onDomWrite,
-            fetchDetail: id => new Promise(resolve => reads.push({ id, resolve })) });
-        const button = actions.children.find(node => node.textContent === 'Files');
-        const step = () => writes.splice(0).map(({ hidden, text, rows, result, options }) =>
-            ({ hidden, text: text.startsWith('Available files could not') ? 'error' : text, rows, result, options }));
-        // The expansion and its loading line are one write; the reply is another, wherever it lands.
-        button.click();
-        assert.deepEqual(step(), [{ hidden: false, text: 'Loading available files…', rows: 0, result: true, options: undefined }]);
-        reads[0].resolve({ task_id: 'foreign', artifacts: [] }); await turn();
-        assert.deepEqual(step(), [{ hidden: false, text: 'error', rows: 0, result: true, options: undefined }]);
-        button.click(); button.click();
-        assert.deepEqual(step().map(({ hidden, text }) => [hidden, text]), [[true, 'error'], [false, 'Loading available files…']]);
-        reads[1].resolve({ task_id: 'task-1', artifacts: [{ name: 'report.md', status: 'ready' },
-            { name: 'brief.txt', relpath: 'research/brief.txt', status: 'ready' }] }); await turn();
-        assert.deepEqual(step(), [{ hidden: false, text: '', rows: 3, result: true, options: undefined }]);
-        button.click(); button.click();
-        assert.deepEqual(step().map(({ hidden, rows }) => [hidden, rows]), [[true, 3], [false, 3]]);
-        assert.deepEqual(reads.map(({ id }) => id), ['task-1', 'task-1'], 'a loaded inventory is never read again');
+        for (const role of ['assistant', 'system']) {
+            const bubble = document.createElement('div');
+            const message = document.createElement('div');
+            message.className = 'message';
+            bubble.append(message);
+            env.mount.append(bubble);
+            const actions = decorateProjectRow(bubble, { role, projectId: 'project-1', projectName: 'Build',
+                systemType: 'project_completion_summary', taskId: 'task-1', limitation: 'Windows is not verified.',
+                fetchDetail() { assert.fail('The Main mirror must not read the task inventory'); } });
+            assert.equal(actions.children.length, 1);
+            assert.equal(actions.children[0].dataset.intent, 'open-project');
+            assert.equal(bubble.querySelector('.project-answer-files'), null);
+            assert.equal(bubble.querySelector('[data-answer-fold]'), null);
+            assert.equal(Boolean(bubble.querySelector('.project-answer-limitation')), role === 'assistant');
+            assert.ok(bubble.children.some(node => node.classList.contains('msg-provenance')), 'time note survives');
+        }
     } finally { restoreDom(env.prior); }
 });

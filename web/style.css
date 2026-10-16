@@ -364,7 +364,7 @@ body.resizing-panels { user-select: none; }
 /* A Project root's final answer in Main is an ordinary Ouroboros message (docs/DESIGN.md
    "Project completion mirror"): folded when it is long, with the Project chip under it. The
    clamp is unconditional CSS over the complete text (never a cut, the text stays selectable);
-   `is-folded` adds the fade only when the fold really hides something; Show full sets `is-expanded`. */
+   `is-folded` adds the fade only when the fold hides text. The Project opens the complete answer. */
 .chat-bubble.project-answer {
     --project-answer-fold: calc(var(--type-section) * var(--line-body) * 7);
 }
@@ -373,11 +373,9 @@ body.resizing-panels { user-select: none; }
     -webkit-mask-image: linear-gradient(180deg, black 60%, transparent 100%);
     mask-image: linear-gradient(180deg, black 60%, transparent 100%);
 }
-.chat-bubble.project-answer.is-expanded > .message { max-height: none; }
 .chat-bubble.project-answer > .message > :first-child { margin-top: 0; }
 .chat-bubble.project-answer > .system-message-actions { align-items: center; padding-block: var(--space-2) var(--space-1); }
 .project-answer-limitation { color: var(--text-meta); white-space: normal; overflow-wrap: anywhere; }
-.project-answer-files { padding-block: var(--space-2); }
 /* Main's questions and owner actions (docs/DESIGN.md "Project question mirror"). The waiting
    pill is one of the composer's pills (Swarm / Context / Effort): their row, height and type, at
    the row's end, amber for "waits for you"; a narrow row keeps the glyph and the number. */
