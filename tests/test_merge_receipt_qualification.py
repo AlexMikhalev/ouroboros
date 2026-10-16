@@ -7,7 +7,6 @@ import json
 import os
 import pathlib
 import shutil
-import subprocess
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -21,6 +20,7 @@ from tests import test_pr_merge_receipts as merge_fixture
 from tests.test_pr_merge_receipts import BASE, HEAD, MERGE, TREE, _receipts
 from tests._store_shared import delete_result, read_result, seed_result, unreadable_result
 from tests._cancel_intents_shared import DeliveryBus
+from tests.group_run import run_in_group
 
 world = merge_fixture.world
 
@@ -239,11 +239,10 @@ def test_concurrent_publication_through_outbox_dedup_and_history(world, monkeypa
     fixture.write_text(json.dumps({"live": chats, "history": rows}), encoding="utf-8")
     node = shutil.which("node")
     assert node, "node is required for the real live/replay projection qualification"
-    result = subprocess.run([node, "--test", "--test-name-pattern=canonical receipt revisions",
-                             "web/tests/chat_card_row_placement.test.js"],
-                            cwd=pathlib.Path(__file__).resolve().parents[1],
-                            env={**os.environ, "MERGE_RECEIPT_PROJECTION": str(fixture)},
-                            capture_output=True, text=True, timeout=30)
+    result = run_in_group([node, "--test", "--test-name-pattern=canonical receipt revisions",
+                           "web/tests/chat_card_row_placement.test.js"],
+                          cwd=pathlib.Path(__file__).resolve().parents[1],
+                          env={**os.environ, "MERGE_RECEIPT_PROJECTION": str(fixture)}, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert sum(c[:2] == ["pr", "merge"] for c in world.gh.calls) == 1
 
@@ -361,10 +360,9 @@ def bounded_receipt_history(world, monkeypatch):
 def test_cold_bounded_history_supplies_current_receipt_to_new_chat(world, monkeypatch):
     payload = bounded_receipt_history(world, monkeypatch)
     fixture = world.root / "cold-history.json"
-    result = subprocess.run([shutil.which("node"), "--test", "--test-name-pattern=cold bounded receipt",
-                             "web/tests/chat_card_row_placement.test.js"],
-                            env={**os.environ, "COLD_RECEIPT_PROJECTION": str(fixture)},
-                            capture_output=True, text=True, timeout=30)
+    result = run_in_group([shutil.which("node"), "--test", "--test-name-pattern=cold bounded receipt",
+                           "web/tests/chat_card_row_placement.test.js"],
+                          env={**os.environ, "COLD_RECEIPT_PROJECTION": str(fixture)}, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     (receipt,) = [r for r in payload["messages"] if r.get("card_row_id")]
     assert receipt["card_row_revision"] == 3 and "merge: merged" in receipt["text"]
