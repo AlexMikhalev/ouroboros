@@ -207,14 +207,31 @@ def _set_root_budget_pause_locked(root_task_id: str, pause: Dict[str, Any], *,
     return row
 
 
-def fold_consumed_resume(meta: Any, drive_root: Any, evt: Optional[Dict[str, Any]] = None) -> bool:
-    """End a live or captured RUNNING clock's Resume exclusion at consumption (#939).
+def finish_resume_clock(meta: dict, paused_sec: float) -> None:
+    """Apply a confirmed total to the matched interval, preserving Resume selection."""
+    task = meta["task"]
+    resume = task.get("_budget_pause_resume") or {}
+    meta["budget_paused_sec"] = paused_sec
+    meta.pop("sleep_parked_at", None)
+    if resume.get("authority") == "explicit_resume":
+        task["_budget_pause_resume"] = {key: value for key, value in resume.items()
+                                       if key != "sleep_exclusion_since"}
+    else:
+        task.pop("_budget_pause_resume", None)
 
-    Events and the assignment tick's event handler name the grant; recovery
-    stamp producers use the captured row's own identity. Only the current durable
-    consumption decides; unreadable or changed authority leaves the clock alone.
-    """
-    from ouroboros.budget_pause import budget_pause_row, STATE_RESUMED
+
+def _resume_observation(meta: dict, drive_root: Any) -> dict:
+    from ouroboros.budget_pause import budget_pause_row
+
+    task = meta["task"]
+    if not (task.get("_budget_pause_resume") or {}).get("sleep_exclusion_since"):
+        return {}  # No pending clock observation: ordinary recovery needs no storage read.
+    return budget_pause_row(pathlib.Path(task.get("budget_drive_root") or drive_root), task["id"])
+
+
+def _apply_consumed_resume(meta: Any, row: dict, evt: Optional[Dict[str, Any]] = None) -> bool:
+    """Project the matching consumption; lineage permission belongs to Resume admission."""
+    from ouroboros.budget_pause import STATE_RESUMED
 
     task = meta.get("task") if isinstance(meta, dict) else None
     resume = (task.get("_budget_pause_resume") if isinstance(task, dict) else None) or {}
@@ -226,33 +243,28 @@ def fold_consumed_resume(meta: Any, drive_root: Any, evt: Optional[Dict[str, Any
             or not resume.get("sleep_exclusion_since")
             or meta.get("sleep_parked_at") != resume["sleep_exclusion_since"]):
         return False
-    try:
-        row = budget_pause_row(pathlib.Path(task.get("budget_drive_root") or drive_root), task["id"])
-    except Exception:
-        return False
     grant = row.get("grant") or {}
     if (row.get("state") != STATE_RESUMED
             or row.get("pause_id") != evt.get("pause_id")
             or grant.get("grant_id") != evt.get("grant_id") or not grant.get("consumed_at")
             or grant.get("revoked_at")
-            or row.get("root_task_id") != str(task.get("root_task_id") or task["id"])
             or row.get("source_ref") != resume.get("source_ref")
             or row.get("pause_generation") != resume.get("pause_generation")
             or grant.get("generation") != resume.get("grant_generation")
             or grant.get("granted_at_ts") != resume["sleep_exclusion_since"]
             or row.get("task_attempt") != evt.get("task_attempt")):
         return False
-    meta["budget_paused_sec"] = float(row["paused_duration_sec"])
-    meta.pop("sleep_parked_at", None)
-    # Consumption spends the sleep clock, not the selection: an explicit
-    # Resume keeps its fence-bound handoff like any consumed grant
-    # (``budget_fence_selected``); a readiness wake selected nothing.
-    if resume.get("authority") == "explicit_resume":
-        task["_budget_pause_resume"] = {key: value for key, value in resume.items()
-                                        if key != "sleep_exclusion_since"}
-    else:
-        task.pop("_budget_pause_resume", None)
+    finish_resume_clock(meta, float(row["paused_duration_sec"]))
     return True
+
+
+def fold_consumed_resume(meta: Any, drive_root: Any, evt: Optional[Dict[str, Any]] = None) -> bool:
+    """Recover a captured clock from storage; an unavailable observation changes nothing."""
+    try:
+        row = _resume_observation(meta, drive_root)
+    except Exception:
+        return False
+    return _apply_consumed_resume(meta, row, evt)
 
 
 def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
@@ -264,10 +276,28 @@ def _handle_budget_pause(evt: Dict[str, Any], ctx: Any) -> None:
     THAT row, never against the event's prose.
     """
     if evt.get("phase") == "consumed":
+        from ouroboros.store import acquisition_budget, StoreBusy
         from supervisor.queue import _queue_lock
 
+        task_id = str(evt.get("task_id") or "")
         with _queue_lock:
-            fold_consumed_resume(ctx.RUNNING.get(str(evt.get("task_id") or "")), ctx.DRIVE_ROOT, evt)
+            meta = ctx.RUNNING.get(task_id)
+            if not isinstance(meta, dict):
+                return
+            captured = {"task": dict(meta.get("task") or {})}
+        try:
+            with acquisition_budget(0):
+                observed = _resume_observation(captured, ctx.DRIVE_ROOT)
+        except StoreBusy as exc:
+            if exc.reason != "contention":
+                log.warning("Resume clock store unavailable for %s: %s", task_id, exc)
+            return  # The existing assignment tick reobserves the same consumption.
+        except Exception:
+            log.warning("Resume clock observation unavailable for %s", task_id, exc_info=True)
+            return
+        with _queue_lock:
+            if ctx.RUNNING.get(task_id) is meta:
+                _apply_consumed_resume(meta, observed, evt)
         return
     task_id = str(evt.get("task_id") or "")
     pause = evt.get("resource_limit") if isinstance(evt.get("resource_limit"), dict) else {}
