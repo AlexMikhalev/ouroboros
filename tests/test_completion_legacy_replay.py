@@ -95,7 +95,18 @@ def _pending_event(root, monkeypatch, *, salvage=False, source_failure=False):
             stage.setattr("ouroboros.utils.in_worker_process", lambda: True)
             terminal_delivery._retire_exhausted(root, [final])
     queued = []
+    register = terminal_delivery.register_pending_delivery
+
+    def register_legacy(drive, event):
+        legacy = copy.deepcopy(event)
+        if legacy.get("system_type") == "project_completion_summary":
+            legacy["progress_meta"].pop("completion_notice", None)
+        return register(drive, legacy)
+
     with monkeypatch.context() as stage:
+        # Model the old wire shape BEFORE durable registration, not just in the
+        # queued copy: otherwise the outbox would bypass legacy enrichment.
+        stage.setattr(terminal_delivery, "register_pending_delivery", register_legacy)
         stage.setattr(terminal_delivery, "enqueue_terminal_delivery", lambda _root, event, **_kw: queued.append(copy.deepcopy(event)) or True)
         from ouroboros.project_dialogue import project_completion_delivery_outcome
         assert project_completion_delivery_outcome(root, {}, "root-project", row, row, {},
@@ -158,6 +169,7 @@ def test_legacy_replay_recovers_source_delivery_registry_warning(lane, tmp_path,
     else:
         [retained] = [e for e in terminal_delivery.pending_deliveries(root)
                       if e["delivery_id"] == event["delivery_id"]]
+        assert "completion_notice" not in retained["progress_meta"]
     send, frames = _legacy_sender(root, monkeypatch)
     send(retained)
     assert frames[-1]["content"] == event["text"]
