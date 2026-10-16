@@ -1,5 +1,5 @@
-/** A room call owns its microphone, socket and playback for the room's visible lifetime.
- * One room lifecycle hook carries the actual chat id and decorates leave/destroy.
+/** A room call owns its microphone, socket and playback until its room is destroyed.
+ * One room hook carries the actual chat id and decorates destroy; hiding the room keeps the call.
  * Captions bind output stream ids to item ids before PCM; bytes queued are never heard bytes.
  */
 import { apiClient } from './api_client.js';
