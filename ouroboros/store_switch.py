@@ -171,8 +171,23 @@ def switch_or_reset(root: Any, repo_dir: Any, *, target_sha: str, target_ref: st
         record_switch_intent(root, target_sha=target_sha, target_ref=target_ref, reason=reason, door=door)
         return True, (f"authority switch to {target_sha[:12]} recorded: the facts are exported and the checkout "
                       "moves at the restart exit"), True
+    refusal = _hand_off_stores(pathlib.Path(root))
+    if refusal:
+        return False, f"switch refused: a store could not be handed off ({refusal})", False
     ok, message = reset()
     return ok, message, False
+
+
+def _hand_off_stores(root: pathlib.Path) -> str:
+    """Every present store of the root and its retained drives leaves WAL before the door moves the
+    checkout (``store.hand_off``); the refusal text when one cannot."""
+    try:
+        for drive in (root, *store_import.descendant_drives(root)):
+            store.hand_off(drive)
+        usage_store.hand_off(root)
+    except (OSError, store.StoreError, UsageAccountingError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return ""
 
 
 def next_engine_pin(repo_dir: Any, target_sha: str):

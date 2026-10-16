@@ -180,3 +180,53 @@ def test_failed_build_rolls_back_and_releases_its_temporary_journal(tmp_path, mo
     with contextlib.closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT * FROM pending").fetchall() == []
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+@pytest.mark.parametrize("wal", [True, False])
+def test_a_door_reset_hands_every_store_off_out_of_wal_first(tmp_path, monkeypatch, wal):
+    # A store-aware older body never sets the journal mode: it must receive DELETE files,
+    # while a rollback-journal store needs no connection at all.
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+    monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs" if wal else None)
+    publish(tmp_path)
+    usage_store.migrate_from_journal(tmp_path)
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.set_meta("retained", 1)
+    with usage_store.hold(tmp_path) as txn:
+        txn.set_meta("retained", 1)
+    paths = [tmp_path / store.STORE_REL, tmp_path / usage_store.STORE_REL]
+    assert [store.wal_file(path) for path in paths] == [wal, wal]
+    if not wal:
+        monkeypatch.setattr(store, "prepare_handoff", lambda *a, **k: pytest.fail("rollback journals need no handoff"))
+    monkeypatch.setattr(store_switch, "switch_needs", lambda *_: {"facts": False, "money": False})
+    seen = []
+
+    def reset():
+        seen.append([store.wal_file(path) for path in paths])
+        return True, "reset done"
+
+    assert store_switch.switch_or_reset(tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="test",
+                                        door="ui_rollback", reset=reset) == (True, "reset done", False)
+    assert seen == [[False, False]]
+    assert all(not path.with_name(path.name + "-wal").exists() for path in paths)
+    with store.open_store(tmp_path, write=False) as txn:
+        assert txn.meta("retained") == 1
+
+
+def test_a_store_that_cannot_hand_off_refuses_the_door_reset(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+    monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")
+    publish(tmp_path)
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.set_meta("retained", 1)
+    store.close_connections()
+
+    def busy(*_args, **_kwargs):
+        raise store.StoreBusy("store checkpoint busy at handoff", reason="contention")
+
+    monkeypatch.setattr(store, "prepare_handoff", busy)
+    monkeypatch.setattr(store_switch, "switch_needs", lambda *_: {"facts": False, "money": False})
+    ok, message, deferred = store_switch.switch_or_reset(
+        tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="test", door="ui_rollback",
+        reset=lambda: pytest.fail("the checkout moved past a store still in WAL"))
+    assert (ok, deferred) == (False, False) and "checkpoint busy" in message

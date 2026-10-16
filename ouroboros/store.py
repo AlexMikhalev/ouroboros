@@ -655,6 +655,28 @@ def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WA
         _delete_journal(conn)
 
 
+def wal_file(path: pathlib.Path) -> bool:
+    """The database header says WAL (bytes 18-19 equal 2; sqlite.org/fileformat2.html)."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(20)
+    except FileNotFoundError:
+        return False
+    return len(header) == 20 and header[18] == 2 and header[19] == 2
+
+
+def hand_off(root: Any, *, wait_sec: float = STORE_WAIT_SEC) -> bool:
+    """Before another body takes a quiescent root: a present WAL store is checkpointed and left in
+    DELETE mode, because a body that never sets the journal mode (a store-aware older release, an
+    older SQLite) could otherwise rename the database away from its log. A rollback-journal store
+    is left untouched. True when a file was converted."""
+    state, tier = probe(root)
+    if state != "present" or not wal_file(store_path(root)):
+        return False
+    prepare_handoff(store_path(root), tier, wait_sec=wait_sec)  # WAL is never chosen on the name tier
+    return True
+
+
 def _delete_journal(conn: sqlite3.Connection) -> None:
     if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
         if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]:

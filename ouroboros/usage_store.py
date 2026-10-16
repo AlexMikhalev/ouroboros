@@ -611,6 +611,21 @@ def _header_tier(path: pathlib.Path) -> Optional[str]:
     return _core.header_tier(path, _APPLICATION_ID)
 
 
+def hand_off(root: pathlib.Path | str) -> bool:
+    """``store.hand_off`` for the money store: a WAL file is checkpointed into DELETE mode."""
+    path = pathlib.Path(root) / STORE_REL
+    if not _core.wal_file(path):
+        return False
+    tier = _header_tier(path)
+    if tier is None:
+        raise UsageLedgerCorrupt(f"usage store unreadable at handoff: {path}")
+    try:
+        _core.prepare_handoff(path, tier, wait_sec=USAGE_LOCK_TIMEOUT_SEC)
+    except _core.StoreBusy as exc:
+        raise UsageLockUnavailable(str(exc), reason=exc.reason) from exc
+    return True
+
+
 def _connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,
              shared: bool = False) -> sqlite3.Connection:
     """The shared connection with the money error vocabulary (``ouroboros.store.connect``)."""
