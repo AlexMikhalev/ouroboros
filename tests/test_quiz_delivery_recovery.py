@@ -281,6 +281,10 @@ def test_a_closure_owing_its_unpublished_ask_is_no_import_unknown(runtime, monke
     def questions():
         return {key for key in obligations.members(runtime.root, "unknowns") if key.startswith("question:")}
     report = startup_migrations.prepare_startup_state(runtime.root, rebuild=door == "rebuild")
+    if door == "rollback":
+        from ouroboros.store_import import run_legacy_reconcile
+        assert report["question_publications"] == {}
+        report = run_legacy_reconcile(runtime.root)
     assert report["question_publications"] == {"bound": 0, "unknown": 1}
     assert questions() == {f"question:{tid}:older"}
     assert recover(runtime) == {"attempted": 1, "delivered": 1, "pending": 0}

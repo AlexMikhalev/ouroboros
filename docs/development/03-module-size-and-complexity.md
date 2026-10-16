@@ -73,34 +73,33 @@ coupling `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
-Apply ARCHITECTURE §10 invariant 10 to current-state readers; review and growth checks follow.
+Apply ARCHITECTURE §10 invariant 10 to current-state readers:
 
-- **Evaluate the whole operation as the project grows:** history, object count, nested
-  repetition, cold caches, shared-resource contention. Where growth can hurt
-  responsiveness, use existing spans and test spies on real readers for scale evidence;
-  telemetry adds no steady-state writes or history reads. Remove redundant work or
-  reuse a validated view before adding a projection or cache. Unknown never means empty. This reasoning sets
-  no universal time limit, mandatory benchmark or extra approval gate.
-- **Passive GET.** Read handlers perform no new steady-state durable writes.
-  `ouroboros/usage_store.py::read` may initialize an empty store when nothing awaits
-  import; display reads leave pending imports to startup and report unavailable data.
-  Enforced by `tests/test_usage_store.py`; the read path never starts a history import.
-- **House precedents, reuse these shapes:** archive-aware chat log rotation
-  (`supervisor/state.py::rotate_chat_log_if_needed`); current rows reduced by the writing
-  transaction beside an unbounded event log (`ouroboros/delegate_custody_current.py`); the
-  bounded filtered tail (`ouroboros/jsonl_tail.py`); per-archive room summaries
-  (`ouroboros/gateway/history_segments.py`); summary rows kept by the writing
-  transaction (`ouroboros/usage_store.py`, `store.py`); indexed selects
-  (`task_store.py`); the task-event SSE v2 cursor (ARCHITECTURE §3 "Chat and
-  Projects").
+- **Measure the growing operation:** history, object count, nesting, cold caches and
+  contention. Where responsiveness suffers, use existing spans and real-reader spies;
+  telemetry adds no steady-state writes/history reads. Remove redundant work or reuse
+  a validated view before adding a projection/cache. Unknown is never empty. This sets
+  no universal time limit, mandatory benchmark or approval gate.
+- **Passive GET:** no new steady-state durable writes. `usage_store.py::read` may
+  initialize an empty store with no pending import; otherwise display reads report
+  unavailable data and leave import to startup (`tests/test_usage_store.py`).
+- **Reuse precedents:** archive-aware rotation (`supervisor/state.py::rotate_chat_log_if_needed`);
+  current rows reduced by the writing transaction (`delegate_custody_current.py`);
+  bounded filtered tail (`jsonl_tail.py`); per-archive room summaries
+  (`gateway/history_segments.py`); transactional summaries (`usage_store.py`, `store.py`);
+  indexed selects (`task_store.py`); task-event SSE v2 cursor (ARCHITECTURE §3).
 
-Enforcement: CHECKLISTS item 9 `perf_lifecycle` (advisory) fires on diffs that change
-data readers, startup/shutdown or batch operations, or an endpoint, poller,
-subscription or timer. The runtime tripwire is
-`agent_startup_checks.py::hot_store_growth_notes` (thresholds in
-`ouroboros/context_budget.py`); a change adding an append-only store read on an
-interactive path enrolls that store there, with a justified constant, in the same
-commit, because an unenrolled hot store is invisible to the tripwire.
+CHECKLISTS item 9 `perf_lifecycle` advises on changed readers, startup/shutdown, batches,
+endpoints, pollers, subscriptions and timers. A new interactive append-only store reader
+must enroll in `agent_startup_checks.py::hot_store_growth_notes` in the same commit,
+with a justified threshold in `context_budget.py`; unenrolled stores evade the tripwire.
+
+`tests/test_store_boot.py` measures `prepare_startup_state` at 50/500
+frozen results and 20/200 child stores with process caches cleared. Connections,
+SQL VM steps, legacy stat/scandir, write BEGIN/COMMIT and store lock probes must
+stay equal; clean boot uses one read transaction and no history access or writes.
+`tests/test_store_legacy_reconcile.py` checks both detector outcomes, cursor resume
+and the foreground CLI, while the import/switch suites retain downgrade semantics.
 
 ### Invariant: Source-complete decision pipeline
 
