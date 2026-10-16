@@ -325,11 +325,11 @@ def test_translated_chrome_long_names_coarse_pointer(branch_ui, width, theme):
     tag = f"{width}-{theme}"
     problems, observations, out = [], [], {}
 
-    # Closed: the floating group at this width.
+    # Closed: Main's bar at this width.
     rw.wait_facts(page, "main", lambda f: not f["disabled"], "an enabled control")
     page.locator("#chat-messages").evaluate("el => { el.scrollTop = Math.round(el.scrollHeight * 0.5); }")
     page.wait_for_timeout(250)
-    out["closed_geometry"] = page.evaluate(rw._GROUP_GEOMETRY)
+    out["closed_geometry"] = page.evaluate(rw._BAR_GEOMETRY, "main")
     out["closed_targets"] = page.evaluate(TARGETS, "main")
     rw.capture(page, f"coarse-{tag}-main-closed")
     if not out["closed_targets"]["coarse"]:
@@ -339,24 +339,25 @@ def test_translated_chrome_long_names_coarse_pointer(branch_ui, width, theme):
     rw.trigger(page).tap()
     opened = rw.wait_facts(page, "main", lambda f: len(f["rows"]) == 4 and (rw.row(f, "rw-far") or {}).get("name", "")
                            .startswith("Индексировать"), "four named rows")
-    page.wait_for_timeout(300)
+    rw.settle_unfold(page, "main")
     out["open_facts"] = opened
-    out["open_geometry"] = page.evaluate(rw._GROUP_GEOMETRY)
+    out["open_geometry"] = page.evaluate(rw._BAR_GEOMETRY, "main")
     out["open_targets"] = page.evaluate(TARGETS, "main")
     out["open_names"] = page.evaluate(NAMES, "main")
     out["open_leaks"] = leaks(page, "main")
     rw.capture(page, f"coarse-{tag}-main-open")
     geometry = out["open_geometry"]
-    sheet, group = geometry["sheet"], geometry["group"]
-    if not (sheet and sheet["x"] >= -0.5 and sheet["right"] <= geometry["vw"] + 0.5 and sheet["bottom"] <= geometry["vh"] + 0.5):
-        problems.append(f"the sheet leaves the viewport: {sheet} vw={geometry['vw']} vh={geometry['vh']}")
-    if sheet and abs(sheet["y"] - group["bottom"]) > 1.5:
-        problems.append(f"the sheet does not continue its group: {sheet} {group}")
-    if geometry["pageOverflow"] > 0:
-        problems.append(f"page overflows horizontally by {geometry['pageOverflow']}px")
+    shade, bar = geometry["shade"], geometry["bar"]
+    if not (shade and shade["x"] >= -0.5 and shade["x"] + shade["w"] <= geometry["vw"] + 0.5
+            and shade["bottom"] <= geometry["vh"] + 0.5):
+        problems.append(f"the Shade leaves the viewport: {shade} vw={geometry['vw']} vh={geometry['vh']}")
+    if shade and abs(shade["y"] - bar["bottom"]) > 1.5:
+        problems.append(f"the Shade does not unfold from the bar's bottom edge: {shade} {bar}")
+    if geometry["overflow"] > 0:
+        problems.append(f"page overflows horizontally by {geometry['overflow']}px")
     if not geometry["reachable"]:
         problems.append("a row target is not the element hit at its centre")
-    moved = [(a, b) for a, b in zip(out["closed_geometry"]["controls"], geometry["controls"])
+    moved = [(a, b) for a, b in zip(out["closed_geometry"]["neighbours"], geometry["neighbours"])
              if any(abs(a[k] - b[k]) > 0.5 for k in ("x", "y", "w", "h"))]
     if moved:
         problems.append(f"opening moved a neighbouring target: {moved}")
@@ -412,7 +413,7 @@ def test_translated_chrome_long_names_coarse_pointer(branch_ui, width, theme):
     rw.capture(page, f"coarse-{tag}-project-closed")
     rw.trigger(page, "project").tap()
     rw.wait_facts(page, "project", lambda f: len(f["rows"]) == 2, "two Project rows")
-    page.wait_for_timeout(300)
+    rw.settle_unfold(page, "project")
     out["shade"] = page.evaluate(SHADE_GEOMETRY)
     out["shade_targets"] = page.evaluate(TARGETS, "project")
     out["shade_names"] = page.evaluate(NAMES, "project")

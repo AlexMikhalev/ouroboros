@@ -879,6 +879,7 @@ def test_project_shade_hold_outside_press_switch_and_latest_root(room_ui):
     evidence("project-shade", {"closed": closed, "open": shade})
     held = row(shade, "p-hold")
     assert (held["word"], held["tone"]) == ("Waiting for Project access", "wait"), held
+    settle_unfold(page, "project")
     geometry = page.evaluate("""() => { const box = s => document.querySelector(s).getBoundingClientRect();
         const bar = box('#project-panel .project-panel-bar'), shade = box('#project-panel .rw-shade'), panel = box('#project-panel');
         return {bar: [bar.left, bar.bottom, bar.right], shade: [shade.left, shade.top, shade.right, shade.bottom],
@@ -1048,6 +1049,16 @@ HEADER_WORDS = {"idle": "Online", "live": "Working", "queued": "Queued", "finali
                 "hold": "Waiting for task scope verification"}
 
 
+def settle_unfold(page, room):
+    """Wait until the room's Shade has finished unfolding (its 170 ms entrance slides it 6px), so geometry reads its
+    resting place rather than a frame of the animation."""
+    root = "#page-chat" if room == "main" else "#project-panel"
+    page.wait_for_function("""(root) => { const s = document.querySelector(`${root} .rw-shade`);
+        return Boolean(s) && !s.hidden && !(s.getAnimations?.() || []).some((a) => a.playState === 'running'); }""",
+                           arg=root, timeout=10_000)
+    settle_frames(page)
+
+
 def settled_bar(page, room, expected, previous, timeout=15):
     """The bar once the census has repainted it: the expected word when known, else a word that changed from the
     previous state's and held still for a moment (a census read lands asynchronously, more so under load)."""
@@ -1157,7 +1168,7 @@ def test_shade_geometry_light_dark_and_screenshots(room_ui, width, height, theme
         capture(page, f"{room}-closed-{tag}")
         trigger(page, room).click()
         wait_facts(page, room, lambda f: len(f["rows"]) == (3 if room == "main" else 2), f"the {room} rows")
-        page.wait_for_timeout(300)  # the unfold animation
+        settle_unfold(page, room)
         opened = page.evaluate(_BAR_GEOMETRY, room)
         capture(page, f"{room}-open-{tag}")
         evidence(f"geometry-{room}-{tag}", {"closed": closed, "open": opened})
