@@ -30,7 +30,7 @@ from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
     replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp, PROJECTION_FAILED,
 )
-from ouroboros.room_index import room_spec
+from ouroboros.gateway.history_segments import room_segment_lens
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
@@ -1440,7 +1440,7 @@ def _assemble_history_response(
                                {"chat": _chat_quota_predicate(row_matches_thread),
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
-                               room_spec(data_dir, thread_id, project_chat_ids, project_source_refs, bindings_by_task),
+                               room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms),
                                notes)
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]

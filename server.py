@@ -103,7 +103,6 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _startup_worktree_prune,
 )
 from ouroboros.ui_translation import start_background as _start_ui_translation
-from ouroboros.room_index import keeper as room_index_keeper
 from supervisor.workspace_preparation import start_generation as _start_preparation_generation
 from supervisor.event_observation import pending_idle_observations
 from ouroboros.server_restart import (  # noqa: F401
@@ -1369,7 +1368,6 @@ async def lifespan(app):
     if not pytest_default_real_data_dir:
         from ouroboros.claudexor_daemon import warm_owned_daemon
         warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
-        room_index_keeper.start(lifespan_drive_root, REPO_DIR, body_stop)  # every door: rooms read through it
 
     host_service_task = None
     host_service_server = None
@@ -1603,7 +1601,6 @@ def _emergency_process_cleanup() -> dict:
     Host Service listeners close with this process: no port is swept."""
     from ouroboros.evidence_packer import packer
     packer.stop()
-    room_index_keeper.stop()
     begin_owned_stop(DATA_DIR)  # the grace starts here; pending stops are recorded before any wait
     worker_exits = None  # the pool's own PID census; None until kill_workers ran to its end
     try:
@@ -1640,15 +1637,14 @@ def _emergency_process_cleanup() -> dict:
         except Exception:
             pass
     if _restart_requested.is_set():  # only the restart that carried an adoption can arm it; never a wait
-        body_adoption.arm(DATA_DIR, worker_exits=worker_exits, live_children=multiprocessing.active_children() + packer.live_children()
-                          + room_index_keeper.live_children(), owned_stop=owned_stop, owner_restart=_owner_restart_requested.is_set())
+        body_adoption.arm(DATA_DIR, worker_exits=worker_exits, live_children=multiprocessing.active_children() + packer.live_children(),
+                          owned_stop=owned_stop, owner_restart=_owner_restart_requested.is_set())
     try:
         from ouroboros.extension_companion import panic_kill_all
         panic_kill_all()
     except Exception:
         pass
-    return {"worker_exits": worker_exits, "owned_stop": owned_stop,
-            "live_children": multiprocessing.active_children() + packer.live_children() + room_index_keeper.live_children()}
+    return {"worker_exits": worker_exits, "live_children": multiprocessing.active_children() + packer.live_children(), "owned_stop": owned_stop}
 
 def main() -> int:
     from ouroboros.delegate_recovery import observe_restart_parent

@@ -4,10 +4,8 @@ A page is counted in the room's rows, never in bytes of the shared chain: the
 newest page holds the room's newest rows however far back they lie, and each
 older page the next older ones (owner decisions 2026-10-05, DESIGN "History
 edges"). The chat and progress streams keep separate quotas (``human``,
-``progress``), each counted by its own predicate. A room reads only its own rows: where they lie
-comes from the derived room index (``ouroboros.room_index``), the bytes it has not reached yet
-straight from the file; only a physical read ceiling or archives the index has not reached yet
-(``room_index_building``) can end a page early.
+``progress``), each counted by its own predicate. Archives a Project's lens rules out are skipped unread
+(``history_segments``); only a physical read ceiling can end a page early.
 """
 
 from __future__ import annotations
@@ -16,14 +14,14 @@ import base64
 import hashlib
 import io
 import json
-from bisect import bisect_right
+from bisect import bisect_left
 from pathlib import Path
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
+from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
-from ouroboros import room_index
 from ouroboros.project_dialogue import _ANNOTATIONS_NAME, ORIGIN_ADDRESSED_NOTICE_TYPES
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
@@ -35,11 +33,9 @@ _READ_CEILING_BYTES = 16 * 1024 * 1024
 # Physical bound on what one ``after`` read replays per stream: a window that fell further
 # behind (a client offline for hours) takes a fresh recent page instead (``history_delta_reset``).
 _DELTA_CEILING_BYTES = 2 * 1024 * 1024
-# The newest-arrival search every recent Project read pays for, in bytes of the room's own
-# rows; a bound reached first is carried on by the chain's cursors (``latest_before``/``quiet``).
+# The newest-arrival search every recent Project read pays for; a bound reached
+# first is carried on by the chain's cursors (``latest_before``/``quiet``).
 _ARRIVAL_SEARCH_BYTES = 512 * 1024
-# Rows of one segment the index names this close together are read in one call.
-_RUN_BYTES = 1024 * 1024
 _CHAIN_WITNESSES = 16
 # A projection that failed part-way: the rows after the failing one are missing
 # from the response, so neither its coverage nor its newest arrival is known.
@@ -196,187 +192,82 @@ class HistorySource(JsonlChainSnapshot):
         newline = data.find(b"\n")
         return end if newline < 0 else start + newline + 1
 
-    def _at(self, locators):
-        """``[(offset, row or None, gaps)]`` at ``locators`` (``[(offset, length, bad)]``, the index's
-        addresses) in offset order, read in one call per run of nearby rows of one segment. A bad
-        line carries the parse gap any read of it names; a row that is not one complete JSON line
-        where the index says marks the index stale (``room_index_stale``) instead of being guessed.
-        Each row keeps its own gaps: a read names only those of the rows it covers."""
-        found, run = [], []
+    def _ruled_out(self, index, lens):
+        """A closed archive whose summary proves it holds none of the room's rows."""
+        path, stat, live = self.snapshot["entries"][index]
+        if lens is None or live:
+            return False
+        summary = segment_summary(path, stat)
+        return summary is not None and not lens(summary)
 
-        def flush():
-            if not run:
-                return
-            low = run[0][0]
-            data = self._read(low, run[-1][0] + run[-1][1])
-            for offset, length, bad in run:
-                raw, gaps = data[offset - low:offset - low + length], set()
-                parsed = list(_helpers.iter_jsonl_objects(self.path, _handle=[raw], gap_reasons=gaps))
-                if not bad and (not raw.endswith(b"\n") or len(parsed) != 1):
-                    gaps.add("room_index_stale")
-                found.append((offset, None if bad or "room_index_stale" in gaps else {
-                    **parsed[0], "history_id": f"{self.source}:{offset}",
-                    "history_position": {"source": self.source, "offset": offset},
-                    "_history_end": offset + length}, gaps))
-            run.clear()
-
-        for offset, length, bad in sorted(locators):
-            if offset + length > self.upper:
-                continue  # after this read's frozen boundary
-            if run and (offset - run[0][0] > _RUN_BYTES
-                        or bisect_right(self.ends, offset) != bisect_right(self.ends, run[0][0])):
-                flush()
-            run.append((offset, length, bad))
-        flush()
-        return found
-
-    def _rows_at(self, locators, gaps):
-        """Every row at ``locators``, naming all their gaps."""
-        rows = []
-        for _offset, row, row_gaps in self._at(locators):
-            gaps |= row_gaps
-            if row is not None:
-                rows.append(row)
-        return rows
-
-    def _frontier(self, lens):
-        """``(complete_from, tail_from)`` of this stream (``room_index.RoomIndexView.frontier``),
-        within this read's boundary; without an index only the live file is reachable."""
-        if lens is not None:
-            complete_from, tail_from = lens.frontier(self.source)
-            return min(complete_from, self.upper), min(tail_from, self.upper)
-        live = self.segment(len(self.entries) - 1)[0] if self.entries and self.entries[-1][2] else self.upper
-        return live, live
-
-    def _span(self, start, end, gaps):
-        """Every row in [start, end), read segment by segment."""
-        rows = []
-        for index in range(len(self.entries)):
-            low, high = self.segment(index)
-            if max(low, start) < min(high, end):
-                rows.extend(self._entries(max(low, start), min(high, end), gaps))
-        return rows
-
-    def _tail(self, low, high, want, counts, gaps, ceiling):
-        """Every row in [low, high) newest first, in growing windows per segment, until ``want``
-        counted rows, ``low`` or ``ceiling`` bytes; returns them and where the read stopped."""
-        rows, counted, read, position = [], 0, 0, high
-        for index in reversed(range(len(self.entries))):
+    def recent(self, want, counts, lens=None):
+        """The room's newest rows: the live tail, then whole archives newest-first
+        until ``want`` counted rows, the chain's start or the read ceiling."""
+        entries, before, counted, read = [], self.upper, 0, 0
+        gaps = self._boundary_gaps(self.upper)
+        for index in reversed(range(len(self.snapshot["entries"]))):
             base, end = self.segment(index)
-            base, end = max(base, low), min(end, position)
-            if base >= end:
+            if base >= self.upper:
                 continue
-            window = _TAIL_WINDOW_START_BYTES
+            live = self.snapshot["entries"][index][2]
+            if not live and (counted >= want or read >= _READ_CEILING_BYTES):
+                break  # the live tail is always read: its overlays need no quota
+            if self._ruled_out(index, lens):
+                before = base
+                continue
+            window = _TAIL_WINDOW_START_BYTES if live else end - base
             while True:
                 start = self._aligned_start(max(base, end - window), end, base)
                 selected = self._entries(start, end, gaps)
                 found = sum(map(counts, selected))
-                if start == base or counted + found >= want or read + end - start >= ceiling:
+                if start == base or counted + found >= want:
                     break
                 window *= 2
-            rows, counted, read, position = selected + rows, counted + found, read + end - start, start
-            if start > base or counted >= want or read >= ceiling:
-                break
-        return rows, position
-
-    def _walk(self, lens, before, floor, want, counts, gaps, ceiling):
-        """The room's indexed rows in [floor, before) newest first until ``want`` counted rows or
-        ``ceiling`` bytes of them; returns them oldest first and where the read stopped (``floor``
-        when none remain above it)."""
-        selected, counted, read = [], 0, 0
-        while lens is not None and before > floor and counted < want and read < ceiling:
-            limit = max(64, 2 * (want - counted))
-            batch = lens.candidates(self.source, before=before, lower=floor, limit=limit)
-            if not batch:
-                before = floor
-                break
-            for offset, entry, row_gaps in reversed(self._at(batch)):
-                gaps |= row_gaps
-                before = offset
-                if entry is None:
-                    continue
-                selected.append(entry)
-                counted += bool(counts(entry))
-                read += entry["_history_end"] - offset
-                if counted >= want or read >= ceiling:
-                    break
-            else:  # a short batch was the last of the room's rows above ``floor``
-                before = floor if len(batch) < limit else min(locator[0] for locator in batch)
-        return list(reversed(selected)), before
-
-    def _select(self, high, want, counts, lens, gaps, ceiling=None):
-        """The room's rows below ``high`` newest first until ``want`` counted rows: what the index
-        has not reached yet straight from the file, then its indexed rows. Rows below its complete
-        part wait for its backfill: a read that needs them ends there (``room_index_building``)."""
-        ceiling = _READ_CEILING_BYTES if ceiling is None else ceiling
-        complete_from, tail_from = self._frontier(lens)
-        rows, before = self._tail(min(tail_from, high), high, want, counts, gaps, ceiling)
-        counted = sum(map(counts, rows))
-        if counted < want and before <= tail_from:
-            indexed, before = self._walk(lens, before, complete_from, want - counted, counts, gaps, ceiling)
-            rows, counted = indexed + rows, counted + sum(map(counts, indexed))
-            if counted < want and 0 < before <= complete_from:
-                gaps.add("room_index_building")
-        return rows, before
-
-    def recent(self, want, counts, lens=None):
-        """The room's newest ``want`` counted rows with the rest of the window the read reached:
-        the live file's tail from where they begin (in doubling windows of at least
-        ``_TAIL_WINDOW_START_BYTES``) or the whole archive they begin in. Rows that ride on top of
-        the quota (a represented root's finished children, overlays) come with them, as they
-        always came with that window."""
-        gaps = self._boundary_gaps(self.upper)
-        rows, before = self._select(self.upper, want, counts, lens, gaps)
-        floor = self._window_floor(before)
-        if floor < before:
-            tail_from = self._frontier(lens)[1]
-            if floor > tail_from:
-                floor = self._aligned_start(floor, before, tail_from)
-            extra, _lower, extra_gaps = self.replay(floor, before, lens)
-            rows, before = extra + rows, floor
-            gaps |= extra_gaps
-        return rows, before, gaps
-
-    def _window_floor(self, offset):
-        """Where the read that reached ``offset`` began its window: the live file's tail in
-        doubling windows from the end, or the base of the archive holding ``offset``."""
-        index = bisect_right(self.ends, offset)
-        if index >= len(self.entries):  # nothing below the end was needed: the live window alone
-            index = len(self.entries) - 1
-            if index < 0 or not self.entries[index][2]:
-                return offset
-        base, _end = self.segment(index)
-        if not self.entries[index][2]:
-            return base
-        window = _TAIL_WINDOW_START_BYTES
-        while self.upper - window > offset:
-            window *= 2
-        return max(base, self.upper - window)
+            counted, read = counted + found, read + end - start
+            entries = selected + entries
+            before = start
+        return entries, before, gaps
 
     def older(self, before, want, counts, lens=None, ceiling=None):
-        """One backward page of ``want`` counted rows of the room below ``before``; ``ceiling``
-        bounds the bytes one read takes."""
+        """Consume one backward page of ``want`` counted rows; foreign/invalid bytes
+        and ruled-out archives advance the position, the read ceiling ends it early."""
         if want <= 0:
             return [], before, set()
-        gaps = self._boundary_gaps(before)
-        rows, before = self._select(before, want, counts, lens, gaps, ceiling)
-        return rows, before, gaps
+        ceiling = _READ_CEILING_BYTES if ceiling is None else ceiling
+        selected, gaps, counted, read = [], self._boundary_gaps(before), 0, 0
+        while before > 0 and read < ceiling:
+            index = bisect_left(self.snapshot["ends"], before)
+            base, _end = self.segment(index)
+            if self._ruled_out(index, lens):
+                before = base
+                continue
+            window = _READ_BYTES
+            while True:
+                start = self._aligned_start(max(base, before - window), before, base)
+                if start < before or start == base:
+                    break
+                window *= 2  # one large JSONL row keeps its existing support
+            entries = self._entries(start, before, gaps)
+            for entry in reversed(entries):
+                selected.append(entry)
+                read += before - entry["history_position"]["offset"]
+                before = entry["history_position"]["offset"]
+                counted += bool(counts(entry))
+                if counted >= want or read >= ceiling:
+                    return list(reversed(selected)), before, gaps
+            read += before - start
+            before = start
+        return list(reversed(selected)), before, gaps
 
     def replay(self, lower, before, lens=None):
-        """Re-read one frozen range: its indexed rows and the bytes the index had not reached;
-        without an index, every row of the range, as a frozen range was always re-read."""
-        complete_from, tail_from = self._frontier(lens)
-        gaps = self._boundary_gaps(before)
-        if lens is None:
-            return self._span(lower, before, gaps), lower, gaps
-        split = max(lower, min(before, tail_from))
-        rows = self._span(split, before, gaps)
-        if lower < split:
-            if lower < complete_from:
-                gaps.add("room_index_building")
-            if max(lower, complete_from) < split:
-                rows = self._rows_at(lens.candidates(self.source, before=split, lower=max(lower, complete_from),
-                                                     limit=1 << 20), gaps) + rows
+        """Re-read one frozen page; the archives its first read ruled out stay unread
+        (same room view, immutable archives), so a replay costs what that read did."""
+        gaps, rows = self._boundary_gaps(before), []
+        for index in range(len(self.snapshot["entries"])):
+            base, end = self.segment(index)
+            start, end = max(base, lower), min(end, before)
+            if start < end and not self._ruled_out(index, lens):
+                rows.extend(self._entries(start, end, gaps))
         return rows, lower, gaps
 
 
@@ -402,18 +293,8 @@ def chain_witness(reader):
     return ".".join(witnesses[-_CHAIN_WITNESSES:]) or "empty"
 
 
-def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, room=None, notes=""):
-    """``room``: the room's candidate superset (``room_index.room_spec``); None reads without the
-    index (the live file, then a declared ``room_index_building`` gap). ``notes``: ``notes_stamp``."""
-    lens = room_index.room_rows(data_dir, room) if room is not None else None
-    try:
-        return _select_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, room, lens, notes)
-    finally:
-        if lens is not None:
-            lens.close()
-
-
-def _select_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, room, lens, notes):
+def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None, notes=""):
+    """``lens``: the room's archive filter (``history_segments.room_segment_lens``); ``notes``: ``notes_stamp``."""
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
     if continuation and continuation["kind"] == "after" and continuation["notes"] != notes:
         raise HistoryCursorError("history_delta_reset")
@@ -435,7 +316,7 @@ def _select_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, ro
             if reader.unfinished_live_line:
                 unfinished.append(source)
             page_ends[source] = continuation["before"][source] if continuation else reader.upper
-            if continuation and continuation["kind"] == "after":
+            if after:
                 # Rows the window has not seen: everything appended after its last read, read fresh.
                 reader = HistorySource(paths[source], source)
                 upper[source], chains[source], unfinished[:] = reader.upper, chain_witness(reader), [
@@ -460,7 +341,7 @@ def _select_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, ro
         before[source] = selections[source][1]
     return {"v": 1, "chat_id": thread_id, "view": view, "upper": upper, "unfinished": unfinished,
             "quotas": quotas, "recent": recent, "after": after, "replayed": bool(continuation),
-            "quiet": bool(continuation and continuation["quiet"]), "room": room, "notes": notes,
+            "quiet": bool(continuation and continuation["quiet"]), "lens": lens, "notes": notes,
             "selections": selections, "before": before, "page_ends": page_ends, "chains": chains}
 
 
@@ -658,15 +539,11 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
         return {"latest_absent": True} if start == 0 and not gaps else {}
     if latest is None and start > 0:
         message = _stored_message(row_matches_thread, stored_chat_id, child)
-        lens = room_index.room_rows(data_dir, page["room"]) if page.get("room") is not None else None
         try:
             entries, before, gaps = HistorySource(data_dir / "logs" / "chat.jsonl", "chat", end).older(
-                start, 1, message, lens, min(_ARRIVAL_SEARCH_BYTES, _READ_CEILING_BYTES))
+                start, 1, message, page.get("lens"), min(_ARRIVAL_SEARCH_BYTES, _READ_CEILING_BYTES))
         except OSError:
             return {"latest_message": None}
-        finally:
-            if lens is not None:
-                lens.close()
         found = next(filter(message, entries), None)  # ``older`` stops at the newest one
         if gaps and _skipped_row_after(entries, offset(found) if found else before, start):
             return {"latest_message": None}

@@ -3320,7 +3320,7 @@ export function createChatInstance({
         let result;
         do {
             result = current() ? await historyPager[direction]() : {};
-        } while (!destroyed && result.status === 'applied' && result.messageCount === 0 && !result.indexing
+        } while (!destroyed && result.status === 'applied' && result.messageCount === 0
             && historyPager.getState()[direction === 'older' ? 'canOlder' : 'canNewer']);
         return result;
     }

@@ -339,8 +339,7 @@ ouroboros/ — agent core and shared runtime (§6)
   terminal_cost_reconciliation.py — Usage recovery/projection (§6 Budget tracking)
   task_continuation.py — Durable review continuation state
   task_results.py — Task-result merge-writes (one store transaction) and typed readers; the locked `task_acceptance_review_accounting` claim is unknown without a recoverable terminal host run, never permission to re-dispatch (§6 Task acceptance)
-  room_index.py — Derived `state/room_index.sqlite`: where chat/progress rows lie and whose (§3)
-  task_store.py, task_reads.py — Indexed facts/signatures, review/plan candidates and documents, batched display views; implicit body+handoff snapshots decode after close, explicit read/modify stays (PERSISTENCE.md)
+  task_store.py, task_reads.py — Indexed facts/signatures, review/plan candidates, documents, batched display views; implicit body+handoff snapshots decode after close, explicit read/modify stays (PERSISTENCE.md)
   pause_notices.py — Confirmed-pause System disclosures: pending episodes, saved-chat receipts, off-loop local replay
   task_result_schema.py — Task-result schema admission: the `_schema_version` stamp, the classifier, and the quarantine an unstamped, future or malformed row lands in
   task_status.py — Effective status, lineage and waits; `execution_owner` and dated `execution_observation` separate lifecycle from liveness (§5); `task_has_live_queue_ownership` supplies the worker-side cancel predicate and fails open toward liveness (§10 invariant 14)
@@ -427,7 +426,8 @@ ouroboros/ — agent core and shared runtime (§6)
     host_service.py — Loopback-only Host Service API (§12)
     host_notify.py — POST /notify beside the Host Service: a granted skill's sentence becomes one signed `skill_notice` System row in the owner's chat (§12)
     history.py — Shared Chat room/quiz/media/review/terminal projection and cost-breakdown factories
-    history_paging.py — A room's own pages through the room index, frozen room-bound cursors, read gaps, a Project's `latest_arrival` (§3 History reads)
+    history_paging.py — A room's own pages over retained chat/progress JSONL chains, frozen room-bound cursors, read gaps, a Project's `latest_arrival`; no stored history copy (§3 History reads and the SSE v2 transport)
+    history_segments.py — Per-archive summaries: a Project read skips archives without its rows
     cost_breakdown.py — Ledger-derived dashboard buckets and root-task detail over the same physical-attempt authority
     projects.py — GET/POST /api/projects, /from-task, /update, /delete
     _helpers.py — Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work

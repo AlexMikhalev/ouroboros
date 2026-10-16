@@ -286,7 +286,7 @@ Frames sent while you were disconnected are not resent: history and the task rea
   - `409 history_view_changed`: which rows belong to the thread changed (its projects or task bindings); start again without a cursor;
   - `409 history_delta_reset`: more arrived since an `after_cursor` than one read replays, or rows already read changed their annotations; read the newest page again;
   - `503 history_source_unavailable` or `migrating`.
-- **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `chat_room_index_building` (or `progress_…`) means older rows the server has not indexed yet: a page naming it holds everything readable now, so read on later rather than at once. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
+- **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
 
 ## 6. Projects and tasks
 

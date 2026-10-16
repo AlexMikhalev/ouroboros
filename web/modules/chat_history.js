@@ -223,9 +223,7 @@ export function createChatHistoryPager({
         // rewind one request per click for content nobody can see.
         if (newChain || messageCount > 0) focus = index;
         const releasedPageIds = prune();
-        // Older rows the server's room index has not reached yet: reading on cannot land them now.
-        const indexing = Boolean(data.window?.truncated_by?.some?.(cause => String(cause).endsWith('_room_index_building')));
-        return { status: 'applied', page, releasedPageIds, messageCount, indexing };
+        return { status: 'applied', page, releasedPageIds, messageCount };
     }
 
     function request(direction, index, cursor, newChain = false) {

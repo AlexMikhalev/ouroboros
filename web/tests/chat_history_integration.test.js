@@ -150,19 +150,6 @@ test('a sparse room walks to its floor in one gesture without minting a Load-new
     assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:900').length, 1);
 });
 
-test('older rows the room index has not reached yet end the walk after one read', async (t) => {
-    // While the server's room index backfills old archives, an older page names that gap and
-    // keeps its cursor: reading on would repeat the same empty read.
-    const building = { complete: false, truncated_by: ['chat_room_index_building'] };
-    let reads = 0;  // a looping reader is cut off after a few reads, so a regression fails, never hangs
-    const f = fixture(t, page([row('chat:900', 'The one saved message')], 'page:recent', 'before:1'),
-        () => (++reads < 4 ? { ...page([], 'page:waiting', 'before:1'), window: building } : page([], 'page:end')));
-    await f.refresh();
-    await scrollEdge(f);
-    assert.deepEqual(f.calls, [null, 'before:1'], 'one read, never a loop over the same cursor');
-    assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:900').length, 1);
-});
-
 test('a walked-out sparse room asks for nothing more, however often the reader scrolls', async (t) => {
     const f = sparseRoom(t);
     await f.refresh();
