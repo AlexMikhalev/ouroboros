@@ -825,8 +825,8 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
                 return unsaved_error(str(exc), 404, code="project_unavailable")
             previous_mode = old["context_mode"]
         else:
-            digest = settings_document_digest()
             previous_mode = main_cognition()["context_mode"]
+            digest = settings_document_digest()
             _owner_update_settings(_set_context_mode, digest,
                                    authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
             os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode

@@ -261,3 +261,45 @@ def test_first_generic_owner_save_preserves_an_explicit_independent_triple(room_
     assert response.status_code == 200, response.text
     assert read_cognition(root)["effort_range"] == {"min": "low", "recommended": "ultra", "max": "high"}
     assert json.loads(config.SETTINGS_PATH.read_text(encoding="utf-8"))[EFFORT_FORMAT_KEY] == 1
+
+
+@pytest.mark.parametrize("legacy_mode", ["max", "low"])
+@pytest.mark.parametrize("endpoint,body", [
+    ("/api/owner/context-mode", {"mode": "low"}),
+    ("/api/owner/effort-range", {"min": "low", "recommended": "ultra", "max": "high"}),
+])
+def test_first_main_control_save_normalizes_legacy_context_before_capturing_digest(room_settings, endpoint, body, legacy_mode):
+    _root, client = room_settings
+    config.SETTINGS_PATH.write_text(json.dumps({"OUROBOROS_CONTEXT_MODE": legacy_mode}), encoding="utf-8")
+    response = client.post(endpoint, json=body)
+    assert response.status_code == 200, response.text
+    saved = json.loads(config.SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert saved["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    if "mode" in body:
+        assert saved["OUROBOROS_CONTEXT_MODE"] == response.json()["cognition"]["context_mode"] == "low"
+    else:
+        assert effort_range(saved) == response.json()["effort_range"] == body
+        assert saved[EFFORT_FORMAT_KEY] == 1
+
+
+@pytest.mark.parametrize("endpoint,module,body", [
+    ("/api/owner/context-mode", "settings", {"mode": "low"}),
+    ("/api/owner/effort-range", "owner_effort", {"min": "low", "recommended": "ultra", "max": "high"}),
+])
+def test_main_control_save_still_refuses_a_real_write_after_its_digest(room_settings, monkeypatch, endpoint, module, body):
+    import importlib
+
+    _root, client = room_settings
+    gateway = importlib.import_module("ouroboros.gateway." + module)
+    update = gateway._owner_update_settings
+    concurrent = {"OUROBOROS_CONTEXT_MODE": "max", "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "false", "TOTAL_BUDGET": 333}
+
+    def intervening_write(*args, **kwargs):
+        config.SETTINGS_PATH.write_text(json.dumps(concurrent), encoding="utf-8")
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(gateway, "_owner_update_settings", intervening_write)
+    response = client.post(endpoint, json=body)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "settings_precondition_failed"
+    assert json.loads(config.SETTINGS_PATH.read_text(encoding="utf-8")) == concurrent

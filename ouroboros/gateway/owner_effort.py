@@ -73,8 +73,8 @@ def _api_owner_effort_range_sync(request: Request, body: Any) -> JSONResponse:
                 return unsaved_error(str(exc), 404, code="project_unavailable")
             previous = old["effort_range"]
         else:
-            digest = settings_document_digest()
             previous = main_cognition()["effort_range"]
+            digest = settings_document_digest()
             _owner_update_settings(_set_range, digest, authored_keys=EFFORT_RANGE_KEYS)
             for key, value in values.items():
                 os.environ[key] = value
