@@ -217,9 +217,9 @@ def validate_project_admission(view: Any) -> dict:
 def task_project_membership(drive_root: Any, task: dict, *, bindings_snapshot: Optional[dict] = None) -> tuple[str, bool]:
     """Recover positive room evidence from host lineage before any scope-only permit.
 
-    One strict bindings snapshot; no registry lock.
-    Exact/predecessor and ancestor membership are authority; shared origin is not.
-    An explicit scope explicit scopes remain valid without any room binding.
+    One strict bindings snapshot; no registry lock. The task's own, retry-attempt,
+    ancestor and launching-task bindings are authority; a shared origin message is not.
+    Explicit scopes remain valid without any room binding.
     """
     from ouroboros.projects_registry import _load_bindings
 

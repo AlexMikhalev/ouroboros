@@ -557,7 +557,8 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                     else "Task is scheduled, but its owner-facing routing receipt was not confirmed."
                 ),
                 attachment_manifest=list(outcome.get("attachment_manifest") or []),
-                    # admission, so its binding finds, polls and controls the work while
+                # A Presence promotion's host-carried provenance is canonical from
+                # admission, so its binding finds, polls and controls the work while
                 # it is still queued (the worker's running write keeps the same value).
                 **({"metadata": carrier, "source": "presence_promote"} if carrier else {}),
             )
