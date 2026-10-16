@@ -68,7 +68,7 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     # #360 A: the chip keeps the observation word; the requested model is detail text
     # on the expanded card, so the collapsed child stays one quiet identity row.
     assert card.locator('.chat-live-executor-chip').inner_text().strip() == 'Cursor · last update'
-    detail = card.locator(':scope > .chat-live-summary-button .chat-live-executor-detail')
+    detail = card.locator(':scope > .chat-live-foot .chat-live-executor-detail')
     assert '(requested)' in detail.text_content() and not detail.locator('.chat-live-meta-text').is_visible()
     activity=card.locator('.chat-live-activity').first
     assert activity.is_visible() and activity.inner_text().startswith('Checking every')
@@ -195,7 +195,8 @@ def open_matrix(ui, page, theme, size):
 
 
 def part(card, selector):
-    return card.locator(f':scope > .chat-live-summary-button {selector}')
+    # The summary holds chip, title and line; the meta line (executor chip and detail) leads the card's foot.
+    return card.locator(f':scope > .chat-live-summary-button {selector}, :scope > .chat-live-foot {selector}')
 
 
 @pytest.mark.parametrize('size', [{'width': 1100, 'height': 721}, {'width': 375, 'height': 812}],

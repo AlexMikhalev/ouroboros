@@ -8035,7 +8035,7 @@ textarea.chat-input {
 /* The chip's detail sentence is card text only while the card is expanded;
    `contents` makes its separator and text ordinary parts of the meta line. */
 .chat-live-executor-detail { display: none; }
-.chat-live-card[data-expanded="1"] > .chat-live-summary-button .chat-live-executor-detail { display: contents; }
+.chat-live-card[data-expanded="1"] > :is(.chat-live-summary-button, .chat-live-foot) .chat-live-executor-detail { display: contents; }
 
 /* Structured chat delivery surfaces. All controls inherit the dark application
    palette so media stays legible in both Main and Project chat instances. */

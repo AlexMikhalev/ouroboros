@@ -3172,7 +3172,7 @@ export function createChatInstance({
         if (historyStamps(messagesDiv).some(([id, node]) => ids.has(id) && historyNodeIsProtected(node, messagesDiv))) return true;
         return [...liveCardRecords.values()].some(record =>
             [...(record.historyIds || [])].some(id => ids.has(id))
-            && [record.summaryButtonEl, record.reviewsHostEl].some(node => historyNodeIsProtected(node, messagesDiv)));
+            && [record.summaryButtonEl, record.footEl, record.reviewsHostEl].some(node => historyNodeIsProtected(node, messagesDiv)));
     }
 
     // One retirement path per message node: media, decision views and markdown go with it.
