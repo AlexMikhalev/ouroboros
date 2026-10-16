@@ -111,7 +111,7 @@ _START_TASK_DESCRIPTION = (
 )
 
 
-_ROOT_EFFORT_PARAM = {"type": "string", "enum": ["", *EFFORT_SCALE], "description": (
+_ROOT_EFFORT_PARAM = {"type": "string", "enum": list(EFFORT_SCALE), "description": (
     "Optional: the reasoning effort the NEW task starts on; applied in Cyber Pro only — otherwise the "
     "task starts at my human's recommended level and the result says so. Omit for that level.")}
 
@@ -379,7 +379,7 @@ def get_tools() -> List[ToolEntry]:
                            "or 'wait' goes back to the turn's primary route.",
             "parameters": {"type": "object", "properties": {
                 "model": {"type": "string", "description": "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to keep current."},
-                "effort": {"type": "string", "enum": ["", *EFFORT_SCALE],
+                "effort": {"type": "string", "enum": list(EFFORT_SCALE),
                            "description": "Reasoning effort for the next round, inside my human's effort range. Main keeps its level outside Cyber Pro (delegate deeper thinking: schedule_subagent(effort=…)); a child, an evolution task or a wake moves inside the range; a pinned or model-named focus keeps its level. Leave empty to keep current."},
                 "primary": {"type": "string", "enum": ["return", "wait"],
                             "description": ("Omit to keep the current route. Return to this turn's primary route: its model, role and account policy "

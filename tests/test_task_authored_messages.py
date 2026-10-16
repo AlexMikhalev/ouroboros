@@ -632,7 +632,7 @@ def test_a_refused_bind_reaches_the_ensure_caller_as_a_typed_refusal(_projects_r
     out = _move_to_project(ctx, project_name="Cyber Racing")
 
     assert out.startswith("⚠️ SCOPE_REJECTED (project_binding_failed)")
-    assert "OK" not in out and "durably bound to no project" in out
+    assert "OK" not in out and "cannot accept bindings" in out
     assert ctx.project_id == ""  # scope unchanged
     assert supervisor.RUNNING["t-root"]["task"]["project_id"] == ""
     [receipt] = [row for row in latest_chat_annotations(tmp_path).values() if row["action"] == "ensure_project_scope"]
@@ -661,11 +661,11 @@ def test_a_bind_that_lands_after_a_lost_ack_is_discoverable_from_the_durable_bin
 
     out = _move_to_project(ctx, project_name="Cyber Racing")
 
-    assert out.startswith("⚠️ SCOPE_UNCONFIRMED") and "do not report it as scoped" in out
-    assert ctx.project_id == pid  # journal writes target it meanwhile
+    assert out.startswith("SCOPE_UNCONFIRMED") and "durable binding remains the authority" in out
+    assert ctx.project_id == ""  # Execution scope stays unchanged; memory reads the binding.
     assert project_id_for_task(tmp_path, "t-root") == pid  # the bind did land
     again = _move_to_project(_ensure_live(tmp_path, supervisor), project_name="Cyber Racing")
-    assert "already scoped" in again
+    assert "SCOPE_UNCONFIRMED" in again and project_id_for_task(tmp_path, "t-root") == pid
 
 
 def _promote_supervisor(tmp_path, running, enqueued):
@@ -683,11 +683,8 @@ def _promote_supervisor(tmp_path, running, enqueued):
 
 
 @pytest.mark.parametrize("drained_owner", [False, True])
-def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, monkeypatch, drained_owner):
-    """(h) Through the real admission handler: the new root carries force_plan,
-    the promoter is released with a transferred receipt on its live row and its
-    task details, the tool result names the move, and the worker's own copy of
-    the flag is released so force_plan_decision stops requiring a plan."""
+def test_separate_work_keeps_the_callers_unmet_swarm_obligation(_projects_root, monkeypatch, drained_owner):
+    """Starting independent work never releases the caller's planning obligation."""
     import supervisor.queue as queue_mod
     from ouroboros.owner_hurry import force_plan_decision
     from ouroboros.task_results import load_task_result
@@ -709,19 +706,12 @@ def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, mo
 
     assert out.startswith("OK: task")
     [new_root] = enqueued
-    assert new_root["metadata"]["force_plan"] is True and new_root["metadata"]["force_plan_source"] == "swarm"
-    assert f"Your planning obligation (force_plan) moved to task {new_root['id']}" in out
-    assert "use ensure_project_scope" in out and "unplanned" in out
-    promoter_row = running["swarm-root"]["task"]["metadata"]
-    assert promoter_row["force_plan"] is False and promoter_row["force_plan_transferred_to"] == new_root["id"]
-    admission = load_task_result(tmp_path, new_root["id"])["promotion_admission"]
-    assert admission["force_plan_transfer"]["from"] == "swarm-root"
-    assert admission["force_plan_transfer"]["released"] is True
-    assert load_task_result(tmp_path, "swarm-root")["force_plan_transfer"]["to"] == new_root["id"]
-    # The worker's copy is released too: no plan is required of the promoter now.
-    assert ctx.task_metadata["force_plan"] is False
-    assert ctx.task_metadata["force_plan_transferred_to"] == new_root["id"]
-    assert force_plan_decision(ctx, {})["status"] == "not_required"
+    assert not new_root["metadata"].get("force_plan")
+    assert running["swarm-root"]["task"]["metadata"]["force_plan"] is True
+    assert "force_plan_transfer" not in load_task_result(tmp_path, new_root["id"])["promotion_admission"]
+    assert ctx.task_metadata["force_plan"] is True
+    assert "force_plan_transferred_to" not in ctx.task_metadata
+
 
 
 def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_root, monkeypatch):
@@ -736,7 +726,7 @@ def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_r
 
     out = _move_to_project(ctx, project_name="Cyber Racing")
 
-    assert out.startswith("OK: this task is now durably bound")
+    assert out.startswith("OK: this work")
     assert ctx.task_metadata["force_plan"] is True  # same task: the obligation stays
     assert unmet_force_plan_obligation(ctx) == {"unmet": True, "source": "swarm"}
     monkeypatch.setattr(task_results, "load_plan_review_state",
@@ -745,9 +735,8 @@ def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_r
     assert unmet_force_plan_obligation(_owner_turn_ctx(tmp_path)) == {"unmet": False, "reason": "not_required"}
 
 
-def test_a_promote_into_another_project_discloses_the_second_project(_projects_root, monkeypatch):
-    """(13) Owner 5A: promote stays free, so the result says a second Project
-    now holds the work when the request already had one."""
+def test_separate_work_reports_its_own_destination(_projects_root, monkeypatch):
+    """A separate root reports its destination without origin-sibling framing."""
     import ouroboros.tools.control_events as control_events
     from ouroboros.projects_registry import bind_task_to_project, create_project
     from ouroboros.tools.control import _start_task
@@ -765,7 +754,8 @@ def test_a_promote_into_another_project_discloses_the_second_project(_projects_r
     out = _start_task(ctx, "Do it elsewhere", title="Work elsewhere",
                                 project_id="second-room")
 
-    assert "already has project 'first-room'" in out and "a second project 'second-room' now holds this promote" in out
+    assert "Second Room" in out and "second-room" in out
+    assert "first-room" not in out and "second project" not in out
 
 
 def test_a_transfer_admitted_after_the_wait_returned_still_releases_the_worker(tmp_path):

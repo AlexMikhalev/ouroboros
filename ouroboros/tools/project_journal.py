@@ -21,6 +21,7 @@ from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.project_facts import (
+    placed_project_id,
     project_journal_path,
     project_reflections_path,
     project_workpad_path,
@@ -29,7 +30,6 @@ from ouroboros.project_facts import (
 )
 from ouroboros.dialogue_provenance import is_presence_task, presence_caller_binding
 from ouroboros.focus import normalize_focus
-from ouroboros.project_placement import placed_project_id
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import completed_local_read
 from ouroboros.utils import (

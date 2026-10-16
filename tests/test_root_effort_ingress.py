@@ -431,5 +431,5 @@ def test_configured_children_keep_their_profile_and_ask_for_effort_through_their
     assert child["effort"]["enum"] == ["auto", *EFFORT_SCALE]
 
     assert schemas["start_task"]["parameters"]["properties"]["reasoning_effort"]["enum"] == \
-        ["", *EFFORT_SCALE]
+        list(EFFORT_SCALE)
     assert json.dumps(schemas["start_task"])  # serializable as sent

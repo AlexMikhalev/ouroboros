@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.contracts.task_contract import normalize_disabled_tools
-from ouroboros.contracts.tool_aliases import TOOL_NAME_ALIASES
+from ouroboros.contracts.task_contract import TOOL_NAME_ALIASES
 from ouroboros.tool_policy import select_tool_schemas
 from ouroboros.tools.registry_guards import _disabled_tools
 

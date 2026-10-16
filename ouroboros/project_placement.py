@@ -12,16 +12,6 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-def placed_project_id(ctx: Any) -> Any:
-    """Resolve the current memory room without changing execution context fields."""
-    from ouroboros.projects_registry import project_id_for_task
-    from ouroboros.tool_access import canonical_data_root
-
-    tid = str(getattr(ctx, "task_id", "") or "")
-    bound = project_id_for_task(canonical_data_root(ctx), tid, strict=True) if tid else ""
-    return bound or getattr(ctx, "project_id", "")
-
-
 def placement_basis(drive_root: Any, task_id: str, project_id: str) -> dict:
     """Capture the destination before transport or asynchronous project naming."""
     from ouroboros.projects_registry import project_id_for_task, project_admission_view

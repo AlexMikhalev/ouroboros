@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 from ouroboros.tool_capabilities import CORE_TOOL_NAMES, META_TOOL_NAMES
-from ouroboros.contracts.tool_aliases import canonical_tool_name
+from ouroboros.contracts.task_contract import canonical_tool_name
 
 
 NANO_SCHEMA_META_NAMES = META_TOOL_NAMES | frozenset({"compact_context"})
