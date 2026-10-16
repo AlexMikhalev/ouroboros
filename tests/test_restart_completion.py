@@ -100,11 +100,15 @@ process_custody.kill_process_tree = lambda proc: None
 
 class Successor:
     pid = 4242
+    returncode = None
     def __init__(self, *a, **kw):
         if phase == "publication":
             start_panic()
     def wait(self, **kw):
-        return 0
+        self.returncode = 0
+        return self.returncode
+    def poll(self):
+        return self.returncode
 process_custody.subprocess = SimpleNamespace(Popen=Successor)
 def record(*a, **kw):
     if phase in {"custody", "success"}:
@@ -642,7 +646,8 @@ sys.exit(server.main())
             assert successor.poll() is None and holder.poll() is None
             release.touch()
             assert holder.wait(timeout=10) == parent_exit
-            exited.write_text(str(parent_exit), encoding="utf-8")
+            exited.with_suffix(".tmp").write_text(str(parent_exit), encoding="utf-8")
+            os.replace(exited.with_suffix(".tmp"), exited)
         output, _ = successor.communicate(timeout=60)
     finally:
         release.touch()

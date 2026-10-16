@@ -596,7 +596,8 @@ def _fake_node(directory) -> str:
     return str(node)
 
 
-@pytest.mark.parametrize("change", ["head", "tree", "index", "env", "workers", "timeout", "node", "launch_only"])
+@pytest.mark.parametrize("change", ["head", "tree", "index", "env", "workers", "timeout", "node",
+                                  "launch_only", "launch_only_windows"])
 def test_each_bound_input_misses_while_launch_descriptors_and_containment_do_not(tmp_path, monkeypatch,
                                                                                 stubbed_lanes, change):
     receipts.capture_executing_source_baseline()
@@ -628,11 +629,12 @@ def test_each_bound_input_misses_while_launch_descriptors_and_containment_do_not
         monkeypatch.setattr("ouroboros.preflight_node.resolve_node", lambda: str(node_b))
     else:
         for key, value in _launch_env("another-launch").items():
-            monkeypatch.setenv(key, value)
+            # Windows imports environment names in uppercase, including mixed-case launchd keys.
+            monkeypatch.setenv(key.upper() if change == "launch_only_windows" else key, value)
     ctx = _ctx(repo, canonical, "second")
     assert pr.run_hermetic_pytest(repo, ctx=ctx) is None
     status = ctx._preflight_test_disclosure["receipt"]["status"]
-    if change == "launch_only":
+    if change in {"launch_only", "launch_only_windows"}:
         assert (status, len(stubbed_lanes), len(_receipt_files(canonical))) == ("reused", ran, 1)
     else:
         assert (status, len(_receipt_files(canonical))) == ("published", 2) and len(stubbed_lanes) > ran

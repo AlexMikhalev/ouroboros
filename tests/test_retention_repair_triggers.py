@@ -452,7 +452,7 @@ def test_review_input_attachment_copies_are_owned_sources(tmp_path):
                             evidence={"task_contract": contract}, retry_key="img-review")
     retain_review_request_sources(request, source_root=child, custody_root=parent)
     placed = request.evidence["task_contract"]
-    assert "source_handles/review_inputs/request-" in placed["attachment_manifest"][0]["abs_path"]
+    assert "source_handles/review_inputs/request-" in Path(placed["attachment_manifest"][0]["abs_path"]).as_posix()
     captured = _acceptance_checkpoint(child, task, placed)  # the persisted request names the placement
     write_task_result(child, task, "completed", result="answer", artifact_status="ready",
                       task_contract=contract, review_evidence={"source_refs": [captured]})
