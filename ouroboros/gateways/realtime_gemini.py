@@ -13,7 +13,6 @@ import asyncio
 import base64
 from dataclasses import replace
 import json
-from urllib.parse import urlencode
 from uuid import uuid4
 
 from ouroboros.gateways.realtime_engine import (
@@ -126,9 +125,14 @@ class GeminiLiveEngine(RealtimeTransport):
             await self._fail(transport_error(exc))
 
     async def _connect_session(self):
+        # The key travels as the ``x-goog-api-key`` request header, where Google's own
+        # Live clients put it (go-genai ``live.go`` and the js-genai change that moved it
+        # out of the query string, read 2026-10-16), so it stays out of URLs that
+        # connection logs and proxies record. The WebSocket get-started page still
+        # shows the ``?key=`` spelling; both are the same server's accepted forms.
         url = ("wss://generativelanguage.googleapis.com/ws/"
-               "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?")
-        await self._connect(url + urlencode({"key": self._api_key}))
+               "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")
+        await self._connect(url, headers={"x-goog-api-key": self._api_key})
         await self._write(setup_message(self._config))
 
     async def _write(self, payload):

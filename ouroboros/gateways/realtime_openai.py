@@ -188,12 +188,13 @@ class OpenAIRealtimeEngine(RealtimeTransport):
             raise LiveEngineRefusal("command", "Unsupported live engine command.")
 
     def _tool_call(self, item):
+        # Arguments travel as the model produced them: a malformed object is the
+        # ordinary tool path's typed argument error back to the model, not a protocol
+        # failure that ends the session.
         call_id = item["call_id"]
         if call_id not in self._calls_seen:
-            if not isinstance(json.loads(item["arguments"]), dict):
-                raise ValueError("function arguments must be a complete object")
             self._calls_seen.add(call_id)
-            self._emit(ToolCall(call_id, item["name"], item["arguments"]))
+            self._emit(ToolCall(call_id, item["name"], str(item.get("arguments") or "")))
 
     async def _handle_message(self, message):
         kind = message.get("type")

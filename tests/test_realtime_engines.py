@@ -435,7 +435,10 @@ async def test_llm_entry_point_resolves_captured_credentials_and_optional_open(p
         assert targets == ["openai::custom-model", "openai::custom-model"]
         assert connection.options[0][1]["additional_headers"]["Authorization"] == "Bearer openai-key"
     else:
-        assert "key=google-key" in connection.options[0][0] and not targets
+        url, options = connection.options[0]
+        # The key is a request header, as in Google's own Live clients, never part of the URL.
+        assert options["additional_headers"] == {"x-goog-api-key": "google-key"} and not targets
+        assert "google-key" not in url and "?" not in url
     await engine.close("stop")
     monkeypatch.setattr(llm_live, "runtime_setting", lambda *args: "")
     monkeypatch.setattr(client, "resolve_remote_target", lambda *args: {"api_key": ""})
@@ -523,10 +526,12 @@ async def test_openai_completed_calls_only_and_repeated_done_settles_once():
     await feed(engine, socket, response)
     assert [e.call_id for e in selected(events, ToolCall)] == ["complete"]
     assert len(selected(events, ResponseDone)) == 1
+    # Malformed arguments reach the host as the model produced them: the ordinary tool
+    # path answers with its typed argument error and the session stays open.
     await feed(engine, socket, {"type": "response.function_call_arguments.done", "call_id": "bad", "name": "lookup", "arguments": "{"})
-    await asyncio.wait_for(collector, 2)
-    assert selected(events, EngineError)[0].kind == "protocol"
-    assert len(selected(events, ToolCall)) == 1
+    assert [(e.call_id, e.arguments) for e in selected(events, ToolCall)] == [("complete", "{}"), ("bad", "{")]
+    assert not selected(events, EngineError)
+    await finished(engine, collector)
 
 
 @pytest.mark.parametrize("wire_expiry", [False, True])
