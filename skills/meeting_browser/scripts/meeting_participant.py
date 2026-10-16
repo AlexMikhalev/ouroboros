@@ -42,7 +42,7 @@ from vendors import (  # noqa: E402
     VendorRefused,
     belongs_to,
     record_probe,
-    require_probed,
+    probe_note,
     vendor_for,
 )
 
@@ -150,7 +150,6 @@ class ParticipantCompanion:
             return _refusal("MEETING_HOST_UNAVAILABLE", "The companion has no Host Service address or token.")
         try:
             vendor, origin = vendor_for(url)
-            require_probed(vendor, self.state_dir)
         except VendorRefused as exc:
             return _refusal(exc.code, exc.message)
         with self._lock:
@@ -200,10 +199,12 @@ class ParticipantCompanion:
             session.close("closed")
             return _refusal("MEETING_CALL_GONE" if call_ended else "MEETING_BROWSER_FAILED",
                             f"The meeting could not be joined: {self.last_event}.")
+        note = probe_note(vendor, self.state_dir)
         return {**self.status(), "state": "joining", "message": (
             f"opened {name} in Ouroboros's browser window; if the page asks, join from that window (sign in "
             "once with Ouroboros's own account; a screenshot and a click on 'Join' with the computer-use tools "
-            "work). meeting_status tells when the meeting can hear Ouroboros.")}
+            "work). meeting_status tells when the meeting can hear Ouroboros." + (f" {note}" if note else "")),
+            **({"experimental": note} if note else {})}
 
     def leave(self) -> Dict[str, Any]:
         with self._lock:

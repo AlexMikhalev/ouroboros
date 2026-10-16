@@ -142,20 +142,17 @@ def test_vendor_comes_from_the_link_host():
     assert vendors.belongs_to("teams", "https://login.example.com/") is False
 
 
-def test_vendors_ship_unprobed_and_open_only_after_a_pass(tmp_path):
+def test_vendors_ship_unprobed_and_every_join_reports_what_the_probe_showed(tmp_path):
     table = vendors.probe_table(tmp_path)
     assert {vendor: row["result"] for vendor, row in table.items()} == {
         "zoom": "NOT_RUN", "meet": "NOT_RUN", "teams": "NOT_RUN"}
     assert "CAPTCHA" in table["zoom"]["known"] and "admits" in table["meet"]["known"]
-    with pytest.raises(vendors.VendorRefused) as refused:
-        vendors.require_probed("meet", tmp_path)
-    assert refused.value.code == "MEETING_VENDOR_NOT_PROBED" and "probe_vendor.py" in refused.value.message
+    assert vendors.probe_note("meet", tmp_path).startswith("Experimental: Google Meet has not been probed")
     vendors.record_probe(tmp_path, "meet", vendors.FAIL, {}, "no remote meeting audio arrived")
-    with pytest.raises(vendors.VendorRefused) as failed:
-        vendors.require_probed("meet", tmp_path)
-    assert failed.value.code == "MEETING_VENDOR_PROBE_FAILED" and "no remote meeting audio" in failed.value.message
+    note = vendors.probe_note("meet", tmp_path)
+    assert "failed its participant probe" in note and "no remote meeting audio" in note and "listen-only" in note
     vendors.record_probe(tmp_path, "meet", vendors.PASS, {"published": True})
-    vendors.require_probed("meet", tmp_path)
+    assert vendors.probe_note("meet", tmp_path) == ""
     assert vendors.probe_table(tmp_path)["meet"]["where"] == "this computer"
 
 
@@ -365,12 +362,20 @@ def participant(tmp_path, door):
 
 
 @pytest.mark.serial
-def test_join_refuses_without_a_call_an_unknown_link_or_an_unprobed_vendor(tmp_path, fake_door):
+def test_join_refuses_without_a_call_or_an_unknown_link(tmp_path, fake_door):
     companion = participant(tmp_path, fake_door)
     assert companion.join("", MEET)["code"] == "MEETING_NO_CALL"
     assert companion.join("call-1", "https://example.com/meeting")["code"] == "MEETING_VENDOR_UNKNOWN"
-    assert companion.join("call-1", MEET)["code"] == "MEETING_VENDOR_NOT_PROBED"
     assert fake_door.opened == [] and FakeSession.instances == []
+
+
+@pytest.mark.serial
+def test_an_unprobed_vendor_joins_as_experimental(tmp_path, fake_door):
+    companion = participant(tmp_path, fake_door)
+    reply = companion.join("call-1", MEET)
+    assert reply["state"] == "joining" and reply["experimental"].startswith("Experimental: Google Meet")
+    assert "only listens" in reply["message"]
+    companion.leave()
 
 
 @pytest.mark.serial

@@ -38,9 +38,10 @@ join; when the call ends, the window leaves the meeting and closes. Outside a ca
 
 ## Which services work
 
-A service is offered only after its **participant probe** passed, because a page
-may refuse a replaced microphone and only a real meeting shows it. The shipped
-record (`vendor_probes.json`) and an owner-run probe on this computer decide:
+Every service is offered and stays **experimental** until its participant probe
+passed, because a page may refuse a replaced microphone and only a real meeting
+shows it. The shipped record (`vendor_probes.json`) and an owner-run probe on this
+computer say what is known; `meeting_join` reports it in its result:
 
 | Service | Shipped probe | Known before probing |
 |---|---|---|
@@ -48,10 +49,10 @@ record (`vendor_probes.json`) and an owner-run probe on this computer decide:
 | Google Meet (`meet.google.com`) | NOT_RUN | Meet holds unknown guests in a queue until the host admits them |
 | Microsoft Teams (`teams.microsoft.com`, `teams.live.com`) | NOT_RUN | |
 
-Until a service passes, `meeting_join` refuses with
-`MEETING_VENDOR_NOT_PROBED`; the `meeting_audio` skill can still listen to the
-owner's own meeting. To probe, the owner runs, with a real meeting that someone
-else is in:
+Until a service passes, the join result carries an `experimental` note: if the
+page refuses the replaced microphone, the participant only listens and says so,
+and the `meeting_audio` skill can still listen to the owner's own meeting. To
+record a probe, the owner runs, with a real meeting that someone else is in:
 
 ```text
 python3 scripts/probe_vendor.py --state-dir <data>/state/skills/meeting_browser --url <meeting link> --seconds 90
@@ -102,7 +103,6 @@ probe results).
 
 - `MEETING_NO_CALL`: not inside a live call; the owner presses Call first.
 - `MEETING_VENDOR_UNKNOWN` / `MEETING_LINK_INVALID`: not a Zoom, Meet or Teams https link.
-- `MEETING_VENDOR_NOT_PROBED` / `MEETING_VENDOR_PROBE_FAILED`: see "Which services work".
 - `MEETING_BROWSER_PROFILE_BUSY`: Ouroboros's browser window is already open elsewhere.
 - `MEETING_CALL_GONE`: the call ended before the participant could join.
 - `MEETING_COMPANION_UNAVAILABLE`: the skill is disabled, its dependency is still

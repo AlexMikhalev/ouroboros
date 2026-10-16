@@ -1,12 +1,11 @@
-"""Which meeting service a link belongs to, and whether that service has passed its probe.
+"""Which meeting service a link belongs to, and what its participant probe has shown.
 
 The vendor is a routing fact read from the link's host, never guessed from page
-content. A vendor is offered only after its participant probe passed: a probe
-needs a real meeting, so results are recorded where they happened. The shipped
-record (``vendor_probes.json`` beside this skill) holds what was proven before
-release; an owner-run probe on this computer writes ``vendor_probes.json`` in the
-skill's state directory. Either PASS opens the vendor; FAIL and NOT_RUN keep it
-closed and the refusal says which and why.
+content. Every vendor is offered; the participant is experimental until a probe
+with a real meeting passed. The shipped record (``vendor_probes.json`` beside
+this skill) holds what was proven before release; an owner-run probe on this
+computer writes ``vendor_probes.json`` in the skill's state directory. The join
+result carries that fact, so the mind knows whether to expect listen-only.
 """
 
 from __future__ import annotations
@@ -80,20 +79,18 @@ def probe_table(state_dir: Optional[pathlib.Path], skill_dir: pathlib.Path = SKI
     return table
 
 
-def require_probed(vendor: str, state_dir: Optional[pathlib.Path], skill_dir: pathlib.Path = SKILL_DIR) -> None:
+def probe_note(vendor: str, state_dir: Optional[pathlib.Path], skill_dir: pathlib.Path = SKILL_DIR) -> str:
+    """The plain fact a join reports about this vendor's probe ("" after a PASS)."""
     row = probe_table(state_dir, skill_dir)[vendor]
     if row["result"] == PASS:
-        return
+        return ""
     name = VENDORS[vendor][0]
     if row["result"] == FAIL:
         reason = str(row.get("reason") or "see the probe record")
-        raise VendorRefused("MEETING_VENDOR_PROBE_FAILED",
-                            f"{name} failed its participant probe ({row['where']}): {reason}. Listen with "
-                            "the meeting_audio skill instead.")
-    raise VendorRefused(
-        "MEETING_VENDOR_NOT_PROBED",
-        f"{name} has not passed the browser participant probe yet, so joining it is not offered. The owner "
-        "can run scripts/probe_vendor.py with a real meeting to record it; meeting_audio can listen meanwhile.")
+        return (f"Experimental: {name} failed its participant probe ({row['where']}): {reason}; expect "
+                "listen-only, or listen with the meeting_audio skill instead.")
+    return (f"Experimental: {name} has not been probed with the browser participant yet; if its page "
+            "refuses the replaced microphone, the participant only listens and says so.")
 
 
 def record_probe(state_dir: pathlib.Path, vendor: str, result: str, facts: Dict[str, Any], reason: str = "") -> None:
