@@ -500,6 +500,30 @@ class TestBuildWindowsPs1:
             assert 'set "ROOT=%ROOT%\\_internal"' in src
 
 
+def test_python_standalone_pin_is_the_fixed_sqlite_release():
+    """Desktop packages take CPython 3.10.22 from python-build-standalone 20261009.
+
+    That release is the last one that still ships Python 3.10, and its SQLite
+    is 3.53.1 (the WAL-reset fix). The two download scripts are the pin.
+    """
+    shell = _read("scripts/download_python_standalone.sh")
+    windows = _read("scripts/download_python_standalone.ps1")
+    assert 'RELEASE="20261009"' in shell
+    assert 'PY_VERSION="3.10.22"' in shell
+    assert '$Release = "20261009"' in windows
+    assert '$PyVersion = "3.10.22"' in windows
+    assert "20260211" not in shell and "20260211" not in windows
+    assert "3.10.19" not in shell and "3.10.19" not in windows
+    for platform in (
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ):
+        assert platform in shell
+    assert "x86_64-pc-windows-msvc" in windows
+
+
 # ---------------------------------------------------------------------------
 # Dockerfile  (Docker / web runtime)
 # ---------------------------------------------------------------------------
