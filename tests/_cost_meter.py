@@ -63,6 +63,21 @@ _ACTIVE: Optional["CostMeter"] = None
 _LOCAL = threading.local()
 
 
+_DOORS = ("tests._cost_meter", "subprocess", "pathlib", "os", "genericpath", "posixpath", "io", "json",
+          "json.decoder", "sqlite3", "contextlib", "threading", "glob", "shutil", "fnmatch")
+
+
+def caller(depth: int = 2) -> str:
+    """The nearest ``depth`` frames outside the meter and the standard library doors, innermost first."""
+    frame, found = sys._getframe(2), []
+    while frame is not None and len(found) < depth:
+        name = frame.f_globals.get("__name__", "")
+        if name not in _DOORS:
+            found.append(f"{name}.{frame.f_code.co_name}")
+        frame = frame.f_back
+    return " <- ".join(found) or "?"
+
+
 def tag_of() -> str:
     tag = BOUNDARY.get()
     if tag is not None:
@@ -77,7 +92,7 @@ class CostMeter:
     """Install with ``with CostMeter(root) as meter:``; read with ``snapshot(tag)``."""
 
     def __init__(self, data_root: Any = None, *, thread_rules: Iterable[Tuple[str, str]] = (),
-                 lineage: Optional[Dict[str, Optional[str]]] = None, keep_paths: int = 400) -> None:
+                 lineage: Optional[Dict[str, Optional[str]]] = None) -> None:
         roots: List[str] = []
         if data_root is not None:
             text = os.fspath(data_root)
@@ -90,7 +105,6 @@ class CostMeter:
         self.statements: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.names: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.spawned: Dict[str, List[threading.Thread]] = collections.defaultdict(list)
-        self._keep_paths = keep_paths
         self._lock = threading.Lock()
         self._fd_category: Dict[int, str] = {}
         self._rebound: List[Tuple[Any, str, Any]] = []
@@ -133,9 +147,17 @@ class CostMeter:
             counter[kind] += amount
             if category is not None:
                 counter[f"{kind}:{category}"] += amount
-                if category in HISTORY and path is not None and len(self.paths[tag]) < self._keep_paths:
-                    self.paths[tag][f"{kind} {self._relative(path)}"] += 1
+                if category in HISTORY and path is not None:
+                    self.paths[tag][f"{kind} {self._bucket(category, path)} <- {caller()}"] += 1
         return tag
+
+    def _bucket(self, category: str, path: Any) -> str:
+        """Where in the history the call went, coarse enough to stay small: an archive stream
+        (``archive/chat``), else the location itself."""
+        if category != "archive":
+            return category
+        name = self._relative(path).replace(os.sep, "/").split("/")[-1]
+        return "archive/" + (name.split("_", 1)[0] if name.endswith(".jsonl") else name)
 
     def _relative(self, path: Any) -> str:
         text = os.fspath(path) if not isinstance(path, int) else str(path)
@@ -383,7 +405,8 @@ def _w_popen_init(self, args, *rest, **kwargs):
     meter = _ACTIVE
     if meter is not None:
         first = args if isinstance(args, (str, bytes, os.PathLike)) else (list(args)[:1] or ["?"])[0]
-        meter.note_name("popen", os.path.basename(os.fspath(first)) if not isinstance(first, bytes) else "bytes")
+        name = os.path.basename(os.fspath(first)) if not isinstance(first, bytes) else "bytes"
+        meter.note_name("popen", f"{name} <- {caller()}")
     return _ORIG["Popen.__init__"](self, args, *rest, **kwargs)
 
 
