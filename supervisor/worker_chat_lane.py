@@ -536,7 +536,8 @@ def _execute_chat_task(admitted: Dict[str, Any]) -> bool:
         ok = True
     except Exception as e:
         from supervisor.direct_pause import recover_direct_pause
-        if not recover_direct_pause(task):
+        ok = recover_direct_pause(task)
+        if not ok:
             _report_direct_chat_error(admitted, e)
     finally:
         registry.unregister(task["id"])

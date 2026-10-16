@@ -859,6 +859,8 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
     """Yield only after complete tool results; no model polling or terminal path."""
     if not getattr(ctx, "_owner_wait_requested", "") and not review_binding:
         return
+    from ouroboros.model_detach import preserve_owner_question
+    preserve_owner_question(ctx, messages)
     sleep = getattr(ctx, "_model_sleep", None)
     if isinstance(sleep, dict) and sleep.get("mode") == "cold" and not review_binding:
         # A cold sleep ends this process at the next round boundary

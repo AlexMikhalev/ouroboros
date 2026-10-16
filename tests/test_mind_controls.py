@@ -37,7 +37,7 @@ def test_mind_pause_other_root_records_actor_and_resume_keeps_attribution(tmp_pa
     from supervisor.events_mind_controls import _apply
 
     q, _state, workers = _install_queue(tmp_path, monkeypatch)
-    task = {"id": "other", "type": "task", "root_task_id": "other", "chat_id": 7, "_attempt": 0}
+    task = {"id": "other", "type": "task", "root_task_id": "other", "chat_id": 7, "_attempt": 1, "admitted_dispatch": "none"}
     workers.PENDING.append(task)
     write_task_result(tmp_path, "other", "scheduled", root_task_id="other")
     result = _apply(_event("pause_task", "other"))
@@ -57,7 +57,7 @@ def test_panic_hold_survives_mind_resume_but_owner_can_select_it(tmp_path, monke
     from supervisor.queue_transitions import resume_budget_paused_task
 
     q, _state, workers = _install_queue(tmp_path, monkeypatch)
-    task = {"id": "other", "root_task_id": "other", "_attempt": 0, "type": "task"}
+    task = {"id": "other", "root_task_id": "other", "_attempt": 1, "type": "task", "admitted_dispatch": "none"}
     hold_budget_row(task, reason=HOLD_PANIC)
     workers.PENDING.append(task)
     write_task_result(tmp_path, "other", "scheduled", root_task_id="other")

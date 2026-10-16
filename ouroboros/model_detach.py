@@ -32,14 +32,30 @@ def pool_available() -> dict:
     return worker_pool_admission_state()
 
 
+def owner_question_pending(ctx: Any) -> bool:
+    requested = str(getattr(ctx, "_owner_wait_requested", "") or "")
+    sleep = getattr(ctx, "_model_sleep", None) or {}
+    return bool(requested and requested != "sleep:" + str(sleep.get("sleep_id") or ""))
+
+
+def preserve_owner_question(ctx: Any, messages: list) -> None:
+    """A question later in the same batch keeps its warm owner-wait owner."""
+    if is_detach(getattr(ctx, "_model_sleep", None)) and owner_question_pending(ctx):
+        ctx._model_sleep = None
+        messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nThe background handoff was withdrawn: "
+                         "your owner question waits in this process."})
+
+
 def arm_detach(ctx: Any, reason: str) -> dict:
     from ouroboros.model_sleep import MODE_COLD, cold_blockers, request_sleep
-    from ouroboros.utils import in_worker_process
+    from ouroboros.utils import in_worker_process, utc_now_iso
 
     owner = (getattr(ctx, "task_metadata", None) or {}).get("_execution_owner") or {}
     if in_worker_process() or owner.get("kind") == "pooled":
         return {"ok": True, "status": "already_in_background", "task_id": ctx.task_id,
                 "note": "This work already runs on a pooled executor; nothing changed."}
+    if owner_question_pending(ctx):
+        return {"ok": False, "error": "owner_question_pending", "note": "Owner-question waits stay warm."}
     if not callable(getattr(ctx, "owner_wait_callback", None)):
         return {"ok": False, "error": "no_continuation_owner"}
     pool = pool_available()
@@ -47,7 +63,7 @@ def arm_detach(ctx: Any, reason: str) -> dict:
         return {"ok": False, "error": "worker_pool_unavailable", "pool": pool,
                 "note": "The dialogue stays in this process."}
     chosen = {"intent": "continue_in_background", "reason": str(reason or ""),
-              "detached_at": time.time(), "detached_by": "mind", "wake_at": time.time(),
+              "detached_at": time.time(), "detached_by": "mind", "wake_at": utc_now_iso(),
               "senders": [], "tasks": [], "runs": [], "any_mail": False}
     blockers = cold_blockers(ctx, chosen=chosen)
     if blockers:

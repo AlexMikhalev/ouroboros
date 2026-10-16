@@ -534,6 +534,8 @@ def enter_cold_sleep(limit_ctx: Any) -> None:
     if is_detach(sleep) and not pool_available().get("available"):
         blockers.append({"kind": "worker_pool_unavailable"})
     if blockers:
+        if getattr(ctx, "_owner_wait_requested", "") == "sleep:" + str(sleep.get("sleep_id") or ""):
+            ctx._owner_wait_requested, ctx._owner_wait_deadline_at = "", ""
         ctx._model_sleep = None
         limit_ctx.messages.append({"role": "user", "content": (
             "[SYSTEM NOTICE]\nYour cold sleep was not taken: this task still runs "

@@ -121,3 +121,55 @@ def test_frozen_profile_survives_carrier_change_but_not_subagent_ceiling():
     assert freeze_tool_profile(task) == "external_workspace_task"
     task.pop("workspace_root")
     assert freeze_tool_profile(task) == "external_workspace_task"
+
+
+def test_owner_question_stays_warm_in_either_tool_order(tmp_path, monkeypatch):
+    from ouroboros import model_detach, owner_wait
+
+    ctx, limit, result = _arm(tmp_path, monkeypatch)
+    assert result["ok"]
+    ctx._owner_wait_requested = "quiz-created-after-detach"
+
+    class WarmCheckpoint(Exception):
+        pass
+
+    def warm(ctx, *_a, **_k):
+        assert ctx._model_sleep is None
+        assert ctx._owner_wait_requested == "quiz-created-after-detach"
+        raise WarmCheckpoint
+
+    monkeypatch.setattr(owner_wait, "checkpoint_owner_wait", warm)
+    with pytest.raises(WarmCheckpoint):
+        owner_wait.wait_after_tools(ctx, limit.messages, {}, {}, 1, [], set())
+    assert model_detach.arm_detach(ctx, "")["error"] == "owner_question_pending"
+
+
+def test_raise_after_saved_pause_parks_before_unregister_without_error_terminal(tmp_path, monkeypatch):
+    from ouroboros import budget_pause
+    from supervisor import message_bus, worker_chat_lane
+
+    _q, _state, workers = _install_queue(tmp_path, monkeypatch)
+    ctx, limit, _result = _arm(tmp_path, monkeypatch)
+    _fast_hold(monkeypatch, budget_pause)
+    _quiet_external(monkeypatch, budget_pause)
+    task = {"id": "head", "type": "task", "chat_id": 7, "text": "work",
+            "project_id": "fixture", "_is_direct_chat": True, "_attempt": 1}
+    emitted, released = [], []
+    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=emitted.append))
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: SimpleNamespace(push_log=lambda _e: None))
+    monkeypatch.setattr(worker_chat_lane, "_report_direct_chat_error", lambda *_a: pytest.fail("pause became terminal"))
+
+    def fail(_task):
+        try:
+            budget_pause.enter_cold_sleep(limit)
+        except budget_pause.BudgetPauseRequested:
+            raise OSError("after saved pause")
+
+    def unregister(task_id):
+        assert workers.PENDING[0]["id"] == task_id
+        released.append(task_id)
+
+    assert worker_chat_lane._execute_chat_task({"task": task, "agent": SimpleNamespace(handle_task=fail),
+        "chat_id": 7, "registry": SimpleNamespace(unregister=unregister)})
+    assert released == ["head"] and not emitted
+    assert not budget_pause.dispatch_fenced("head")
