@@ -222,7 +222,7 @@ def _prepare_owner_restart_returns(ctx: Any) -> tuple:
 
         _LAST_RETURN_TX["id"] = ""
         transaction_id = uuid.uuid4().hex
-        owner_waits = prepare_owner_wait_handoffs(DATA_DIR, _question_waits(ctx.RUNNING), transaction_id)
+        owner_waits = prepare_owner_wait_handoffs(DATA_DIR, ctx.RUNNING, transaction_id, include_sleep=False)
         returning = prepare_restart_returns(DATA_DIR, dict(ctx.RUNNING or {}),
                                             name_queue_returns(ctx.PENDING or [], "owner_restart"),
                                             transaction_id=transaction_id, direct=direct_chat_turns(),
@@ -232,22 +232,6 @@ def _prepare_owner_restart_returns(ctx: Any) -> tuple:
     except Exception:
         log.warning("Owner restart: saved work returns were not prepared; the next boot holds them", exc_info=True)
         return set(), set()
-
-
-def _question_waits(running: Any) -> dict:
-    """Only question/review waits ride this Restart's transaction; a warm sleep or a warm
-    owner-Pause park keeps its own retention (an exact pause only Resume releases, §9)."""
-    from ouroboros.task_results import load_task_result
-
-    chosen = {}
-    for task_id, meta in dict(running or {}).items():
-        try:
-            wait = (load_task_result(DATA_DIR, task_id, strict=True) or {}).get("owner_wait") or {}
-        except Exception:
-            continue  # unreadable: the ordinary stop path keeps whatever custody it has
-        if wait.get("reason") in {"owner", "review"}:
-            chosen[task_id] = meta
-    return chosen
 
 
 def arm_owner_restart_transaction() -> str:
