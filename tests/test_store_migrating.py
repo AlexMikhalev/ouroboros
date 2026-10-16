@@ -3,13 +3,13 @@ import asyncio
 import json
 import pathlib
 import shutil
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from ouroboros import store, store_import, task_status
 from ouroboros.gateway import history
+from tests.group_run import run_in_group
 from tests.test_history_tool_carriers import TS, _tool, _write
 
 
@@ -55,7 +55,6 @@ def test_migrating_client_consumers():
     node = shutil.which("node")
     assert node, "focused frontend verification requires Node"
     files = ["chat_history_loading", "dashboard_read_states", "task_card_recovery", "api_client_errors"]
-    result = subprocess.run([node, "--test", *[f"web/tests/{name}.test.js" for name in files]],
-                            cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    result = run_in_group([node, "--test", *[f"web/tests/{name}.test.js" for name in files]], cwd=root, timeout=60)
     print(result.stdout)
     assert result.returncode == 0, result.stdout + result.stderr
