@@ -238,6 +238,17 @@ def at_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_r
         return "error"
 
 
+def skills_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_ready: bool) -> str:
+    """The skills part of server startup: classify the data root (new install or upgrade) before the
+    built-in source's startup work (identity conversion, re-seeding changed built-ins), then
+    ``at_startup``."""
+    from ouroboros.launcher_bootstrap import ensure_data_skills_seeded
+
+    classify_first_start(drive_root, settings)
+    ensure_data_skills_seeded()
+    return at_startup(drive_root, settings, provider_ready=provider_ready)
+
+
 def after_onboarding(drive_root: pathlib.Path, ids: Optional[List[str]], *,
                      repo_dir: Optional[pathlib.Path] = None) -> str:
     """Run the installer for the owner's ticks once onboarding completed (``None`` = the default list)."""
@@ -277,5 +288,5 @@ def onboarding_skill_choices(body: Dict[str, Any], settings: Dict[str, Any]) -> 
 __all__ = [
     "MARKER_FILENAME", "STARTER_SETTING", "after_onboarding", "at_startup", "classify_first_start", "default_starter_ids",
     "onboarding_skill_choices", "read_marker",
-    "run_starter", "schedule_starter", "starter_groups", "starter_ids",
+    "run_starter", "schedule_starter", "skills_startup", "starter_groups", "starter_ids",
 ]

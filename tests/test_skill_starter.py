@@ -109,3 +109,13 @@ def test_onboarding_choices_confirm_hub_rows_and_refuse_malformed_input(setup):
                 {"skill_source_trust": {"missing": "review"}}, {"skill_source_trust": ["x"]}):
         with pytest.raises(ValueError):
             skill_starter.onboarding_skill_choices(bad, settings)
+
+
+def test_startup_classifies_the_data_root_before_the_builtin_startup_work(tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr("ouroboros.launcher_bootstrap.ensure_data_skills_seeded",
+                        lambda: order.append(("builtins", skill_starter.read_marker(tmp_path).get("state"))))
+    monkeypatch.setattr(skill_starter, "at_startup",
+                        lambda _drive, _settings, provider_ready: order.append(("sources", provider_ready)) or "fresh")
+    assert skill_starter.skills_startup(tmp_path, {}, provider_ready=True) == "fresh"
+    assert order == [("builtins", "fresh"), ("sources", True)]

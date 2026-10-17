@@ -618,11 +618,10 @@ def install_skill(
     try:
         _write_registry_install_record(drive_root, adapter_result.sanitized_name, target_dir,
                                        slug=cleaned_slug, version=target_version, record=install_record)
-    except Exception:
+    except Exception as exc:
         restore_payload_state(rollback_snapshot, restore_state_provenance=True)
         staged.cleanup()
-        log.exception("Failed to record the install of %s", adapter_result.sanitized_name)
-        return fail("Could not record the install of the landed skill", sanitized_name=adapter_result.sanitized_name,
+        return fail(f"Could not record the install of the landed skill: {exc}", sanitized_name=adapter_result.sanitized_name,
                     summary=summary, archive=archive, staged=staged, adapter=adapter_result)
 
     # Seed grants.json for core settings so the owner-grant bridge has one file.
