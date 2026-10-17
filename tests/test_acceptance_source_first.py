@@ -448,21 +448,21 @@ def test_native_consumer_reports_lost_retained_reader_without_switching_to_packe
 
 def test_session_rechecks_actual_request_after_packet_retention(monkeypatch, tmp_path):
     from ouroboros.review_substrate import run_review_request
-    from ouroboros.tools import review_brief_coupling
 
     fake = _fake_session(monkeypatch)
     request, slot, _author, canonical, _workspace = _prepared_request(tmp_path)
-    # Lower the available window only AFTER the measured preparation and
-    # canonical retention. Actual-wire sizing must still prevent a POST.
+    # A newly advertised physical transport bound applies AFTER preparation;
+    # even file pointers cannot fit this bound, so no POST may be sent.
     from ouroboros import acceptance_retrieving
     retain = acceptance_retrieving.retain_review_source
     def smaller_dispatch_window(*args):
         retain(*args)
-        monkeypatch.setattr(review_brief_coupling, "SESSION_INLINE_DIFF_CEILING_CHARS", 1000)
+        monkeypatch.setattr(fake, "ask_input_limits", lambda _self: {
+            "fake-review": {"scope": "turn_text", "unit": "unicode_scalars", "prompt_budget": 1}}, raising=False)
     monkeypatch.setattr(acceptance_retrieving, "retain_review_source", smaller_dispatch_window)
     result = run_review_request(request, slots=[slot], drive_root=canonical, llm=_EpisodeLLM(canonical, []))
     assert result.aggregate_signal != "PASS"
-    assert "Complete source-first request exceeds session send bound" in result.actors[0]["error"]
+    assert result.actors[0]["failure_code"] == "input_too_large"
     delivery = request.slot_source_delivery[slot.slot_id]
     assert delivery["first_send_chars"] >= 1000
     assert Path(delivery["source_path"]).is_file()  # retained even though no dispatch fit

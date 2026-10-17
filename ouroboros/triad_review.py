@@ -52,6 +52,13 @@ class ReviewActorRecord:
     error_event_logged: bool = False
     review_wave_id: str = ""
 
+    def __post_init__(self) -> None:
+        from ouroboros.review_records import review_failure_facts
+
+        facts = review_failure_facts(vars(self))
+        self.failure_code = facts["failure_code"]
+        self.reported_cause = facts["reported_cause"]
+
     def to_dict(self) -> Dict[str, Any]:
         # The durable id is the one the review substrate actually ran this row
         # under, carried on the envelope. Re-deriving it from the record's
@@ -811,6 +818,10 @@ def emit_review_run_errors(ctx: Any, request: Any, actors: Sequence[Any], *, dri
         row["task_id"] = str(getattr(request, "task_id", "") or "")
         row["status"] = actor.status if actor.status in {"error", "not_dispatched"} else "parse_failure"
         row["error"] = actor.error or actor.reason or "Reviewer response was malformed or absent."
+        from ouroboros.review_records import review_failure_facts
+
+        row.update(review_failure_facts(row))
+        actor.failure_code, actor.reported_cause = row["failure_code"], row["reported_cause"]
         meta = getattr(request, "usage_attribution", {}) or {}
         actor.error_event_logged = _append_review_model_error(
             ctx, row, source=str(request.surface or ""), skill_name=str(meta.get("review_skill") or ""),
@@ -876,7 +887,9 @@ def _append_review_model_error(ctx: Any, row: Dict[str, Any], *, source: str,
     """
     try:
         from ouroboros.usage_accounting import current_usage_scope
+        from ouroboros.review_records import review_failure_facts
 
+        row = {**row, **review_failure_facts(row)}
         binding, usage = row.get("recovery_binding") or {}, row.get("usage") or {}
         receipt = usage.get("claudexor") if isinstance(usage.get("claudexor"), dict) else {}
         metadata = getattr(ctx, "task_metadata", None)
@@ -1087,7 +1100,10 @@ def review_query_error_payload(
     its durable actor record must name the same one its refs do. Imports stay
     lazy so this module's dependency graph remains the primitives it declares.
     """
-    payload = {"error": error, "usage": {}, "slot_id": slot_id, "prompt_ref": {}, "response_ref": {}}
+    from ouroboros.review_records import review_failure_facts
+
+    facts = review_failure_facts({"status": "error", "error": error})
+    payload = {"error": error, **facts, "usage": {}, "slot_id": slot_id, "prompt_ref": {}, "response_ref": {}}
     try:
         from ouroboros.observability import new_call_id, persist_call
         from ouroboros.tools.review_helpers import review_drive_root
@@ -1114,7 +1130,7 @@ def review_query_error_payload(
             task_id=task_id,
             call_id=f"{call_id}_error",
             call_type="multi_model_review_error",
-            payload={"error": error},
+            payload={"error": error, **facts},
             manifest={"surface": "multi_model_review", "slot_id": slot_id, "model": model, "status": "error", "synthetic": True},
         )
     except Exception:

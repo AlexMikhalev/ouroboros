@@ -66,14 +66,15 @@ def test_an_untyped_engine_failure_keeps_its_reported_words_as_a_record_field(tm
     actor = result.actors[0]
     assert (actor["status"], actor["failure_code"], actor["reported_cause"]) == (
         "error", "run_failed", words)
-    # Other direction: a failure the engine said nothing about, and a delivered review,
-    # carry no words.
+    # A silent engine still leaves the host's failure text; a delivered review
+    # carries no failure cause.
     fake_route.detail = _terminal_detail("partial…", state="failed")
     custody._CUSTODY.clear()
     silent = run_review_request(_agent_request(), slots=[_agent_slot()],
                                 drive_root=tmp_path / "silent", llm=FakeLLM()).actors[0]
-    assert (silent["failure_code"], silent["reported_cause"]) == ("run_failed", "")
-    fake_route.detail = _terminal_detail("[]", conformance="passed")
+    assert silent["failure_code"] == "run_failed"
+    assert "ended failed" in silent["reported_cause"]
+    fake_route.detail = _terminal_detail('[{"verdict":"PASS","item":"fixture","reason":"checked"}]', conformance="passed")
     custody._CUSTODY.clear()
     delivered = run_review_request(_agent_request(), slots=[_agent_slot()],
                                    drive_root=tmp_path / "ok", llm=FakeLLM()).actors[0]

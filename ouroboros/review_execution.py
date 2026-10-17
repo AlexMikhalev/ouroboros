@@ -59,6 +59,7 @@ from ouroboros.review_session_custody import (
     owned_started_review_custody,
     recorded_review_shape,
     review_recovery_facts,
+    continue_review_run,
 )
 from ouroboros.review_session_preparation import prepare_review_session_request, render_review_session_prompt
 from ouroboros.review_session_usage import (review_event_identity, session_custody_attribution,
@@ -793,6 +794,8 @@ def run_delegated_review_session(
     gateway, route = None, session_route
     recovering, project_id, existing_project = False, "", ""  # also bound on early recovery failures
     observed, summary = {}, {}  # a failure after start still names what it observed
+    delivery_facts = invocation.source_delivery if invocation.source_delivery is not None else {}
+    continuations, stopped_summaries = [], []
     start_attempted, start_refused = False, False  # only submit witnesses POST entry
     try:
         record = custody.invocation_record(custody_drive, retry_token) if retry_token else None
@@ -806,8 +809,13 @@ def run_delegated_review_session(
             raise ReviewRouteUnavailable("delegated retry token has no durable invocation; refusing a second paid run",
                                          code="review_custody_lost")
         if recovering:
+            source_request = record.get("work_order_source_request") or {}
+            delivery_facts.update(source_request)
+            recovery_prompt = prompt
+            if source_request.get("original_prompt_sha256") == hashlib.sha256(prompt.encode("utf-8")).hexdigest():
+                recovery_prompt = str((run_request or {}).get("prompt") or "")
             route, project_id, existing_project, key, schema_asked = review_recovery_facts(
-                record, run_request, started_custody, prompt=prompt, root=root,
+                record, run_request, started_custody, prompt=recovery_prompt, root=root,
                 claimant_task_id=task_id, claimant_surface=surface, claimant_slot_id=slot_id,
                 claimant_operation_id=str(invocation.operation_id or ""))
             shape = recorded_review_shape(run_request)  # replay original rights and checking copy
@@ -875,7 +883,9 @@ def run_delegated_review_session(
             run_request = prepare_review_session_request(
                 invocation, route, prompt=prompt, root=root, ephemeral=ephemeral,
                 thread_id=thread_id, schema_asked=schema_asked,
-                shape=shape, execution=checking.get("execution"), instructions=checking.get("instructions", ""))
+                shape=shape, execution=checking.get("execution"), instructions=checking.get("instructions", ""),
+                input_limit=(getattr(gateway, "ask_input_limits", lambda: {})() or {}).get(route.route_id),
+                source_root=custody_drive, delivery_facts=delivery_facts)
         if not run_id:
             from ouroboros.budget_pause import dispatch_fenced
 
@@ -903,7 +913,8 @@ def run_delegated_review_session(
                     surface=surface, slot_id=slot_id,
                     # #112: pending recovery replays the request row's lineage.
                     root_task_id=root_task_id, parent_task_id=parent_task_id,
-                    review_source_delivery=dict(invocation.source_delivery or {}),
+                    review_source_delivery=delivery_facts,
+                    work_order_source_request=delivery_facts,
                     **usage_custody, **checking.get("custody", {}),
                 )
             except BillingAuthorityUnavailable as exc:  # Outer pre-start boundary owns cleanup; nothing sent.
@@ -964,6 +975,22 @@ def run_delegated_review_session(
         window = float(timeout_sec) if timeout_sec is not None else 300.0
         poll_deadline = time.monotonic() + window
         detail = _poll_session_terminal(gateway, custody, custody_drive, entry, run_id, window)
+        seen_runs = {run_id}
+        while str(custody.summary_of(detail).get("state") or "") != "succeeded":
+            stopped = custody.summary_of(detail)
+            successor = continue_review_run(gateway, custody_drive, entry, detail, invocation,
+                remaining=poll_deadline - time.monotonic(), seen=seen_runs)
+            if successor is None:
+                break
+            continuations.append({"from_run_id": run_id, "run_id": successor.run_id,
+                                  "resumable": stopped.get("resumable") or detail.get("resumable") or {}})
+            stopped_summaries.append(stopped)
+            entry, run_id = successor, successor.run_id
+            turn_id = ""  # A successor is never the stopped run's thread turn.
+            seen_runs.add(run_id)
+            state["delegated_run_id"] = run_id
+            detail = _poll_session_terminal(gateway, custody, custody_drive, entry, run_id,
+                                            max(0.0, poll_deadline - time.monotonic()))
         late_success = time.monotonic() >= poll_deadline  # a terminal the deadline read discovered
         if shape.investigation:  # every terminal turn retains its own named outputs and delta
             checking["evidence"] = terminal_seat_evidence(
@@ -978,12 +1005,29 @@ def run_delegated_review_session(
             raise run_failure_error(run_id, run_state, summary.get("failure"))
         text = _full_session_text(gateway, run_id, detail)
         spend, estimated = custody.disclosed_spend(summary)
+        combined_summary = dict(summary)
+        if stopped_summaries:
+            spends = [custody.disclosed_spend(item) for item in [*stopped_summaries, summary]]
+            spend = sum(value for value, _estimated in spends) if all(value is not None for value, _ in spends) else None
+            estimated = any(flag for _value, flag in spends)
+            for key in ("inputTokens", "outputTokens", "cachedInputTokens"):
+                values = [item.get(key) for item in [*stopped_summaries, summary]]
+                combined_summary[key] = sum(values) if all(type(v) in (int, float) for v in values) else None
         thread_receipt: Dict[str, Any] = {}
         if use_thread:
             from ouroboros.review_thread_continuity import review_thread_receipt as receipt_for
-            thread_receipt = receipt_for(gateway, thread_id, run_id, turn_id,
-                expected_profile=str(getattr(route, "profile_id", "") or ""),
-                applied_profile=observed.get("profile_id", ""))
+            try:
+                thread_receipt = receipt_for(gateway, thread_id, run_id, turn_id,
+                    expected_profile=str(getattr(route, "profile_id", "") or ""),
+                    applied_profile=observed.get("profile_id", ""))
+            except ReviewRouteUnavailable as exc:
+                if not continuations or exc.code != "review_thread_receipt_missing":
+                    raise
+                # continueFrom may move the session or use an evidence packet.
+                # Collect its answer without claiming it advanced the old thread.
+                thread_receipt = {"prior_thread_id": thread_id, "run_id": run_id,
+                                  "status": "continuation_not_in_thread"}
+                thread_id = ""
             turn_id = str(thread_receipt.get("turn_id") or turn_id)
         state.pop("pending_invocation_id", None)
         state.pop("delegated_run_id", None)
@@ -998,11 +1042,13 @@ def run_delegated_review_session(
             "idempotent_recovery": recovering,
             "late_success_accepted": late_success,
             "settlement": settlement,
+            "review_source_delivery": delivery_facts,
+            "review_continuations": continuations,
             "route_id": str(entry.route_id), "run_dir": str(summary.get("runDir") or ""),
             # One final attempt, never the requested pool or a mixed summary route.
             "effective_route_ids": [observed["harness_id"]] if observed.get("harness_id") else [],
             "observed_attempt": observed, "model": observed.get("model", ""),
-            "usage": session_usage_facts(run_id, requested_route=str(entry.route_id), observed_attempt=observed, summary=summary),
+            "usage": session_usage_facts(run_id, requested_route=str(entry.route_id), observed_attempt=observed, summary=combined_summary),
             "spend": spend, "spend_estimated": estimated,
             # D22/D29 applied facts are verbatim telemetry, never inferred.
             "applied_profile": observed.get("profile_id", ""),
@@ -1034,6 +1080,8 @@ def run_delegated_review_session(
             exc.delegated_run_started, exc.delegated_run_id = True, run_id
             exc.delegated_usage = session_usage_facts(run_id, requested_route=str(getattr(route, "route_id", "") or ""),
                                                       observed_attempt=observed, summary=summary)  # #1578
+            if continuations:
+                exc.delegated_usage["review_continuations"] = continuations
         if checking.get("evidence"):
             exc.checking_evidence = checking["evidence"]
         raise
@@ -1326,6 +1374,8 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         return {**(session_failure_identity(self._session_usage) if run_id else {}),
                 "delegated_run_started": bool(run_id), "delegated_run_id": run_id,
                 "pending_invocation_id": pending, **({"checking_evidence": evidence} if evidence else {}),
+                **({"review_continuations": self._session_usage["review_continuations"]}
+                   if self._session_usage.get("review_continuations") else {}),
                 **({"delegated_start_unrequested": True} if getattr(failure, "delegated_start_unrequested", None) is True else {})}
 
     def restore_custody(self, state: Dict[str, Any]) -> None:
@@ -1438,6 +1488,8 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             "late_success_accepted": bool(facts.get("late_success_accepted")),
             "output_conformance": conformance,
             "settlement": facts["settlement"],
+            "review_source_delivery": facts.get("review_source_delivery") or {},
+            "review_continuations": facts.get("review_continuations") or [],
             # The ledger row is written by settle_run (record_subscription_session);
             # cost rides here for the actor record only, finality following the
             # spendEstimated fact, never re-derived.
