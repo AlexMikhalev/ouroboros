@@ -386,7 +386,7 @@ def independent_roots(drive_root: pathlib.Path) -> Dict[str, Any]:
 
 def unlisted_live_work(drive_root: pathlib.Path, listed: set) -> List[Dict[str, Any]]:
     """Live work whose own root is not a listed root: helpers that outlived their ended lead, and external
-    runs a settled root still retains. Facts only, never a tell_task target (``independent_roots`` stays the
+    runs still working under a settled root. Facts only, never a tell_task target (``independent_roots`` stays the
     address book). Never raises; an unreadable source yields no rows (the roster discloses freshness)."""
     root = pathlib.Path(drive_root)
     groups: Dict[str, Dict[str, Any]] = {}
@@ -403,10 +403,10 @@ def unlisted_live_work(drive_root: pathlib.Path, listed: set) -> List[Dict[str, 
     except Exception:
         log.debug("Unlisted live work: queue snapshot unreadable", exc_info=True)
     try:
-        from ouroboros.delegate_custody_current import HELD, runs
+        from ouroboros.delegate_custody_reconcile import open_runs
 
-        for facts in runs(root, "state=?", (HELD,)).values():
-            root_id = str((facts or {}).get("root_task_id") or (facts or {}).get("task_id") or "")
+        for entry in open_runs(root):  # started, not settled: a run still working
+            root_id = str(entry.root_task_id or entry.task_id or "")
             if root_id and root_id not in listed:
                 groups.setdefault(root_id, {"helpers_running": 0, "helpers_waiting": 0, "external_runs": 0})[
                     "external_runs"] += 1

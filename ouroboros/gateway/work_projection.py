@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ouroboros.gateway import work_status as ws
@@ -141,21 +142,32 @@ def _inflight_upkeep(drive_root: Any, known: set) -> List[Dict[str, Any]]:
     return rows
 
 
-def _held_runs(drive_root: Any) -> Dict[str, List[str]]:
-    from ouroboros.delegate_custody_current import HELD, runs
+def _open_runs(drive_root: Any) -> Dict[str, List[str]]:
+    """Delegated runs with a durable start and no settlement, by root: live members of that root's work.
+    A settled run custody still holds (an undisposed patch) runs nothing and is not a member."""
+    from ouroboros.delegate_custody_reconcile import open_runs
 
-    held: Dict[str, List[str]] = {}
-    for run_id, facts in runs(drive_root, "state=?", (HELD,)).items():
-        if not isinstance(facts, dict):
-            continue
-        root_id = str(facts.get("root_task_id") or facts.get("task_id") or "")
+    live: Dict[str, List[str]] = {}
+    for entry in open_runs(drive_root):
+        root_id = str(entry.root_task_id or entry.task_id or "")
         if root_id:
-            held.setdefault(root_id, []).append(str(run_id))
-    return held
+            live.setdefault(root_id, []).append(str(entry.run_id))
+    return live
 
 
-def _since(row: Mapping[str, Any]) -> Any:
-    return row.get("started_at") or None
+def _since(row: Mapping[str, Any]) -> Optional[float]:
+    """The work's start in epoch seconds: a census row's number, or a stored result's ISO time."""
+    value = row.get("started_at")
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def works_snapshot(drive_root: Any, owners: Iterable[Mapping[str, Any]], raw_facts: Mapping[str, Mapping[str, Any]],
@@ -187,7 +199,7 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         complete = False
         obs.gaps.append({"reason": "answer_upkeep_unavailable"})
     try:
-        held = _held_runs(drive_root)
+        held = _open_runs(drive_root)
     except Exception:
         held, complete = {}, False
         obs.gaps.append({"reason": "delegated_custody_unavailable"})
@@ -239,6 +251,8 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         name = entry["name"] or _first_name(facts)
         work = ws.roll_up_work(work_id, members, episode=episode, name=name, room=room_row.get("chat_id"),
                                focus=(facts or {}).get("focus"), delegated=delegated, outcome=outcome)
+        # Working helpers say the reason and keep the call's word; the count of runs is still the work's fact.
+        work["members"]["delegated"] = int(entry["delegated"])
         current_id = str(episode["task_id"])
         # Every other episode root that still owns a live member (or retained run) is the earlier attempt.
         earlier = sorted(root for root in entry["roots"] if root != current_id and (

@@ -199,16 +199,18 @@ def test_room_finalizing_only_says_finalizing_and_empty_rooms_are_idle_or_unknow
 
 # ---- the server adapter ------------------------------------------------------------------------------
 
+_REAL_OPEN_RUNS = wp._open_runs  # the custody reader itself, before a fixture fakes it
+
 @pytest.fixture
 def stored(monkeypatch):
     results = {}
     monkeypatch.setattr(wp._Observations, "result", lambda self, task_id: results.get(task_id))
-    monkeypatch.setattr(wp, "_held_runs", lambda drive_root: {})
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {})
     monkeypatch.setattr(wp, "_inflight_upkeep", lambda drive_root, known: [])
     return results
 
 
-def test_the_17_october_room_is_one_working_work(stored, tmp_path):
+def test_a_held_continue_with_helpers_of_its_failed_attempt_is_one_working_work(stored, tmp_path):
     stored["p"] = {"task_id": "p", "status": "failed", "suggested_name": "Ouroboros 7.7.0 — finish the saved release",
                    "title": "НОВОЕ ПРЯМОЕ решение"}
     owners = [row("c", "budget_paused", pause_cause="unknown", can_resume=False),
@@ -262,13 +264,36 @@ def test_a_failing_source_never_reads_as_an_empty_room(monkeypatch, tmp_path):
     assert snap["works_complete"] is False and snap["works_gaps"][0]["reason"] == "work_projection_unavailable"
 
 
-def test_retained_delegated_runs_of_an_ended_root_are_live_work(stored, monkeypatch, tmp_path):
-    stored["p"] = {"task_id": "p", "status": "done", "chat_id": 42}
-    monkeypatch.setattr(wp, "_held_runs", lambda drive_root: {"p": ["run-1", "run-2"]})
+def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monkeypatch, tmp_path):
+    """Through the real custody store: started runs under an ended root are live members, a settled run
+    custody still holds is not, and the stored ISO start becomes epoch seconds."""
+    from datetime import datetime, timezone
+
+    from ouroboros import delegate_custody as custody
+
+    monkeypatch.setattr(wp, "_open_runs", _REAL_OPEN_RUNS)
+    stored["p"] = {"task_id": "p", "status": "done", "chat_id": 42, "started_at": "2026-10-17T11:00:00Z"}
+    stored["q"] = {"task_id": "q", "status": "done", "chat_id": 43, "started_at": "2026-10-17T10:00:00Z"}
+    for run_id in ("run-1", "run-2"):
+        assert custody.emit(tmp_path, custody.STARTED, {"run_id": run_id, "task_id": "p-h", "root_task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "kept", "task_id": "q", "root_task_id": "q",
+                                                     "project_id": "x", "project_owned": True})
+    assert custody.emit(tmp_path, custody.SETTLED, {"run_id": "kept", "task_id": "q", "state": "succeeded"})
     snap = wp.works_snapshot(tmp_path, [], {})
-    work = snap["works"][0]
-    assert work["activity"] == "working" and work["because"][0]["code"] == "delegated_running"
-    assert work["members"]["delegated"] == 2
+    assert snap["works_complete"] is True, snap["works_gaps"]
+    [work] = snap["works"]
+    assert work["work_id"] == "p" and work["activity"] == "working" and work["members"]["delegated"] == 2
+    assert work["because"][0]["code"] == "delegated_running"
+    assert work["since"] == datetime(2026, 10, 17, 11, tzinfo=timezone.utc).timestamp()
+
+
+def test_working_helpers_say_the_reason_while_the_work_still_counts_its_runs(stored, monkeypatch, tmp_path):
+    stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
+    monkeypatch.setattr(wp, "_open_runs", lambda drive_root: {"p": ["run-1", "run-2"]})
+    snap = wp.works_snapshot(tmp_path, [row("h0", parent_task_id="p", root_task_id="p")], {})
+    [work] = snap["works"]
+    assert work["because"] == [ws.reason("helpers_running", count=1, ids=["h0"])]
+    assert work["members"]["delegated"] == 2 and work["members"]["working"] == 1
 
 
 # ---- controls -----------------------------------------------------------------------------------------

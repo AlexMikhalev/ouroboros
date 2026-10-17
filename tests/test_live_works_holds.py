@@ -57,12 +57,17 @@ def test_live_work_without_a_listed_root_is_visible_but_never_addressable(tmp_pa
     assert independent_roots(tmp_path)["roots"] == []
 
 
-def test_retained_runs_of_a_settled_root_count_as_its_live_work(tmp_path, monkeypatch):
-    import ouroboros.delegate_custody_current as custody
+def test_runs_still_working_under_a_settled_root_count_as_its_live_work(tmp_path):
+    """Through the real custody store: started runs count; a settled run custody still holds does not."""
+    from ouroboros import delegate_custody as custody
 
     write_task_result(tmp_path, "p", "done", title="Done work")
+    write_task_result(tmp_path, "q", "done", title="Done earlier")
     _snapshot(tmp_path)
-    monkeypatch.setattr(custody, "runs", lambda root, where="", params=(): {"r1": {"root_task_id": "p"},
-                                                                             "r2": {"task_id": "p"}})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r1", "task_id": "p-h", "root_task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "r2", "task_id": "p"})
+    assert custody.emit(tmp_path, custody.STARTED, {"run_id": "kept", "task_id": "q", "project_id": "x",
+                                                     "project_owned": True})
+    assert custody.emit(tmp_path, custody.SETTLED, {"run_id": "kept", "task_id": "q", "state": "succeeded"})
     rows = unlisted_live_work(tmp_path, set())
-    assert rows[0]["work_id"] == "p" and rows[0]["external_runs"] == 2 and rows[0]["helpers_running"] == 0
+    assert [(row["work_id"], row["external_runs"], row["helpers_running"]) for row in rows] == [("p", 2, 0)]
