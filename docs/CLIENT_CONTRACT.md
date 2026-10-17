@@ -317,9 +317,11 @@ Frames sent while you were disconnected are not resent: history and the task rea
 
 - **How much.** `n_human` (default 150, at most 1500) bounds conversation rows and `n_progress` (default 60, at most 600) progress rows.
 - **Paging.** While `has_more` is true, pass `next_cursor` back as `cursor` to read older rows. `page_cursor` re-reads the same page. Cursors are opaque.
+- **New arrivals.** The newest page carries `after_cursor` (absent when a read failed part-way or the window holds more tasks than a cursor can name); passed back as `cursor`, it returns the rows stored since that read with the room's current work (never paging older, ordered by time) and the next `after_cursor`, so a client that keeps a window open reads its new rows instead of the whole window again. In a project thread `window.latest_message` names the newest message among them when one arrived (absent: none did); `out_of_order` also counts the window it continues.
 - **Errors.** An error answer keeps the same shape, with no rows and `has_more` true, and echoes the cursor you sent as `next_cursor`, so the same request can be repeated:
   - `400 history_cursor_invalid`;
   - `409 history_view_changed`: which rows belong to the thread changed (its projects or task bindings); start again without a cursor;
+  - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
 - **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
 

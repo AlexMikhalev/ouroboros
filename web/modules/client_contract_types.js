@@ -405,6 +405,7 @@
  * @property {string=} next_before_ts  // legacy, no longer sent
  * @property {?string} next_cursor
  * @property {?string=} page_cursor
+ * @property {string=} after_cursor  // the newest page and every `after` read: the rows stored since
  * @property {ChatHistoryWindow} window
  * @property {ChatHistoryCoverage=} coverage
  * @property {string=} error

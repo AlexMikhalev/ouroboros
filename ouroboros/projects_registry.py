@@ -323,12 +323,8 @@ def bind_task_to_project(
 
 
 def project_task_bindings(drive_root: Any) -> Dict[str, Dict[str, Any]]:
-    """Copy of the immutable task-to-Project bindings for read models."""
-    return {
-        str(task_id): dict(row)
-        for task_id, row in _load_bindings(drive_root).get("bindings", {}).items()
-        if isinstance(row, dict)
-    }
+    """Copy of the immutable task-to-Project bindings for read models (the cached lens)."""
+    return {str(task_id): dict(row) for task_id, row in _bindings_lens(drive_root).items() if isinstance(row, dict)}
 
 
 def all_task_bindings(drive_root: Any) -> Dict[str, int]:
@@ -345,8 +341,9 @@ def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[
     (F4), not merely to suppress the stray convert button (P2). Strict snapshot
     readers propagate source failures so absence never impersonates completeness."""
     out: Dict[str, Dict[str, Any]] = {}
-    try:
-        for tid, row in _load_bindings(drive_root, strict=strict).get("bindings", {}).items():
+    try:  # a strict reader rereads the file; the others share the mtime-keyed lens
+        bindings = _load_bindings(drive_root, strict=True)["bindings"] if strict else _bindings_lens(drive_root)
+        for tid, row in bindings.items():
             if not isinstance(row, dict):
                 continue
             pid = str(row.get("project_id") or "").strip()
@@ -763,11 +760,15 @@ class RoomResolver:
         return chat
 
     def warm(self, task_ids: Any) -> None:
-        """Read every unseen id's lineage in ONE transaction (an archive summary names hundreds)."""
-        unseen = {tid for tid in map(str, task_ids) if tid and (str(self.root), tid) not in _TASK_LINEAGE}
-        read = _read_lineage(self.root, unseen - self.misses) if unseen - self.misses else {}
-        if read is not None:
+        """Read the lineage of every unseen id and of its unseen ancestors, ONE transaction per
+        generation, before the rule walks them one id at a time (a page names dozens)."""
+        wanted = {str(tid) for tid in task_ids if tid}
+        while unseen := {tid for tid in wanted if (str(self.root), tid) not in _TASK_LINEAGE} - self.misses:
+            read = _read_lineage(self.root, unseen)
+            if read is None:
+                return
             self.misses.update(unseen - read.keys())
+            wanted = {row[key] for row in read.values() for key in ("parent_task_id", "root_task_id") if row[key]}
 
 
 def project_chat_for_task_tree(
