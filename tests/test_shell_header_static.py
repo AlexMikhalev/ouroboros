@@ -43,7 +43,14 @@ def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_
     summary = _rule(css, 'html[data-layout="stack"] .chat-header-more > summary {')
     assert "width: 44px" in summary and "height: 44px" in summary
     assert 'html[data-layout="stack"] .chat-header-more-word { display: none; }' in css
-    assert 'html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {' in css
+    assert '.chat-header-menu > .chat-budget-pill {' in css
+    # The note is a floating sibling under the bar, never a second row of it; the move into ⋯ follows the
+    # bar's measured width as well as the layout (page_header.js), so a narrow docked column keeps one row too.
+    assert '.chat-page-note {' in css and "top: var(--chat-header-bar, 56px)" in _rule(css, ".chat-page-note {")
+    assert "createHistoryControls(messagesDiv, pageNote || page.querySelector('.chat-panel-statusbar'))" in _read("web/modules/chat.js")
+    header_js = _read("web/modules/page_header.js")
+    assert "export const HEADER_FULL_ROW_MIN_WIDTH = 640;" in header_js
+    assert "bar.clientWidth < HEADER_FULL_ROW_MIN_WIDTH" in header_js and "new Observer(place)" in header_js
     # The ☰ and the × share the shell's one icon-control recipe; the Project's × is that recipe too.
     assert 'class="shell-icon-control project-panel-close"' in _read("web/app.js")
     assert 'class="shell-icon-control mobile-nav-toggle"' in _read("web/modules/page_header.js")

@@ -174,7 +174,7 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
                 page.set_viewport_size({'width':width, 'height':850})
                 page.locator('#chat-messages').evaluate('n => { n.scrollTop = n.scrollHeight / 2; }')
                 page.evaluate(_FRAMES)
-                note = page.locator('#page-chat .chat-page-header .chat-history-status')
+                note = page.locator('#page-chat .chat-page-note .chat-history-status')  # the note floats under the bar
                 assert note.is_visible()
                 assert 'Shown messages may have gaps' in note.inner_text()
                 box = note.bounding_box()

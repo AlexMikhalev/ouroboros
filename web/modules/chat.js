@@ -254,8 +254,10 @@ export function createChatInstance({
                 <span id="chat-status" class="status-badge offline">Connecting…</span>
             `,
         });
+    // Main: the history note (gaps, a failed read, an approximate position) floats UNDER the bar as its own
+    // strip, never as a second row of it; the Project panel keeps its in-flow status bar.
     page.innerHTML = `
-        ${headerHtml}
+        ${headerHtml}${asPanel ? '' : '<div class="chat-page-note"></div>'}
         <div id="chat-messages"></div>
         <div id="chat-input-area">
             <div class="chat-input-wrap">
@@ -302,6 +304,7 @@ export function createChatInstance({
     const statusBadge = byId('status');
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
+    const pageNote = page.querySelector('.chat-page-note');
     const budgetPill = byId('budget-pill');
     const disposeHeaderPlacement = asPanel ? () => {} : bindHeaderControlPlacement({ headerActions, budgetPill });
     const attachBtn = byId('attach');
@@ -2979,8 +2982,15 @@ export function createChatInstance({
         const mutate = () => {
             let changed = false;
             if (pageHeader && messagesDiv) {
-                const headerReserve = Math.max(56, Math.ceil(pageHeader.offsetHeight || 0));
-                const value = `${headerReserve}px`;
+                // The bar's own height places the note under it; the transcript clears both.
+                const bar = Math.ceil(pageHeader.offsetHeight || 0);
+                const note = pageNote?.offsetParent ? Math.ceil(pageNote.offsetHeight || 0) : 0;
+                const barValue = `${bar}px`;
+                if (page.style.getPropertyValue('--chat-header-bar') !== barValue) {
+                    page.style.setProperty('--chat-header-bar', barValue);
+                    changed = true;
+                }
+                const value = `${Math.max(56, bar + note)}px`;
                 if (page.style.getPropertyValue('--chat-header-reserve') !== value) {
                     page.style.setProperty('--chat-header-reserve', value);
                     changed = true;
@@ -3021,6 +3031,7 @@ export function createChatInstance({
         chatResizeObserver = new ResizeObserver(schedule);
         chatResizeObserver.observe(messagesDiv);
         if (pageHeader) chatResizeObserver.observe(pageHeader);
+        if (pageNote) chatResizeObserver.observe(pageNote);
         if (inputArea) chatResizeObserver.observe(inputArea);
     }
 
@@ -3224,7 +3235,7 @@ export function createChatInstance({
         }
     }
 
-    const historyControls = createHistoryControls(messagesDiv, pageHeader || page.querySelector('.chat-panel-statusbar'));
+    const historyControls = createHistoryControls(messagesDiv, pageNote || page.querySelector('.chat-panel-statusbar'));
     const { olderButton: loadOlderBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({

@@ -1250,7 +1250,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 /* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
    of controls, the history note) that fades only in the band below it, so moving messages never show
    through header text, closed or open. The mask stays on this layer, never on the actions. */
-.chat-page-header::before {
+.chat-page-header::before,
+.chat-page-note::before {
     content: "";
     position: absolute;
     inset: 0 0 calc(-1 * var(--space-4));
@@ -1266,6 +1267,21 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .chat-page-header > * {
     pointer-events: auto;
 }
+
+/* The history note (a reading-window fact: gaps, a failed read, an approximate position) is its own strip under
+   the bar, never a second row of it: it floats at the bar's measured height (chat.js writes --chat-header-bar)
+   with the same reading backing, and the transcript's reserve counts both. Empty, it takes no room. */
+.chat-page-note {
+    position: absolute;
+    top: var(--chat-header-bar, 56px);
+    left: 0;
+    right: 0;
+    z-index: var(--z-page-header);
+    padding: 0 var(--page-header-padding-x) var(--space-2);
+    pointer-events: none;
+}
+.chat-page-note > * { pointer-events: auto; }
+.chat-page-note:not(:has(> :not([hidden]))) { display: none; }
 
 .chat-header-actions {
     display: flex;
@@ -3711,17 +3727,21 @@ html[data-layout="stack"] .chat-header-more > summary.has-active::after {
     top: 9px;
     right: 9px;
 }
-html[data-layout="stack"] .chat-header-menu {
+html[data-layout="stack"] .chat-page-note {
+    padding: 0 var(--space-3) var(--space-2);
+}
+/* Inside ⋯ (page_header.js places them there when the bar is too narrow for the full row) the budget is a
+   full-width amber row and Restart the last row. */
+.chat-header-menu:has(> .chat-budget-pill) {
     min-width: 220px;
 }
-/* Inside ⋯ the budget is a full-width amber row and Restart the last row. */
-html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {
+.chat-header-menu > .chat-budget-pill {
     width: 100%;
     min-width: 0;
     align-items: stretch;
     text-align: left;
 }
-html[data-layout="stack"] .chat-header-menu > .chat-header-btn {
+.chat-header-menu > .chat-header-btn {
     width: 100%;
     justify-content: flex-start;
     text-align: left;
@@ -7138,9 +7158,11 @@ body.keyboard-open #page-chat.active {
     overscroll-behavior: none;
 }
 
-body.keyboard-open #page-chat.active .chat-page-header {
+body.keyboard-open #page-chat.active .chat-page-header,
+body.keyboard-open #page-chat.active .chat-page-note {
     flex-shrink: 0;
     position: relative;
+    top: auto;
 }
 
 body.keyboard-open #page-chat.active #chat-messages,
