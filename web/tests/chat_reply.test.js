@@ -208,7 +208,8 @@ test('the owner\'s echo adopts the saved row\'s address and with it Reply; Send 
     } finally { f.close(); }
 });
 
-test('a work card offers Reply first and quotes the work by its task address', () => {
+test('a work card draws no Reply of its own; its row menu quotes the work by its task address', () => {
+    // Owner 17.10 (Q9 B): Reply on a work card lives only in its row menu; the action row holds commands.
     const f = fixture();
     try {
         const actions = f.el('div', { className: 'chat-live-actions' });
@@ -218,17 +219,19 @@ test('a work card offers Reply first and quotes the work by its task address', (
             activityEl: f.el('div', { text: 'Reading the third project' }), phaseEl: f.el('div', { text: 'Working' }) };
         const stop = f.el('button', { text: 'Stop…' });
         actions.append(stop);
-        assert.equal(f.replies.syncCard(record, true), true);
-        assert.deepEqual(actions.children.map((child) => child.textContent), ['Reply', 'Stop…']);
-        assert.equal(record.cardReplyEl.getAttribute('aria-label'), 'Reply to this work');
-        assert.equal(root.dataset.rowAddress, 't-9'.replace(/^/, 'task:'));
-        record.cardReplyEl.click();
+        assert.equal(f.replies.cardRef(record), null, 'nothing to quote before the card is known as a root work card');
+        f.replies.syncCard(record, true);
+        assert.deepEqual(actions.children.map((child) => child.textContent), ['Stop…'], 'the action row keeps only commands');
+        assert.equal(root.querySelector('.btn'), null, 'no Reply capsule anywhere on the card');
+        assert.equal(root.dataset.rowAddress, 't-9'.replace(/^/, 'task:'), 'the card is a quote\'s jump target');
+        f.replies.start(f.replies.cardRef(record));
         assert.deepEqual(f.replies.frameField(), { reply_to: 'task:t-9' });
         const staged = JSON.parse(f.storage.get('ouro_chat_reply'));
         assert.equal(staged.kind, 'work_card');
         assert.equal(staged.author_label, 'Audit');
         assert.equal(staged.snippet, 'Reading the third project');
-        assert.equal(f.replies.syncCard(record, false), true, 'not a root work card any more: no Reply');
-        assert.equal(record.cardReplyEl, null);
+        f.replies.syncCard(record, false);
+        assert.equal(f.replies.cardRef(record), null, 'not a root work card any more: no Reply');
+        assert.equal(root.dataset.rowAddress, 'task:t-9', 'a quote of it still finds it');
     } finally { f.close(); }
 });

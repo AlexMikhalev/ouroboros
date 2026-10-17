@@ -42,7 +42,7 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
             card.wait_for(state='attached')
             _step(page, feed, automatic=True)  # read on past the card's page while it stays mounted
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             card.locator('[data-review-section-toggle]').click()
             card.locator('[data-review-group-toggle]').click()
             card.locator('[data-review-attempt-toggle]').first.click()
@@ -371,7 +371,7 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
             assert not any(marker in row.get('text', '') for row in recent['messages'])
             card = page.locator(f'{feed} .chat-live-card[data-task-id="source-owner"]')
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             line = card.locator(':scope > [data-live-timeline] > .chat-live-line').filter(has_text=marker)
             if line_kind == 'receipt':
                 # A late live receipt already has the same revision as its archive row.
@@ -521,10 +521,10 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             _emit_ws_frame(page, {**row, 'type': 'chat', 'role': 'assistant', 'is_progress': True})
             parent = page.locator(f'{feed} .chat-live-card[data-task-id="adopt-parent"]')
             if parent.get_attribute('data-expanded') != '1':
-                parent.locator(':scope > [data-live-summary-button]').click()
+                parent.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             owner = page.locator(f'{feed} .chat-live-card[data-task-id="{row["task_id"]}"]')
             if owner.get_attribute('data-expanded') != '1':
-                owner.locator(':scope > [data-live-summary-button]').click()
+                owner.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             line = owner.locator(':scope > [data-live-timeline] > .chat-live-line.expandable').last
             line.locator('[data-live-line-toggle]').click()
             if line_kind == 'full-result':
@@ -555,7 +555,7 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             assert 'could not be restored exactly' not in page.locator(feed).locator('..').inner_text()
             for card in (parent, owner):
                 if card.get_attribute('data-expanded') != '1':
-                    card.locator(':scope > [data-live-summary-button]').click()
+                    card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             assert line.get_attribute('data-live-line-key') != live_key, 'cold replay has its source-owned key'
             line.locator('[data-live-line-toggle]').click()
             assert line.get_attribute('data-expanded') == '1'
@@ -607,7 +607,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
                 _emit_ws_frame(page, {**row, 'type': 'chat', 'role': 'system', 'is_progress': True, 'content': row['text']})
             card = page.locator(f'{feed} .chat-live-card[data-task-id="{task_id}"]')
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             lines = card.locator(':scope > [data-live-timeline] > .chat-live-line.result')
             assert lines.count() == 2, 'same text and time must not merge different receipts'
             line = lines.nth(1)
@@ -635,7 +635,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
             _assert_at_newest(page, feed, 'Receipt context 59')
             assert 'could not be restored exactly' not in page.locator(feed).locator('..').inner_text()
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             assert lines.count() == 2
             assert line.get_attribute('data-live-line-key') != live_key
             _screenshot(page, tmp_path, f'receipt-bookmark-after-{browser_engine}')

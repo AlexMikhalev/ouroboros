@@ -131,7 +131,6 @@ import {
     loadChatInputHistory,
     markIngressSaved,
     liveLineRowToggleKey,
-    bindContentButton,
     bindLiveCardTimeline,
     subagentIdentityTitle,
     subagentTwin,
@@ -854,7 +853,7 @@ export function createChatInstance({
     }
 
     // Main blocks with work offer conversion unless their origin is bound (the same /api/state fact app.js
-    // reads); titles use the same work predicate. Every root work card offers Reply first (never the primary).
+    // reads); titles use the same work predicate. Every root work card offers Reply in its row menu.
     function syncBlockChrome(record) {
         replies.syncCard(record, !record.isSubagent && (isPortal(record) || blockHasWork(record)));
         // A child is never a convertible unit (it inherits its root's Project by
@@ -1240,8 +1239,10 @@ export function createChatInstance({
             ? explicitCardExpansion.get(normalizedGroupId)
             : Boolean(options.isSubagent && nestedSubagentsExpanded);
         root.dataset.expanded = initialExpanded ? '1' : '0';
+        // The summary band is reading content (selectable, never a control); its one disclosure is the
+        // "N notes · Show details" button (DESIGN §5 "A task card's summary outranks its details").
         root.innerHTML = `
-            <div class="chat-live-summary-button" role="button" tabindex="0" data-live-summary-button aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+            <div class="chat-live-summary-button" data-live-summary-button>
                 <div class="chat-live-summary">
                     <div class="chat-live-summary-main">
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
@@ -1252,13 +1253,13 @@ export function createChatInstance({
                         </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
-                    <div class="chat-live-summary-side">
-                        <span class="chat-live-count" data-live-count hidden>2 notes</span>
+                    <button type="button" class="chat-live-summary-side" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+                        <span class="chat-live-count" data-live-count hidden></span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
                         <svg class="chat-live-chevron" width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                             <path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
                         </svg>
-                    </div>
+                    </button>
                 </div>
                 <div class="chat-live-episodes" data-live-episodes hidden></div>
                 <div class="chat-live-activity" data-live-activity></div>
@@ -1288,6 +1289,7 @@ export function createChatInstance({
             episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
             activityEl: root.querySelector('[data-live-activity]'),
             countEl: root.querySelector('[data-live-count]'),
+            disclosureEl: root.querySelector('[data-live-disclosure]'),
             footEl: root.querySelector('[data-live-foot]'),
             footEndEl: root.querySelector('[data-live-foot-end]'),
             metaEl: root.querySelector('[data-live-meta]'),
@@ -1333,12 +1335,14 @@ export function createChatInstance({
             ),
             onDomWrite: withStableViewport,
         });
-        bindContentButton(record.summaryButtonEl, () => {
+        // A native button: Enter and Space press it. A portal hides it (its room holds what it would open).
+        record.disclosureEl?.addEventListener('click', () => {
+            if (isPortal(record)) return;
             const nowExpanded = record.root.dataset.expanded !== '1';
             explicitCardExpansion.set(record.groupId, nowExpanded);
             setLiveCardExpanded(record, nowExpanded);
             if (nowExpanded) hydrateCardReviews(record.groupId);
-        }, () => !isPortal(record));  // a portal's summary is content, not a disclosure
+        });
         record.timelineDispose = bindLiveCardTimeline(record.timelineEl, (lineKey) => {
             const nowExpanded = !record.expandedLineKeys.has(lineKey);
             if (nowExpanded) record.expandedLineKeys.add(lineKey);
@@ -1510,6 +1514,7 @@ export function createChatInstance({
             ? explicitCardExpansion.get(record.groupId)
             : Boolean(record.isSubagent && nestedSubagentsExpanded);
         setLiveCardExpanded(record, expanded);
+        syncLiveCardToggle(record);  // a card born expanded says so from its first paint
     }
 
     function ensureLiveCardVisible(
