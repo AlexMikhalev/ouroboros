@@ -150,7 +150,12 @@ def release_extension_import_tree(import_root: pathlib.Path) -> None:
 
 
 def declared_catalog_inputs(skill: LoadedSkill) -> dict | None:
-    """An opt-in declaration is exhaustive; unenumerated inputs are not cached."""
+    """An opt-in declaration is exhaustive; unenumerated inputs are not cached.
+
+    Catalog settings are a fixed snapshot of the declared keys (ordinary dispatch reads
+    current settings); registration that depends on files, time, network or side effects
+    must omit the declaration.
+    """
     declaration = skill.manifest.raw_extra.get("catalog_inputs")
     if not isinstance(declaration, dict) or set(declaration) != {"settings", "environment"}:
         return None
