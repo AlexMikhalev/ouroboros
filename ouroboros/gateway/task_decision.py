@@ -296,10 +296,11 @@ def deliver_as_owner_message(
             **({"task_metadata": task_metadata} if task_metadata else {}),
         )
     except ValueError:
-        # This id was already accepted, but under other bytes: a delivery
+        # This id was already accepted, but under other bytes: a quiz delivery
         # accepted before the row carried only the owner's words (it carried
-        # the host frame then). It WAS delivered once; a retry rejoins it
-        # instead of failing forever or enqueueing a second owner turn.
+        # the host frame then), or a card press whose card was retitled since.
+        # It WAS delivered once; a retry rejoins it instead of failing forever
+        # or enqueueing a second owner turn.
         accepted = message_bus.accepted_chat_message(drive_root, chat_id, client_message_id)
         if accepted is None:
             raise
