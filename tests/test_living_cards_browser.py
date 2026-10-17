@@ -23,6 +23,7 @@ body { margin: 0; padding: 8px; color: var(--ouro-text); font-family: var(--ouro
 button { min-height: 36px; }
 </style></head><body>
 <p id="seen">Loan calculator</p><button id="choose" type="button">Choose Pro</button>
+<button id="leave" type="button" onclick="location.href = 'about:blank'">Leave</button>
 <script>
 document.getElementById('seen').textContent += ' · kept ' + JSON.stringify(OuroborosCard.state.value);
 document.body.dataset.theme = OuroborosCard.theme;
@@ -190,6 +191,10 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                     app_card.locator("[data-card-open]").wait_for(timeout=10_000)
                     app_card.scroll_into_view_if_needed()
                     inner.locator("#seen", has_text='kept {"chose":"pro"}').wait_for(timeout=10_000)
+                    # An app that navigates its frame away is stopped at once.
+                    inner.locator("#leave").click()
+                    app_card.locator(".chat-card-status", has_text="The app tried to open a page and was stopped.").wait_for(timeout=10_000)
+                    assert app_card.locator("iframe").count() == 0
 
                     # Keep on Widgets: the card lands on the Widgets page; Remove takes it off.
                     card.locator("[data-card-pin]").click()

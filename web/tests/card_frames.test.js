@@ -126,3 +126,22 @@ test('a mounted app: an opaque frame, its state kept per card and app, its submi
         dom.restore();
     }
 });
+
+test('an app that navigates its frame away is removed at its second document', () => {
+    const dom = installCardDom();
+    try {
+        const host = document.createElement('div');
+        let left = 0;
+        mountCardApp(host, { cardId: 'card_n', title: 'Nav', sha256: 'n', html: '', fit: { fit() {} }, onSubmit() {}, onLeave: () => { left += 1; } });
+        const frame = host.querySelector('iframe');
+        frame.dispatch('load');
+        assert.equal(host.querySelector('iframe'), frame, 'its own document loading is fine');
+        assert.equal(left, 0);
+        frame.dispatch('load');
+        assert.equal(host.querySelector('iframe'), null, 'a second document: the frame is gone');
+        assert.equal(left, 1);
+        assert.equal(window.listeners('message'), 0);
+    } finally {
+        dom.restore();
+    }
+});

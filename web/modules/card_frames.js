@@ -194,11 +194,12 @@ function readState(storage, key) {
 }
 
 /**
- * Run one app inside `host`: `{cardId, title, sha256, html, fit, onSubmit(line)}`; `fit` is the frame's inline size
- * policy (`createInlineFit`). The app's saved state (keyed by card and app bytes, so a replaced app starts fresh) is
- * handed back at mount. Returns the disposer.
+ * Run one app inside `host`: `{cardId, title, sha256, html, fit, onSubmit(line), onLeave()}`; `fit` is the frame's
+ * inline size policy (`createInlineFit`). The app's saved state (keyed by card and app bytes, so a replaced app starts
+ * fresh) is handed back at mount. No policy stops a frame from navigating itself, so a second document loading in
+ * the frame (the app left for a page) removes the frame at once and calls `onLeave`. Returns the disposer.
  */
-export function mountCardApp(host, { cardId, title, sha256, html, fit, onSubmit, storage = globalThis.sessionStorage }) {
+export function mountCardApp(host, { cardId, title, sha256, html, fit, onSubmit, onLeave = () => {}, storage = globalThis.sessionStorage }) {
     const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
     const key = stateKey(cardId, sha256);
     const iframe = document.createElement('iframe');
@@ -217,11 +218,19 @@ export function mountCardApp(host, { cardId, title, sha256, html, fit, onSubmit,
     window.addEventListener('message', handle);
     const stopTheme = onThemeChange(() => iframe.contentWindow?.postMessage({ type: 'ouro-card-theme', nonce, theme: cardThemeTokens() }, '*'));
     let disposed = false;
-    return () => {
+    let loads = 0;
+    const dispose = () => {
         if (disposed) return;
         disposed = true;
         window.removeEventListener('message', handle);
         stopTheme();
         iframe.remove();
     };
+    iframe.addEventListener('load', () => {
+        loads += 1;
+        if (loads < 2 || disposed) return;
+        dispose();
+        onLeave();
+    });
+    return dispose;
 }

@@ -203,6 +203,10 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             readAppText(body.app.url, body.app.sha256).then((html) => done(write(() => mountCardApp(host, {
                 cardId: record.id, title: body.title, sha256: body.app.sha256, html, fit: record.fit,
                 onSubmit: (line) => insertLine(line),
+                onLeave: () => {
+                    budget.forget(record);
+                    write(() => setStatus(record, 'The app tried to open a page and was stopped.', 'danger'));
+                },
             }))), (error) => fail(`The app could not be read: ${error.message || error}`));
         } else {
             const { tab } = record;
