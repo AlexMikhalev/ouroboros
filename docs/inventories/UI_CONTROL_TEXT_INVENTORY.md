@@ -31,7 +31,6 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Apply maximum | `btn btn-default` | modules/model_roles.js | 1 |
 | Apply to draft | `btn btn-primary` | modules/mcp_import_dialog.js | 1 |
 | Apply to this task | `btn btn-default` | modules/model_wait.js | 1 |
-| [icon] Attach file | `chat-attach-btn` | modules/chat.js | 1 |
 | Back | `btn btn-secondary` | modules/onboarding_wizard.js | 1 |
 | Cancel | `btn btn-default` | modules/mcp_import_dialog.js | 1 |
 | Cancel | `btn btn-default` | modules/project_create.js | 1 |
@@ -87,6 +86,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Main Chat | `nav-row nav-row-main active` | index.html | 1 |
 | Make runnable | `skills-menu-item skills-make-runnable` | modules/skill_card_renderer.js | 1 |
 | Measure now | `btn btn-default btn-sm storage-refresh` | modules/storage.js | 1 |
+| [icon] More actions | `chat-plus-btn` | modules/composer.js | 1 |
 | Move | `files-context-item` | modules/files.js | 1 |
 | [icon] New project | `nav-projects-add` | index.html | 1 |
 | Next | `btn btn-default` | modules/marketplace.js | 1 |
@@ -154,7 +154,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Search | `btn btn-primary` | modules/marketplace.js | 1 |
 | Search | `btn btn-primary` | modules/ouroboroshub.js | 1 |
 | Selected ✓ | `btn btn-sm` | modules/project_create.js | 1 |
-| Send | `chat-send-inline` | modules/chat.js | 1 |
+| Send | `chat-send-inline` | modules/composer.js | 1 |
 | Send a test notification | `btn btn-default btn-sm` | modules/settings_ui.js | 1 |
 | Settings | `btn btn-default` | modules/model_wait.js | 1 |
 | Settings | `nav-row` | index.html | 1 |
@@ -172,7 +172,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Start local runtime | `btn btn-ghost` | modules/onboarding_wizard.js | 1 |
 | Stop | `btn btn-ghost` | modules/onboarding_wizard.js | 1 |
 | Stop | `btn btn-primary` | modules/settings_ui.js | 1 |
-| Swarm | `chat-swarm` | modules/chat.js | 1 |
+| Swarm | `chat-swarm` | modules/composer.js | 1 |
 | Test | `btn btn-default` | modules/settings_ui.js | 1 |
 | Test draft catalog | `btn btn-default` | modules/mcp_settings.js | 1 |
 | Test Tool Calling | `btn btn-primary` | modules/settings_ui.js | 1 |

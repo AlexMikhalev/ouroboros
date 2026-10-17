@@ -3705,12 +3705,14 @@ body.resizing-panels { user-select: none; }
     box-shadow: 0 0 0 1px var(--accent-45), 0 0 0 4px var(--accent-10);
 }
 
-/* Attach button: a flow item at the left of the text row (no absolute float). */
-.chat-attach-btn {
+/* "+": the composer's actions menu, a flow item at the left of the text row (no absolute float). A finger-sized
+   target whose negative margin keeps the row's height and the field's place. */
+.chat-plus-btn {
     flex: 0 0 auto;
     align-self: center;
-    width: 32px;
-    height: 32px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin: calc((var(--composer-control-height) - var(--touch-target-min)) / 2);
     border-radius: var(--radius-sm);
     border: none;
     background: transparent;
@@ -3723,19 +3725,49 @@ body.resizing-panels { user-select: none; }
     padding: 0;
 }
 
-.chat-attach-btn:hover {
+.chat-plus-btn:hover,
+.chat-plus-btn[aria-expanded="true"] {
     color: var(--text-primary);
     background: rgba(var(--neutral-rgb), 0.06);
 }
+
+.chat-plus-btn:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 
 .chat-file-input-hidden {
     display: none !important;
 }
 
-.chat-attach-btn.uploading {
+.chat-plus-btn.uploading {
     opacity: 0.5;
     pointer-events: none;
 }
+
+/* The "+" menu is the shared menu sheet (ui.css): an item's icon in the secondary ink, a section under its label. */
+.chat-plus-menu .chat-plus-item { display: flex; align-items: center; gap: var(--space-2); }
+.chat-plus-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-secondary); }
+.chat-plus-group { display: flex; flex-direction: column; }
+.chat-plus-label {
+    padding: var(--space-2) var(--space-3) var(--space-1);
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    font-weight: 500;
+}
+
+/* Mount points (empty and hidden until a control fills them): the dictation mic between the field and Send, and
+   contributed chips after the room's capsules on their one line. The host capsules keep priority: the chips slot
+   takes only the room they leave (a zero basis never wraps the row; it shrinks first and clips), and a chip keeps
+   its own width. */
+.chat-voice-slot { display: inline-flex; flex: 0 0 auto; align-items: center; gap: var(--space-1); }
+.chat-composer-chips {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: max-content;
+    overflow: hidden;
+}
+.chat-composer-chips > * { flex: 0 0 auto; }
 
 .chat-attachment-preview {
     display: none;
@@ -4046,6 +4078,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     transition: none;
 }
 .chat-toolbar-row[data-owner-solo] .chat-composer-pills,
+.chat-toolbar-row[data-owner-solo] .chat-composer-chips,
 .chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
 .chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
     display: none;
@@ -9535,7 +9568,7 @@ textarea.chat-input {
 /* A question's × is a quiet control: no body until hover. */
 :root[data-theme] .chat-quiz-close { border-color: transparent; background: transparent; }
 :root[data-theme] .chat-quiz-close:hover:not(:disabled) { border-color: transparent; background: var(--tone-quiet-hover); }
-:root[data-theme] :is(.chat-attach-btn, .rw-more) { border-radius: var(--pill-radius); }
+:root[data-theme] :is(.chat-plus-btn, .rw-more) { border-radius: var(--pill-radius); }
 /* Navigation over the transcript: Load older rests in the reading flow; ↓ latest and Back to reading fly over it. */
 :root[data-theme] .chat-load-older-btn { border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); }
 :root[data-theme] :is(.chat-scroll-bottom-btn, .rw-back) {

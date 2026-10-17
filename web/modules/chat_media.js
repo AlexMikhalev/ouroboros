@@ -133,8 +133,8 @@ export function safeHttpUrl(value) {
 }
 
 export function bindComposerFileTargets({ page, inputArea, input, stagePendingFiles }) {
-    // The two implicit routes a file takes into the composer beside the
-    // paperclip: an image pasted into the textarea, and a file dropped
+    // The two implicit routes a file takes into the composer beside
+    // "+" → Attach file: an image pasted into the textarea, and a file dropped
     // anywhere on the page. Both end in the caller's local stager, so
     // nothing uploads before Send, and the drop target is the whole page
     // while only the input area shows the active state.
