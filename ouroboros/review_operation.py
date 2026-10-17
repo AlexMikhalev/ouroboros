@@ -481,59 +481,6 @@ def task_has_live_review_operation(root: Any, task_id: str, *, exclude_owner_id:
     return False
 
 
-# Historical task-acceptance preparations: only pointers written before the fold are
-# ``preparing`` or carry ``preparation_pause``; nothing writes either now. The owner
-# Pause, budget-resume and cancel paths still read them on old tasks.
-def _preparation_pause(task_id: str, fence: dict, entry: dict) -> dict:
-    return {'root_task_id': task_id, 'fence_id': fence['fence_id'], 'generation': fence.get('generation'),
-            'intent_ref': entry['intent_ref'], 'controller': entry['controller']}
-
-
-def retain_preparing_owner_pause(root: Any, task_id: str, fence: dict) -> None:
-    """Bind already-retained unsent preparation to the accepted owner Pause."""
-    for owner, subject, entry in _task_operation_entries(root, task_id):
-        if entry.get('state') != OPERATION_PREPARING or entry.get('source_ref') or not entry.get('intent_ref'):
-            continue
-        def retain(rows, owner=owner, entry=entry):
-            if rows.get(owner) != entry:
-                return None  # It upgraded to a request; its ordinary paid custody wins.
-            return {**rows, owner: {**entry, 'preparation_pause': _preparation_pause(task_id, fence, entry)}}
-        _update_operations(root, subject, retain)
-
-
-def paused_acceptance_preparations(root: Any, task_id: str, fence_id: str, *, result_loader=None) -> list:
-    """Durable owed work, separate from whether its controller is physically alive."""
-    return [(owner, subject, entry) for owner, subject, entry in _task_operation_entries(root, task_id, result_loader=result_loader)
-            if (entry.get('preparation_pause') or {}).get('root_task_id') == task_id
-            and (entry.get('preparation_pause') or {}).get('fence_id') == fence_id
-            and entry.get('state') != 'preparation_refused']
-
-
-def stop_paused_acceptance_preparations(root: Any, task_id: str) -> bool:
-    """Discard only a dead controller's unsent saved remainder; keep its evidence."""
-    from ouroboros.owner_pause import fence_closed, launch_lock, read_fence
-
-    stopped = []
-    with launch_lock(root, task_id):
-        fence = read_fence(root, task_id)
-        if not fence_closed(fence):
-            return False
-        for owner, subject, entry in paused_acceptance_preparations(root, task_id, fence['fence_id']):
-            with _LOCK:
-                live = _LIVE.get(owner)
-            if ((live is not None and not live.closed) or controller_state(entry.get('controller')) in {'alive', 'unknown'}
-                    or entry.get('source_ref') or entry.get('state') not in {OPERATION_PREPARING, 'preparation_unknown'}):
-                continue  # Live/paid operations still settle through their existing owners.
-            def stop(rows, owner=owner, entry=entry):
-                if rows.get(owner) != entry:
-                    return None
-                stopped.append(owner)
-                return {**rows, owner: {**entry, 'state': 'preparation_refused', 'finished_at': utc_now_iso(),
-                    'preparation_outcome': {'status': 'owed', 'reason': 'owner_stopped', 'dispatched': False}}}
-            _update_operations(root, subject, stop)
-    return bool(stopped)
-
-
 def _update_operations(root: Any, task_id: str, transform: Callable[[Dict[str, Any]], Any], *,
                        create: bool = False) -> Dict[str, Any]:
     """Change only the operation pointers of one task result, under its lock; returns the stored row.

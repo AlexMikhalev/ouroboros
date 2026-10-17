@@ -270,38 +270,6 @@ def _review_panel_id(request: ReviewRequest, actors: List[ReviewActorRecord]) ->
     return f"panel_{digest[:16]}"
 
 
-def build_review_binding(
-    *,
-    candidate: str,
-    evidence: Dict[str, Any],
-    fence_token_or_state: Any,
-) -> Dict[str, Any]:
-    """Build the exact host-panel identity of a task-acceptance panel. No producer
-    remains since the result review replaced that machine; the name stays only while
-    ``review_substrate`` re-exports it."""
-    from ouroboros.review_evidence import task_acceptance_evidence_revision
-
-    candidate_hash = hashlib.sha256(str(candidate or "").encode("utf-8")).hexdigest()
-    evidence_revision = task_acceptance_evidence_revision(evidence)
-    fence_value = (
-        json.dumps(fence_token_or_state, sort_keys=True, separators=(",", ":"), default=str)
-        if isinstance(fence_token_or_state, (dict, list, tuple))
-        else str(fence_token_or_state or "direct_context")
-    )
-    fence_hash = hashlib.sha256(fence_value.encode("utf-8")).hexdigest()
-    binding_payload = {
-        "candidate_hash": candidate_hash,
-        "evidence_revision": evidence_revision,
-        "fence_hash": fence_hash,
-    }
-    binding_hash = _sub().review_binding_hash(**binding_payload)
-    return {
-        **binding_payload,
-        "binding_hash": binding_hash,
-        "panel_id": f"panel_{binding_hash[:16]}",
-    }
-
-
 def _panel_transport(statuses: List[str]) -> str:
     """One panel's transport word over the words of its collected actors."""
     if "authority_error" in statuses and all(word in {"authority_error", "not_dispatched"} for word in statuses):

@@ -575,7 +575,7 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     from ouroboros._usage_wait import retry_presend
     from ouroboros.delegate_custody import emit, START_REQUESTED
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.usage_admission import effective_billing_fields, task_billing_fields
+    from ouroboros.usage_admission import task_billing_fields
     from ouroboros.utils import utc_now_iso
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
@@ -591,8 +591,7 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
     elif bound is not None and bound.non_task_operation is True and str(bound.root_task_id or "") == source.root_task_id:
         binding = {"billing_group_id": source.root_task_id, "billing_group_limit_usd": None}
     else:
-        binding = effective_billing_fields(drive_root, source.root_task_id,
-            task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root))
+        binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
     payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
     retrying = False

@@ -64,18 +64,6 @@ def authority_unavailable(kind: str, root_task_id: str, cause: str) -> BillingAu
                                        kind=kind, cause=cause, root_task_id=root_task_id)
 
 
-def effective_billing_fields(budget_root: Any, root_id: str, fields: Dict[str, Any],
-                             *, non_task_operation: bool = False) -> Dict[str, Any]:
-    """The binding as recorded, as a copy: no owner amendment overlays it any more.
-
-    The only amendment writer was the historical review of the deleted task-acceptance
-    machine (``acceptance_root_cap_amendments`` on the root's row); rows that carry one
-    keep it as history and it no longer widens the allowance. Kept for its callers.
-    """
-    del budget_root, root_id, non_task_operation
-    return dict(fields)
-
-
 def ledger_billing_binding(budget_root: Any, root_task_id: str) -> Dict[str, Any]:
     """The group binding the root's own earliest recorded row carries, never current settings.
 
@@ -500,8 +488,8 @@ def current_usage_projection(
 def amended_projection(root, identity, projection, *, group=False):
     """Read current owner authority over a copy, leaving historical cache intact."""
     try:
-        fields = effective_billing_fields(root, identity, {"billing_group_id": identity,
-            "billing_group_limit_usd": projection.get("limit_usd"), "root_limit_usd": projection.get("limit_usd")})
+        fields = {"billing_group_id": identity,
+            "billing_group_limit_usd": projection.get("limit_usd"), "root_limit_usd": projection.get("limit_usd")}
     except BillingAuthorityUnavailable as exc:
         # Unconfirmed owner authority over these sums: degraded and named, never a zero limit.
         return {**projection, "integrity_degraded": True, "billing_authority": exc.kind}
@@ -525,7 +513,7 @@ def task_money_snapshot(root, task, root_id, *, root_limit=None):
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_store
     try:
-        fields = effective_billing_fields(root, root_id, task_billing_fields(task, root_id, root_limit, root))
+        fields = task_billing_fields(task, root_id, root_limit, root)
     except BillingAuthorityUnavailable:
         return None
     group = str(fields.get("billing_group_id") or root_id)

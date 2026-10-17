@@ -14,10 +14,8 @@ discovery shapes in ``promote_source_payload``, so an old record promotes whole.
 from __future__ import annotations
 
 import copy
-import dataclasses
 import json
 import pathlib
-import tempfile
 from typing import Any
 
 
@@ -173,94 +171,6 @@ def retain_contract(value: dict, source: pathlib.Path, custody: pathlib.Path, ta
     wrapper = {'task_contract': copy.deepcopy(value)}
     promote_task_attachment_refs(custody, source, task_id, wrapper, state)
     return wrapper['task_contract']
-
-
-def retain_review_refs(value: Any, source: pathlib.Path, custody: pathlib.Path, task_id: str,
-                       *, carrier: str = 'metadata') -> Any:
-    """Retain explicit host source carriers, never infer authority from data."""
-    from ouroboros.observability import _rewrite_child_ref_tree, child_ref_promotion_scope
-    from ouroboros.owner_mailbox import promote_owner_attachments
-
-    facts = {'pending_refs': [], 'unavailable_refs': [], 'promoted_ref_count': 0,
-             'promoted_source_handle_count': 0, 'status': 'complete'}
-    with child_ref_promotion_scope():
-        # Accepted owner follow-ups have their own task-bound manifest owner.
-        promote_owner_attachments(custody, source, task_id, facts)
-        retained = _rewrite_child_ref_tree(value, custody, source, task_id, facts, carrier=carrier)
-    if facts['pending_refs'] or facts['unavailable_refs']:
-        raise ValueError(json.dumps(facts, sort_keys=True))
-    return retained
-
-
-def _reader_bindings(value: Any, root: pathlib.Path, task_id: str) -> list[dict]:
-    """Give each task-owned ref its actual address without rewriting opaque text."""
-    from ouroboros.artifacts import task_artifact_dir_path
-
-    rows = {}
-
-    def visit(item, owner, carrier='request'):
-        if isinstance(item, dict):
-            if item.get('kind') == 'task_source':
-                if not item.get('path'):
-                    return  # a path-less legacy gap names no address to bind; it states its own loss
-                path = task_artifact_dir_path(root, owner) / item['path']
-                rows[(owner, str(path))] = {'owner_task_id': owner, 'source_path': item['path'],
-                    'sha256': item['sha256'], 'size': item['size'],
-                    'retained_path': str(path), 'read': {'tool': 'read_file', 'arguments': {
-                        'root': 'runtime_data', 'path': str(path.relative_to(root))}}}
-            else:
-                for key, child in item.items():
-                    role = source_carrier(item, key, carrier)
-                    if role:
-                        visit(child, source_owner(key, child, owner), role)
-        elif isinstance(item, list):
-            for child in item:
-                visit(child, owner, carrier)
-
-    visit(value, task_id)
-    return list(rows.values())
-
-
-def retain_review_request_sources(request: Any, *, source_root: Any, custody_root: Any) -> None:
-    """Bind a review request's typed refs to durable custody.
-
-    Call BEFORE review_operation_scope, serialization, prompt caching or dispatch.
-    This is not rendered-packet custody: general typed source closure includes
-    earlier loops and native continuation sources. Reuse verifies the original
-    snapshots; it never refreshes a request underneath a live paid reader.
-    A failure raises before the caller can stamp paid work.
-    """
-    from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
-
-    source, custody = pathlib.Path(source_root), pathlib.Path(custody_root)
-    if not source.is_dir():
-        raise ValueError('original_reader_root_unavailable: cannot retain named sources')
-    retained = request.policy.get('review_source_closure')
-    if retained:
-        read_root = pathlib.Path(retained['read_root']).resolve()
-        if (retained.get('task_id') != request.task_id
-                or source.resolve() != read_root
-                or not read_root.is_relative_to((task_artifact_dir_path(custody, request.task_id) / 'source_handles' / 'review_inputs').resolve())):
-            raise ValueError('review source closure identity mismatch')
-        for row in retained['sources']:
-            if row['status'] == 'retained':
-                read_actor_source_bytes(read_root, request.task_id, row['source_ref'])
-        retain_review_refs(dataclasses.asdict(request), read_root, custody, request.task_id, carrier='request')
-        return
-    # Work on a copy: partial publication cannot leave the caller appearing bound.
-    bound = dataclasses.replace(request, **{key: value for key, value in retain_review_refs(
-        dataclasses.asdict(request), source, custody, request.task_id, carrier='request').items()})
-    parent = task_artifact_dir_path(custody, request.task_id, create=True) / 'source_handles' / 'review_inputs'
-    parent.mkdir(parents=True, exist_ok=True)
-    read_root = pathlib.Path(tempfile.mkdtemp(prefix='request-', dir=parent))
-    bound = dataclasses.replace(bound, **retain_review_refs(dataclasses.asdict(bound), custody, read_root, request.task_id, carrier='request'))
-    bindings = _reader_bindings(dataclasses.asdict(bound), read_root, request.task_id)
-    bound.policy = {**bound.policy, 'native_data_root': str(read_root), 'review_source_closure': {
-        'schema_version': 1, 'task_id': request.task_id, 'read_root': str(read_root),
-        'sources': [], 'refmap': bindings}}
-    retain_review_refs(dataclasses.asdict(bound), read_root, custody, request.task_id, carrier='request')
-    for field in dataclasses.fields(request):
-        setattr(request, field.name, getattr(bound, field.name))
 
 
 def promote_source_payload(raw: bytes, *, source_id: str, extension: str, category: str,

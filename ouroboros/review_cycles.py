@@ -134,15 +134,6 @@ def review_max_cycles_source() -> str:
     return "owner_setting" if runtime_setting(REVIEW_MAX_CYCLES_KEY, "") else "shipped_default"
 
 
-def get_acceptance_max_improvement_passes() -> Optional[int]:
-    """The paid review ceiling never limits ordinary author response work.
-
-    The deprecated ``OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES`` no longer binds at runtime:
-    a customized value is MIGRATED into the shared knob when settings load (``config``), the
-    same rename-alias shape the retention keys use. Disclosed residual: a legacy value supplied
-    only through the environment (never saved) is not migrated and no longer binds."""
-    return None
-
 def emit_review_cycles_exhausted(
     event_queue: Any, drive_root: Any, *, surface: str, task_id: str,
     cycles_paid: int, cap: int, enforcement: str, **extra: Any,

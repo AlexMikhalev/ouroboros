@@ -26,7 +26,6 @@ from ouroboros.review_execution_projection import (
     MAX_PROJECTED_ACTOR_FINDINGS, projected_finding_row,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     review_executions_from_actor_usage,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 )
-from ouroboros.task_results import review_binding_hash  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 # Everything below the seam. Re-exported here because the substrate is the
 # historical import site for the api_chat prompt renderers; `review_execution`
 # owns them now and must never import this module back.
@@ -719,6 +718,5 @@ from ouroboros.review_projection import (  # noqa: E402, F401 -- intentional pub
     _review_enforcement_impact,
     _review_panel_id,
     _transport_error_status,
-    build_review_binding,
     compact_review_projection,
 )

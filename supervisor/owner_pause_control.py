@@ -201,9 +201,6 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
     try:
         fence, created = install_fence(root_drive, root_id, request_id=request_id,
                                       late_work=late_review, actor_id=task_id)
-        if fence_closed(fence):
-            from ouroboros.review_operation import retain_preparing_owner_pause
-            retain_preparing_owner_pause(root_drive, root_id, fence)
     except OwnerPauseRefused as exc:
         return {"ok": False, "error": str(exc) or "pause_refused"}
     except Exception as exc:

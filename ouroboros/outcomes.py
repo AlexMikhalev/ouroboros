@@ -146,7 +146,6 @@ REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
 # The reasons and statuses named "acceptance" below are the vocabulary of task-acceptance
 # decisions stored before the result review replaced that machine. Nothing writes them
 # now; old task cards (the cause sentences) and the objective reader still read them.
-REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE = "review_skipped_deadline_reserve"
 # HQ1 (2026-08-15): the owner-hurry acceptance-skip reason. A finite typed
 # acceptance-decision reason ONLY — deliberately NOT a member of
 # ACCEPTANCE_BYPASS_REASON_BY_RAIL (it is an owner-approved skip, not a forced
@@ -202,17 +201,12 @@ ACCEPTANCE_BYPASS_REASON_BY_RAIL = {
     # task to wrap up now — its own typed reason, never the deadline's (CF-02).
     REASON_OWNER_REQUESTED_FINALIZATION: "acceptance_bypassed_owner_requested_finalization",
 }
-ACCEPTANCE_BYPASS_REASONS = frozenset(ACCEPTANCE_BYPASS_REASON_BY_RAIL.values())
 
-# v6.78.0 (owner Q23=B): an old HOST acceptance decision has exactly three owner-facing
-# states, each carrying a typed `reason`. This is the HOST decision vocabulary only —
+# v6.78.0 (owner Q23=B): an old HOST acceptance decision carried one of three owner-facing
+# states, each with a typed `reason` (`revision_requested` was the third). This is the HOST decision vocabulary only —
 # the reviewer's own PASS|FAIL|DEGRADED verdict vocabulary is a different layer.
 ACCEPTANCE_ACCEPTED = "accepted"
-ACCEPTANCE_REVISION_REQUESTED = "revision_requested"
 ACCEPTANCE_FINALIZED_UNACCEPTED = "finalized_unaccepted"
-ACCEPTANCE_DECISION_STATUSES = (
-    ACCEPTANCE_ACCEPTED, ACCEPTANCE_REVISION_REQUESTED, ACCEPTANCE_FINALIZED_UNACCEPTED,
-)
 
 # When unresolved or cosmetic errors exist but no review of the result ran, the
 # execution axis is OK yet "did it actually work?" was never judged: surface a

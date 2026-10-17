@@ -20,20 +20,6 @@ from ouroboros.utils import truncate_review_artifact, truncate_within_limit  # n
 log = logging.getLogger(__name__)
 
 
-# D-Q5 exhibit-key vocabulary + exact-membership resolver live in the
-# ``review_evidence_refs`` leaf. ``annotate_criteria_evidence_resolution`` below
-# reads them through THESE module globals on purpose — the fail-closed seam stays
-# patchable at ``review_evidence.<name>`` (D-Q5 tests).
-from ouroboros.review_evidence_refs import (
-    _RESOLUTION_UNAVAILABLE_ROW as _RESOLUTION_UNAVAILABLE_ROW,
-)
-from ouroboros.review_evidence_refs import (
-    acceptance_evidence_ref_vocabulary as acceptance_evidence_ref_vocabulary,
-)
-from ouroboros.review_evidence_refs import (
-    resolve_criteria_evidence_refs as resolve_criteria_evidence_refs,
-)
-
 # Commit-review status renderers: extracted to the ``review_status_projection``
 # leaf (module size gate); re-exported here so every historical import site keeps
 # resolving. The private ``_review_status_*`` renderers are part of that surface
@@ -68,42 +54,6 @@ from ouroboros.review_status_projection import (
 from ouroboros.review_status_projection import (
     _review_status_message as _review_status_message,
 )
-
-
-def annotate_criteria_evidence_resolution(actors: Any, evidence: Any) -> None:
-    """Stamp per-actor ``criteria_refs_unresolved`` disclosure rows in place (D-Q5).
-
-    Runs ONCE per acceptance panel over actor dict rows; a fully-resolving actor
-    gets NO annotation (the common clean path is byte-identical). The annotation
-    feeds ONLY ``task_acceptance_is_clean`` and disclosure — never parse validity,
-    never quorum, never a verdict.
-
-    TOTAL and fail-CLOSED. An annotation that did not run may never be read as
-    "everything resolved": the absence of a row is what authorizes the clean bit,
-    so a resolver failure that left the rows off would silently certify evidence
-    nobody checked. Any failure therefore stamps the typed
-    ``host_resolution_unavailable`` row on EVERY actor, landing on the same
-    clean-bit rail as an unresolved ref — never a verdict, never a veto."""
-    unavailable = False
-    try:
-        vocabulary = acceptance_evidence_ref_vocabulary(evidence)
-    except Exception:
-        log.warning("acceptance evidence-ref vocabulary unavailable", exc_info=True)
-        vocabulary, unavailable = {}, True
-    for actor in actors if isinstance(actors, list) else []:
-        if not isinstance(actor, dict):
-            continue
-        try:
-            if unavailable:
-                actor["criteria_refs_unresolved"] = [dict(_RESOLUTION_UNAVAILABLE_ROW)]
-                continue
-            parsed = actor.get("parsed") if isinstance(actor.get("parsed"), dict) else {}
-            rows = resolve_criteria_evidence_refs(parsed.get("criteria_used"), vocabulary)
-            if rows:
-                actor["criteria_refs_unresolved"] = rows
-        except Exception:
-            log.warning("acceptance evidence-ref resolution failed for one actor", exc_info=True)
-            actor["criteria_refs_unresolved"] = [dict(_RESOLUTION_UNAVAILABLE_ROW)]
 
 
 def _commit_source_payload(ctx: Any, ref: dict, *, manifest: bool = False) -> dict:
@@ -613,7 +563,6 @@ def _debt_to_dict(item: Any) -> Dict[str, Any]:
 # v7next F2.3a (D06): moved spans live in their owner leaves; re-exported
 # here so this facade stays the single import surface for callers and tests.
 from ouroboros.review_evidence_sections import (  # noqa: E402, F401 -- intentional public re-exports
-    _ACCEPT_DENSE_CHARS_PER_TOKEN,
     _ACCEPT_NOTES_CAP,
     _accept_effective_claims,
     _accept_owner_directives,
@@ -622,5 +571,4 @@ from ouroboros.review_evidence_sections import (  # noqa: E402, F401 -- intentio
     _accept_task_contract,
     _accept_verification_summary,
     _owner_content_projection,
-    task_acceptance_evidence_revision,
 )

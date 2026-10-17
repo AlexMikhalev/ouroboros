@@ -455,13 +455,6 @@ def _collection_candidates(root: Any, column: str, predicate: Callable[[dict], b
         return  # failed acquisition/classification leaves the same candidates owed
 
 
-def review_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Iterable[str]:
-    """Possible acceptance collection/late-notice work; unrelated plans stay out."""
-    from ouroboros.obligations import review_collection_pending
-
-    yield from _collection_candidates(root, "review_collection_pending", review_collection_pending, stop)
-
-
 def plan_collection_candidates(root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Iterable[str]:
     """Possible pending plan seats; their record and ended-task reader keep authority."""
     from ouroboros.plan_record import PLAN_RECORD_KEY, collection_pending

@@ -305,13 +305,13 @@ def _global_money_refusal(q: Any, budget_remaining: Any) -> Optional[Dict[str, A
 
 def _root_money_refusal(result_root: Any, task: Dict[str, Any], root_task_id: str) -> Optional[Dict[str, Any]]:
     from ouroboros.usage_accounting import refresh_root_accounting
-    from ouroboros.usage_admission import effective_billing_fields, task_accounting_key, task_billing_fields
+    from ouroboros.usage_admission import task_accounting_key, task_billing_fields
     from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
     # The original group's authority is reread strictly first: unreadable or refused is
     # named as such, never as accounting room or as an exhausted cap.
     try:
-        effective_billing_fields(result_root, root_task_id, task_billing_fields(task, root_task_id, None, result_root))
+        task_billing_fields(task, root_task_id, None, result_root)
     except BillingAuthorityUnavailable as exc:
         return {"ok": False, "error": "billing_authority_unavailable", "billing_authority": exc.kind, "cause": exc.cause,
                 "action": "fix_billing_authority_then_resume" if exc.kind == "unreadable" else "cancel_or_new_run"}

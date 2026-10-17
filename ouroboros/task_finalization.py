@@ -539,12 +539,6 @@ def focus_source_projection(
     return {**payload, **current, **({"reason": reason} if reason else {})}
 
 
-def review_source_reader(task_id: str, ref: Dict[str, Any]) -> Dict[str, Any]:
-    """A receiver-independent selector for one author's immutable host acceptance record."""
-    return {"tool": "get_task_result", "arguments": {
-        "task_id": task_id, "review_source_sha256": str(ref.get("sha256") or "")}}
-
-
 def host_acceptance_source(drive_root: Any, task_id: str, digest: str) -> tuple:
     """``(ref, bytes)`` of this physical author's own HOST acceptance record, named by digest.
 
