@@ -34,7 +34,9 @@ test('built-ins lead as their own group; the host’s category order stays', () 
         ['Built in — comes with the app', ['telegram', 'unix_computer_use']],
         ['Messaging', ['x']],
     ]);
-    assert.equal(normalizeStarterGroups(STARTER.groups)[0].label, 'Built in — comes with the app');
+    // The host's answer groups built-ins inside their categories; the row lifts them into one group first.
+    assert.deepEqual(normalizeStarterGroups(STARTER.groups).map((group) => group.label), [
+        'Built in — comes with the app', 'Messaging', 'Documents', 'Search & research', 'About Ouroboros', 'Writing & review']);
     assert.deepEqual(normalizeStarterGroups(null), []);
 });
 
@@ -43,9 +45,9 @@ test('collapsed: «N · M ticked · Change ›» with the ticked names; the payl
     await row.loading;
     const host = fakeHost();
     row.mount(host);
-    assert.match(text(host.innerHTML), /^Starter skills 10 · 6 ticked · Change › Ticked: telegram, duckduckgo, pdf_tools, word_tools, anti-slop, memory-atlas\. 4 more you can tick\.$/);
+    assert.match(text(host.innerHTML), /^Starter skills 10 · 6 ticked · Change › Ticked: telegram, pdf_tools, word_tools, duckduckgo, memory-atlas, anti-slop\. 4 more you can tick\.$/);
     assert.deepEqual(row.payload(), {
-        starter_skills: ['builtin/telegram', 'ouroboros/duckduckgo', 'ouroboros/pdf_tools', 'ouroboros/word_tools', 'ouroboros/anti-slop', 'ouroboros/memory-atlas'],
+        starter_skills: ['builtin/telegram', 'ouroboros/pdf_tools', 'ouroboros/word_tools', 'ouroboros/duckduckgo', 'ouroboros/memory-atlas', 'ouroboros/anti-slop'],
         skill_source_trust: { ouroboros: 'trusted', 'ouroboros-community': 'review' },
     });
     assert.doesNotMatch(host.innerHTML, /skills-starter-panel/, 'the list opens only on Change');
