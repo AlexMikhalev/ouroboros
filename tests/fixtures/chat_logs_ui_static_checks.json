@@ -903,7 +903,7 @@
     "id": "test_history_replay_resyncs_after_reconnect",
     "path": "web/modules/chat.js",
     "kind": "contains",
-    "value": "fromReconnect: isReconnect"
+    "value": "isReconnect ? syncHistory({ fromReconnect: true })"
   },
   {
     "id": "test_history_replay_resyncs_after_reconnect",
