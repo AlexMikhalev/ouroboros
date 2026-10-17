@@ -62,7 +62,7 @@ Effective results show typed `cancel_state: "pending"` with `cancel_reason` unti
 
 Stop policy is an axis on the same durable intent, independent of cascade scope. An omitted or empty-body cancellation is immediate: 200, 404 when nothing is left, or 202 pending (CLIENT_CONTRACT §8). `stop_policy=finalize_then_cancel` answers 202 with the intent open and runs one bounded finalization episode: descendants settle first, then the root's `finalize_now` allows at most one tool-less model turn, terminalizing under the honest owner reason, not a false deadline (`supervisor/owner_stop.py` docstring). `OWNER_STOP_OUTER_CAP_SEC` bounds grace; explicit deadline and absolute ceiling stay independent. Transitions are monotonic (immediate hardens pending graceful; graceful never softens accepted immediate); Panic bypasses both.
 
-Owner "hurry" is a typed task-local `kind=hurry` owner-mailbox control (`ouroboros/owner_hurry.py` docstring; `gateway/task_hurry.py`): it skips the next otherwise-eligible acceptance panel with a typed reason, zeroes remaining improvement passes and makes that task's force-plan projection advisory; never a chat message, settings mutation or weakening of the P3 commit/review gates; attempt-scoped (`retry_reset` strips it on every same-id requeue).
+Owner "hurry" is a typed task-local `kind=hurry` owner-mailbox control (`ouroboros/owner_hurry.py` docstring; `gateway/task_hurry.py`): it makes that task's force-plan projection advisory; never a chat message, settings mutation or weakening of the P3 commit/review gates; attempt-scoped (`retry_reset` strips it on every same-id requeue).
 
 ### Event bus, timeouts and worker readiness
 
