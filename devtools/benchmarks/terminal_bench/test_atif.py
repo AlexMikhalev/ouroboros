@@ -267,6 +267,31 @@ def test_a_call_precedes_the_host_notes_its_own_execution_emitted(tmp_path: Path
     assert all("tool_calls" not in s for s in steps[2:4])
 
 
+def test_a_timed_out_call_also_precedes_its_in_call_host_notes(tmp_path: Path) -> None:
+    """The wait-end branch is placed at the call's start too; its step keeps the timeout's ts."""
+    agent = _make_agent_dir(tmp_path)
+    logs = agent / "ouroboros-data/logs"
+    ts = "2026-07-04T18:02:{:02d}+00:00".format
+    _write_jsonl(logs / "progress.jsonl", [
+        {"ts": ts(0), "type": "send_message", "text": "💬 Run make.", "role": "assistant", "narration": True},
+        {"ts": ts(3), "type": "send_message", "text": "💬 Still running", "role": "system",
+         "system_type": "host_progress", "narration": False},
+    ])
+    base = {"tool": "run_command", "args": {"cmd": ["make"]}, "invocation_id": "slow"}
+    _write_jsonl(logs / "tools.jsonl", [
+        {**base, "ts": ts(1), "type": "tool_call_started"},
+        {**base, "ts": ts(4), "type": "tool_call_timeout", "result_preview": "⚠️ TOOL_TIMEOUT (run_command)"},
+        {**base, "ts": ts(6), "type": "tool_call", "result_preview": "late", "status": "ok"},
+    ])
+    steps = build_trajectory(agent)["steps"]
+
+    assert [s["source"] for s in steps] == ["user", "agent", "system", "agent"]
+    caused = steps[1]
+    assert caused["message"] == "💬 Run make." and caused["timestamp"] == ts(4)
+    assert caused["observation"]["results"][0]["content"].startswith("[status=timeout is_error=True]")
+    assert (steps[2]["message"], steps[2]["timestamp"]) == ("💬 Still running", ts(3))
+
+
 def test_build_trajectory_minimal_dir(tmp_path: Path) -> None:
     agent = tmp_path / "agent"
     agent.mkdir()
