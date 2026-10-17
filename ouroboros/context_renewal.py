@@ -80,10 +80,13 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
     from ouroboros.artifacts import store_actor_source_bytes
     from ouroboros.context_fit import estimate_context_prompt_tokens
     from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+    from ouroboros.loop_model_call import CONTEXT_REFUSAL_ROUND_KEY
     from ouroboros.loop_round_limits import _publish_reclaimed_transcript
 
     usage = limit_ctx.accumulated_usage
-    if (str(usage.get("_last_llm_error_kind") or "") != "context_overflow" or usage.get("resource_refusal")
+    # This round's own size refusal decides, not the kind a configured fallback failed with afterwards
+    # (its resource refusal stays recorded beside the renewal; the next primary call clears it).
+    if (usage.get(CONTEXT_REFUSAL_ROUND_KEY) != limit_ctx.round_idx
             or isinstance(usage.get(TRANSPORT_DEATHS_KEY), dict) or usage.get("_pending_transport_outcome")):
         return False
     messages = limit_ctx.messages

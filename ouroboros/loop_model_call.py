@@ -1383,16 +1383,20 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 # view as applied and walks nothing again. The fallback chain and the end of the path follow in the caller.
 REFUSAL_PASSES: Tuple[Tuple[str, ...], ...] = (("host_copies", "bodies"), ("floor", "unseen_bodies"))
 WAKE_DELIVERY_STEP = "wake_delivery"  # the change applied before the passes, when there was one
+WHOLE_CATEGORY = 2**31 - 1  # an unknown target: the step takes everything its category can give
+#: The round a provider refused this conversation for size (``context_renewal`` reads it): a configured
+#: fallback that then fails for another reason never cancels the renewal the size refusal earned.
+CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 
 
 def _refusal_target(ctx: _RoundModelCallContext, fit: Any) -> Optional[int]:
     """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
 
-    A provider that states its limit L gives ``E + reply - L``; otherwise the refused estimate E over the
-    largest input this model accepted here, A, gives ``E - A`` (E at or below A contradicts the reading:
-    unknown). E must be this conversation's anchored estimate (``context_anchor``), never a cold count.
-    Both add the owner's return-after-fold eighth of the window (L33 2=A). The refused size is recorded,
-    so the facts stop stating free room for this model.
+    A provider that states its limit L gives ``E + reply - L`` whatever E's basis (the limit is the
+    measurement; a cold E still names its excess). Without a stated limit, the anchored estimate E over the
+    largest input this model accepted here, A, gives ``E - A``; E at or below A contradicts the reading, and a
+    cold E compares with nothing: unknown. Both add the owner's return-after-fold eighth of the window (L33
+    2=A). The refused size is recorded, so the facts stop stating free room for this model.
     """
     from ouroboros.capability_evidence import _parse_ctx_limit_number
     from ouroboros.context_anchor import record_refused_input
@@ -1404,10 +1408,10 @@ def _refusal_target(ctx: _RoundModelCallContext, fit: Any) -> Optional[int]:
     window = (stated or measurement.capacity_total_tokens or measurement.window_reading_tokens
               or measurement.accepted_input_tokens)
     slack = reclaim_low_water_margin(None, window) if window else 0
-    if measurement.anchor_input_tokens is None:
-        return None
     if stated:
         return max(0, measurement.estimated_input_tokens + measurement.reply_allowance_tokens - stated) + slack
+    if measurement.anchor_input_tokens is None:
+        return None
     accepted = measurement.accepted_input_tokens
     if not accepted or measurement.estimated_input_tokens <= accepted:
         return None
@@ -1425,6 +1429,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
         _emit_overflow_retry_skipped(ctx, reason)
         return None, cost, ctx.active_context_mode
 
+    ctx.accumulated_usage[CONTEXT_REFUSAL_ROUND_KEY] = ctx.round_idx
     if not _failed_capture_is_comparable(failed_capture):
         return _skipped("failed_candidate_not_comparable")
     done = _loop()._context_overflow_retries(ctx.tools._ctx)
@@ -1507,7 +1512,7 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
         after = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
         return max(0, before - after.measurement.estimated_input_tokens) if after is not None else default
 
-    coarsened = _coarsen_memory_view(ctx, fit, saving=target)
+    coarsened = _coarsen_memory_view(ctx, fit, saving=target or WHOLE_CATEGORY)
     saved = shed_since_before(0) if coarsened else 0
     if target and saved >= target:
         return saved

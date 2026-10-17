@@ -67,9 +67,12 @@ def test_renewal_publishes_the_seed_with_an_exact_source_and_continues_the_same_
     original = json.loads(json.dumps(messages))
     events = []
     tools = SimpleNamespace(_ctx=SimpleNamespace(messages=messages))
-    limit_ctx = SimpleNamespace(messages=messages, accumulated_usage={"_last_llm_error_kind": "context_overflow"},
-                                drive_root=tmp_path, drive_logs=tmp_path / "logs", task_id="renewal", round_idx=12,
-                                event_queue=None, tool_schemas=[])
+    # The fallback walked after the passes failed for its own reason (a dead id, an exhausted pool with
+    # waits disallowed): the size refusal this round earned still renews the view (review r1, 17.10).
+    limit_ctx = SimpleNamespace(messages=messages, accumulated_usage={
+        "_last_llm_error_kind": "bad_request", "resource_refusal": {"reason": "quota"},
+        "_context_refusal_round": 12}, drive_root=tmp_path, drive_logs=tmp_path / "logs", task_id="renewal",
+        round_idx=12, event_queue=None, tool_schemas=[])
     import ouroboros.loop as loop
     loop_emit = loop._emit_checkpoint_event
     loop._emit_checkpoint_event = lambda *_a, **_kw: events.append(_a[-1])
@@ -86,13 +89,15 @@ def test_renewal_publishes_the_seed_with_an_exact_source_and_continues_the_same_
 
 
 def test_renewal_is_not_attempted_when_it_cannot_help_or_the_failure_is_not_size(tmp_path):
-    def ctx(messages, kind="context_overflow"):
-        return SimpleNamespace(messages=messages, accumulated_usage={"_last_llm_error_kind": kind},
-                               drive_root=tmp_path, drive_logs=tmp_path / "logs", task_id="renewal", round_idx=3,
-                               event_queue=None, tool_schemas=[])
+    def ctx(messages, kind="context_overflow", refused_round=3):
+        return SimpleNamespace(messages=messages, accumulated_usage={
+            "_last_llm_error_kind": kind, "_context_refusal_round": refused_round}, drive_root=tmp_path,
+            drive_logs=tmp_path / "logs", task_id="renewal", round_idx=3, event_queue=None, tool_schemas=[])
 
     tools = SimpleNamespace(_ctx=SimpleNamespace())
-    assert renew_after_refusal(ctx(_noted(tmp_path), kind="provider_unavailable"), tools) is False
+    # No size refusal in this round (an earlier round's stamp, or none): another failure renews nothing.
+    assert renew_after_refusal(ctx(_noted(tmp_path), kind="provider_unavailable", refused_round=2), tools) is False
+    assert renew_after_refusal(ctx(_noted(tmp_path), refused_round=None), tools) is False
     only_host = [{"role": "system", "content": "S"}, {"role": "user", "content": "go"},
                  bound_host_row(CONTEXT_FACTS_NAME, "[CONTEXT_FACTS] round 1"),
                  {"role": "user", HOST_CONTEXT_KIND_KEY: OWNER_WORDS_KIND, "content": "A"}]

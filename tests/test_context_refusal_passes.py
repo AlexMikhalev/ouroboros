@@ -34,6 +34,8 @@ def test_the_target_is_measured_on_this_conversation_or_stays_unknown():
     assert lmc._refusal_target(_ctx(), _fit(933_440, anchor=None)) is None  # a cold count sizes nothing
     stated = _ctx("This model's maximum context length is 400,000 tokens.")
     assert lmc._refusal_target(stated, _fit(390_000, accepted=None, reply=20_000)) == 10_000 + 50_000
+    # A stated limit measures even the first refusal, before this model accepted anything here (cold E).
+    assert lmc._refusal_target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) == 10_000 + 50_000
 
 
 def test_bodies_shed_only_what_the_host_copies_left_of_the_target(monkeypatch):
@@ -77,3 +79,7 @@ def test_memory_narrowed_enough_addresses_no_unseen_body(monkeypatch):
     sizes[:] = [800_000, 760_000]
     assert lmc._apply_refusal_pass(_ctx(), second, _fit(900_000), 150_000) is True
     assert calls == [("floor", 150_000), ("books",), ("unseen_bodies", 10_000)]  # books, then only the rest
+    calls.clear()
+    sizes[:] = [800_000, 760_000]
+    assert lmc._apply_refusal_pass(_ctx(), second, _fit(900_000), None) is True
+    assert calls == [("floor", lmc.WHOLE_CATEGORY), ("books",), ("unseen_bodies", None)]  # unknown: each whole
