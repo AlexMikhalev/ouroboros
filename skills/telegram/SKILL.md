@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.3.2
+version: 1.3.3
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -59,6 +59,9 @@ question carry ordinary references.
 Version 1.3.2 warns when the derived reference map cannot be saved, without
 blocking an owner message or later outbound parts. Completion notifications
 reference their work, not an authored answer shown only in Main.
+Version 1.3.3 gives a finished root task's notice the task card's cost words for
+its whole tree: `$3.42` when final, `up to $3.42` while costs may still arrive,
+`Tracked:` when some step has no price; an unknown cost adds nothing.
 
 Version 1.2.1 marks questions that wait for an owner answer and clears the
 waiting line after an answer submitted through Telegram.
