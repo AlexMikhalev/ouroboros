@@ -1846,6 +1846,10 @@ body.resizing-panels { user-select: none; }
     letter-spacing: 0.02em;
     user-select: none;
 }
+/* A completion row's one compact time line shows the short form; the full instants stay its title and spoken text. */
+.msg-time-full {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 
 .chat-bubble:hover .msg-time {
     opacity: 0.8;

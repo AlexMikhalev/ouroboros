@@ -328,7 +328,8 @@ test('plain project row renders escaped text with the Project reference and no m
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
         assert.equal(message.contains(actions), false);
-        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
+        // Right after the prose: the row's one time line is its own time, not a note between (owner 17.10, Q7 A).
+        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 1);
         assert.ok(actions, 'system-message-actions container present');
         // The row points at its Project with the one reference, never a button of its own.
         assert.deepEqual(referenceShape(actions.children[0]), LAUNCH_REFERENCE);
@@ -393,7 +394,7 @@ test('a completion row carrying the answer renders as an ordinary Ouroboros mess
         assert.doesNotMatch(bubble.innerHTML, /Done with warnings|did not reach a verdict/);
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
-        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
+        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 1);
         // The SAME reference the System row carries: the voice of a row never chooses how the
         // UI points at its Project. The mirror has no second route into the result.
         assert.equal(actions.children.length, 1);

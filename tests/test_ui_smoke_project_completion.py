@@ -305,8 +305,11 @@ def test_ui_project_completion_mirror_has_one_project_door(direct_server_with_da
                 assert message.locator('[data-fold-stop]').count() == 1
                 assert message.locator('a').evaluate_all('ns => ns.every(n => n.tabIndex === -1)')
                 expect(row.locator('.project-answer-limitation')).to_have_text('Windows verification was not performed.')
-                assert row.locator(':scope > .msg-provenance').count() == 2
-                assert row.locator('.msg-time').inner_text()
+                # The caveat is the one note; the row's own time is its one compact time line (owner 17.10, Q7 A):
+                # it ended a minute before it was added, so both facts, the full instants in its title.
+                assert row.locator(':scope > .msg-provenance').count() == 1
+                assert re.fullmatch(r'Ended .+ · added .+', row.locator('.msg-time [aria-hidden="true"]').inner_text())
+                assert (row.locator('.msg-time').get_attribute('title') or '').startswith('Task ended ')
                 assert row.locator('.system-message-actions').locator('button').count() == 1
                 row.screenshot(path=str(evidence / f'{stage}.png'))
                 if stage == 'history':
