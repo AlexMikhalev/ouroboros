@@ -968,6 +968,10 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
             raise ClaudexorUnavailable("malformed_response", "thread create returned no id")
         return body
 
+    def continue_run(self, run_id: str, *, idempotency_key: str) -> Dict[str, Any]:
+        """Continue stopped work; the engine owns native/moved/packet selection."""
+        return self.start_run({"continueFrom": run_id}, idempotency_key=idempotency_key)
+
     def start_thread_turn(
         self, thread_id: str, request: Dict[str, Any], *, idempotency_key: str,
     ) -> Dict[str, Any]:
