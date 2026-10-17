@@ -1,8 +1,8 @@
 """Closing the chat-id truthiness class must not move a benchmark's answer.
 
-Terminal-Bench reads a run's final answer straight out of ``chat.jsonl``: the
+Terminal-Bench reads a run's final answer from SQL chat rows: the
 LAST untyped row with ``direction == "out"`` (``atif._final_answer``). It ALSO
-reads ``progress.jsonl`` and publishes those rows as the agent's own narration
+reads SQL progress rows and publishes those rows as the agent's own narration
 (``atif.build_trajectory``). Headless benchmark roots run in the hidden partition
 (chat 0), which is exactly the partition the class fix stops dropping — so a
 notice that now reaches chat 0 must be a typed or system chat row (invisible to
@@ -33,13 +33,14 @@ def _agent_dir(tmp_path, chat_rows):
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in chat_rows),
         encoding="utf-8",
     )
+    dialogue_test.import_all(data)
     return tmp_path
 
 
 def test_progress_notices_never_enter_the_answer_stream(tmp_path):
     """The reaper/scheduler toasts the class fix un-drops are progress rows.
 
-    ``send_with_budget(is_progress=True)`` appends to progress.jsonl, so a
+    ``send_with_budget(is_progress=True)`` appends to SQL progress, so a
     grace toast for a hidden-partition root cannot be mistaken for its answer.
     """
     from types import SimpleNamespace
@@ -164,8 +165,8 @@ def test_the_two_toasts_this_sprint_touched_stay_out_of_a_headless_progress_log(
     assert "if chat_id is None or chat_id == HIDDEN_CHAT_ID:" in admission
 
     atif = (REPO / "devtools/benchmarks/terminal_bench/atif.py").read_text(encoding="utf-8")
-    assert 'progress.jsonl' in atif and 'narration_rows' in atif, (
-        "if ATIF stops reading progress.jsonl this guard can be revisited"
+    assert '_dialogue_rows(data_dir, "progress"' in atif and 'narration_rows' in atif, (
+        "if ATIF stops reading progress rows this guard can be revisited"
     )
 
 
@@ -176,7 +177,7 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
 
     The other tests in this file state the extraction rule over hand-written
     rows. This one runs emit_task_results -> _handle_send_message ->
-    send_with_budget -> chat.jsonl -> atif._final_answer, so a change to WHICH
+    send_with_budget -> SQL chat -> atif._final_answer, so a change to WHICH
     rows the host writes, or to HOW they are authored and typed, is caught here
     instead of in a Terminal-Bench trajectory. Exactly one untyped outbound row
     may exist and it must be the model's own answer; every host disclosure has
