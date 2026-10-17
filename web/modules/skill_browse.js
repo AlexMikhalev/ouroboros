@@ -149,8 +149,8 @@ export function renderBrowseCard(item, { source, state, categoryLabels = new Map
     const id = escapeHtml(item.id);
     const long = String(item.description || '').length > CLAMP_CHARS;
     const marks = [
-        item.official ? officialMarkHtml() : '',
         item.source_id === 'builtin' ? chipHtml('Built in', 'neutral') : '',
+        item.official ? officialMarkHtml() : '',
     ].join('');
     const facts = factsText(item);
     const cats = showCategory ? (item.category || []).map((cat) => chipHtml(categoryLabels.get(cat) || cat, 'neutral')).join('') : '';

@@ -102,3 +102,103 @@ test('an unreadable list leaves the host defaults and says so; the Finish payloa
     await empty.loading;
     assert.deepEqual(empty.payload(), {});
 });
+
+function pollingRow(read) {
+    let time = 0;
+    let id = 0;
+    const timers = new Map();
+    const row = createStarterSkillsRow({ read, now: () => time,
+        setTimer(fn, ms) { timers.set(++id, { fn, ms }); return id; }, clearTimer(key) { timers.delete(key); } });
+    return { row, timers, async tick() {
+        const [key, timer] = [...timers][0];
+        timers.delete(key);
+        assert.equal(timer.ms, 3000);
+        time += timer.ms;
+        await timer.fn();
+    } };
+}
+const freshOffer = () => ({ ...structuredClone(STARTER),
+    groups: STARTER.groups.map((group) => ({ ...group, items: group.items.filter((item) => item.builtin) })).filter((group) => group.items.length),
+    sources: STARTER.sources.map((source) => ({ ...source, state: source.kind === 'hub' ? 'reading' : source.state })),
+});
+
+function changeBox(host, id, checked) {
+    const box = { checked, dataset: { starterItem: id }, closest: () => ({ classList: { toggle() {} } }) };
+    host.handlers.change({ target: { closest: () => box } });
+}
+
+test('fresh-root polling merges recommended additions, preserves edits and trust, and stops once ready', async () => {
+    let calls = 0;
+    const poll = pollingRow(async () => ++calls === 1 ? freshOffer() : STARTER);
+    await poll.row.loading;
+    const host = fakeHost();
+    poll.row.mount(host);
+    assert.match(text(host.innerHTML), /Reading the Ouroboros hub…/);
+    assert.match(text(host.innerHTML), /installs the default starter list once it can read the hub/);
+    assert.equal('starter_skills' in poll.row.payload(), false, 'untouched incomplete offer leaves defaults to the host');
+    changeBox(host, 'builtin/telegram', false);
+    changeBox(host, 'builtin/unix_computer_use', true);
+    host.handlers.click({ target: target({ '[data-starter-trust]': { dataset: { starterTrust: 'ouroboros', trust: 'review' } } }) });
+    assert.deepEqual(poll.row.payload().starter_skills, ['builtin/unix_computer_use']);
+    await poll.tick();
+    assert.equal(calls, 2);
+    assert.equal(poll.timers.size, 0);
+    assert.deepEqual(poll.row.payload().starter_skills, ['builtin/unix_computer_use', 'ouroboros/pdf_tools', 'ouroboros/word_tools', 'ouroboros/duckduckgo', 'ouroboros/memory-atlas', 'ouroboros/anti-slop']);
+    assert.equal(poll.row.payload().skill_source_trust.ouroboros, 'review');
+    assert.doesNotMatch(text(host.innerHTML), /Reading the Ouroboros hub|default starter list/);
+});
+
+test('Untick all also leaves newly discovered recommended cards unticked', async () => {
+    let calls = 0;
+    const poll = pollingRow(async () => ++calls === 1 ? freshOffer() : STARTER);
+    await poll.row.loading;
+    const host = fakeHost();
+    poll.row.mount(host);
+    host.handlers.click({ target: target({ '[data-starter-all]': { dataset: { starterAll: '0' } } }) });
+    assert.deepEqual(poll.row.payload().starter_skills, []);
+    await poll.tick();
+    assert.deepEqual(poll.row.payload().starter_skills, []);
+});
+
+test('polling is bounded to three minutes and an untouched failed hub still leaves the default payload', async () => {
+    let calls = 0;
+    const poll = pollingRow(async () => { calls += 1; return freshOffer(); });
+    await poll.row.loading;
+    while (poll.timers.size) await poll.tick();
+    assert.equal(calls, 61, 'one initial read and at most sixty three-second polls');
+    assert.equal('starter_skills' in poll.row.payload(), false);
+    const failed = freshOffer();
+    failed.sources.forEach((source) => { if (source.kind === 'hub') source.state = 'error'; });
+    const offline = pollingRow(async () => failed);
+    await offline.row.loading;
+    assert.equal(offline.timers.size, 0);
+    assert.equal('starter_skills' in offline.row.payload(), false);
+});
+
+test('destroy cancels polling and ignores an in-flight answer', async () => {
+    let resolve;
+    let calls = 0;
+    const poll = pollingRow(() => ++calls === 1 ? freshOffer() : new Promise((done) => { resolve = done; }));
+    await poll.row.loading;
+    const pending = poll.tick();
+    poll.row.destroy();
+    resolve(STARTER);
+    await pending;
+    assert.equal(poll.row.snapshot().groups.flatMap((group) => group.items).length, 2);
+    assert.equal(poll.timers.size, 0);
+    const mounted = pollingRow(async () => freshOffer());
+    await mounted.row.loading;
+    mounted.row.destroy();
+    assert.equal(mounted.timers.size, 0);
+});
+
+test('built-in starter cards carry one Official mark next to Built in and disclose suggested trust', async () => {
+    const row = createStarterSkillsRow({ read: async () => STARTER });
+    await row.loading;
+    const host = fakeHost();
+    row.mount(host);
+    host.handlers.click({ target: target({ '[data-starter-toggle]': {} }) });
+    assert.match(host.innerHTML, /Built in<\/span><span class="skills-mark" data-mark="official">/);
+    assert.match(text(host.innerHTML), /Suggested choices apply until you choose\./);
+    assert.equal((host.innerHTML.match(/data-mark="official"/g) || []).length, 10);
+});

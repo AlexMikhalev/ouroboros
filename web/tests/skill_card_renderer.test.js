@@ -11,6 +11,7 @@ import {
 
 const LISTING = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_v4.json', import.meta.url), 'utf8'));
 const row = (name) => structuredClone(LISTING.skills.find((skill) => skill.name === name));
+const FIXES = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_fix_r1.json', import.meta.url), 'utf8')).skills;
 const chipOf = (html) => html.match(/<span class="skills-card-status"><span class="ui-chip skills-chip" data-tone="([^"]+)"[^>]*>(?:<span class="chat-live-typing[^"]*"[^>]*>(?:<span><\/span>){3}<\/span>)?([^<]+)</);
 const traysOf = (html) => html.split('data-skill-trays>')[1].split('<div data-skill-errors>')[0];
 
@@ -30,7 +31,7 @@ test('one head: the name opens the detail sheet, marks stay beside it, the who l
     assert.match(installedWhoHtml(row('weather')), /^Ouroboros · v0\.3\.1 · installed .* by Ouroboros$/);
     assert.match(installedWhoHtml(row('telegram')), /^Built in · v1\.3\.0 · came with Ouroboros /);
     assert.match(installedWhoHtml(row('zoom_meeting')), /^Made here · v0\.1\.0 · made here /);
-    assert.doesNotMatch(renderInstalledSkillCard(row('telegram')), /data-official-mark/, 'a built-in skill is not Official');
+    assert.equal((renderInstalledSkillCard(row('telegram')).match(/data-official-mark/g) || []).length, 1, 'built-in release carries one Official mark');
     assert.doesNotMatch(html, / title="/, 'no explanation lives in a hover title');
 });
 
@@ -75,7 +76,7 @@ test('updates: one click for an unmodified skill, «Update…» asks what to kee
     assert.match(traysOf(modified), /Ouroboros Community has v3\.2\.0\. You changed this skill here, so updating asks what to keep\./,
         'the host recorded the owner’s edit of these bytes');
     const unrecordedUpdate = row('anime_studio');
-    unrecordedUpdate.review_gate = { executable_review: false, reason: 'review_pending' };
+    unrecordedUpdate.review_gate = { executable_review: false, blocking_reason: 'review_pending' };
     assert.match(traysOf(renderInstalledSkillCard(unrecordedUpdate)), /This skill was changed here, so updating asks what to keep\./);
     assert.match(traysOf(modified), />Update…</);
     assert.match(modified, /Modified · edited by you/, 'the host recorded the owner’s edit of these bytes');
@@ -99,6 +100,42 @@ test('withdrawn and left-source skills say so; a withdrawn one offers Uninstall'
     assert.equal(installedSkillModel(row('old_tool')).needs, true);
     assert.match(traysOf(renderInstalledSkillCard(row('gone_tool'))), /No longer in Ouroboros Community\. It keeps working; it won’t get updates\./);
     assert.equal(installedSkillModel(row('gone_tool')).needs, false);
+});
+
+test('a rejected update names the restored state and offers findings and owner skip; a pending update stays off', () => {
+    const rejected = FIXES.find((skill) => skill.name === 'update_rejected');
+    const html = renderInstalledSkillCard(rejected);
+    assert.match(traysOf(html), /The update to 0\.3\.2 didn’t pass its review, so the previous version runs\./);
+    assert.match(traysOf(html), /data-skill-action="read_findings"[^>]*>See findings</);
+    assert.match(traysOf(html), /data-skill-action="update_without_review"[^>]*>Update without review</);
+    assert.doesNotMatch(traysOf(html), /is available/);
+    assert.deepEqual(chipOf(html).slice(1), ['ok', 'On']);
+    const pending = renderInstalledSkillCard(FIXES.find((skill) => skill.name === 'pending_update'));
+    assert.match(traysOf(pending), /Updating to 2\.0\.0: it stays off until the review finishes\./);
+    assert.match(pending, /class="skills-toggle"[^>]*disabled/);
+    assert.doesNotMatch(traysOf(pending), /data-skill-action="update"/);
+    const ordinary = renderInstalledSkillCard(row('weather'));
+    assert.doesNotMatch(ordinary, /previous version runs|data-skill-action="update_without_review"/);
+});
+
+test('self-check is escaped, abbreviated in the review sentence, complete in Details and has no pending chip', () => {
+    const checked = FIXES.find((skill) => skill.name === 'self_checked');
+    const html = renderInstalledSkillCard(checked);
+    assert.match(reviewSentence(checked), /^Ouroboros read it before installing and recorded why: “/);
+    assert.ok(reviewSentence(checked).length < checked.install.check.notes.length);
+    assert.doesNotMatch(html, /<script>|>pending<|Reviewed on this computer/);
+    assert.match(html, /&lt;script&gt;/);
+    assert.ok(html.includes(checked.install.check.notes.replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')));
+    const changed = structuredClone(checked);
+    changed.review_gate = { ...changed.review_gate, executable_review: false, blocking_reason: 'review_pending' };
+    changed.executable_review = false;
+    assert.equal(reviewSentence(changed), 'Not reviewed for its current files.');
+});
+
+test('per-release withdrawal names the withdrawn version supplied by the host', () => {
+    const withdrawn = structuredClone(FIXES.find((skill) => skill.name === 'old_tool'));
+    withdrawn.install.withdrawn.version = '0.1.9';
+    assert.match(traysOf(renderInstalledSkillCard(withdrawn)), /Version 0\.1\.9 was withdrawn by Ouroboros Community: Sends data to an unnamed server\./);
 });
 
 test('conflicts lock an off switch with a visible reason but never trap an enabled skill', () => {
@@ -179,13 +216,13 @@ test('Details keep the record: review sentence and verdict, what it can use, the
     assert.match(weather, />Loaded</);
     // The host's acceptance basis for these exact bytes decides the sentence, not the install basis alone.
     const install = { source: { id: 'ouroboros', name: 'Ouroboros' }, basis: 'trusted', installed_at: '2026-10-12T10:00:00Z', release: { version: '1.0.0' } };
-    const trusted = skill({ review_status: 'pending', review_gate: { executable_review: true, reason: 'trusted_source' }, install });
+    const trusted = skill({ review_status: 'pending', review_gate: { executable_review: true, blocking_reason: 'trusted_source' }, install });
     assert.equal(reviewSentence(trusted), 'Installed without review on 12 Oct because you trust Ouroboros.');
-    const changed = skill({ review_status: 'pending', review_gate: { executable_review: false, reason: 'review_pending' }, install });
+    const changed = skill({ review_status: 'pending', review_gate: { executable_review: false, blocking_reason: 'review_pending' }, install });
     assert.equal(reviewSentence(changed), 'Not reviewed for its current files.', 'a trusted install whose bytes changed is not «installed without review»');
-    const reviewed = skill({ review_status: 'clean', review_gate: { executable_review: true, reason: 'trusted_source' }, install });
+    const reviewed = skill({ review_status: 'clean', review_gate: { executable_review: true, blocking_reason: 'trusted_source' }, install });
     assert.equal(reviewSentence(reviewed), 'Reviewed on this computer · passed.', 'a passed review of these bytes is said first');
-    assert.equal(reviewSentence(skill({ review_status: 'pending', review_gate: { executable_review: true, reason: 'owner_skip' } })),
+    assert.equal(reviewSentence(skill({ review_status: 'pending', review_gate: { executable_review: true, blocking_reason: 'owner_skip' } })),
         'You skipped the review; it runs unreviewed.');
     assert.equal(reviewSentence(row('anime_studio')), 'Edited by you here; it runs without a new review.');
     assert.equal(reviewSentence(skill({ review_profile: 'owner_attested' })), 'You skipped the review; it runs unreviewed.');

@@ -83,7 +83,7 @@ def test_browse_install_says_its_consequence_and_follows_the_host(skills_browser
         skills.wait_for_request("/api/skill-catalog/install")
         assert "Installing…" in duck.inner_text()
         listing.append({"name": "duckduckgo", "source": "ouroboroshub", "description": "Web search", "version": "1.0.0",
-                        "enabled": True, "review_status": "pending", "review_gate": {"executable_review": True, "reason": "trusted_source"},
+                        "enabled": True, "review_status": "pending", "review_gate": {"executable_review": True, "blocking_reason": "trusted_source"},
                         "content_hash": DIGEST["ouroboros/duckduckgo"], "payload_root": "skills/ouroboroshub/duckduckgo",
                         "grants": {}, "permissions": ["net", "tool"], "category": ["search"],
                         "install": {"source": {"id": "ouroboros", "kind": "hub", "name": "Ouroboros", "part": "official"},

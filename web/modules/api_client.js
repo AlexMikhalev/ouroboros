@@ -351,6 +351,8 @@ export const skillSourcesApi = {
      * @returns {Promise<SkillSourceChangeResponse>}
      */
     add: (source) => jsonPost('/api/skill-sources', source, STRICT),
+    /** Create or connect the owner's private GitHub repository (only on an explicit click). */
+    mySkills: () => jsonPost('/api/skill-sources/my-skills', {}, STRICT),
     /**
      * @param {string} id
      * @param {import('./skill_source_contract_types.js').SkillSourceChangeRequest} changes
@@ -379,8 +381,8 @@ export const skillSourcesApi = {
      * @param {'replace'|'keep'|'merge'} mode
      * @returns {Promise<import('./skill_source_contract_types.js').SkillUpdateResponse>}
      */
-    updateSkill: (name, mode, digest, localDigest = '') => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`,
-        { mode, digest, ...(localDigest ? { local_digest: localDigest } : {}) }, STRICT),
+    updateSkill: (name, mode, digest, localDigest = '', { skipReview = false } = {}) => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`,
+        { mode, digest, ...(localDigest ? { local_digest: localDigest } : {}), ...(skipReview ? { skip_review: true } : {}) }, STRICT),
     /** @returns {Promise<import('./skill_source_contract_types.js').SkillUninstallResponse>} */
     uninstallSkill: (name) => jsonPost(`/api/skills/${encodeURIComponent(name)}/uninstall`, {}, STRICT),
     /** @returns {Promise<import('./skill_source_contract_types.js').StarterSkillsResponse>} */

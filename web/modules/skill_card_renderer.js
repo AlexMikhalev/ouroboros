@@ -46,8 +46,9 @@ export const isBuiltIn = (skill) => installFacts(skill)?.source?.kind === 'built
 /** Created on this computer (by the owner or Ouroboros), not installed from a source. */
 export const isMadeHere = (skill) => !installFacts(skill) && ['external', 'self_authored'].includes(sourceTag(skill));
 
-// The host's acceptance basis for the current bytes (trusted_source, owner_skip, owner_edit).
-const acceptedAs = (skill) => String(skill?.review_gate?.reason || '');
+// Host reasons that admit these bytes without a critic PASS (fixture parity tests pin this list).
+export const INSTALL_ACCEPTANCE_REASONS = ['trusted_source', 'owner_skip', 'owner_edit', 'self_check'];
+const acceptedAs = (skill) => String(skill?.review_gate?.blocking_reason || '');
 
 // The files differ from the installed release (UX §5.3: a neutral fact). Who changed
 // them is known only when the owner's edit is recorded for these exact bytes.
@@ -61,7 +62,7 @@ function statusBadge(status, gate = null, profile = '') {
     // verdict word stays distinct from a reviewed one.
     if (profile === 'owner_attested') return chipHtml('review skipped by you', 'warn');
     // Running on its install basis with no review of these bytes: the sentence says why; «pending» would not.
-    if ((status || 'pending') === 'pending' && ['trusted_source', 'owner_skip', 'owner_edit'].includes(String(gate?.reason || ''))) return '';
+    if ((status || 'pending') === 'pending' && INSTALL_ACCEPTANCE_REASONS.includes(String(gate?.blocking_reason || ''))) return '';
     const executable = gate && typeof gate.executable_review === 'boolean'
         ? gate.executable_review
         : ['clean', 'warnings'].includes(status);
@@ -213,7 +214,11 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
         return { chip, trays, needs, update: false, withdrawn: false, lockReason: '', sourceName, modified, install };
     }
 
-    if (!skill.lifecycle_pending && !repairing && reviewRunning) {
+    if (install?.pending_update) {
+        chip = chipHtml('Reviewing…', 'warn', { work: true });
+        trays.push(trayHtml({ sentence: `Updating to ${escapeHtml(install.pending_update.version)}: it stays off until the review finishes.` }));
+        lockReason = 'Can’t turn on until the review finishes.';
+    } else if (!skill.lifecycle_pending && !repairing && reviewRunning) {
         chip = chipHtml('Reviewing…', 'warn', { work: true });
         const started = relativeAge(reviewJob(skill)?.started_at);
         trays.push(trayHtml({
@@ -283,10 +288,16 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
         needs = true;
         const when = shortDate(withdrawn.at);
         trays.push(trayHtml({ tone: 'danger',
-            sentence: `${escapeHtml(sourceName)} withdrew ${escapeHtml(versionText(install?.release?.version) || 'this version')}${when ? ` on ${escapeHtml(when)}` : ''}${withdrawn.reason ? `: ${escapeHtml(withdrawn.reason)}` : '.'}`,
+            sentence: withdrawn.version
+                ? `Version ${escapeHtml(withdrawn.version)} was withdrawn by ${escapeHtml(sourceName)}${withdrawn.reason ? `: ${escapeHtml(withdrawn.reason)}` : '.'}`
+                : `${escapeHtml(sourceName)} withdrew ${escapeHtml(versionText(install?.release?.version) || 'this version')}${when ? ` on ${escapeHtml(when)}` : ''}${withdrawn.reason ? `: ${escapeHtml(withdrawn.reason)}` : '.'}`,
             note: 'It won’t be installed anew. You can uninstall it.',
             actions: smallButton('Uninstall', name, 'uninstall') }));
-    } else if (update) {
+    } else if (install?.update_rejected) {
+        needs = true;
+        trays.push(trayHtml({ sentence: `The update to ${escapeHtml(install.update_rejected.version)} didn’t pass its review, so the previous version runs.`,
+            actions: smallButton('See findings', name, 'read_findings') + smallButton('Update without review', name, 'update_without_review') }));
+    } else if (update && !install?.pending_update) {
         const v = escapeHtml(versionText(update.version) || 'A new version');
         trays.push(modified || install?.base_known === false
             ? trayHtml({ sentence: `${escapeHtml(sourceName)} has ${v}. ${!modified ? 'Its original files aren’t known' : modified.by === 'owner' ? 'You changed this skill here' : 'This skill was changed here'}, so updating asks what to keep.`,
@@ -301,7 +312,7 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
     if (!skill.enabled && !lockReason && conflict) lockReason = `Conflicts with ${conflict}.`;
     return {
         chip, trays, needs, lockReason: skill.enabled ? '' : lockReason, sourceName, modified, install,
-        update: Boolean(update || withdrawn), withdrawn: Boolean(withdrawn),
+        update: Boolean(update || withdrawn || install?.update_rejected || install?.pending_update), withdrawn: Boolean(withdrawn),
         widgets: skill.enabled && skill.type === 'extension' && skill.live_loaded && hasSkillUiTab(skill, live),
     };
 }
@@ -441,6 +452,10 @@ export function reviewSentence(skill) {
         return `Installed without review${when ? ` on ${when}` : ''} because you trust ${installedSourceLabel(skill)}.`;
     }
     if (ready && accepted === 'owner_edit') return 'Edited by you here; it runs without a new review.';
+    if (ready && accepted === 'self_check') {
+        const notes = String(install?.check?.notes || '');
+        return `Ouroboros read it before installing and recorded why: “${boundedText(notes, 240)}”.`;
+    }
     if (ready && skill.review_profile === 'native_seed') return 'Comes with the app; it runs without a separate review.';
     if (ready && skill.review_status === 'warnings') return 'Reviewed on this computer · passed with notes.';
     if (ready) return 'Reviewed on this computer · passed.';
@@ -473,6 +488,7 @@ function installRecordRows(skill) {
         review: 'reviewed before it runs',
         owner_skip: 'you skipped the review',
         owner_edit: 'edited by you',
+        self_check: 'Ouroboros read it and recorded why',
         cyber: 'installed by Ouroboros in Cyber Pro',
     }[install.basis] || escapeHtml(install.basis || 'unknown');
     const task = install.task_id ? ` · in task ${escapeHtml(install.task_id)}` : '';
@@ -480,6 +496,7 @@ function installRecordRows(skill) {
     return [
         detailRow('Source', `${escapeHtml(installedSourceLabel(skill))}${install.official ? ' · Official' : ''}`),
         detailRow('Installed', `${escapeHtml(versionText(release.version) || 'unknown version')}${release.digest ? ` · <code>${escapeHtml(String(release.digest).slice(0, 24))}</code>` : ''} · ${basis}${install.installed_by === 'ouroboros' ? ' · by Ouroboros' : ''}${task}${reason}`),
+        install.check?.notes ? detailRow('Ouroboros’s check', escapeHtml(install.check.notes)) : '',
         install.turn_on_when_ready && !skill.enabled ? detailRow('Turns on', 'by itself once it is reviewed, has its keys and its packages are ready.') : '',
         detailRow('Folder', `<code>${escapeHtml(skill.payload_root || '—')}</code>`),
     ].join('');
@@ -625,6 +642,7 @@ export function renderInstalledSkillCard(skill, reviewingSkills = new Set(), rep
         <span class="skills-switch-track" aria-hidden="true"><span class="skills-switch-thumb"></span></span>
     </label>`;
     const marks = [
+        isBuiltIn(skill) ? chipHtml('Built in', 'neutral') : '',
         model.install?.official ? officialMarkHtml() : '',
         model.modified ? chipHtml(model.modified.by === 'owner' ? 'Modified · edited by you' : 'Modified', 'neutral') : '',
     ].join('');

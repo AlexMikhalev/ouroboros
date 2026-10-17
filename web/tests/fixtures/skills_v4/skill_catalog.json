@@ -11,7 +11,7 @@
       ],
       "version": "1.3.0",
       "digest": "a0a2d9971bb3a91bce1b101b260046cfb006439566897d7c570db04c882e7fd8",
-      "official": false,
+      "official": true,
       "recommended": true,
       "owner": "",
       "signals": null,

@@ -36,22 +36,49 @@ function needsLine(item) {
 }
 
 /** The wizard row and its panel. `read()` defaults to GET /api/onboarding/starter-skills. */
-export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSkills() } = {}) {
-    const state = { status: 'loading', groups: [], ticked: new Set(), trust: {}, rows: [], expanded: false, error: '' };
+export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSkills(), setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now } = {}) {
+    const state = { status: 'loading', groups: [], ticked: new Set(), trust: {}, rows: [], sources: [], expanded: false, error: '', ticksChanged: false, untickNew: false };
     let host = null;
     let disposeFade = null;
+    let destroyed = false;
+    let timer = null;
+    const deadline = now() + 180_000;
     const items = () => state.groups.flatMap((group) => group.items);
+    const hubs = () => state.sources.filter((source) => source.kind === 'hub' || state.rows.some((row) => row.id === source.id));
+    const reading = () => hubs().some((source) => source.state === 'reading');
+    const useDefaults = () => !state.ticksChanged && hubs().some((source) => source.state !== 'ready');
 
-    const loading = Promise.resolve().then(read).then((data) => {
-        state.groups = normalizeStarterGroups(data?.groups);
-        state.rows = Array.isArray(data?.hub_rows) ? data.hub_rows.filter((row) => row?.id) : [];
-        state.ticked = new Set(items().filter((item) => item.recommended).map((item) => item.id));
-        state.trust = Object.fromEntries(state.rows.map((row) => [row.id, row.trust === 'trusted' ? 'trusted' : 'review']));
-        state.status = items().length || state.rows.length ? 'ready' : 'empty';
-    }).catch((error) => {
-        state.status = 'error';
-        state.error = error?.message || String(error);
-    }).finally(() => paint());
+    async function refresh() {
+        if (destroyed || now() > deadline) return;
+        try {
+            const data = await read();
+            if (destroyed) return;
+            const known = new Set(items().map((item) => item.id));
+            const groups = new Map(state.groups.map((group) => [group.category, group]));
+            for (const group of normalizeStarterGroups(data?.groups)) {
+                const merged = new Map((groups.get(group.category)?.items || []).map((item) => [item.id, item]));
+                for (const item of group.items) {
+                    merged.set(item.id, item);
+                    if (!known.has(item.id) && item.recommended && !state.untickNew) state.ticked.add(item.id);
+                }
+                groups.set(group.category, { ...group, items: [...merged.values()] });
+            }
+            state.groups = [...groups.values()];
+            state.rows = Array.isArray(data?.hub_rows) ? data.hub_rows.filter((row) => row?.id) : [];
+            state.sources = Array.isArray(data?.sources) ? data.sources : [];
+            for (const row of state.rows) state.trust[row.id] ??= row.trust === 'trusted' ? 'trusted' : 'review';
+            state.status = items().length || state.rows.length ? 'ready' : 'empty';
+            state.error = '';
+        } catch (error) {
+            if (destroyed) return;
+            if (state.status === 'loading') state.status = 'error';
+            state.error = error?.message || String(error);
+        }
+        if (destroyed) return;
+        paint();
+        if (reading() && now() + 3000 <= deadline) timer = setTimer(refresh, 3000);
+    }
+    const loading = Promise.resolve().then(refresh);
 
     function summaryValue() {
         if (state.status === 'loading') return '<span class="skills-starter-value">Reading the list…</span>';
@@ -60,14 +87,17 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
         const all = items();
         const ticked = all.filter((item) => state.ticked.has(item.id));
         const toggle = `<button type="button" class="skills-starter-change" data-starter-toggle aria-expanded="${state.expanded ? 'true' : 'false'}">${state.expanded ? 'Hide ▾' : 'Change ›'}</button>`;
-        const sub = state.expanded ? '' : `<span class="skills-starter-sub">${ticked.length ? `Ticked: ${escapeHtml(ticked.map((item) => item.name).join(', '))}.` : 'Nothing is ticked: no skills install now.'}${all.length > ticked.length ? ` ${all.length - ticked.length} more you can tick.` : ''}</span>`;
-        return `<span class="skills-starter-value">${all.length} · ${ticked.length} ticked · ${toggle}</span>${sub}`;
+        const sub = state.expanded || useDefaults() ? '' : `<span class="skills-starter-sub">${ticked.length ? `Ticked: ${escapeHtml(ticked.map((item) => item.name).join(', '))}.` : 'Nothing is ticked: no skills install now.'}${all.length > ticked.length ? ` ${all.length - ticked.length} more you can tick.` : ''}</span>`;
+        const pending = [reading() ? 'Reading the Ouroboros hub…' : '',
+            useDefaults() ? 'If you finish before it is ready, Ouroboros installs the default starter list once it can read the hub.' : '',
+            state.error ? `The list couldn’t be refreshed (${state.error}).` : ''].filter(Boolean).join(' ');
+        return `<span class="skills-starter-value">${all.length} · ${ticked.length} ticked · ${toggle}</span>${sub}${pending ? `<span class="skills-starter-sub" role="status">${escapeHtml(pending)}</span>` : ''}`;
     }
 
     function cardHtml(item) {
         const on = state.ticked.has(item.id);
-        const mark = item.builtin ? '<span class="ui-chip skills-chip" data-tone="neutral">Built in</span>'
-            : item.official ? officialMarkHtml({ control: false }) : '';
+        const mark = (item.builtin ? '<span class="ui-chip skills-chip" data-tone="neutral">Built in</span>' : '')
+            + (item.official ? officialMarkHtml({ control: false }) : '');
         const needs = needsLine(item);
         return `<label class="wizard-choice skills-starter-card${on ? ' active' : ''}">
             <span class="skills-starter-head"><input type="checkbox" class="ui-checkbox" data-starter-item="${escapeHtml(item.id)}"${on ? ' checked' : ''}><strong>${escapeHtml(item.name)}</strong>${mark}</span>
@@ -90,7 +120,7 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
                 <section class="skills-starter-group"><h4>${escapeHtml(group.label)}<span>${group.items.length}</span></h4>
                     <div class="wizard-choice-grid skills-starter-cards">${group.items.map(cardHtml).join('')}</div></section>`).join('')}</div>` : ''}
             ${trustRows ? `<div class="skills-starter-trust"><span class="skills-starter-sub">How skills from the Ouroboros hub install</span>${trustRows}
-                <span class="skills-starter-sub">Suggested choices are selected. You can add or remove skills any time on the Skills page.</span></div>` : ''}
+                <span class="skills-starter-sub">Suggested choices apply until you choose. You can add or remove skills any time on the Skills page.</span></div>` : ''}
         </div>`;
     }
 
@@ -111,6 +141,8 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
         if (event.target.closest('[data-starter-toggle]')) { state.expanded = !state.expanded; paint(); return; }
         const bulk = event.target.closest('[data-starter-all]');
         if (bulk) {
+            state.ticksChanged = true;
+            state.untickNew = bulk.dataset.starterAll === '0';
             state.ticked = bulk.dataset.starterAll === '1' ? new Set(items().map((item) => item.id)) : new Set();
             paint();
             return;
@@ -122,6 +154,7 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
     function onChange(event) {
         const box = event.target.closest('[data-starter-item]');
         if (!box) return;
+        state.ticksChanged = true;
         if (box.checked) state.ticked.add(box.dataset.starterItem);
         else state.ticked.delete(box.dataset.starterItem);
         box.closest('.skills-starter-card')?.classList.toggle('active', box.checked);
@@ -148,10 +181,18 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
         payload() {
             if (state.status !== 'ready') return {};
             return {
-                starter_skills: items().filter((item) => state.ticked.has(item.id)).map((item) => item.id),
+                ...(useDefaults() ? {} : { starter_skills: items().filter((item) => state.ticked.has(item.id)).map((item) => item.id) }),
                 skill_source_trust: { ...state.trust },
             };
         },
         snapshot: () => ({ ...state, ticked: [...state.ticked] }),
+        destroy() {
+            destroyed = true;
+            clearTimer(timer);
+            disposeFade?.();
+            host?.removeEventListener('click', onClick);
+            host?.removeEventListener('change', onChange);
+            host = null;
+        },
     };
 }

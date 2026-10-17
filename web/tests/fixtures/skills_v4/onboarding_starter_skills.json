@@ -8,7 +8,7 @@
           "id": "builtin/telegram",
           "name": "telegram",
           "description": "Message your own Ouroboros from Telegram: text, photos, files and the Mini App.",
-          "official": false,
+          "official": true,
           "builtin": true,
           "recommended": true,
           "needs_keys": [
@@ -37,7 +37,7 @@
           "id": "builtin/unix_computer_use",
           "name": "unix_computer_use",
           "description": "Desktop control: screenshots, clicks, typing. Turn it on when you need it.",
-          "official": false,
+          "official": true,
           "builtin": true,
           "recommended": false,
           "needs_keys": []

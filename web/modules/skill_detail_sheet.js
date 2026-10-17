@@ -75,6 +75,7 @@ function detailsHtml(item, installed) {
         ['Source', [item.source_name, displayAddress(item.repo_url)].filter(Boolean).join(' · ')],
         ['Exact version', [versionText(item.version), item.digest || ''].filter(Boolean).join(' · ')],
         ['Installed folder', installed?.payload_root || ''],
+        ['Ouroboros’s check', installed?.install?.check?.notes || ''],
     ].filter(([, value]) => value);
     if (!rows.length) return '';
     return `<details class="skills-details skills-sheet-details"><summary>Details</summary><dl class="skills-sheet-facts">${rows.map(([label, value]) =>

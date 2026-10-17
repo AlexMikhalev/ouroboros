@@ -1507,6 +1507,7 @@ import { createStarterSkillsRow } from './onboarding_starter_skills.js';
         };
         try {
             await saveWizardPayload(payload);
+            starterSkills.destroy();
         } catch (error) {
             // The wizard STAYS OPEN with the real reason. A typed preset refusal
             // wrote nothing, so the offered escape is honest: finish without the
@@ -1570,6 +1571,7 @@ import { createStarterSkillsRow } from './onboarding_starter_skills.js';
         catalogGeneration += 1;
         catalogRequest?.controller.abort();
         modelRoles.destroy();
+        starterSkills.destroy();
     });
     render();
 })();
