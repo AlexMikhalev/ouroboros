@@ -349,7 +349,7 @@ def _register_owed_terminal_delivery(
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                outcome="cancelled",
+                outcome="stopped",
                 salvaged_text=salvage_text, preserved_path=salvage_path,
                 unreconciled_runs=list(unreconciled_runs or []),
                 settled_status=stored_status,
@@ -446,7 +446,7 @@ def _publish_cancelled_task(
             if settled_status == STATUS_CANCELLED:
                 deliver_unreviewed_salvage(
                     pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                    outcome="cancelled",
+                    outcome="stopped",
                     salvaged_text=salvage_text, preserved_path=salvage_path,
                     unreconciled_runs=list(unreconciled_runs or []),
                     settled_status=settled_status,

@@ -846,14 +846,14 @@ def evolution_stop_report(outcomes: Dict[str, List[str]]) -> tuple[List[str], bo
     """Compose honest ``/evolve off`` message lines from typed stop outcomes.
 
     ONE composer for both stop ingresses (owner chat and agent tool), so the
-    two surfaces cannot drift: "Cancelled" names only real cancellations,
+    two surfaces cannot drift: "Stopped" names only real cancellations,
     already-settled tasks are reported as what they are, and any task that is
     STILL LIVE (custody failure or a refused intent write) makes the stop
     INCOMPLETE — returned as ``(lines, incomplete)``.
     """
     lines: List[str] = []
     if outcomes.get("cancelled"):
-        lines.append("🛑 Cancelled evolution task(s): " + ", ".join(outcomes["cancelled"]))
+        lines.append("🛑 Stopped evolution task(s): " + ", ".join(outcomes["cancelled"]))
     settled = [*outcomes.get("already_settled", []), *outcomes.get("not_found", [])]
     if settled:
         lines.append("ℹ️ Already settled (nothing left to cancel): " + ", ".join(settled))
