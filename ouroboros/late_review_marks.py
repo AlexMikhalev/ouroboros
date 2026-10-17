@@ -3,10 +3,10 @@
 A paid review that settles after its author can no longer receive it is advice for Ouroboros,
 never a decision, a veto or a wake (owner decision on late review delivery, 2026-10-11, #1738):
 it waits in the next ordinary turn of the room the work came from, and consciousness reads it
-when that room stays quiet. Its record writer (a late acceptance settlement, a plan council
-reply that settled after its task ended, a left change or commit review) persists the full
-source first, then calls ``publish_late_review`` once per settled publication with immutable
-facts: no live context, no clock.
+when that room stays quiet. Its record writer (a plan council reply that settled after its task
+ended, a left change, result or commit review; marks of the deleted acceptance panel stay as
+history) persists the full source first, then calls ``publish_late_review`` once per settled
+publication with immutable facts: no live context, no clock.
 
 The publication becomes ONE chronicle ``mark`` signed by the host (``LATE_REVIEW_OPERATION``)
 in the room the memory view reads for that work: the room ``dialogue_evidence.own_room_chat``

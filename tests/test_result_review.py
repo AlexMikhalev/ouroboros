@@ -195,6 +195,32 @@ def test_nothing_is_forced_for_a_child_auto_off_or_a_plain_text_answer(tmp_path,
     assert sends == []
 
 
+def test_required_never_holds_presence_speech_or_a_result_that_only_declared_its_expected_output(
+        tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import required_material, result_review_at_delivery
+
+    sends: list[dict] = []
+    ctx = _floor_ctx(tmp_path / "presence", monkeypatch)
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    ctx._presence_completion = {"outcome": "spoken"}
+    trace = {"tool_calls": []}
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False, \
+        "Presence speech is never held for a review"
+    assert not trace.get("review_runs") and sends == []
+
+    # The expected result a task was given is intent, never production (owner, 11 Oct, #1731).
+    ctx = _floor_ctx(tmp_path / "declared", monkeypatch)
+    monkeypatch.setattr("ouroboros.contracts.task_contract.answer_protocol_active", lambda ctx: False)
+    ctx.task_metadata = {**dict(getattr(ctx, "task_metadata", None) or {}),
+                         "task_contract": {"expected_output": "A report with three findings",
+                                           "acceptance_criteria": ["three findings"]}}
+    answer = "The report lists three findings."
+    assert required_material(ctx, {"tool_calls": []}, answer) is False
+    assert result_review_at_delivery(ctx, answer, {"tool_calls": []}, lambda text: None) is False
+    assert sends == []
+
+
 def test_a_mind_reviewed_result_is_bound_at_delivery_in_auto_without_a_second_wave(tmp_path, monkeypatch):
     from ouroboros.outcomes import _objective_axis, _review_axis
     from ouroboros.tools.review_result import result_review_at_delivery
