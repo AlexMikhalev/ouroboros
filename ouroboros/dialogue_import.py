@@ -574,38 +574,68 @@ def export_for_older_body(root: Any) -> Dict[str, Any]:
 
 
 def _export_stream(root: pathlib.Path, stream: str) -> Dict[str, Any]:
+    """One stream's rows the chain files do not hold, appended as one batch. The batch is recorded
+    (where it starts in the file, its bytes' hash, the coordinate it reaches) before its first byte
+    is written, so an export interrupted after the append and before ``files_seq`` moved finishes
+    that batch instead of appending it twice: the bytes already in the file must be the batch's
+    beginning, and only the rest is appended."""
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
+    key = f"export_batch:{stream}"
     with ds.transaction(root, write=False) as conn:
         marks = conn.execute("SELECT next_seq, files_seq FROM streams WHERE stream=?", (stream,)).fetchone()
+        begun = ds._meta(conn, key)  # a batch an interrupted export recorded, wholly or partly written
+        upper = int(begun["to"]) if begun else int(marks["next_seq"])
         # The rows the files do not hold: appended after ``files_seq`` and not inside an imported segment.
         records = conn.execute(
-            "SELECT seq, body FROM dialogue WHERE stream=? AND seq>=? AND NOT EXISTS (SELECT 1 FROM import_ledger "
+            "SELECT seq, body FROM dialogue WHERE stream=? AND seq>=? AND seq<? AND NOT EXISTS (SELECT 1 FROM import_ledger "
             "WHERE import_ledger.stream=dialogue.stream AND state='done' AND base<=seq AND seq<base+size) ORDER BY seq",
-            (stream, marks["files_seq"])).fetchall()
-    if not records:
-        return {"rows": 0, "from": marks["files_seq"], "to": marks["next_seq"]}
+            (stream, marks["files_seq"], upper)).fetchall()
+    data = b"".join(record["body"].encode("utf-8") + b"\n" for record in records)
     live = root / ds.LIVE_REL[stream]
-    live.parent.mkdir(parents=True, exist_ok=True)
-    lock = jsonl_append_lock_path(live)
-    fd = acquire_exclusive_file_lock(lock, timeout_sec=ds.WAIT_SEC, stale_sec=10.0, owner_aware_stale=True)
-    if fd is None:
-        raise StoreBusy(f"dialogue export: the append lock of {live} is held", reason="contention")
-    try:
-        data = b"".join(record["body"].encode("utf-8") + b"\n" for record in records)
-        handle = os.open(str(live), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    if records:
+        live.parent.mkdir(parents=True, exist_ok=True)
+        lock = jsonl_append_lock_path(live)
+        fd = acquire_exclusive_file_lock(lock, timeout_sec=ds.WAIT_SEC, stale_sec=10.0, owner_aware_stale=True)
+        if fd is None:
+            raise StoreBusy(f"dialogue export: the append lock of {live} is held", reason="contention")
         try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(handle, view):]
-            os.fsync(handle)
+            size = live.stat().st_size if live.exists() else 0
+            digest = hashlib.sha256(data).hexdigest()
+            if begun:
+                offset = int(begun["offset"])
+                with open(live, "rb") as handle:
+                    handle.seek(offset)
+                    written = handle.read()
+                if size < offset or digest != begun["sha256"] or not data.startswith(written):
+                    raise ds.StoreError(f"dialogue export: {live} changed under an interrupted export; nothing appended")
+                remainder = data[len(written):]
+            else:
+                with ds.transaction(root, write=True) as conn:
+                    ds._set_meta(conn, key, {"offset": size, "length": len(data), "sha256": digest, "to": upper})
+                remainder = data
+            if remainder:
+                handle = os.open(str(live), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                try:
+                    view = memoryview(remainder)
+                    while view:
+                        view = view[os.write(handle, view):]
+                    os.fsync(handle)
+                finally:
+                    os.close(handle)
+                store.fsync_directory(live.parent)
         finally:
-            os.close(handle)
-        store.fsync_directory(live.parent)
-    finally:
-        release_exclusive_file_lock(lock, fd)
+            release_exclusive_file_lock(lock, fd)
+    elif not begun:
+        return {"rows": 0, "from": marks["files_seq"], "to": marks["next_seq"]}
     with ds.transaction(root, write=True) as conn:
-        conn.execute("UPDATE streams SET files_seq=? WHERE stream=?", (marks["next_seq"], stream))
-        ds._set_meta(conn, f"export:{stream}", {"at": utc_now_iso(), "from": marks["files_seq"], "to": marks["next_seq"],
+        conn.execute("UPDATE streams SET files_seq=? WHERE stream=?", (upper, stream))
+        conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        ds._set_meta(conn, f"export:{stream}", {"at": utc_now_iso(), "from": marks["files_seq"], "to": upper,
                                                 "rows": len(records)})
-    return {"rows": len(records), "from": marks["files_seq"], "to": marks["next_seq"], "bytes": len(data)}
+    report = {"rows": len(records), "from": marks["files_seq"], "to": upper, "bytes": len(data)}
+    if begun and upper < int(marks["next_seq"]):  # the finished batch first, then the rows after it
+        later = _export_stream(root, stream)
+        report = {**later, "from": report["from"], "rows": report["rows"] + later["rows"],
+                  "bytes": report["bytes"] + later.get("bytes", 0)}
+    return report

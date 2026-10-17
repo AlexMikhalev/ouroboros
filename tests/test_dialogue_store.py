@@ -395,6 +395,45 @@ def test_the_export_appends_the_post_cutover_rows_byte_identical_and_a_re_cutove
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0, "the files hold everything again"
 
 
+@pytest.mark.parametrize("written", ["whole", "part", "none", "foreign"])
+def test_an_export_interrupted_before_its_coordinate_moved_finishes_the_batch_once(tmp_path, monkeypatch, written):
+    """A death after the batch reached the file and before ``files_seq`` moved: the retry finishes
+    the recorded batch (appends only what is missing) instead of appending it a second time; bytes
+    in its place that are not the batch's refuse the export and append nothing."""
+    di.cutover(tmp_path)
+    new_rows = [chat("after-1", "после"), chat("", "ответ после", direction="out")]
+    for row in new_rows:
+        ds.append(tmp_path, "chat", row)
+    batch = b"".join(ds.encode(row).encode("utf-8") + b"\n" for row in new_rows)
+    live = tmp_path / "logs" / "chat.jsonl"
+    real_now = di.utc_now_iso
+
+    def died(*_args):
+        raise SystemExit("the process died before the export's coordinate moved")
+
+    monkeypatch.setattr(di, "utc_now_iso", died)
+    with pytest.raises(SystemExit):
+        di.export_for_older_body(tmp_path)
+    monkeypatch.setattr(di, "utc_now_iso", real_now)
+    assert live.read_bytes() == batch and ds.meta(tmp_path, "export_batch:chat")["to"] == ds.stream_end(tmp_path, "chat")
+    if written == "part":
+        live.write_bytes(batch[:len(batch) // 2])  # the write itself was cut short
+    elif written == "none":
+        live.write_bytes(b"")
+    elif written == "foreign":
+        live.write_bytes(b'{"text": "not the batch"}\n')
+        with pytest.raises(ds.StoreError, match="changed under an interrupted export"):
+            di.export_for_older_body(tmp_path)
+        assert live.read_bytes() == b'{"text": "not the batch"}\n', "nothing appended over foreign bytes"
+        return
+    ds.append(tmp_path, "chat", chat("after-2", "ещё"))  # a row after the batch: exported after it, once
+    report = di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]
+    assert report["rows"] == 3 and report["to"] == ds.stream_end(tmp_path, "chat")
+    assert live.read_bytes() == batch + ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
+    assert ds.meta(tmp_path, "export_batch:chat") is None
+    assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0, "nothing exported twice"
+
+
 # ---- concurrent writer processes ---------------------------------------------------------------
 
 def _spawned_writer(root, index, count, done):
