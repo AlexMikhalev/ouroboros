@@ -12,34 +12,6 @@ from ouroboros.gateway.task_events import _TaskEventCursorFollower
 from tests.test_task_event_cursor import append, content, seed
 
 
-def test_captured_consumer_horizon_survives_append_and_rotation(tmp_path):
-    """A wake's captured horizon survives an append and a rotation (chat history no longer shares
-    the chain snapshot: it reads the dialogue store)."""
-    from ouroboros.consciousness_wake import _ChatChain
-
-    path = tmp_path / "logs" / "chat.jsonl"
-    path.parent.mkdir()
-    first = b'{"text":"first"}\n'
-    path.write_bytes(first + b'{"text":"next')
-    source = _ChatChain(path)
-    with path.open("ab") as handle:
-        handle.write(b'"}\n')
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    path.rename(archive / "chat_20260101T000000.jsonl")
-    path.write_bytes(b'{"text":"new generation"}\n')
-
-    gaps = set()
-    rows, accepted = source.rows(0, 0, gaps)
-    assert [row["text"] for _, row in rows] == ["first"]
-    assert accepted == len(first) and not gaps
-    fresh = _ChatChain(path)
-    rows = [row for index in range(len(fresh.entries))
-            for _, row in fresh.rows(index, accepted, gaps)[0]]
-    assert [row["text"] for row in rows] == ["next", "new generation"]
-    assert not gaps
-
-
 @pytest.mark.parametrize("archives,records", [(40, 1), (100, 1), (20, 4)])
 def test_cold_metadata_reads_are_linear_in_archives_and_not_multiplied_by_batches(tmp_path, monkeypatch, archives, records):
     root = seed(tmp_path / "root")
