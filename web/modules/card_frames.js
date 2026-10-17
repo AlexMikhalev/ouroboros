@@ -4,7 +4,7 @@
 
    An app is the HTML the host serves as inert text (`GET /api/cards/{id}/app`), put into a created iframe through
    the `srcdoc` property with sandbox `allow-scripts` ONLY — never the same-origin token, forms, popups, modals or
-   downloads — under a document policy with no network at all (no `connect-src`, nothing from any URL). Its one
+   downloads — under a document policy with no network at all (no fetch or socket, nothing from any URL). Its one
    channel is a nonce-bound three-message bridge, `window.OuroborosCard` inside the frame:
      resize(height)            the frame's content height (the bridge also reports it on its own);
      state.save(value)         JSON of at most 32 KiB, kept per card in this tab's sessionStorage and handed back

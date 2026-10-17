@@ -1129,15 +1129,16 @@ export function initWidgets(ctx = {}) {
     }
 
     retryButton.addEventListener('click', reconcileWidgetList);
-    // Remove on a kept card takes it off the board; the server's `extension_lifecycle` re-reads the list.
-    const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths, (key) => {
+    // Remove on a card kept from the chat takes it off the board; the server's `extension_lifecycle` re-reads the list.
+    async function removeKeptCard(key) {
         const tab = tabByKey(key);
         if (!tab?.pinned_card) return;
-        setCardPinned(tab.tab_id, false).then(({ ok, error }) => {
-            const status = list.parentElement?.querySelector('[data-widget-arrange-status]');
-            if (!ok && status) Object.assign(status, { textContent: `The card was not removed: ${error}` }).dataset.tone = 'error';
-        });
-    });
+        const { ok, error } = await setCardPinned(tab.tab_id, false);
+        const status = list.parentElement?.querySelector('[data-widget-arrange-status]');
+        if (!ok && status) Object.assign(status, { textContent: `The card was not removed: ${error}` }).dataset.tone = 'error';
+    }
+
+    const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths, removeKeptCard);
     window.addEventListener('pagehide', (event) => {
         listRequests.abortAll();
         if (!event.persisted) { cardMenus.destroy(); widths.dispose(); }
