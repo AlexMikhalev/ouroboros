@@ -32,6 +32,7 @@ Boundaries (tags in the output):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import pathlib
@@ -39,6 +40,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 from tests._cost_meter import BOUNDARY, CostMeter
@@ -67,6 +69,9 @@ class _Tagger:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
+            # Work-count fixture, not a contention benchmark: consecutive requests
+            # must share the per-thread connection cache for cold/warm to be stable.
+            asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
             token = BOUNDARY.set("B1")
 
             async def tagged_send(message):

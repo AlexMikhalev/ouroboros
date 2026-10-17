@@ -189,13 +189,11 @@ def _assert_state_questions(measured, tag):
         assert measured[k]["responses"][tag]["decisions"] == expected
 
 
-@pytest.mark.xfail(strict=True, reason="WU5b: Main decodes the finished question author's full result per poll.")
 def test_b3_state_cold_is_flat(measured):
     _assert_state_questions(measured, "B3")
     assert_flat(measured, "B3")
 
 
-@pytest.mark.xfail(strict=True, reason="WU5b: Main decodes the finished question author's full result per poll.")
 def test_b3_state_warm_is_flat(measured):
     _assert_state_questions(measured, "B3w")
     assert_flat(measured, "B3w")

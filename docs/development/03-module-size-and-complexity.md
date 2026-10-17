@@ -75,17 +75,18 @@ coupling `implicit_contracts` item.
 
 Apply ARCHITECTURE §10 invariant 10 to current-state readers:
 
-`tests/test_hot_facts*.py` hold Stop and custody selection results fixed while unrelated
-settled history grows from 20 to 2,000 rows. They count SQL statements, VM steps and
-decoded JSON bytes, and compare typed selectors with the previous JSON predicates.
-The activity census reads controls and phases in one short transaction per addressed
-store, outside the queue lock, with no task-body reads for derived rows. Its card and
-question materializer remains a separate reader. An unavailable store stays unknown
-throughout the request; a later request reads anew. The tests also prove snapshot
-release before display consumers run and signature/body coherence on a racing write.
-New current facts belong in the changing transition's transaction. Legacy derivation
-uses a named durable job and sequence/source CAS; a process-local flag cannot prove
-an installation's migration finished. Passive readers fall back only for underived rows.
+`tests/test_hot_facts*.py` fix Stop/custody results while settled history grows 20→2,000
+rows, counting SQL, VM steps and decoded JSON bytes against previous JSON predicates.
+Census snapshots controls/phases in one transaction per addressed store, outside queue
+locks, without derived-row bodies; card/question display reads remain separate.
+Unavailable stays unknown for that request; the next reads anew. Tests prove snapshot
+release before display consumers and signature/body coherence on racing writes.
+Main batches question display views and warms lineage by generation, preserving strict
+per-member gaps if a batch fails (`tests/test_main_decisions_reads.py`). B3/B3w in
+`tests/test_cost_contract.py` fix visible questions while fully delivered history grows.
+New facts belong in their transition's transaction. Legacy derivation uses named durable
+jobs and sequence/source CAS; process-local flags never prove installation migration.
+Passive control readers fall back only for underived rows.
 
 - **Measure the growing operation:** history, object count, nesting, cold caches and
   contention. Where responsiveness suffers, use existing spans and real-reader spies;
