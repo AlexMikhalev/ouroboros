@@ -31,7 +31,6 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Apply maximum | `btn btn-default` | modules/model_roles.js | 1 |
 | Apply to draft | `btn btn-primary` | modules/mcp_import_dialog.js | 1 |
 | Apply to this task | `btn btn-default` | modules/model_wait.js | 1 |
-| [icon] Attach file | `chat-attach-btn` | modules/composer.js | 1 |
 | Back | `btn btn-secondary` | modules/onboarding_wizard.js | 1 |
 | Cancel | `btn btn-default` | modules/mcp_import_dialog.js | 1 |
 | Cancel | `btn btn-default` | modules/project_create.js | 1 |
@@ -87,6 +86,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Main Chat | `nav-row nav-row-main active` | index.html | 1 |
 | Make runnable | `skills-menu-item skills-make-runnable` | modules/skill_card_renderer.js | 1 |
 | Measure now | `btn btn-default btn-sm storage-refresh` | modules/storage.js | 1 |
+| [icon] More actions | `chat-plus-btn` | modules/composer.js | 1 |
 | Move | `files-context-item` | modules/files.js | 1 |
 | [icon] New project | `nav-projects-add` | index.html | 1 |
 | Next | `btn btn-default` | modules/marketplace.js | 1 |

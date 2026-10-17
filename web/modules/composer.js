@@ -1,6 +1,7 @@
 // The Main and Project composer (docs/DESIGN.md "Controls and editable choices", "Composer owner controls",
 // "Chat attachments"): its markup inside the room's input dock, the message field (its growth, Enter, the input
-// recall and the room's draft), Swarm, the room's Context and Effort capsules with their readback, the staged
+// recall and the room's draft), Swarm, the room's Context and Effort capsules with their readback, the "+" menu
+// (Attach file first, then the sections later controls set), the empty voice and chips slots, the staged
 // attachments with their paste and drop routes, and the send path that turns the draft into the owner's frame.
 // The room (chat.js) mounts the markup, namespaces its ids and shows in its feed what was sent.
 import { bindComposerFileTargets, cleanupUploadedAttachments } from './chat_media.js';
@@ -8,13 +9,18 @@ import { composerText, createComposerAttachments } from './chat_attachments.js';
 import { loadChatInputHistory, saveChatInputHistory } from './chat_activity.js';
 import { clientSurfaceField } from './client_surface.js';
 import { apiClient, apiFetch } from './api_client.js';
-import { bindEnterSubmit } from './ui_interactions.js';
+import { bindEnterSubmit, bindMenu } from './ui_interactions.js';
+import { strokeIcon } from './page_icons.js';
 import { createComposerOwnerControls } from './composer_owner_controls.js';
 import { attachChatInputSizing } from './chat_input_sizing.js';
 import { showToast } from './toast.js';
 
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
+// The host icons a "+" item may name (`icon`); an unknown name draws none.
+const PLUS_ICONS = {
+    attach: strokeIcon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 16),
+};
 
 /** The composer inside the room's `.chat-input-wrap`; chat.js mounts it and namespaces its `chat-*` ids in a Project. */
 export function composerMarkup() {
@@ -25,17 +31,126 @@ export function composerMarkup() {
                         <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
                     </div>
                     <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>
+                    <span class="chat-composer-chips" data-composer-chips hidden></span>
                 </div>
                 <div class="chat-text-row">
-                    <button class="chat-attach-btn" id="chat-attach" type="button" title="Attach file">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                    <button class="chat-plus-btn" id="chat-plus" type="button" data-composer-plus aria-label="More actions" aria-haspopup="menu" aria-expanded="false" title="More actions">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
                     </button>
                     <input type="file" id="chat-file-input" class="chat-file-input-hidden" accept="*/*" multiple>
                     <textarea id="chat-input" placeholder="Message Ouroboros..." rows="1" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+                    <span class="chat-voice-slot" data-composer-voice hidden></span>
                     <div class="chat-send-group">
                         <button class="chat-send-inline" id="chat-send" title="Send message">Send</button>
                     </div>
                 </div>`;
+}
+
+const keepFocus = (event) => event.preventDefault();
+
+/**
+ * The composer's "+" menu (docs/DESIGN.md "Composer owner controls"): `hostItems` first (Attach file), then the
+ * sections later controls set, each under its label. Items are `{key, label, title, icon, disabled, onSelect}`.
+ * The shared menu sheet outside every clipping parent: Enter or Space on "+" opens it with focus on the first item,
+ * arrows move, Esc closes and returns focus. A pointer (a tap, a click) from elsewhere opens it and chooses from it
+ * without taking the focus, so a phone typing in the field keeps its keyboard and the composer stays under the menu.
+ */
+export function createPlusMenu({ button, hostItems = [] }) {
+    const doc = button.ownerDocument;
+    let sections = [];
+    let current = null;  // { menu, binding }
+
+    function item(spec) {
+        const node = doc.createElement('button');
+        node.type = 'button';
+        node.className = 'chat-plus-item';
+        node.setAttribute('role', 'menuitem');
+        node.dataset.plusItem = String(spec.key || '');
+        if (spec.title) node.title = String(spec.title);
+        node.disabled = Boolean(spec.disabled);
+        if (PLUS_ICONS[spec.icon]) {
+            const icon = doc.createElement('span');
+            icon.className = 'chat-plus-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.innerHTML = PLUS_ICONS[spec.icon];
+            node.append(icon);
+        }
+        const label = doc.createElement('span');
+        label.textContent = String(spec.label || '');
+        node.append(label);
+        node.addEventListener('mousedown', keepFocus);
+        node.addEventListener('click', (event) => {
+            event.stopPropagation();
+            close();
+            spec.onSelect?.();
+        });
+        return node;
+    }
+
+    function group(section) {
+        const node = doc.createElement('div');
+        node.className = 'chat-plus-group';
+        node.setAttribute('role', 'group');
+        node.dataset.plusSection = String(section.key || '');
+        if (section.label) {
+            node.setAttribute('aria-label', String(section.label));
+            const heading = doc.createElement('div');
+            heading.className = 'chat-plus-label';
+            heading.setAttribute('aria-hidden', 'true');
+            heading.textContent = String(section.label);
+            node.append(heading);
+        }
+        node.append(...section.items.filter(Boolean).map(item));
+        return node;
+    }
+
+    function open({ focus = true } = {}) {
+        if (current) return;
+        const menu = doc.createElement('div');
+        menu.className = 'ui-popup chat-plus-menu';
+        menu.setAttribute('role', 'menu');
+        menu.setAttribute('aria-label', button.getAttribute('aria-label') || 'More actions');
+        menu.append(...hostItems.map(item),
+            ...sections.filter((section) => section?.items?.length).map(group));
+        doc.body.append(menu);
+        button.setAttribute('aria-expanded', 'true');
+        // Opened by a pointer, focus stays in the field: Esc still closes the menu, and only the menu.
+        const onKey = (event) => {
+            if (event.key !== 'Escape' || menu.contains(doc.activeElement)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            binding.close({ reason: 'escape' });
+        };
+        const binding = bindMenu(menu, { anchor: button, align: 'start', initialFocus: focus, onClose: () => {
+            doc.removeEventListener('keydown', onKey, true);
+            menu.remove();
+            button.setAttribute('aria-expanded', 'false');
+            if (current?.menu === menu) current = null;
+        } });
+        doc.addEventListener('keydown', onKey, true);
+        current = { menu, binding };
+    }
+
+    function close() {
+        current?.binding.close({ restoreFocus: true, reason: 'action' });
+    }
+
+    button.addEventListener('mousedown', keepFocus);
+    // A keyboard press (Enter, Space) is a click without a pointer count; it, or a press on a focused "+", moves
+    // focus into the menu.
+    button.addEventListener('click', (event) => (current ? close()
+        : open({ focus: !event.detail || doc.activeElement === button })));
+
+    return {
+        /** Replace the sections after the host's items: `[{key, label, items: [{key, label, title, icon, disabled,
+         *  onSelect}]}]`. The next opening shows them; an open menu keeps the list it opened with. */
+        setSections(next) {
+            sections = Array.isArray(next) ? next : [];
+        },
+        open,
+        close,
+        destroy: close,
+    };
 }
 
 /**
@@ -49,15 +164,17 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
     refreshState, onLayout, onSent }) {
     const input = byId('input');
     const sendBtn = byId('send');
-    const attachBtn = byId('attach');
+    const plusBtn = byId('plus');
     const fileInput = byId('file-input');
     let destroyed = false, cognitionRead = false;
 
-    // Staged files, their thumbnails and object URLs, and the upload on Send.
-    const attachments = createComposerAttachments({ preview: byId('attachment-preview'), attachBtn, fileInput, input,
-        showToast, onLayout: () => requestAnimationFrame(() => onLayout()) });
+    // Staged files, their thumbnails and object URLs, and the upload on Send ("+" waits while it runs).
+    const attachments = createComposerAttachments({ preview: byId('attachment-preview'), attachBtn: plusBtn, fileInput,
+        input, showToast, onLayout: () => requestAnimationFrame(() => onLayout()) });
 
-    attachBtn.addEventListener('click', () => fileInput.click());
+    const plusMenu = createPlusMenu({ button: plusBtn, hostItems: [
+        { key: 'attach', label: 'Attach file', icon: 'attach', onSelect: () => fileInput.click() },
+    ] });
 
     // Local-only staging avoids orphan uploads and fast-send races.
     fileInput.addEventListener('change', () => {
@@ -272,6 +389,12 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
 
     return {
         input,
+        // `setSections(sections)` adds items after Attach file; see createPlusMenu.
+        plusMenu,
+        // Empty and hidden until a control mounts into them: the dictation mic between the field and Send, and
+        // contributed chips after the room's capsules.
+        voiceSlot: page.querySelector('[data-composer-voice]'),
+        chipsSlot: page.querySelector('[data-composer-chips]'),
         focus: () => input.focus({ preventScroll: true }),
         getDraft: () => input.value,
         /** Replace the draft (it is kept for the room like typed words). */
@@ -312,6 +435,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
         hasPendingWork: () => attachments.count > 0 || attachments.busy,
         destroy() {
             destroyed = true;
+            plusMenu.destroy();
             attachments.destroy();
             ownerControls.destroy();
             inputSizing.dispose();

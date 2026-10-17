@@ -3519,7 +3519,7 @@ export function createChatInstance({
         page,
         chatId,
         projectId,
-        // The room's composer (composer.js), for controls that work with its draft.
+        // The room's composer (composer.js): its draft, its "+" menu and its voice and chips slots.
         composer,
         // Called by app.js when a kept panel is shown again: a room reopens at its
         // newest message (owner decision 2026-10-05).
