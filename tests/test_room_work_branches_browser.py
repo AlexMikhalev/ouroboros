@@ -94,10 +94,7 @@ class BranchTransport(rw.Transport):
             self.state_failures += 1
             route.abort("connectionreset")
             return
-        route.fulfill(json={"sha": "room-work-fixture", "supervisor_ready": self.ready,
-                            "active_chat_activities": json.loads(json.dumps(self.activities)),
-                            "active_chat_activities_complete": self.complete, "projects": self.projects,
-                            "project_chat_ids": [p["chat_id"] for p in self.projects]})
+        route.fulfill(json=self.body(ready=self.ready))
 
     def _i18n(self, route):
         if self.i18n is None:
