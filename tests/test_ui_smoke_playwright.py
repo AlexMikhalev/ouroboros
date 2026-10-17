@@ -2761,19 +2761,23 @@ def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
     # A real marketplace skill carries clawhub provenance -> resolves to source=clawhub.
     (mk / ".clawhub.json").write_text(
         json.dumps({"slug": "markettool", "version": "0.1.0"}), encoding="utf-8")
-    # An already owner-attested skill: says "You skipped the review" and offers no second Skip.
+    # An owner-attested skill (the attestation bound to these exact bytes): says "You skipped the
+    # review" and offers no second Skip.
+    from ouroboros.skill_loader import compute_content_hash
+
     att = data_dir / "skills" / "external" / "attestedtool"
     att.mkdir(parents=True, exist_ok=True)
     (att / "SKILL.md").write_text(manifest.format(n="attestedtool"), encoding="utf-8")
+    attested_hash = compute_content_hash(att)
     att_state = data_dir / "state" / "skills" / "attestedtool"
     att_state.mkdir(parents=True, exist_ok=True)
     (att_state / "review.json").write_text(json.dumps({
-        "status": "clean", "content_hash": "seed", "review_profile": "owner_attested",
+        "status": "clean", "content_hash": attested_hash, "review_profile": "owner_attested",
         "reviewer_models": ["owner_attestation"],
         "findings": [{"item": "owner_attestation", "verdict": "PASS", "severity": "info", "reason": "owner attested"}],
     }), encoding="utf-8")
     (att_state / "owner_attestation.json").write_text(
-        json.dumps({"attested_at": "now", "content_hash": "seed"}), encoding="utf-8")
+        json.dumps({"attested_at": "now", "content_hash": attested_hash}), encoding="utf-8")
     skip = '[data-skill-action="attest_review"]'
 
     try:
@@ -2800,6 +2804,7 @@ def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
                 att_card.locator(".skills-details > summary").click()
                 assert "You skipped the review; it runs unreviewed." in att_card.inner_text()
                 assert att_card.locator(".ui-chip").filter(has_text="review skipped by you").count() >= 1
+                assert att_card.locator(skip).count() == 0
                 # The backend is the sole publication classifier. Owner-attested review is
                 # not publication-ready, but the selected flow may start an ordinary task
                 # that repairs/reviews the bytes before opening a PR.

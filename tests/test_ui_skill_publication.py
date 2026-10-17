@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,9 @@ def test_forget_publication_record_clears_only_the_record_shown(direct_server_wi
             page.click('[data-nav-page="skills"]')
             own = page.locator(f'.skills-card[data-skill="{name}"]')
             own.locator('.skills-details > summary').click()
-            record = own.locator('.skills-detail-row', has_text='Publication')
+            # The row labelled exactly «Publication» (a folder path may contain the word).
+            label = page.locator('.skills-detail-label', has_text=re.compile(r'^Publication$'))
+            record = own.locator('.skills-detail-row').filter(has=label)
             expect(record).to_contain_text('Submitted v2.0.0 · PR #7')
             expect(own.locator('.skills-card-title')).not_to_contain_text('Submitted')
             assert record.locator('a').get_attribute('href') == 'https://github.com/hub/project/pull/7'
@@ -144,7 +147,7 @@ def test_forget_publication_record_clears_only_the_record_shown(direct_server_wi
             expect(page.locator('.toast', has_text='publication record forgotten')).to_have_count(1)
             assert read_publication_record(data, name) == (None, None)
             assert json.loads((data / f'state/skills/{name}/ouroboroshub.json').read_text())['future'] == {'keep': True}
-            expect(own.locator('.skills-detail-row', has_text='Publication')).to_have_count(0)
+            expect(record).to_have_count(0)
             expect(own.locator('.skills-details')).to_have_attribute('open', '')
             assert compute_content_hash(payload) == original_hash
             assert not external

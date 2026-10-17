@@ -5569,7 +5569,8 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 
 /* Details: sentence-case labels at the meta size; values in meta ink, the label in the reading ink. */
 .skills-card-actions { display: flex; gap: var(--space-2); align-items: flex-start; flex-wrap: wrap; }
-.skills-installed-card .skills-details { margin: 0; border: none; padding: 0; }
+/* The footer is a flex row: Details takes its whole width, so its summary sits at the card's right edge. */
+.skills-installed-card .skills-details { flex: 1 1 100%; min-width: 0; margin: 0; border: none; padding: 0; }
 .skills-installed-card .skills-details > summary { display: flex; width: fit-content; margin-left: auto; color: var(--text-primary); font-size: var(--type-meta); }
 .skills-details-body { display: grid; gap: var(--space-1); padding-top: var(--space-2); }
 .skills-details-facts { display: contents; }
