@@ -313,3 +313,45 @@ def test_memory_recall_keeps_the_frozen_public_golden(tmp_path):
     di.run_dialogue_import(tmp_path)
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))["memory"]
     assert _normalize(Memory(tmp_path).chat_history(count=20), tmp_path) == expected
+
+
+@pytest.mark.parametrize("reader", ["reentry", "page", "receipt", "wake"])
+def test_presence_readers_do_equal_sql_work_with_one_or_thirty_foreign_rooms(tmp_path, monkeypatch, reader):
+    from ouroboros import presence_continuation as pc
+    from ouroboros.consciousness_wake import _chat_window
+    from ouroboros.presence_delivery import PresenceDeliveryRecorder
+    from tests.test_presence_continuation_seams import _row, KEY
+    from tests.test_presence_delivery import _payload
+
+    measurements = []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        for room in range(rooms):
+            for number in range(3):
+                ds.append(root, "chat", owner(f"foreign-{room}-{number}", chat_id=room + 10))
+        recorder = PresenceDeliveryRecorder(root)
+        recorder.record("transport", _payload())
+        cursor = pc._chat_cursor(root)
+        _rows, window = _chat_window(root, None, 0, set())
+        row = _row(KEY, "new own words")
+        ds.append(root, "chat", row)
+        history = pc.capture_reentry_history(root, cursor)
+        reads = {
+            "reentry": lambda: pc._conversation_rows_since(root, cursor, KEY),
+            "page": lambda: pc.reentry_history_page(root, history, KEY, history["start"]),
+            "receipt": lambda: PresenceDeliveryRecorder(root).record("transport", _payload()),
+            "wake": lambda: _chat_window(root, window["boundary"], 0, set()),
+        }
+        with metered(monkeypatch) as measured:
+            result = reads[reader]()
+        if reader == "reentry":
+            assert result == ([row], [])
+        elif reader == "page":
+            assert result["rows"] == [row] and result["interval_exhausted"] and not result["gaps"]
+        elif reader == "receipt":
+            assert result["duplicate"] and result["history_coverage"] == "indexed"
+        else:
+            assert [value for _seq, value in result[0]] == [row]
+            assert result[1]["basis"] == "accepted_boundary"
+        measurements.append(dict(measured))
+    assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0

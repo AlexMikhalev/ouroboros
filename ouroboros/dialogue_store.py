@@ -933,3 +933,16 @@ def generation_metadata(root: Any, stream: str) -> List[Dict[str, Any]]:
     with transaction(root, write=False) as conn:
         return [dict(record) for record in conn.execute(
             "SELECT * FROM import_ledger WHERE stream=? ORDER BY base, id", (stream,))]
+
+
+def last_legacy_generation(root: Any, *, gen: str = "", name: str = "") -> Optional[Dict[str, Any]]:
+    """Appended read function (Q1b2 M): the last matching legacy segment for a Presence byte cursor.
+
+    Presence selected the last repeated first-line signature, unlike the memory
+    ordinal cursor's first match. A named empty-live boundary uses its archive name.
+    """
+    column, value = ("name", name) if name else ("gen", gen)
+    with transaction(root, write=False) as conn:
+        record = conn.execute(f"SELECT * FROM import_ledger WHERE stream='chat' AND {column}=? "
+                              "AND state='done' ORDER BY base DESC LIMIT 1", (value,)).fetchone()
+    return None if record is None else dict(record)
