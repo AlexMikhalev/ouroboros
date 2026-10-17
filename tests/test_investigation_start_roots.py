@@ -273,10 +273,10 @@ def test_a_source_edit_during_provisioning_still_refuses_the_investigation(tmp_p
     _source_local(project, "autocrlf")
     copy = subagent_worktrees._fill_private_copy
 
-    def owner_edits_while_copied(source, destination):
+    def owner_edits_while_copied(source, destination, copy_root):
         if Path(source).name == "mod.py":
             Path(source).write_bytes(b"VALUE = 9\r\n")
-        return copy(source, destination)
+        return copy(source, destination, copy_root)
 
     monkeypatch.setattr(subagent_worktrees, "_fill_private_copy", owner_edits_while_copied)
     ctx, engine, start = _consumer(tmp_path, monkeypatch, "full", workspace=folder)

@@ -2,14 +2,17 @@
 
 Git checks the baseline out; each regular file then receives the source's exact
 working bytes and ``copystat`` metadata in the file checkout created, without
-the per-file temporary file and rename of ``artifacts.copy_artifact_file``. The
-whole-tree diff against the baseline still refuses a source that moved, and a
-copy whose provisioning has not returned is no consumer's ready copy.
+the per-file temporary file and rename of ``artifacts.copy_artifact_file``; only
+an entry checkout left absent (an inherited sparse cone) goes through that
+helper, and only while the copy still exists. The whole-tree diff against the
+baseline still refuses a source that moved, and a copy whose provisioning has
+not returned is no consumer's ready copy.
 """
 from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import threading
@@ -204,8 +207,8 @@ def test_population_refuses_a_path_checkout_left_as_a_link(tmp_path, monkeypatch
     nothing_left(tmp_path, target, "fill")
 
 
-@pytest.mark.parametrize("independent", [False, True], ids=["worktree", "clone"])
-def test_an_entry_outside_an_inherited_sparse_cone_is_still_copied(tmp_path, independent):
+@pytest.mark.parametrize("flow", ["snapshot", "task_copy"])
+def test_an_entry_outside_an_inherited_sparse_cone_is_still_copied(tmp_path, monkeypatch, flow):
     root = tmp_path / "sparse"
     (root / "docs").mkdir(parents=True)
     for args in (("init", "-q"), ("config", "user.name", "Fixture"), ("config", "user.email", "f@example.invalid")):
@@ -219,7 +222,39 @@ def test_an_entry_outside_an_inherited_sparse_cone_is_still_copied(tmp_path, ind
         pytest.skip("this git has no sparse-checkout")
     if not (root / "docs" / "b.txt").exists():
         pytest.skip("this git removed the modified entry outside the cone")
-    handle = provision(tmp_path, root, snapshot_id="sparse", independent=independent)
-    copy = pathlib.Path(handle.path)
+    fallback, real_copy = [], artifacts.copy_artifact_file
+
+    def counted_copy(source, destination, **kwargs):
+        fallback.append(pathlib.Path(destination).relative_to(copies).as_posix())
+        return real_copy(source, destination, **kwargs)
+
+    copies = (tmp_path / "snapshots").resolve()
+    monkeypatch.setattr(artifacts, "copy_artifact_file", counted_copy)
+    if flow == "snapshot":
+        handle = provision(tmp_path, root, snapshot_id="sparse")
+    else:
+        handle = trees.provision_worktree(repo_dir=root, task_id="sparse-task", worktree_root=copies,
+                                          data_dir=tmp_path / "data", source_is_system_repo=False)
+    copy = pathlib.Path(handle.path).resolve()
     assert (copy / "docs" / "b.txt").read_bytes() == b"dirty outside the cone\n"
     assert (copy / "a.txt").read_bytes() == b"in cone\n"
+    if not fallback:
+        pytest.skip("this git did not carry the sparse patterns into the new worktree")
+    assert fallback == [(copy / "docs" / "b.txt").relative_to(copies).as_posix()]
+
+
+def test_a_copy_removed_mid_population_is_not_re_created(tmp_path, monkeypatch):
+    target = source_tree(tmp_path)
+    fallback, real_fill = [], trees._fill_private_copy
+    monkeypatch.setattr(artifacts, "copy_artifact_file", lambda *a, **k: fallback.append(a[1]))
+
+    def remove_after_first(source, checkout, copy_root):
+        real_fill(source, checkout, copy_root)
+        if copy_root.exists():
+            shutil.rmtree(copy_root)  # what an unregistered-snapshot prune does mid-population
+
+    monkeypatch.setattr(trees, "_fill_private_copy", remove_after_first)
+    with pytest.raises(OSError):
+        provision(tmp_path, target)
+    assert fallback == []
+    nothing_left(tmp_path, target, "fill")

@@ -313,12 +313,12 @@ def test_regular_input_copy_failure_cleans_snapshot_without_rewriting_target(tmp
     original = subagent_worktrees._fill_private_copy
     newer = b"concurrent owner edit\r\n"
 
-    def copy(source, destination):
+    def copy(source, destination, copy_root):
         if Path(source) == target / "code.txt":
             if failure == "copy_error":
                 raise OSError("source changed during copy")
             Path(source).write_bytes(newer)
-        return original(source, destination)
+        return original(source, destination, copy_root)
 
     monkeypatch.setattr(subagent_worktrees, "_fill_private_copy", copy)
     expected = OSError if failure == "copy_error" else subprocess.CalledProcessError
@@ -349,9 +349,9 @@ def test_snapshot_keeps_git_link_entries_out_of_regular_file_copy(tmp_path, monk
     before_index = git(target, "ls-files", "--stage", "-z").stdout
     original = subagent_worktrees._fill_private_copy
 
-    def copy(source, destination):
+    def copy(source, destination, copy_root):
         assert Path(source).name not in {"link", "nested"}
-        return original(source, destination)
+        return original(source, destination, copy_root)
 
     monkeypatch.setattr(subagent_worktrees, "_fill_private_copy", copy)
     handle = snapshot(tmp_path, target)

@@ -55,9 +55,9 @@ def _phase_spies(monkeypatch, snaps):
         seen["classify"] = _lock_held(snaps)
         return real_verdicts(root, rels, **kw)
 
-    def spy_copy(source, destination):
+    def spy_copy(source, destination, copy_root):
         seen["copy"] = _lock_held(snaps)
-        return real_copy(source, destination)
+        return real_copy(source, destination, copy_root)
 
     def spy_git(repo_dir, *args, **kw):
         for marker in ("update-index", "commit-tree", "reset", "update-ref", "worktree"):

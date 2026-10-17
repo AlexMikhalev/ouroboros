@@ -592,7 +592,7 @@ class _InPlaceFill:
         self.size += len(chunk)
 
 
-def _fill_private_copy(source: Path, checkout: Path) -> None:
+def _fill_private_copy(source: Path, checkout: Path, copy_root: Path) -> None:
     """Give one file Git checked out into a not-yet-returned copy the source's exact bytes.
 
     Nothing reads or runs in the copy before provisioning returns, and the
@@ -602,7 +602,8 @@ def _fill_private_copy(source: Path, checkout: Path) -> None:
     place from its first differing byte, an equal file is not written, and
     ``copystat`` applies the source's mode, times and flags as before. An entry
     checkout did not write (outside an inherited sparse-checkout cone) is created
-    by ``copy_artifact_file`` as before; a path checkout left as something other
+    by ``copy_artifact_file`` as before while the copy still exists, so a copy
+    removed mid-population is not re-created; a path checkout left as something other
     than a regular file is refused, never written through. No retention flow
     provisions copies, so skipping that helper's publication fence loses nothing.
     """
@@ -611,6 +612,8 @@ def _fill_private_copy(source: Path, checkout: Path) -> None:
     try:
         info = os.lstat(checkout)
     except FileNotFoundError:
+        if not os.path.lexists(copy_root / ".git"):
+            raise
         copy_artifact_file(source, checkout)
         return
     if not stat.S_ISREG(info.st_mode):
@@ -862,7 +865,7 @@ def _provision_git_copy(
                 original = target / relative
                 if original.is_symlink():
                     raise OSError(f"snapshot input changed from a regular file: {relative}")
-                _fill_private_copy(original, wt_path / relative)
+                _fill_private_copy(original, wt_path / relative, wt_path)
                 copied.append(raw_path)
         # The checkout recorded each entry's stat for the bytes IT wrote; a
         # CRLF/smudge rewrite (core.autocrlf=true is Git for Windows' default)
