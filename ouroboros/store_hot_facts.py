@@ -273,6 +273,11 @@ def underived(root: Any) -> bool:
         return True  # a schema below the hot-fact columns: the runner upgrades it first
 
 
+# Rows the derivation classifies per write transaction (and per recorded cursor): one commit per batch,
+# never per row, so a network-backed data root (Colab on Google Drive) pays a few hundred commits.
+_DERIVE_BATCH = 64
+
+
 def run_hot_facts(root: Any, *, progress=None, should_stop=None) -> dict:
     """Maintenance-child entry: resumable sequence-CAS classification, no body rewrites."""
     from ouroboros import maintenance_jobs, store
@@ -335,7 +340,7 @@ def run_hot_facts(root: Any, *, progress=None, should_stop=None) -> dict:
                     with store.open_store(root, write=False) as txn:
                         batch = txn.conn.execute(
                             f"SELECT {identity},{stamp} FROM {table} INDEXED BY {index} "
-                            f"WHERE ({where}) AND {identity}>? ORDER BY {identity} LIMIT 64", (after,)).fetchall()
+                            f"WHERE ({where}) AND {identity}>? ORDER BY {identity} LIMIT ?", (after, _DERIVE_BATCH)).fetchall()
                         sources = [(item[0], item[1], txn.body_text(item[0]) if table == "tasks" else
                                     item[1] if table == "obligations" else txn.conn.execute(
                                         "SELECT facts FROM custody_runs WHERE run_id=?", (item[0],)).fetchone()[0])
@@ -347,22 +352,30 @@ def run_hot_facts(root: Any, *, progress=None, should_stop=None) -> dict:
                             after = ""  # sequence-CAS lost to an old writer/handoff behind the cursor
                             continue
                         break
-                    for tid, seq, raw in sources:
-                        if stop():
-                            return record(state="pending", cursor=cursor, done=done)
-                        waiting = {"table": scope, "id": tid, "stamp": input_stamp(seq)}
-                        document = json.loads(raw)
-                        values = derive(document)
-                        if table == "tasks":
-                            values["control_valid"] &= int(str(document.get("task_id") or "") == tid)
-                        with store.open_store(root, write=True) as txn:
-                            changed = txn.conn.execute(
-                                f"UPDATE {table} SET {','.join(name + '=?' for name in values)} "
-                                f"WHERE {identity}=? AND {stamp}=? AND ({where})", (*values.values(), tid, seq)).rowcount
-                        done += changed
-                        after = tid
-                        cursor = {"table": scope, "after": after}
-                        record(cursor=cursor, done=done)
+                    derived = []
+                    try:
+                        for tid, seq, raw in sources:
+                            if stop():
+                                break
+                            waiting = {"table": scope, "id": tid, "stamp": input_stamp(seq)}
+                            document = json.loads(raw)
+                            values = derive(document)
+                            if table == "tasks":
+                                values["control_valid"] &= int(str(document.get("task_id") or "") == tid)
+                            derived.append((tid, seq, values))
+                    finally:  # what was derived before a stop or a damaged input commits with its cursor
+                        if derived:
+                            with store.open_store(root, write=True) as txn:
+                                for tid, seq, values in derived:
+                                    done += txn.conn.execute(
+                                        f"UPDATE {table} SET {','.join(name + '=?' for name in values)} "
+                                        f"WHERE {identity}=? AND {stamp}=? AND ({where})",
+                                        (*values.values(), tid, seq)).rowcount
+                            after = derived[-1][0]
+                            cursor = {"table": scope, "after": after}
+                            record(cursor=cursor, done=done)
+                    if stop():
+                        return record(state="pending", cursor=cursor, done=done)
                 if stop():
                     return record(state="pending", cursor=cursor, done=done)
             with store.open_store(root, write=False) as txn:

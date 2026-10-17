@@ -89,6 +89,7 @@ def test_derivation_job_resumes_and_leaves_body_and_write_sequence_unchanged(tmp
                       root_phase_checkpoint={"post_task_synthesis": "paused"})
         before = {tid: (txn.body_text(tid), txn.row(tid, "write_seq")) for tid in ("a", "b", "c")}
     progress = []
+    monkeypatch.setattr(hot, "_DERIVE_BATCH", 1)  # one row per committed batch: a stop lands between rows
     first = hot.run_hot_facts(tmp_path, progress=progress.append,
                               should_stop=lambda: any(row.get("done") == 1 for row in progress))
     assert first["state"] == "pending" and first["cursor"] == {"table": "tasks", "after": "a"}
