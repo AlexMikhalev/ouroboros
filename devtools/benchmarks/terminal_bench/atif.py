@@ -6,7 +6,8 @@ an honest trajectory from the artifacts the installed adapter already writes:
 
 - ``agent/instruction.txt``                        -> the user step
 - ``agent/ouroboros-data/logs/tools.jsonl``        -> tool calls + observations
-- ``agent/ouroboros-data/state/dialog.sqlite``    -> narration and final answer
+- ``agent/ouroboros-data/state/dialog.sqlite``    -> narration and final answer;
+  host progress notes as ``system`` steps
 - ``agent/ouroboros-task-result.json``             -> final answer fallback
 - ``agent/ouroboros-data/state/usage.sqlite``     -> physical subtree totals
   (``state/usage_attempts.jsonl`` for artifacts written before the usage store)
@@ -21,7 +22,7 @@ ATIF constraints honored (see harbor ``models/trajectories``):
 - ``step_id`` strictly sequential starting at 1;
 - ``observation.results[].source_call_id`` only references a ``tool_call`` of
   the SAME step;
-- agent-only fields never appear on user steps;
+- agent-only fields never appear on user or system steps;
 - no extra keys (harbor models are ``extra="forbid"``).
 """
 
@@ -321,7 +322,9 @@ def _tool_call_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     one ``invocation_id``; a legacy row without it stands alone. What the model SAW
     is the step: a call whose wait ended shows the timeout text at the timeout's
     position (a late settlement is only noted); a call with only a start is kept
-    as an unknown outcome, never dropped and never read as a failure."""
+    as an unknown outcome, never dropped and never read as a failure. A logged
+    start rides along as ``_started_ts``: the call is placed there, before what
+    its own execution emitted."""
     calls: dict[str, dict[str, dict[str, Any]]] = {}
     order: list[Any] = []
     for row in rows:
@@ -348,19 +351,33 @@ def _tool_call_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         call = calls[item]
         started, settled, waited = (call.get(k) for k in ("tool_call_started", "tool_call", "tool_call_timeout"))
+        placed = {"_started_ts": started["ts"]} if started and started.get("ts") else {}
         if waited is not None:
             text = str(waited.get("result_preview") or "")
             if settled is not None:
                 text += (f"\n[the worker also settled (status={settled.get('status')} "
                          f"is_error={bool(settled.get('is_error'))}), but the model saw only this timeout]")
-            out.append({**waited, "status": "timeout", "is_error": True, "result_preview": text})
+            out.append({**waited, **placed, "status": "timeout", "is_error": True, "result_preview": text})
         elif settled is not None:
-            out.append(settled)
+            out.append({**settled, **placed})
         else:
             out.append({**(started or {}), "status": "unknown", "is_error": False,
                         "result_preview": "(no outcome recorded: host processing began; "
                                           "neither a result nor a wait end was logged)"})
     return out
+
+
+def _host_authored(row: dict[str, Any]) -> bool:
+    """A progress note the host wrote about the run, not the model's own speech.
+
+    ``narration`` is the note's typed voice: the worker stamps it on every frame,
+    ``True`` only for the model's round narration, and the send seam defaults
+    every other sender to ``False`` (the supervisor's HOST_NARRATION toasts
+    included). A row written before that fact falls back to its typed ``role``;
+    an untyped legacy row keeps the agent reading."""
+    if "narration" in row:
+        return row.get("narration") is not True
+    return row.get("role") == "system"
 
 
 def build_trajectory(
@@ -393,20 +410,38 @@ def build_trajectory(
         }
     )
 
-    # Merge narration and tool calls chronologically; narration since the last
-    # tool call becomes the message of the step wrapping the next tool call.
+    # Merge narration and tool calls chronologically, a call at its logged start;
+    # narration since the last tool call becomes the message of the step wrapping
+    # the next tool call.
     merged: list[tuple[str, str, dict[str, Any]]] = []
     for row in narration_rows:
         merged.append((str(row.get("ts") or ""), "narration", row))
     for row in tool_rows:
-        merged.append((str(row.get("ts") or ""), "tool_call", row))
+        merged.append((str(row.get("_started_ts") or row.get("ts") or ""), "tool_call", row))
     merged.sort(key=lambda item: item[0])
 
     call_counter = 0
     pending_narration: list[str] = []
+    pending_ts = ""
     for ts, kind, row in merged:
+        if kind == "narration" and _host_authored(row):
+            if pending_narration:
+                # The model's words before this host line stay before it, as their own step.
+                said: dict[str, Any] = {"step_id": len(steps) + 1, "source": "agent",
+                                        "message": _clip("\n\n".join(pending_narration))}
+                if pending_ts:
+                    said["timestamp"] = pending_ts
+                steps.append(said)
+                pending_narration = []
+            # Kept where it happened, as the host's line: never the model's message.
+            note: dict[str, Any] = {"step_id": len(steps) + 1, "source": "system", "message": _clip(row["text"])}
+            if ts:
+                note["timestamp"] = ts
+            steps.append(note)
+            continue
         if kind == "narration":
             pending_narration.append(row["text"])
+            pending_ts = ts
             continue
         call_counter += 1
         call_id = f"call_{call_counter}"
@@ -431,8 +466,8 @@ def build_trajectory(
                 ]
             },
         }
-        if ts:
-            step["timestamp"] = ts
+        if row.get("ts"):
+            step["timestamp"] = str(row["ts"])  # what the model saw, when it saw it (#1316)
         steps.append(step)
         pending_narration = []
 
