@@ -164,13 +164,19 @@ def _read_rows(txn, ids) -> dict:
     if not ids:
         return {}
     modern = int(txn.meta("schema_version") or VERSION) >= VERSION
-    columns = "," + ",".join(TASK_COLUMNS) if modern else ""
+    columns = "," + ",".join(f"t.{name}" for name in TASK_COLUMNS) if modern else ""
+    # The live members' own bodies are checked, never decoded: a document that no longer parses keeps
+    # its member's authority unknown (no Resume is offered from it) while its columns still read.
     records = txn.conn.execute(
-        f"SELECT task_id,status,root_task_id,superseded_by,retry_task_id,write_seq,updated_at{columns} FROM tasks "
-        "WHERE task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchall()
+        "SELECT t.task_id,t.status,t.root_task_id,t.superseded_by,t.retry_task_id,t.write_seq,t.updated_at"
+        f"{columns},json_valid(b.body) AS body_valid FROM tasks AS t LEFT JOIN task_bodies AS b "
+        "ON b.task_id = t.task_id WHERE t.task_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)).fetchall()
     found = {row["task_id"]: dict(row) for row in records}
     # Unknown rows alone pay their old strict read; coherent with their sequence.
     for tid, row in found.items():
+        if row.pop("body_valid", None) == 0:
+            row["control_valid"] = 0
+            continue
         if not modern or any(row.get(name) is None for name in TASK_COLUMNS):
             body = txn.body_text(tid)
             if body is None:
