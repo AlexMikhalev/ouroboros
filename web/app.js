@@ -189,7 +189,7 @@ function syncNavigationState() {
         if (isActive) button.setAttribute('aria-current', 'page');
         else button.removeAttribute('aria-current');
     });
-    navProjectsToggle?.classList.toggle('active', Boolean(activeProjectId));
+    // One chosen row at a time: the open Project's row, never the Projects header (owner Q6).
     navProjectsToggle?.setAttribute('aria-expanded', navState.projectsExpanded ? 'true' : 'false');
     navProjectsList.hidden = !navState.projectsExpanded;
     document.querySelectorAll('[data-project-id]').forEach((button) => {
@@ -784,7 +784,8 @@ function paintProjectsNav() {
             trailing = kebab;
         }
         if (project.id === navState.activeProjectId) btn.classList.add('active');
-        if (!deleting) btn.addEventListener('click', () => openProjectPanel(project));
+        // Pressing a row opens its Project; pressing the open one again keeps it open (like every reference).
+        if (!deleting) btn.addEventListener('click', () => openProjectPanel(project, { openOnly: true }));
         item.append(btn, trailing);
         navProjectsList.appendChild(item);
     }

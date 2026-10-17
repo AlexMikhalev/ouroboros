@@ -175,11 +175,32 @@ def test_skills_and_widgets_use_inner_scroll_regions():
     assert ".widgets-scroll" in css and "overflow-y: auto" in css
 
 
-def test_sidebar_projects_list_is_a_bounded_scroll_region():
-    """The sidebar's one variable-length collection owns a bounded window with
-    its own scroll, so the navigation column cannot grow with the project count."""
-    rule = _read("web/style.css").split(".nav-projects-list {", 1)[1].split("}", 1)[0]
-    assert "max-height: var(--nav-projects-list-max-height)" in rule and "overflow-y: auto" in rule, rule
+def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
+    """The sidebar is a pinned head (Main Chat), the Projects list as the ONE scroller (it takes the free
+    height, no inner cap, no outer scroll wrapper) and a pinned foot (docs/DESIGN.md "Shell", plan P4).
+    A too-short window falls back to the whole column scrolling with the head sticky."""
+    css = _read("web/style.css")
+    html = _read("web/index.html")
+    rule = css.split(".nav-projects-list {", 1)[1].split("}", 1)[0]
+    assert "flex: 1 1 auto" in rule and "min-height: 0" in rule and "overflow-y: auto" in rule, rule
+    assert "overscroll-behavior: contain" in rule and "max-height" not in rule, rule
+    assert "--nav-projects-list-max-height" not in css and "--nav-projects-list-max-height" not in _read("web/ui.css")
+    assert ".sidebar-scroll" not in css and "sidebar-scroll" not in html
+    head = css.split(".sidebar-head {", 1)[1].split("}", 1)[0]
+    assert "position: sticky" in head and "top: 0" in head
+    assert html.index('class="sidebar-head"') < html.index('id="nav-projects"') < html.index('class="sidebar-foot"')
+    assert 'data-nav-page="chat"' in html.split('class="sidebar-head"', 1)[1].split('</div>', 1)[0]
+    for page in ("files", "skills", "widgets", "dashboard", "settings"):
+        assert f'data-nav-page="{page}"' in html.split('class="sidebar-foot"', 1)[1]
+    assert "Utilities" not in html and "nav-section-label" not in html
+    # A finger gets 44px rows, ⋯ and +; the version reads at the meta size; unread is crimson, never red or a glow.
+    assert "#primary-sidebar { --nav-item-h: 44px; --nav-control-h: 44px; }" in css
+    version = css.split("#nav-version {", 1)[1].split("}", 1)[0]
+    assert "font-size: var(--type-meta)" in version and "opacity" not in version
+    dot = css.split(".nav-unread-dot {", 1)[1].split("}", 1)[0]
+    assert "background: var(--accent)" in dot and "box-shadow" not in dot
+    assert "navProjectsToggle?.classList.toggle('active'" not in _read("web/app.js")
+    assert "openProjectPanel(project, { openOnly: true })" in _read("web/app.js")
 
 
 # ---------------------------------------------------------------------------

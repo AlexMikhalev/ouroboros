@@ -36,18 +36,62 @@ body {
     display: none;
 }
 
+/* The sidebar is three zones (docs/DESIGN.md "Shell"): a pinned head (Main Chat), the Projects list as the ONE
+   scroller, a pinned foot (the tools, the version, the update). Row heights follow the pointer: a finger gets the
+   touch minimum, a mouse a quieter row, and a short window with a mouse compacts the rows first. A window too short
+   even for that (the list keeps three rows) falls back to the whole column scrolling with the head sticky. */
 #primary-sidebar {
+    --nav-row-h: 44px;       /* a place: Main Chat, Files … */
+    --nav-item-h: 32px;      /* a Project row */
+    --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
+    --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
     height: var(--vvh);
     display: flex;
     flex-direction: column;
+    gap: var(--space-1);
     min-width: 0;
-    padding: var(--space-4) var(--space-3) var(--space-3);
-    background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.62), rgba(var(--shell-rgb), 0.32)),
-        radial-gradient(circle at 8% 0%, var(--accent-08), transparent 260px);
-    border-right: 1px solid var(--divider);
+    padding: 0 var(--space-3) var(--space-3);
+    background: var(--surface-side);
+    border-right: 1px solid rgba(var(--neutral-rgb), 0.05);
     z-index: 10;
     position: relative;  /* positioning context for the resize handle */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+}
+@media (pointer: coarse) {
+    #primary-sidebar { --nav-item-h: 44px; --nav-control-h: 44px; }
+}
+@media (pointer: fine) and (max-height: 700px) {
+    #primary-sidebar { --nav-row-h: 36px; --nav-item-h: 28px; }
+}
+
+.sidebar-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-4);
+    background: var(--surface-side);
+}
+
+.sidebar-foot {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-2);
+}
+
+.sidebar-foot-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) 0 var(--space-3);
 }
 
 /* macOS desktop window (launcher_window_chrome.py): while its transparent title bar covers the page,
@@ -59,7 +103,7 @@ body {
     --window-chrome-start: 0px;
     --window-chrome-clearance: calc(var(--window-chrome-start) + var(--space-3));
 }
-:root[data-window-chrome="integrated"] #primary-sidebar {
+:root[data-window-chrome="integrated"] .sidebar-head {
     padding-top: calc(var(--space-4) + var(--window-chrome-top));
 }
 :root[data-window-chrome="integrated"] .onboarding-overlay {
@@ -83,7 +127,7 @@ body {
     padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
-:root[data-window-chrome="integrated"][data-layout="stack"] #primary-sidebar {
+:root[data-window-chrome="integrated"][data-layout="stack"] .sidebar-head {
     padding-top: max(64px, calc(var(--space-4) + var(--window-chrome-top)));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
@@ -102,34 +146,22 @@ body.resizing-panels { user-select: none; }
     z-index: 20;
     touch-action: none;
 }
-.resize-handle-right { right: -4px; }
+.resize-handle-right { right: 0; }
 .resize-handle-left { left: -4px; }
-.resize-handle:hover { background: var(--accent-10); }
+@media (hover: hover) {
+    .resize-handle:hover { background: var(--accent-10); }
+}
 html[data-layout="stack"] .resize-handle,
 html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
-.sidebar-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    scrollbar-width: thin;
-}
-
-.sidebar-scroll > * { flex-shrink: 0; }
-
+/* The version is a readable fact in the meta ink (owner Q6=A), beside the update capsule. */
 #nav-version {
     display: block;
-    max-width: 100%;
-    text-align: left;
-    line-height: 1.15;
-    white-space: normal;
-    font-size: 8px;
-    color: var(--text-muted);
-    padding: var(--space-2) var(--space-2) 0;
-    opacity: 0.6;
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+    color: var(--text-meta);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .nav-row,
@@ -139,16 +171,16 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     align-items: center;
     justify-content: flex-start;
     gap: var(--space-3);
-    min-height: 44px;
+    min-height: var(--nav-row-h);
     padding: 0 var(--space-3);
     width: 100%;
     border: 1px solid transparent;
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
-    border-radius: var(--nav-item-radius);
-    transition: background 0.15s ease, color 0.15s ease;
-    font-size: 13px;
+    border-radius: var(--radius-inner);
+    transition: var(--motion-tone);
+    font-size: var(--type-body);
     font-family: inherit;
     text-align: left;
     position: relative;
@@ -218,13 +250,13 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 .nav-row-meta {
     flex: 0 0 auto;
-    color: var(--text-muted);
-    font-size: 11px;
+    color: var(--text-meta);
+    font-size: var(--type-meta);
 }
 
-/* Clean left active indicator (Codex-style), not a heavy glowing tile. */
-.nav-row.active::before,
-.nav-section-toggle.active::before {
+/* The chosen place: the crimson tone, its ink and a left mark. One row at a time; the Projects header is never
+   chosen (a Project row is). */
+.nav-row.active::before {
     content: '';
     position: absolute;
     left: 3px;
@@ -236,6 +268,7 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     background: var(--accent);
 }
 
+/* Unread is the crimson accent (a live fact for you), never red (danger) and never a glow (owner Q6=A). */
 .unread-badge {
     position: absolute;
     top: 4px;
@@ -243,9 +276,9 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
-    border-radius: var(--radius-sm);
-    background: var(--red);
-    color: #fff;
+    border-radius: var(--pill-radius);
+    background: var(--tone-crimson);
+    color: var(--tone-crimson-ink);
     font-size: var(--type-meta);
     font-weight: 700;
     display: flex;
@@ -254,7 +287,6 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     line-height: 1;
 }
 
-/* Per-project unread-messages indicator: a standard small red dot at the row's end. */
 .nav-project-row { position: relative; }
 .nav-unread-dot {
     flex: 0 0 auto;
@@ -262,21 +294,21 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--red);
-    box-shadow: 0 0 0 2px var(--accent-18);
+    background: var(--accent);
 }
 
-.nav-row:hover,
-.nav-section-toggle:hover {
-    background: var(--accent-08);
-    border-color: transparent;
-    color: var(--text-primary);
+@media (hover: hover) {
+    .nav-row:hover,
+    .nav-section-toggle:hover {
+        background: var(--tone-quiet-hover);
+        border-color: transparent;
+        color: var(--text-primary);
+    }
 }
-.nav-row.active,
-.nav-section-toggle.active {
-    background: var(--accent-12);
+.nav-row.active {
+    background: var(--tone-crimson);
     border-color: transparent;
-    color: var(--accent);
+    color: var(--tone-crimson-ink);
 }
 
 .nav-row:focus,
@@ -3488,10 +3520,6 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     line-height: var(--line-meta);
 }
 
-.nav-spacer {
-    flex: 1;
-}
-
 /* A touch keyboard zooms into a field under 16px: the guard follows the pointer, not a width. */
 @media (pointer: coarse) {
     textarea, input[type="text"], input[type="password"], input[type="email"], select {
@@ -3541,25 +3569,20 @@ html[data-layout="stack"] #primary-sidebar {
     max-width: 320px;
     transform: translateX(-105%);
     transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+html[data-layout="stack"] .sidebar-head {
     padding-top: calc(64px + var(--inset-top));
-    background:
-        linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86)),
-        radial-gradient(circle at 8% 0%, var(--accent-10), transparent 260px);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
-    box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
+    box-shadow: var(--elev-float);
 }
 html[data-layout="stack"] .unread-badge {
     top: 2px;
     right: 4px;
     min-width: 14px;
     height: 14px;
-}
-html[data-layout="stack"] #nav-version,
-html[data-layout="stack"] .nav-spacer {
-    display: none;
 }
 html[data-layout="stack"] #content {
     padding-left: 0;
@@ -7044,6 +7067,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    Multi-project sidebar + right thread panel (v6.32.0)
    =========================================================================== */
 
+/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. It keeps
+   at least three rows; a shorter window scrolls the whole column instead (the head stays sticky). */
 .nav-projects {
     display: flex;
     flex-direction: column;
@@ -7051,21 +7076,22 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     width: 100%;
     align-items: stretch;
     margin: var(--space-1) 0 var(--space-2);
-    flex-shrink: 0;
+    flex: 1 1 auto;
+    min-height: calc(var(--nav-row-h) + 3 * var(--nav-item-h) + 2px);
 }
 
-/* The sidebar's one variable-length collection: a bounded window that scrolls
-   on its own, so expanding it never pushes the Utilities rows past the fold. */
 .nav-projects-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
     width: 100%;
     align-items: stretch;
-    flex-shrink: 0;
-    max-height: var(--nav-projects-list-max-height);
+    flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    scrollbar-width: thin;
 }
 
 .nav-projects-list[hidden] {
@@ -7077,17 +7103,18 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    no left active bar) — a dropdown list, not standalone tabs. */
 .nav-project-item {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 28px;
+    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
     align-items: center;
     width: 100%;
     border-radius: var(--radius-sm);
 }
 
+/* A Project row reads in the secondary ink at the body size; unread takes the primary ink as well as its dot. */
 .nav-project-row {
-    min-height: 30px;
-    font-size: 13px;
-    color: var(--text-muted);
-    padding-left: calc(var(--space-3) + 18px + var(--space-3));
+    min-height: var(--nav-item-h);
+    font-size: var(--type-body);
+    color: var(--text-secondary);
+    padding-left: var(--nav-label-x);
     padding-right: var(--space-1);
     border-radius: var(--radius-sm);
     /* One trailing rail per row: label, activity column, unread column. Each
@@ -7113,8 +7140,11 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 .nav-project-item.is-deleting .nav-project-row { grid-template-columns: minmax(0, 1fr); }
 .nav-project-item.is-deleting .nav-activity-marker { display: none; }
 
-.nav-project-row:hover {
-    color: var(--text-primary);
+.nav-project-row.has-unread { color: var(--text-primary); }
+@media (hover: hover) {
+    .nav-project-row:hover {
+        color: var(--text-primary);
+    }
 }
 
 .nav-project-item.is-deleting .nav-project-row,
@@ -7131,23 +7161,24 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 .nav-project-deleting-status {
     justify-self: end;
     padding-right: 3px;
-    color: var(--text-muted);
-    font-size: 10px;
+    color: var(--text-meta);
+    font-size: var(--type-meta);
     white-space: nowrap;
 }
 
 .nav-project-row.active {
     color: var(--project);
+    background: var(--project-08);
 }
 
 .nav-project-row.active::before {
     display: none;
 }
 
-/* v6.59.0 — New Project "+" in the Projects header + per-row kebab actions. */
+/* The Projects header: the toggle, the unread count, the activity dots, then "+" (New project). */
 .nav-projects-header {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 32px;
+    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
     align-items: center;
     width: 100%;
 }
@@ -7170,9 +7201,9 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
-    border-radius: 9px;
-    background: var(--red);
-    color: #fff;
+    border-radius: var(--pill-radius);
+    background: var(--tone-crimson);
+    color: var(--tone-crimson-ink);
     font-size: var(--type-meta);
     font-weight: 700;
     line-height: 18px;
@@ -7180,22 +7211,27 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 }
 
 .nav-projects-add {
-    width: 28px;
-    height: 28px;
+    width: var(--nav-control-h);
+    height: var(--nav-control-h);
     display: flex;
     align-items: center;
     justify-content: center;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-meta);
     cursor: pointer;
 }
 
-.nav-projects-add:hover,
+@media (hover: hover) {
+    .nav-projects-add:hover {
+        color: var(--text-primary);
+        background: var(--tone-quiet-hover);
+    }
+}
 .nav-projects-add:focus-visible {
     color: var(--text-primary);
-    background: var(--bg-hover);
+    background: var(--tone-quiet-hover);
 }
 
 .nav-projects-add:focus-visible {
@@ -7203,30 +7239,37 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     outline-offset: -2px;
 }
 
+/* A row's ⋯: visible at rest where there is no hover (a phone); under a mouse it appears with the row's hover or
+   focus, so actions never depend on hover (DESIGN "actions never depend on hover"). */
 .nav-project-kebab {
-    width: 26px;
-    height: 26px;
+    width: var(--nav-control-h);
+    height: var(--nav-control-h);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--text-muted);
-    opacity: 0;
+    color: var(--text-meta);
     cursor: pointer;
     border-radius: var(--radius-sm);
 }
 
-.nav-project-item:hover .nav-project-kebab,
-.nav-project-item:focus-within .nav-project-kebab {
-    opacity: 1;
+@media (hover: hover) {
+    .nav-project-kebab { opacity: 0; }
+    .nav-project-item:hover .nav-project-kebab,
+    .nav-project-item:focus-within .nav-project-kebab {
+        opacity: 1;
+    }
+    .nav-project-kebab:hover {
+        color: var(--text-primary);
+        background: var(--tone-quiet-hover);
+    }
 }
 
-.nav-project-kebab:hover,
 .nav-project-kebab:focus-visible {
     color: var(--text-primary);
-    background: var(--bg-hover);
+    background: var(--tone-quiet-hover);
 }
 
 /* Hover paint is not a focus ring: the kebab had only the paint, so a keyboard
@@ -9348,9 +9391,6 @@ html[data-layout="stack"] .project-panel.open {
    colour, never its height. */
 
 /* The room: plain, the sidebar one step off it, no wash, glow or texture behind the page. */
-:root[data-theme] #primary-sidebar { background: var(--surface-side); border-right-color: rgba(var(--neutral-rgb), 0.05); }
-:root[data-theme][data-layout="stack"] #primary-sidebar { background: var(--surface-side); }
-:root[data-theme][data-layout="stack"] #primary-sidebar.open { box-shadow: var(--elev-float); }
 :root[data-theme] .chat-page-header { background: var(--bg-primary); }
 /* A scrollbar is the room's furniture: neutral, never the accent. */
 :root[data-theme] ::-webkit-scrollbar-thumb { background: rgba(var(--neutral-rgb), 0.16); }
@@ -9541,7 +9581,4 @@ html[data-layout="stack"] .project-panel.open {
     transition: var(--motion-tone);
 }
 
-/* The sidebar's places are rows of one list: quiet rows with the inner radius; the chosen place takes the crimson
-   tone's own ink, so it keeps reading contrast on its tint. A Project row keeps its own fuchsia. */
-:root[data-theme] :is(.nav-row, .nav-section-toggle) { border-radius: var(--radius-inner); }
-:root[data-theme] :is(.nav-row, .nav-section-toggle).active:not(.nav-project-row) { color: var(--tone-crimson-ink); }
+

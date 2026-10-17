@@ -196,7 +196,6 @@
     /* App shell: persistent desktop sidebar + optional project detail pane. */
     --sidebar-width: 280px;
     --project-panel-width: clamp(340px, 36vw, 440px);
-    --nav-item-radius: 10px;
     /* One hover fill for an item in a popup menu or a picker list. Six menus
        used five different fills (0.04 / 0.06 / 0.08 / an accent tint / an
        undeclared --surface-2), so the same gesture looked like a different
@@ -220,7 +219,6 @@
        share of the visual viewport height below, so the navigation column keeps
        its height whatever the project count. Distinct from the fixed Updates
        window above: one is a page-local list, this one follows the viewport. */
-    --nav-projects-list-max-height: calc(var(--vvh) * 0.38);
     /* Chat media (DESIGN "Chat attachments"): a whole single photo keeps its own
        ratio up to this height, a bubble carrying several media stops at this
        width, and a staged composer file shows a thumbnail of this size. */
