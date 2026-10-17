@@ -768,9 +768,9 @@ def _wait_for_dialogue(client: OuroborosHTTPClient, proc) -> OuroborosHTTPClient
         boot = health.get("boot") if isinstance(health, dict) else None
         if not isinstance(boot, dict) or boot.get("dialogue_ready") is True:
             return client
-        if boot.get("phase") == "ready":  # no model provider yet: the dialogue opens once one is saved
-            print("server ready; owner messages are accepted once a model provider is configured",
-                  file=sys.stderr, flush=True)
+        if boot.get("phase") == "ready":  # no model provider yet, or the dialogue's opening failed
+            print("server ready, but its chat is not accepting messages yet: configure a model provider, "
+                  "or see the failed boot step in /api/health", file=sys.stderr, flush=True)
             return client
         if boot.get("phase") == "failed":
             raise CLIError(f"server start failed at {client.base_url}: {boot.get('error') or 'unknown'}")

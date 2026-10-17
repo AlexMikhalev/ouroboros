@@ -122,8 +122,14 @@ def test_build_colab_settings_normalizes_explicit_update_channel():
 def test_quickstart_waits_on_the_server_only_while_its_process_lives():
     """The boot wait has no clock: the notebook hands it the server process's liveness, so a server
     that exits before it answers ends the wait with that exit instead of retrying forever."""
+    import ast
+
     source = pathlib.Path(__file__).resolve().parents[1].joinpath("notebooks", "colab_quickstart.py").read_text(encoding="utf-8")
-    assert "ensure_native_telegram_live(settings=settings, alive=lambda: server.poll() is None)" in source
+    [call] = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+              and getattr(node.func, "id", "") == "ensure_native_telegram_live"]
+    alive = {keyword.arg: keyword.value for keyword in call.keywords}["alive"]
+    poll = alive.body.left if isinstance(alive, ast.Lambda) else None  # lambda: server.poll() is None
+    assert isinstance(poll, ast.Call) and ast.unparse(poll.func) == "server.poll"
 
 
 def test_quickstart_uses_clone_or_update_repo_helper():
@@ -721,7 +727,7 @@ def test_ensure_native_telegram_waits_for_the_dialogue_not_for_a_clock(monkeypat
     providerless = lambda *a, **k: (200, {"boot": {"phase": "ready", "dialogue_ready": False, "tasks_ready": True}})  # noqa: E731
     printed.clear()
     assert wait_for_dialogue(providerless, report=printed.append)["ok"] is True, "a providerless boot ends at ready"
-    assert printed[-1].endswith("once a model provider is configured")
+    assert printed[-1].startswith("Ouroboros is ready, but its chat is not accepting messages yet")
 
 
 def test_ensure_native_telegram_ends_on_a_failed_boot_or_a_dead_server(monkeypatch):

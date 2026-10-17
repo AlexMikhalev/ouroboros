@@ -470,8 +470,9 @@ def wait_for_dialogue(call: Callable[..., tuple], *, alive: Optional[Callable[[]
                 return {"ok": False, "error": f"server start failed: {boot.get('error') or 'unknown'}", "boot": boot}
             if boot.get("dialogue_ready") is True:
                 return {"ok": True, "boot": boot}
-            if boot.get("phase") == "ready":  # a boot without a model provider: its dialogue opens once one is saved
-                report("Ouroboros is ready; owner messages are accepted once a model provider is configured")
+            if boot.get("phase") == "ready":  # no model provider yet, or the dialogue's opening failed
+                report("Ouroboros is ready, but its chat is not accepting messages yet: configure a model "
+                       "provider, or see the failed boot step in /api/health")
                 return {"ok": True, "boot": boot}
         time.sleep(1.0)
     return {"ok": False, "error": "server did not become ready"}
