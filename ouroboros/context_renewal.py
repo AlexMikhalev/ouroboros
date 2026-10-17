@@ -8,15 +8,17 @@ children, budget, route, pending questions and custody are those of the running 
 only the view changes. No model is called and nothing is summarized; the mind's own notes
 are never dropped for age.
 
-The seed keeps, in their original order: the system view and the assignment; every row of
-the owner's or a principal's words and of Ouroboros's outward dialogue (typed at delivery);
-plain user rows, which may hold words delivered before typing; the mind's authored notes
-(actor capsules) and a predecessor's notes; the current review decisions; and the mind's own
-replies since its newest note. Complete tool units, replies the notes already cover, host
-copies and earlier address records leave the view; one host record names the checkpoint
-that holds them exactly. A renewal that would remove no tool unit and no covered reply, or
-a seed not smaller than the refused request, is never sent: the round then ends in the
-named refusal.
+The seed keeps, in their original order: the system view and the assignment; every delivered
+message (the owner's and principals' words typed at delivery, review feedback, notices, and
+any row written before host state was bound to its text, which may hold merged owner words);
+Ouroboros's outward dialogue; the mind's authored notes (actor capsules) and a predecessor's
+notes; the current review decisions; and the mind's own prose since its newest note,
+including the text it wrote beside a tool call. Complete tool units, replies the notes
+already cover, host state the host sends afresh (facts, clock, roster: bound and unchanged),
+superseded review copies and earlier address records leave the view; one host record names
+the checkpoint that holds them exactly. A renewal that would remove no tool unit and no
+covered reply, or a seed not smaller than the refused request, is never sent: the round then
+ends in the named refusal.
 """
 from __future__ import annotations
 
@@ -32,9 +34,15 @@ RENEWAL_RECORD_NAME = "ouroboros_view_renewal"
 
 def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """``(kept rows in order, counts of the rows that leave the view)``; pure, no I/O."""
-    from ouroboros.context_compaction import _capsule_metadata
+    from ouroboros.context_budget import host_row_intact
+    from ouroboros.context_compaction import _capsule_metadata, _plain_text
+    from ouroboros.loop_messages import CONTEXT_FACTS_NAME
     from ouroboros.main_context_authority import PREDECESSOR_NOTES_NAME
+    from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
     from ouroboros.review_history_view import REVIEW_CONTEXT_INDEX_KEY, obsolete_review_index_positions
+    from ouroboros.send_clock import CLOCK_ROW_NAME
+
+    resent = {CONTEXT_FACTS_NAME, CLOCK_ROW_NAME, ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME, RENEWAL_RECORD_NAME}
 
     def note(row: Dict[str, Any]) -> bool:
         capsule, meta = _capsule_metadata(row)
@@ -47,20 +55,21 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
     left = {"tool_rows": 0, "covered_replies": 0, "host_rows": 0}
     for i, row in enumerate(messages):
         role, kind = row.get("role"), row.get(HOST_CONTEXT_KIND_KEY)
-        if (i == 0 and role == "system") or i == first_user or kind in OWNER_ROW_KINDS or note(row):
-            kept.append(row)
-        elif kind == PREDECESSOR_NOTES_NAME or (row.get(REVIEW_CONTEXT_INDEX_KEY) and i not in superseded):
+        if ((i == 0 and role == "system") or i == first_user or kind in OWNER_ROW_KINDS or note(row)
+                or kind == PREDECESSOR_NOTES_NAME or (row.get(REVIEW_CONTEXT_INDEX_KEY) and i not in superseded)):
             kept.append(row)
         elif role == "tool" or row.get("tool_calls"):
             left["tool_rows"] += 1
-        elif role == "assistant" and not _capsule_metadata(row)[0] and i > newest_note:
-            kept.append(row)
-        elif role == "assistant" and not _capsule_metadata(row)[0]:
+            prose = _plain_text(row.get("content")) if role == "assistant" and i > newest_note else None
+            if prose and prose.strip():
+                kept.append({"role": "assistant", "content": prose})  # my words beside the call stay
+        elif (_capsule_metadata(row)[0] or row.get(REVIEW_CONTEXT_INDEX_KEY)
+              or (kind in resent and host_row_intact(row))):
+            left["host_rows"] += 1  # addresses, superseded review copies, state the host sends afresh
+        elif role == "assistant" and i <= newest_note:
             left["covered_replies"] += 1
-        elif role == "user" and set(row) <= {"role", "content"} and not _capsule_metadata(row)[0]:
-            kept.append(row)
         else:
-            left["host_rows"] += 1
+            kept.append(row)  # every delivered message and my replies since my newest note
     return kept, left
 
 

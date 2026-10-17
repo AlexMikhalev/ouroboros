@@ -18,6 +18,12 @@ from tests.test_context_reclaim_materializer import _request
 
 OWNER_LATER = "Owner: also keep the CLI flags."
 NOTE = "I verified the migration on both code paths; the old API stays."
+FEEDBACK = {"role": "user", "content": "[Task acceptance feedback] Review verdict: REVISE.",
+            "review_feedback": [{"task_id": "renewal", "run_index": 0, "binding_hash": "b", "settled": True}]}
+LEGACY_FACTS = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME,  # written before binding, merged later
+                "content": "[CONTEXT_FACTS] round 5\n\n---\n\n[Message from my human]: B"}
+PROSE_CALL = {"role": "assistant", "content": "Checking the flag parser next.", "tool_calls": [{
+    "id": "four", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\": \"cli.py\"}"}}]}
 
 
 def _noted(tmp_path):
@@ -31,10 +37,11 @@ def _noted(tmp_path):
     assert receipt.status == "applied"
     return [*folded,
             {"role": "user", HOST_CONTEXT_KIND_KEY: PREDECESSOR_NOTES_NAME, "content": "[Predecessor notes] earlier work"},
-            bound_host_row(CONTEXT_FACTS_NAME, "[CONTEXT_FACTS] round 9"),
+            LEGACY_FACTS, bound_host_row(CONTEXT_FACTS_NAME, "[CONTEXT_FACTS] round 9"),
             *_tool("three", "big body " * 2000),
             {"role": "assistant", "content": "My reasoning since the note."},
-            _owner(OWNER_LATER),
+            PROSE_CALL, {"role": "tool", "tool_call_id": "four", "content": "def parse(): ..."},
+            _owner(OWNER_LATER), FEEDBACK,
             {"role": "user", "content": "A plain notice delivered before typing."}]
 
 
@@ -47,9 +54,12 @@ def test_the_seed_keeps_people_notes_and_recent_reasoning_and_addresses_the_rest
     assert any(row.get(HOST_CONTEXT_KIND_KEY) == PREDECESSOR_NOTES_NAME for row in seed)
     assert {"role": "assistant", "content": "My reasoning since the note."} in seed
     assert {"role": "user", "content": "A plain notice delivered before typing."} in seed
+    assert FEEDBACK in seed and LEGACY_FACTS in seed  # delivered messages stay; an unbound row stays whole
+    assert {"role": "assistant", "content": "Checking the flag parser next."} in seed  # my words beside a call
     assert not any(row.get("role") == "tool" or row.get("tool_calls") for row in seed)  # bodies by address
-    assert not any(row.get(HOST_CONTEXT_KIND_KEY) == CONTEXT_FACTS_NAME for row in seed)  # host state is re-sent fresh
-    assert left["tool_rows"] >= 2 and left["host_rows"] >= 1
+    facts = [row for row in seed if row.get(HOST_CONTEXT_KIND_KEY) == CONTEXT_FACTS_NAME]
+    assert facts == [LEGACY_FACTS]  # bound host state is sent afresh next round
+    assert left["tool_rows"] >= 4 and left["host_rows"] >= 1
 
 
 def test_renewal_publishes_the_seed_with_an_exact_source_and_continues_the_same_task(tmp_path):
