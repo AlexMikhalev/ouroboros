@@ -148,17 +148,11 @@ def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
 
 # ---- B1-B5 and the room ------------------------------------------------------------------------
 
-PREVIEW = "the wave-A preview (wu1+wu2a+wu2b+wu3a+wu3b+wu4+wu6+wu7 heads of 17.10)"
-
 def test_b1_lifespan_before_health_is_flat(measured):
     assert_flat(measured, "B1")
     assert_flat(measured, "B1h")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU2a: today the whole boot runs before the HTTP yield; no boot coordinator thread exists yet, so "
-    "this boundary is not reached. With WU2a the steps that move after the yield must stay flat too: on "
-    f"{PREVIEW} the coordinator still runs _backfill_thread_activity (open:archive 5 -> 92); WU3a removes it."))
 def test_b1_boot_steps_after_the_yield_are_flat(measured):
     assert_flat(measured, "B1c")
 
