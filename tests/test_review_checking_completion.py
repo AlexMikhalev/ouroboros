@@ -13,7 +13,6 @@ import pytest
 from ouroboros import review_checking as rc
 from ouroboros.gateways.claudexor import ClaudexorUnavailable
 from ouroboros.review_execution import (
-    ReviewRouteUnavailable,
     SessionInvocation,
     review_session_route,
     run_delegated_review_session,
