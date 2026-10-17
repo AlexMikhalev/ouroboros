@@ -87,6 +87,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_video",
         "send_file",
         "send_links",
+        "show_card",
         "search_code",
         "escalate",
         "forward_to_worker",
@@ -147,8 +148,11 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # required keys outside escalate, all other schemas and handler owners stay intact.
     # Published question lifecycle wording changes only escalate's description and
     # question_task_id description; the parameters and all other catalog entries remain identical.
+    # Rolled for living messages (plugin-first): the catalog gains show_card after send_links, its
+    # entry living beside its handler in tools/cards.py; every other entry is byte-identical (the
+    # catalog without show_card still hashes to 6d10eac1...).
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "6d10eac1e0a9a6fd0c90e4f98044da5b44212ec33618ea2925f9d7918f15b749"
+        "20903bf117a41bd1f3b92ded1544824629c043158fa445fccd91b76dd5f9ed24"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
@@ -162,6 +166,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_video": ("ouroboros.tools.core_artifacts", "_send_video"),
         "send_file": ("ouroboros.tools.core_artifacts", "_send_file"),
         "send_links": ("ouroboros.tools.core_artifacts", "_send_links"),
+        "show_card": ("ouroboros.tools.cards", "_show_card"),
         "search_code": ("ouroboros.tools.core", "_code_search"),
         "escalate": ("ouroboros.tools.core_artifacts", "_escalate"),
         "forward_to_worker": ("ouroboros.tools.core", "_forward_to_worker"),

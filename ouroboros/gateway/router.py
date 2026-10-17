@@ -41,6 +41,15 @@ def _ui_client_routes() -> list[BaseRoute]:
     ]
 
 
+def _owner_answer_routes() -> list[BaseRoute]:
+    """The owner's answers: decision cards (``/api/decisions``, every family) and the
+    living cards Ouroboros shows in its messages (``/api/cards/*``: reads, pins)."""
+    from ouroboros.gateway.cards import card_routes
+    from ouroboros.gateway.task_decision import api_decision_answer
+
+    return [Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]), *card_routes()]
+
+
 def collect_routes(
     *,
     data_dir: pathlib.Path,
@@ -147,7 +156,6 @@ def collect_routes(
     from ouroboros.gateway.tasks import (
         api_task_artifact,
         api_task_cancel,
-    api_decision_answer,
     api_task_hurry, owner_tree_control_routes,
         api_task_resume,
         api_task_events,
@@ -269,7 +277,7 @@ def collect_routes(
         Route("/api/tasks/{task_id}/hurry", endpoint=api_task_hurry, methods=["POST"]),
         *owner_tree_control_routes(),
         Route("/api/tasks/{task_id}/resume", endpoint=api_task_resume, methods=["POST"]),
-    Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]),
+        *_owner_answer_routes(),
         Route("/api/schedules", endpoint=api_schedules_list, methods=["GET"]),
         Route("/api/schedules", endpoint=api_schedules_upsert, methods=["POST"]),
         Route("/api/schedules/{schedule_id}/action", endpoint=api_schedules_action, methods=["POST"]),

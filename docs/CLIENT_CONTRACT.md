@@ -243,9 +243,10 @@ answer through §7.
 
 **Message types.** `ws.messages` in the contract lists every built-in type with each direction's shape:
 - **Client to core:** `chat` and `command`.
-- **Core to client, stored as history rows:** `chat` (a message or a progress line), `photo`, `video`, `document`, `links` and `quiz`.
+- **Core to client, stored as history rows:** `chat` (a message or a progress line), `photo`, `video`, `document`, `links`, `quiz` and `card` (a living card, §5 "Living cards").
 - **Core to client, signals only:**
   - `quiz_state` updates a question card; history shows the merged state.
+  - `card_state` says a shown living card changed: read it again (§5 "Living cards").
   - `log` carries one runtime event row in `data` (`data.type` names the event) for live activity displays; the task's durable facts come from §6.
   - `message_annotation`, the routing outcome shown on an owner message, is that row's `chat_annotation` in history.
   - `task_named` gives a card its title; history rows carry `suggested_name`.
@@ -281,7 +282,7 @@ In a Project response, `window.latest_message` names the latest eligible non-own
 - **Always present:** `text` (live frames call it `content`), `role` (`user`, `assistant` or `system`), `ts`, `is_progress`, `system_type` (the row's kind; `""` for an ordinary message) and `task_id`.
 - **Identity:** stored rows carry `history_id` (`"<chat|progress>:<offset>"`, the same on every re-read), `history_position` (`{source, offset}`) and a stable `row_address` computed before projection (none without a persisted source). `client_message_id` correlates owner messages and some quiz publications; owner authorship follows `role`.
 - **References:** `reply_to` (an owner row's: the row he replied to; an Ouroboros answer's: the owner message its turn answers) is `{address, chat_id, role, author_label, kind, snippet, ts, task_id}` (`snippet`: at most 160 whitespace-collapsed characters) or `{address, unresolved: true}`. A `relay_entry` row's `relay` holds the owner's words passed into the room: `quotes`, every message passed on, each with `text`, `attachments` and `source` (where and when he wrote it), the singular fields repeating the first. A reply to a relay, in its source room, carries `reply_to_relay`.
-- **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links` or `quiz`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer).
+- **Deliveries:** `msg_type` is `document`, `photo`, `video`, `links`, `quiz` or `card`, with `filename`, `mime`, `download_url`, `caption` and `size_bytes`; `actions` and `title` for links; `quiz` for a question (`quiz.quiz_id`, `quiz.state`, the recorded answer); `card` for a living card (`card.card_id`, `card.kind`, `card.title`, `card.revision` as first published; the row's `text` is its plain fallback).
 - **Progress rows** (`is_progress: true`) carry the task-progress facts of live `chat` progress frames (`ChatOutbound`).
 - **Rows that are not messages.** Do not show these as bubbles:
   - replay evidence (`system_type` `quiz_answer`, `quiz_closed` or `task_evidence`, or a row with `summary_kind` and `historical_terminal`), facts for cards whose rows lie on other pages. A `task_evidence` carrier may be an in-room parent's only evidence (zero tool calls included; `task_terminal_status` only when the parent is terminal): mint a parent card only from the parent's own rows, carrier or live state, never from a child's `parent_task_id`; a child whose parent has no such evidence here renders as its own card and re-nests when that evidence arrives.
@@ -299,6 +300,7 @@ The core writes each stored row and its live frame with an identical `ts` string
 | `quiz` | `msg_type: "quiz"` | `task_id` and `quiz_id` (`quiz.quiz_id`) are equal |
 | a Main pointer `chat` with `system_type: "project_question_pointer"` | the pointer row | `task_id` and `quiz_id` are equal |
 | `photo`, `video`, `document` or `links` | `msg_type` equal to the frame's `type` | `task_id` and `ts` are equal |
+| `card` | `msg_type: "card"` | `card.card_id` is equal |
 | any other `chat` | a row with the same `is_progress`, `role` and `system_type` | `task_id`, `ts` and `content` = `text` are all equal |
 
 Only `role:"user"` rows merge by `client_message_id`: on a System frame it only correlates the answered submission and is not persisted, so stored System replies use the other-chat rule. Never match on `ts` or `task_id` alone: one task writes many rows with close timestamps, and the same words can come from different tasks.
@@ -323,6 +325,15 @@ The socket has no resume cursor: frames sent while you were disconnected are not
   - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
 - **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
+
+### Living cards
+
+Ouroboros can put an interactive card into its own message: a `card` frame (`CardOutbound`), in history a `msg_type: "card"` row. Both carry only the card's identity `card: {card_id, kind, title, revision}` and its plain `fallback_text` (the row's `text`), which a surface that cannot draw the card shows instead.
+- **Body.** `GET /api/cards/{card_id}` (`CardResponse`) returns the current card with exactly one body: `components`, a declarative tree drawn like a declarative widget (`docs/CREATING_SKILLS.md`) with `data` as the values its path fields read and no skill route; `widget`, `{skill, tab_id, input?}`, that skill's tab from `GET /api/widgets` drawn inline (it may no longer be live); or `app`, `{sha256, size, url}`. A card that is gone answers `404 card_not_found`: show the fallback text.
+- **Apps.** `GET /api/cards/{card_id}/app` returns the app's HTML as `text/plain` with `nosniff` and `no-store`. Run it only inside an opaque-origin sandboxed frame built from those bytes (`srcdoc`, never `allow-same-origin`) without network, never as a page of the core's origin. What the app produces goes into the owner's draft; only the owner's Send sends it.
+- **Changes.** A `card_state` frame (`CardStateOutbound`) says the card got a new body (`card.revision` grew) or a press was recorded (`submissions_summary`); read the card again. History keeps the row as first published; `GET /api/cards/{card_id}` is the current card.
+- **Presses** on a component card's `action` or `form` go to `POST /api/decisions` (§7).
+- **Keeping a card.** `POST /api/cards/{card_id}/pin` keeps a component card on the Widgets page as a snapshot (`CardPinResponse`); an app or widget card answers `409 card_not_pinnable` and the 51st pin `409 pins_full`. `DELETE /api/cards/{card_id}/pin` removes it. Both broadcast `extension_lifecycle` with `skill: "_cards"`. `GET /api/widgets` lists kept cards after the skills' widgets, with `skill: "_cards"`, `pinned_card: true` and the snapshot in `render`; their presses use the same decisions.
 
 ## 6. Projects and tasks
 
@@ -385,6 +396,8 @@ data: {"seq":12,"type":"task_result","task_id":"…","data":{…}}
 **Closing without answering.** For a root task's quiz, send the same endpoint and `decision_id` with a `request_id`, `action: "close"` and an optional `reason` of at most 2000 characters, without `option_index` or `comment`; a blank or omitted owner reason records `Closed by the owner without an answer.`, and a non-string or longer one answers `400 close_reason_invalid`. Closure shares the first-winner rule with answers; show the returned `state`, `closed_reason` and `question_delivery`: a recorded closure is no proof its author received it.
 
 **Removing unknown late delivery from current decisions.** For an answered quiz with unknown late-answer delivery, send `action: "dismiss"` with `decision_id` and `request_id` only (no answer, comment or reason). It removes only the outstanding delivery item, neither resending the answer nor marking it delivered; the recorded answer and unknown outcome stay in history. Another, ineligible state is refused; read the returned facts.
+
+**Pressing a living card's control.** Send the same endpoint with `decision_id` `card:<card_id>:<action_id>` (the control's `submit.id`), a `request_id`, and for a `form` its field values as `values` (field names to text of at most 4000 characters, numbers, booleans or null; at most 50); other values, or `values` on an `action`, answer `400 values_invalid`. Each press is its own record: the same `request_id` returns the recorded press with `duplicate: true` and retries a delivery still owed; a control declared `once` keeps only its first press, and a later one answers `409 card_action_once` with `winner`. `delivery` says where the press went: `delivered` into the authoring task's mailbox (not proof it was read), `forwarded` as the owner's own message in the card's chat because that task no longer reads mail, or `owed` (`202` with `reason_code`: resend the same `request_id`). `404 card_not_found` or `action_not_found` names a card or control that does not exist now; a replaced card can drop a control.
 
 **Other decisions.** Model-wait choices (`model_wait:<task_id>:<wait_id>`) and persisted routing choices (`routing:<client_message_id>:<token>`; no new routing pickers are produced) use the same endpoint and idempotency rule.
 

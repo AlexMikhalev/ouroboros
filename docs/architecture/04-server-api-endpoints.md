@@ -20,7 +20,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/skills/{skill}/publish-preflight` | |
 | GET | `/api/extensions/{skill}/manifest` | |
 | GET | `/api/extensions/{skill}/module/{entry:path}` | reviewed `.js`/`.mjs` from captured texts; `Access-Control-Allow-Origin: *` |
-| GET | `/api/widgets` | passive projection of live UI tabs; `Cache-Control: no-store` |
+| GET | `/api/widgets` | passive projection of live UI tabs and pinned cards; `Cache-Control: no-store` |
 | GET | `/api/extensions/{skill}/settings_section` | |
 | ANY | `/api/extensions/{skill}/{rest:path}` | extension dispatch (§13) |
 | GET | `/api/skills/daemons` | |
@@ -114,6 +114,10 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/tasks/{task_id}/continue` | (§6 Owner Continue after a technical interruption) |
 | POST | `/api/tasks/{task_id}/resume` | |
 | POST | `/api/decisions` | |
+| GET | `/api/cards/{card_id}` | a living card's current body and presses |
+| GET | `/api/cards/{card_id}/app` | app HTML as `text/plain`, `nosniff`, `no-store` |
+| POST | `/api/cards/{card_id}/pin` | keep a component card on Widgets |
+| DELETE | `/api/cards/{card_id}/pin` | |
 | GET | `/api/schedules` | |
 | POST | `/api/schedules` | |
 | POST | `/api/schedules/{schedule_id}/action` | explicit action and reason (§5 Schedules and follow-ups) |

@@ -49,7 +49,7 @@ PROJECTION_FAILED = "projection_failed"
 # Stored kinds chat.js shows as a bubble of their own whoever sent them: it
 # renders them before a child's words are routed to its card, and their
 # producers (message_bus ``send_photo`` ...) count every one.
-_STANDALONE_KINDS = ("document", "links", "photo", "video", "quiz")
+_STANDALONE_KINDS = ("document", "links", "photo", "video", "quiz", "card")
 # A read around one task (``around=task:<id>``, DESIGN "Room work status") holds a quarter of
 # each stream's quota before the task's earliest row in the room and the rest from it on.
 _AROUND_OLDER_SHARE = 4

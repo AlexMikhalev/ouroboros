@@ -171,6 +171,8 @@ TOOL_POLICY: Dict[str, str] = {
     "send_file": POLICY_SKIP,
     # Structured links cannot exceed the task's existing owner-chat delivery authority.
     "send_links": POLICY_SKIP,
+    # A card is owner-chat delivery too; an app runs only in the opaque sandbox frame.
+    "show_card": POLICY_SKIP,
     "presence_finish": POLICY_SKIP,
     "presence_cancel_work": POLICY_SKIP,
     "configure_presence": POLICY_SKIP,

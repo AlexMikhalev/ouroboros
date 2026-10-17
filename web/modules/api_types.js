@@ -904,6 +904,7 @@
  * @property {number} span
  * @property {number} grid_span
  * @property {string} revision
+ * @property {boolean=} pinned_card  // a kept living card (skill "_cards"); presses use the card: decision family
  */
 
 /**
