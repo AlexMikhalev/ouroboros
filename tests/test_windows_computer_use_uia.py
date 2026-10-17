@@ -560,6 +560,30 @@ def test_act_discloses_an_early_stop_after_a_slow_first_walk_then_fast_walks(mon
     assert "another walk at the last pace" in result["hint"] and "call element_act again" in result["hint"]
 
 
+def test_act_measures_an_early_stop_against_timeout_ms_not_the_grace_floor(monkeypatch):
+    # timeout_ms=500 already waits past itself to the 750 ms grace floor; that is
+    # no early stop and must not tell the agent to look again.
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    monkeypatch.setattr(win_uia, "POLL_PAUSE_S", 0.125)
+    calls = Calls()
+    root = dialog(calls, make(calls, "a", 50000, name="A"))
+    automation = Automation(root)
+
+    def fetch(hwnd, cache):
+        clock.now += 0.25
+        return root
+
+    automation.ElementFromHandleBuildCache = fetch
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "no such element"}, "do": "focus", "timeout_ms": 500})
+
+    result = win_uia.act_in_session(automation, plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "not_found" and result["polls"] == 2 and result["waited_ms"] == 625
+    assert "stopped_before_timeout_ms" not in result and "last_walk_ms" not in result
+    assert "call element_act again" not in result["hint"]
+
+
 @pytest.mark.parametrize("wake_at", [3.0, 3.2])
 def test_act_answers_from_the_last_walk_when_a_pause_reaches_or_oversleeps_the_deadline(monkeypatch, wake_at):
     # A scheduler can wake the pause late; a sweep started past the deadline would

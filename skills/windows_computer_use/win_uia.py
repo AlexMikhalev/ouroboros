@@ -809,8 +809,10 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
         return time.monotonic() + walk_s < deadline
 
     def disclose_wait_stop(answer, walk_s: float):
-        remaining_s = deadline - time.monotonic()
-        if plan.timeout_ms > 0 and remaining_s > 0:
+        # Against the caller's timeout_ms, not the grace-floored deadline; an ordinary
+        # end leaves up to one pause unused and is not an early stop.
+        remaining_s = started + plan.timeout_ms / 1000.0 - time.monotonic()
+        if plan.timeout_ms > 0 and remaining_s > POLL_PAUSE_S:
             answer["stopped_before_timeout_ms"] = int(remaining_s * 1000)
             answer["last_walk_ms"] = int(walk_s * 1000)
             answer["hint"] += (
