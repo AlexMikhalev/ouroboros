@@ -27,6 +27,8 @@ import pathlib
 import threading
 import time
 import uuid
+from contextvars import ContextVar
+from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional
 
 from ouroboros.utils import append_jsonl, truncate_for_log
@@ -35,6 +37,20 @@ CALL_STARTED = "tool_call_started"
 CALL_SETTLED = "tool_call"
 CALL_WAIT_ENDED = "tool_call_timeout"
 _FROZEN_KEYS = ("invocation_id", "tool_call_id", "task_attempt", "execution_id", "round_id", "llm_call_id", "args_source_ref", "args_source_status")
+_ACTIVE_CALL = ContextVar("active_tool_call", default=None)
+
+
+def current_tool_call_id() -> str:
+    return str((_ACTIVE_CALL.get() or {}).get("tool_call_id") or "")
+
+
+@contextmanager
+def invocation_scope(invocation):
+    token = _ACTIVE_CALL.set(invocation)
+    try:
+        yield
+    finally:
+        _ACTIVE_CALL.reset(token)
 
 
 def new_invocation(tool_call_id: Any, correlation: Dict[str, Any], task_attempt: Any) -> Dict[str, Any]:
