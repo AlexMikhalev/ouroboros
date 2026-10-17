@@ -2,24 +2,26 @@
 // engine home, working copies, project folders, Deliverables, the installed program), its date, the growth
 // since the count before it and the free space of the data folder's disk. `POST /api/storage/measure`
 // starts one complete count in a server child; `GET /api/storage` is its passive projection, polled only
-// while a count runs AND this tab is on screen; Stop kills the child. The bar is drawn only for a finished
+// while counting, listing or freeing (including trash deletion) AND this tab is on screen. The bar is drawn only for a finished
 // count (the owner's choice «Полоса и группы», 2026-10-05): five group shares that sum to the headline; a
 // running, stopped or failed count never replaces the saved one, so the bar and the list stay while a new
-// count runs. Unknown is never zero: a place that could not be listed has no size.
+// count runs. Unknown is never zero: a place that could not be listed has no size. The second card ends
+// in the Temporary space tray (storage_free.js): a pure preview of what the app's own retirers would
+// remove, one danger capsule last on the page, the shared confirm dialog, progress and result in place.
 
 import { apiClient } from './api_client.js';
+import { openConfirmDialog } from './confirm_dialog.js';
 import { fmt } from './i18n.js';
 import { showToast } from './toast.js';
 import { escapeHtmlAttr, escapeHtmlText } from './utils.js';
+import { DOTS, durationLabel, formatBytes, isSize, number, plural, signedBytes as signed, whenLabel } from './storage_format.js';
+import { confirmCopy, groupsOf, notStarted, trayHtml, trayState } from './storage_free.js';
+
+export { durationLabel, formatBytes, whenLabel };
 
 const POLL_MS = 1000;
 const text = escapeHtmlText;
 const attr = escapeHtmlAttr;
-// Counts in one fixed format, like the file counts of result_files.js; never the browser's locale.
-const number = (n) => Number(n || 0).toLocaleString('en-US');
-const plural = (n, one, many) => (Number(n) === 1 ? fmt(one, { n }) : fmt(many, { n, count: number(n) }));
-// The house working indicator (three dots), beside the sentence that says what is working.
-const DOTS = '<span class="chat-live-typing" aria-hidden="true"><span></span><span></span><span></span></span>';
 
 /** The five groups of the bar and the list, in display order (server `place.group`). */
 export const STORAGE_GROUPS = [
@@ -50,40 +52,6 @@ const PLACE_WORDS = {
 // ---------------------------------------------------------------------------
 // Pure presentation
 // ---------------------------------------------------------------------------
-
-const isSize = (value) => typeof value === 'number' && Number.isFinite(value);
-
-/** Decimal units, one decimal below 10 of a unit (1.0 MB, 1.4 MB, 12 MB, 4.0 TB) so neighbouring rows stay
- *  distinguishable. Null or non-numeric stays empty: unknown is never zero. */
-export function formatBytes(bytes) {
-    if (!isSize(bytes)) return '';
-    if (bytes < 1e3) return plural(bytes, '{n} byte', '{count} bytes');
-    // The unit is chosen after rounding, so 999.96 GB reads 1.0 TB rather than 1000 GB.
-    const [unit, size] = bytes >= 999.5e9 ? ['TB', 1e12] : bytes >= 999.5e6 ? ['GB', 1e9] : bytes >= 999.5e3 ? ['MB', 1e6] : ['KB', 1e3];
-    const value = bytes / size;
-    return `${value < 9.95 ? value.toFixed(1) : Math.round(value)} ${unit}`;
-}
-
-const signed = (bytes) => `${bytes < 0 ? '−' : '+'}${formatBytes(Math.abs(bytes))}`;
-
-/** One fixed date and time format inside the English sentence ("today at 18:40", "16 Oct at 18:10"),
- *  never the browser locale, which mixed languages in one line. */
-export function whenLabel(iso, now = new Date()) {
-    const date = new Date(iso);
-    if (!iso || Number.isNaN(date.getTime())) return '';
-    const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-    if (date.toDateString() === now.toDateString()) return fmt('today at {time}', { time });
-    return fmt('{date} at {time}', { date: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), time });
-}
-
-export function durationLabel(seconds) {
-    const value = Number(seconds);
-    if (!Number.isFinite(value) || value < 0) return '';
-    if (value < 60) return fmt('{seconds} s', { seconds: value < 10 ? value.toFixed(1) : String(Math.round(value)) });
-    const minutes = Math.round(value / 60);
-    if (minutes < 60) return fmt('{minutes} min', { minutes });
-    return fmt('{hours} h {minutes} min', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
-}
 
 const words = (place) => PLACE_WORDS[place?.id] || { label: String(place?.id || ''), why: '' };
 
@@ -291,9 +259,11 @@ function placesHtml(response) {
         <ul class="storage-groups">${groupRows(placeRows(count, days)).map(groupHtml).join('')}</ul>`;
 }
 
-/** The whole view for one response: markup per region, the measure action's label and busy flag, and
- *  whether Stop is offered. */
-export function renderStorage(response, { pending = false, readFailed = false, now = new Date() } = {}) {
+export const freeOf = (response) => response?.free || { state: 'idle', groups: [], run: null, error: null, done: 0, total: 0 };
+
+/** The whole view for one response: markup per region, the measure action's label and busy flag, whether
+ *  Stop is offered, and the tray for the owner's checklist state (`tray: {checked, dismissed}`). */
+export function renderStorage(response, { pending = false, readFailed = false, now = new Date(), tray = null } = {}) {
     const state = storageState(response);
     const counting = state === 'counting' || (pending && !response?.count);
     const busy = Boolean(pending || response?.counting);
@@ -302,6 +272,7 @@ export function renderStorage(response, { pending = false, readFailed = false, n
         state,
         summary: summaryHtml(response, { readFailed, now }),
         places: placesHtml(response),
+        tray: response ? trayHtml(freeOf(response), tray || { checked: new Set(), dismissed: false }, response.retention_days ?? 7) : '',
         measure: { label, busy },
         stop: Boolean(response?.counting),
     };
@@ -343,6 +314,7 @@ export function initStorage({ state, mount } = {}) {
                 </section>
                 <section class="storage-panel ui-card" aria-label="Where it is" data-storage-panel hidden>
                     <div data-storage-places></div>
+                    <div class="storage-tray" data-storage-tray></div>
                 </section>
             </div>
         </div>
@@ -351,8 +323,12 @@ export function initStorage({ state, mount } = {}) {
     const regions = {
         summary: page.querySelector('[data-storage-summary]'),
         places: page.querySelector('[data-storage-places]'),
+        tray: page.querySelector('[data-storage-tray]'),
     };
     const panel = page.querySelector('[data-storage-panel]');
+    // The owner's checklist: a new preview starts with every group checked, a group listed later too; the
+    // choices hold until the next preview. Cancel hides the list without asking the server anything.
+    const ui = { checked: new Set(), known: new Set(), checkedFor: null, dismissed: false };
     // The measure node is never replaced, and a running count marks it aria-disabled rather than disabled,
     // so keyboard focus stays on it through a count and every repaint.
     const measureButton = page.querySelector('[data-storage-action="measure"]');
@@ -369,10 +345,22 @@ export function initStorage({ state, mount } = {}) {
     const onScreen = () => !document.hidden && state?.activePage === 'dashboard' && state?.dashboardActiveSubtab === 'storage';
 
     function paint() {
-        const view = renderStorage(response, { pending, readFailed });
+        const free = freeOf(response);
+        if (free.started_at !== ui.checkedFor) {
+            ui.checkedFor = free.started_at;
+            ui.checked = new Set();
+            ui.known = new Set();
+        }
+        for (const group of groupsOf(free)) {
+            if (ui.known.has(group.id)) continue;
+            ui.known.add(group.id);
+            ui.checked.add(group.id);
+        }
+        const view = renderStorage(response, { pending, readFailed, tray: ui });
         patch(regions.summary, view.summary, painted);
         patch(regions.places, view.places, painted);
-        panel.hidden = !view.places;
+        patch(regions.tray, view.tray, painted);
+        panel.hidden = !response;
         if (measureButton.textContent !== view.measure.label) measureButton.textContent = view.measure.label;
         measureButton.setAttribute('aria-disabled', view.measure.busy ? 'true' : 'false');
         if (view.measure.busy) measureButton.setAttribute('aria-busy', 'true');
@@ -394,9 +382,12 @@ export function initStorage({ state, mount } = {}) {
         stopPolling();
     }
 
+    const working = () => Boolean(response?.counting) || ['listing', 'running'].includes(freeOf(response).state)
+        || freeOf(response).run?.deleting > 0;
+
     function schedule() {
         stopPolling();
-        if (!disposed && response?.counting && onScreen()) timer = setTimeout(refresh, POLL_MS);
+        if (!disposed && working() && onScreen()) timer = setTimeout(refresh, POLL_MS);
     }
 
     /** A read that names the count it holds gets no `count`: the held one stays. */
@@ -457,10 +448,47 @@ export function initStorage({ state, mount } = {}) {
     }
 
     const stopCount = () => act(() => apiClient.cancelStorageMeasure(), 'The count could not be stopped.');
+    const stopFree = () => act(() => apiClient.cancelStorageFree(), 'Freeing could not be stopped.');
+
+    function preview() {
+        ui.dismissed = false;
+        return act(() => apiClient.previewStorageFree(), 'Temporary space could not be listed. Nothing was removed.');
+    }
+
+    /** The shared confirm dialog, then one POST naming the plan and the checked groups. */
+    async function confirmFree() {
+        const free = freeOf(response);
+        const groups = groupsOf(free).filter((group) => ui.checked.has(group.id)).map((group) => group.id);
+        if (trayState(free, ui.dismissed) !== 'ready' || !groups.length || pending) return;
+        const confirmed = await openConfirmDialog(confirmCopy(free, ui.checked));
+        if (!confirmed || disposed) return;
+        await act(async () => {
+            const next = await apiClient.freeStorage(free.plan, groups);
+            if (next?.started === false) showToast(notStarted(next.reason), 'warn');
+            return next;
+        }, 'Nothing was removed.');
+    }
 
     const onClick = (event) => {
         if (event.currentTarget === measureButton) void measure();
         else if (event.currentTarget === stopButton) void stopCount();
+    };
+    const onTrayClick = (event) => {
+        const target = event.target?.closest?.('button');
+        if (!target || target.disabled) return;
+        if (target.hasAttribute('data-free-preview')) void preview();
+        else if (target.hasAttribute('data-free-cancel')) {
+            ui.dismissed = true;
+            paint();
+        } else if (target.hasAttribute('data-free-go')) void confirmFree();
+        else if (target.hasAttribute('data-free-stop')) void stopFree();
+    };
+    const onTrayChange = (event) => {
+        const box = event.target?.closest?.('[data-free-group]');
+        if (!box) return;
+        if (box.checked) ui.checked.add(box.dataset.freeGroup);
+        else ui.checked.delete(box.dataset.freeGroup);
+        paint();
     };
     const onSubtab = (event) => {
         if (event?.detail?.tab === 'storage' && onScreen()) void refresh();
@@ -472,6 +500,8 @@ export function initStorage({ state, mount } = {}) {
     };
     measureButton.addEventListener('click', onClick);
     stopButton.addEventListener('click', onClick);
+    regions.tray.addEventListener('click', onTrayClick);
+    regions.tray.addEventListener('change', onTrayChange);
     window.addEventListener('ouro:dashboard-subtab-shown', onSubtab);
     window.addEventListener('ouro:page-shown', onPage);
     document.addEventListener('visibilitychange', onPage);
@@ -482,6 +512,8 @@ export function initStorage({ state, mount } = {}) {
         cancelRead();
         measureButton.removeEventListener('click', onClick);
         stopButton.removeEventListener('click', onClick);
+        regions.tray.removeEventListener('click', onTrayClick);
+        regions.tray.removeEventListener('change', onTrayChange);
         window.removeEventListener('ouro:dashboard-subtab-shown', onSubtab);
         window.removeEventListener('ouro:page-shown', onPage);
         document.removeEventListener('visibilitychange', onPage);

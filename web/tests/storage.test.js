@@ -43,7 +43,8 @@ const count = (overrides = {}) => ({
     growth_bytes: 52 * GB, growth_since: '2026-10-16T15:10:05Z',
     ...overrides,
 });
-const response = (overrides = {}) => ({ count: null, counting: null, error: null, volume, retention_days: 7, ...overrides });
+const free = { state: 'idle', plan: null, started_at: null, finished_at: null, done: 0, total: 0, groups: [], run: null, error: null };
+const response = (overrides = {}) => ({ count: null, counting: null, error: null, volume, retention_days: 7, free, ...overrides });
 const counting = (overrides = {}) => ({
     started_at: '2026-10-17T16:05:10Z', place: 'engine', current: 'projects', places_done: 1, places_total: 12,
     bytes: 182 * GB, files: 1_200_000, done: [{ name: 'model_calls', bytes: 156 * GB, files: 9 }], ...overrides,
@@ -175,6 +176,15 @@ test('before any count the empty state names what Measure does; a failed read ke
     assert.match(renderStorage(null, { readFailed: true }).summary, /Could not be read/);
     const stale = renderStorage(response({ count: count() }), { readFailed: true, now: NOW });
     assert.match(stale.summary, /400 GB[\s\S]*Storage status could not be read\. Showing the last answer\./);
+});
+
+test('the second card carries the tray whenever an answer exists, idle before any count', () => {
+    const never = renderStorage(response(), { now: NOW });
+    assert.match(never.tray, /Temporary space[\s\S]*Show what can go/);
+    assert.equal(renderStorage(null).tray, '');
+    const counted = renderStorage(response({ count: count() }), { now: NOW, tray: { checked: new Set(), dismissed: false } });
+    assert.match(counted.tray, /Copies the app already removes on its own/);
+    assert.doesNotMatch(counted.tray, AVOIDED);
 });
 
 test('titles and accessible names are fixed chrome: no size or name is minted per count', () => {

@@ -5015,6 +5015,51 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .storage-parts-list > li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); overflow-wrap: anywhere; }
 .storage-parts-rest { justify-content: flex-start; }
 
+/* Temporary space: the tray closing the list card (layout B1). */
+.storage-tray { display: grid; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--surface-border); }
+.storage-tray:empty { display: none; }
+.storage-tray p { margin: 0; }
+.storage-tray-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-1) var(--space-3); }
+.storage-tray-sum { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); font-weight: 600; }
+.storage-tray-text { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); }
+.storage-free-groups { display: grid; margin: 0; padding: 0; list-style: none; }
+.storage-free-group {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    column-gap: var(--space-2);
+    row-gap: 2px;
+    align-items: baseline;
+    padding-block: var(--space-2);
+    border-top: 1px solid var(--surface-border-soft);
+}
+/* The checkbox sits on the name's first line, also when the name wraps. */
+.storage-free-group > .ui-checkbox { grid-column: 1; grid-row: 1; align-self: start; margin-top: calc((var(--type-body) * var(--line-body) - 14px) / 2); }
+.storage-free-label {
+    grid-column: 2;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: var(--type-body);
+    line-height: var(--line-body);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.storage-free-size { grid-column: 3; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); white-space: nowrap; }
+.storage-free-why { grid-column: 2 / -1; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+/* One offered group: no checkbox column, the name is plain text. */
+.storage-free-groups.is-single > .storage-free-group { grid-template-columns: minmax(0, 1fr) auto; }
+.storage-free-groups.is-single .storage-free-label { grid-column: 1; cursor: auto; }
+.storage-free-groups.is-single .storage-free-size { grid-column: 2; }
+.storage-free-groups.is-single .storage-free-why { grid-column: 1 / -1; }
+.storage-tray .storage-largest { margin-top: 0; border-top: 0; padding-top: 0; }
+.storage-largest > .storage-meta { margin-top: var(--space-2); }
+.storage-largest-list { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.storage-largest-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-3); }
+.storage-largest-name { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); overflow-wrap: anywhere; }
+.storage-largest-size { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); white-space: nowrap; }
+.storage-largest-group { grid-column: 1 / -1; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+.storage-tray > .storage-actions > .storage-meta { margin: 0; }
+
 /* A phone stacks everything: full-width capsules, Measure first, Stop under it; size on the name's
    line, growth under it. */
 @media (max-width: 640px) {
@@ -5026,6 +5071,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     .storage-group-head > .storage-place-delta { grid-column: 2 / -1; text-align: start; }
     .storage-place.is-member { grid-template-columns: minmax(0, 1fr) auto; }
     .storage-place.is-member > .storage-place-delta { grid-column: 1 / -1; text-align: start; }
+    .storage-free-groups.is-single > .storage-free-group { grid-template-columns: minmax(0, 1fr) auto; }
 }
 /* === design-system:migrated-end === */
 

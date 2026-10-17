@@ -18,6 +18,10 @@ pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 AVOIDED = ("At least", "Excluded", "System data", "Junk", "Clean ", "Prune", "%")
 
 
+def _file_snapshots(paths):
+    return {path: (path.stat().st_mtime_ns, path.read_bytes()) for path in paths}
+
+
 def _assert_bar_fills_its_card(page):
     """The five group shares sum to the headline: the segments fill the bar, none is clipped."""
     bar = page.locator(".storage-bar").bounding_box()
@@ -111,6 +115,27 @@ def test_storage_dashboard_real_server_consumer(direct_server_with_data, request
         page.locator('[data-storage-place="model_calls"] summary').click()
         expect(page.locator('[data-storage-place="model_calls"] .storage-parts-list')).to_be_visible()
 
+        # Temporary space: the tray's door previews without side effects over the real server; with no
+        # finished work in this install the list is empty and the door stays.
+        # The server and its worker write housekeeping even while idle (including memory bootstrap).
+        # Compare the test-owned data and saved count here. test_preview_is_pure separately checks the
+        # entire isolated tree and spies on every settlement/write seam without concurrent writers.
+        protected = [path for path, _size in markers.values()] + [data_dir / "state" / "storage_measurement.json"]
+        before = _file_snapshots(protected)
+        tray = page.locator("[data-storage-tray]")
+        expect(tray).to_contain_text("Copies the app already removes on its own")
+        assert page.locator("[data-storage-tray] .btn-danger").count() == 0
+        with page.expect_response(lambda response: response.url.endswith("/api/storage/free/preview"), timeout=10_000) as previewed:
+            page.locator("[data-free-preview]").click()
+        assert previewed.value.status == 202 and previewed.value.json()["started"] is True
+        expect(tray).to_contain_text("Nothing temporary is waiting", timeout=30_000)
+        expect(page.locator("[data-free-preview]")).to_be_visible()
+        after = _file_snapshots(protected)
+        assert after == before, "the preview changed no task data or saved count"
+        supervisor_rows = [json.loads(line) for line in (data_dir / "logs" / "supervisor.jsonl").read_text().splitlines()]
+        assert not any(row.get("type") == "storage_free" for row in supervisor_rows), "preview must not record a free run"
+        assert posts == ["measure", "preview"]
+
         # A transient read failure keeps the last count beside the failure.
         failed = {"remaining": 1}
 
@@ -136,6 +161,7 @@ def test_storage_dashboard_real_server_consumer(direct_server_with_data, request
             if page.locator("#nav-drawer-backdrop").is_visible():
                 page.locator("#nav-drawer-backdrop").click(position={"x": 380, "y": 20})
             page.wait_for_timeout(300)
+        page.wait_for_function("document.querySelector('#primary-sidebar').getBoundingClientRect().right <= 1")
         page.screenshot(path=str(evidence / "storage-narrow.png"), full_page=True)
         body = page.locator("#page-storage .costs-scroll")
         overflow = body.evaluate("node => node.scrollWidth - node.clientWidth")

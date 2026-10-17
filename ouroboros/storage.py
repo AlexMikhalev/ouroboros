@@ -52,6 +52,8 @@ try:  # Python 3.11+
 except ImportError:  # pragma: no cover - CI supports Python 3.10.
     from typing_extensions import NotRequired, TypedDict  # type: ignore[assignment]
 
+from ouroboros.storage_free import StorageFree  # the tray's envelope, homed with its owner; resolved for the contract schema
+
 log = logging.getLogger(__name__)
 
 PURPOSE = "storage"  # the custody purpose and the module the child runs
@@ -165,15 +167,18 @@ class StorageError(TypedDict):
 
 
 class StorageResponse(TypedDict):
-    """``GET /api/storage``; the measure and cancel POSTs answer it too (``started`` on measure).
-    ``count`` is omitted when ``?count=<finished_at>`` names the latest finished count."""
+    """``GET /api/storage``; the measure, cancel and free POSTs answer it too (``started`` on measure
+    and free, ``reason`` when a free run did not start). ``count`` is omitted when
+    ``?count=<finished_at>`` names the latest finished count; ``free`` is ``storage_free``'s tray."""
 
     count: NotRequired[Optional[StorageCount]]
     counting: Optional[StorageCounting]
     error: Optional[StorageError]
     volume: StorageVolume
     retention_days: int
+    free: "StorageFree"
     started: NotRequired[bool]
+    reason: NotRequired[str]
 
 
 class StorageUnavailable(Exception):
@@ -627,9 +632,13 @@ class StorageCounter:
                 self._saved_key, self._saved = key, (load_saved(data_root) if key[1] is not None else None)
             return self._saved
 
-    def projection(self, data_root: Any, *, count_token: Optional[str] = None) -> StorageResponse:
-        """Passive: the saved count with growth, the running count, the last error and fresh free
-        space; ``count_token`` equal to the latest ``finished_at`` omits the unchanged count."""
+    def projection(self, data_root: Any, *, count_token: Optional[str] = None,
+                   free: Optional[Any] = None) -> StorageResponse:
+        """Passive: the saved count with growth, the running count, the last error, fresh free space
+        and the free-space tray (``free``: a ``storage_free.FreeSpace``, the module's own by default);
+        ``count_token`` equal to the latest ``finished_at`` omits the unchanged count."""
+        from ouroboros import storage_free
+
         saved = self.saved(data_root)
         latest = with_growth(saved["latest"], saved["previous"]) if saved else None
         with self._lock:
@@ -637,7 +646,7 @@ class StorageCounter:
             error = dict(self._error) if self._error else None
         response: StorageResponse = {  # type: ignore[typeddict-item]
             "counting": counting, "error": error, "volume": _volume(data_root),
-            "retention_days": _retention_days(),
+            "retention_days": _retention_days(), "free": (free or storage_free.free).projection(data_root),
         }
         if not (latest and count_token and count_token == latest["finished_at"]):
             response["count"] = latest

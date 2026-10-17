@@ -389,7 +389,9 @@ def test_get_projection_is_passive_and_fresh_free_space_is_read_each_time(tmp_pa
     monkeypatch.setattr(os, "scandir", lambda path: listings.append(path) or real(path))
     before = sorted((str(path), path.stat().st_mtime_ns) for path in data.rglob("*"))
     projection = counter.projection(data)
-    assert projection == {"counting": None, "error": None, "volume": projection["volume"], "retention_days": projection["retention_days"], "count": None}
+    assert projection == {"counting": None, "error": None, "volume": projection["volume"], "retention_days": projection["retention_days"],
+                          "count": None, "free": projection["free"]}
+    assert projection["free"]["state"] == "idle"
     assert isinstance(projection["volume"]["free_bytes"], int) and isinstance(projection["retention_days"], int)
     assert listings == [] and sorted((str(path), path.stat().st_mtime_ns) for path in data.rglob("*")) == before
 
@@ -624,6 +626,9 @@ def test_storage_route_surface(tmp_path):
         ("/api/storage", frozenset({"GET", "HEAD"})),
         ("/api/storage/measure", frozenset({"POST"})),
         ("/api/storage/measure/cancel", frozenset({"POST"})),
+        ("/api/storage/free/preview", frozenset({"POST"})),
+        ("/api/storage/free", frozenset({"POST"})),
+        ("/api/storage/free/cancel", frozenset({"POST"})),
     }
 
 
@@ -641,7 +646,7 @@ def test_mounted_storage_routes_read_passively_until_the_owner_measures(tmp_path
     spawned = _fake_spawn(monkeypatch, [b'{"event":"progress","place":"engine","current":"","places_done":1,"places_total":12,"bytes":1,"files":1,"done":[]}\n'], hold=hold)
     monkeypatch.setattr(storage, "count", StorageCounter())
     routes = [route for route in collect_routes(data_dir=data) if getattr(route, "path", "").startswith("/api/storage")]
-    assert len(routes) == 3
+    assert len(routes) == 6
     # The owner's cancel writes one supervisor row (logs/); nothing else under the data folder may change.
     snapshot = lambda: sorted((str(path), path.stat().st_mtime_ns) for path in data.rglob("*")  # noqa: E731
                               if "logs" not in path.relative_to(data).parts)
@@ -656,7 +661,8 @@ def test_mounted_storage_routes_read_passively_until_the_owner_measures(tmp_path
             assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
             body = response.json()
             assert body["count"] is None and body["counting"] is None and body["error"] is None
-            assert set(body) == {"count", "counting", "error", "volume", "retention_days"}
+            assert set(body) == {"count", "counting", "error", "volume", "retention_days", "free"}
+            assert body["free"]["state"] == "idle"
         assert listings == [], "a GET must not walk the data folder"
 
         started = client.post("/api/storage/measure")
@@ -691,11 +697,15 @@ def test_storage_envelopes_have_a_field_identical_browser_twin():
     from tests.test_gateway_parity import _js_typedef_fields
 
     text = (WEB / "storage_types.js").read_text(encoding="utf-8")
+    from ouroboros import storage_free
+
     names = [name for name in contracts.__all__ if name.startswith("Storage")]
     assert names == ["StorageCount", "StorageCounting", "StorageError", "StoragePart", "StoragePlace", "StorageResponse",
-                     "StorageRest", "StorageVolume"]
+                     "StorageRest", "StorageVolume", "StorageFree", "StorageFreeGroup", "StorageFreeItem", "StorageFreeKept",
+                     "StorageFreeRequest", "StorageFreeRun"]
     for name in names:
-        assert getattr(contracts, name) is getattr(storage, name)
+        home = storage_free if name.startswith("StorageFree") else storage
+        assert getattr(contracts, name) is getattr(home, name)
         assert _js_typedef_fields(text, name) == set(getattr(contracts, name).__annotations__), name
     assert "storage_types.js" in (WEB / "api_types.js").read_text(encoding="utf-8").splitlines()[0]
     assert not re.search(r"@typedef \{Object\} Storage", (WEB / "api_types.js").read_text(encoding="utf-8"))

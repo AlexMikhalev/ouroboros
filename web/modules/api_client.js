@@ -477,6 +477,23 @@ export const apiClient = {
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
     cancelStorageMeasure: () => jsonPost('/api/storage/measure/cancel', {}),
+    /**
+     * List, without side effects, the finished work the app's own retirers would remove now (202; a second
+     * preview joins the running one).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    previewStorageFree: () => jsonPost('/api/storage/free/preview', {}),
+    /**
+     * Free exactly the previewed items of the chosen groups under the named plan (202; `started` and
+     * `reason` say whether it ran).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    freeStorage: (plan, groups) => jsonPost('/api/storage/free', { plan, groups }),
+    /**
+     * Stop the listing or the run; what was freed stays freed.
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    cancelStorageFree: () => jsonPost('/api/storage/free/cancel', {}),
     /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
     /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
