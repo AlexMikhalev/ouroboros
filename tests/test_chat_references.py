@@ -1,4 +1,6 @@
 """Reply facts and addresses name persisted rows, independently of their transport/view."""
+import json
+
 import pytest
 
 from ouroboros import dialogue_store
@@ -106,7 +108,7 @@ def test_reply_to_authored_completion_mirror_quotes_the_shown_answer(tmp_path, m
     task = {"id": "reply", "type": "task", "metadata": {"reply_reference": reference}}
     model = json.loads(build_runtime_section(_make_health_env(tmp_path / "env"), task).split("\n\n", 1)[1])
     assert model["reply_to"]["snippet"] == reference["snippet"]
-    raw = json.loads((tmp_path / "logs/chat.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    raw = dialogue_test.chat_rows(tmp_path)[0]  # the stored row, as the dialogue store keeps it
     assert raw["text"] == "Project / Done / open room" and raw["direction"] == "system"
     assert raw["completion_answer"] == answer and format_address(row_address(raw)) == address
 
