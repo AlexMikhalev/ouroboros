@@ -381,10 +381,14 @@ def resolve_owner_message_source(drive_root: Any, ref: Dict[str, Any]) -> Option
     if client_id:
         candidates = ds.iter_probes(drive_root, "chat", [("client_message_id", client_id)], newest_first=True)
     elif ts:
-        candidates = reversed(ds.rows_by_identity(drive_root, chat_id, ts))
+        candidates = ds.rows_by_identity(drive_root, chat_id, ts)
+        if chat_id == 1:  # the legacy owner-source convention for a missing/invalid chat id
+            candidates += ds.rows_by_identity(drive_root, None, ts)
+        candidates = sorted(candidates, key=lambda entry: entry.seq, reverse=True)
     else:
         # Pre-identity bindings named only a chat and a text checksum.
-        candidates = ds.iter_probes(drive_root, "chat", [("chat_id", chat_id)], newest_first=True)
+        keys = [("chat_id", chat_id)] + ([("chat_id", None)] if chat_id == 1 else [])
+        candidates = ds.iter_probes(drive_root, "chat", keys, newest_first=True)
     for entry in candidates:
         if ref_key in _entry_source_identities(entry.row):
             return dict(entry.row)

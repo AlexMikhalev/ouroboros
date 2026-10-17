@@ -202,3 +202,27 @@ def test_initialization_reads_existing_dialogue_evidence_and_never_creates_a_sto
     ds.path(tmp_path).write_bytes(b"unreadable dialogue store")
     assert supervisor_evidence(tmp_path)[0] == "unknown"
     assert initialization_decision(tmp_path)["reason"] == "initialization_evidence_unknown"
+
+
+@pytest.mark.parametrize("named_time", [False, True])
+def test_legacy_owner_binding_keeps_the_missing_chat_id_convention(tmp_path, named_time):
+    row = owner()
+    row.pop("chat_id")
+    ds.append(tmp_path, "chat", row)
+    ds.append(tmp_path, "chat", owner("foreign", chat_id=22))
+    ref = build_owner_message_ref(chat_id=1, client_message_id="", ts=row["ts"] if named_time else "", text=row["text"])
+    assert resolve_owner_message_source(tmp_path, ref) == row
+    assert resolve_owner_message_source(tmp_path, {**ref, "text_sha256": "0" * 64}) is None
+
+
+def test_mismatched_import_is_not_coverage_or_absence(tmp_path):
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner()]})
+    ds.ensure(tmp_path)
+    [segment] = di.pending_segments(tmp_path)
+    path = tmp_path / "archive" / segment["name"]
+    path.write_text("changed after cutover\n", encoding="utf-8")
+    di.import_segment(tmp_path, "chat", segment["name"])
+    assert ds.range_coverage(tmp_path, "chat") == {"imported": False, "pending": 0, "mismatch": 1}
+    with pytest.raises(ds.StoreError, match="could not be imported"):
+        ds.require_imported(tmp_path, "chat")
+    assert ds.range_coverage(tmp_path, "chat", lower=segment["base"] + segment["size"])["imported"]
