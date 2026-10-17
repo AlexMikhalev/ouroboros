@@ -267,6 +267,7 @@ BAND_PATHS = {
     "tests/test_usage_accounting.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
     "tests/test_worker_crash_retry.py": "Exercises deferred health recovery through real child terminal persistence, same-attempt source custody and the existing crash policy; preserves one focused fixture owner.",
+    "tests/test_worker_demand.py": "Worker-demand consumer tests share one pool fixture across readiness, parking and replacement; two existing owner-Pause checkpoints now supply their required clock inputs without splitting the coupled scenarios.",
     "tests/ui_chat_viewport_smoke.py": "Entered the band from 992 lines: the terminal-summary shrink bound gained its calibration rationale for the owner-approved 16px chat scale (frontend sprint 2026-09-01).",
     "web/app.js": "Sidebar activity adds in-place marker and accessible-name updates to the existing navigation owner and connects the shared snapshot sequencer to transport failures. Pure census/status interpretation stays in project_activity.js; moving these DOM bindings would split navigation ownership.",
     "web/modules/chat_decision.js": "Exact Main question navigation extends the existing canonical question reader, room binding and late-read ownership rather than creating a second loader.",
