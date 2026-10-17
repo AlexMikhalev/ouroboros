@@ -38,6 +38,7 @@ def _obsolete_host_rows(messages: Sequence[Mapping[str, Any]]) -> set[int]:
     from ouroboros.loop_messages import CONTEXT_FACTS_NAME
     from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
     from ouroboros.review_history_view import obsolete_review_index_positions
+    from ouroboros.skill_context_snapshot import obsolete_snapshot_positions
 
     obsolete = set()
     for full_name, names in ((CONTEXT_FACTS_NAME, {CONTEXT_FACTS_NAME}),
@@ -48,7 +49,7 @@ def _obsolete_host_rows(messages: Sequence[Mapping[str, Any]]) -> set[int]:
                       and compaction._plain_text(row.get("content"))), default=-1)
         obsolete.update(i for i, row in enumerate(messages[:max(0, latest)])
                         if row.get("role") == "user" and row.get(HOST_CONTEXT_KIND_KEY) in names)
-    return obsolete | set(obsolete_review_index_positions(messages))
+    return obsolete | set(obsolete_review_index_positions(messages)) | obsolete_snapshot_positions(messages)
 
 
 def _exposed_units(messages: list, units: Sequence[_AtomicUnit], observation: Mapping[str, Any]) -> set[str]:

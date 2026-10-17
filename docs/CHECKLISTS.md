@@ -770,7 +770,7 @@ buckets, nested manifests, and path escapes remain refused.
 
 ### Output contract
 
-Reviewers return a JSON array covering every item below (16 items total).
+Reviewers return a JSON array covering every item below.
 Each entry carries `item`, `verdict` (`PASS`/`FAIL`), `severity`
 (`critical`/`advisory`), and `reason`. If one item has multiple distinct
 concrete problems, reviewers may return multiple `FAIL` entries for that
@@ -799,6 +799,7 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
 | 14 | integration_preflight | Does the skill include cheap local preflight checks for the APIs/files/runtimes it depends on before spending provider budget or starting long work? Missing preflight for fragile external integrations is an advisory FAIL. | advisory |
 | 15 | bug_hunting | Are there obvious runtime bugs in reviewed code: wrong filenames, mismatched manifest script names, missing imports, impossible arguments, JSON/schema mismatches, blocking calls in async handlers, or untested happy-path assumptions? For every FAIL, cite the concrete runtime bug and state how you propose to fix it (file/symbol/change), so the author can apply the correction instead of guessing. Concrete likely runtime breakage should use `severity=critical`; latent issues, provider fragility, minor cleanup, or dead-code concerns should use `severity=advisory`. | severity-driven |
 | 16 | completion_notification | For long-running or user-visible work, does the skill emit or document a completion/failure notification path (for example a host event, `events.jsonl` append, or clear stdout marker consumed by Ouroboros)? A skill that must reach the owner directly (a reminder, a finished external job) declares `notify_owner` and hands the host one bounded sentence through `POST /notify`, shown as a signed System row in the owner's chat — judged as under item 9: attributable, bounded, user-facing, and never a way to inject conversation. Mark PASS with reason "Not applicable" for tiny synchronous utilities. | advisory |
+| 17 | context_snapshot_discipline | For `context_snapshot`: are the declared local snapshots compact deterministic facts, with honest dates/units/unknowns, no instructions, secrets or relative-age counters? Check atomic publication, the complete UTF-8 file bound and withdrawal on expiry/revocation (CREATING_SKILLS “Passive context snapshots”); no network, model or refresh belongs on prompt preparation. Mark other skills Not applicable. | severity-driven when applicable |
 
 ### Severity rules
 
@@ -829,7 +830,7 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
   `permissions_honesty`, `no_repo_mutation`, `path_confinement`,
   `env_allowlist`, `inject_chat_minimization`,
   `event_subscription_minimization`, and `host_token_handling`.
-- Items 7, 8, 11, and 15 are severity-driven. A `FAIL` with
+- Items 7, 8, 11, 15 and 17 are severity-driven. A `FAIL` with
   `severity=critical` produces `blockers`; a `FAIL` with
   `severity=advisory` produces `warnings`. Reviewers MUST reserve
   critical severity for concrete dangerous or runtime-breaking cases

@@ -1,6 +1,6 @@
 # 13. External Skills Layer
 
-The skill plane outside the runtime package lives here: where native and marketplace payloads live, the independent gates between installation and execution, and how archive installs, declared dependencies, extension staging and the bundled Telegram transport are admitted. Discovery, review, grants, dependency readiness and enablement stay separate facts, because collapsing any two turns a UI toggle into execution authority.
+External payloads, dependencies, staging and Telegram. Discovery, review, grants, dependency readiness and enablement are independent: a toggle proves no execution authority. Granted context snapshots reuse §6; protocol: `CREATING_SKILLS.md`.
 
 ### Skill gates
 
