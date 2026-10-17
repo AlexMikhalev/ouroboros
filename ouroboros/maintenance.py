@@ -164,10 +164,10 @@ def _temp_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], ch
 
 
 def _temp_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
-    """The atomic writers' directories only (``utils.ATOMIC_TEMP_DIRS``), never the whole root or
+    """The atomic writers' directories only (``temp_sweep.ATOMIC_TEMP_DIRS``), never the whole root or
     ``observability/``; the age guard keeps any in-flight write's temp. The startup sweep of the
     ``tmp_scripts`` fallback (no script can be live then) stays the server's."""
-    from ouroboros.utils import sweep_stale_temp_files
+    from ouroboros.temp_sweep import sweep_stale_temp_files
 
     removed = sweep_stale_temp_files(root, scripts=False)
     maintenance_jobs.record(root, "temp_sweep", state="done", release=_release(), removed=removed)

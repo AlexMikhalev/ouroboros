@@ -314,7 +314,7 @@ def test_no_history_sized_duty_runs_in_the_server_and_the_child_spawns_under_cus
     maintenance child through the custodied spawn (own module, session custody, own group)."""
     import threading
 
-    from ouroboros import evidence_packer, observability, process_custody, server_maintenance as sm, task_custody, utils
+    from ouroboros import evidence_packer, observability, process_custody, server_maintenance as sm, task_custody, temp_sweep
     from tests.test_evidence_packs import REPO, _FakeChild
 
     ran = []
@@ -329,8 +329,8 @@ def test_no_history_sized_duty_runs_in_the_server_and_the_child_spawns_under_cus
     monkeypatch.setattr(evidence_packer, "run_pass", refuse("evidence packing"))
     monkeypatch.setattr(observability, "retry_pending_child_ref_promotions", refuse("child-ref promotion"))
     monkeypatch.setattr(task_custody, "remove_custody_trash", refuse("trash removal"))
-    sweep = utils.sweep_stale_temp_files
-    monkeypatch.setattr(utils, "sweep_stale_temp_files", lambda root, **kw: (
+    sweep = temp_sweep.sweep_stale_temp_files
+    monkeypatch.setattr(temp_sweep, "sweep_stale_temp_files", lambda root, **kw: (
         refuse("atomic temp walk")() if kw.get("atomic_temps", True) else sweep(root, **kw)))
     started, start = [], threading.Thread.start
     monkeypatch.setattr(threading.Thread, "start", lambda thread: started.append(thread) or start(thread))

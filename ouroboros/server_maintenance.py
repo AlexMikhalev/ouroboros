@@ -807,7 +807,7 @@ def _startup_prune_sweeps(*, preserve_task_sources=False, recovery_report=None):
     _STARTUP_RECOVERY_GAPS[0] = bool(preserve_task_sources and (
         recovery_report is None or recovery_report.get("errors") or "*" in recovery_report.get("unresolved", [])))
     if not preserve_task_sources:  # the atomic-temp walk is the maintenance child's temp_sweep job
-        from ouroboros.utils import sweep_stale_temp_files
+        from ouroboros.temp_sweep import sweep_stale_temp_files
         sweep_stale_temp_files(DATA_DIR, atomic_temps=False)
 
 
