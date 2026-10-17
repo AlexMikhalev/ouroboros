@@ -2,8 +2,8 @@
 
 A repair is admitted AGAINST one exact payload state: ``base_content_hash``,
 captured immutably at admission (the promoted managed-task seam canonicalizes
-every skill_repair constraint, so both the marketplace auto-repair prompt and a
-manual repair pass through it). Every payload write by the ADMITTED repair task
+every skill_repair constraint, so every repair passes through it, whoever asked
+for it). Every payload write by the ADMITTED repair task
 then checks the payload against its last known revision
 (``expected_content_hash``). File-tool effects retain their attribution; after
 opaque process work the record advances to an OBSERVED revision, without claiming
