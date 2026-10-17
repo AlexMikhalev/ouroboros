@@ -84,7 +84,7 @@ def collect_routes(
         api_marketplace_update,
         api_skill_publication_clear,
     )
-    from ouroboros.gateway.skill_sources import skill_source_routes
+    from ouroboros.gateway.skill_my_skills import skill_source_routes
     from ouroboros.gateway.claudexor_accounts import (
         api_claudexor_credential_profile,
         api_claudexor_login,

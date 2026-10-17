@@ -466,6 +466,7 @@ HTTP_SHAPES: dict[str, Shape] = {
         note="safe to repeat; every engine refusal answers 503"),
 }
 
+HTTP_ENDPOINTS, HTTP_SHAPES = (*HTTP_ENDPOINTS, "POST /api/skill-sources/my-skills"), {**HTTP_SHAPES, "POST /api/skill-sources/my-skills": Shape("200,400,403,502:MySkillsResponse", "MySkillsRequest")}
 # Middleware-owned routes: ``server_auth.NetworkAuthGate`` answers them itself, and only while it
 # enforces a configured network password for a non-loopback peer (otherwise they are not mounted).
 AUTH_ENDPOINTS: dict[str, Shape] = {

@@ -72,6 +72,22 @@
  */
 
 /**
+ * `POST /api/skill-sources/my-skills`: an empty object, an explicit owner action.
+ * @typedef {Object} MySkillsRequest
+ */
+
+/**
+ * Created or connected the owner's repository; codes: no_token, cannot_create, failed.
+ * @typedef {Object} MySkillsResponse
+ * @property {boolean} ok
+ * @property {boolean=} created
+ * @property {string=} repository
+ * @property {SkillSourceRow=} source
+ * @property {string=} code
+ * @property {string=} error
+ */
+
+/**
  * One skill a source offers; `id` is `<source_id>/<name>`.
  * @typedef {Object} SkillCatalogItem
  * @property {string} id

@@ -92,6 +92,21 @@ class SkillSourceChangeResponse(TypedDict, total=False):
     code: str
 
 
+class MySkillsRequest(TypedDict):
+    """``POST /api/skill-sources/my-skills``: an empty object, an explicit owner action."""
+
+
+class MySkillsResponse(TypedDict, total=False):
+    """Created or connected the owner's repository. Failures use code no_token, cannot_create or failed."""
+
+    ok: Required[bool]
+    created: bool
+    repository: str
+    source: SkillSourceRow
+    code: str
+    error: str
+
+
 class SkillCatalogItem(TypedDict, total=False):
     """One skill a source offers. ``id`` is ``<source_id>/<name>``; ``digest`` names the exact release;
     ``signals`` null means no data (never zero); ``installed`` null means not installed, else
@@ -243,6 +258,7 @@ class StarterSkillsResponse(TypedDict):
 
 
 __all__ = [
+    "MySkillsRequest", "MySkillsResponse",
     "SkillCatalogInstallRequest", "SkillCatalogInstallResponse", "SkillCatalogItem", "SkillCatalogItemDetailResponse",
     "SkillCatalogResponse", "SkillCatalogSearchResponse", "SkillPublishDestinationChoice",
     "SkillPublishPreflightRequest", "SkillSourceAddRequest", "SkillSourceChangeRequest",

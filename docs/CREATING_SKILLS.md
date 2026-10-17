@@ -1703,6 +1703,11 @@ hub, unless the owner picks another:
   the skill is published; otherwise it waits for that repository's
   maintainers.
 
+**My skills** is an optional private `<login>/ouroboros-skills` repository,
+created or connected when you choose it with your configured GitHub token.
+It is added as a trusted git source and carries your skills between your
+Ouroboros installations.
+
 The result reports separately whether the files reached the repository
 (`files_published`: `pull_request` or `merged`) and whether a catalog lists
 them (`listed`: `when_merged`, `listed`, or `needs_entry_update` when the hub
