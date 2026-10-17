@@ -486,6 +486,10 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
     replay = _replay(q, predecessor, nonce, successor)
     if replay is not None:
         return replay
+    from supervisor.queue_snapshot import saved_queue_unowned
+
+    if saved_queue_unowned():  # a successor published now would replace the saved queue (#1952)
+        return {"ok": False, "error": "queue_not_restored"}
     try:
         result = load_task_result(q.DRIVE_ROOT, predecessor, strict=True) or {}
     except Exception:

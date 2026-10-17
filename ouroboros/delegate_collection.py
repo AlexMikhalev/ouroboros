@@ -249,6 +249,8 @@ def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = N
                 and not disposition_refusal(root, entry)):
             try:
                 capture = capture_terminal_patch_for_drive(root, entry, gateway=gateway, retain_investigation=False)
+                if isinstance(capture, dict) and capture.get("status") == "failed":  # a typed failure stays owed
+                    raise RuntimeError(str(capture.get("note") or "patch capture failed"))
             except Exception as exc:
                 errors.append(f"capture:{type(exc).__name__}")
                 _collection_failure(entry, "capture", exc, failures)
@@ -294,13 +296,20 @@ def capture_projection(root, entry, *, reader_task_id="") -> dict | None:
     try:
         manifest = json.loads((cap_dir / "workspace_patch.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"status": "pending", "note": "Body capture is still owed; no patch was applied.",
+        from ouroboros.delegate_registration_policy import evidence_only
+
+        if evidence_only(entry):  # no author decision is owed
+            return {"status": "pending", "note": "Body capture is still owed; evidence only, never applied.",
+                    "patch_disposition": entry.patch_disposed or "not_applicable"}
+        return {"status": "pending", "note": "Body capture is still owed; no patch was applied. integrate_delegated_patch "
+                "prepares a finished run's capture itself and returns it for inspection first.",
                 "patch_disposition": entry.patch_disposed or "pending"}
     if directory:
         from ouroboros.delegate_directory import directory_capture_block
-        return directory_capture_block(root, entry, manifest)
-    from ouroboros.tools.delegate_integration import _capture_block
-    block = _capture_block(entry, cap_dir, manifest, manifest.get("authority_drift") or {})
+        block = directory_capture_block(root, entry, manifest)
+    else:
+        from ouroboros.tools.delegate_integration import _capture_block
+        block = _capture_block(entry, cap_dir, manifest, manifest.get("authority_drift") or {})
     if reader_task_id and reader_task_id != entry.task_id:
         for kind in ("patch", "manifest"):
             if block.get(f"{kind}_read") and block.get(f"{kind}_artifact"):

@@ -396,6 +396,8 @@ def _run_round_compaction(
         messages = [*messages, *updates]
         ctx.tools._ctx._pending_review_context = {}
     maybe_append_roster_note(ctx.tools._ctx, messages, ctx.drive_root)
+    from ouroboros.skill_context_snapshot import maybe_append_skill_snapshots
+    maybe_append_skill_snapshots(ctx.tools._ctx, messages, ctx.drive_root)
     return messages, usage
 
 

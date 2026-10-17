@@ -384,16 +384,16 @@ def _refuse_publication(self, records, *, scan_state=None):
 def _sweep(root, monkeypatch):
     """The real off-loop maintenance pass, its unrelated steps idle: owed late reviews are replayed there."""
     import supervisor.workspace_preparation as preparation
-    from ouroboros import evidence_packer
     from ouroboros import server_maintenance as maintenance
+    from ouroboros.maintenance import child as maintenance_child
 
     monkeypatch.setattr(maintenance, "DATA_DIR", root)
-    for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_TREES_OWED", "_STARTUP_SOURCE_PRUNES_OWED", "_STARTUP_TEMP_SWEEP_OWED"):
+    for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_TREES_OWED", "_STARTUP_SOURCE_PRUNES_OWED"):
         monkeypatch.setattr(maintenance, name, [False])
     monkeypatch.setattr(maintenance, "_periodic_zombie_reconcile", lambda **_kw: None)
     monkeypatch.setattr(maintenance, "_run_drive_custody_pass", lambda *_a: None)
     monkeypatch.setattr(preparation, "recover_interrupted_preparations", lambda *_a, **_kw: None)
-    monkeypatch.setattr(evidence_packer.packer, "tick", lambda *_a, **_kw: None)
+    monkeypatch.setattr(maintenance_child, "tick", lambda *_a, **_kw: None)
     maintenance._run_periodic_reconcile_sweep([0], latch=SimpleNamespace(release=lambda: None))
 
 
