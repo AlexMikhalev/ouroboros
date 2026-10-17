@@ -35,6 +35,10 @@ _METRIC_TONES = {"neutral", "info", "success", "warning", "danger"}
 _CALLOUT_TONES = {"info", "success", "warning", "danger"}
 _TABLE_PRESENTATIONS = {"text", "number", "status", "link"}
 _SETTINGS_COMPONENTS = {"form", "action", "markdown", "json"}
+# A living-message card (``tools/cards.py``) has no skill route, live source or download.
+_CARD_FORBIDDEN_TYPES = {"poll", "stream", "subscription", "file"}
+_CARD_ROUTE_KEYS = ("route", "api_route", "route_prefix", "on_move")
+_CARD_ACTION_ID = re.compile(r"[a-z0-9_]{1,40}")
 _DECLARATIVE_MAX_DEPTH = 8
 _DECLARATIVE_MAX_NODES = 256
 _GRID_COLUMNS_MAX = 4
@@ -264,7 +268,9 @@ def _validate_component(
         raise ExtensionRegistrationError(
             f"{path}.on_move is not allowed inside subscription.render"
         )
-    if component_type in {"form", "action", "poll", "stream"} and not _text(component.get("route") or component.get("api_route")):
+    if state.get("card") is not None:
+        _validate_card_component(component, component_type, path=path, actions=state["card"])
+    elif component_type in {"form", "action", "poll", "stream"} and not _text(component.get("route") or component.get("api_route")):
         raise ExtensionRegistrationError(f"{path} requires route or api_route")
     if component_type == "subscription":
         event_name = _text(component.get("event") or component.get("message_type"))
@@ -415,6 +421,64 @@ def _validate_component(
             )
 
 
+def _validate_card_component(
+    component: Dict[str, Any], component_type: str, *, path: str, actions: Dict[str, Any],
+) -> None:
+    """CARD mode: a message has no skill route, so commit controls bind ``submit: {id, once?}``."""
+    if component_type in _CARD_FORBIDDEN_TYPES:
+        raise ExtensionRegistrationError(
+            f"{path} type {component_type!r} is not available in a card (no live source or download)"
+        )
+    items = component.get("items") if component_type == "gallery" and isinstance(component.get("items"), list) else []
+    for where, node in ((path, component), *((f"{path}.items[{i}]", item) for i, item in enumerate(items))):
+        for key in _CARD_ROUTE_KEYS:
+            if isinstance(node, dict) and key in node:
+                raise ExtensionRegistrationError(f"{where}.{key} is not available in a card: a card has no skill route")
+        if node is not component and isinstance(node, dict) and _text(node.get("type")) == "file":
+            raise ExtensionRegistrationError(f"{where}.type 'file' is not available in a card (no download)")
+    if component_type not in {"action", "form"}:
+        if "submit" in component:
+            raise ExtensionRegistrationError(f"{path}.submit binds only action and form components")
+        return
+    submit = component.get("submit")
+    action_id = submit.get("id") if isinstance(submit, dict) else None
+    if not isinstance(action_id, str) or not _CARD_ACTION_ID.fullmatch(action_id):
+        raise ExtensionRegistrationError(f"{path}.submit.id is required: [a-z0-9_]{{1,40}}, unique in the card")
+    if action_id in actions:
+        raise ExtensionRegistrationError(
+            f"{path}.submit.id duplicates {action_id!r} first used at {actions[action_id]['path']}"
+        )
+    if not isinstance(submit.get("once", False), bool):
+        raise ExtensionRegistrationError(f"{path}.submit.once must be boolean")
+    fields = component.get("fields") if isinstance(component.get("fields"), list) else []
+    actions[action_id] = {
+        "path": path, "kind": component_type, "once": submit.get("once", False),
+        # The label the renderer draws (widgets.js defaults), so a press is named as the owner saw it.
+        "label": str(component.get("label") or "Run") if component_type == "action"
+        else str(component.get("submit_label") or component.get("title") or component.get("label") or "Submit"),
+        **({"fields": [_text(f.get("name")) for f in fields if isinstance(f, dict)]} if component_type == "form" else {}),
+    }
+
+
+def validate_card_components(components: Any) -> Dict[str, Any]:
+    """Validate a living-message card's declarative tree and index its commit controls.
+
+    The widget catalog, depth and node bounds apply as for a declarative widget; a card
+    additionally has no ``poll``/``stream``/``subscription``/``file`` and no route anywhere,
+    and each ``action``/``form`` binds ``submit: {id, once?}`` instead. Returns
+    ``{"components": <clean copy>, "actions": {id: {kind, label, once, fields?}}}``; an
+    ``ExtensionRegistrationError`` names the exact path of the first problem.
+    """
+    if not isinstance(components, list) or not components:
+        raise ExtensionRegistrationError("components must be a non-empty list")
+    clean = copy.deepcopy(components)
+    actions: Dict[str, Any] = {}
+    _validate_components(clean, path="components", depth=1, passive=False,
+                         state={"nodes": 0, "ids": {}, "card": actions})
+    return {"components": clean,
+            "actions": {key: {k: v for k, v in row.items() if k != "path"} for key, row in actions.items()}}
+
+
 def validate_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the browser-hosted widget declaration surface."""
     if not isinstance(render, dict):
@@ -516,6 +580,7 @@ __all__ = [
     "WIDGET_FRAME_MIN_HEIGHT",
     "WIDGET_APPEARANCE_MODES",
     "WIDGET_START_MODES",
+    "validate_card_components",
     "validate_runtime_ui_render",
     "read_module_sources",
     "validate_settings_schema",
