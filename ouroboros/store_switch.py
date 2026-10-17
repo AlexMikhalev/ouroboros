@@ -606,9 +606,11 @@ def require_published(root: Any) -> Dict[str, Any]:
 
 
 def when_ready(root: Any, *steps: Callable[[], Any]) -> None:
-    """Run ``steps`` in order once ROOT's boot import has published (on its thread), or now
-    when none runs here: the providerless door's recovery and readiness. A boot that did not
-    publish drops them (the process stays not ready)."""
+    """Run ``steps`` in order once ROOT's boot import has published (on its thread), or at once
+    on a thread of their own when it already published or none runs here (the providerless
+    door's recovery and readiness): never on the caller's thread, whose next work a step may
+    wait on (the lifespan starts the boot coordinator, and with it the extensions, after this
+    call). A boot that did not publish drops them (the process stays not ready)."""
     with _GUARD:
         boot = _BOOTS.get(str(pathlib.Path(root)))
         if boot is not None and not boot.done.is_set():
@@ -617,8 +619,7 @@ def when_ready(root: Any, *steps: Callable[[], Any]) -> None:
     if boot is not None and not boot.published:
         log.critical("%d step(s) dropped: the current-facts store is not published (%s)", len(steps), boot.outcome.get("status"))
         return
-    for step in steps:
-        _step(step)
+    threading.Thread(target=lambda: [_step(step) for step in steps], daemon=True, name="store-ready-steps").start()
 
 
 def switch_at_restart(root: Any, repo_dir: Any, cleanup: Any) -> Dict[str, Any]:

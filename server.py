@@ -1409,7 +1409,7 @@ async def lifespan(app):
         else:
             _start_supervisor_if_needed(settings)
 
-    store_switch.when_ready(lifespan_drive_root, _dialogue, _after_extensions)  # now, when no import runs here
+    store_switch.when_ready(lifespan_drive_root, _dialogue, _after_extensions)  # never on this thread: it starts the coordinator next
 
     # --- the boot coordinator's steps, in the order the lifespan ran them before it served ---
     live = not pytest_default_real_data_dir  # the real data root: every step; a bare pytest run: none that touches it

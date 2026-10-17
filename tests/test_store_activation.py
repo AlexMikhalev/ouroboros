@@ -233,7 +233,28 @@ def test_boot_imports_off_the_ready_path_and_runs_the_waiting_steps_after_public
     assert store.migrating(root) is False and store.store_ready(root) is True and restarts == []
     assert store_switch.require_published(root)["status"] == "published"
     store_switch.when_ready(root, lambda: steps.append("late"))
+    deadline = time.monotonic() + 10
+    while steps[-1] != "late" and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert steps[-1] == "late"  # after publication a step runs at once
+
+
+@pytest.mark.parametrize("import_here", [True, False])
+def test_steps_registered_after_the_publication_never_run_on_the_registering_thread(tmp_path, import_here):
+    """The lifespan registers its steps and only then starts the boot coordinator that one of them
+    waits on (the extensions): a fast import that already published, or a door without an import,
+    must not run them on the registering thread, which would then never start that coordinator."""
+    root = fixture_root(tmp_path)
+    if import_here:
+        store_switch.start(root, repo_dir=REPO, request_restart=lambda: None)
+        assert store_switch.wait_ready(root, timeout=30)["status"] == "published"  # the import finished first
+    coordinator, ran = threading.Event(), []
+    store_switch.when_ready(root, lambda: ran.append(coordinator.wait(10)))
+    coordinator.set()  # this thread's next work, reached only because the registration returned
+    deadline = time.monotonic() + 10
+    while not ran and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ran == [True]
 
 
 def test_a_failed_boot_import_leaves_the_root_not_ready_and_no_request_re_imports(tmp_path, monkeypatch):
