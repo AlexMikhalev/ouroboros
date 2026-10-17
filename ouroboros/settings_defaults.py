@@ -233,10 +233,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
     "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true",
-    # Launcher-seeded native skills carry a hash-pinned native-trust review
-    # verdict (the payload bytes shipped through the repo commit gate); the
-    # zero-grant ones also auto-enable. Editing the payload still goes stale.
-    # Owner opt-out: set to false to keep manual review for native seeds.
+    # Trust of the built-in source while no source list is saved (its derived row): true installs the bundled
+    # skills with basis trusted (exact bytes only; any edit leaves the release), false reviews them like a
+    # review-each source. A saved list's built-in row decides instead (skill_builtin.builtin_trust).
     "OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS": "true",
     # Agent-requested restarts drain running tasks first: while any RUNNING
     # task still heartbeats, the restart waits up to this many seconds before

@@ -399,7 +399,7 @@ def get_auto_grant_enabled() -> bool:
 
 
 def get_trust_native_seeded_skills() -> bool:
-    """Whether launcher-seeded native skills get the hash-pinned trust verdict."""
+    """Whether built-ins install trusted when the source list has no built-in row (the derived row reads it too)."""
     return _settings_flag_enabled("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS")
 
 

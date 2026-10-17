@@ -103,6 +103,23 @@ def test_install_with_trust_off_records_review_basis(env, monkeypatch):
     assert skill.review.gate_for(skill.content_hash)["executable_review"] is False
 
 
+def test_the_builtin_row_of_the_source_list_decides_the_basis(env, monkeypatch):
+    from ouroboros.skill_builtin import builtin_trust
+
+    seed_dir, drive_root = env
+    row = {"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "review", "confirmed": True}
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps([row]))
+    _write_skill(seed_dir, "weather")
+    assert _install("weather", seed_dir, drive_root)["basis"] == "review", "the owner set built-ins to review"
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "false")
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps([{**row, "trust": "trusted"}]))
+    assert builtin_trust() == "trusted", "a saved row outranks the older switch"
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps([{**row, "id": "mine", "kind": "local", "path": "/x"}]))
+    assert builtin_trust() == "review", "a list without a built-in row keeps the older switch"
+    monkeypatch.delenv("OUROBOROS_SKILL_SOURCES")
+    assert builtin_trust() == "review", "the derived row follows the older switch"
+
+
 def test_install_auto_grants_only_under_the_owner_setting(env, monkeypatch):
     import ouroboros.config as config
     from ouroboros.skill_loader import load_skill_grants

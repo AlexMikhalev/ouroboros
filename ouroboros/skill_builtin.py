@@ -5,8 +5,8 @@ The repository's ``skills/`` folder is an ordinary source with id ``builtin``; i
 maintainer recommends it for a new install. Installing a built-in copies the bundled
 folder into ``data/skills/native/<name>`` (the per-install note ``.seed-origin`` keeps
 older readers working) and writes the same install record every installer writes, with
-the basis the built-in source's trust gives (trusted by default,
-``OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS``). The acceptance gate admits exactly those bytes;
+the basis the built-in row of the source list gives (trusted by default; the derived list
+reads ``OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS``). The acceptance gate admits exactly those bytes;
 no synthetic review verdict is written, and grants follow the ordinary auto-grant
 setting.
 
@@ -42,9 +42,14 @@ def bundled_skills_dir() -> pathlib.Path:
 
 
 def builtin_trust() -> str:
-    """The built-in source's trust: ``trusted`` unless the owner turned it off."""
+    """The built-in source's trust: its row in the source list (while no list is saved, the derived row
+    follows ``OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS``, as does a saved list without a built-in row)."""
     from ouroboros.config import get_trust_native_seeded_skills
+    from ouroboros.skill_sources import BUILTIN_ID, load_sources, source_by_id
 
+    row = source_by_id(load_sources(), BUILTIN_ID)
+    if row is not None:
+        return str(row["trust"])
     return "trusted" if get_trust_native_seeded_skills() else "review"
 
 
