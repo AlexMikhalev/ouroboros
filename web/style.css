@@ -50,6 +50,48 @@ body {
     position: relative;  /* positioning context for the resize handle */
 }
 
+/* macOS desktop window (launcher_window_chrome.py): while its transparent title bar covers the page,
+   the shell writes the band's height and the traffic lights' far edge here, measured, in CSS px.
+   The sidebar starts below the band; content reaching the left edge (drawer layout, a project panel
+   as wide as the window) starts past the lights. Without the shell's attribute nothing moves. */
+:root[data-window-chrome="integrated"] {
+    --window-chrome-top: 0px;
+    --window-chrome-start: 0px;
+    --window-chrome-clearance: calc(var(--window-chrome-start) + var(--space-3));
+}
+:root[data-window-chrome="integrated"] #primary-sidebar {
+    padding-top: calc(var(--space-4) + var(--window-chrome-top));
+}
+:root[data-window-chrome="integrated"] .onboarding-overlay {
+    box-sizing: border-box;
+    padding-top: var(--window-chrome-top);
+}
+/* Main's header floats over its transcript and lets a press between its groups through to the row beneath, a
+   link or button the owner cannot see: inside the band this strip takes such a press for the title bar. The
+   header's groups stay above it; the feed keeps its scrollbar (the global 6px ::-webkit-scrollbar). */
+:root[data-window-chrome="integrated"] .chat-page-header::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 6px;
+    height: var(--window-chrome-top);
+    z-index: -1;
+    pointer-events: auto;
+}
+:root[data-window-chrome="integrated"] .project-panel-bar {
+    padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
+}
+@media (max-width: 900px) {
+    :root[data-window-chrome="integrated"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
+}
+@media (max-width: 640px) {
+    :root[data-window-chrome="integrated"] #primary-sidebar {
+        padding-top: max(64px, calc(var(--space-4) + var(--window-chrome-top)));
+    }
+    :root[data-window-chrome="integrated"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
+}
+
 /* Resizable side-section drag handles (v6.33.0). Thin edge strips that set
    --sidebar-width / --project-panel-width; hidden under the mobile drawer. */
 /* CW10 (v6.34.0): suppress text selection while dragging via a class, not a JS
@@ -8402,7 +8444,9 @@ textarea.chat-input {
     border-bottom: 1px solid var(--surface-border);
 }
 
-.document-reader-identity { grid-area: identity; min-width: 0; }
+/* Name, type and size are selectable text like the document: declared, so the macOS window's
+   title bar band (launcher_window_chrome.py) leaves a press on them to selection. */
+.document-reader-identity { grid-area: identity; min-width: 0; cursor: text; }
 .document-reader-actions { grid-area: actions; }
 .document-reader-close { grid-area: close; }
 

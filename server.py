@@ -736,11 +736,11 @@ def _run_supervisor(settings: dict) -> None:
                 # window later (task_lifecycle._INTENT_WATCHDOG_MIN_AGE_SEC).
                 notice = ["♻️"]
                 if restored_pending > 0:
-                    notice.append(f"Restored pending queue from snapshot: {restored_pending} tasks.")
+                    notice.append(f"Restored pending queue: {restored_pending} tasks.")
                 if interrupted_running:
                     count = len(interrupted_running)
                     notice.append(
-                        f"Cancelling {count} task{'' if count == 1 else 's'} that "
+                        f"Settling {count} task{'' if count == 1 else 's'} that "
                         f"{'was' if count == 1 else 'were'} still running when the server stopped."
                     )
                 send_with_budget(int(st_boot["owner_chat_id"]), " ".join(notice), role="system", system_type="startup_notice")

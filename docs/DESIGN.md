@@ -109,6 +109,14 @@ the design bible above; neither has a decorative background.
 On Windows the desktop window keeps its ordinary system caption, buttons, Snap and
 resizing; only their light or dark tint follows the painted palette — the system
 tint, not the page's colour — and a High Contrast theme keeps its own colours.
+On macOS the main window is one surface: the page reaches the top edge under a
+transparent title bar, the real traffic lights sit level with the header row, empty
+parts of that band drag the window, and a double-click follows the Mac's setting:
+Zoom, Minimize, Do Nothing or Fill. Fill relies on an available undocumented native
+action, not an imitation by Zoom. Its appearance follows Light or Dark and inherits
+under System. In full screen the bar hides until the pointer reveals it; the setup
+and error windows and a UI that does not declare it keep the ordinary title bar. A
+browser, another OS or an older desktop app reserves nothing.
 
 Appearance belongs to a browser profile or desktop client, not an account or
 server setting. Existing saved Light/Dark choices keep their meaning. Storage
