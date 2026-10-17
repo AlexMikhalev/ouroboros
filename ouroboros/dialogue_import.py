@@ -504,38 +504,6 @@ def import_status(root: Any) -> Dict[str, Any]:
     return status
 
 
-def scan_pending(root: Any, chat_id: Optional[int], client_message_id: str) -> Optional[ds.Row]:
-    """While the chat archive is still importing, the inbound row an id names in the segments not
-    yet imported (newest first; only lines holding the encoded id are parsed). ``None`` when
-    the pending segments hold none -- then the store's answer was complete."""
-    root = pathlib.Path(root)
-    with ds.transaction(root, write=False) as conn:
-        pending = conn.execute("SELECT name, base FROM import_ledger WHERE stream='chat' AND state='pending' ORDER BY base DESC").fetchall()
-    if not pending:
-        return None
-    # A writer may have escaped the id (``ensure_ascii``) or not: both spellings are candidates.
-    needles = {json.dumps(client_message_id, ensure_ascii=False).encode("utf-8"),
-               json.dumps(client_message_id, ensure_ascii=True).encode("utf-8")}
-    for record in pending:
-        try:
-            data = (root / "archive" / record["name"]).read_bytes()
-        except OSError:
-            continue
-        if b'"in"' not in data or not any(needle in data for needle in needles):
-            continue
-        found = None
-        for line in segment_rows(data, int(record["base"])):
-            row = line.row
-            if row is None or not any(needle in line.body.encode("utf-8") for needle in needles):
-                continue
-            if row.get("direction") == "in" and row.get("client_message_id") == client_message_id \
-                    and ds.facts(row)["chat_id"] == chat_id:
-                found = ds.Row("chat", line.seq, row, None, line.length)  # the newest row naming the id, as the store answers
-        if found is not None:
-            return found
-    return None
-
-
 # --- the rollback export ----------------------------------------------------------------------
 
 def export_for_older_body(root: Any) -> Dict[str, Any]:
