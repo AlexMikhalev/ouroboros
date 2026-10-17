@@ -612,15 +612,16 @@ not move them into the migrated set in section 8.
 ### Sidebar activity dots
 
 Project navigation rows may carry the existing three 4px working dots
-(`chat-live-typing`, 3px gap) for the live `active_chat_activities` census.
-`Working`, `Thinking` and `Finalizing` are the only moving states, in the
-existing 1.4s bounce rhythm; `Queued` stays static at a quieter step.
-Budget-paused work, confirmed model access waits, required owner questions and
-Project/task scope verification waits are static amber; `resumed` questions no
-longer wait. A wait on the same producer row suppresses its working motion; an
-independent working row keeps motion, and the row's accessible name states both
-facts. Unknown or unconfirmed census state stays static and explicitly
-unavailable. The dots take the row's own foreground, like the status-sentence
+(`chat-live-typing`, 3px gap) for their room's status in the server's work
+projection, the mark the room's bar shows (Room work status): working work
+moves, in the existing 1.4s bounce rhythm; queued work holds three still dots
+at a quieter step; a wait or a pause is one dot; unconfirmed state is a hollow
+ring and explicitly unavailable. The mark turns amber only while something
+waits for the owner: a question to answer or an action only the owner can take
+(sign-in, a spending limit, Resume after a restart). A Pause the owner or
+Ouroboros made is not amber, nor a wait that ends by itself. A room keeps its
+motion while one of its works waits and another works, and the row's
+accessible name says the word and its first work's reason. The dots take the row's own foreground, like the status-sentence
 dot, so they never out-shout the title and follow its hover and selected ink;
 the wait is the one hue, and no row paints them in a saturated project colour of
 its own. In a Project row the dots and the unread dot each own a reserved
@@ -1052,20 +1053,30 @@ reconciliation.
 
 Each room's bar has one status, right after its title: the short word in its
 status ink, then one mark, as on the sidebar's rows; no frame at rest, a neutral
-tint on hover and while open, a caret when it opens. Live work moves three dots,
-queued work holds three still ones, any other fact shows one. One producer
-(`computeDerivedChatStatus`) gives the word, tone and dots together, in the
-cards' short words; while a question waits for the owner's answer the mark turns
-amber (moving if work runs), unless the word already says so. The title ellipsizes first, and
-a new word never moves a neighbour or resizes the bar. When there is work to
-show, pressing the status, or ↓/↑ on it, unfolds that room's work and only that
-room's as one Shade under the bar, the same in every room: its census rows, the
-owner's unconfirmed sends and unfinished cards the census has not confirmed. A
-Project with nothing else keeps its latest represented root. A row names its work
-(the card's coined name or title, else the owner's message) in two lines that
-keyboard focus or open details show whole, with the state under the name in the
-card's or census's own words: an outcome stays beside `Finalizing…`, an access
-wait is not an answer wait, unknown stays unknown and a pause keeps its cause.
+tint on hover and while open, a caret when it opens. A work is one request with
+its Continue episodes and whatever of them still lives (helpers, retained
+delegated runs, post-answer upkeep); the server gives each work and each room
+one status, and every surface (bar, Shade, sidebar, cards, Activity, tray)
+words that one status without deciding its own. The room says its busiest work:
+working, then queued, waiting, paused. Live work moves three dots, queued work
+holds three still ones, a wait or a pause shows one, unconfirmed state a hollow
+ring. The mark turns amber while something waits for the owner (moving if work
+runs), unless the word already says so; a Pause is not the owner's turn. Only
+what the client alone knows lies over it: `Reconnecting…`, the owner's own
+unconfirmed send, `Starting…` and the owner's own Stop press. The title
+ellipsizes first, and a new word never moves a neighbour or resizes the bar.
+When there is work to show, pressing the status, or ↓/↑ on it, unfolds that
+room's work and only that room's as one Shade under the bar, the same in every
+room: one row per work, the owner's unconfirmed sends, and unfinished cards an
+incomplete read has not confirmed (shown unknown, without controls). A Project
+with nothing else keeps its latest represented work. A row names its work (its
+coined name or the request's title, never `Continue: …`, else the owner's
+message) in two lines that keyboard focus or open details show whole, with the
+state under the name and one quiet reason beside it: an outcome stays beside
+`Finalizing…`; `Paused` says who or what paused it and stays until Resume;
+`Waiting` says what it waits for and goes on by itself when that happens;
+helpers an earlier attempt left running read as `Working`, with their count; an
+access wait is not an answer wait, and unknown stays unknown.
 The name goes to the work's message wherever
 it lies, finished work included: its card or the owner's message when loaded, else
 the room reads the page of its history around the work's first message there and
@@ -1073,8 +1084,13 @@ lands on it, the list staying open while it looks. Before that a row claims noth
 about where its message is; when the room's history holds none (`No message yet.`,
 or `No message saved in this chat.` once ended), belongs to another room, or cannot
 be checked, its details say so. `View question`
-goes to the exact waited question and answers nothing; Resume and ⋯ are that exact
-activity's shared task controls, offered only while the census confirms it. While
+goes to the exact waited question and answers nothing. A row offers exactly the
+controls the server lists for its work, each at its exact task, on the shared
+task controls: Stop ends the whole work (every episode still running, the newest
+first), `Stop earlier attempt` only what earlier attempts left running, and
+Pause, Resume, Hurry and Wrap up act on the current episode. A control its door
+would refuse is never offered, so a Continue waiting for its earlier attempt
+offers no Resume. While
 open, order and focus hold, and work that ends keeps its row and outcome, without
 controls, until close. Escape, an outside press or leaving closes it; `Back to
 reading` returns to the passage left, reading its page again if it was let go, or
@@ -1281,7 +1297,7 @@ with 2px offset. Component min/max widths keep local literals, as elsewhere in c
 
 **Project question mirror.** Main is the list of what needs the owner; nothing waits in a section of its own. A Project question's Main copy is the Project's own `buildQuizCard` card, whole as anatomized above, in an assistant bubble at its ask time in the feed; the Project reference beside `Question` opens the exact original, and answers, materials and recovery controls work in Main. It uses the shared ring and `--project` tints; names ellipsize (full titles) before status; narrow heads wrap. History, live pointers and the census share one task/quiz card and lifecycle wording; the canonical current questions only confirm or settle copies the feed holds, never mount them, and an incomplete read withholds only what its typed gaps name. Optional, resumed and terminal-author questions stay answerable until answered or closed; no display/history cap drops them. Replaced questions stay read-only. The owner closes from the card; a model closes its own or a host-proven continued task line's question, or a finished task's, always with its own reason. Closure records a reason, never an answer/approval. A late answer left delivery-unknown by a restart offers Remove from pending (no resend, never marked delivered). Publication destination stays fixed across Project conversion; current room membership controls display. Explicit materials use registered task artifacts and the existing reader.
 
-A task that cannot continue without the owner is one System message in the feed, stamped when first seen: the task, one sentence, its own controls (revision-bound model access, Resume/Stop, children's included; activity counts stay root-only). Sign-in, unobservable automatic access, disabled automatic continuation, budget pauses and Resume-only holds qualify; viable automatic account/quota recovery, queues, self-waking sleep, background scope verification and own Pause stay quiet. Deduplicate the same quiz/wait identity, not all waits on a task; the message leaves when a complete census drops the row. Missing action evidence stays unavailable; visibility never authorizes login, budget changes or automatic Resume.
+A task that cannot continue without the owner is one System message in the feed, stamped when first seen: the task, one sentence, its own controls (revision-bound model access, Resume/Stop, children's included; activity counts each work once, its helpers within it). Sign-in, unobservable automatic access, disabled automatic continuation, budget pauses and Resume-only holds qualify; viable automatic account/quota recovery, queues, self-waking sleep, background scope verification and own Pause stay quiet. Deduplicate the same quiz/wait identity, not all waits on a task; the message leaves when a complete census drops the row. Missing action evidence stays unavailable; visibility never authorizes login, budget changes or automatic Resume.
 
 One amber pill among the composer's pills (their row, height and type, at its end; `--status-warn-*`) counts the unanswered questions and owner actions — `1 question`, `3 questions`, `1 action`, `4 waiting` — and shows only while one of them is off screen; a narrow row keeps the glyph and number. Each press shows the next, oldest first, cycling: the card head lands under the chat header and the question text takes focus, never the answer field, so no touch keyboard opens. A question outside the loaded history mounts at its own date under the existing history note; there is no history seek.
 
