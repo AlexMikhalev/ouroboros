@@ -15,7 +15,7 @@ from ouroboros import delegate_custody as custody, review_checking as checking
 from ouroboros.loop_acceptance_review import acceptance_run_pending
 from ouroboros.review_dispatch import collect_task_acceptance_run, review_operation_binding
 from ouroboros.review_records import ReviewRequest, ReviewSlot
-from tests.test_review_checkout_lifecycle import ABSENT, NO_CENSUS, SETTLED
+from tests.test_review_checkout_lifecycle import ABSENT, NO_CENSUS, SETTLED, directory_source
 from tests.test_review_operation_collection import (
     PASS, TASK, _ctx, _observe, _session_run, _started, forbid_effects,  # noqa: F401
 )
@@ -35,7 +35,7 @@ def checking_run(tmp_path):
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "check.py").write_bytes(b"# original candidate\n")
-    source = checking.freeze_checking_source(subject, data_root=root)
+    source = directory_source(subject, root)  # a copied subject: a skill seat's retained view
     area = Path(checking.prepare_seat_area(root, TASK, OPERATION, source))
     (area / "check.py").write_bytes(REVIEWER_EDIT)
     (area / checking.EVIDENCE_DIRNAME).mkdir()
