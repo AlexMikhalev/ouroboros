@@ -269,3 +269,48 @@ def test_rows_keep_their_exact_physical_length_and_skipped_lines_are_recorded_in
     assert receipt.length == len(ds.encode(receipt.row).encode("utf-8")) + 1 and receipt.end == ds.stream_end(tmp_path, "chat")
     assert ds.row_at(tmp_path, "chat", receipt.seq).end == receipt.end
     assert ds.append(tmp_path, "chat", owner("appended")).end == receipt.end, "a duplicate answers the existing row's end"
+
+
+# ---- fact 3: reverse legacy addresses, every alias ---------------------------------------------
+
+def imported_rooms(root, rooms):
+    rows = [owner(f"foreign-{room}-{index}", chat_id=room + 10) for room in range(rooms) for index in range(10)] + [owner("selected")]
+    seed(root, archives={"chat_20261016T000000.jsonl": rows})
+    di.cutover(root)
+    di.run_dialogue_import(root)
+    return ds.rows_by_client_id(root, "selected")[0]
+
+
+def test_reverse_legacy_lookup_is_one_indexed_probe_whatever_the_other_rooms_imported(tmp_path, monkeypatch):
+    results, statements = {}, []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        row = imported_rooms(root, rooms)
+        with traced(monkeypatch) as counts:
+            assert ds.legacy_address(root, row.seq) == (gen_of(root, "chat_20261016T000000.jsonl"), 10 * rooms + 1)
+        results[rooms] = (len(counts["statements"]), counts["steps"])
+        statements = counts["statements"]
+    assert results[1] == results[30] and results[1][1] > 0
+    details = plans(root, statements)
+    assert any("legacy_seq" in detail for detail in details) and not any(detail.startswith("SCAN") for detail in details), details
+
+
+def test_repeated_generation_signatures_keep_every_alias(tmp_path):
+    shared = owner("shared", text="the same first line twice")
+    seed(tmp_path, archives={"chat_20261001T000000.jsonl": [shared, owner("first-second")],
+                             "chat_20261002T000000.jsonl": [shared, owner("second-second")]})
+    gen = gen_of(tmp_path, "chat_20261001T000000.jsonl")
+    assert gen == gen_of(tmp_path, "chat_20261002T000000.jsonl")
+    di.cutover(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    first = [row.seq for row in ds.legacy_candidates(tmp_path, gen, 1)]
+    assert [ds.row_at(tmp_path, "chat", seq).row for seq in first] == [shared, shared] and first == sorted(first)
+    second = ds.legacy_candidates(tmp_path, gen, 2)
+    assert [row.row["client_message_id"] for row in second] == ["first-second", "second-second"], "chain order"
+    assert ds.resolve_legacy(tmp_path, gen, 2).row == second[0].row and ds.legacy_candidates(tmp_path, gen, 3) == []
+    assert ds.legacy_address(tmp_path, second[1].seq) == (gen, 2) and ds.legacy_address(tmp_path, first[1]) == (gen, 1)
+    assert ds.legacy_generation(tmp_path, gen)["name"] == "chat_20261001T000000.jsonl", "the first generation, as the chain reader chose"
+    for row in second:  # the old reader told the aliases apart by the row's own hash; the candidates let a caller do the same
+        found, resolution = chat_chain.resolve_row(tmp_path, chat_chain.row_address(row.row, gen=gen, line=2))
+        assert resolution["status"] == "ok" and found == row.row
+    assert ds.legacy_address(tmp_path, ds.append(tmp_path, "chat", owner("appended")).seq) is None
