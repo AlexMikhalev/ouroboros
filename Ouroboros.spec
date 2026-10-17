@@ -204,6 +204,7 @@ if _is_macos:
             'CFBundleShortVersionString': open('VERSION').read().strip(),
             'CFBundleVersion': open('VERSION').read().strip(),
             'NSHighResolutionCapable': True,
+            'NSMicrophoneUsageDescription': 'Ouroboros uses your microphone for dictation and voice when you start them.',
             'LSMinimumSystemVersion': '12.0',
         },
     )
