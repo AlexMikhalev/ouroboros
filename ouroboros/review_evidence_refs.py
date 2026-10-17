@@ -10,6 +10,9 @@ acceptance_evidence_ref_vocabulary, resolve_criteria_evidence_refs, ...``)
 keeps resolving unchanged.  ``annotate_criteria_evidence_resolution`` stays in
 ``review_evidence`` (it consumes these via the re-exported module globals, which
 keeps its fail-closed seam patchable per the D-Q5 tests).
+
+The task-acceptance clean-PASS gate these refs fed is deleted; the leaf stays
+only while ``review_evidence`` and ``review_evidence_sections`` still read it.
 """
 
 from __future__ import annotations
@@ -230,8 +233,7 @@ def resolve_criteria_evidence_refs(criteria: Any, vocabulary: Dict[str, str]) ->
     lossy-identity lesson). Returns disclosure rows ONLY for supported criteria
     carrying at least one unresolved ref; each row names the deciding basis for
     every ref (rounds-6/7 rule: whatever decides is what is reported) plus
-    ``supported_evidence_resolves`` — whether at least ONE ref resolved, which is
-    all ``task_acceptance_is_clean`` consumes. A basis in
+    ``supported_evidence_resolves`` — whether at least ONE ref resolved. A basis in
     ``NON_RESOLVING_BASIS_KINDS`` (for example, an unsupported claim id or a
     partial section) is DISCLOSED by name but does not resolve. Never touches
     parse validity, quorum, or verdicts (the v6.71.1 starvation class stays

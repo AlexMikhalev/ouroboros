@@ -160,7 +160,7 @@ def native_mandatory_read_facts(request: Any, bound: int) -> Dict[str, Any]:
 
 def native_or_packet_attempt_rail(slot: Any, two_send_surface: bool) -> Any:
     """The physical-send rail for one actor: the historical two-send rail for
-    a packet/session actor on the P3/acceptance surfaces; NO local send count
+    a packet/session actor on the P3 surfaces; NO local send count
     for a native tool-round slot (its bounds are the provider, owner deadline
     and paid ledger — a count would be a round cap by
     another name, and `llm.py` already rails its own recovery sends); no rail
@@ -276,8 +276,8 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
     per-instance, so the worker's own registry/context is never touched.
     ``drive_root`` is the data plane the inspection tools may read: an
     empty scratch directory by default, or the surface's opt-in
-    ``policy["native_data_root"]`` (task acceptance reads task results and
-    receipts there; deep self-review exposes the runtime root while its
+    ``policy["native_data_root"]`` (a stored paged source or skill index
+    resolves there; deep self-review exposes the runtime root while its
     memory whitelist arrives inline) — the read-only constraint applies to
     it exactly as to the repository.
     """
@@ -404,13 +404,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             ref = store_actor_source_bytes(root, task_id, category=category,
                 source_id=f"{self.assignment.call_id}-{source_id}", data=data,
                 extension="txt" if isinstance(payload, str) else "json")
-            if (self.assignment.request.policy or {}).get('review_source_closure'):
-                from ouroboros.review_source_closure import retain_review_refs
-
-                # The inspection root contains only this request's named inputs.
-                # Its continuation closure also belongs to canonical operation custody.
-                ref = retain_review_refs(ref, root, pathlib.Path(self.assignment.custody_root), task_id)
-                retain_review_refs(ref, pathlib.Path(self.assignment.custody_root), root, task_id)
             return ref
         except Exception as exc:
             self._source_gap = f"native_source_persistence_failed:{type(exc).__name__}"
@@ -659,8 +652,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         per-instance, so the worker's own registry/context is never touched.
         ``drive_root`` is the data plane the inspection tools may read: an
         empty scratch directory by default, or the surface's opt-in
-        ``policy["native_data_root"]`` (task acceptance reads task results and
-        receipts there; deep self-review exposes the runtime root while its
+        ``policy["native_data_root"]`` (a stored paged source or skill index
+        resolves there; deep self-review exposes the runtime root while its
         memory whitelist arrives inline) — the read-only constraint applies to
         it exactly as to the repository.
         """
@@ -954,8 +947,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         # Only initial layout: later working views remain the reviewer's choice.
         # Other surfaces may supply a large work order without the brief builder.
         bound = native_episode_transcript_bound(self.assignment.request, self.assignment.slot)
-        delivery = (self.assignment.request.slot_source_delivery or {}).get(self.assignment.slot.slot_id) or {}
-        if delivery.get("status") != "paged" and _wire_size(messages, schemas) >= native_landing_at(bound):
+        if _wire_size(messages, schemas) >= native_landing_at(bound):
             source = self._store_source("initial-brief", self.episode_prompt)
             if source:
                 from ouroboros.tools.review_brief_coupling import paged_review_text

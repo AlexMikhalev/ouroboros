@@ -39,7 +39,7 @@ def build_author_disposition(
     """Build one bounded, current-subject author-finality record.
 
     This is a record helper, not a second review ledger.  Callers persist the
-    returned object in their existing plan/skill/acceptance/commit owners and
+    returned object in their existing plan/skill/commit owners and
     continue to retain raw reviewer rows beside it.  A missing hash or reason
     is rejected so an author finish can never look like an unbound PASS.
     The author's act (``action``) is a final stance by itself: a record may
@@ -113,7 +113,8 @@ def validate_author_disposition(
 
 
 def recorded_author_stop(decision: Any) -> bool:
-    """Whether a task acceptance decision records the author's explicit stop (TZ-2 C4).
+    """Whether a recorded task decision (the ``acceptance_decision`` shape historical
+    task records carry) records the author's explicit stop (TZ-2 C4).
 
     The typed ``author_stop`` reason, or the structured stop the producer records
     under its TRUE terminal cause when the review rounds ran out: ``author_action``
@@ -281,8 +282,9 @@ class ReviewRequest:
     session_root: str = ""
     session_task: str = ""
     slot_session_tasks: Dict[str, str] = field(default_factory=dict)  # per-slot work order over session_task
-    # Per-slot source delivery of a retrieving row (``acceptance_retrieving``):
-    # inline, paged through an exact source this row can open, or unavailable.
+    # Historical: task acceptance's retrieving rows recorded their per-slot source
+    # delivery here. Kept so recorded prompts still rebuild through
+    # ``ReviewRequest(**stored)``; nothing fills or reads it now.
     slot_source_delivery: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     session_threads: Dict[str, str] = field(default_factory=dict)
     usage_attribution: Dict[str, str] = field(default_factory=dict)
@@ -312,8 +314,8 @@ def new_review_wave_id() -> str:
 def resolve_review_wave(request: ReviewRequest, review_meta: Mapping[str, Any], inherited: str = "") -> str:
     """The round every reviewer send of ``request`` is billed to: the caller's wave
     (skill and plan review), the inherited scope's, the round already recorded on the
-    request, the review's paid-cycle identity (``retry_key``: one per commit, scope or
-    acceptance cycle, shared by all its slots and by a resumed run of it), or a fresh
+    request, the review's paid-cycle identity (``retry_key``: one per review cycle,
+    shared by all its slots and by a resumed run of it), or a fresh
     id. Recorded as ``request.resolved_wave_id``, so the returned run and a replay of
     the stored request keep it; the caller's ``usage_attribution`` stays as given."""
     wave = str(review_meta.get("review_wave_id") or inherited or getattr(request, "resolved_wave_id", "")
@@ -329,9 +331,9 @@ class ReviewActorRecord:
     status: str
     raw_text: str = ""
     parsed: Any = None
-    # Per-actor parsed verdict (PASS/FAIL/DEGRADED/UNKNOWN). Carried here so the
-    # objective axis can aggregate outcome_tier from only the actors that
-    # CONTRIBUTED to a quorum PASS, instead of re-deriving the verdict downstream.
+    # Per-actor parsed verdict (PASS/FAIL/DEGRADED/UNKNOWN). Carried here so a
+    # reader can take only the actors that CONTRIBUTED to the aggregate
+    # (``review_verdict._contributing_actors``) instead of re-deriving the verdict.
     signal: str = ""
     error: str = ""
     usage: Dict[str, Any] = field(default_factory=dict)
@@ -425,8 +427,8 @@ class ReviewRunResult:
     degraded_reasons: List[str] = field(default_factory=list)
     # Bible P3: a single configured reviewer is honored but the lost cross-model
     # diversity is recorded LOUDLY and DURABLY here (centralized for every surface
-    # that runs through ReviewCoordinator — acceptance, etc. — so a one-slot review
-    # can never quietly look like an ordinary multi-reviewer PASS).
+    # that runs through ReviewCoordinator, so a one-slot review can never quietly
+    # look like an ordinary multi-reviewer PASS).
     single_reviewer_no_diversity: bool = False
     panel_id: str = ""
     # The resolved roster belongs to this operation, including overrides in force
@@ -434,7 +436,7 @@ class ReviewRunResult:
     slot_roster: List[Dict[str, Any]] = field(default_factory=list)
 
 
-HARDNESS_ADVISORY_VISIBLE = "advisory_visible"  # fed back as a compact capsule, never blocks
+HARDNESS_ADVISORY_VISIBLE = "advisory_visible"  # shown to the author, never blocks
 
 
 HARDNESS_LABEL_ONLY = "label_only"              # recorded on the objective axis, not shown
