@@ -1,6 +1,8 @@
 /** Edge decoration follows actual hidden content, never masks a settled edge. */
 export function bindScrollFade(scroller, { axis = 'y' } = {}) {
-    const win = scroller.ownerDocument.defaultView;
+    const win = scroller.ownerDocument?.defaultView;
+    // Decoration only: a host without the observers (a unit-test DOM) keeps the strip undecorated.
+    if (!win?.ResizeObserver || !win.MutationObserver || !win.requestAnimationFrame) return () => {};
     let frame = null;
     let disposed = false;
     const update = () => {
