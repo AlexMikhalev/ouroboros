@@ -795,6 +795,7 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
     target_pid = resolve_pid(window.hwnd)
 
     polls = 0
+    last_whole = None
     while True:
         polls += 1
         found, scanned, hit_limit, unread = sweep(
@@ -802,6 +803,9 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
         )
         waited_ms = int((time.monotonic() - started) * 1000)
         out_of_time = plan.timeout_ms == 0 or time.monotonic() >= deadline
+        if _cut_repoll(hit_limit, found, unread, last_whole):
+            found, scanned, unread = last_whole
+            hit_limit, out_of_time = None, True
         if hit_limit is not None:
             reason, hint = not_found(hit_limit, False, False)
             return {
@@ -815,6 +819,7 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
             # competitor: choosing among the readable rest would be a guess.
             if out_of_time:
                 return unreadable_error(len(found), unread, scanned, waited_ms, polls)
+            last_whole = (found, scanned, unread)
             time.sleep(0.12)
             continue
         indexes = list(range(len(found)))
@@ -860,7 +865,15 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
                 "searched_whole_window": hit_limit is None,
                 "waited_ms": waited_ms, "polls": polls,
             }
+        last_whole = (found, scanned, unread)
         time.sleep(0.12)
+
+
+def _cut_repoll(hit_limit, found, unread, last_whole) -> bool:
+    """A re-poll the wait deadline cut before it met any candidate is not the
+    answer: the window was already read whole, and that walk - its counts, not
+    the cut one's - says what is there. A cut walk that met one stays a timeout."""
+    return hit_limit == "timeout" and last_whole is not None and not found and not unread
 
 
 def _guard_live_match(element, select) -> None:
@@ -895,6 +908,7 @@ def find_in_session(automation, plan, hwnd_value: int):
     cache = _build_cache(automation)
     walker = automation.ControlViewWalker
     polls = 0
+    last_whole = None
     while True:
         polls += 1
         # One sweep gets its own ceiling even with timeout_ms=0: "look now" must
@@ -904,6 +918,9 @@ def find_in_session(automation, plan, hwnd_value: int):
         found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, hwnd_value, plan.select, plan.max_nodes, plan.max_depth, by
         )
+        if _cut_repoll(hit_limit, found, unread, last_whole):
+            found, scanned, unread = last_whole
+            hit_limit = None
         if found or time.monotonic() >= deadline:
             matched = len(found)
             waited_ms = int((time.monotonic() - started) * 1000)
@@ -922,6 +939,7 @@ def find_in_session(automation, plan, hwnd_value: int):
                 plan, matched, shown, scanned, hit_limit is None and not unread, waited_ms, polls,
                 unreadable=unread,
             )
+        last_whole = (found, scanned, unread) if hit_limit is None else None
         time.sleep(0.12)
 
 

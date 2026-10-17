@@ -381,6 +381,82 @@ def test_a_walker_error_is_a_refusal_never_the_end_of_the_children():
         act(root, {"select": {"name": "Pane"}, "do": "focus"})
 
 
+# ── waiting: a re-poll the deadline cut is not the answer ─────────────────────
+
+class Clock:
+    """win_uia's clock: time passes between polls, and where a test stalls a read."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def stall_second_walk(clock, element, *, rename=None):
+    """The second walk that reads ``element`` stalls past any deadline on it."""
+    read = element.GetCachedPropertyValue
+    walks = []
+
+    def stalling(prop_id):
+        if prop_id == 30003:
+            walks.append(clock.now)
+            if len(walks) == 2:
+                clock.now += 30
+                if rename:
+                    element.props[30005] = rename
+        return read(prop_id)
+
+    element.GetCachedPropertyValue = stalling
+
+
+def test_act_answers_not_found_from_the_last_whole_walk_when_the_deadline_cuts_a_re_poll(monkeypatch):
+    # The real-desktop sequence: every walk of a small window completes, and the
+    # poll begun after the default 3000 ms wait ran out is cut before its first node.
+    monkeypatch.setattr(win_uia, "time", Clock())
+    calls = Calls()
+    root = dialog(calls, make(calls, "a", 50000, name="A"), make(calls, "b", 50020, name="B"))
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "no such element"}, "do": "focus"})
+
+    result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
+    assert result["nodes_scanned"] == 3 and result["polls"] > 1 and result["waited_ms"] >= 3000
+
+
+def test_a_cut_walk_that_met_a_candidate_stays_a_timeout(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    calls = Calls()
+    late = make(calls, "late", 50000, name="Later", patterns={10000: None})
+    root = dialog(calls, late, make(calls, "b", 50020, name="B"))
+    stall_second_walk(clock, late, rename="Go")
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "Go"}, "do": "invoke"})
+
+    result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "timeout" and result["searched_whole_window"] is False
+    assert result["matched"] == 1 and result["polls"] == 2
+    assert ("Invoke", "late") not in calls
+
+
+def test_find_answers_from_the_last_whole_walk_when_a_slow_re_poll_is_cut(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    calls = Calls()
+    slow = make(calls, "slow", 50000, name="Slow")
+    root = dialog(calls, slow, make(calls, "b", 50020, name="B"))
+    stall_second_walk(clock, slow)
+
+    result = find(root, {"select": {"name": "no such element"}, "timeout_ms": 1000})
+
+    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
+    assert result["nodes_scanned"] == 3 and result["polls"] == 2
+
+
 # ── window_read: values, states, rectangles and visibility from the cache ─────
 
 def test_window_read_shows_values_states_and_rectangles():

@@ -4,9 +4,10 @@ Opt-in: runs only on Windows with ``OUROBOROS_WINDOWS_DESKTOP_QA=1`` in an
 interactive desktop session, and needs network access for the real isolated
 ``comtypes`` install. It drives the production path end to end - launcher seed
 and trust stamp, the native-seed dependency step, out-of-process extension load
-and tool dispatch through ``ToolRegistry`` - against a WinForms window this test
-creates in its own PowerShell process. Only that window is read or acted on, and
-only that process is stopped; nothing else on the desktop is touched.
+and tool dispatch through ``ToolRegistry`` - against a WinForms window and a WPF
+window this test creates in its own PowerShell process. Only those windows are
+read or acted on, and only that process is stopped; nothing else on the desktop
+is touched.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 
 FIXTURE = r"""
 param([string]$Title)
-Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Windows.Forms, PresentationFramework
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $Title
 $form.Width = 520; $form.Height = 420
@@ -63,6 +64,26 @@ $twinB.Text = 'Twin'
 $freeze = Add (New-Object System.Windows.Forms.Button) 'freezeButton' 200 100
 $freeze.Text = 'Freeze'
 $freeze.Add_Click({ Start-Sleep -Seconds 8 })
+# PowerShell 5.1 hosts WinForms with .NET Framework's legacy accessibility: the
+# combo box above has no ExpandCollapse provider and no WinForms element offers
+# ScrollItem. A WPF window of this same process carries the controls whose
+# automation peers implement both.
+$wpf = New-Object System.Windows.Window
+$wpf.Title = $Title + '-wpf'
+$wpf.Width = 320; $wpf.Height = 240
+$wpf.WindowStartupLocation = 'Manual'; $wpf.Left = 560; $wpf.Top = 40
+$panel = New-Object System.Windows.Controls.StackPanel
+$shape = New-Object System.Windows.Controls.ComboBox
+$shape.Name = 'shapeBox'
+[void]$shape.Items.Add('circle'); [void]$shape.Items.Add('square')
+$planets = New-Object System.Windows.Controls.ListBox
+$planets.Name = 'planetList'; $planets.Height = 60
+# Every item realized, so the one scrolled to is in the tree while out of view.
+[System.Windows.Controls.VirtualizingStackPanel]::SetIsVirtualizing($planets, $false)
+foreach ($planet in 'mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn') { [void]$planets.Items.Add($planet) }
+[void]$panel.Children.Add($shape); [void]$panel.Children.Add($planets)
+$wpf.Content = $panel
+$wpf.Show()
 [System.Windows.Forms.Application]::Run($form)
 """
 
@@ -76,7 +97,7 @@ def owned_window(tmp_path):
     script = tmp_path / "fixture.ps1"
     script.write_text(FIXTURE, encoding="utf-8")
     proc = subprocess.Popen(  # noqa: S603 - fixed argv, test-owned process
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), title],
+        ["powershell.exe", "-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-File", str(script), title],
         **subprocess_new_group_kwargs(),
     )
     try:
@@ -130,7 +151,7 @@ def _hwnd(call, title, pid):
             if row["title"] == title and row["pid"] == pid:
                 return int(row["hwnd"], 16)
         time.sleep(0.5)
-    raise AssertionError("the owned fixture window never appeared")
+    raise AssertionError(f"the owned fixture window {title!r} never appeared")
 
 
 def test_the_skill_reads_and_acts_on_its_own_window_through_the_host(host, owned_window):
@@ -145,8 +166,8 @@ def test_the_skill_reads_and_acts_on_its_own_window_through_the_host(host, owned
     assert nodes["agreeBox"]["state"]["checked"] == "off"
     assert nodes["applyButton"]["rect"]["width"] > 0 and "unread" not in nodes["applyButton"]
 
-    def act(select, do, **extra):
-        return call("element_act", hwnd=hwnd, select=select, do=do, **extra)
+    def act(select, do, *, on=hwnd, **extra):
+        return call("element_act", hwnd=on, select=select, do=do, **extra)
 
     # Every step runs even after a failure, and each failure keeps the skill's
     # own answer, so one desktop run explains all of what went wrong.
@@ -171,10 +192,22 @@ def test_the_skill_reads_and_acts_on_its_own_window_through_the_host(host, owned
     check("toggle", bool(toggle.get("element_after")), toggle)
     toggled = call("window_read", hwnd=hwnd, shape="flat", text_contains="agree")
     check("toggle effect", any(node.get("state", {}).get("checked") == "on" for node in toggled["items"]), toggled)
-    done("expand", {"automation_id": "kindBox"}, "expand")
-    done("collapse", {"automation_id": "kindBox"}, "collapse")
     done("select", {"role": "list_item", "name": "two"}, "select")
-    done("scroll_into_view", {"role": "list_item", "name": "three"}, "scroll_into_view")
+    try:
+        wpf = _hwnd(call, f"{title}-wpf", pid)
+    except AssertionError as absent:
+        problems.append(str(absent))
+    else:
+        done("expand", {"automation_id": "shapeBox"}, "expand", on=wpf)
+        done("collapse", {"automation_id": "shapeBox"}, "collapse", on=wpf)
+        done("scroll_into_view", {"role": "list_item", "name": "saturn"}, "scroll_into_view", on=wpf)
+    # The WinForms combo box and list item lack these patterns (run 39058404823):
+    # refused by name, with the patterns they do have, never clicked instead.
+    for verb, select, pattern in (("expand", {"automation_id": "kindBox"}, "ExpandCollapsePattern"),
+                                  ("scroll_into_view", {"role": "list_item", "name": "three"}, "ScrollItemPattern")):
+        refused = act(select, verb)
+        check(f"{verb} refused", refused.get("ok") is False and f"does not support {pattern}; patterns it does "
+              "support: " in str(refused.get("error")), refused)
     focus = act({"automation_id": "amountBox"}, "focus")
     check("focus is not mutating", focus.get("mutating") is False, focus)
 
