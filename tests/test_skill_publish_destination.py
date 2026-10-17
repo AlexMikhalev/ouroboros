@@ -260,3 +260,33 @@ def test_merge_requests_the_exact_head_and_reports_refusals(monkeypatch):
                         "-f", "merge_method=squash"]
     refused = github.merge_pull_request(types.SimpleNamespace(), "o", "r", 8, "b" * 40)
     assert refused["merged"] is False and refused["http_status"] == 405 and "405" in refused["error"]
+
+
+@pytest.mark.parametrize("requested", [None, "mine", {"source_id": "mine", "mode": "origin"}])
+def test_repository_root_origin_is_distinct_from_an_unknown_folder(tmp_path, requested):
+    _record(tmp_path, "root_skill", "mine", "git", {"path": ""})
+    destination = resolve_publish_destination(tmp_path, "root_skill", requested, rows=ROWS)
+    assert destination.skill_folder("root_skill") == ""
+    _record(tmp_path, "unknown", "mine", "git", {})
+    assert resolve_publish_destination(tmp_path, "unknown", requested, rows=ROWS).skill_folder("unknown") == "packs/unknown"
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/owner/repo", "https://github.com/owner/repo.git",
+    "git@github.com:owner/repo", "git@github.com:owner/repo.git",
+    "ssh://git@github.com/owner/repo", "ssh://git@github.com/owner/repo.git",
+])
+def test_github_publication_accepts_https_and_ssh(url):
+    from ouroboros.skill_publish_destination import github_repository
+
+    assert github_repository(url) == ("owner", "repo")
+
+
+@pytest.mark.parametrize("url", ["https://gitlab.com/owner/repo", "git@gitlab.com:owner/repo",
+                                  "ssh://git@gitlab.com/owner/repo"])
+def test_publication_to_other_hosts_explains_the_remaining_limit(url):
+    from ouroboros.skill_publish_destination import github_repository
+
+    with pytest.raises(SkillPublishDestinationError, match="Publishing currently supports GitHub repositories only") as err:
+        github_repository(url)
+    assert err.value.reason_code == "hub_destination_invalid"

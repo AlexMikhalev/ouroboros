@@ -2,7 +2,8 @@
 
 A skill installed from a git-hosted source publishes back to that origin: the hub for a hosted hub
 entry, the author's repository for a hub entry that points at one, the repository itself (the exact
-folder it came from) for a plain git source. Everything else (made here, built in, from a registry or
+folder it came from, including the repository root) for a plain git source. GitHub HTTPS and SSH
+origins are supported; publication to other hosts is not yet supported. Everything else (made here, built in, from a registry or
 a local folder) publishes to the hub, or to a git source the owner names. The owner's choice arrives as
 ``{"source_id", "mode"}`` (mode ``origin``, ``entry`` or ``new_entry``, a new name beside an existing
 entry) from the Publish dialog, through the publish task's ``skill_publish_target.destination``.
@@ -28,7 +29,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ouroboros.skill_publish_result import SkillPublishDestinationError, parse_skill_publish_destination
 
-_GITHUB_RE = re.compile(r"^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+?)(?:\.git)?/?$")
+_GITHUB_RE = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                        r"([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+?)(?:\.git)?/?$")
 MODES = ("origin", "entry", "new_entry")
 
 
@@ -53,7 +55,7 @@ class PublishDestination:
     source_id: str
     source_name: str
     pointer: bool = False  # the author's repository behind a hub pointer entry
-    skill_path: str = ""  # the exact folder the installed release came from, when known
+    skill_path: Optional[str] = None  # None: unknown; "": repository root
     new_entry: bool = False  # hub: a new name, never an update of an existing entry
 
     @property
@@ -63,16 +65,18 @@ class PublishDestination:
     def skill_folder(self, skill: str) -> str:
         if self.kind == "hub":
             return f"skills/{skill}"  # hosted entries live where v1 clients read them
-        if self.skill_path or self.pointer:
+        if self.skill_path is not None:
             return self.skill_path
         return "/".join(part for part in (self.folder, skill) if part)
 
 
 def github_repository(url: str) -> tuple[str, str]:
-    """``(owner, repository)`` of a GitHub https address; other hosts cannot be published to here."""
+    """``(owner, repository)`` of a GitHub HTTPS or SSH address; publication supports GitHub only."""
     match = _GITHUB_RE.match(str(url or "").strip())
     if not match:
-        raise SkillPublishDestinationError("hub_destination_invalid")
+        error = SkillPublishDestinationError("hub_destination_invalid")
+        error.args = ("Publishing currently supports GitHub repositories only. Choose a GitHub source.",)
+        raise error
     return match.group(1), match.group(2)
 
 
@@ -89,7 +93,7 @@ def _hub_destination(rows: List[Dict[str, Any]], *, new_entry: bool = False) -> 
                               new_entry=new_entry)
 
 
-def _row_destination(row: Dict[str, Any], *, skill_path: str = "", new_entry: bool = False) -> PublishDestination:
+def _row_destination(row: Dict[str, Any], *, skill_path: Optional[str] = None, new_entry: bool = False) -> PublishDestination:
     if row["kind"] not in {"hub", "git"}:
         raise SkillPublishDestinationError("destination_not_git")
     owner, repo = github_repository(row.get("url", ""))
@@ -113,7 +117,7 @@ def _origin(record: Mapping[str, Any], rows: List[Dict[str, Any]]) -> Optional[P
     row = next((row for row in rows if record_matches_row(record, row)), None)
     if row is None or row["kind"] not in {"hub", "git"}:
         return None
-    return _row_destination(row, skill_path=str(release.get("path") or ""))
+    return _row_destination(row, skill_path=release.get("path"))
 
 
 def _requested(requested: Any) -> Tuple[str, str]:
@@ -151,7 +155,7 @@ def resolve_publish_destination(drive_root: pathlib.Path, skill: str, requested:
         raise SkillPublishDestinationError("destination_not_hub")
     release = record.get("release") or {}
     same_origin = bool(record) and (record.get("source") or {}).get("id") == row["id"] and not release.get("repo")
-    return _row_destination(row, skill_path=str(release.get("path") or "") if same_origin else "",
+    return _row_destination(row, skill_path=release.get("path") if same_origin else None,
                             new_entry=mode == "new_entry")
 
 
