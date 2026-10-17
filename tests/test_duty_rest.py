@@ -363,10 +363,16 @@ def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(env, m
 
 # ---------------------------------------------------------------- pending drives at boot
 
-from ouroboros.startup_task_files import recover_terminal_task_files  # noqa: E402
+from ouroboros.startup_task_files import _drive_stamps, recover_terminal_task_files  # noqa: E402
 
 
-def test_boot_rests_settled_drives_that_wait_on_their_child_and_reports_them_as_found(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wal", [False, True])
+def test_boot_rests_settled_drives_that_wait_on_their_child_and_reports_them_as_found(tmp_path, monkeypatch, wal):
+    if wal:  # the installer's engine on a local disk: a child's commit stays in its WAL log until a checkpoint
+        import sqlite3
+
+        monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+        monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")
     gone = tmp_path / "state" / "headless_tasks" / "gone" / "data"  # the child drive was settled away
     write_task_result(tmp_path, "gone", "failed", result="r", child_drive_root=str(gone))
     dead = tmp_path / "state" / "headless_tasks" / "dead" / "data"
@@ -383,8 +389,27 @@ def test_boot_rests_settled_drives_that_wait_on_their_child_and_reports_them_as_
     again = recover_terminal_task_files(tmp_path, set())
     assert again["unresolved"] == ["dead"]  # reported as found, still excluded from healing
     assert bodies == [] and revision(tmp_path) == before
+    stamps = _drive_stamps(tmp_path, "dead")
     write_task_result(dead, "dead", "running", note="the child store moved")
+    assert _drive_stamps(tmp_path, "dead") != stamps, "a commit still in the WAL log moves the stamp too"
+    bodies[:] = []  # the write's own merge read is not the recovery's
     recover_terminal_task_files(tmp_path, set())
     assert set(bodies) == {"dead"}  # back exactly once
     bodies[:] = []
     assert recover_terminal_task_files(tmp_path, set())["unresolved"] == ["dead"] and bodies == []
+
+
+def test_a_retained_settlements_basis_moves_with_a_commit_still_in_the_wal_log(tmp_path, monkeypatch):
+    import sqlite3
+
+    from ouroboros.task_custody import settlement_basis
+
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+    monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")
+    drive = tmp_path / "task_drives" / "kept"
+    drive.mkdir(parents=True)
+    write_task_result(drive, "kept", "running")
+    write_task_result(tmp_path, "kept", "completed", result="r")
+    basis = settlement_basis(tmp_path, "kept", drive, drive)
+    write_task_result(drive, "kept", "running", note="a commit the WAL log holds")
+    assert settlement_basis(tmp_path, "kept", drive, drive) != basis

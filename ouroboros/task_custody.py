@@ -1118,8 +1118,9 @@ TRANSIENT_RETENTIONS = frozenset({"liveness_unknown", "task_live", "generation_c
 
 def settlement_basis(parent: pathlib.Path, task_id: str, task_dir: pathlib.Path, drive: pathlib.Path) -> list:
     """What a retained settlement's verdict was read from, cheaply: the canonical row's signature,
-    the drive's, its store's, its call inventory's and both mailboxes' identities, and the
-    release that judged it. Any change makes the next pass attempt the drive again."""
+    the drive's, its store's (the database and its WAL log, where a commit lives until a
+    checkpoint), its call inventory's and both mailboxes' identities, and the release that judged
+    it. Any change makes the next pass attempt the drive again."""
     from ouroboros import __version__
     from ouroboros.task_store import signature
 
@@ -1132,6 +1133,7 @@ def settlement_basis(parent: pathlib.Path, task_id: str, task_dir: pathlib.Path,
 
     return json.loads(json.dumps([
         signature(parent, task_id), identity(task_dir), identity(drive / "state" / "current.sqlite"),
+        identity(drive / "state" / "current.sqlite-wal"),
         identity(drive / "observability" / "calls" / task_id), identity(_mailbox_path(parent, task_id)),
         identity(_mailbox_path(drive, task_id)), str(__version__)], default=str))
 
