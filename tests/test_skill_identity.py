@@ -421,3 +421,56 @@ def test_lent_lane_lets_other_jobs_run_and_is_taken_back(tmp_path):
     assert order == ["other", "persist"]
     with q.lend_lifecycle_lane():  # outside a lane job it is a no-op
         pass
+
+
+def test_lent_lane_is_retaken_within_the_lane_deadline(tmp_path, monkeypatch):
+    """Another holder of the cross-process lock past the lane's deadline fails the lending
+    job loudly; the lane is whole again afterwards."""
+    import asyncio
+
+    from ouroboros import skill_lifecycle_queue as q
+    from ouroboros.platform_layer import file_lock_exclusive_nb
+
+    monkeypatch.setattr(q, "_lifecycle_deadline_sec", lambda: 0.3)
+    holder = {}
+
+    def review():
+        with q.lend_lifecycle_lane():
+            holder["fh"] = (tmp_path / "state" / "skill_lifecycle.lock").open("a+")
+            file_lock_exclusive_nb(holder["fh"].fileno())  # e.g. another process's job
+
+    async def run(kind, func):
+        async def runner():
+            return await q.run_blocking_preserving_cancellation(func)
+
+        return await asyncio.wait_for(q.run_lifecycle_job(kind=kind, target="a", runner=runner,
+                                                          options=q.LifecycleJobOptions(drive_root=tmp_path)), 5)
+
+    with pytest.raises(TimeoutError, match="held beyond the deadline"):
+        asyncio.run(run("review", review))
+    holder["fh"].close()
+    assert asyncio.run(run("install", lambda: "next")) == "next"
+
+
+@pytest.mark.parametrize("moved_on", [False, True])
+def test_a_verdict_lands_only_while_its_bytes_are_installed(tmp_path, moved_on):
+    """The panel ran with the lane lent out; back under the lane, a verdict persists only
+    for the bytes still installed (an edit, update or uninstall meanwhile drops it)."""
+    import types
+
+    from ouroboros.skill_loader import find_skill, skill_state_dir_path
+    from ouroboros.skill_review import SkillReviewOutcome, _persist_reviewed_outcome
+
+    drive_root = tmp_path / "data"
+    skill_dir = _skill(drive_root / "skills" / "external")
+    skill = find_skill(drive_root, "probe")
+    outcome = SkillReviewOutcome(skill_name="probe", status="clean", findings=[], reviewer_models=["m1", "m2"],
+                                 content_hash=skill.content_hash)
+    if moved_on:
+        (skill_dir / "notes.md").write_text("changed during the panel\n", encoding="utf-8")
+    result = _persist_reviewed_outcome(types.SimpleNamespace(), skill, drive_root, outcome, history=[],
+                                       review_rebuttal="", contract_fp="fp", rebuttal_sha="")
+    persisted = (skill_state_dir_path(drive_root, "probe") / "review.json").is_file()
+    assert persisted is not moved_on
+    assert result.status == ("pending" if moved_on else "clean")
+    assert ("payload changed while the review ran" in (result.error or "")) is moved_on

@@ -168,13 +168,21 @@ def lend_lifecycle_lane():
     try:
         yield
     finally:
+        # In-process: wait for the holder (the job owns this lock again before its own
+        # release runs). Cross-process: the lane's deadline, as when it was first taken.
         handle.lock.acquire()
         if handle.lock_file is not None:
+            deadline = time.monotonic() + _lifecycle_deadline_sec()
             while True:
                 try:
                     file_lock_exclusive_nb(handle.lock_file.fileno())
                     break
                 except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "skill_lifecycle.lock is held beyond the deadline — a "
+                            "previous job appears wedged. Restarting Ouroboros recovers it."
+                        )
                     time.sleep(0.05)
         with _state_lock:
             _active = handle.job
