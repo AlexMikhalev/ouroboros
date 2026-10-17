@@ -12,8 +12,10 @@ The seed keeps, in their original order: the system view and the assignment; eve
 message (the owner's and principals' words typed at delivery, review feedback, notices, and
 any row written before host state was bound to its text, which may hold merged owner words);
 Ouroboros's outward dialogue; the mind's authored notes (actor capsules) and a predecessor's
-notes; the current review decisions; and the mind's own prose since its newest note,
-including the text it wrote beside a tool call. Complete tool units, replies the notes
+notes; the current review decisions; the address records the refusal passes wrote since the
+newest note; and the mind's own prose since its newest note, including the text it wrote beside
+a tool call. The record lists every tool unit since the newest note with its typed facts, shown
+or never shown. Complete tool units, replies the notes
 already cover, host state the host sends afresh (facts, clock, roster and skill snapshots,
 bound and unchanged), superseded review copies and earlier address records leave the view;
 one host record names the checkpoint that holds them exactly. A renewal that would remove no
@@ -32,6 +34,36 @@ from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, OWNER_ROW_KINDS, bou
 RENEWAL_RECORD_NAME = "ouroboros_view_renewal"
 
 
+def _is_note(row: Dict[str, Any]) -> bool:
+    """An actor capsule: a note the mind authored and kept."""
+    from ouroboros.context_compaction import _capsule_metadata
+
+    capsule, meta = _capsule_metadata(row)
+    return bool(capsule and meta and meta.get("authorship") == "actor")
+
+
+def _newest_note(messages: Sequence[Dict[str, Any]]) -> int:
+    return max((i for i, row in enumerate(messages) if _is_note(row)), default=-1)
+
+
+def units_since_note(messages: Sequence[Dict[str, Any]], observation: Any) -> str:
+    """Typed facts of every tool unit after the newest note, each named shown or never shown to me.
+
+    Plan item 16 (review r1, 17.10): the record indexes what left the view since the newest note, so a
+    renewal never hides which calls ran (a child started, a commit attempted) or which results the mind
+    never saw. The facts are ``context_source_view._unit_facts``; exposure is the usable-send evidence
+    (``_exposed_units``); unknown exposure reads as never shown.
+    """
+    from ouroboros import context_compaction as compaction
+    from ouroboros.context_source_view import _exposed_units, _unit_facts
+
+    newest = _newest_note(messages)
+    units = [unit for unit in compaction.context_units(list(messages), scope="tool") if unit.start > newest]
+    shown = _exposed_units(list(messages), units, observation if isinstance(observation, dict) else {})
+    return "\n".join(f"{_unit_facts(messages, unit)}\n  {'shown to me' if unit.unit_id in shown else 'never shown to me'}"
+                     for unit in units)
+
+
 def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """``(kept rows in order, counts of the rows that leave the view)``; pure, no I/O."""
     from ouroboros.context_budget import host_row_intact
@@ -46,12 +78,9 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
     resent = {CONTEXT_FACTS_NAME, CLOCK_ROW_NAME, ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME, SNAPSHOT_KIND,
               RENEWAL_RECORD_NAME}
 
-    def note(row: Dict[str, Any]) -> bool:
-        capsule, meta = _capsule_metadata(row)
-        return bool(capsule and meta and meta.get("authorship") == "actor")
-
+    note = _is_note
     first_user = next((i for i, row in enumerate(messages) if row.get("role") == "user"), -1)
-    newest_note = max((i for i, row in enumerate(messages) if note(row)), default=-1)
+    newest_note = _newest_note(messages)
     superseded = set(obsolete_review_index_positions(messages))
     kept: List[Dict[str, Any]] = []
     left = {"tool_rows": 0, "covered_replies": 0, "host_rows": 0}
@@ -65,9 +94,11 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
             prose = _plain_text(row.get("content")) if role == "assistant" and i > newest_note else None
             if prose and prose.strip():
                 kept.append({"role": "assistant", "content": prose})  # my words beside the call stay
+        elif _capsule_metadata(row)[0] and i > newest_note:
+            kept.append(row)  # the passes' address records since my newest note: what left, with its facts
         elif (_capsule_metadata(row)[0] or row.get(REVIEW_CONTEXT_INDEX_KEY)
               or (kind in resent and host_row_intact(row))):
-            left["host_rows"] += 1  # addresses, superseded review copies, state the host sends afresh
+            left["host_rows"] += 1  # older addresses, superseded review copies, state the host sends afresh
         elif role == "assistant" and i <= newest_note:
             left["covered_replies"] += 1
         else:
@@ -101,13 +132,16 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
                                           data=raw, extension="json")
     except (OSError, ValueError):
         return False  # no exact source, no renewal: every address must resolve (BIBLE P1)
+    index = units_since_note(messages, getattr(getattr(tools, "_ctx", None), "_last_context_observation", None))
     seed.append(bound_host_row(RENEWAL_RECORD_NAME, (
         "[Host record: working view renewed after the provider refused this conversation's size. Same task; "
-        "nothing summarized; no model called.] Kept, in order: the assignment, typed owner and outward dialogue "
-        "rows, plain user rows, my notes, my replies since my newest note and the current review decisions. "
+        "nothing summarized; no model called.] Kept, in order: the assignment, every delivered message and "
+        "outward dialogue, my notes, my replies since my newest note and the current review decisions. "
         f"Left the view: {left['tool_rows']} tool rows, {left['covered_replies']} replies before my newest note, "
         f"{left['host_rows']} host rows. The exact transcript of {before} rows: "
-        f"{json.dumps(source, ensure_ascii=False, sort_keys=True)}.")))
+        f"{json.dumps(source, ensure_ascii=False, sort_keys=True)}."
+        + (f"\nTool units since my newest note (they left the view; each stays exact there):\n{index}" if index
+           else ""))))
     schemas = getattr(limit_ctx, "tool_schemas", None)
     if estimate_context_prompt_tokens(seed, schemas) >= estimate_context_prompt_tokens(messages, schemas):
         return _cannot_help(limit_ctx)  # never send a candidate that is not smaller than the refused one

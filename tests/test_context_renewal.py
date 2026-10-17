@@ -82,10 +82,34 @@ def test_renewal_publishes_the_seed_with_an_exact_source_and_continues_the_same_
         loop._emit_checkpoint_event = loop_emit
     record = messages[-1]
     assert record[HOST_CONTEXT_KIND_KEY] == RENEWAL_RECORD_NAME and "nothing summarized" in record["content"]
+    # Review r1 (17.10): every call since my newest note is indexed with its facts, shown or never shown.
+    index = record["content"].split("Tool units since my newest note")[1]
+    assert "three.py" in index and "cli.py" in index and "never shown to me" in index
+    assert "one.py" not in index  # covered by the note, not since it
     assert tools._ctx.messages is messages and len(messages) < len(original)  # published in place, same task
-    source = json.loads(record["content"].rsplit("rows: ", 1)[1].rstrip("."))
+    source = json.loads(record["content"].rsplit("rows: ", 1)[1].split("\n", 1)[0].rstrip("."))
     assert json.loads(read_actor_source_bytes(pathlib.Path(tmp_path), "renewal", source)) == original
     assert events and events[0]["checkpoint_kind"] == "context_view_renewed" and events[0]["owner_visible"]
+
+
+def test_the_passes_address_records_since_the_newest_note_stay_in_the_seed(tmp_path):
+    """Review r1 (17.10): a refusal pass's records of what left the view since my newest note stay;
+    an older address record (before the note) leaves with the rest."""
+    from ouroboros.context_budget import ContextReclaimRequest
+    from ouroboros.context_source_view import emergency_address_view
+
+    messages = _noted(tmp_path)
+    request = ContextReclaimRequest(route_fp="r", round_id="r:1", transcript_sha256=cc.context_reclaim_transcript_sha256(
+        messages), measurement_basis="cold_estimate", measurement_density=1.0, reclaim_goal_tokens=2**31 - 1)
+    addressed, receipt = emergency_address_view(messages, request, rung="unseen_bodies", observation={},
+                                                drive_root=tmp_path, task_id="renewal")
+    assert receipt.status == "applied"
+    newest = max(i for i, row in enumerate(addressed) if cc._capsule_metadata(row)[0]
+                 and (cc._capsule_metadata(row)[1] or {}).get("authorship") == "actor")
+    records = [row for i, row in enumerate(addressed) if i > newest and cc._capsule_metadata(row)[0]]
+    assert records  # the pass replaced units after the note by address records
+    seed, _left = renewal_seed(addressed)
+    assert all(record in seed for record in records)
 
 
 def test_renewal_is_not_attempted_when_it_cannot_help_or_the_failure_is_not_size(tmp_path):
