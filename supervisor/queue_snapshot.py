@@ -77,6 +77,12 @@ def _keeps_saved_queue(path: Any, *held: Any) -> bool:
         return False  # nothing readable to keep
     return isinstance(saved, dict) and bool(saved.get("pending") or saved.get("running"))
 
+def saved_queue_unowned() -> bool:
+    """Whether the saved queue snapshot still names work this process has not taken into custody (no
+    finished restore of it, no publication of its own): work admitted now would be published over it."""
+    return _keeps_saved_queue(_queue().QUEUE_SNAPSHOT_PATH)
+
+
 # ABI 7.0 (Q8=B): the durable queue snapshot names its schema on every write.
 # Stamp-on-write ONLY — the restore path does not require the stamp (no
 # compat branching), so an N−1 snapshot restores unchanged.

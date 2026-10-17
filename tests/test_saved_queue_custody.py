@@ -199,3 +199,28 @@ def test_settling_a_caught_direct_turn_grants_no_custody_of_an_unread_snapshot(t
     queue.init(tmp_path)  # the following generation
     assert queue.restore_pending_from_snapshot() == 1
     assert queue.resume_budget_paused_task("saved-root")["ok"] is True
+
+
+def test_a_continue_before_the_restore_waits_and_the_saved_queue_survives(tmp_path, monkeypatch):
+    """A Continue admits a successor into this process's queue; before the process took the saved
+    queue into custody that publication would replace it, and the restore that follows skips a
+    queue already holding work. The Continue is refused as retryable instead; after the restore the
+    same press is admitted and the saved Pause still resumes."""
+    from supervisor.continuation_admission import admit_continuation
+    from tests.test_owner_continue import NONCE, _interrupted
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    _parked(tmp_path, monkeypatch, task_id="saved-root")
+    workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                         stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+    saved = queue.QUEUE_SNAPSHOT_PATH.read_bytes()
+    workers.PENDING[:] = []
+    queue.init(tmp_path)  # the next generation serves its UI before its restore
+    _interrupted(tmp_path, "pred-1")
+    assert admit_continuation("pred-1", action_nonce=NONCE) == {"ok": False, "error": "queue_not_restored"}
+    assert not workers.PENDING and queue.QUEUE_SNAPSHOT_PATH.read_bytes() == saved
+    assert queue.restore_pending_from_snapshot() >= 1
+    admitted = admit_continuation("pred-1", action_nonce=NONCE)
+    assert admitted.get("ok") is True, admitted
+    assert queue.resume_budget_paused_task("saved-root")["ok"] is True
