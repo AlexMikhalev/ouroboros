@@ -20,12 +20,14 @@ from tests._budget_pause_exact_helpers import _install_queue, _parked
 def _a_generation_holding_nothing_of_its_own(monkeypatch):
     """Before its restore a generation holds no work: the direct-turn registry and the fence maps
     are this test's own, never ones an earlier test in the same worker left behind."""
-    from supervisor import active_activity, queue
+    from supervisor import active_activity, queue, queue_snapshot
 
     registry = active_activity.DirectActivityRegistry()
     monkeypatch.setattr(active_activity, "get_direct_activity_registry", lambda: registry)
     monkeypatch.setattr(queue, "ACCEPTANCE_FENCES", {})
     monkeypatch.setattr(queue, "BUDGET_ROOT_FENCES", {})
+    monkeypatch.setattr(queue_snapshot, "_RESTORED", set())
+    monkeypatch.setattr(queue_snapshot, "_RESTORING", {})
 
 
 @pytest.mark.parametrize("door", ["kill_workers", "publication", "update_quiesce", "rollback_aborted"])
@@ -152,6 +154,47 @@ def test_a_restore_that_did_not_finish_grants_no_custody_of_the_saved_queue(tmp_
             assert queue.restore_pending_from_snapshot() == 0
         stop()
     assert queue.QUEUE_SNAPSHOT_PATH.read_bytes() == saved
+    queue_snapshot._RESTORED.clear()
+    queue.init(tmp_path)  # the following generation
+    assert queue.restore_pending_from_snapshot() == 1
+    assert queue.resume_budget_paused_task("saved-root")["ok"] is True
+
+
+@pytest.mark.parametrize("orphan", [False, True], ids=["no_direct_turn", "caught_direct_turn"])
+@pytest.mark.parametrize("read_failure", [False, True], ids=["read", "unreadable"])
+def test_settling_a_caught_direct_turn_grants_no_custody_of_an_unread_snapshot(tmp_path, monkeypatch, orphan,
+                                                                               read_failure):
+    """The restore settles a direct turn the stop caught even when the snapshot could not be read; that
+    hand-over to cancellation custody never certifies the unread saved queue, so the boot's next stop
+    and startup publication keep it and the next generation's Resume finds the saved Pause."""
+    from supervisor import queue_snapshot
+    from tests.test_direct_roots_adoption import TID, _crashed_turn, _next_generation
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    _parked(tmp_path, monkeypatch, task_id="saved-root")
+    assert queue.persist_queue_snapshot(reason="seed") is True
+    if orphan:
+        _crashed_turn(tmp_path)  # a durable direct execution owner naming the ended process
+        _next_generation(monkeypatch, tmp_path)
+    workers.PENDING.clear()
+    queue.init(tmp_path)  # the next generation discovers the caught direct turn
+    assert (TID in queue.PRIOR_DIRECT_ROOTS.get("task_ids", [])) is orphan
+    real_read, fenced = pathlib.Path.read_text, []
+
+    def transient(path, *args, **kwargs):
+        if read_failure and path == queue.QUEUE_SNAPSHOT_PATH:
+            raise OSError(5, "a transient read error")
+        return real_read(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pathlib.Path, "read_text", transient)
+        queue.restore_pending_from_snapshot(terminalized=fenced)
+    assert (TID in fenced) is orphan, "the caught direct turn still goes to cancellation custody"
+    workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                         stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+    queue.persist_queue_snapshot(reason="startup")
+    workers.PENDING.clear()
     queue_snapshot._RESTORED.clear()
     queue.init(tmp_path)  # the following generation
     assert queue.restore_pending_from_snapshot() == 1

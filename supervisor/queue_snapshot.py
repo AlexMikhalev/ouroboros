@@ -1006,14 +1006,16 @@ def _restore_pending(key: str, max_age_sec: int, terminalized: Optional[list]) -
             restored += _refuse_restore_invalid_fences(snapshot_pending, budget=malformed_budget_fences)
             _record_queue_restore(restored=restored, terminalized_running=fenced_running,
                                   direct_roots_incomplete=direct_roots.get("incomplete", False))
-            _RESTORED.add(key)  # every row decided: this process's publications may now replace it
+            if not unread:  # every row of a READ snapshot decided: this process's publications may replace it
+                _RESTORED.add(key)
             if restored > 0:
                 _queue().persist_queue_snapshot(reason="queue_restored")
             return restored
         if stale and not snapshot_pending and not restored:
             _record_queue_restore(terminalized_running=fenced_running,
                                   direct_roots_incomplete=direct_roots.get("incomplete", False))
-            _RESTORED.add(key)
+            if not unread:  # settling caught direct roots grants no custody of an unread snapshot
+                _RESTORED.add(key)
             return 0
 
         skipped_terminal, invalid_depth_restore = 0, []
@@ -1214,7 +1216,8 @@ def _restore_pending(key: str, max_age_sec: int, terminalized: Optional[list]) -
         sweep_orphaned_budget_fences(
             _queue().PENDING, _queue().BUDGET_ROOT_FENCES, _queue().DRIVE_ROOT,
         )
-        _RESTORED.add(key)
+        if not unread:
+            _RESTORED.add(key)
         if restored > 0 or skipped_terminal > 0 or invalid_depth_restore or blocked_restore:
             _queue().persist_queue_snapshot(reason="queue_restored")
         return restored
