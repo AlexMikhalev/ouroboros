@@ -204,6 +204,32 @@ def test_routing_recent_text_rows_report_only_missing_parts_of_the_window(tmp_pa
     assert [row["client_message_id"] for row in covered["recent_canonical_dialogue"]] == [f"recent-{i}" for i in range(20)]
 
 
+def test_routing_recent_text_discloses_recorded_invalid_intervals(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros import server_routing_context as routing
+
+    monkeypatch.setattr(routing, "_addressable_root_tasks", lambda *args: [])
+    monkeypatch.setattr(routing, "_recent_root_results", lambda *args: ([], {}))
+    seed(tmp_path, live={"chat": [owner(), "{broken\n"]})
+    ds.ensure(tmp_path)
+    result = routing._main_routing_manifest(SimpleNamespace(DRIVE_ROOT=tmp_path))
+    assert result["omissions"]["dialogue_gaps"] == ["recorded invalid intervals"]
+    assert result["recent_canonical_dialogue"][0]["text"] == owner()["text"].strip()
+
+
+def test_empty_accepted_wake_keeps_late_rows_with_older_timestamps(tmp_path):
+    from ouroboros.consciousness_wake import _chat_window
+
+    first, window = _chat_window(tmp_path, None, 2_000_000_000, set())
+    assert first == [] and window["boundary"]["upper"] == 0
+    row = owner(ts="2000-01-01T00:00:00+00:00")
+    ds.append(tmp_path, "chat", row)
+    rows, second = _chat_window(tmp_path, window["boundary"], 2_000_000_001, set())
+    assert [entry for _seq, entry in rows] == [row]
+    assert second["basis"] == "accepted_boundary"
+    assert _chat_window(tmp_path, second["boundary"], 2_000_000_002, set())[0] == []
+
+
 def test_initialization_reads_existing_dialogue_evidence_and_never_creates_a_store(tmp_path):
     from ouroboros import store
     from supervisor.state_initialization import initialization_decision, supervisor_evidence
@@ -274,6 +300,34 @@ def test_memory_readers_do_equal_work_with_one_or_thirty_foreign_rooms(tmp_path,
             assert len(result["rows"]) == 1 and result["rows"][0]["text"] == row["text"]
         else:
             assert result == (row if reader == "identity" else [row])
+        measurements.append(dict(measured))
+    assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
+
+
+def test_legacy_origin_timestamp_does_not_scan_the_source_rooms_history(tmp_path, monkeypatch):
+    import json
+    from ouroboros import chat_chain
+    from ouroboros.projects_registry import create_project
+
+    measurements = []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        project = create_project(root, "selected", origin="reconcile")
+        row = owner(client_id="", ts="2026-10-01T00:00:00+00:00")
+        ref = build_owner_message_ref(chat_id=1, client_message_id="", ts=row["ts"], text=row["text"])
+        (root / "state/project_task_bindings.json").write_text(json.dumps({"bindings": {
+            "selected": {"project_id": project["id"], "project_chat_id": project["chat_id"], "source_ref": ref}
+        }}), encoding="utf-8")
+        ds.append(root, "chat", row)
+        for room in range(rooms):
+            for number in range(3):
+                # The foreign histories share Main's physical address, as before promotion.
+                ds.append(root, "chat", owner(f"foreign-{room}-{number}", task_id=f"other-{room}"))
+        own = {"chat_id": project["chat_id"], "text": "own reply", "direction": "out"}
+        ds.append(root, "chat", own)
+        with metered(monkeypatch) as measured:
+            rows = [entry.row for entry in chat_chain.room_rows(root, project["chat_id"])]
+        assert rows == [row, own]
         measurements.append(dict(measured))
     assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
 

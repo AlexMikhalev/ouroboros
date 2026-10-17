@@ -380,6 +380,8 @@ def _main_routing_manifest(ctx: Any) -> Dict[str, Any]:
     coverage = ds.range_coverage(root, "chat", lower=rows[19].seq if len(rows) >= 20 else 0, upper=upper)
     if not coverage["imported"]:
         gaps.add("a segment could not be imported" if coverage["mismatch"] else "history is still importing")
+    if coverage["gaps"]:
+        gaps.add("recorded invalid intervals")
     rows = [entry.row for entry in reversed(rows[:20])]
     for row in rows:
         text = render_row_text(row).strip() if str(row.get("text") or "").strip() else ""

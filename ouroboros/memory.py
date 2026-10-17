@@ -623,10 +623,12 @@ class Memory:
         self, log_name: str, task_id: str, want: int, *, iter_objects=None, list_archives=None, stat=None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """The newest ``want`` rows of ONE task (or of the log when ``task_id`` is
-        empty) through the bounded rotation-aware reader (razzant/ouroboros#131);
+        empty) through an addressed SQL query for chat/progress;
         for ``tools.jsonl`` the rows of the newest ``want`` logical calls (#1316).
 
-        The window is a doubling byte tail of the live file plus at most the
+        SQL coverage records the queried coordinates, older matching rows and
+        incomplete or invalid import ranges. Other logs use a doubling byte tail
+        of the live file plus at most the
         three newest archives, so a busy neighbour cannot push this task's own
         rows out of a shared global suffix, and the whole file is never parsed
         for its tail. ``coverage`` states what the window was and whether the

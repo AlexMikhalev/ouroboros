@@ -180,7 +180,9 @@ def _chat_window(drive_root: pathlib.Path, boundary: Any, since: float,
     upper = ds.stream_end(drive_root, "chat")
     if not upper:
         ds.require_imported(drive_root, "chat")
-        return [], {"lower": 0, "upper": 0, "basis": "empty_chain", "boundary": None}
+        return [], {"lower": 0, "upper": 0, "basis": "empty_chain", "boundary": {
+            "version": OBSERVATION_BOUNDARY_VERSION, "upper": 0, "segment_start": 0,
+            "segment_sha256": "dialogue:empty"}}
     boundary = boundary if isinstance(boundary, dict) and "upper" in boundary else None
     lower, valid = 0, False
     if boundary and boundary.get("version") == OBSERVATION_BOUNDARY_VERSION:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import heapq
 import json
 import pathlib
 import re
@@ -230,6 +231,8 @@ def room_rows(root: Any, room_id: Any, *, stream: str = "chat", lower: int = 0,
     resolver = RoomResolver(root)
     member = room_membership(chat, projects, refs, resolver)
     keys = [("chat_id", chat)]
+    identities = {}
+    upper = ds.stream_end(root, stream) if upper is None else upper
     if chat == 1 and chat not in projects:
         keys = [("chat_id", room["chat_id"]) for room in ds.rooms(root)
                 if room["chat_id"] not in projects and room["chat_id"] >= 0]
@@ -248,12 +251,23 @@ def room_rows(root: Any, room_id: Any, *, stream: str = "chat", lower: int = 0,
         for ref in refs:
             if ref.get("client_message_id"):
                 keys.append(("client_message_id", ref["client_message_id"]))
+            elif ref.get("ts"):
+                source_chat = int(ref.get("chat_id") or 1)
+                for cid in ([source_chat, None] if source_chat == 1 else [source_chat]):
+                    for entry in ds.rows_by_identity(root, cid, str(ref["ts"]), stream=stream):
+                        if lower <= entry.seq < upper:
+                            identities[entry.seq] = entry
             else:
                 # Hash-only legacy references still name a chat; membership checks their text.
                 keys.append(("chat_id", int(ref.get("chat_id") or 1)))
                 if int(ref.get("chat_id") or 1) == 1:
                     keys.append(("chat_id", None))
-    for entry in ds.iter_probes(root, stream, keys, lower=lower, upper=upper):
+    candidates = ds.iter_probes(root, stream, keys, lower=lower, upper=upper)
+    previous = None
+    for entry in heapq.merge(candidates, sorted(identities.values(), key=lambda row: row.seq), key=lambda row: row.seq):
+        if entry.seq == previous:
+            continue
+        previous = entry.seq
         if member(_row_chat_id(entry.row), entry.row):
             yield entry
 

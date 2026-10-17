@@ -272,7 +272,8 @@ def coverage_line(coverage: dict) -> str:
     whose = f"task {task_id}" if task_id else "all tasks"
     live_size, live_window = int(coverage.get("live_size") or 0), int(coverage.get("live_window") or 0)
     unread = "live_size" not in coverage
-    whole = live_window >= live_size and not coverage.get("archives_bounded") and not unread
+    whole = (live_window >= live_size and not coverage.get("archives_bounded") and not unread
+             and not coverage.get("older_available") and not coverage.get("gaps"))
     unit = str(coverage.get("unit") or "rows")  # tools.jsonl counts logical calls (#1316)
     if shown and matched > shown:
         rows = f"newest {shown} of {matched} matching {unit} in the window"
