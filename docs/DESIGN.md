@@ -1074,7 +1074,7 @@ When there is work to show, pressing the status, or ↓/↑ on it, unfolds that
 room's work and only that room's as one Shade under the bar, the same in every
 room: one row per work, the owner's unconfirmed sends, and unfinished cards an
 incomplete read has not confirmed (shown unknown, without controls). A Project
-with nothing else keeps its latest represented work. A row names its work (its
+with nothing else keeps its latest represented root card. A row names its work (its
 coined name or the request's title, never `Continue: …`, else the owner's
 message) in two lines that keyboard focus or open details show whole, with the
 state under the name and one quiet reason beside it: an outcome stays beside
@@ -1545,9 +1545,8 @@ stays unknown; neither proves a free result. The chip's short word (`Sending`,
 `Queued`) and `Tracked:` are explained in the card's details (exact phase;
 `some steps have no price`), not a tooltip; real ` · ` text separates meta parts
 for copies and assistive technology. The host's `_is_direct_chat` fact keeps its
-host jobs (routing, census `kind`, Stop custody, terminal rows) and, on the
-client, only the header pill (a direct turn keeps the census verdict beside its
-block). A block that existed only for open attention leaves when that attention
+host jobs (routing, census `kind`, Stop custody, terminal rows); the client
+draws no chrome or status from it. A block that existed only for open attention leaves when that attention
 closes: a wait-only block disappears when the wait resolves, and the resolved
 episode's no-reopen ledger survives with the record, so a stale revision cannot
 bring it back.
