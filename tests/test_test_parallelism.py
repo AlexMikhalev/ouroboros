@@ -26,7 +26,8 @@ def test_native_memory_reports_reclaimable_bytes_without_double_counting(monkeyp
     monkeypatch.setattr(budget.sys, "platform", platform)
     if platform == "darwin":
         outputs = iter(["65536\n", 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\n'
-                        'Pages free: 2.\nPages inactive: 3.\nPages speculative: 1.\nPages purgeable: 2.\n'])
+                        'Pages free: 2.\nPages inactive: 3.\nPages speculative: 1.\nPages purgeable: 2.\n',
+                        "1\n"])  # kern.memorystatus_vm_pressure_level: normal
         monkeypatch.setattr(budget, "_native_output", lambda argv: next(outputs))
     elif platform == "linux":
         monkeypatch.setattr(budget.Path, "read_text", lambda self, **kwargs: "MemTotal: 64 kB\nMemAvailable: 24 kB\n")
@@ -35,6 +36,25 @@ def test_native_memory_reports_reclaimable_bytes_without_double_counting(monkeyp
         monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
             virtual_memory=lambda: SimpleNamespace(total=65536, available=24576)))
     assert budget.physical_memory() == budget.MemorySnapshot(65536, 24576)
+
+
+@pytest.mark.parametrize("level, pressure", [("1\n", False), ("2\n", True), ("4\n", True), (None, False)])
+def test_macos_kernel_pressure_counts_although_inactive_pages_look_free(monkeypatch, level, pressure):
+    """XNU keeps refilling the inactive queue with anonymous pages it then compresses, so free +
+    inactive + speculative barely moves under pressure: the kernel's warn or critical level is read
+    too. An unreadable level leaves the free-memory reading alone."""
+    vm = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 2.\nPages inactive: 3.\nPages speculative: 1.\n"
+
+    def native(argv):
+        if argv[-1] == "kern.memorystatus_vm_pressure_level":
+            if level is None:
+                raise subprocess.CalledProcessError(1, argv)
+            return level
+        return "65536\n" if argv[-1] == "hw.memsize" else vm
+
+    monkeypatch.setattr(budget.sys, "platform", "darwin")
+    monkeypatch.setattr(budget, "_native_output", native)
+    assert budget.physical_memory() == budget.MemorySnapshot(65536, 24576, pressure)
 
 
 def test_native_probe_failure_admits_one_worker(monkeypatch):

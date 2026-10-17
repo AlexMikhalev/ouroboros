@@ -225,23 +225,26 @@ def test_watch_thread_start_failure_reaps_started_children(monkeypatch, sentinel
         container.close()
 
 
-def _under_reserve(monkeypatch):
-    """The watch sees a 16 GiB machine with 1 GiB free, under its 1.6 GiB reserve. No pressure
-    experiment against the real machine: only the watch's view of it is injected."""
+def _under_reserve(monkeypatch, receipt):
+    """Once the child published its identity, the watch sees a 16 GiB machine with 1 GiB free,
+    under its 1.6 GiB reserve; before that, 8 GiB free, so interpreter startup cannot race the
+    stop. No pressure experiment against the real machine: only the watch's view is injected."""
     from ouroboros import test_parallelism
 
     gib = 1024 ** 3
-    monkeypatch.setattr(test_parallelism, "physical_memory", lambda: test_parallelism.MemorySnapshot(16 * gib, gib))
+    monkeypatch.setattr(test_parallelism, "physical_memory",
+                        lambda: test_parallelism.MemorySnapshot(16 * gib, gib if receipt.exists() else 8 * gib))
 
 
 def test_overload_stops_bounded_allocator_with_largest_member(tmp_path, owned, sentinel, monkeypatch):
     from ouroboros import config
 
-    # An 80 MiB allocation past a 16 MiB admitted floor (one slot plus its controller).
-    _under_reserve(monkeypatch)
-    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 8 * 1024 * 1024)
-    monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
+    # The child starts near 26 MiB; only its 80 MiB allocation passes the 64 MiB admitted
+    # floor (one slot plus its controller), so the stop guards growth, not startup.
     receipt = tmp_path / "allocator.json"
+    _under_reserve(monkeypatch, receipt)
+    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 32 * 1024 * 1024)
+    monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
     container, proc = owned(_child_code(receipt, allocate=True), lifeline=True, overload=True)
     child = _read(receipt)
     proc.wait(timeout=15)
@@ -249,7 +252,7 @@ def test_overload_stops_bounded_allocator_with_largest_member(tmp_path, owned, s
     assert proc.returncode != 0
     assert "overload_stop: machine under its reserve" in diagnostic
     assert f"largest pid={child[0]}" in diagnostic
-    assert "tree_rss=" in diagnostic and "floor=16777216" in diagnostic
+    assert "tree_rss=" in diagnostic and "floor=67108864" in diagnostic
     assert container.reap() == diagnostic, "repeated cleanup must not erase an overload stop"
     _until(lambda: not _live(child))  # Windows ends Job members asynchronously
     assert _live(sentinel)
@@ -277,8 +280,9 @@ def test_an_unavailable_sampler_degrades_the_watch_instead_of_failing_the_run(ow
 def test_a_transient_sample_failure_does_not_end_the_watch(tmp_path, owned, sentinel, monkeypatch, capfd):
     from ouroboros import config, process_overload
 
-    _under_reserve(monkeypatch)
-    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 8 * 1024 * 1024)
+    receipt = tmp_path / "allocator.json"
+    _under_reserve(monkeypatch, receipt)
+    monkeypatch.setattr(config, "TEST_WORKER_PEAK_RSS_BYTES", 32 * 1024 * 1024)
     monkeypatch.setattr(config, "TEST_PROCESS_SAMPLE_SEC", 0.05)
     real, calls = process_overload.member_memory, []
 
@@ -289,7 +293,6 @@ def test_a_transient_sample_failure_does_not_end_the_watch(tmp_path, owned, sent
         return real(container, detached)
 
     monkeypatch.setattr(process_overload, "member_memory", flaky)
-    receipt = tmp_path / "allocator.json"
     container, proc = owned(_child_code(receipt, allocate=True), lifeline=True, overload=True)
     child = _read(receipt)
     proc.wait(timeout=15)
@@ -326,17 +329,19 @@ def test_the_token_scan_keeps_its_own_cadence_and_its_members_stay_counted(monke
     assert seen == [[sentinel[0]]] * 4  # the detached member is counted in every sample
 
 
-@pytest.mark.parametrize("slots,tree,now,machine,stops", [
-    (1, 0.9, 2.0, 16, False),     # the one admitted worker on a busy 16 GB laptop runs
-    (1, 2.5, 2.0, 16, False),     # past its admitted size, but the machine keeps its reserve
-    (1, 2.5, 1.0, 16, True),      # ...and stops once the machine falls under it
-    (1, 0.05, 12.0, 128, False),  # a small tree is not killed for another program's pressure
-    (1, 1.5, 10.0, 128, False),   # an admitted-size tree survives pressure that arrives later
-    (1, 3.0, 10.0, 128, True),    # past its admitted size while the machine is under its reserve
-    (1, 42.0, 54.0, 128, False),  # summed RSS counts shared pages repeatedly: size alone never stops
-    (2, 3.03, 2.6, 7, False),     # 17.10 macOS CI runner: two workers at 3.03 GiB with 2.6 GiB free
+@pytest.mark.parametrize("slots,tree,now,machine,pressure,stops", [
+    (1, 0.9, 2.0, 16, False, False),     # the one admitted worker on a busy 16 GB laptop runs
+    (1, 2.5, 2.0, 16, False, False),     # past its admitted size, but the machine keeps its reserve
+    (1, 2.5, 1.0, 16, False, True),      # ...and stops once the machine falls under it
+    (1, 2.5, 8.0, 16, True, True),       # macOS: the kernel reports pressure while inactive pages look free
+    (1, 1.5, 8.0, 16, True, False),      # an admitted-size tree survives the kernel's pressure too
+    (1, 0.05, 12.0, 128, False, False),  # a small tree is not killed for another program's pressure
+    (1, 1.5, 10.0, 128, False, False),   # an admitted-size tree survives pressure that arrives later
+    (1, 3.0, 10.0, 128, False, True),    # past its admitted size while the machine is under its reserve
+    (1, 42.0, 54.0, 128, False, False),  # summed RSS counts shared pages repeatedly: size alone never stops
+    (2, 3.03, 2.6, 7, False, False),     # 17.10 macOS CI runner: two workers at 3.03 GiB with 2.6 GiB free
 ])
-def test_overload_stops_growth_only_under_machine_pressure(monkeypatch, slots, tree, now, machine, stops):
+def test_overload_stops_growth_only_under_machine_pressure(monkeypatch, slots, tree, now, machine, pressure, stops):
     from ouroboros import config, process_overload, test_parallelism
 
     gib = 1024 ** 3
@@ -344,8 +349,8 @@ def test_overload_stops_growth_only_under_machine_pressure(monkeypatch, slots, t
     watch = process_overload.OverloadWatch(object(), slots=slots)
     assert watch.floor_bytes == (slots + 1) * gib
     reserve = int(machine * gib * config.TEST_MEMORY_RESERVE_FRACTION)
-    reason = process_overload.stop_reason(int(tree * gib), test_parallelism.MemorySnapshot(machine * gib, int(now * gib)),
-                                          floor=watch.floor_bytes, reserve=reserve)
+    memory = test_parallelism.MemorySnapshot(machine * gib, int(now * gib), pressure)
+    reason = process_overload.stop_reason(int(tree * gib), memory, floor=watch.floor_bytes, reserve=reserve)
     assert bool(reason) is stops, reason
     assert not process_overload.stop_reason(int(tree * gib), None, floor=watch.floor_bytes, reserve=reserve)
 

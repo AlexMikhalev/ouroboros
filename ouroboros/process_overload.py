@@ -1,9 +1,10 @@
 """Sample an owned test tree and stop it when the machine runs short of physical memory.
 
 RSS is summed (shared pages may be counted more than once), so tree size alone
-never stops a run: the machine's own free memory is the pressure signal. This is
-supervision, not an OS memory/PID/file-descriptor quota. Rapid growth between
-samples can exceed it, particularly on macOS.
+never stops a run: the machine's free memory, and on macOS its kernel pressure
+level, is the signal. This is supervision, not an OS memory/PID/file-descriptor
+quota. Rapid growth between samples can outrun it, and a host too loaded to run
+its probes skips the stop loudly.
 """
 from __future__ import annotations
 
@@ -104,14 +105,19 @@ def member_memory(container, detached=None) -> list[MemberMemory]:
 def stop_reason(total: int, memory, *, floor: int, reserve: int) -> str:
     """Why an owned tree must stop now, or "".
 
-    Only real pressure stops a tree: the machine is under its physical reserve and
-    the tree outgrew what admission gave it. A normal run is never killed for
-    another program's pressure, nor a large tree on a machine that keeps its
-    reserve (a start-of-run free-memory snapshot and summed RSS both misjudge
-    room, which killed healthy two-worker runs on 7 GB hosts).
+    Only real pressure stops a tree that outgrew what admission gave it: the machine
+    is under its physical reserve, or its kernel reports memory pressure. A tree
+    within its admitted floor is never killed for another program's pressure, and a
+    large tree on a machine that keeps its reserve runs on (a start-of-run
+    free-memory snapshot and summed RSS both misjudge room, which killed healthy
+    two-worker runs on 7 GB hosts).
     """
-    if memory is not None and memory.available_bytes < reserve and total > floor:
+    if memory is None or total <= floor:
+        return ""
+    if memory.available_bytes < reserve:
         return "machine under its reserve and tree past its admitted size"
+    if memory.pressure:
+        return "kernel reports memory pressure and tree past its admitted size"
     return ""
 
 
