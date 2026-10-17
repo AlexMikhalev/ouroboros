@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from ouroboros import event_bus
+from ouroboros import dialogue_store, event_bus
 from ouroboros.tools.core import (
     _MAX_QUIZ_OPTIONS,
     QuizValidationError,
@@ -365,15 +365,14 @@ def test_atif_final_answer_skips_typed_delivery_rows(tmp_path):
     except Exception:
         import pytest as _pytest
         _pytest.skip("atif module has optional deps not present here")
-    data = tmp_path / "ouroboros-data" / "logs"
-    data.mkdir(parents=True)
+    data = tmp_path / "ouroboros-data"
     rows = [
         {"direction": "out", "text": "the real final", "ts": "1"},
         {"direction": "out", "text": "Which path?", "type": "quiz", "ts": "2",
          "quiz": {"quiz_id": "q", "options": []}},
     ]
-    (data / "chat.jsonl").write_text(
-        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    for row in rows:
+        dialogue_store.append(data, "chat", row)
     assert module._final_answer(tmp_path) == "the real final"
 
 
@@ -387,8 +386,6 @@ def test_history_replays_quiz_row_with_state(tmp_path):
 
     from ouroboros.gateway.history import make_chat_history_endpoint
 
-    logs = tmp_path / "logs"
-    logs.mkdir(parents=True)
     row = {
         "ts": "2026-08-31T10:00:00Z", "session_id": "s", "direction": "out",
         "chat_id": 1, "user_id": 7, "text": "Merge now?", "format": "",
@@ -401,8 +398,7 @@ def test_history_replays_quiz_row_with_state(tmp_path):
             "stake": "", "assumption": "merging meanwhile", "state": "open",
         },
     }
-    (logs / "chat.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
-    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+    dialogue_store.append(tmp_path, "chat", row)
     endpoint = make_chat_history_endpoint(tmp_path)
     response = asyncio.run(endpoint(types.SimpleNamespace(query_params={"limit": "10"})))
     messages = json.loads(response.body.decode("utf-8"))["messages"]
