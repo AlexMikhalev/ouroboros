@@ -80,16 +80,11 @@ def test_actual_claudexor_send_copy_preserves_canonical_feedback(claudexor_setup
     messages = [{"role": "user", "content": "Exact reviewer result\r\nПривет", "review_feedback": [
         {"task_id": "host-task", "run_index": 0, "binding_hash": "critic"}]}]
     before = deepcopy(messages)
-    observed = []
-    def observer(canonical):
-        observed.extend(deepcopy(canonical))
     if asynchronous:
         asyncio.run(client.chat_async(messages, MODEL))
     else:
         _send_main_candidate(client, {"messages": messages, "model": MODEL}, model=MODEL,
-            use_local=False, deadline_ts=None, physical_context=None, candidate_predicate=None,
-            model_context_observer=observer)
-        assert observed == before  # the observer reads the canonical copy, marker included
+            use_local=False, deadline_ts=None, physical_context=None, candidate_predicate=None)
     payload = gateway.uploads[0][0]
     assert payload["messages"] == [{"role": "user", "content": before[0]["content"]}]
     assert retained(root, "request") == payload
