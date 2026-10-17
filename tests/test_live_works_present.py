@@ -73,6 +73,10 @@ def test_routing_metadata_and_new_head_share_present_outside_actual_cache_prefix
     _fixture(env.drive_root)
     ctx = SimpleNamespace(DRIVE_ROOT=env.drive_root, RUNNING={}, PENDING=[])
     monkeypatch.setattr(routing, "_active_direct_roots", lambda ctx: [])
+    # The subagent roster is process-wide state another test may change between the two builds; this test is about
+    # where the live-works present lands, so the roster is held still.
+    import ouroboros.subagent_runtime as subagent_runtime
+    monkeypatch.setattr(subagent_runtime, "current_model_visible_subagent_catalog", lambda: {"rows": []})
     md = routing._decision_turn_metadata(ctx, 1, "new-request", {})
     assert md["live_works_present"]["works"] == live_works_present(env.drive_root)["works"]
     assert md["live_works_present"]["incomplete"] is False

@@ -748,8 +748,7 @@ class ActiveDirectTurn(TypedDict):
     task_attempt: NotRequired[int]
 
 
-class ActiveChatActivity(ActiveDirectTurn):
-    """Global root census; phase and control facts retain their own authority."""
+class ActiveChatActivity(ActiveDirectTurn):  # global root census; phase and control facts keep their own authority
     last_line: NotRequired[str]  # visible model narration, never host notes
     last_line_at: NotRequired[str]
     tool_calls: NotRequired[int]
