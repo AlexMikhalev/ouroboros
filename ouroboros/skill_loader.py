@@ -1422,9 +1422,10 @@ def discover_skill_identity(
 ) -> List[LoadedSkill]:
     """Execution resolver: ordinary discovery/collision rules for one identity.
 
-    Unlike repair's ``discover_selected_skill_candidates``, a manifestless peer
-    stays invisible, exactly as in passive discovery. Liveness, reconcile and
-    extension children all use this resolver.
+    A manifestless peer stays invisible, exactly as in passive discovery.
+    Liveness, reconcile and extension children all use this resolver; the
+    repair/publication lanes keep ``discover_selected_skill_candidates`` and
+    its deliberately stricter manifestless ambiguity.
     """
     safe = _sanitize_skill_name(name)
     candidates = tuple(item for item in _skill_location_inventory(drive_root, repo_path=repo_path) if item.name == safe)
