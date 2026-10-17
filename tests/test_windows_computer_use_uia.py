@@ -501,6 +501,77 @@ def test_find_keeps_a_timeout_when_a_re_poll_begun_in_time_is_cut(monkeypatch):
     assert result["polls"] == 2
 
 
+def slow_walks(clock, element, seconds):
+    """Every walk that reads ``element`` takes ``seconds`` of the clock."""
+    read = element.GetCachedPropertyValue
+
+    def slow(prop_id):
+        if prop_id == 30003:
+            clock.now += seconds
+        return read(prop_id)
+
+    element.GetCachedPropertyValue = slow
+
+
+def test_act_does_not_start_a_re_poll_that_cannot_finish_at_the_last_walks_pace(monkeypatch):
+    # Run 39063120643: walks of a small window took real time, the last re-poll
+    # began inside the wait and was cut after 8 nodes -> 'timeout' although every
+    # earlier walk had read the window whole. Act now stops while the last whole
+    # walk is still the newest look.
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    calls = Calls()
+    a = make(calls, "a", 50000, name="A")
+    root = dialog(calls, a, make(calls, "b", 50020, name="B"))
+    slow_walks(clock, a, 0.25)
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "no such element"}, "do": "focus"})
+
+    result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
+    assert result["nodes_scanned"] == 3 and result["waited_ms"] <= 3000
+
+
+def test_act_answers_from_the_last_walk_when_a_pause_oversleeps_the_deadline(monkeypatch):
+    # A scheduler can wake the pause late; a sweep started past the deadline would
+    # be cut before its first node.
+    class Late(Clock):
+        def sleep(self, seconds):
+            self.now += seconds + (0.3 if self.now > 2.7 else 0.0)
+
+    monkeypatch.setattr(win_uia, "time", Late())
+    calls = Calls()
+    root = dialog(calls, make(calls, "a", 50000, name="A"), make(calls, "b", 50020, name="B"))
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "no such element"}, "do": "focus"})
+
+    result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
+    assert result["nodes_scanned"] == 3
+
+
+def test_find_takes_its_last_look_at_the_end_of_the_wait(monkeypatch):
+    # Find sweeps get their own SWEEP_MS, so the look begun at the deadline is
+    # whole: an element that appears in the final pause is still found.
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    calls = Calls()
+    late = make(calls, "late", 50000, name="Later")
+    root = dialog(calls, late, make(calls, "b", 50020, name="B"))
+    read = late.GetCachedPropertyValue
+
+    def appearing(prop_id):
+        if prop_id == 30003 and clock.now >= 0.98:
+            late.props[30005] = "Go"
+        return read(prop_id)
+
+    late.GetCachedPropertyValue = appearing
+
+    result = find(root, {"select": {"name": "Go"}, "timeout_ms": 1000})
+
+    assert result["ok"] is True and result["matched"] == 1
+
+
 # ── window_read: values, states, rectangles and visibility from the cache ─────
 
 def test_window_read_shows_values_states_and_rectangles():

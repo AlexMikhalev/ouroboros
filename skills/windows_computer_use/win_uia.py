@@ -783,9 +783,10 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         raise UIAError(f"unknown act {act!r}")
 
 
-# Pause between polls. A whole walk that ends inside the last pause is the final
-# look: a re-poll begun past the deadline would be cut before its first node, and
-# answering from that empty cut walk would hide what the whole one saw.
+# Pause between element_act polls. Its deadline is strict, so a re-poll that
+# cannot finish before it (at the last walk's pace, after this pause, or after an
+# overslept pause) is not started: the whole walk just done is the final look,
+# while a walk that did begin and was cut still answers with its own timeout.
 POLL_PAUSE_S = 0.12
 
 
@@ -800,29 +801,36 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
     walker = automation.ControlViewWalker
     target_pid = resolve_pid(window.hwnd)
 
+    def keep_waiting(walk_s: float) -> bool:
+        """True after a pause that leaves room for one more whole walk."""
+        if plan.timeout_ms == 0 or time.monotonic() + POLL_PAUSE_S + walk_s >= deadline:
+            return False
+        time.sleep(POLL_PAUSE_S)
+        return time.monotonic() + walk_s < deadline
+
     polls = 0
     while True:
         polls += 1
+        walk_started = time.monotonic()
         found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, window.hwnd, plan.select, plan.max_nodes, plan.max_depth, deadline
         )
-        waited_ms = int((time.monotonic() - started) * 1000)
-        out_of_time = plan.timeout_ms == 0 or time.monotonic() + POLL_PAUSE_S >= deadline
+        walk_s = time.monotonic() - walk_started
         if hit_limit is not None:
             reason, hint = not_found(hit_limit, False, False)
             return {
                 "ok": False, "reason": reason, "hint": hint,
                 "matched": len(found), "unreadable": len(unread), "nodes_scanned": scanned,
                 "searched_whole_window": False,
-                "waited_ms": waited_ms, "polls": polls,
+                "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
             }
         if unread:
             # A candidate the provider could not read may be the real target or a
             # competitor: choosing among the readable rest would be a guess.
-            if out_of_time:
-                return unreadable_error(len(found), unread, scanned, waited_ms, polls)
-            time.sleep(POLL_PAUSE_S)
-            continue
+            if keep_waiting(walk_s):
+                continue
+            waited_ms = int((time.monotonic() - started) * 1000)
+            return unreadable_error(len(found), unread, scanned, waited_ms, polls)
         indexes = list(range(len(found)))
         choice = choose(indexes, plan.select.nth)
         if choice.which == "one":
@@ -858,15 +866,15 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
             candidates = [m.describe() for m in found]
             return ambiguous_error(choice.total, candidates)
         # none: wait and retry until deadline
-        if out_of_time:
-            reason, hint = not_found(hit_limit, plan.select.nth is not None, bool(found))
-            return {
-                "ok": False, "reason": reason, "hint": hint,
-                "matched": len(found), "nodes_scanned": scanned,
-                "searched_whole_window": hit_limit is None,
-                "waited_ms": waited_ms, "polls": polls,
-            }
-        time.sleep(POLL_PAUSE_S)
+        if keep_waiting(walk_s):
+            continue
+        reason, hint = not_found(hit_limit, plan.select.nth is not None, bool(found))
+        return {
+            "ok": False, "reason": reason, "hint": hint,
+            "matched": len(found), "nodes_scanned": scanned,
+            "searched_whole_window": hit_limit is None,
+            "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
+        }
 
 
 def _guard_live_match(element, select) -> None:
@@ -910,7 +918,9 @@ def find_in_session(automation, plan, hwnd_value: int):
         found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, hwnd_value, plan.select, plan.max_nodes, plan.max_depth, by
         )
-        if found or time.monotonic() + POLL_PAUSE_S >= deadline:
+        # Every find sweep gets at least SWEEP_MS, so a last look begun at the
+        # deadline still reads the window whole: find waits its full timeout_ms.
+        if found or time.monotonic() >= deadline:
             matched = len(found)
             waited_ms = int((time.monotonic() - started) * 1000)
             shown = [m.describe() for m in found[: plan.limit]]

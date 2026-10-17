@@ -214,7 +214,9 @@ def test_the_skill_reads_and_acts_on_its_own_window_through_the_host(host, owned
     twins = act({"role": "button", "name": "Twin"}, "focus")
     check("ambiguity", twins.get("ok") is False and twins.get("reason") == "ambiguous" and twins.get("matched") == 2, twins)
     done("nth", {"role": "button", "name": "Twin", "nth": 1}, "focus")
-    missing = act({"name": "no such element"}, "focus")
+    # timeout_ms=0: one whole walk under the worker grace, so this absence check
+    # does not depend on where the default wait's last poll falls.
+    missing = act({"name": "no such element"}, "focus", timeout_ms=0)
     check("not found", missing.get("reason") == "not_found" and missing.get("searched_whole_window") is True, missing)
     unsupported = act({"automation_id": "statusLabel"}, "invoke")
     check("unsupported", unsupported.get("ok") is False and "does not support InvokePattern" in str(unsupported.get("error")), unsupported)
