@@ -754,7 +754,8 @@ def _client(args: argparse.Namespace, *, start: bool = False) -> OuroborosHTTPCl
 
 def _wait_for_dialogue(client: OuroborosHTTPClient, proc) -> OuroborosHTTPClient:
     """Wait until the started server accepts owner messages (``/api/health`` answers and its
-    ``boot`` says ``dialogue_ready``; an older core without ``boot`` counts at its first answer).
+    ``boot`` says ``dialogue_ready``; an older core without ``boot`` counts at its first answer),
+    or its boot is ``ready`` without them (no model provider configured yet).
     No clock: the wait ends with readiness, with the boot's own ``failed`` verdict, or with the
     server process's exit."""
     last_phase = ""
@@ -766,6 +767,10 @@ def _wait_for_dialogue(client: OuroborosHTTPClient, proc) -> OuroborosHTTPClient
             continue
         boot = health.get("boot") if isinstance(health, dict) else None
         if not isinstance(boot, dict) or boot.get("dialogue_ready") is True:
+            return client
+        if boot.get("phase") == "ready":  # no model provider yet: the dialogue opens once one is saved
+            print("server ready; owner messages are accepted once a model provider is configured",
+                  file=sys.stderr, flush=True)
             return client
         if boot.get("phase") == "failed":
             raise CLIError(f"server start failed at {client.base_url}: {boot.get('error') or 'unknown'}")

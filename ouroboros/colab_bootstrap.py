@@ -441,7 +441,8 @@ def _gateway_request(host: str, port: int) -> Callable[..., tuple]:
 def wait_for_dialogue(call: Callable[..., tuple], *, alive: Optional[Callable[[], bool]] = None,
                       timeout: Optional[float] = None, report: Callable[[str], Any] = print) -> Dict[str, Any]:
     """Wait until the server accepts owner messages: ``/api/health`` answers and its ``boot``
-    says ``dialogue_ready`` (an older core without ``boot`` counts as ready at its first 200).
+    says ``dialogue_ready`` (an older core without ``boot`` counts as ready at its first 200), or
+    the boot is ``ready`` without them (no model provider configured yet).
 
     No clock decides that a live server failed: the wait ends when the dialogue is ready, when
     the boot reports ``failed`` (its error is returned), when ``alive`` says the server process
@@ -468,6 +469,9 @@ def wait_for_dialogue(call: Callable[..., tuple], *, alive: Optional[Callable[[]
             if boot.get("phase") == "failed":
                 return {"ok": False, "error": f"server start failed: {boot.get('error') or 'unknown'}", "boot": boot}
             if boot.get("dialogue_ready") is True:
+                return {"ok": True, "boot": boot}
+            if boot.get("phase") == "ready":  # a boot without a model provider: its dialogue opens once one is saved
+                report("Ouroboros is ready; owner messages are accepted once a model provider is configured")
                 return {"ok": True, "boot": boot}
         time.sleep(1.0)
     return {"ok": False, "error": "server did not become ready"}

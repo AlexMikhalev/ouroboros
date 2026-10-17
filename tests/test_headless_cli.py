@@ -488,6 +488,9 @@ def test_cli_start_waits_on_the_dialogue_while_the_server_lives(monkeypatch):
     answers = iter([{"status": "ok"}])
     assert cli._wait_for_dialogue(FakeClient(), alive) is not None, "an older core counts at its first answer"
 
+    answers = iter([{"status": "ok", "boot": {"phase": "ready", "dialogue_ready": False}}])
+    assert cli._wait_for_dialogue(FakeClient(), alive) is not None, "a providerless boot ends the wait at ready"
+
     answers = iter([{"status": "ok", "boot": {"phase": "failed", "dialogue_ready": False, "error": "store not published"}}])
     with pytest.raises(cli.CLIError, match="server start failed"):
         cli._wait_for_dialogue(FakeClient(), alive)
