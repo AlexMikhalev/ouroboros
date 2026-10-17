@@ -24,8 +24,9 @@
    (``continuation_writer_unsettled``): no diagnostic successor, no second
    writer, no timeout release. The owner's existing conversation and controls
    diagnose; the hold releases only when a fresh check finds the writers
-   settled (the owner's Resume, or a reconciliation at a tree member's
-   terminal) and no newer Stop/Pause/Restart hold has replaced it.
+   settled (the owner's Resume, a reconciliation at a tree member's terminal,
+   or the body cadence's re-check while the hold stands) and no newer
+   Stop/Pause/Restart hold has replaced it.
 
 A request that times out on the client is never "not admitted": the client
 retries with the same nonce and step 1 answers it.
@@ -621,9 +622,10 @@ def release_settled_continuations(tree_root: str) -> List[str]:
     """Release Continues whose predecessor ``tree_root`` has no unsettled writer left.
 
     The reconciliation half of the writer hold, called when a member of that
-    tree reaches its terminal. Only a row still under ITS OWN continuation hold
-    is released (a newer Restart/Pause/Stop hold is never overridden), and the
-    release is the ordinary selection, which re-checks the writers itself.
+    tree reaches its terminal and by ``recheck_held_continuations``. Only a row
+    still under ITS OWN continuation hold is released (a newer
+    Restart/Pause/Stop hold is never overridden), and the release is the
+    ordinary selection, which re-checks the writers itself.
     """
     from supervisor.events_budget import budget_hold_fact, observe_held_budget_selection, select_held_budget_row
 
@@ -643,4 +645,36 @@ def release_settled_continuations(tree_root: str) -> List[str]:
             outcome = select_held_budget_row(q, task, hold, selected_by="reconciliation", observation=observation)
             if outcome.get("ok"):
                 released.append(task_id)
+    return released
+
+
+def held_continuation_predecessors(pending: Any) -> List[str]:
+    """Each predecessor whose Continue still waits under its own writer hold, once."""
+    from supervisor.events_budget import budget_hold_fact
+
+    return sorted({str(((task.get("metadata") or {}).get("continuation") or {}).get("predecessor_task_id") or "")
+                   for task in list(pending or ()) if isinstance(task, dict)
+                   and (budget_hold_fact(task) or {}).get("reason") == HOLD_CONTINUATION_WRITER} - {""})
+
+
+def recheck_held_continuations(*, stop_requested: Any = None) -> List[str]:
+    """The body cadence's re-check of every writer-held Continue (``server_maintenance``).
+
+    A writer can settle while no member reaches a terminal: a delegated run's
+    custody closes, a model or tool handoff resolves, an owned process exits,
+    a late phase ends. A writer hold installs no root fence, so the held rows
+    themselves schedule this pass, and each distinct predecessor gets one
+    ``release_settled_continuations``: its selection re-checks the writers and
+    selects a row once. It runs off the loop and outside every custody and
+    store transaction, never from a repair (whose census it would re-enter).
+    """
+    from supervisor import queue as q
+
+    with q._queue_lock:
+        predecessors = held_continuation_predecessors(q.PENDING)
+    released: List[str] = []
+    for predecessor in predecessors:
+        if stop_requested is not None and stop_requested():
+            break
+        released.extend(release_settled_continuations(predecessor))
     return released
