@@ -77,7 +77,14 @@ def upgrade(txn) -> None:
         txn.conn.execute("ALTER TABLE obligations ADD COLUMN request_root_task_id TEXT")
     for sql in (*INDEXES, INVALIDATE_CUSTODY, INVALIDATE_REQUEST):
         txn.conn.execute(sql)
-    txn.set_meta("job:" + JOB, {"state": "pending", "cursor": None, "done": 0, "total": None})
+    owed = any(txn.conn.execute(f"SELECT 1 FROM {table} INDEXED BY {index} WHERE {where} LIMIT 1").fetchone()
+               for table, index, where in _UNDERIVED_PROBES)  # a fresh store has nothing to classify
+    txn.set_meta("job:" + JOB, {"state": "pending" if owed else "done", "cursor": None, "done": 0, "total": None})
+
+
+_UNDERIVED_PROBES = (("tasks", "tasks_underived_hot", TASK_UNDERIVED),
+                     ("custody_runs", "custody_underived_hot", CUSTODY_UNDERIVED),
+                     ("obligations", "custody_request_underived", REQUEST_UNDERIVED))
 
 
 def task_columns(document: dict) -> dict:
@@ -258,13 +265,10 @@ def underived(root: Any) -> bool:
     """Whether any row still lacks its hot-fact columns: indexed probes in one read transaction."""
     from ouroboros import store
 
-    probes = (("tasks", "tasks_underived_hot", TASK_UNDERIVED),
-              ("custody_runs", "custody_underived_hot", CUSTODY_UNDERIVED),
-              ("obligations", "custody_request_underived", REQUEST_UNDERIVED))
     try:
         with store.open_store(root, write=False) as txn:
             return any(txn.conn.execute(f"SELECT 1 FROM {table} INDEXED BY {index} WHERE {where} LIMIT 1").fetchone()
-                       for table, index, where in probes)
+                       for table, index, where in _UNDERIVED_PROBES)
     except sqlite3.OperationalError:
         return True  # a schema below the hot-fact columns: the runner upgrades it first
 

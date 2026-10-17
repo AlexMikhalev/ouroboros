@@ -7,7 +7,7 @@ import pytest
 from ouroboros import maintenance_jobs, store, store_hot_facts, store_import
 
 # A fresh store carries the import's own row and the hot-fact job its schema publication records
-# pending (``store_hot_facts.upgrade``); no other row of ``meta`` is a job.
+# (``store_hot_facts.upgrade``: done, nothing to classify); no other row of ``meta`` is a job.
 FRESH = {"current_store_import", store_hot_facts.JOB}
 
 
@@ -16,7 +16,7 @@ def test_job_facts_round_trip_and_survive_a_fresh_read(tmp_path):
     assert maintenance_jobs.job(tmp_path, "legacy_reconcile") is None
     imported = maintenance_jobs.job(tmp_path, "current_store_import")
     assert imported["state"] == "done" and imported["done"] == imported["total"] == 1
-    assert maintenance_jobs.job(tmp_path, store_hot_facts.JOB)["state"] == "pending"
+    assert maintenance_jobs.job(tmp_path, store_hot_facts.JOB)["state"] == "done", "a fresh store owes no classification"
     assert set(maintenance_jobs.jobs(tmp_path)) == FRESH
 
     maintenance_jobs.record(tmp_path, "legacy_reconcile", state="running", cursor="task-0042", done=42, total=None)
