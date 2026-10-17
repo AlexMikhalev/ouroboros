@@ -647,6 +647,7 @@ def test_the_healer_tells_rendered_cards_their_question_expired(roots, monkeypat
     write_task_result(root, "ghost-asked", "running", chat_id=1)
     owner_quiz.record_asked(root, "ghost-asked", quiz_id="q9", question="Which folder?",
                             options=["A", "B"], wait_for_answer=True)
+    queue_module.persist_queue_snapshot(reason="startup")  # this generation already holds the queue
     _interrupted_running_row(root, "ghost-asked")
     queue_module.persist_queue_snapshot(reason="startup")
     frames: list = []
@@ -758,6 +759,7 @@ def test_the_boot_healer_still_settles_a_running_row_nothing_owns(roots):
     from supervisor import queue as queue_module
     root, _ = roots
 
+    queue_module.persist_queue_snapshot(reason="startup")  # this generation already holds the queue
     _interrupted_running_row(root, "ghost-unowned")
     queue_module.persist_queue_snapshot(reason="startup")
 

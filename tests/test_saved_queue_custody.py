@@ -16,6 +16,18 @@ import pytest
 from tests._budget_pause_exact_helpers import _install_queue, _parked
 
 
+@pytest.fixture(autouse=True)
+def _a_generation_holding_nothing_of_its_own(monkeypatch):
+    """Before its restore a generation holds no work: the direct-turn registry and the fence maps
+    are this test's own, never ones an earlier test in the same worker left behind."""
+    from supervisor import active_activity, queue
+
+    registry = active_activity.DirectActivityRegistry()
+    monkeypatch.setattr(active_activity, "get_direct_activity_registry", lambda: registry)
+    monkeypatch.setattr(queue, "ACCEPTANCE_FENCES", {})
+    monkeypatch.setattr(queue, "BUDGET_ROOT_FENCES", {})
+
+
 @pytest.mark.parametrize("door", ["kill_workers", "publication", "update_quiesce", "rollback_aborted"])
 def test_a_stop_before_the_queue_restore_keeps_every_saved_pause_for_resume(tmp_path, monkeypatch, door):
     """#1952: a generation that stops before its supervisor restored the queue holds no work of its own
