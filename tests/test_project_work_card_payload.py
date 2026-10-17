@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._dialogue import chat_rows
 from ouroboros.gateway import state as gateway_state
 from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.task_results import load_task_result, write_task_result
@@ -140,7 +141,7 @@ def test_project_work_name_survives_real_outbox_bus_live_and_history(tmp_path, m
     events._handle_send_message(event, ctx)
     events._handle_send_message(event, ctx)
     assert len(live) == 1  # delivery id and event provenance keep their original meaning
-    saved = json.loads((tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8"))
+    [saved] = chat_rows(tmp_path)
     history = next(row for row in _history(tmp_path) if row.get("system_type") == kind)
     for row in (live[0], saved, history):
         assert row["task_name"] == "Check › boundary"

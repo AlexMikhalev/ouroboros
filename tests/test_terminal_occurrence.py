@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._dialogue import chat_rows
 from ouroboros.terminal_time import terminal_time_fact, task_attempt_witness
 
 T1 = '2026-09-24T18:18:27+00:00'
@@ -259,7 +260,7 @@ def test_late_failure_publication_after_other_success_keeps_both_outcomes_and_ti
     assert append_terminal_task_projection(tmp_path, 'new', {'id': 'new'}, new, {})
     monkeypatch.setattr('ouroboros.terminal_projection.utc_now_iso', lambda: T3)
     assert append_terminal_task_projection(tmp_path, 'old', {'id': 'old'}, old, {'ts': T1})
-    rows = [json.loads(line) for line in (tmp_path / 'logs/chat.jsonl').read_text().splitlines()]
+    rows = chat_rows(tmp_path)
     assert [(row['task_id'], row['ts']) for row in rows] == [('new', T2), ('old', T3)]
     assert rows[-1]['terminal_time']['occurred_at'] == T1
     assert rows[-1]['status'] == 'failed' and rows[0]['status'] == 'completed'
