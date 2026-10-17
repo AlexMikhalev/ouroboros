@@ -28,21 +28,9 @@ RESULT_LAYER = "result"
 RESULT_KIND = "result"
 RESULT_ROOT_KIND = "task_result"
 RESULT_USER_TURN = "Review the task result against its request, as the instructions above describe."
-RESULT_RUBRIC = """\
-You review the RESULT of one task, not a code change. The subject has four parts: what was asked (the
-task, its owner's words and the claims it was held to), the reply the task gives, what the task produced
-(files and effects, named by path and content hash) and the host-attested verification receipts.
-
-Answer one question: does this result do what was asked?
-- Judge the result, never the method: how the work was done is not under review.
-- A partial result that says plainly what it did not do is honest, not a defect. A result that silently
-  narrows what was asked, claims what it did not do, or contradicts its own material is a defect.
-- Read the produced files you can reach; a claim about a file must match its content.
-- A finding names the concrete gap, where it is, and what would close it.
-
-Severity: "critical" when the result fails what was asked or misstates what it delivers, so it should not
-be delivered as it is; "advisory" for a real improvement that does not block delivery.
-"""
+# The rules a result wave is judged by: this section of docs/CHECKLISTS.md, read from the install as every
+# other review surface reads its own section (owner, 18.10: the rubric lives with the other checklists).
+RESULT_CHECKLIST_SECTION = "Result Review Checklist"
 
 
 def refuse_when_off() -> None:
@@ -58,10 +46,18 @@ def refuse_when_off() -> None:
             "change review and ordinary child critics stay available")
 
 
+def result_rubric() -> str:
+    """The ``Result Review Checklist`` section every result seat receives."""
+    from ouroboros.tools.review_checklist import load_checklist_section
+
+    return load_checklist_section(RESULT_CHECKLIST_SECTION)
+
+
 def result_rules() -> Dict[str, Any]:
     """The rules a result wave is judged by, in the checklist facts' own shape."""
-    digest = hashlib.sha256(RESULT_RUBRIC.encode("utf-8")).hexdigest()
-    return {"checklist_hash": digest, "rules_source": {"path": "ouroboros/tools/review_result.py", "sha": digest}}
+    from ouroboros.tools.review_checklist import section_fingerprint
+
+    return section_fingerprint(RESULT_CHECKLIST_SECTION)
 
 
 def latest_reply(ctx: Any) -> str:
@@ -246,7 +242,7 @@ def subject_source(ctx: Any, text: str) -> Optional[pathlib.Path]:
 def _brief_head(*, goal: str, scope: str, review_rebuttal: str) -> str:
     from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
 
-    parts = ["## REVIEW INSTRUCTIONS", "", RESULT_RUBRIC]
+    parts = ["## REVIEW INSTRUCTIONS", "", result_rubric()]
     if goal.strip():
         parts += ["## The author's own goal and questions for this review", "", goal.strip(), ""]
     if scope.strip():
