@@ -3796,8 +3796,8 @@ body.resizing-panels { user-select: none; }
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--tone-crimson);
-    transform: scale(calc(0.75 + var(--voice-level, 0) * 0.75));
+    background: var(--accent-light);
+    transform: scale(calc(0.85 + var(--voice-level, 0) * 0.65));
 }
 .chat-voice-slot[data-voice-state="permission"] .voice-dot { opacity: 0.4; }
 /* Dictated words whose draft changed meanwhile wait above the composer as a float sheet until the owner puts them in,

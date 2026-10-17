@@ -119,10 +119,13 @@ def toast(page, text):
 def test_a_saved_reply_offers_the_skill_action_and_a_failing_page_module_costs_only_itself(subscription_ui, width, scheme):
     page, loaded, _posted = open_app(subscription_ui, width=width, scheme=scheme)
     answer = page.locator(".chat-bubble.assistant").first
-    action = answer.locator(".chat-message-actions > .chat-message-action")
+    action = answer.locator(".chat-message-actions > [data-message-action='contribution:lists:save']")
     action.wait_for()
-    controls = answer.locator(".chat-message-actions > *").evaluate_all("nodes => nodes.map(node => node.className)")
-    assert controls == ["chat-message-reply", "chat-message-action", "chat-message-copy"], controls
+    # The host's Read aloud (the voice module registered a device engine) comes first, the skill's action after it.
+    answer.locator("[data-message-action='read-aloud']").wait_for()
+    controls = answer.locator(".chat-message-actions > *").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.messageAction || node.className)")
+    assert controls == ["chat-message-reply", "read-aloud", "contribution:lists:save", "chat-message-copy"], controls
     owner = page.locator(".chat-bubble.user").first
     assert owner.locator(".chat-message-action").count() == 0, "a skill's action is for Ouroboros's replies"
     assert action.get_attribute("aria-label") == "Save to list"
@@ -170,7 +173,7 @@ def test_plus_lists_skill_sections_then_host_items_and_each_does_its_verb(subscr
     menu.wait_for()
     items = menu.locator("[role=menuitem]").all_inner_texts()
     assert [text.strip() for text in items] == [
-        "Attach file", "Explain simpler", "Add to list", "Make a button with Ouroboros…"], items
+        "Attach file", "Explain simpler", "Add to list", "Add dictation…", "Make a button with Ouroboros…"], items
     assert menu.locator(".chat-plus-label").all_inner_texts() == ["Templates", "Lists", "Ouroboros"], \
         "each skill under its label, the host's own items last under Ouroboros's"
     assert menu.locator("[data-plus-item='templates:simpler'] svg").count() == 1, "a skill's glyph from the host set"
