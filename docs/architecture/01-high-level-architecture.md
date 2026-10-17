@@ -9,7 +9,8 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
   ui.css — the shared palette/control stylesheet of the SPA, onboarding and author pages (§3 Navigation)
   modules/ — browser modules (§3)
     media_capture.js — One page audio lease, device replacement and lifecycle release
-    speech_providers.js, voice_recorder.js, dictation.js — Injected provider selection, bounded Opus/AAC/WAV recording, cancellable transcription and draft-insertion decisions
+    speech_providers.js, voice_recorder.js, dictation.js — The page's speech hub and strict selection, bounded Opus/AAC/WAV recording, cancellable transcription and draft-insertion decisions
+    voice_controls.js, dictation_chooser.js, read_aloud.js — The composer's dictation mic, "+" → Add dictation…, Read aloud on replies (DESIGN "Voice controls")
     ui_primitives.js — safe-field, escaping and tone/status helpers (§3 Navigation)
     i18n.js, settings_language.js, ui_i18n_types.js — interface language: a DOM overlay over rendered chrome from the translation memory, translated at the producer; chat prose, logs, code and owner names are never walked (§3 Settings; §7 `OUROBOROS_UI_LANGUAGE`)
     page_header.js, ui_interactions.js, scroll_fade.js — header/tab strip and the segmented-choice generator; dialog, menu and popup binders; scroll-edge fade (§3 Navigation)

@@ -1443,7 +1443,7 @@ skill's label verbatim, one glyph from the host set, the host's capsule or
 icon control, never the skill's markup. In "+", after Attach file, each skill
 has a section under its name with its items in the owner's order; the host's
 own items close the menu under Ouroboros's name: Add dictation… while no
-engine is chosen, and Make a button with Ouroboros…, which starts a request in
+engine can dictate here, and Make a button with Ouroboros…, which starts a request in
 the draft for the owner to finish and send. A chip is one of the row's
 capsules: the skill's name, then the value its source answers in the meta ink
 (24 characters; the rest and its description on the chip's title), with a dot
@@ -1461,6 +1461,32 @@ Main's More menu offers Restart without plugins on every surface, the macOS
 app's Help menu Start without plugins; a page that a module froze is left
 through that menu or by reopening it within five minutes, which then starts
 without them.
+
+### Voice controls
+
+Dictation and Read aloud are host controls over engines that skills provide;
+an engine is never chosen or replaced silently, and each one names where its
+audio or text goes: On this device, On this computer, On your Ouroboros
+server (its host), or Goes to the vendor it names. The composer has no mic
+until a speech-to-text engine is chosen and can run here; until then "+"
+offers Add dictation…, a sheet of the live engines, bundled Browser speech
+(free; the skill's own words say which vendor hears the audio in each
+browser; choosing it turns it on) and Whisper from OuroborosHub (its Skills
+entry when installed, the OuroborosHub search when not). The mic is a quiet
+finger-sized control between the field and Send; its chevron lists the
+engines with their destinations, Get another engine… and Turn off dictation.
+While recording, the slot holds a level dot and the time, Stop in the mic's
+place wearing the crimson tone, and Cancel; the draft stays visible. Stop
+transcribes; the words go in at the caret saved at Stop when the draft has
+not changed since, otherwise a sheet above the composer holds them with
+Insert and Copy. Dictation never sends. Esc, Cancel, Panic, a hidden room and
+the engine leaving end a recording; a chosen engine that cannot run here is
+named with its reason in the chooser. Read aloud is a saved reply's action
+(Replies): the reply's words with code announced, not read; one reply at a
+time, Stop on the one being read; Panic and leaving the page stop it. With
+no engine chosen it uses one on this device. The row menu's Read aloud
+voice… lists Automatic (a voice on this device first) and every voice, "On
+this device" only when the browser marks it local, otherwise "Online voice".
 
 ### Conversation activity block
 

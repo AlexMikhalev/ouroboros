@@ -333,6 +333,20 @@ capability a later version adds is absent from an older context, never a stub.
 | `theme.dark`, `theme.reducedMotion` | The painted theme and the motion preference, read when asked. |
 | `origin.secure`, `origin.loopback` | The page is a secure context; it is served from this computer. |
 
+A client speech provider is a plain object the host calls; it never draws.
+A `stt` provider is `{label, destination?, available() → {ok, code?},
+start({lang, signal}) → {stop() → Promise<{text} | {no_speech: true}>,
+cancel()}}`: the host calls `start` inside the owner's press (recognizers need
+the gesture), holds the page's one microphone lease for it, and puts the text
+into the draft itself. A `tts` provider is `{label, voices() → [{id, label,
+lang, local}], speak(text, {voice, lang, signal}) → Promise<void>, stop()}`;
+`local` is true only when the platform says the voice runs on the device, and
+`speak` settles when the words end, are stopped, or `signal` aborts. A
+provider's `destination` (`device`, `host` or `vendor:<Name>`) says where
+audio or text goes; the host shows it beside the engine's name. An engine the
+owner chose that cannot run is reported with its reason; the host never picks
+another one in its place.
+
 There is no composer, feed or other page DOM in the context: placements are
 the way into those. A module that cannot be imported, throws or rejects in
 `mount`, does not start within the host's module bound
