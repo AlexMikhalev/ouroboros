@@ -91,7 +91,7 @@ ouroboros/ — agent core and shared runtime (§6)
   packaged_cli.py, packaged_cli_install.py — packaged desktop CLI bridge and its command-shim installer
   agent.py — task orchestrator; a loop crash is projected from captured evidence or an explicit `loop_evidence_unavailable`, never invented counters (§6 Task lifecycle)
   startup_historical_audit.py — explicit seal-audit child (`python -m ouroboros.startup_historical_audit`, own process group); never automatic at boot (§2; docs/MODEL_SEND_OBSERVABILITY.md)
-  maintenance.py, maintenance_jobs.py — the one background maintenance child (`python -m ouroboros.maintenance`, own process group, low priority) running history-sized named jobs; their durable facts are `job:<name>` meta rows of `state/current.sqlite` (§5 Maintenance and custody)
+  maintenance.py, maintenance_jobs.py — the maintenance child's history-sized jobs and their durable `job:<name>` facts (§5)
   focus.py — authored focus with typed source ref; no dialogue or path escapes
   agent_startup_checks.py — agent-boot verification (warning-only health) and native-host adoption for self-restart (§2)
   agent_task_pipeline.py — task execution pipeline: result, artifacts, frozen cost snapshot, the review lens, root-only post-task work (§6 Task lifecycle)

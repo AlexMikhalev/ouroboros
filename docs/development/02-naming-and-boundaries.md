@@ -194,13 +194,9 @@ export compatibility are checked by `tests/test_store_connections.py` and
 `tests/test_store.py`. `tests/test_store_journal.py` covers both directions of
 the version/tier/filesystem WAL gate; FULL is unchanged on both journal modes.
 
-Apply ARCHITECTURE §10 invariant 10; enforcement: "Invariant: Projection over replay (hot readers of growing stores)" below.
-
-Once per process is not once per installation. A fact of the installation (a migration done, a scan
-that found nothing, a cursor) is a durable row, never a module-level set, dict or flag that a restart
-forgets. History-sized work is a named job with a durable cursor in the maintenance child
-(`ouroboros/maintenance.py`, facts in `ouroboros/maintenance_jobs.py`), never a boot step, a request
-step or a server thread; a second run over unchanged inputs decodes no history body and commits nothing.
+Apply ARCHITECTURE §10 invariant 10 (enforcement: 03 "Projection over replay"). Once per process is
+not once per installation: an installation fact (a migration done, an empty scan, a cursor) is a
+durable row; history-sized work is a named job of the maintenance child (`ouroboros/maintenance.py`).
 
 ### Generality and emergence (P13)
 
