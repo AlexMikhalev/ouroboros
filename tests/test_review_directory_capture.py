@@ -88,7 +88,7 @@ def _released(actor, area):
     evidence = Path(receipt["evidence_dir"])
     assert json.loads((evidence / "summary.json").read_text()) == receipt
     assert "entries" in receipt, "released directory evidence loses typed symlink and mode changes"
-    assert receipt["refresh_safe"] and not area.exists()
+    assert not area.exists()
     assert len(FakeGateway.instances[-1].start_requests) == 1
     return receipt["entries"], evidence
 
@@ -199,19 +199,19 @@ def test_public_directory_consumer_retains_posix_modes_before_release(
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO output requires POSIX")
 @pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
-def test_public_directory_consumer_keeps_copy_for_unretainable_output(
+def test_public_directory_consumer_names_unretainable_output_and_releases_the_copy(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
     root, drive = _subject(tmp_path, surface, links=True), tmp_path / "drive"
+    observed = []
     actor = _run(root, drive, surface, _source(root, drive, surface), monkeypatch,
-                 lambda area: os.mkfifo(area / "pipe"))
+                 lambda area: observed.append(area) or os.mkfifo(area / "pipe"))
     assert actor["status"] == "ok", actor
     receipt = actor["usage"]["checking_evidence"]
     assert receipt["status"] == "partial", "special output must not disappear behind a complete receipt"
     assert receipt["gaps"] == [{"path": "pipe", "reason": "unsupported_entry_type"}]
     assert receipt["entries"]["pipe"]["after"]["kind"] == "special"
-    assert not receipt["refresh_safe"]
-    assert stat.S_ISFIFO((Path(receipt["area"]) / "pipe").lstat().st_mode)
+    assert not observed[0].exists(), "a receipt that names its gap releases the copy"
 
 
 def test_skill_consumer_rejects_foreign_payload_hash_before_start(tmp_path, writable_engine):  # noqa: F811
@@ -335,9 +335,8 @@ def test_public_directory_consumer_keeps_copy_when_same_stat_bytes_are_unreadabl
     assert observed["denied"] and observed["same_stat"]
     assert actor["status"] == "ok", actor
     receipt = actor["usage"]["checking_evidence"]
-    assert receipt["status"] in {"partial", "capture_failed"}, f"uncompared bytes were released as unchanged: {receipt}"
+    assert receipt["status"] == "capture_failed", f"uncompared bytes were released as unchanged: {receipt}"
     assert "new-target" in json.dumps([receipt.get("gaps"), receipt.get("error")]), receipt
-    assert not receipt["refresh_safe"]
     assert (observed["area"] / "new-target").read_bytes() == b"NEW\n"
 
 
@@ -394,6 +393,6 @@ def test_public_directory_consumer_keeps_copy_when_a_subtree_cannot_be_listed(
             (observed["area"] / "locked").chmod(0o755)
     assert actor["status"] == "ok", actor
     receipt = actor["usage"]["checking_evidence"]
-    assert receipt["status"] in {"partial", "capture_failed"} and not receipt["refresh_safe"]
+    assert receipt["status"] == "capture_failed"
     assert (observed["area"] / "locked" / "only-copy.log").read_bytes() == b"written before the folder was locked\n"
     assert (observed["area"] / "SKILL.md").is_file(), "an incomplete capture must not partially release the copy"

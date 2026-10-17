@@ -249,11 +249,31 @@ def _force_rmtree(path: Path) -> None:
     On Windows git pack/object files under ``.git`` are read-only, and
     ``shutil.rmtree(ignore_errors=True)`` silently FAILS to delete them, leaving
     the directory behind. The onerror hook clears the read-only bit and retries
-    so genesis-project / worktree teardown actually removes the tree."""
+    so genesis-project / worktree teardown actually removes the tree. It only adds
+    owner bits, only inside the tree and never through a link (a target may live
+    outside it): a removal its folder refuses makes that folder writable, and a
+    folder that could not be listed is made listable and removed in turn."""
+    root = os.path.abspath(path)
+
+    def _linked(info):  # a link, or a Windows junction (reparse point)
+        return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+    def _grant(target, bits):
+        info = os.lstat(target)  # one look: the mode written is this entry's own
+        if os.path.commonpath([root, target]) == root and not _linked(info):
+            os.chmod(target, stat.S_IMODE(info.st_mode) | bits)
+
     def _on_error(func, p, _exc):
+        p = os.path.abspath(p)  # a relative tree reports relative paths
         try:
-            os.chmod(p, stat.S_IWRITE)
-            func(p)
+            if func in (os.unlink, os.remove, os.rmdir):
+                if os.path.dirname(p) != os.path.dirname(root):
+                    _grant(os.path.dirname(p), stat.S_IRWXU)
+                _grant(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IWRITE | stat.S_IREAD)
+                func(p)
+            elif not _linked(os.lstat(p)) and os.path.isdir(p):
+                _grant(p, stat.S_IRWXU)
+                shutil.rmtree(p, onerror=_on_error)
         except Exception:
             pass
 
