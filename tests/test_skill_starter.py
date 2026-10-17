@@ -35,8 +35,62 @@ def test_default_list_is_the_recommended_builtin_and_official_skills(setup):
     assert skill_starter.default_starter_ids(drive, repo_dir=repo) == ["builtin/telegram", "ouroboros/duckduckgo"]
     configured = {"OUROBOROS_STARTER_SKILLS": json.dumps(["ouroboros/weather"])}
     assert skill_starter.starter_ids(drive, configured, repo_dir=repo) == ["ouroboros/weather"]
-    assert skill_starter.starter_ids(drive, {"OUROBOROS_STARTER_SKILLS": "not json"}, repo_dir=repo) == [
-        "builtin/telegram", "ouroboros/duckduckgo"]
+    assert skill_starter.starter_ids(drive, {"OUROBOROS_STARTER_SKILLS": "not json"}, repo_dir=repo) == []
+
+
+@pytest.mark.parametrize("value", [[], "[]"])
+def test_explicit_empty_starter_list_installs_nothing(setup, value, monkeypatch):
+    drive, _hub, repo = setup
+    settings = {"OUROBOROS_STARTER_SKILLS": value}
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: settings)
+    assert skill_starter.starter_ids(drive, settings, repo_dir=repo) == []
+    monkeypatch.setattr("ouroboros.skill_source_catalog.refresh_source",
+                        lambda *a, **k: pytest.fail("an empty list needs no fetch"))
+    assert skill_starter.run_starter(drive, None, origin="first_start", repo_dir=repo)["requested"] == []
+
+
+@pytest.mark.parametrize("turn_on", [False, True])
+def test_build_selects_starter_first_enable(setup, monkeypatch, turn_on):
+    from ouroboros.skill_loader import load_enabled
+
+    drive, _hub, repo = setup
+    monkeypatch.setenv("OUROBOROS_STARTER_SKILLS_TURN_ON", str(turn_on).lower())
+    skill_starter.run_starter(drive, ["builtin/telegram"], origin="first_start", repo_dir=repo)
+    assert read_install_record(drive, "telegram")["turn_on_when_ready"] is turn_on
+    assert load_enabled(drive, "telegram") is turn_on
+
+
+def test_offer_includes_configured_items_from_other_sources_in_their_category(setup, monkeypatch):
+    from ouroboros.skill_source_catalog import refresh_source
+
+    drive, hub, repo = setup
+    row = {"id": "team", "name": "Team", "kind": "git", "url": str(hub.bare),
+           "ref": "main", "trust": "review", "confirmed": True}
+    rows = [*hub.rows(), row]
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
+    monkeypatch.setenv("OUROBOROS_STARTER_SKILLS", '["team/notes", "ouroboros-community/notes"]')
+    refresh_source(drive, row)
+    groups = skill_starter.starter_groups(drive, rows=rows, repo_dir=repo)["groups"]
+    writing = next(group for group in groups if group["category"] == "writing")
+    assert {i["id"] for i in writing["items"]} == {"team/notes", "ouroboros-community/notes"}
+    assert all(i["recommended"] for i in writing["items"])
+
+
+def test_headless_installs_builtin_before_any_git_read(setup, monkeypatch):
+    from ouroboros.skill_source_catalog import refresh_source
+
+    drive, _hub, repo = setup
+    calls = []
+    def refresh(root, row, **kwargs):
+        assert read_install_record(drive, "telegram") is not None
+        calls.append(row["id"])
+        return refresh_source(root, row, **kwargs)
+    monkeypatch.setattr("ouroboros.skill_source_catalog.refresh_source", refresh)
+    monkeypatch.setattr("ouroboros.skill_source_catalog.refresh_in_background",
+                        lambda *a, **k: pytest.fail("no git read before the built-in starter"))
+    marker = skill_starter.run_starter(drive, None, origin="first_start", repo_dir=repo)
+    assert marker["state"] == "done" and calls
+    assert marker["results"]["builtin/telegram"]["status"] == "installed"
 
 
 def test_first_start_classification_separates_new_installs_from_upgrades(tmp_path):

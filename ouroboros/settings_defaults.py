@@ -260,9 +260,11 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # its rows managed: true); empty = derived from the three keys above and OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS
     # (skill_sources.derived_sources).
     "OUROBOROS_SKILL_SOURCES": "",
-    # Starter skills installed once on a new install (JSON list of catalog ids); empty = the built-in and
+    # Starter skills installed once on a new install (JSON list of catalog ids); absent/"" = the built-in and
     # Official skills their maintainers mark recommended (skill_starter.default_starter_ids).
+    # An explicit [] means none; the first-enable choice never overrides an owner's Off.
     "OUROBOROS_STARTER_SKILLS": "",
+    "OUROBOROS_STARTER_SKILLS_TURN_ON": "true",
     "MCP_ENABLED": False,
     "MCP_SERVERS": [],
     "MCP_TOOL_TIMEOUT_SEC": 60,
