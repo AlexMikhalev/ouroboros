@@ -57,6 +57,15 @@ def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_
     assert ".project-panel-title" not in css, "one title style"
 
 
+def test_the_place_name_wins_over_the_status_word_and_the_status_keeps_its_target():
+    room_work = _read("web/room_work.css")
+    trigger = _rule(room_work, ":is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {")
+    assert "flex: 0 1000 auto" in trigger, "the status yields a thousand times faster than the title"
+    assert "min-width: var(--touch-target-min)" in trigger and "5ch" not in trigger
+    title = _rule(room_work, ":is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {")
+    assert "flex: 0 1 auto" in title and "min-width: 0" in title and "text-overflow: ellipsis" in title
+
+
 def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():
     chat_js = _read("web/modules/chat.js")
     assert "asPanel = false, title = pageLabel('chat')," in chat_js

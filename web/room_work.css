@@ -31,12 +31,13 @@
 .rw-trigger[hidden] { display: none; }
 .rw-trigger:disabled { cursor: default; opacity: 1; }
 .rw-trigger:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
-/* The status follows the room's title in its bar. The status never shrinks while the title can: the title
-   yields its ellipsis first and keeps a 5ch floor, because the status may never take more than the row less 5ch;
-   only past that floor does the status word ellipsize inside its cap. Neither moves the bar's other controls: the
-   bar decides its rows by the title block's basis, never by these words. */
+/* The status follows the room's title in its bar. The place's name wins (DESIGN "Shell"): when the row is short
+   the status word yields first (its dot and caret stay, and the control's name keeps the whole status), and only
+   then does the title ellipsize; the control never goes under the touch minimum. Neither moves the bar's other
+   controls: the bar decides its row by the title block's basis, never by these words. */
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {
-    flex: 0 0 auto; min-width: 0; max-width: calc(100% - 5ch); margin-left: var(--space-1); padding-inline: 10px;
+    flex: 0 1000 auto; min-width: var(--touch-target-min); max-width: 100%; justify-content: center;
+    margin-left: var(--space-1); padding-inline: 10px;
 }
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
