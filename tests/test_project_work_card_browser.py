@@ -550,3 +550,52 @@ def test_main_portal_follows_a_successor_that_already_finished(project_chat, jou
     expect(episodes.nth(1)).to_have_attribute("data-current", "1")
     assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
     card.screenshot(path=_evidence(tmp_path, project_chat, f"finished-successor-{journey}"), animations="disabled")
+
+
+@pytest.mark.parametrize("journey", ["live", "reload"])
+def test_an_already_failed_portal_follows_a_later_fast_continue(project_chat, journey, tmp_path):
+    """Astra W3: Main already read the moved work's Failed record and offers Continue; the owner continues in the room
+    and the successor finishes before any census lists it. Main receives its new binding, its mirrored final and complete
+    snapshots with no live Alpha work. The settled portal reads its own record once on those observations and follows
+    its admitted link: one card for the work, settled Done, live and after a reload."""
+    page, expect, state = project_chat["page"], project_chat["expect"], project_chat["state"]
+    old = _card(page, "creation")
+    expect(old).to_be_visible()
+    project_chat["details"]["creation"] = _interrupted(continuation_offer={"eligible": True, "cause": "model_provider_failed"})
+    state["active_chat_activities"] = [row for row in state["active_chat_activities"] if row["activity_id"] != "creation"]
+    page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    expect(old.locator('.chat-live-phase').first).to_have_text("Failed", timeout=15000)
+    expect(old.locator('[data-continue-task]')).to_have_text("Continue")
+    later = "creation-clater"
+    binding = {"project_id": "alpha", "chat_id": 7}
+    project_chat["details"]["creation"] = _interrupted(
+        continued_by={"state": "admitted", "successor_task_id": later, "binding": binding},
+        continuation_offer={"eligible": False, "refusal": "already_continued", "state": "admitted", "successor_task_id": later})
+    project_chat["details"][later] = {
+        "task_id": later, "status": "completed", "chat_id": 7, "project_id": "alpha",
+        "outcome_axes": {"lifecycle": {"status": "completed"}, "execution": {"status": "ok"}},
+        "terminal_time": {"occurred_at": "2026-10-08T14:12:00Z", "attempt": {"started_at": "2026-10-08T14:10:00Z"}}}
+    state["task_bindings"][later] = binding
+    page.evaluate("""id => emit('chat', {chat_id: 1, task_id: id, role: 'assistant', content: 'The audit is complete.',
+        project_id: 'alpha', project_name: 'Project Alpha', system_type: 'project_completion_summary',
+        ts: '2026-10-08T14:12:00Z'})""", later)
+    for _ in range(3):
+        page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    if journey == "reload":
+        page.reload()
+        page.wait_for_function("() => window.chat && document.querySelector('#chat-messages .chat-bubble')")
+        page.evaluate("s => chat.hydrateStateSnapshot(s)", state)
+    card = _card(page, later)
+    expect(card).to_be_visible(timeout=15000)
+    expect(_card(page, "creation")).to_be_hidden()
+    assert _visible_cards(page) == [later, "transfer"], "one card for the work, at its first place"
+    expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
+    expect(card.locator('.chat-live-phase').first).to_have_text("Done")
+    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply"])
+    expect(card.locator(':scope > .chat-live-bound-pointer')).to_have_attribute("aria-label", "Open project Project Alpha")
+    episodes = card.locator('.chat-live-episode')
+    expect(episodes).to_have_count(2)
+    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
+    expect(episodes.nth(1)).to_have_text("Episode 2 · 14:10–14:12")
+    assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continue stands as its action"
+    card.screenshot(path=_evidence(tmp_path, project_chat, f"later-continue-{journey}"), animations="disabled")
