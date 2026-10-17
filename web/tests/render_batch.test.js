@@ -73,7 +73,7 @@ test('at its older end a grown room offers the way on, a chain a navigation bega
     const exhausted = { initialized: true, canOlder: false, canNewer: false, olderExhausted: true, loading: '', error: null };
     controls.render(exhausted, { horizonGap: true });
     assert.equal(controls.olderButton.hidden, false, 'a grown room re-anchors to the present from here');
-    controls.render({ ...exhausted, jumped: true }, { horizonGap: true });
+    controls.render({ ...exhausted, away: true }, { horizonGap: true });
     assert.equal(controls.olderButton.hidden, true, 'a page around a task never sends Load more to the present');
 });
 

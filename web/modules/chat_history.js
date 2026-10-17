@@ -136,7 +136,9 @@ export function createChatHistoryPager({
             error: failure?.error || null,
             retryDirection: failure?.direction || '',
             retryCursor: failure?.cursor ?? null,
-            canOlder, canNewer, jumped,
+            canOlder, canNewer,
+            // The chain does not show the present: newer pages of it, or a navigation began it.
+            away: initialized && (first > 0 || jumped),
             olderExhausted: initialized && !canOlder,
             newerExhausted: initialized && !canNewer,
             pageCount: pages.length,

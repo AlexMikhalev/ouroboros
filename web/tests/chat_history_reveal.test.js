@@ -109,9 +109,9 @@ test('only a read of the present restarts the arrivals', async () => {
     const h = harness((cursor, options) => (options.around ? around()
         : cursor ? { messages: [], after_cursor: `${cursor}+`, window: {} } : { ...recent, after_cursor: 'after:9' }));
     await h.pager.around('task:t-old', () => true);
-    assert.equal(h.pager.getState().jumped, true, 'the chain began at a navigation');
+    assert.equal(h.pager.getState().away, true, 'the chain began at a navigation: it is not the present');
     assert.equal((await h.pager.latest()).status, 'applied');
-    assert.equal(h.pager.getState().jumped, false);
+    assert.equal(h.pager.getState().away, false);
     await h.pager.read();
     assert.equal(h.calls.at(-1).cursor, 'after:9', 'the newest read names where the next arrivals start');
 });
