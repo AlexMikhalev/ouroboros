@@ -1,6 +1,5 @@
 """Real gateway/SPA result projections plus a native required-question journey."""
 import json
-import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +9,7 @@ import pytest
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
 from tests.test_native_owner_wait_browser import chat_connection
+from tests._shared import producer_evidence_dir
 from tests.test_ui_coherence_browser import pill_landing
 from tests.system_e2e.harness import (
     ArtifactOracle, KeylessIsolatedServer, ScriptedStubModel, keyless_settings,
@@ -129,7 +129,8 @@ def test_main_current_optional_question_survives_history_horizon_and_reload(wait
     for index in range(_DEFAULT_N_HUMAN + 12):
         log_chat("in", 1, 1, f"Later Main history row {index}", drive_root=root)
 
-    evidence = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or tmp_path / "screenshots")
+    evidence = producer_evidence_dir(tmp_path / "screenshots", "ui-result",
+                                     env="OUROBOROS_BROWSER_EVIDENCE_OUT")
     evidence.mkdir(parents=True, exist_ok=True)
     with ScriptedStubModel([{"final": "Future editions will use PDF."}]) as stub:
         settings_path = root / "settings.json"
@@ -212,7 +213,8 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
         return {**original_env(server), "HOME": str(fake_home), "USERPROFILE": str(fake_home),
                 "XDG_CONFIG_HOME": str(fake_home / ".config")}
     monkeypatch.setattr(KeylessIsolatedServer, "_env", isolated_env)
-    screenshots = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or tmp_path / "screenshots")
+    screenshots = producer_evidence_dir(tmp_path / "screenshots", "ui-result",
+                                        env="OUROBOROS_BROWSER_EVIDENCE_OUT")
     screenshots.mkdir(parents=True, exist_ok=True)
     steps = [
         {"tool": "escalate", "arguments": {"question": "Which evidence should the report use?",

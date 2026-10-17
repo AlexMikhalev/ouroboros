@@ -1,21 +1,21 @@
 """Main question materials and Project result navigation through the real SPA.
 
 Readers, explicit downloads, keyboard navigation and reloads use the production
-server. Evidence is retained via OUROBOROS_BROWSER_EVIDENCE_OUT, including RED.
+server. Evidence goes to the shared diagnostic channel, or an explicit
+OUROBOROS_BROWSER_EVIDENCE_OUT, including RED.
 """
 
 import hashlib
 import struct
 import zlib
 import json
-import os
 import re
-from pathlib import Path
 
 import pytest
 
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
+from tests._shared import producer_evidence_dir
 from tests.system_e2e.harness import KeylessIsolatedServer, ScriptedStubModel, keyless_settings, write_settings_file
 
 wait_clone = clone_fixture
@@ -77,7 +77,8 @@ def _m1660_material_question(root):
 
 
 def _m1660_material_evidence(tmp_path, stem):
-    evidence = Path(os.environ.get('OUROBOROS_BROWSER_EVIDENCE_OUT') or tmp_path / 'screenshots') / stem
+    evidence = producer_evidence_dir(tmp_path / 'screenshots', "main-materials",
+                                     env='OUROBOROS_BROWSER_EVIDENCE_OUT') / stem
     evidence.mkdir(parents=True, exist_ok=True)
     return evidence
 

@@ -18,6 +18,7 @@ from tests.candidate_checkout import (
     candidate_checkout, require_candidate_interpreter, verify_checkout,
 )
 from ouroboros.test_environment import isolated_environment
+from ouroboros.test_evidence import diagnostic_directory
 from tests.fixtures_mock_llm import MockLLMServer
 from tests.ui_chat_viewport_smoke import (
     _CAPTURE_TEST_SOCKET, _OBSERVE_STATE_READS, _emit_ws_frame, _wait_socket_open_quiescent,
@@ -36,6 +37,11 @@ def _fixture_interpreter() -> str:
 def _fixture_python() -> str:
     """Launch target; Settings may wrap it."""
     return _fixture_interpreter()
+
+
+def _browser_missing(exc) -> bool:
+    """Playwright's report of an engine that was never installed; each test decides skip or fail."""
+    return "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower()
 
 
 def _open_review_checkpoint(card, *, open_card=True):
@@ -130,7 +136,7 @@ def _run_core_ui_assertions(url: str) -> None:
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -195,7 +201,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -242,7 +248,7 @@ def _run_docker_ui_assertions(url: str) -> None:
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -903,7 +909,7 @@ def test_ui_smoke_phase3_declarative_widgets_and_settings(direct_server_with_dat
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -965,7 +971,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
             try:
                 browser = browser_type.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
                 raise
             try:
@@ -1131,14 +1137,14 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                         arg=unique_tail,
                     )
                     page.screenshot(
-                        path=str(data_dir.parent / f"compact-activity-{browser_engine}-{width}.png"),
+                        path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"compact-activity-{browser_engine}-{width}.png"),
                         full_page=True,
                     )
                     context.close()
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
         raise
 
@@ -1408,7 +1414,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 context.close()
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1445,7 +1451,7 @@ def test_ui_smoke_direct_mode_creates_task_with_mock_provider(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1781,10 +1787,10 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert replay_child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 page.wait_for_timeout(900)  # cover the routine background history sync
                 assert replay_child.locator('.chat-live-line-repeat:not([hidden])').count() == 0
-                page.screenshot(path=str(data_dir.parent / "review-truth-child-reconnect.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "review-truth-child-reconnect.png"), full_page=True)
                 replay_progress.locator(".chat-live-line-toggle").click()
                 replay_child.scroll_into_view_if_needed()
-                page.screenshot(path=str(data_dir.parent / "lifecycle-current-status.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "lifecycle-current-status.png"), full_page=True)
                 assert page.locator(".chat-bubble.progress").count() == 0
                 assert page.locator(".chat-bubble", has_text="Final child answer should stay inside the child card.").count() == 0
 
@@ -1811,7 +1817,7 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1859,7 +1865,7 @@ def test_ui_smoke_desktop_composer_chips_above_input_send_inside(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1913,7 +1919,7 @@ def test_ui_smoke_mobile_composer_toolbar_does_not_overlap_input(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2035,7 +2041,7 @@ def _mobile_keyboard_drawer_assertions(page, url: str, screenshot_path: pathlib.
     assert scroll["scrollHeight"] > scroll["clientHeight"], scroll
     assert scroll["scrollTop"] > 0, scroll
     assert scroll["overflowY"] in {"auto", "scroll"}, scroll
-    page.screenshot(path=str(screenshot_path), full_page=True)
+    page.screenshot(path=str(diagnostic_directory(screenshot_path.parent, "ui-smoke") / screenshot_path.name), full_page=True)
 
     # Exercise the real backdrop click in the visible strip to the right of the
     # 320px drawer, then require all state/ARIA projections to close together.
@@ -2070,7 +2076,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_chromium(direct_
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2090,7 +2096,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_webkit(direct_se
             try:
                 browser = pw.webkit.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.skip(f"Playwright WebKit browser is not installed: {exc}")
                 raise
             context = browser.new_context(**iphone)
@@ -2107,7 +2113,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_webkit(direct_se
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2191,7 +2197,7 @@ def test_ui_smoke_direct_mode_chat_scrolls_on_desktop(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2247,7 +2253,7 @@ def test_ui_smoke_finished_cards_keep_height_when_transcript_overflows(direct_se
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2529,7 +2535,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             try:
                 browser = browser_type.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
                 raise
             try:
@@ -2543,7 +2549,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert_mobile_geometry(mobile)
                 assert_jump_geometry(mobile, "#page-chat")
                 mobile.screenshot(
-                    path=str(data_dir.parent / f"live-card-depth-10-{browser_engine}.png"),
+                    path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"live-card-depth-10-{browser_engine}.png"),
                     full_page=True,
                 )
                 mobile.reload(wait_until="domcontentloaded", timeout=30_000)
@@ -2718,13 +2724,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                     wide, "#panel-pchat-layout-project", require_overflow=False
                 )
                 wide.screenshot(
-                    path=str(data_dir.parent / f"live-card-project-panel-{browser_engine}.png"),
+                    path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"live-card-project-panel-{browser_engine}.png"),
                     full_page=True,
                 )
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
         raise
 
@@ -2862,7 +2868,7 @@ def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2977,7 +2983,7 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 @pytest.mark.ui_browser
@@ -3080,7 +3086,7 @@ def test_ui_owner_context_mode_and_reviewer_row_save(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3123,7 +3129,7 @@ def test_ui_smoke_superseded_input_dialog_resolves_object_result(direct_server_w
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3270,7 +3276,7 @@ def test_ui_smoke_login_recovery_reconcile_detach_and_retry_are_explicit(direct_
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3346,7 +3352,7 @@ def test_ui_smoke_dismiss_overlapping_start_cannot_drop_a_live_job(direct_server
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3457,7 +3463,7 @@ def test_ui_smoke_stale_get_cannot_overwrite_login_terminal_faces(
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3525,7 +3531,7 @@ def test_ui_smoke_window_pagehide_detaches_login_without_lifecycle_http(direct_s
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3607,7 +3613,7 @@ def test_ui_smoke_dismiss_overlapping_settle_never_freezes_the_card(direct_serve
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3702,12 +3708,12 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 page.keyboard.press("Escape")
                 menu.wait_for(state="detached", timeout=10_000)
                 assert cancel_btn.is_enabled()
-                page.screenshot(path=str(data_dir.parent / "cancel-run.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "cancel-run.png"), full_page=True)
             finally:
                 browser.close()
                 _release_mock_model()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 

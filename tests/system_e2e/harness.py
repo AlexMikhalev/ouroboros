@@ -1260,7 +1260,9 @@ def clone_repo(destination: pathlib.Path) -> pathlib.Path:
     depend on the operator's global git config.
     """
     clone = pathlib.Path(destination) / "clone"
-    subprocess.run(["git", "clone", "--no-hardlinks", "-q", str(REPO_ROOT), str(clone)],
+    # Full-history transport clone: omit unreachable source objects, not history
+    # or refs. No alternates; source deletion cannot invalidate this checkout.
+    subprocess.run(["git", "clone", "--no-local", "-q", str(REPO_ROOT), str(clone)],
                    check=True, capture_output=True)
     subprocess.run(["git", "checkout", "-B", "ouroboros"], cwd=str(clone),
                    check=True, capture_output=True)

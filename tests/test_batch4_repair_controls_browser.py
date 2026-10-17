@@ -12,6 +12,7 @@ from threading import Thread
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_owner_continue import _interrupted
 
@@ -95,8 +96,7 @@ def test_failed_admission_reload_retry_and_tree_pause_consumers(tmp_path, monkey
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(WEB)))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    evidence = tmp_path / 'screenshots'
-    evidence.mkdir()
+    evidence = producer_evidence_dir(tmp_path / 'screenshots', "batch4-repair-controls")
     persist = q.persist_queue_snapshot
     try:
         with sync_playwright() as pw:
