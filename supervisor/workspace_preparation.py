@@ -11,7 +11,8 @@ Copies and new projects stay serialized in acceptance order on one lane; an
 existing folder's validation uses the other, so it never waits behind a copy
 (a child admitted on a folder may write it while a copy of that folder still
 waits: the copy then starts from those writes, and one landing during the copy
-is refused by its whole-tree diff, both as in the other order). Command and event draining wait on neither. A host that never opened
+is refused by its whole-tree diff, both as in the other order). Command and
+event draining wait on neither. A host that never opened
 a generation (a direct caller of the handler) keeps the historical inline path.
 Positive entry contention keeps the unaccepted event on its original transport;
 after marker acceptance, acquisition waits retain the same FIFO stack off Q.

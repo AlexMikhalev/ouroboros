@@ -602,9 +602,11 @@ def _fill_private_copy(source: Path, checkout: Path, copy_root: Path) -> None:
     place from its first differing byte, an equal file is not written, and
     ``copystat`` applies the source's mode, times and flags as before. An entry
     checkout did not write (outside an inherited sparse-checkout cone) is created
-    by ``copy_artifact_file`` as before while the copy still exists, so a copy
-    removed mid-population is not re-created; a path checkout left as something other
-    than a regular file is refused, never written through. No retention flow
+    by ``copy_artifact_file`` as before while the copy still has its ``.git``, so
+    a removal that has reached ``.git`` re-creates nothing; entries a removal
+    still walking the tree already deleted can be re-created until it gets
+    there, and the failed start's discard removes them. A path checkout left as
+    something other than a regular file is refused, never written through. No retention flow
     provisions copies, so skipping that helper's publication fence loses nothing.
     """
     from ouroboros.artifacts import copy_artifact_file, stream_artifact_file

@@ -4,9 +4,9 @@ Git checks the baseline out; each regular file then receives the source's exact
 working bytes and ``copystat`` metadata in the file checkout created, without
 the per-file temporary file and rename of ``artifacts.copy_artifact_file``; only
 an entry checkout left absent (an inherited sparse cone) goes through that
-helper, and only while the copy still exists. The whole-tree diff against the
-baseline still refuses a source that moved, and a copy whose provisioning has
-not returned is no consumer's ready copy.
+helper, and only while the copy still has its ``.git``. The whole-tree diff
+against the baseline still refuses a source that moved, and a copy whose
+provisioning has not returned is no consumer's ready copy.
 """
 from __future__ import annotations
 
@@ -251,7 +251,7 @@ def test_a_copy_removed_mid_population_is_not_re_created(tmp_path, monkeypatch):
     def remove_after_first(source, checkout, copy_root):
         real_fill(source, checkout, copy_root)
         if copy_root.exists():
-            shutil.rmtree(copy_root)  # what an unregistered-snapshot prune does mid-population
+            shutil.rmtree(copy_root)  # a removal that has already reached .git
 
     monkeypatch.setattr(trees, "_fill_private_copy", remove_after_first)
     with pytest.raises(OSError):
