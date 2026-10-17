@@ -1045,9 +1045,12 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
         if _stop_requested(stop_event):
             return
         from ouroboros.late_review_marks import replay_owed_late_reviews
-        from ouroboros.review_operation import collect_orphaned_operations_softly
+        from ouroboros.review_operation import local_reviews_settled
 
-        collect_orphaned_operations_softly(DATA_DIR, stop=lambda: _stop_requested(stop_event))
+        try:
+            local_reviews_settled()  # this process's closed review operations retry a failed final pointer
+        except Exception:
+            log.warning("Review operation pointer retry failed", exc_info=True)
         replay_owed_late_reviews(DATA_DIR, stop=lambda: _stop_requested(stop_event))  # owed rows only
         if _STARTUP_TEMP_SWEEP_OWED[0]:
             from ouroboros.utils import sweep_stale_temp_files

@@ -16,9 +16,9 @@ answers:
 * plan asks are OUTSIDE this cap (owner batch 2, Q3=A): the planning organ
   (``tools/plan_ask``) dispatches an ask whenever the mind asks, and only its
   budget gate and deadline bound it; nothing here counts plan asks;
-* task acceptance — paid panel runs per task. The last paid result still
-  permits an author response; only an explicit task-local improvement-pass
-  limit bounds author work, independently of this paid ceiling;
+* result review (``review_change(subject="result")``) — paid result waves per
+  ROOT task, counted apart from the task's change-review waves (its own
+  ``tool_name`` on the attempt rows), so change reviews never spend it;
 * commit gate — paid review-wave cycles per ROOT task (the whole task tree
   shares one ceiling; a manual session is its own task; a follow-up task is a
   fresh root). The paid fact is recorded on the attempt row AT DISPATCH and
@@ -62,7 +62,7 @@ from typing import Any, Optional
 
 from ouroboros.config import SETTINGS_DEFAULTS
 # The ONE typed reason/event name for "the shared cap is spent under blocking
-# enforcement" (owner D10/D27) — SSOT beside the acceptance-decision vocabulary.
+# enforcement" (owner D10/D27) — SSOT beside the other outcome reasons.
 from ouroboros.outcomes import REASON_REVIEW_CYCLES_EXHAUSTED  # noqa: F401 — re-export
 from ouroboros.utils import append_jsonl, emit_log_event, utc_now_iso
 from ouroboros.config import runtime_setting
@@ -73,9 +73,6 @@ from ouroboros.settings_scales import UNLIMITED, parse_positive_or_unlimited
 log = logging.getLogger(__name__)
 
 REVIEW_MAX_CYCLES_KEY = "OUROBOROS_REVIEW_MAX_CYCLES"
-# Deprecated alias (task acceptance only). Kept as a settings key so an explicit
-# owner customization keeps binding; removal is a separate owner decision.
-ACCEPTANCE_PASSES_LEGACY_KEY = "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES"
 _WARNED: set = set()
 
 

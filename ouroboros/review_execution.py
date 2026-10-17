@@ -43,8 +43,6 @@ from ouroboros.delegate_custody_usage import (
     observe_failed_review_send, observe_review_usage, session_usage_once,
 )
 from ouroboros.triad_review import (
-    ACCEPTANCE_SURFACE_RULES,
-    TIER_CLASSIFICATION_RULES,
     TWO_PART_SESSION_OUTPUT_SCHEMA,
     default_output_contract,
     review_output_shape,
@@ -140,7 +138,7 @@ class ReviewSessionWaitingOnUser(RuntimeError):
     itself (BR2-2); anything unverified says the run may still be live, and a
     verify read that finds the run already SUCCEEDED never raises this at all
     (completion wins). Answering support for hosted review lanes is a
-    deliberate non-goal (owner: no acceptance host-wait; see docs/ARCHITECTURE.md).
+    deliberate non-goal (owner: no host-wait for a review lane; see docs/ARCHITECTURE.md).
     """
 
 _DELIVERY_RANK = {"api_chat": 0, "native_tool_rounds": 1, "agent_session": 2}
@@ -165,70 +163,19 @@ def panel_delivery_class(slots: Any) -> str:
 # Policy keys a retrieving executor consumes itself (`review_native_episode`,
 # `AgentSessionReviewExecutor`); the rendered Policy JSON omits them so the api
 # pack states the review contract once, in its governance segment.
-ROUTE_OWNED_POLICY_KEYS = frozenset({"output_contract", "native_data_root", "review_source_closure"})
+ROUTE_OWNED_POLICY_KEYS = frozenset({"output_contract", "native_data_root"})
 
 
 def review_output_contract(request: ReviewRequest) -> str:
-    """The surface's output contract — required keys, tier and acceptance rules,
-    the DEGRADED escape hatch — as ONE text every delivery honours: the api pack
-    renders it into its byte-stable governance segment, and a surface hands the
-    same text to its retrieving rows as ``policy["output_contract"]``."""
-    classify_tier = bool(request.policy.get("classify_outcome_tier"))
-    # Acceptance-only prompt POLICY (criteria/dialogue/obligation keys and the
-    # surface rules) keys on the surface; the output SHAPE those keys imply is
-    # the separate form fact `review_output_shape` the canonicalizer consumes.
-    acceptance = request.surface == "task_acceptance"
-    # The tier keys belong in the REQUIRED key list, not trailing prose — models
-    # honor the explicit "Return JSON with keys" list and otherwise drop them,
-    # which silently kills the best_effort/completion-coach lexicon.
-    tier_keys = (
-        ', outcome_tier ("solved"|"best_effort"|"blocked_with_evidence"), completion_coach'
-        if classify_tier
-        else ""
-    )
-    # For task acceptance the reviewer makes its derived acceptance criteria
-    # VISIBLE — recorded per-actor in the review trace / objective axis (M4) so
-    # "for whom we review" is auditable. Reviewer reasoning, not a new
-    # authoritative gate (criteria live in actors[].parsed, not a separate phase).
-    criteria_key = (
-        ', criteria_used (the acceptance criteria you re-derived from the full goal narrative '
-        'and checked, as [{criterion, status (supported|missing|partial|rejected), evidence_refs}]; evidence_refs must name concrete '
-        'host-attested receipts/artifacts/tool results for every contributing criterion; '
-        # D-Q5: the host resolves each ref by EXACT match against the packet's
-        # enumerable exhibit keys — the vocabulary below is the closed set of forms.
-        'each evidence_ref is resolved by EXACT match against the evidence packet, so use these exact forms: '
-        'claim ids from task_contract.acceptance_claims (which count as evidence ONLY while '
-        'acceptance_support_refs shows that claim supported by a passing receipt — otherwise cite the exhibit itself), '
-        'verification_receipts[i] receipt ids (rows of the verification_receipts exhibit list; '
-        'only a green pass/observed receipt supports a criterion), acceptance_obligations ids, artifact manifest names, '
-        'or HOST-ATTESTED top-level packet section names (the agent-supplied sections — reasoning_notes, '
-        'candidate_answers, agent_supplied — and task_contract itself are NOT evidence: cite the exhibit '
-        'that proves the work instead) — a ref that resolves to nothing cannot support a criterion)'
-        if acceptance
-        else ""
-    )
-    # v6.74.0 acceptance-dialogue keys (A3/A5): reviewer-authored obligation
-    # identity and the typed dialogue judgement. Both live in the REQUIRED key
-    # list for the same reason as the tier keys above.
-    dialogue_key = (
-        ', dialogue_status ("continue_actionable"|"unreachable_here"|"stable_disagreement")'
-        if acceptance
-        else ""
-    )
-    findings_shape = (
-        '[{severity, item, evidence, recommendation, disposition_kind ("new"|"re_raise"), '
-        'obligation_id (required when disposition_kind="re_raise")}]'
-        if acceptance
-        else "[{severity, item, evidence, recommendation}]"
-    )
-    tier_rules = TIER_CLASSIFICATION_RULES if classify_tier else ""
-    acceptance_rules = ACCEPTANCE_SURFACE_RULES if acceptance else ""
+    """The surface's output contract — the required keys and the DEGRADED
+    escape hatch — as ONE text every delivery honours: the api pack renders it
+    into its byte-stable governance segment, and a surface hands the same text
+    to its retrieving rows as ``policy["output_contract"]``. The output SHAPE is
+    the separate form fact ``review_output_shape`` the canonicalizer consumes."""
     return (
-        f"Return JSON with keys: verdict (PASS|FAIL|DEGRADED){tier_keys}{criteria_key}{dialogue_key}, findings "
-        f"({findings_shape}), and summary. "
-        + tier_rules
-        + acceptance_rules
-        + "If you cannot judge because evidence is missing, return DEGRADED and explain."
+        "Return JSON with keys: verdict (PASS|FAIL|DEGRADED), findings "
+        "([{severity, item, evidence, recommendation}]), and summary. "
+        "If you cannot judge because evidence is missing, return DEGRADED and explain."
     )
 
 
@@ -237,7 +184,7 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
 
     Cache segmentation (v6.74.0, B1): the byte-stable governance instruction and
     the task-stable contract (goal/scope/checklist/policy — stable across the
-    improvement passes of ONE task) are the two cache-marked segments; the
+    review rounds of ONE task) are the two cache-marked segments; the
     mutable tail (subject, evidence, refs) is never marked, and the slot label
     lives at its TAIL so concurrent same-model slots share a warm prefix."""
     evidence = json.dumps(request.evidence, ensure_ascii=False, indent=2, default=str)
@@ -319,8 +266,8 @@ def _request_messages(request: ReviewRequest, slot: ReviewSlot) -> List[Dict[str
     # Default shape is cache-friendly (v6.74.0, B1): two cache-marked system
     # segments — the byte-stable governance instruction and the task-stable
     # contract (goal/scope/checklist/policy, unchanged across a task's
-    # improvement passes) — followed by the unmarked mutable evidence tail as
-    # the user message. The large evidence body changes every pass by design
+    # review rounds) — followed by the unmarked mutable evidence tail as
+    # the user message. The large evidence body changes every round by design
     # and is honestly not cached.
     from ouroboros.tools.review_helpers import cached_prompt_blocks
 
@@ -579,53 +526,6 @@ REVIEW_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-# The OBJECT contract's schema (task acceptance): the whole verdict object. The
-# host keeps exact evidence-ref resolution and tier/coach demotion for itself
-# (an enum of every exhibit key would mint a schema larger than the packet), so
-# the schema pins only the shape the canonicalizer preserves whole.
-ACCEPTANCE_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "required": ["verdict", "findings", "summary"],
-    "properties": {
-        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "DEGRADED"]},
-        "outcome_tier": {"type": "string", "enum": ["solved", "best_effort", "blocked_with_evidence"]},
-        "completion_coach": {"type": "string"},
-        "criteria_used": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["criterion", "status"],
-                "properties": {
-                    "criterion": {"type": "string"},
-                    "status": {"type": "string", "enum": ["supported", "missing", "partial", "rejected"]},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-        "dialogue_status": {
-            "type": "string",
-            "enum": ["continue_actionable", "unreachable_here", "stable_disagreement"],
-        },
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["severity", "item", "evidence", "recommendation"],
-                "properties": {
-                    "severity": {"type": "string"},
-                    "item": {"type": "string"},
-                    "evidence": {"type": "string"},
-                    "recommendation": {"type": "string"},
-                    "disposition_kind": {"type": "string", "enum": ["new", "re_raise"]},
-                    "obligation_id": {"type": "string"},
-                },
-            },
-        },
-        "summary": {"type": "string"},
-    },
-}
-
-
 def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     """The session verdict schema, shaped to the SURFACE's own clean contract.
 
@@ -633,12 +533,11 @@ def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     ordinary advisory reviewer. Skill Review's matrix contract requires all checklist
     rows (PASS included): its schema demands ``minItems: 1`` and the downstream parser
     still verifies exact item coverage. The commit gate's ``two_part`` shape asks for
-    contract B's one object; an ``object`` surface (task acceptance) for the whole
-    verdict object; a ``report`` surface for NO schema — its prose passes verbatim.
+    contract B's one object; a ``report`` surface for NO schema — its prose passes verbatim.
     """
     shape = review_output_shape(surface)
-    if shape in ("report", "object", "two_part"):
-        return {"object": ACCEPTANCE_SESSION_OUTPUT_SCHEMA, "two_part": TWO_PART_SESSION_OUTPUT_SCHEMA}.get(shape)
+    if shape in ("report", "two_part"):
+        return {"two_part": TWO_PART_SESSION_OUTPUT_SCHEMA}.get(shape)
     if shape == "plan_reply":
         # The planning organ's reply object (prose, the participant's own objections and
         # withdrawals): the generic item/verdict shape would conform-and-launder it.
@@ -751,6 +650,7 @@ class SessionInvocation:
     operation_id: str = ""
     pending_invocation_checkpoint: Optional[Callable[[str], None]] = None
     owner_deadline_at: str = ""
+    # The facts dict request preparation fills (input limit, a turn delivered as sources); None = a fresh one.
     source_delivery: Optional[Dict[str, Any]] = None
     # #1609: the seat's configured technical access ('' = historical read-only) and its wave's frozen checking source.
     access: str = ""
@@ -852,8 +752,6 @@ def run_delegated_review_session(
                 raise ReviewRouteUnavailable(
                     f"delegated review route unavailable: {unavailable}", code=unavailable)
         if not recovering:
-            from ouroboros.acceptance_retrieving import prepare_session_source
-            prepare_session_source(invocation.source_delivery, task_id=task_id)
             from ouroboros.delegate_registration_policy import minted_review_root, resolve_registration
             project_id, owned_project_id, _persistent, ephemeral = resolve_registration(  # a sticky thread keeps it
                 gateway, root, "", shape.access, minted=not use_thread and minted_review_root(root, custody_drive))
@@ -1428,7 +1326,6 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 operation_id=self.assignment.call_id,
                 pending_invocation_checkpoint=self._pending_invocation_checkpoint,
                 owner_deadline_at=str(getattr(request, "deadline_at", "") or ""),
-                source_delivery=(getattr(request, "slot_source_delivery", None) or {}).get(slot.slot_id),
                 access=str(getattr(slot, "session_access", "") or ""),
                 checking_source=getattr(request, "checking_source", None) or None,
             )

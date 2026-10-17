@@ -442,7 +442,7 @@ def capture_attempt_ids() -> Iterator[list[str]]:
         _ATTEMPT_COLLECTOR.reset(token)
 @contextlib.contextmanager
 def physical_attempt_limit(maximum: int) -> Iterator[None]:
-    """Bound physical provider sends in this actor context (acceptance uses 2)."""
+    """Bound physical provider sends in this actor context (a P3 packet reviewer's rail uses 2)."""
     state = _AttemptLimit(maximum=max(0, int(maximum)))
     token = _PHYSICAL_LIMIT.set(state)
     try:
