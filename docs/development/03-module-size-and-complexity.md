@@ -73,20 +73,15 @@ coupling `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
-Apply ARCHITECTURE §10 invariant 10 to current-state readers:
-
-`tests/test_hot_facts*.py` fix Stop/custody results while settled history grows 20→2,000
-rows, counting SQL, VM steps and decoded JSON bytes against previous JSON predicates.
-Census snapshots controls/phases in one transaction per addressed store, outside queue
-locks, without derived-row bodies; card/question display reads remain separate.
-Unavailable stays unknown for that request; the next reads anew. Tests prove snapshot
-release before display consumers and signature/body coherence on racing writes.
-Main batches question display views and warms lineage by generation, preserving strict
-per-member gaps if a batch fails (`tests/test_main_decisions_reads.py`). B3/B3w in
-`tests/test_cost_contract.py` fix visible questions while fully delivered history grows.
-New facts belong in their transition's transaction. Legacy derivation uses named durable
-jobs and sequence/source CAS; process-local flags never prove installation migration.
-Passive control readers fall back only for underived rows.
+Apply ARCHITECTURE §10 invariant 10 to current-state readers. A new fact belongs in its
+transition's transaction; legacy derivation is a named durable job under sequence/source CAS, a
+process-local flag never proves an installation migration, and passive control readers fall
+back only for underived rows. The census snapshots controls/phases in one short transaction per
+addressed store, outside queue locks, released before display consumers; unavailable stays
+unknown for that request (`tests/test_hot_facts*.py` fix Stop/custody results while settled
+history grows 20→2,000 rows). Main batches question display views and warms lineage by
+generation, keeping strict per-member gaps if a batch fails (`tests/test_main_decisions_reads.py`);
+B3/B3w in `tests/test_cost_contract.py` fix visible questions while delivered history grows.
 
 - **Measure the growing operation:** history, object count, nesting, cold caches and
   contention. Where responsiveness suffers, use existing spans and real-reader spies;
@@ -106,15 +101,11 @@ CHECKLISTS item 9 `perf_lifecycle` advises on changed readers, startup/shutdown,
 endpoints, pollers, subscriptions and timers. A new interactive append-only store reader
 must enroll in `agent_startup_checks.py::hot_store_growth_notes` in the same commit,
 with a justified threshold in `context_budget.py`; unenrolled stores evade the tripwire.
-The frozen `logs/progress.jsonl` export is no longer enrolled: dialogue producers
-write `state/dialog.sqlite`, so its file size cannot diagnose a failed rotator.
 
-`tests/test_store_boot.py` measures `prepare_startup_state` at 50/500
-frozen results and 20/200 child stores with process caches cleared. Connections,
-SQL VM steps, legacy stat/scandir, write BEGIN/COMMIT and store lock probes must
-stay equal; clean boot uses one read transaction and no history access or writes.
-`tests/test_store_legacy_reconcile.py` checks both detector outcomes, cursor resume
-and the foreground CLI, while the import/switch suites retain downgrade semantics.
+`tests/test_store_boot.py` fixes `prepare_startup_state` at 50/500 frozen results and 20/200
+child stores (a clean boot is one read transaction, no history access or writes);
+`tests/test_store_legacy_reconcile.py` covers both detector outcomes, cursor resume and the
+foreground CLI, and the import/switch suites keep downgrade semantics.
 
 ### Invariant: Source-complete decision pipeline
 
