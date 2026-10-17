@@ -298,7 +298,8 @@ def test_awaited_valid_and_report_answers_write_no_error(tmp_path, monkeypatch):
     for actor, surface in (
         (ReviewActorRecord(slot_id="slot-stable", model="m", status="error", operation_state="pending_dispatch"),
          "multi_model_review"),
-        (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text="[]"),
+        (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text=json.dumps([
+            {"item": "coupling", "verdict": "PASS", "severity": "advisory", "reason": "checked"}])),
          "scope_review"),
         (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text="# Review\nAll checks passed."),
          "deep_self_review"),
