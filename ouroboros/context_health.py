@@ -539,7 +539,8 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "",
                 state_clause = (
                     f"settled with its work preserved in its private snapshot of "
                     f"{run.target_root or '?'} (no patch captured yet — "
-                    f"integrate_delegated_patch captures it at disposition)"
+                    f"integrate_delegated_patch captures it at disposition and returns it for inspection "
+                    f"before any apply)"
                 )
                 persist_clause = "The snapshot persists until that disposition."
             # Ownership-aware instruction: a foreign reader is told WHO must act
