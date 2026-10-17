@@ -1124,7 +1124,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         # Delivery warning and a verdict under _objective_axis's default reviewed
         # source are independent facts. _objective_axis already selected the bound,
         # non-superseded review; preserve that assessment without clearing delivery degradation.
-        and objective.get("source") != "task_acceptance_review"
+        and objective.get("source") not in {"task_acceptance_review", "result_review"}
     ):
         objective.update({
             "status": OBJECTIVE_DEGRADED,
