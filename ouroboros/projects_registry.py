@@ -46,10 +46,7 @@ PROJECT_LIFECYCLES = frozenset({PROJECT_ACTIVE, PROJECT_DELETING, PROJECT_TOMBST
 def _file_write_lock(target_path: pathlib.Path, *, timeout_sec: float = 4.0) -> Iterator[None]:
     """Server create/bind and worker journal share a sidecar flock for load→modify→atomic-write;
     nested _LOCK serializes threads. A process-local lock alone permits lost updates."""
-    from ouroboros.platform_layer import (
-        acquire_exclusive_file_lock,
-        release_exclusive_file_lock,
-    )
+    from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target_path.with_name(target_path.name + ".lock")
