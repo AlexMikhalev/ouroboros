@@ -1,5 +1,5 @@
 ---
-name: templates
+name: Templates
 version: 1.0.0
 description: Starter buttons for the composer and instructions for making your own.
 type: instruction
@@ -10,14 +10,17 @@ model_experience:
 contributes:
   - id: explain_simpler
     placement: composer.plus
+    order: 1
     label: Explain simpler
     action: {verb: draft.insert, text: "Explain your last answer more simply, with an example."}
   - id: summarize_chat
     placement: composer.plus
+    order: 2
     label: Summarize this chat
     action: {verb: draft.insert, text: "Summarize what we decided in this chat and what is still open."}
   - id: check_text
     placement: composer.plus
+    order: 3
     label: Check my text
     action: {verb: draft.insert, text: "Check the text below for mistakes and unclear places, then show a corrected version:\n\n"}
 ---

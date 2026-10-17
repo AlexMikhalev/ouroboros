@@ -14,14 +14,15 @@ def test_templates_are_instruction_contributions_that_project_to_drafts():
     assert manifest.type == "instruction"
     entries, problems = validate_contributions(manifest, skill_dir=directory)
     assert problems == []
-    rows = project_contributions(manifest.name, entries, "test-revision")
+    rows = project_contributions(directory.name, entries, "test-revision", manifest.name)
     assert [(row["label"], row["action"]["text"]) for row in rows] == [
         ("Explain simpler", "Explain your last answer more simply, with an example."),
         ("Summarize this chat", "Summarize what we decided in this chat and what is still open."),
         ("Check my text", "Check the text below for mistakes and unclear places, then show a corrected version:\n\n"),
     ]
+    assert [row["order"] for row in rows] == [1, 2, 3], "the \"+\" menu keeps the manifest's order"
     for row in rows:
-        assert row["key"] == f"templates:{row['id']}"
+        assert row["key"] == f"templates:{row['id']}" and row["skill_label"] == "Templates"
         assert row["placement"] == "composer.plus"
         assert row["action"]["verb"] == "draft.insert"
         assert row["render"]["kind"] == "declarative"
