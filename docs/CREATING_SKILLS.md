@@ -1682,8 +1682,9 @@ fetched.
 
 ### Publishing
 
-Finish the local payload and configure `GITHUB_TOKEN` in Settings → Secrets,
-then choose **Publish** on the skill or ask Ouroboros in chat
+Finish the local payload and configure `GITHUB_TOKEN` in Settings → Secrets;
+publication uses HTTPS directly and needs no `gh` CLI. Choose **Publish** on
+the skill or ask Ouroboros in chat
 (`submit_skill_to_hub`). The destination is where the skill came from, else the
 hub, unless the owner picks another:
 
