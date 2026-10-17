@@ -4,8 +4,8 @@ This is the practical guide for **writing your own skills** that
 Ouroboros can install, review, enable, and execute. It is the
 single place where the manifest schema, the `PluginAPI`, the review
 checklist, the lifecycle (install → review → enable → execute), the
-widget render schemas, and the marketplace publishing flows are
-explained together.
+widget render schemas, skill sources and publishing are explained
+together.
 
 If you are looking for the *runtime* architecture (how the loader
 imports plugins, how the tri-model review pipeline is wired, etc.),
@@ -19,8 +19,9 @@ A **skill** is a small package that adds capabilities to Ouroboros:
 new tools the agent can call, HTTP routes the desktop app can fetch,
 WebSocket message handlers, and host-rendered widget UIs. Skills are
 **reviewed** before they can run. Skills dropped in from disk or
-marketplaces go through tri-model review and explicit owner lifecycle
-actions. Skills authored by the current Ouroboros agent session carry
+installed from a source the owner set to review go through tri-model review
+and explicit owner lifecycle actions; a source the owner trusts installs
+without review (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
 both payload-local `.self_authored.json` and owner-state
 `data/state/skills/<name>/self_authored.json` markers for provenance,
 but they still go through the same tri-model skill review before they
@@ -61,8 +62,8 @@ The **runtime ownership** of an installed skill is also tagged:
   plane; marked by `.self_authored.json` and reviewed through the
   standard tri-model skill-review path.
 - `external`: dropped into `data/skills/external/` by the user.
-- `clawhub`: installed via the ClawHub marketplace.
-- `ouroboroshub`: installed via the official OuroborosHub catalog.
+- `clawhub`: installed from the ClawHub registry.
+- `ouroboroshub`: installed from a hub or another git-hosted source.
 
 User-authored or manually copied skills belong under
 `data/skills/external/<name>/`. The `native` bucket is reserved for
@@ -197,8 +198,10 @@ flowchart LR
 ```
 
 - **Install** lands the payload under the appropriate bucket
-  (`data/skills/<bucket>/<name>/`). Marketplace installs also write
-  a provenance sidecar (`.clawhub.json` / `.ouroboroshub.json`).
+  (`data/skills/<bucket>/<name>/`) and records where it came from in
+  `data/state/skills/<name>/install.json`, outside the payload. ClawHub
+  installs also keep their `.clawhub.json` sidecar; skills installed from the
+  hub by earlier versions keep `.ouroboroshub.json`.
 - **Review** runs three reviewer models in parallel against the
   Skill Review Checklist (see [`docs/CHECKLISTS.md`](CHECKLISTS.md)).
   The review pack hashes every runtime-reachable file in the skill
@@ -487,7 +490,7 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-**Repair and run** from the Skills or Marketplace UI starts an ordinary managed
+**Repair and run** from the Skills page starts an ordinary managed
 development task. The confirmed request is retained as a real owner message, not
 a presentation-only acknowledgement. Its normal task constraint records the selected skill and physical payload
 root; the task also retains the request source and initial content revision.
@@ -1449,11 +1452,11 @@ WebAssembly: your own routes serve them (`register_route` returning a standard
 response, streamed from an isolated child when required), the
 widget references them by `/api/extensions/<skill>/...` URL, and review
 sees each non-text asset as a content-hash-bound descriptor. The module
-endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
-.svg`, `.mp3 .ogg .wav`, `.mp4 .webm`, `.woff .woff2 .ttf .otf`, and `.wasm`.
-ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
-and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
-at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
+endpoint stays JavaScript-only. Installs from sources and ClawHub archives
+admit inert assets such as `.png .jpg .jpeg .gif .webp .svg`, `.mp3 .ogg .wav`,
+`.mp4 .webm`, `.woff .woff2 .ttf .otf` and `.wasm`, and refuse loadable binaries
+and credential-shaped files outside Cyber Pro. Both are capped at 8 MiB per
+file, 50 MiB in total and 200 files (`ouroboros/marketplace/fetcher.py`). A large runtime image
 — a v86 disk image of several megabytes and up — does not fit a package: have
 the installer fetch it through an exact `download` spec and serve it from
 `<skill_dir>/.ouroboros_env/resources/` (`skill_dir` comes from
@@ -1639,17 +1642,74 @@ You can read their full source under
 `data/skills/external/<name>/` for your own local skills, or by browsing
 `razzant/OuroborosHub` on GitHub.
 
-## Publishing
+## Sources and publishing
 
-### OuroborosHub (official, curated)
+### Where installed skills come from
 
-`razzant/OuroborosHub` is the official catalog. Finish the local payload and
-configure `GITHUB_TOKEN` in Settings → Secrets, then choose **Publish to
-OuroborosHub** on the skill card or ask Ouroboros in chat. This is one
-agent-driven flow; a separate manual Preflight or Review action is not required
-merely to start it. The browser first runs a read-only preflight for the
-selected skill and asks for explicit public-action confirmation. Cancelling
-creates no task.
+An install reads skills from its **sources** (Skills → Sources; the settings key
+`OUROBOROS_SKILL_SOURCES`): the skills built into the app, the public hub
+`razzant/OuroborosHub` as two rows (**Ouroboros**, the maintainer's Official
+skills, installed without review by default; **Ouroboros Community**, every
+other entry, reviewed before it runs), ClawHub, an optional local folder, and
+any git repository the owner adds. Each source has a trust: `trusted` installs
+without review; `review` reviews each skill, and blocker findings keep it off,
+even under Advisory, until the owner skips the review. The basis a skill was
+installed under is recorded in `data/state/skills/<name>/install.json` and does
+not change when the source's trust changes later.
+
+A git repository is a source in one of two shapes:
+
+- **A plain skills repository**: every folder (or the root) holding a
+  `SKILL.md` or `skill.json` is a skill, described by its manifest. A private
+  repository works when this computer's git can fetch it.
+- **A hub**: `hub.json` at the root, one `entries/<name>.json` per skill
+  (description, one or two categories, owner, version, `source` hosted at
+  `skills/<name>` or pointing at the author's repository at an exact commit,
+  release `digest`, `withdrawn`), the maintainer's `official.json`
+  (endorsements bound to digests) and `categories.json`.
+
+Every install verifies its copy against the release digest: the SHA-256 of
+each payload file plus the manifest's raw dependency declaration
+(`install_specs`, `install` or `dependencies`), per-install notes left out
+(`ouroboros/skill_identity.py`). An update is a different digest, never a
+different version string. A skill whose files changed here shows as Modified;
+its update offers replace (the previous copy is kept), keep, or **Ask Ouroboros
+to merge**, which merges three-way when the original release can still be
+fetched.
+
+### Publishing
+
+Finish the local payload and configure `GITHUB_TOKEN` in Settings → Secrets,
+then choose **Publish** on the skill or ask Ouroboros in chat
+(`submit_skill_to_hub`). The destination is where the skill came from, else the
+hub, unless the owner picks another:
+
+- **Back to its origin**: the hub for a hosted hub entry, the author's
+  repository for a hub entry that points there, or the exact folder of the
+  plain repository it came from.
+- **The hub**: one entry, `entries/<name>.json` plus the hosted files under
+  `skills/<name>/`. The hub regenerates its v1 `catalog.json` for older apps
+  itself; a pull request that only updates one existing entry, by the owner the
+  hub recorded for it, merges automatically once checks pass, while new names,
+  owner changes and Official skills wait for the maintainer. A new entry names
+  one or two category ids from the hub's `categories.json`. A hub without
+  `hub.json` (an older one) gets its `catalog.json` row instead.
+- **A git source of the owner's**: the skill's folder in that repository. When
+  the GitHub account may push there, the pull request is merged at once and
+  the skill is published; otherwise it waits for that repository's
+  maintainers.
+
+The result reports separately whether the files reached the repository
+(`files_published`: `pull_request` or `merged`) and whether a catalog lists
+them (`listed`: `when_merged`, `listed`, or `needs_entry_update` when the hub
+lists the skill from its author's repository and that entry must move to the
+new commit in its own hub change). It carries the published files'
+`release_digest`, the value a hub entry states for them.
+
+This is one agent-driven flow; a separate manual Preflight or Review action is
+not required merely to start it. The browser first runs a read-only preflight
+for the selected skill and destination and asks for explicit public-action
+confirmation. Cancelling creates no task.
 
 The preflight returns one of five states:
 
@@ -1663,8 +1723,8 @@ The preflight returns one of five states:
   re-review it.
 - `repairable` — Betterleaks is missing or unhealthy; the ordinary task may
   start with the exact repair hint.
-- `hard_block` — authority, identity, source, or managed-task admission prevents
-  the task from starting.
+- `hard_block` — authority, identity, source, destination, or managed-task
+  admission prevents the task from starting.
 
 If the selected `user_repo` leaf lost its manifest after the card was opened,
 that exact `skill_publish` task may omit `bucket` while it lists/searches/reads
@@ -1699,41 +1759,26 @@ A successful publication also writes a durable local receipt to
 `data/state/skills/<name>/ouroboroshub.json` (`published` section: slug,
 version, content hash, repository, PR number/url, timestamp). The receipt is
 best-effort: a write failure is disclosed as `publication_recorded: false` in
-the tool result and never cancels the real PR. Both Skills views show it as
-quiet submission history — the submitted version (not the current local one),
-the PR link and whether the local files now differ from the submitted copy —
-in the card's details on My skills and under **Submission history** on the
-OuroborosHub card. It is history, not a status: it never claims that the PR
-merged or that the served Hub copy is yours, and it never gates an action. When
-the catalog lists the name, a local copy offers **Use Hub version** whichever
-way the versions differ. The receipt survives uninstall (including the startup
-cleanup of uninstalled state), adopt and reinstall; a republish overwrites it,
-and an explicit **Delete** of a local skill removes it with the rest of that
-skill's state.
+the tool result and never cancels the real PR. The skill's details show it as
+quiet submission history: the submitted version (not the current local one),
+the PR link and whether the local files now differ from the submitted copy. It
+is history, not a status: it never claims that the PR merged and never gates an
+action. The receipt survives uninstall (including the startup cleanup of
+uninstalled state) and reinstall; a republish overwrites it, and an explicit
+**Delete** of a local skill removes it with the rest of that skill's state.
 
-**Clear local submission** in that history deliberately forgets the local
-receipt. Nothing else needs it: the installed files, review and grants stay,
-the GitHub PR is not closed or changed, and Install, Use Hub version and Update
-never wait for it. It clears the receipt shown on the card; if another
-publication replaced it, refresh the card first.
+Forgetting the record in that history deliberately clears the local receipt.
+Nothing else needs it: the installed files, review and grants stay, the GitHub
+PR is not closed or changed, and installs and updates never wait for it. It
+clears the receipt shown; if another publication replaced it, refresh first.
 
-**Use Hub version** and **Update** (on the OuroborosHub card or the My skills
-menu) both confirm before anything changes: the local files, including any
-local edits, are replaced with the copy the Hub serves when the action runs —
-the version shown is the last one seen, not a pinned package. The skill's saved
-data, enablement and review history stay; the new files are reviewed again and
-may need access granted again. Cancelling sends nothing. Grants are bound to
-the content hash, so with auto-grant off an enabled extension whose new files
-need a granted key cannot reload: the replacement fails and rolls back to the
-previous copy, and a failed restore is reported.
-
-For a catalog update, the tool result and PR body name both the current catalog
-version and the proposed version. Versions are opaque strings: an older-looking
-or non-semantic version is allowed, while an identical version still needs to
-change before publishing an update.
+For an update of a catalog entry, the tool result and PR body name both the
+current catalog version and the proposed version. Versions are opaque strings:
+an older-looking or non-semantic version is allowed, while an identical version
+still needs to change before publishing an update.
 
 Publication succeeds only when the task records a validated pull-request
-receipt in the configured Hub repository for this exact skill. A branch,
+receipt in the destination repository for this exact skill. A branch,
 commit, refusal report, or unfinished attempt is partial progress, not
 successful publication. The pull request includes only a redacted scanner
 attestation: engine and version, ruleset digest, `blockers=0`, and
@@ -1743,9 +1788,9 @@ scanner output.
 ### ClawHub (third-party, registry-driven)
 
 ClawHub is the broader OpenClaw registry. Publishing requires an
-OpenClaw publisher account; once your skill is on the registry the
-ClawHub tab in the Marketplace will install it via the
-`adapt_openclaw_skill` translation pipeline. Note that the adapter
+OpenClaw publisher account; once your skill is on the registry, a search in
+Skills → Browse finds it and installs it via the `adapt_openclaw_skill`
+translation pipeline. Note that the adapter
 preserves the original `SKILL.openclaw.md` next to the translated
 `SKILL.md` so reviewers can cross-check both manifests.
 
