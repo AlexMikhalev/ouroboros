@@ -13,7 +13,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | Method | Path | Note |
 |---|---|---|
 | GET | `/` | |
-| GET | `/api/health` | 200 as soon as the socket serves, during boot too; `boot` carries the phase document (§2 Boot order) |
+| GET | `/api/health` | 200 during boot too; the `boot` document: §2 Boot order |
 | GET | `/api/contract` | |
 | GET | `/api/state` | |
 | GET | `/api/extensions` | installed-skill projection; never fetches the hub catalog |
@@ -206,4 +206,4 @@ Server broadcasts snapshot the client list and send to all clients concurrently,
 
 The browser reconnects with bounded exponential delay behind the reconnect overlay; a watchdog closes a silent seemingly-open connection: heartbeats prove stream liveness, not task progress. One served-page decision (`ws.js decideServedPage`) governs the post-open state read and the socket-down probe, so a transient drop cannot destroy in-page state. The core attests only pages it serves: without `served_ui` (an older core), or for its marked page while it serves builtin, `decide()` reloads on a changed or unprovable SHA (a restarted server must not keep old JS/CSS alive in PyWebView), and an unchanged one keeps the page and its queued frames (an unversioned `/api/state` with no remembered SHA keeps it too, accepting possibly stale assets); the marked page reloads once after a restart applied a directory or `none`, and an unmarked page owns its refresh and only reconnects. A failed/non-OK state read never reloads (a seconds-old server can answer 500); `web/modules/ws.js` owns the probe discipline and its one forced reload per disconnect episode.
 
-Each Chat instance handles `open` by resynchronizing archive-aware durable history and `close` by withdrawing online and accounting presentation; reconnect deduplication covers the overlap between live frames and REST replay, and large history parsing runs off the server event loop. Delivery is live plus replay, not a promise that every transient frame is persisted: durable chat rows, task results, queue snapshots, Project revisions, review ledgers, cost ledgers and lifecycle state remain the recovery authorities.
+Each Chat instance handles `open` by resynchronizing durable history and `close` by withdrawing online and accounting presentation; reconnect deduplication covers the overlap between live frames and REST replay, and large history parsing runs off the server event loop. Delivery is live plus replay, not a promise that every transient frame is persisted: durable chat rows, task results, queue snapshots, Project revisions, review ledgers, cost ledgers and lifecycle state remain the recovery authorities.
