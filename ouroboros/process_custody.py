@@ -366,7 +366,11 @@ def measured_identity_mismatch(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 def record_not_ours(drive_root: Any, entry: Dict[str, Any], evidence: Dict[str, Any], *,
                     lock_timeout_sec: float = 2.0) -> bool:
-    """Persist the measured refutation before retiring its ownership record."""
+    """Persist the measured refutation before retiring its ownership record.
+
+    A failed write keeps the record (``False``); the caller's removal is conditional
+    and spares a newer registration of the same PID.
+    """
     return append_jsonl(pathlib.Path(drive_root) / "logs" / "supervisor.jsonl", {
         "ts": utc_now_iso(), "type": "process_not_ours", "outcome": "not_ours",
         "pid": entry.get("pid"), "pgid": entry.get("pgid"), "purpose": entry.get("purpose"),
