@@ -60,6 +60,17 @@ def test_build_selects_starter_first_enable(setup, monkeypatch, turn_on):
     assert load_enabled(drive, "telegram") is turn_on
 
 
+def test_offer_keeps_configured_id_visible_while_source_is_unavailable(setup, monkeypatch):
+    drive, hub, repo = setup
+    monkeypatch.setenv("OUROBOROS_STARTER_SKILLS", '["ouroboros-community/notes"]')
+    monkeypatch.setattr("ouroboros.skill_source_catalog.snapshot_for", lambda *a, **kw: (None, {"state": "error"}))
+    offer = skill_starter.starter_groups(drive, rows=hub.rows(), repo_dir=repo)
+    items = [item for group in offer["groups"] for item in group["items"]]
+    assert items == [{"id": "ouroboros-community/notes", "name": "notes",
+                      "description": "Source details are not available yet.", "official": False,
+                      "builtin": False, "recommended": True, "needs_keys": []}]
+
+
 def test_offer_includes_configured_items_from_other_sources_in_their_category(setup, monkeypatch):
     from ouroboros.skill_source_catalog import refresh_source
 
