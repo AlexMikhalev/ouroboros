@@ -872,7 +872,7 @@ def build_completed_result_event(
     answer as OWED in the durable outbox BEFORE it settles the cancel intent —
     a crash between the settle and the send then replays the row instead of
     losing both the watchdog trigger and the answer. Returns None when there
-    is nothing deliverable (no text / no lineage chat).
+    is nothing deliverable (no text, a silent wake with no custody line, no chat).
 
     ``unreconciled_runs``: a completed answer whose teardown left delegated
     runs open carries the outcome-independent disclosure line on its CUSTODY
@@ -887,29 +887,29 @@ def build_completed_result_event(
     core_text = str((stored or {}).get("result") or "")
     task_row = task if isinstance(task, dict) and task else dict(stored or {})
     chat_id = lineage_chat_id(pathlib.Path(drive_root), task_row, tid)
-    if not tid or not core_text or not chat_id:
+    quiet = (stored or {}).get("wake_silent") is True  # its words stay internal; only custody may speak
+    if not tid or not (core_text or quiet) or not chat_id:
         return None
-    from ouroboros.task_finalization import terminal_custody_notice_text
+    from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, terminal_custody_notice_text
 
     runs = [str(rid) for rid in (unreconciled_runs or []) if str(rid)]
     custody = terminal_custody_notice_text(stored or {})
     note = unreconciled_runs_note(runs).lstrip("\n")
     if note and any(run not in custody for run in runs):
         custody = "\n\n".join(part for part in (note, custody) if part)
+    if quiet and not (core_text := custody):  # a silent wake's row is the host's custody line alone
+        return None
     event = {
-        "type": "send_message",
-        "chat_id": chat_id,
-        "task_id": tid,
-        "text": core_text,
+        "type": "send_message", "chat_id": chat_id, "task_id": tid, "text": core_text,
         # A re-delivered copy that drops markdown renders as a different message.
         "format": "markdown",
         "delivery_id": delivery_id_for(tid, core_text),
-        **({"terminal_custody_notice": custody} if custody else {}),
+        **({"terminal_custody_notice": custody} if custody and not quiet else {}),
     }
     return project_terminal_result_event(
         pathlib.Path(drive_root), task_row, tid,
         result_text=core_text,
-        terminal_origin=(stored or {}).get("terminal_origin"),
+        terminal_origin=TERMINAL_ORIGIN_HOST_NOTICE if quiet else (stored or {}).get("terminal_origin"),
         base_event=event, provider_notice=str((stored or {}).get("terminal_provider_notice") or ""),
     )
 
