@@ -585,6 +585,10 @@ def _export_stream(root: pathlib.Path, stream: str) -> Dict[str, Any]:
     with ds.transaction(root, write=False) as conn:
         marks = conn.execute("SELECT next_seq, files_seq FROM streams WHERE stream=?", (stream,)).fetchone()
         begun = ds._meta(conn, key)  # a batch an interrupted export recorded, wholly or partly written
+        if begun and int(begun.get("from", -1)) != int(marks["files_seq"]):
+            # A cutover took the chain files since (the written part is in an imported segment, a cut
+            # line its skipped interval): the record is stale and this export starts afresh.
+            begun = None
         upper = int(begun["to"]) if begun else int(marks["next_seq"])
         # The rows the files do not hold: appended after ``files_seq`` and not inside an imported segment.
         records = conn.execute(
@@ -603,16 +607,18 @@ def _export_stream(root: pathlib.Path, stream: str) -> Dict[str, Any]:
             size = live.stat().st_size if live.exists() else 0
             digest = hashlib.sha256(data).hexdigest()
             if begun:
-                offset = int(begun["offset"])
-                with open(live, "rb") as handle:
-                    handle.seek(offset)
-                    written = handle.read()
+                offset, written = int(begun["offset"]), b""
+                if size > offset:  # an absent file at offset 0 holds none of the batch yet
+                    with open(live, "rb") as handle:
+                        handle.seek(offset)
+                        written = handle.read()
                 if size < offset or digest != begun["sha256"] or not data.startswith(written):
                     raise ds.StoreError(f"dialogue export: {live} changed under an interrupted export; nothing appended")
                 remainder = data[len(written):]
             else:
                 with ds.transaction(root, write=True) as conn:
-                    ds._set_meta(conn, key, {"offset": size, "length": len(data), "sha256": digest, "to": upper})
+                    ds._set_meta(conn, key, {"offset": size, "length": len(data), "sha256": digest, "to": upper,
+                                             "from": int(marks["files_seq"])})
                 remainder = data
             if remainder:
                 handle = os.open(str(live), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)

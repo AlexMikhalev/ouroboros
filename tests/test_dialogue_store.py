@@ -395,7 +395,7 @@ def test_the_export_appends_the_post_cutover_rows_byte_identical_and_a_re_cutove
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0, "the files hold everything again"
 
 
-@pytest.mark.parametrize("written", ["whole", "part", "none", "foreign"])
+@pytest.mark.parametrize("written", ["whole", "part", "none", "absent", "foreign"])
 def test_an_export_interrupted_before_its_coordinate_moved_finishes_the_batch_once(tmp_path, monkeypatch, written):
     """A death after the batch reached the file and before ``files_seq`` moved: the retry finishes
     the recorded batch (appends only what is missing) instead of appending it a second time; bytes
@@ -420,6 +420,8 @@ def test_an_export_interrupted_before_its_coordinate_moved_finishes_the_batch_on
         live.write_bytes(batch[:len(batch) // 2])  # the write itself was cut short
     elif written == "none":
         live.write_bytes(b"")
+    elif written == "absent":  # the death came after the record and before the file existed
+        live.unlink()
     elif written == "foreign":
         live.write_bytes(b'{"text": "not the batch"}\n')
         with pytest.raises(ds.StoreError, match="changed under an interrupted export"):
@@ -432,6 +434,30 @@ def test_an_export_interrupted_before_its_coordinate_moved_finishes_the_batch_on
     assert live.read_bytes() == batch + ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
     assert ds.meta(tmp_path, "export_batch:chat") is None
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0, "nothing exported twice"
+
+
+def test_a_torn_export_that_a_boot_cutover_took_in_never_refuses_later_exports(tmp_path, monkeypatch):
+    """An export cut inside a row, then a boot whose cutover took the live file in (its whole rows
+    imported, the cut line a skipped interval) before the seam retried: the batch record is stale,
+    and later exports start afresh instead of refusing every time."""
+    di.cutover(tmp_path)
+    for row in (chat("after-1", "после"), chat("", "ответ после", direction="out")):
+        ds.append(tmp_path, "chat", row)
+    live = tmp_path / "logs" / "chat.jsonl"
+    real_now = di.utc_now_iso
+    monkeypatch.setattr(di, "utc_now_iso", lambda *_a: (_ for _ in ()).throw(SystemExit("died")))
+    with pytest.raises(SystemExit):
+        di.export_for_older_body(tmp_path)
+    monkeypatch.setattr(di, "utc_now_iso", real_now)
+    data = live.read_bytes()
+    live.write_bytes(data[:len(data) - 7])  # the second row's write was cut short
+    di.cutover(tmp_path)  # the next boot: a non-empty live file is planned again
+    assert live.stat().st_size == 0 and ds.meta(tmp_path, "export_batch:chat") is not None
+    ds.append(tmp_path, "chat", chat("after-2", "ещё"))
+    report = di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]
+    assert report["rows"] == 1 and live.read_bytes() == ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
+    assert ds.meta(tmp_path, "export_batch:chat") is None
+    assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0
 
 
 # ---- concurrent writer processes ---------------------------------------------------------------
