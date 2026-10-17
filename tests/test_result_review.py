@@ -211,3 +211,77 @@ def test_a_mind_reviewed_result_is_bound_at_delivery_in_auto_without_a_second_wa
     review = _review_axis(trace)
     assert review["status"] == "pass" and review["source"] == "result_review"
     assert _objective_axis(review) == {"status": "pass", "source": "result_review", "review_status": "pass"}
+
+
+def test_an_advisory_finish_over_findings_is_the_authors_own_decision(tmp_path, monkeypatch):
+    from ouroboros.outcomes import _objective_axis, _review_axis
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch)
+    _produced_answer_protocol(monkeypatch)
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    trace = {"tool_calls": []}
+
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is True
+    [run] = trace["review_runs"]
+    assert not run.get("informed_finish"), "findings shown, nothing decided yet"
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False
+    assert run["informed_finish"] is True and run["enforcement"] == "advisory"
+    review = _review_axis(trace)
+    assert (review["status"], review["source"], review.get("author_finish")) == ("fail", "result_review", True)
+    assert _objective_axis(review)["source"] == "author_acceptance" and _objective_axis(review)["status"] == "pass"
+
+
+def test_blocking_with_no_review_left_to_buy_reads_blocked(tmp_path, monkeypatch):
+    from ouroboros.outcomes import OUTCOME_TIER_BLOCKED, _objective_axis, _review_axis
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    trace, shown = {"tool_calls": []}, []
+
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True  # FAIL holds
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True  # refused: shown once
+    assert "REVIEW_CYCLES_EXHAUSTED" in shown[-1] and "escalate to the owner" in shown[-1]
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False, "a refusal never holds again"
+    assert len(sends) == 3
+    review = _review_axis(trace)
+    assert review["blocked_reason"] == "review_cycles_exhausted" and not review.get("author_finish")
+    objective = _objective_axis(review)
+    assert (objective["status"], objective["outcome_tier"], objective["reason"]) == (
+        "fail", OUTCOME_TIER_BLOCKED, "review_cycles_exhausted")
+
+
+def test_a_delivered_answer_never_keeps_an_earlier_answers_run_current(tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="auto")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    assert run_review_change(ctx, subject="result", answer="Report A")["aggregate"] == "PASS"
+    trace = {"tool_calls": []}
+    assert result_review_at_delivery(ctx, "Report A", trace, lambda text: None) is False
+    assert result_review_at_delivery(ctx, "Report B", trace, lambda text: None) is False
+    [run] = trace["review_runs"]
+    assert run["superseded_by_revision"], "A's review speaks only for A"
+
+
+@pytest.mark.parametrize("enforcement, delivered", [("advisory", True), ("blocking", False)])
+def test_pending_review_finish_delivers_over_a_running_review_unless_blocking(tmp_path, monkeypatch, enforcement, delivered):
+    import ouroboros.tools.review_change as review_change_mod
+    from ouroboros.tools.review_result import pending_review_choice_offered, result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement=enforcement)
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setattr(review_change_mod, "run_review_change",
+                        lambda ctx, **kwargs: {"state": "pending", "record_id": "rl-running"})
+    shown = []
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", {"tool_calls": []}, shown.append) is True
+    assert pending_review_choice_offered(ctx) is delivered
+    assert ("pending_review=finish" in shown[0]) is delivered
+    ctx._acceptance_pending_review_choice = "finish"
+    assert (result_review_at_delivery(ctx, "FINAL ANSWER: 2", {"tool_calls": []}, shown.append) is False) is delivered

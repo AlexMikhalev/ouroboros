@@ -448,6 +448,8 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         return False
     _supersede_other_result_runs(llm_trace, subject.diff_sha)
     record = settled_result_record(ctx, subject.diff_sha, rows)
+    if record is None and subject.diff_sha in (getattr(ctx, "_result_review_refused", None) or set()):
+        return False  # its $0 refusal was shown: no review of this result can be bought, nothing holds it
     if record is None and required:
         from ouroboros import review_pause
 
@@ -483,6 +485,8 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     if str((record.get("verdict") or {}).get("aggregate") or "") == "PASS":
         return False
     refused = str((record.get("verdict") or {}).get("aggregate") or "") == "NOT_DISPATCHED"
+    if refused:
+        ctx._result_review_refused = (getattr(ctx, "_result_review_refused", None) or set()) | {subject.diff_sha}
     blocking = required and not refused and enforcement == "blocking"
     shown = getattr(ctx, "_result_review_shown", None)
     if not isinstance(shown, set):
