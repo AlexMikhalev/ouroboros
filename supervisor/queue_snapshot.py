@@ -313,9 +313,9 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     carrier of work that ran on, so it is not retained at all and is fenced as
     the running work it names (its id is returned third). A RUNNING row whose
     durable pause was already complete is parked, never fenced; so is a direct
-    root the stop caught (``direct_caught``) in that state: a direct turn is
-    never a RUNNING row, so the roster is the only place the stop names it, and
-    handing such an id to the shutdown cancel fence would cancel a saved pause
+    root the stop caught (``direct_caught``) in that state: queue init's direct
+    handover names these non-pooled turns, and handing such an id to the
+    shutdown cancel fence would cancel a saved pause
     (#1196). Its queue record is rebuilt from the durable result the pause
     wrote (chat, lane fact, origin, metadata, attempt) and parked through the
     same path a RUNNING row takes; a turn with no complete pause (no row, no
@@ -885,16 +885,15 @@ def restore_pending_from_snapshot(
     try:
         from ouroboros.queue_observation import load_queue_document, queue_stamp
         snap = load_queue_document(_queue().DRIVE_ROOT)
-        if snap.get("_snapshot_invalid") or snap.get("_snapshot_missing"):
-            return 0
+        # An unreadable snapshot (its marker reads as empty) names no queue row; a direct root queue init's
+        # handover names as caught still restores, over an empty, stale queue (the gate below).
+        unread = bool(snap.get("_snapshot_invalid") or snap.get("_snapshot_missing"))
         ts = str(queue_stamp(snap, boot=True).get("ts") or "")
         ts_unix = _queue().parse_iso_to_ts(ts)
-        # Timestamp validity and freshness gate ORDINARY rows only (#1196): a
-        # readable snapshot whose stamp is missing or malformed is treated as
-        # stale, so an identifiable exact pause or an acknowledged owner-wait
-        # handoff is still retained under its own durable authority instead of
-        # vanishing (a Resume would then answer task_not_pending over an intact checkpoint).
-        if ts_unix is None:
+        # Timestamp validity and freshness gate ORDINARY rows only (#1196): a readable snapshot whose stamp is
+        # missing or malformed is stale, so an exact pause or an acknowledged owner-wait handoff is still
+        # retained under its own authority, never vanishing for Resume to answer task_not_pending.
+        if ts_unix is None and not unread:
             _queue().append_jsonl(
                 _queue().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {"ts": utc_now_iso(), "type": "queue_restore_snapshot_timestamp_invalid",
@@ -917,12 +916,10 @@ def restore_pending_from_snapshot(
         running_rows = running_rows if isinstance(running_rows, list) else []
         # The pre-restart RUNNING rows are read HERE, before the stale gate: this
         # is the last moment the list exists, and a stale snapshot is exactly the
-        # case where nothing else will ever settle them. Direct-chat roots never
-        # reach the queue, so the roster `queue.init` took over is the only place
-        # they are named; both lists describe work the stop caught, and one fence
-        # call gives them the one cancel-intent path custody settles — except a
-        # direct root whose exact budget pause was complete on disk, which is
-        # parked under its own id like a paused RUNNING row (#1196).
+        # case where nothing else will ever settle them. Direct-chat roots never reach the queue: only
+        # the handover `queue.init` took over names them; both lists describe work the stop caught, and
+        # one fence call gives them the one cancel-intent path custody settles — except a direct root
+        # whose exact budget pause was complete on disk, parked under its own id like a paused RUNNING row (#1196).
         direct_roots = dict(_queue().PRIOR_DIRECT_ROOTS)
         # An in-process supervisor revival re-runs queue init while direct turns of THIS process are
         # alive: the roster then names live work, not what a stop caught.
@@ -931,6 +928,8 @@ def restore_pending_from_snapshot(
         pending_ids = {str(task.get("id") or "") for task in snapshot_pending}
         direct_caught = [task_id for task_id in direct_roots.get("task_ids") or []
                          if task_id not in live_direct and task_id not in pending_ids]
+        if unread and not direct_caught:
+            return 0
         snapshot_pending, unseen_pauses, consumed_rows, prior_roots = _retain_snapshot_pending(  # #1183 handoffs
             snapshot_pending, running_rows, stale=stale, direct_caught=direct_caught, handoffs=(handoffs := {}))
         from supervisor.restart_retention import consume_return_transaction, fresh_return_transaction
