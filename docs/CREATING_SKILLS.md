@@ -17,11 +17,10 @@ Review Checklist" section of [`docs/CHECKLISTS.md`](CHECKLISTS.md).
 
 A **skill** is a small package that adds capabilities to Ouroboros:
 new tools the agent can call, HTTP routes the desktop app can fetch,
-WebSocket message handlers, and host-rendered widget UIs. Skills are
-**reviewed** before they can run. Skills dropped in from disk or
-installed from a source the owner set to review go through tri-model review
-and explicit owner lifecycle actions; a source the owner trusts installs
-without review (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
+WebSocket message handlers, and host-rendered widget UIs. Skills need exact-byte
+review or acceptance before they run. Disk copies use the configured review;
+source installs also support trusted-source acceptance or Ouroboros's recorded
+self-check (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
 both payload-local `.self_authored.json` and owner-state
 `data/state/skills/<name>/self_authored.json` markers for provenance,
 but they still go through the same tri-model skill review before they
@@ -41,10 +40,15 @@ outcome acknowledged through qualified Advisory author finish (see Publishing). 
 agent cannot self-attest (the marker is owner-state).
 
 **Accepted without a review.** A skill installed unchanged from a source the owner
-trusts (built-ins included) runs on its install record's basis for exactly that
+trusts runs on its install record's basis for exactly that
 release; an edit by the selected-skill task the owner's own request started is
 recorded as an owner edit and keeps running as Modified. Any other edit makes the
-skill "Not reviewed yet". Blocker findings in a skill from a source that reviews
+skill "Not reviewed yet". For an owner-requested edit in an ordinary task,
+Ouroboros can carry out Skip through `skill_owner_action(action="attest")`, with
+the current `expected_content_hash` and `owner_source` recording the owner's
+words; its deterministic preflight and exact-byte owner
+attestation keep that edited copy running. This is the owner's authority, not
+an agent's claim that its own edit passed review. Blocker findings in a skill from a source that reviews
 each skill keep it off even under Advisory until the owner skips the review.
 
 There are three skill types:
@@ -1654,11 +1658,23 @@ An install reads skills from its **sources** (Skills → Sources; the settings k
 `razzant/OuroborosHub` as two rows (**Ouroboros**, the maintainer's Official
 skills, installed without review by default; **Ouroboros Community**, every
 other entry, reviewed before it runs), ClawHub, an optional local folder, and
-any git repository the owner adds. Each source has a trust: `trusted` installs
-without review; `review` reviews each skill, and blocker findings keep it off,
+any git repository the owner adds. Until the owner chooses, a source acts on
+its suggested trust: Official installs without review; Community reviews each
+skill. `confirmed: false` does not suspend that choice. Built-ins default to
+trusted only while no list is saved; afterwards the Built in row decides.
+Each source has a trust: `trusted` installs without review; `review` reviews each skill, and blocker findings keep it off,
 even under Advisory, until the owner skips the review. The basis a skill was
 installed under is recorded in `data/state/skills/<name>/install.json` and does
 not change when the source's trust changes later.
+
+For `skill_install` and `skill_update`, Ouroboros chooses `check: "review"`
+(the configured panel, the default) or `check: "self"` after reading the exact
+release, with `check_notes` of 1–2000 characters explaining why it may run.
+Choose the depth by what the skill can touch: its code, keys, permissions and
+effects. A self-check records `basis: "self_check"`; an edit invalidates it.
+A trusted source ignores this choice and says so in the result. Both acceptance
+paths retain preflight, the owner's auto-grant setting, dependencies and readiness.
+There is no one-reviewer depth in these tools.
 
 A git repository is a source in one of two shapes:
 
@@ -1676,9 +1692,23 @@ each payload file plus the manifest's raw dependency declaration
 (`install_specs`, `install` or `dependencies`), per-install notes left out
 (`ouroboros/skill_identity.py`). An update is a different digest, never a
 different version string. A skill whose files changed here shows as Modified;
-its update offers replace (the previous copy is kept), keep, or **Ask Ouroboros
+its update offers replace (the previous payload is kept as `.previous`), keep, or **Ask Ouroboros
 to merge**, which merges three-way when the original release can still be
 fetched.
+
+A review-basis replacement stays off while reviewed and keeps the previous
+payload, lifecycle state and install record durably. Executable new bytes keep
+the update; blockers, preflight failure or an interrupted review restore the
+previous copy and its state, recording `update_rejected`. An owner Skip during
+review accepts the new bytes. After a rejection, **Update without review**
+(`skip_review: true`, replace only) installs that release with exact-digest
+`owner_skip` acceptance; preflight still runs. A later update clears the rejection.
+
+Builds set `OUROBOROS_STARTER_SKILLS` to catalog ids from any source. Only an
+absent value or `""` selects the defaults; `[]` and `"[]"` select none.
+`OUROBOROS_STARTER_SKILLS_TURN_ON` (default true) controls turning starters on
+when ready. The starter offer includes every configured id in its category;
+headless first start installs the selected built-ins before fetching git sources.
 
 ### Publishing
 
