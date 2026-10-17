@@ -231,7 +231,7 @@
     --chat-media-bubble-max: 520px;
     --chat-attach-thumb-size: 28px;
     /* The smallest comfortable touch target for a coarse pointer (a phone). */
-    --touch-target-min: 36px;
+    --touch-target-min: 44px;
     --vvh: 100dvh;
     /* Quote panel glass (DESIGN "Replies"): the shell colour at one alpha, so a quote reads lighter than the bubble it sits in. */
     --quote-glass: rgba(var(--shell-rgb), 0.7);

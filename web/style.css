@@ -719,6 +719,28 @@ body.resizing-panels { user-select: none; }
     overflow: hidden;
 }
 
+/* Page-body controls use the shared touch minimum in the stack layout and on
+   coarse pointers. Headers and navigation keep their shell-owned recipes. */
+:root[data-layout="stack"] {
+    --page-control-min: var(--touch-target-min);
+}
+@media (pointer: coarse) {
+    :root {
+        --page-control-min: var(--touch-target-min);
+    }
+}
+:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell)
+    :is(button, a[href], summary, select) {
+    min-inline-size: var(--page-control-min, 0px);
+    min-block-size: var(--page-control-min, 0px);
+}
+:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
+    display: inline-flex;
+    align-items: center;
+    overflow-wrap: anywhere;
+    max-inline-size: 100%;
+}
+
 .files-sidebar {
     grid-area: sidebar;
     display: flex;
@@ -4906,7 +4928,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 .costs-stats-grid > *, .costs-tables-grid > * { min-width: 0; }
 .costs-tables-grid > * { overflow-x: auto; }
-.costs-stats-grid .stat-value { overflow-wrap: anywhere; }
+.costs-stats-grid .value { overflow-wrap: anywhere; }
 .costs-table-label { font-size: 14px; color: var(--text-secondary); margin: 0 0 8px; }
 .cost-cell-name { font-size: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cost-cell-right { text-align: right; }
@@ -9530,6 +9552,7 @@ textarea.chat-input {
 :root[data-theme] .app-tab-strip[data-scroll-start] { --tab-fade-start: var(--space-4); }
 :root[data-theme] .app-tab-strip[data-scroll-end] { --tab-fade-end: var(--space-4); }
 :root[data-theme] .app-tab {
+    min-block-size: var(--page-control-min, 0px);
     border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-capsule); box-shadow: var(--elev-rest);
 }
 :root[data-theme] .app-tab:hover { border-color: transparent; background: var(--surface-capsule-hover); box-shadow: var(--elev-rest); color: var(--text-primary); }
