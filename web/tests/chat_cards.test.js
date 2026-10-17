@@ -149,9 +149,10 @@ test('an app shows its face with Open; open, its submit and Make it a skill fill
         const inserted = [];
         const composer = { input: { value: 'Hello', selectionStart: 5 }, insertAtCursor: (text) => inserted.push(text) };
         const cards = feed({ composer });
-        const bubble = cards.buildCard(identity('card_a1', 'app', { card: { card_id: 'card_a1', kind: 'app', title: 'Loan', revision: 1 } }));
+        const bubble = cards.buildCard(identity('card_a1', 'app', { card: { card_id: 'card_a1', kind: 'app', title: 'Loan', revision: 1 },
+            fallback_text: 'A loan calculator' }));
         await flush();
-        assert.equal(bubble.querySelector('.chat-card-face').querySelector('.chat-card-fallback').textContent, 'Basic 9 · Pro 19');
+        assert.equal(bubble.querySelector('.chat-card-face').querySelector('.chat-card-fallback').textContent, 'A loan calculator');
         assert.equal(bubble.querySelector('iframe'), null, 'no frame before Open (no viewport observer here)');
         bubble.querySelector('[data-card-open]').click();
         await flush();
@@ -225,9 +226,10 @@ test('a widget card whose skill is off keeps its words and says so', async () =>
     });
     try {
         const cards = feed();
-        const bubble = cards.buildCard(identity('card_w1', 'widget'));
+        const bubble = cards.buildCard(identity('card_w1', 'widget', { card: { card_id: 'card_w1', kind: 'widget', title: 'Weather', revision: 1 },
+            fallback_text: 'Sunny' }));
         await flush();
-        assert.equal(bubble.querySelector('.chat-card-fallback').textContent, 'Basic 9 · Pro 19');
+        assert.equal(bubble.querySelector('.chat-card-fallback').textContent, 'Sunny');
         assert.equal(bubble.querySelector('.chat-card-status').textContent, 'This skill is off.');
         assert.equal(bubble.querySelector('[data-card-actions]').textContent, '', 'a skill\'s widget has nothing to keep');
         cards.destroy();
@@ -272,6 +274,53 @@ test('the live card frame and its history row are one row; replay draws it befor
         handlers.card_state({ card: { card_id: 'card_r1', revision: 1 }, submissions_summary: [] });
         media.destroy();
     } finally {
+        server.restore();
+        dom.restore();
+    }
+});
+
+test('a replaced card shows its new title and words: heading, label, Copy, a message action, its face, Make it a skill', async () => {
+    const dom = installCardDom();
+    let revision = 1;
+    const server = serve({ 'GET /api/cards/card_n1': () => json(200, revision === 1 ? componentsBody('card_n1')
+        : { card_id: 'card_n1', kind: 'app', title: 'Prices', fallback_text: 'Basic 10 · Pro 20', revision: 2,
+            app: { sha256: 'beef', size: 9, url: '/api/cards/card_n1/app' }, submissions_summary: [] }) });
+    const copied = [];
+    const priorNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async (text) => { copied.push(text); } } } });
+    try {
+        const inserted = [];
+        const composer = { input: { value: '', selectionStart: 0 }, insertAtCursor: (text) => inserted.push(text) };
+        const root = document.createElement('div');
+        const media = createChatMedia({
+            chatSessionId: 's', durableChatMediaUrl: () => '', formatMsgTime: () => null, senderLabel: () => 'Owner',
+            insertMessageNode: (node) => root.append(node), stampNodeTimestamp, composer: () => composer,
+        });
+        const handlers = {};
+        media.wireDeliveries({
+            onWs: (type, fn) => { handlers[type] = fn; }, isMyThread: () => true, hideTypingIndicatorOnly() {}, syncChatStatus() {},
+            incrementUnreadIfNeeded() {}, seenMessageKeys: new Set(), rememberMessageKey() {},
+            chatMediaMessageKey: () => '', documentMessageKey: () => '', messagesRoot: () => root,
+        });
+        handlers.card(identity('card_n1', 'components', { row_address: 'chat:1:n1' }));
+        await flush();
+        const bubble = root.children[0];
+        assert.equal(bubble.querySelector('.chat-card-title').textContent, 'Plans');
+        revision = 2;
+        handlers.card_state({ type: 'card_state', card: { card_id: 'card_n1', kind: 'app', title: 'Prices', revision: 2 }, submissions_summary: [] });
+        await flush();
+        assert.equal(bubble.querySelector('.chat-card-title').textContent, 'Prices', 'the new title, not only the new body');
+        assert.equal(bubble.querySelector('.chat-card').getAttribute('aria-label'), 'Prices');
+        assert.equal(bubble.querySelector('.chat-card-face').querySelector('.chat-card-fallback').textContent, 'Basic 10 · Pro 20');
+        assert.equal(messageRow(bubble).text, 'Basic 10 · Pro 20', 'Reply and message actions read the new words');
+        bubble.querySelector('.chat-message-copy').click();
+        await flush();
+        assert.deepEqual(copied, ['Basic 10 · Pro 20'], 'Copy takes the new words');
+        bubble.querySelector('[data-card-make-skill]').click();
+        assert.deepEqual(inserted, ['Turn the card «Prices» into a skill so I can keep it on Widgets.']);
+        media.destroy();
+    } finally {
+        if (priorNavigator) Object.defineProperty(globalThis, 'navigator', priorNavigator); else delete globalThis.navigator;
         server.restore();
         dom.restore();
     }

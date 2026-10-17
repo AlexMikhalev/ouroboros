@@ -217,7 +217,7 @@ export function createChatMedia({
     let destroyed = false;
     // Living cards are delivered rows too: Copy takes their fallback text, Reply their row address (chat_cards.js).
     const cards = createChatCards({ frameNode: bubbleFrameNode, composer, onDomWrite, decorate(bubble, msg, text) {
-        attachCopyControl(bubble, text);
+        attachCopyControl(bubble, () => bubble.dataset.rowWords ?? text);  // a replaced card's words are its new ones
         replies?.decorate(bubble, msg);
     } });
 
@@ -823,7 +823,8 @@ export function createChatMedia({
         + '<path d="M10.5 2.5h-6a2 2 0 0 0-2 2v6"></path></svg>';
 
     function attachCopyControl(bubble, rawText) {
-        if (!bubble || !String(rawText || '')) return null;
+        const words = () => String((typeof rawText === 'function' ? rawText() : rawText) || '');
+        if (!bubble || !words()) return null;
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'chat-message-copy';
@@ -835,7 +836,7 @@ export function createChatMedia({
             const owner = document.activeElement;
             const area = document.createElement('textarea');
             area.className = 'chat-copy-fallback';
-            area.value = String(rawText);
+            area.value = words();
             area.setAttribute('readonly', '');
             document.body.appendChild(area);
             try {
@@ -852,7 +853,7 @@ export function createChatMedia({
             let ok = true;
             try {
                 if (navigator.clipboard?.writeText) {
-                    try { await navigator.clipboard.writeText(String(rawText)); }
+                    try { await navigator.clipboard.writeText(words()); }
                     catch { writeFallback(); }
                 } else writeFallback();
             } catch {

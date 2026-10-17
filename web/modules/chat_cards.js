@@ -297,10 +297,26 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         }
     }
 
+    // A replaced card (`show_card replace`) brings its own title and words: the heading, the card's label, the words
+    // Copy, Reply and message actions take, and every fallback face follow them.
+    function retitle(record, body) {
+        const title = String(body?.title ?? record.title);
+        const fallback = String(body?.fallback_text ?? record.fallback);
+        if (title === record.title && fallback === record.fallback) return;
+        record.title = title;
+        record.fallback = fallback;
+        write(() => {
+            record.heading.textContent = title;
+            record.node.setAttribute('aria-label', title || 'Card');
+            record.bubble.dataset.rowWords = fallback;
+        });
+    }
+
     // `quiet`: a re-read that fails keeps the body already drawn (a reconnect's check is not the card failing).
     function load(record, revision, { quiet = false } = {}) {
         readCardBody(record.id, revision).then((body) => {
             if (destroyed || records.get(record.id) !== record) return;
+            retitle(record, body);
             const sameBody = record.data && record.data.revision === body.revision && record.data.kind === body.kind;
             record.data = body;
             // The same body drawn already: only its presses and pin can have changed; a running frame keeps running.
@@ -354,7 +370,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         const prior = records.get(id);
         if (prior) release(prior.bubble);
         const record = {
-            id, title, fallback, bubble, revision: Number(card.revision) || 0,
+            id, title, fallback, node, bubble, revision: Number(card.revision) || 0, heading: node.querySelector('.chat-card-title'),
             body: node.querySelector('[data-card-body]'), status: node.querySelector('.chat-card-status'),
             toggle: node.querySelector('.chat-card-expand'), actions: node.querySelector('[data-card-actions]'),
             data: null, mounted: null, framed: null, framedKind: '', fit: null, tab: null,
