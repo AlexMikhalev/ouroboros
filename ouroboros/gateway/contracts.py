@@ -13,7 +13,7 @@ from ouroboros.storage import (  # noqa: F401 -- public re-exports
 from ouroboros.gateway.claudexor_contracts import (  # noqa: F401 -- public re-exports
     ClaudexorReadState, ClaudexorStatusReads, ClaudexorPassiveReadError, ClaudexorQuotaResponse,
 )
-
+from ouroboros.gateway.work_contracts import WorkStateFields
 from ouroboros.gateway.history_contracts import ChatHistoryResponse  # noqa: F401 -- public re-export
 from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-exports
     AttachmentManifestEntry, ChatAttachmentInbound, ChatAttachmentView,
@@ -788,8 +788,8 @@ class OwnerEffortRangeResponse(TypedDict):
     cognition: ProjectCognition
 
 
-class StateResponse(TypedDict):
-    """Shape of ``GET /api/state`` (happy path)."""
+class StateResponse(WorkStateFields):
+    """Shape of ``GET /api/state`` (happy path); the work projection fields come from ``WorkStateFields``."""
 
     uptime: int
     workers_alive: int

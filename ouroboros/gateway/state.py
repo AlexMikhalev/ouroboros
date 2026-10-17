@@ -228,15 +228,17 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     task_bindings = _task_bindings_safe(request, availability=activity_availability)
     bindings_complete = activity_availability["complete"]
     direct_turns = _direct_turns_snapshot_safe(availability=activity_availability)
-    decision_owners = []
+    decision_owners, work_facts = [], {}
     activities = _chat_activities_snapshot_safe(
         drive_root, task_bindings, direct_turns=direct_turns, availability=activity_availability,
-        decision_owners=decision_owners,
+        decision_owners=decision_owners, work_facts=work_facts,
     )
     from ouroboros.gateway.main_decisions import main_decisions_snapshot
     decisions = main_decisions_snapshot(drive_root, decision_owners, task_bindings,
                                        activities_complete=activity_availability["complete"],
                                        bindings_complete=bindings_complete)
+    from ouroboros.gateway.work_projection import works_snapshot
+    works = works_snapshot(drive_root, decision_owners, work_facts, complete=activity_availability["complete"])
     # Registered-project facts (never raise): the compact sidebar list, and the
     # COMPLETE (uncapped, all-status) project chat_ids for the live WS fan-out
     # isolation SSOT — distinct from the capped/filtered sidebar list, so
@@ -278,6 +280,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         "active_chat_activities": activities,
         "active_chat_activities_complete": activity_availability["complete"],
         **decisions,
+        **works,
     }
 
 
@@ -455,6 +458,17 @@ def _finishing_reviews(drive_root: Any, row: Dict[str, Any], task_id: str) -> bo
         return False
 
 
+def _raw_work_facts(row: dict) -> dict:
+    """The queue facts a census row drops that the work projection reads (gateway/work_projection.py)."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
+    facts = {key: row[key] for key in ("_budget_pause_hold", "_budget_pause", "title", "suggested_name", "focus",
+                                        "root_task_id", "parent_task_id", "original_task_id", "budget_drive_root")
+             if row.get(key)}
+    edges = {key: continuation[key] for key in ("predecessor_task_id", "work_id", "work_name") if continuation.get(key)}
+    return {**facts, **({"continuation": edges} if edges else {})}
+
+
 def _activity_pause_cause(row: dict, fence: dict) -> str:
     """Explain a parked census row from its existing typed control, never its phase name."""
     hold = row.get("_budget_pause_hold") or {}
@@ -506,7 +520,8 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
 
 
 def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None,
-                                  decision_owners=None, owners_only: bool = False, question_details: bool = True) -> list:
+                                  decision_owners=None, owners_only: bool = False, question_details: bool = True,
+                                  work_facts=None) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
     Additive beside ``active_direct_turns`` (kept unchanged for compatibility):
@@ -523,7 +538,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     but skips every per-row phase, pause and question projection (each a store
     read): a reader that needs only which work is current (one room's history)
     must not pay for the whole census. ``question_details=False`` skips optional Project/question
-    enrichment but retains phases, fences, waits and current result facts. Never raises.
+    enrichment but retains phases, fences, waits and current result facts. ``work_facts`` collects,
+    per activity, the queue facts the rows drop that the work projection reads (``_raw_work_facts``). Never raises.
     """
     direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe()
     activities = [dict(row) if owners_only else _direct_activity_pause_projection(drive_root, row, availability)
@@ -637,6 +653,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                         "cause") == "owner_pause" or _owner_fence_state(drive_root, row, task_id) == "paused"))
                 activities.append(_activity(task_id, row, phase, _epoch_or_zero(row.get("queued_at")),
                                             root=root, can_resume=resume, owner_resumed=interrupted is True))
+                if work_facts is not None:
+                    work_facts[task_id] = _raw_work_facts(row)
         for task_id, row, started_at in running_rows:
             if task_id:
                 root = _is_root(task_id, row)
@@ -656,6 +674,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
+                if work_facts is not None:
+                    work_facts[task_id] = _raw_work_facts(row)
         from ouroboros.post_task_checkpoint import post_task_model_waits, post_task_synthesis_in_flight
         from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
         visible = {row["activity_id"]: row for row in activities}
@@ -690,6 +710,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             activities.append(visible[root_id])
         for owner in post_task_model_waits(drive_root):
             census_ids.add(owner.task_id)
+            if work_facts is not None:
+                work_facts.setdefault(owner.task_id, _raw_work_facts(owner.task))
             waits = owner.snapshot()["model_waits"]
             if owner.task_id in visible:
                 # A Pause settling over the late phase stays "pausing", never back to finalizing.
@@ -929,6 +951,11 @@ async def api_state(request: Request) -> JSONResponse:
             "main_attention": snap.get("main_attention") or [],
             "main_attention_complete": snap.get("main_attention_complete") is True,
             "main_attention_gaps": snap.get("main_attention_gaps") or [],
+            "works": snap.get("works") or [],
+            "rooms": snap.get("rooms") or {},
+            "work_summary": snap.get("work_summary") or {},
+            "works_complete": snap.get("works_complete") is True,
+            "works_gaps": snap.get("works_gaps") or [],
             "served_ui": _served_ui_state(request),
         })
     except Exception as exc:
