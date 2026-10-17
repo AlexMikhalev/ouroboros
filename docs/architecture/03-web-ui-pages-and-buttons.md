@@ -73,6 +73,10 @@ Host task facts attach to its card by producer-stamped `card_row` (`timeline`/`r
 
 #### Project handoff receipts
 
+Owner-source resolution and routing-picker origin reads address `state/dialog.sqlite` by client message id, retaining the original bytes and checking the binding's text hash. Legacy bindings without a client id use chat/time, or that chat's own rows. `owner_words` probes only the ids named by routing annotations. An incomplete archive import is unknown: a picker miss reports `history_importing`, and complete-fold readers raise `StoreMigrating`. Annotation compaction probes each retained message id; while import is pending it preserves the sidecar rather than deleting unobserved sources. Upgrade-notice receipt import probes only the notice kinds after chat coverage is complete.
+
+The legacy continuation-narrative fallback reads the named task's rows newest first and checks the exact result reference. Its source identifies the SQLite row by `history_id`; unrelated rooms cannot evict an authored narrative from an arbitrary archive window.
+
 `project_handoff.py` owes Main a transfer receipt through the terminal outbox after durable binding. `handoff_id` binds captured ingress/Project: retries share it, independent requests do not. `RECEIPT_STATES`: `durable`/`already_delivered` prove Main owed/delivered; `origin_unproven` writes none, other states disclose gaps. Main is never default. `/api/projects/from-task` returns `handoff_receipt`/`handoff_id`; nondurability warns, inventing no history.
 
 `project_handoff.js` owns creation/transfer layout and free-area press (`isFreePress`), live or replayed, with `formatMsgTime`/Copy. Folding supplies the matching receipt time; anchors and task outcomes stay separate. Structured `task_name` follows producers, bus and history. `task_phase_chip.censusTaskPhase`/`paintTaskPhase` share outcome and motion with tasks and Project summaries (DESIGN "Project work entries"). Only explicit technical retry follows work; Continue is a new root; reconnect re-proves activity.

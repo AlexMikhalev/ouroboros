@@ -32,14 +32,13 @@ def _seed_refusal(root, cmid="cm-1", token="tok-1", options=OPTIONS, **extra):
 
 
 def _seed_origin(root, cmid="cm-1", text="original owner words", chat_id=0):
-    path = root / "logs" / "chat.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "direction": "in", "client_message_id": cmid,
-            "text": text, "chat_id": chat_id,
-            "ts": "2026-10-06T12:00:00+00:00",
-        }) + "\n")
+    from ouroboros import dialogue_store as ds
+
+    ds.append(root, "chat", {
+        "direction": "in", "client_message_id": cmid,
+        "text": text, "chat_id": chat_id,
+        "ts": "2026-10-06T12:00:00+00:00",
+    })
 
 
 class _Queue:

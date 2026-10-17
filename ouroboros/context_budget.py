@@ -350,9 +350,6 @@ LARGE_CONTEXT_SECTION_CHARS = 200_000
 # from the generic section warning: an oversized terminal result is replaced
 # by its authored continuation narrative, not merely logged and sent whole.
 PREDECESSOR_RESULT_INLINE_CHARS = 200_000
-CONTINUATION_NARRATIVE_LEGACY_GENERATIONS = 3
-CONTINUATION_NARRATIVE_LEGACY_TAIL_BYTES = 512 * 1024
-CONTINUATION_NARRATIVE_LEGACY_MAX_ROWS = 5_000
 
 # --- Native image blocks (v6.26.0 multimodal chat) ---------------------------
 # Char-equivalent for ONE image block in chars/4 token estimates (~1.1K tokens):

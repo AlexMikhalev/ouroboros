@@ -749,3 +749,60 @@ def counts(root: Any) -> Dict[str, int]:
     """Rows per stream (tests and the import report; a full count, not a hot-path read)."""
     with transaction(root, write=False) as conn:
         return {record["stream"]: record["n"] for record in conn.execute("SELECT stream, count(*) AS n FROM dialogue GROUP BY stream")}
+
+
+def iter_probes(root: Any, stream: str, keys: Iterable[Tuple[str, Any]], *, lower: int = 0,
+                upper: Optional[int] = None, batch: int = 200, newest_first: bool = False) -> Iterator[Row]:
+    """Added by Q1b: iterate an addressed union in a frozen range, in short transactions.
+
+    Each page reads only the indexed keys, deduplicates overlapping probes and advances
+    by coordinate. A caller may stop early without holding a connection or a read lock.
+    """
+    if batch < 1:
+        raise ValueError("a dialogue probe batch must be positive")
+    keys = tuple(keys)
+    if not keys:
+        return
+    upper = stream_end(root, stream) if upper is None else int(upper)
+    while lower < upper:
+        rows = probe_rows(root, stream, keys, lower=lower, before=upper,
+                          limit=batch, newest_first=newest_first)
+        yield from rows
+        if len(rows) < batch:
+            return
+        if newest_first:
+            upper = rows[-1].seq
+        else:
+            lower = rows[-1].seq + 1
+
+
+def range_coverage(root: Any, stream: str, *, lower: int = 0,
+                   upper: Optional[int] = None) -> Dict[str, Any]:
+    """Added by Q1b: import coverage of exactly ``[lower, upper)``.
+
+    Same answer as ``dialogue_import.coverage``, restricted to intersecting segments:
+    an older pending archive does not make a fully imported recent page incomplete.
+    Reading starts the root's normal cutover if needed, never the archive import job.
+    """
+    if stream not in STREAMS:
+        raise ValueError(f"not a dialogue stream: {stream!r}")
+    with transaction(root, write=False) as conn:
+        counts = {record["state"]: record["n"] for record in conn.execute(
+            "SELECT state, count(*) AS n FROM import_ledger INDEXED BY ledger_state "
+            "WHERE stream=? AND state IN ('pending', 'mismatch') AND base<? AND base+size>? "
+            "GROUP BY state", (stream, _bound(upper), lower))} if lower < _bound(upper) else {}
+    pending, mismatch = int(counts.get("pending", 0)), int(counts.get("mismatch", 0))
+    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch}
+
+
+def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[int] = None) -> None:
+    """Added by Q1b: an absence/complete-fold consumer cannot turn pending import into truth.
+
+    Readers with a coverage field use ``range_coverage`` directly; readers whose public
+    answer cannot express an unknown interval propagate the store's typed failure.
+    """
+    coverage = range_coverage(root, stream, lower=lower, upper=upper)
+    if not coverage["imported"]:
+        if coverage["mismatch"]:
+            raise StoreError("Dialogue history: a segment could not be imported")
+        raise StoreMigrating("Dialogue history is still importing")

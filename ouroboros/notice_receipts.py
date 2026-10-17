@@ -47,12 +47,12 @@ def record(root, row):
 
 
 def import_upgrade_receipts(root):
-    from pathlib import Path
-    from ouroboros.utils import jsonl_chain_handles, iter_jsonl_objects
+    from ouroboros import dialogue_store as ds
+
+    ds.require_imported(root, "chat")
     records = {}
-    with jsonl_chain_handles(Path(root) / "logs/chat.jsonl", strict=True) as handles:
-        rows = [row for path, handle in handles for row in iter_jsonl_objects(path, _handle=handle)]
-    for row in rows:
+    for entry in ds.iter_probes(root, "chat", [("kind", kind) for kind in sorted(UPGRADE_TYPES)]):
+        row = entry.row
         kind = row.get("type")
         # One malformed historical row is skipped, never a failed import.
         if row.get("direction") == "system" and kind in UPGRADE_TYPES and isinstance(row.get("chat_id"), int):
