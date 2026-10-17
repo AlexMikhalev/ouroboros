@@ -562,7 +562,7 @@ availability is a separate browser fact. Re-read on `extension_lifecycle`, WS
 open and `ouro:skill-lifecycle`; owner toggles invalidate instruction entries too.
 
 Server STT uses POST of raw audio to `route_url`, with its recorded `Content-Type`
-and optional `?lang=`. Reply: `{text}`, `{text:"", status:"no_speech"}` or
+and optional `?lang=` (the builtin client sends none). Reply: `{text}`, `{text:"", status:"no_speech"}` or
 `{error:{code,message}}`. The existing 512 KiB extension-route cap is unchanged.
 Optional `max_bytes` is 1..524288 and `max_seconds` 1..600; `formats` is a subset
 of `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`. The recorder

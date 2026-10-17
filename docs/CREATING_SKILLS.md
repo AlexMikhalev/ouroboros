@@ -258,8 +258,9 @@ contributes:
     max_seconds: 60
 ```
 
-The request body is raw audio (`Content-Type` is the recorded type), optionally
-with `?lang=`. Return `{text}`, `{text:"", status:"no_speech"}` or
+The request body is raw audio (`Content-Type` is the recorded type); a client
+may add `?lang=`, but the builtin one sends none, so detect the language
+yourself. Return `{text}`, `{text:"", status:"no_speech"}` or
 `{error:{code,message}}`. Keep uploads under both declared limits and the existing
 512 KiB route cap. The recorder enforces the declared limits; do not require a
 multipart wrapper or a skill-specific host upload exception.
