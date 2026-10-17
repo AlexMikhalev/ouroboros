@@ -337,11 +337,30 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
     return {"state": "done", "items": report["examined"]}
 
 
+def _hot_facts_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Rows written before the hot-fact columns (or by an older writer since) wait for a classification
+    pass (``store_hot_facts.run_hot_facts``); a root without such rows has nothing to do. A failed pass
+    waits on its damaged input, which the runner compares itself, so it is no reason to spawn the child."""
+    from ouroboros.store_hot_facts import underived
+
+    if row.get("state") == "failed":
+        return child
+    return underived(root)
+
+
+def _hot_facts_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    from ouroboros.store_hot_facts import run_hot_facts
+
+    row = run_hot_facts(root, should_stop=should_stop) or {}
+    return {"state": str(row.get("state") or "unknown"), "items": int(row.get("done") or 0)}
+
+
 # name -> (due(root, row, store facts, child), run(root, should_stop)); the child runs them in this
 # order. ``child`` is False for the server's look: a job may then decline to be a reason to spawn
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
     "legacy_reconcile": (_legacy_due, _legacy_run),
+    "hot_facts": (_hot_facts_due, _hot_facts_run),
     "activity_backfill": (_activity_due, _activity_run),
     "child_ref_promotion": (_promotion_due, _promotion_run),
     "custody_trash": (_trash_due, _trash_run),

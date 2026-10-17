@@ -315,7 +315,3 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
         packs.record_storage_pack(root, phase="fault", task_id="", exception_class=type(exc).__name__)
     return report
 
-
-# The name ``server.py``'s exit census reads (``_emergency_process_cleanup``): packing runs in the
-# one maintenance child, whose owner answers ``stop``/``live_children``.
-from ouroboros.maintenance import child as packer  # noqa: E402,F401

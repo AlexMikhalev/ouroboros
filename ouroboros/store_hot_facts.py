@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import os
+import sqlite3
 from typing import Any
 
 from ouroboros.utils import machine_json
@@ -245,6 +246,21 @@ def controls(root, task_id: str) -> dict:
     return {"status": row["status"], "present": True,
             "owner_pause": json.loads(row["owner_pause_facts"]),
             "budget_pause": json.loads(row["budget_pause_facts"])}
+
+
+def underived(root: Any) -> bool:
+    """Whether any row still lacks its hot-fact columns: indexed probes in one read transaction."""
+    from ouroboros import store
+
+    probes = (("tasks", "tasks_underived_hot", TASK_UNDERIVED),
+              ("custody_runs", "custody_underived_hot", CUSTODY_UNDERIVED),
+              ("obligations", "custody_request_underived", REQUEST_UNDERIVED))
+    try:
+        with store.open_store(root, write=False) as txn:
+            return any(txn.conn.execute(f"SELECT 1 FROM {table} INDEXED BY {index} WHERE {where} LIMIT 1").fetchone()
+                       for table, index, where in probes)
+    except sqlite3.OperationalError:
+        return True  # a schema below the hot-fact columns: the runner upgrades it first
 
 
 def run_hot_facts(root: Any, *, progress=None, should_stop=None) -> dict:

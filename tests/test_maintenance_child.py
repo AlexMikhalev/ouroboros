@@ -317,6 +317,12 @@ def _setup_job(name, data, monkeypatch):
         from tests.test_evidence_packs import _task
 
         _task(data, "settled", blobs=1)
+    elif name == "hot_facts":
+        from ouroboros import store
+
+        write_task_result(data, "older", "completed", result="answer")
+        with store.open_store(data, write=True) as txn:  # an older writer left the hot columns unset
+            txn.conn.execute("UPDATE tasks SET owner_pause_state=NULL WHERE task_id='older'")
 
 
 @pytest.mark.parametrize("name", maintenance.JOB_NAMES)
