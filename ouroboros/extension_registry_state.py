@@ -50,6 +50,10 @@ class _ExtensionRegistrations:
     # (manifest ``plugin_api`` field, or the legacy generation for
     # grandfathered field-less payloads).
     plugin_api_generation: str = ""
+    # Loaded manifest/hash identity; prompt reads use existing readiness owners
+    # over small current control files, never rehash the publisher's payload.
+    loaded_skill: Any = None
+    context_snapshot: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -153,6 +157,7 @@ class _PluginAPIConfig:
     # ABI-1: negotiated PluginAPI generation served to this extension
     # ("" -> the loader's negotiation default for grandfathered payloads).
     plugin_api_generation: str = ""
+    loaded_skill: Any = None
 
 
 # Lock-guarded registries; per-surface maps keep unload proportional to one extension.

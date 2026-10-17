@@ -529,6 +529,7 @@ D20 = "Presence"
 "ouroboros/skill_conflicts.py" = "D14"
 "ouroboros/skill_lifecycle_queue.py" = "D14"
 "ouroboros/skill_loader.py" = "D14"
+"ouroboros/skill_context_snapshot.py" = "D14"
 "ouroboros/skill_catalogue.py" = "D14"
 "ouroboros/skill_peer_inventory.py" = "D14"
 "ouroboros/skill_uninstall_state.py" = "D14"
@@ -568,6 +569,8 @@ D20 = "Presence"
 "ouroboros/delegate_directory.py" = "D07"
 "ouroboros/subagents.py" = "D07"
 "ouroboros/subagent_route_health.py" = "D07"
+"ouroboros/subagent_inspection.py" = "D07"
+"ouroboros/claudexor_observations.py" = "D07"
 "ouroboros/subscription_install_presets.py" = "D12"
 "ouroboros/synthesis_cost_text.py" = "D01"
 "ouroboros/task_continuation.py" = "D06"
@@ -992,6 +995,7 @@ allowed = [
   "D13->D17",
   "D13->D18",
   "D14->D02",
+  "D14->D03",
   "D14->D04",
   "D14->D05",
   "D14->D06",
@@ -1123,6 +1127,7 @@ lazy_only = [
   "D14->D01",
   "D14->D07",
   "D14->D08",
+  "D14->D15",
   "D14->D17",
   "D14->D20",
   "D15->D02",
