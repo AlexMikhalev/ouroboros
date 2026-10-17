@@ -632,8 +632,10 @@ def settlement_obligations(root: Any, *, txn: Optional[store.Txn] = None, cache:
 def task_settlement_facts(root: Any, task_id: str, *, obligation_rows: Optional[dict] = None,
                           external: Optional[dict] = None, txn: Optional[store.Txn] = None) -> Dict[str, Any]:
     """The facts the settle predicate reads, through the current store: terminal status,
-    every obligation flag, open review operations / undischarged acceptance debt, and unresolved
-    money attempts (``None`` = unknown, which never settles). No timer anywhere."""
+    every obligation flag, open review operations, review panels still awaiting a seat, and
+    unresolved money attempts (``None`` = unknown, which never settles). No timer anywhere.
+    What the retired task acceptance left on a task (its operation pointers, panels,
+    late-notice receipts and acceptance debt) has no collector any more: history, never open work."""
     from ouroboros.review_operation import _OPEN_STATES
     from ouroboros.review_projection import _actor_pending
     from ouroboros.task_store import read_document
@@ -650,19 +652,9 @@ def task_settlement_facts(root: Any, task_id: str, *, obligation_rows: Optional[
     except (store.StoreError, OSError, ValueError, TypeError, AttributeError):
         owed.add("unknowns")
     operations = row.get("review_operations") if isinstance(row.get("review_operations"), dict) else {}
-    debt = row.get("acceptance_debt") if isinstance(row.get("acceptance_debt"), dict) else {}
     projection = row.get("review_projection") or {}
-    panels = [p for p in projection.get("panels") or [] if isinstance(p, dict)]
-    open_debt = False
-    if debt.get("debt_id"):
-        wanted = "task_acceptance:" + hashlib.sha256(str(debt["debt_id"]).encode()).hexdigest()
-        open_debt = not any(((p.get("late_settlement") or {}).get("reviewed_subject") or {}).get("retry_key") == wanted
-                            for p in panels)
+    panels = [p for p in projection.get("panels") or [] if isinstance(p, dict) and p.get("surface") != "task_acceptance"]
     late_open = any(_actor_pending(actor) for p in panels for actor in p.get("actors") or [] if isinstance(actor, dict))
-    for receipt in (projection.get("late_notice_receipts") or {}).values():
-        panel = next((p for p in panels if p.get("panel_id") == receipt.get("panel_id")), {})
-        late_open |= (receipt.get("custody") != "terminal_outbox"
-                      or receipt.get("settled_at") != (panel.get("late_settlement") or {}).get("settled_at"))
     external = settlement_external(root) if external is None else external
     if external["delivery"] is None:
         owed.add("unknowns")
@@ -672,8 +664,8 @@ def task_settlement_facts(root: Any, task_id: str, *, obligation_rows: Optional[
         "status": str(row.get("status") or ""),
         "terminal": bool(row) and str(row.get("status") or "") in SETTLED_STATUSES,
         "obligations": sorted(owed),
-        "open_operations": any(isinstance(e, dict) and e.get("state") in _OPEN_STATES for e in operations.values()),
-        "open_acceptance": open_debt,
+        "open_operations": any(isinstance(e, dict) and e.get("state") in _OPEN_STATES
+                               and e.get("surface") != "task_acceptance" for e in operations.values()),
         "open_late_receipts": late_open,
         "money_open": None if external["money"] is None else str(task_id) in external["money"],
     }
@@ -710,7 +702,7 @@ def settlement_external(root: Any, *, timeout_sec: Optional[float] = None) -> di
 
 def facts_settled(facts: Dict[str, Any]) -> bool:
     return bool(facts["terminal"] and not facts["obligations"] and not facts["open_operations"]
-                and not facts["open_acceptance"] and not facts["open_late_receipts"] and facts["money_open"] is False)
+                and not facts["open_late_receipts"] and facts["money_open"] is False)
 
 
 def task_settled(root: Any, task_id: str, *, obligation_rows: Optional[dict] = None,

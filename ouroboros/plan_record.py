@@ -17,7 +17,7 @@ Everything else is derived here and never stored: the open objections (a fold ov
 EACH SEAT'S OWN replies — an objection stands until the same seat lists it under
 ``withdrawn``; omission keeps it and flags ``not_adjudicated``; an unparseable reply
 changes nothing), who last saw which revision, the gate projection
-(``gate_projection``), the acceptance view (``acceptance_view``) and the review
+(``gate_projection``), the claims view (``acceptance_view``) and the review
 history the context views read (``record_history``). There is no cycle counter, no
 quorum, no aggregate and no fingerprint routing for plans.
 
@@ -438,13 +438,14 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     return decision
 
 
-# ------------------------------------------------------------------ acceptance
+# ------------------------------------------------------------------ claims view
 
 def acceptance_view(record: Mapping[str, Any], ingress_claims: List[Dict[str, Any]], *,
                     legacy: Optional[Mapping[str, Any]] = None) -> tuple[List[Dict[str, str]], str, Dict[str, Any]]:
-    """``(claims, source, exhibit)`` for task acceptance: ingress claims win; otherwise
-    the LATEST revision's ``done_when`` binds, open objections or not (legacy selected
-    claims when the task only has a v1/v2 record). The exhibit carries the ACTUAL text
+    """``(claims, source, exhibit)`` — the claims a task's result is held to (result
+    review, plan facts): ingress claims win; otherwise the LATEST revision's
+    ``done_when`` binds, open objections or not (legacy selected claims when the task
+    only has a v1/v2 record). The exhibit carries the ACTUAL text
     of every revision's ``done_when``, which revisions the council saw, and the
     objections open now — and, when ingress wins, the adopted promises stay visible."""
     from ouroboros.contracts.task_contract import normalize_acceptance_claims
@@ -551,7 +552,7 @@ def legacy_facts(root: Any, task_id: str) -> tuple[Dict[str, Any], Dict[str, str
     ``error`` is ``{}`` or names the read that failed (``source`` = ``plan_review_state`` or
     ``author_plan``, plus the message); the projection is then built without that piece. Each
     caller chooses its policy in one line: the gate holds as unreadable, the tool's read says
-    so, the acceptance binder refuses to bind without the bar, the task detail names it."""
+    so, the claims binder refuses to bind without the bar, the task detail names it."""
     from ouroboros.task_results import load_plan_review_state
 
     try:

@@ -403,7 +403,6 @@ def project_predecessor_review_views(runtime: dict, *, task: Mapping[str, Any], 
 def _predecessor_review_readers(root: Any, owner: str, refs: list, *, inherited: bool = False) -> tuple[list, list]:
     """Use the existing exact-source reader and retained-root locations."""
     from pathlib import Path
-    from ouroboros.acceptance_history import historical_source_reference
     from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
     from ouroboros.review_history_view import _immutable_ref, _sha
     from ouroboros.source_retention import retained_task_roots
@@ -421,14 +420,15 @@ def _predecessor_review_readers(root: Any, owner: str, refs: list, *, inherited:
                 continue
             try:
                 read_actor_source_bytes(source_root, owner, ref)
-                addressed = historical_source_reference(source_root, owner, ref)
+                reader = {"tool": "read_file", "arguments": {
+                    "root": "runtime_data", "path": str(path), "start_line": 1, "max_lines": 40, "start_char": 0}}
                 # Existing lineage reads permit the named predecessor's absolute
                 # artifact path, including from a child's different data root.
                 if not inherited:
-                    addressed["reader"]["arguments"]["root"] = "artifact_store"
-                # More distant named predecessors use the helper's existing
-                # canonical runtime_data address; they are not direct lineage.
-                reads.append({"task_id": owner, "source_ref": identity, "read": addressed["reader"]})
+                    reader["arguments"]["root"] = "artifact_store"
+                # More distant named predecessors keep the canonical runtime_data
+                # address; they are not direct lineage.
+                reads.append({"task_id": owner, "source_ref": identity, "read": reader})
                 break
             except (OSError, ValueError, TypeError):
                 continue
