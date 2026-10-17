@@ -62,3 +62,14 @@ def test_fallback_is_short_and_redacted():
         error=f"Authentication failed for {secret}\n" + "provider detail " * 200)
     assert actor.reported_cause and len(actor.reported_cause) <= 512
     assert secret not in actor.reported_cause and "\n" not in actor.reported_cause
+
+
+def test_withheld_packet_seat_keeps_the_size_refusal_on_its_ledger_row():
+    from ouroboros.tools.review_admission import triad_not_dispatched_records
+
+    records = triad_not_dispatched_records({"models": ["m"], "slot_ids": ["s"]},
+                                          "The complete packet exceeds the configured input window")
+    row = build_rows({"triad_raw": records})[0]
+    row.pop("raw_text", None)
+    assert row["failure_code"] == "review_not_dispatched"
+    assert row["reported_cause"] == "The complete packet exceeds the configured input window"
