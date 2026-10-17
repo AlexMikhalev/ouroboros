@@ -363,7 +363,7 @@ test('an unloaded row reads the page around its task and lands on its card; one 
         trigger.click();  // dismissed again
         answers[1]();
         await settle();
-        assert.deepEqual(wanted, [false, false], 'neither look applies once its list closed'); 
+        assert.deepEqual(wanted, [false, false], 'neither look applies once its list closed');
     } finally { work?.destroy(); restoreDom(prior); }
 });
 
