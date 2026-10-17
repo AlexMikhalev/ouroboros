@@ -292,8 +292,8 @@ export async function fetchTaskDetail(taskId) {
  * @param {string} taskId
  * @returns {Promise<import('./api_types.js').TaskDetailResponse|null>}
  */
-export async function fetchTaskDetailStrict(taskId) {
-    const resp = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+export async function fetchTaskDetailStrict(taskId, { signal } = {}) {
+    const resp = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`, signal ? { signal } : {});
     if (resp && typeof resp.json === 'function') {
         if (resp.ok !== false) return resp.json();
         if (resp.status === 404) return null;

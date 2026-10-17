@@ -30,8 +30,8 @@ A client and the core must share one browser origin, served from the root path. 
 | Path prefix | Owner | What it serves |
 |---|---|---|
 | `/api` | core | HTTP API, including extension routes under `/api/extensions/{skill}/…` |
-| `/auth` | core | login and logout, only while the network auth gate is active (§3) |
-| `/onboarding` | core | the builtin setup wizard; its assets under `/onboarding/static/*` are always the core's own files |
+| `/auth` | core | login/logout operations while the network gate is active; optional public login assets (§3) |
+| `/onboarding` | core | the selected setup page or builtin wizard; `/onboarding/static/*` always serves builtin assets |
 | `/ws` | core | the WebSocket |
 | `/` and `/static` | the interface | the main page and its assets |
 
@@ -65,6 +65,31 @@ The rules for the setting itself:
 
 `GET /api/state` reports what this core actually serves as `served_ui: {source: "builtin"|"directory"|"none", error?}`. This is the applied choice, not the requested one, and it is not a fingerprint of anyone's asset files.
 
+### Complete setup and sign-in pages
+
+A valid selected directory may also contain these optional files:
+
+```text
+index.html          main client
+onboarding.html     complete setup page
+auth/index.html     complete sign-in page
+auth/...            public sign-in assets
+```
+
+`GET /onboarding` serves `onboarding.html`; under the active network gate, `GET /auth/login` serves `auth/index.html`. Each is returned unchanged. If its optional file is absent or cannot be read, that whole page uses the builtin implementation. The rules apply only to `source: "directory"`; builtin, `none` and rejected directory selections keep builtin setup/login.
+
+Setup resources use the selected `/static/` tree. Login resources use `/auth/`, which publishes **only the selected `auth/` directory**, including before sign-in, on loopback and without a password. Relative resources in the login document resolve there. `login` and `logout` are reserved names for the gate's operations. Publish only public build assets in `auth/`, never settings or credentials. Missing custom assets answer 404; they never borrow builtin files. The applied directory remains fixed until restart, just like the main page.
+
+`/onboarding?builtin=1` and `/auth/login?builtin=1&next=<path>` explicitly open the builtin pages without changing settings. The builtin wizard loads its own complete `/onboarding/static/` graph; the login form is self-contained. A builtin setup request keeps builtin sign-in when authentication is needed, so it remains recoverable even if both custom pages have broken JavaScript. The server cannot detect a script that fails after the HTML loads: recovery is an explicit action, not an automatic fallback timer.
+
+On macOS launchers containing this change, **Help → Open built-in setup** works independently of page JavaScript in the setup and main windows. A directory or separately hosted copy of the builtin client offers recovery outside its setup iframe. The core-owned builtin main page omits that extra control: it already opens builtin setup. Other clients own their recovery controls. This change adds no native recovery control to Windows/Linux, Android or Telegram shells; their builtin HTTP URLs remain available, but a shell without an address bar needs its own host action or a browser to open them. Old installed launchers do not acquire a new menu until their launcher code is updated.
+
+In a separately hosted deployment with `OUROBOROS_UI_DIR=none`, the core's setup/login pages stay builtin. That interface host can supply its own pages at its own interface addresses and call the same APIs (§3–4); these optional files are specifically for a directory served by the core. See the [minimal client example](examples/client_views/README.md).
+
+### Personal source changes and updates
+
+For a personal version of the builtin application, change its ordinary source through the existing body development and review workflow. A normal merge update brings official changes into those local commits; disjoint edits merge automatically, while textual conflicts and incompatible behavior need the agent or author to resolve and test them. This includes UI code: no separate UI updater or release-note checklist is required. A replacement/reset has different semantics (§15). A separately maintained client owns its releases; updating the core cannot invent that client's new screens. Using the published setup vocabulary (§4) can expose new fields in a data-driven form, but does not automatically implement a new interaction.
+
 ### When a page served by the core should reload
 
 The builtin page served by the core carries `<meta name="ouroboros-ui-owner" content="core">`. It is added to the response and is never part of `web/index.html`. Pages without it are owned by someone else. Apply these rules after reconnecting to a restarted core:
@@ -86,13 +111,15 @@ Nobody tells an unmarked page to reload. A new choice reaches it when someone ne
 - a per-request `X-Ouroboros-Password: <password>` header;
 - `Authorization: Bearer <password>` or Basic.
 
-**Refusals.** A refused HTTP request answers `401` with `{"error": "Authentication required."}`. A `GET` that asks for `text/html` gets the login page instead. The open routes are `GET /api/health`, `/auth/login` and `/auth/logout`.
+**Refusals.** A refused HTTP request answers `401` with `{"error": "Authentication required."}`. A `GET` that asks for `text/html` gets the builtin login form with 401, or redirects to `/auth/login?next=…` when a selected login page exists. Explicit builtin setup recovery keeps the builtin form. Health, login/logout and GET/HEAD of the selected `/auth/` assets are public; the main `/static/` tree, APIs, setup bootstrap and extension resources retain the gate.
 
 **Signing in from a browser interface:**
 
 1. **On 401, go to the login form.** When a core route (for example `GET /api/state` or `GET /api/onboarding`) answers 401, navigate the top-level page to `/auth/login?next=<path>`. Use the page's own path, query and fragment, URL-encoded.
 2. **Return to `next`.** After a correct password the form answers `303` to `next`. A JSON client posts `{"password", "next"?}` to `/auth/login` and receives `200 {ok: true, next}` with the cookie. A wrong password answers `401` and sets no session.
 3. **What `next` accepts.** It must be a same-origin path: it starts with one `/`, and contains no backslash, no control characters (tab and newline included) and no quotes or angle brackets. Anything else becomes `/`.
+
+**A custom login page** submits JSON to the same `POST /auth/login`, displays its 401 error in its own UI and navigates using the successful response's sanitized `next`. No HTML placeholders or private bootstrap are required. HTML form POST keeps the builtin behavior: a wrong password returns the builtin form with 401, a correct one redirects with 303. Use JSON to retain custom error presentation. `GET /auth/login?builtin=1` always opens the builtin form while the gate is active.
 
 **The session.** It is an HttpOnly, SameSite=Lax cookie named `ouroboros_auth`. It is `Secure` when the core sees TLS. It lasts 30 days, and a core that loses its key file signs everyone out.
 
@@ -102,13 +129,13 @@ Nobody tells an unmarked page to reload. A new choice reaches it when someone ne
 
 **The WebSocket.** An unauthenticated `/ws` is refused before the connection is accepted (HTTP 403 during the handshake). Browsers report it as close code 1006, never a custom code. Recognise sign-in problems through an HTTP probe, not through WebSocket close codes.
 
-**Signing out.** `GET` or `POST /auth/logout` deletes the cookie and answers `303` to `next`. While the gate is inactive, `/auth/*` is not mounted (404).
+**Signing out.** `GET` or `POST /auth/logout` deletes the cookie and answers `303` to `next`. Login/logout answer 404 when the gate is inactive; those names never serve selected files. Other `/auth/` paths serve the optional public bundle even without the gate: missing files answer 404, unsupported methods 405. With no bundle those paths answer 404.
 
 ## 4. First contact and setup
 
 1. **Check the core.** `GET /api/health` checks the core and returns `abi_version`. `GET /api/contract` lists the routes this core offers.
 2. **Check whether setup is needed.** `GET /api/onboarding` answers `204` when a usable model provider is configured (nothing to set up), otherwise `200` with the builtin wizard page.
-3. **Load or show setup.** Either frame or open `/onboarding`, the builtin wizard (all its files come from the core), or render your own setup from `GET /api/onboarding/bootstrap`.
+3. **Load or show setup.** Frame or open `/onboarding` (the selected complete page when present, otherwise builtin), or render your own setup from `GET /api/onboarding/bootstrap`. Force the builtin wizard with `/onboarding?builtin=1`. The readiness probe's 200 HTML body remains builtin for existing clients.
 
 `GET /api/onboarding/bootstrap` returns `{ready, bootstrap}` and writes nothing. `bootstrap` is exactly what the builtin wizard renders. It contains:
 
@@ -172,6 +199,16 @@ To finish setup, send `POST /api/onboarding/complete`:
 Replace `<model-id>` with the endpoint's model id. An empty review pool is an explicit choice, not a production recommendation. Setup validates configuration, not reachability or successful generation; test the provider separately. Optional model slots may be blank to keep inheritance. Completion on an existing install is still a settings write, not an idempotent readiness check. `400` rejects input, `403` is a permission refusal, and `409 onboarding_state_changed` means the settings changed before commit. Apply the `saved` rules to failures.
 
 `POST /api/onboarding/subagents/preview` takes the same body and returns, without saving, the agent roster and the model settings setup would produce.
+
+### Completing setup in a host window
+
+The HTTP completion receipt is the save result. Closing a window or receiving a bridge return value does not prove a save. After a confirmed successful receipt, use the host that actually exists:
+
+- **Separate desktop setup window:** if present, call `window.pywebview.api.onboarding_finished({ok: true, restart_required, runtime_mode})` with the receipt's values. The existing host closes setup and owns a required server restart before opening the main client. The bridge appears asynchronously (`pywebviewready`); detect the actual method rather than infer it from the core version. The main window does not expose this setup-only method. If it is unavailable, keep the saved/restart state visible and offer the host's normal close/restart path.
+- **A setup iframe inside the builtin or copied builtin client:** send `parent.postMessage({type: 'ouroboros:onboarding-complete', restart_required, runtime_mode}, location.origin)`. That parent's overlay owns its transition and restart display. This is a client convention; another parent can define its own handoff. Do not call the parent's setup-window bridge or close the main window.
+- **A plain top-level page:** navigate to `/` only when no restart is needed. Otherwise show that setup was saved but the new access mode is pending, and use the ordinary restart workflow (§15). A navigation alone does not apply a boot-pinned setting.
+
+On a failed or unknown save, retain the form and follow the existing readback rules; do not send a successful completion message or blindly save again. The native `onboarding_finished` method only reports the HTTP result, and introduces no second settings writer.
 
 ## 5. Conversation: live events and history
 
@@ -280,9 +317,11 @@ Frames sent while you were disconnected are not resent: history and the task rea
 
 - **How much.** `n_human` (default 150, at most 1500) bounds conversation rows and `n_progress` (default 60, at most 600) progress rows.
 - **Paging.** While `has_more` is true, pass `next_cursor` back as `cursor` to read older rows. `page_cursor` re-reads the same page. Cursors are opaque.
+- **New arrivals.** The newest page carries `after_cursor` (absent when a read failed part-way or the window holds more tasks than a cursor can name); passed back as `cursor`, it returns the rows stored since that read with the room's current work (never paging older, ordered by time) and the next `after_cursor`, so a client that keeps a window open reads its new rows instead of the whole window again. In a project thread `window.latest_message` names the newest message among them when one arrived (absent: none did); `out_of_order` also counts the window it continues.
 - **Errors.** An error answer keeps the same shape, with no rows and `has_more` true, and echoes the cursor you sent as `next_cursor`, so the same request can be repeated:
   - `400 history_cursor_invalid`;
   - `409 history_view_changed`: which rows belong to the thread changed (its projects or task bindings); start again without a cursor;
+  - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
 - **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
 

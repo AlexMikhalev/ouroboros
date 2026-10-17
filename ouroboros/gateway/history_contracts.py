@@ -158,14 +158,15 @@ class ChatHistoryWindow(TypedDict, total=False):
 class ChatHistoryResponse(TypedDict, total=False):
     """``GET /api/chat/history``: conversation rows oldest first; replay evidence may follow them
     regardless of timestamp and recur across pages. An error answer (400 history_cursor_invalid,
-    409 history_view_changed, 503 history_source_unavailable or migrating) keeps this shape with
-    no rows, ``has_more`` true and the cursor that was sent as ``next_cursor``."""
+    409 history_view_changed or history_delta_reset, 503 history_source_unavailable or migrating)
+    keeps this shape with no rows, ``has_more`` true and the cursor that was sent as ``next_cursor``."""
 
     messages: Required[List[ChatHistoryMessage]]
     has_more: Required[bool]
     next_before_ts: str  # legacy, no longer sent
     next_cursor: Required[Optional[str]]  # pass back as ?cursor= for the next older page
     page_cursor: Optional[str]  # re-reads this same page
+    after_cursor: str  # the newest page and every ``after`` read: pass back as ?cursor= for what arrived since
     window: Required[ChatHistoryWindow]
     coverage: ChatHistoryCoverage
     error: str
