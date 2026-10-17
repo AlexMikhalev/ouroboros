@@ -158,7 +158,7 @@ def test_a_press_reaches_the_live_author_as_card_input_once(tmp_path, decide):
 
     card = _component_card(tmp_path)
     decision_id = f"card:{card['card_id']}:dates"
-    response = decide({"request_id": "r1", "decision_id": decision_id, "values": {"from": "Mon", "to": "Fri"}})
+    response = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id, "values": {"from": "Mon", "to": "Fri"}})
     assert response.status_code == 200, response.text
     assert response.json() == {"ok": True, "decision_id": decision_id, "request_id": "r1", "duplicate": False,
                                "delivery": "delivered", "card_id": card["card_id"], "revision": 1}
@@ -171,10 +171,10 @@ def test_a_press_reaches_the_live_author_as_card_input_once(tmp_path, decide):
     state = [f for f in decide.frames if f.get("type") == "card_state"][-1]
     assert state["submissions_summary"][0]["delivery"] == "delivered"
 
-    again = decide({"request_id": "r1", "decision_id": decision_id, "values": {"from": "Sat"}})
+    again = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id, "values": {"from": "Sat"}})
     assert again.status_code == 200 and again.json()["duplicate"] is True and again.json()["delivery"] == "delivered"
     assert len(_mail(tmp_path)) == 1
-    later = decide({"request_id": "r2", "decision_id": decision_id, "values": {"from": "Sun"}})
+    later = decide({"request_id": "r2", "revision": 1, "decision_id": decision_id, "values": {"from": "Sun"}})
     assert later.status_code == 409 and later.json()["error"] == "card_action_once"
     assert later.json()["winner"]["request_id"] == "r1" and len(load_card(tmp_path, card["card_id"])["submissions"]) == 1
 
@@ -182,7 +182,7 @@ def test_a_press_reaches_the_live_author_as_card_input_once(tmp_path, decide):
 def test_each_press_of_an_ordinary_action_is_its_own_submission(tmp_path, decide):
     card = _component_card(tmp_path)
     for request_id in ("r1", "r2"):
-        response = decide({"request_id": request_id, "decision_id": f"card:{card['card_id']}:book"})
+        response = decide({"request_id": request_id, "revision": 1, "decision_id": f"card:{card['card_id']}:book"})
         assert response.status_code == 200 and response.json()["duplicate"] is False
     assert [e["text"].count("«Book it»") for e in _mail(tmp_path)] == [1, 1]
     assert "Values:" not in _mail(tmp_path)[0]["text"]
@@ -198,17 +198,21 @@ def test_each_press_of_an_ordinary_action_is_its_own_submission(tmp_path, decide
     ({"decision_id": "card:{id}:missing"}, 404, "action_not_found"),
     ({"decision_id": "card:card_0000000000000000:book"}, 404, "card_not_found"),
     ({"decision_id": "card:{id}"}, 400, "malformed_decision_id"),
+    ({"decision_id": "card:{id}:book", "revision": None}, 400, "revision_required"),
+    ({"decision_id": "card:{id}:book", "revision": "1"}, 400, "revision_required"),
+    ({"decision_id": "card:{id}:book", "revision": 2}, 409, "card_stale"),
 ])
 def test_a_refused_press_records_nothing(tmp_path, decide, body, status, reason):
     card = _component_card(tmp_path)
-    response = decide({"request_id": "r1", **body, "decision_id": body["decision_id"].format(id=card["card_id"])})
+    press = {"request_id": "r1", "revision": 1, **body, "decision_id": body["decision_id"].format(id=card["card_id"])}
+    response = decide({key: value for key, value in press.items() if value is not None})
     assert response.status_code == status and response.json()["reason_code"] == reason
     assert load_card(tmp_path, card["card_id"])["submissions"] == [] and _mail(tmp_path) == []
 
 
 def test_form_values_accept_json_scalars(tmp_path, decide):
     card = _component_card(tmp_path)
-    response = decide({"request_id": "r1", "decision_id": f"card:{card['card_id']}:dates",
+    response = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:dates",
                        "values": {"from": 3, "to": None}})
     assert response.status_code == 200
     assert load_card(tmp_path, card["card_id"])["submissions"][0]["values"] == {"from": 3, "to": None}
@@ -216,37 +220,76 @@ def test_form_values_accept_json_scalars(tmp_path, decide):
 
 def test_widget_and_app_cards_have_no_host_drawn_controls(tmp_path, decide):
     app = _app_card(tmp_path)
-    response = decide({"request_id": "r1", "decision_id": f"card:{app['card_id']}:book"})
+    response = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{app['card_id']}:book"})
     assert response.status_code == 404 and response.json()["reason_code"] == "action_not_found"
 
 
 def test_a_press_after_the_author_ended_is_the_owners_message_in_the_cards_chat(tmp_path, decide):
+    """The owner's bubble holds their own words (the pressed label, each value), as a Reply to the card."""
+    from supervisor.card_delivery import send_card
+
     card = _component_card(tmp_path)
+    assert send_card(decide.bridge, card, 1, task_id="task-1", interactive=True) == (True, "ok")
+    [shown] = [f for f in decide.frames if f.get("type") == "card"]
+    assert load_card(tmp_path, card["card_id"])["publication_address"] == shown["row_address"]
     decide.state["live"] = False
     decision_id = f"card:{card['card_id']}:book"
-    response = decide({"request_id": "r1", "decision_id": decision_id})
+    response = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id})
     assert response.status_code == 200, response.text
     assert response.json()["delivery"] == "forwarded" and _mail(tmp_path) == []
     queued = decide.bridge._inbox.get_nowait()
     assert queued["chat_id"] == 1 and queued["client_message_id"] == f"card_input:{card['card_id']}:r1"
-    assert queued["text"].startswith("[Card input] The owner pressed «Book it»")
+    assert queued["text"] == "Book it", "never the host's [Card input] frame in the owner's voice"
     echo = [f for f in decide.frames if f.get("type") == "chat" and f.get("role") == "user"]
-    assert len(echo) == 1 and echo[0]["content"] == queued["text"]
-    again = decide({"request_id": "r1", "decision_id": decision_id})
+    assert len(echo) == 1 and echo[0]["content"] == "Book it"
+    assert echo[0]["reply_to"]["address"] == shown["row_address"] and echo[0]["reply_to"]["role"] == "assistant"
+    form = decide({"request_id": "r3", "revision": 1, "decision_id": f"card:{card['card_id']}:dates",
+                   "values": {"from": "Mon", "to": 3}})
+    assert form.json()["delivery"] == "forwarded"
+    assert decide.bridge._inbox.get_nowait()["text"] == "Dates\nfrom: Mon\nto: 3"
+    again = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id})
     assert again.json()["duplicate"] is True and again.json()["delivery"] == "forwarded"
     assert decide.bridge._inbox.empty()
     assert load_card(tmp_path, card["card_id"])["submissions"][0]["delivered"] == "forwarded"
+
+
+def test_a_kept_copy_cannot_press_a_replaced_card_but_a_recorded_press_still_retries(tmp_path, decide):
+    card = _component_card(tmp_path)
+    decide.state["live"] = False
+    owed = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:book"})
+    assert owed.status_code == 200
+    write_card(tmp_path, chat_id=1, task_id="task-2", title="Flights (new)", fallback_text="C or D", kind="components",
+               body={"components": [{"type": "action", "label": "Book C", "submit": {"id": "book"}}]},
+               replace=card["card_id"])
+    stale = decide({"request_id": "r2", "revision": 1, "decision_id": f"card:{card['card_id']}:book"})
+    assert stale.status_code == 409 and stale.json()["reason_code"] == "card_stale" and stale.json()["revision"] == 2
+    assert [row["request_id"] for row in load_card(tmp_path, card["card_id"])["submissions"]] == ["r1"]
+    fresh = decide({"request_id": "r3", "revision": 2, "decision_id": f"card:{card['card_id']}:book"})
+    assert fresh.status_code == 200 and load_card(tmp_path, card["card_id"])["submissions"][-1]["label"] == "Book C"
+    again = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:book"})
+    assert again.status_code == 200 and again.json()["duplicate"] is True, "a recorded press answers whatever the card became"
+
+
+def test_the_summary_names_each_press_by_its_request(tmp_path, decide):
+    from ouroboros.card_store import submissions_summary
+
+    card = _component_card(tmp_path, chat_id=-7)
+    decide.state["live"] = False
+    assert decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:dates",
+                   "values": {"from": "Mon"}}).status_code == 202
+    [entry] = submissions_summary(load_card(tmp_path, card["card_id"]))
+    assert entry == {"action_id": "dates", "label": "Dates", "at": entry["at"], "delivery": "owed", "request_id": "r1"}
 
 
 def test_an_undeliverable_press_stays_owed_and_a_retry_delivers_it(tmp_path, decide):
     card = _component_card(tmp_path, chat_id=-7)  # a machine chat: no owner turn to start there
     decide.state["live"] = False
     decision_id = f"card:{card['card_id']}:book"
-    owed = decide({"request_id": "r1", "decision_id": decision_id})
+    owed = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id})
     assert owed.status_code == 202 and owed.json()["delivery"] == "owed"
     assert owed.json()["reason_code"] == "card_chat_unanswerable"
     decide.state["live"] = True
-    retried = decide({"request_id": "r1", "decision_id": decision_id})
+    retried = decide({"request_id": "r1", "revision": 1, "decision_id": decision_id})
     assert retried.status_code == 200 and retried.json() | {"duplicate": True} == retried.json()
     assert retried.json()["delivery"] == "delivered" and len(_mail(tmp_path)) == 1
 

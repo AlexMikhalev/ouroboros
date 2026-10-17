@@ -163,3 +163,66 @@ test('a card read again shows its recorded presses; a kept card on Widgets uses 
         dom.restore();
     }
 });
+
+test('an owed once press is retried under its recorded id, after a reload too; once delivered it locks', async () => {
+    const r = recorder({ status: 202, body: { ok: true, delivery: 'owed' } }, { status: 200, body: { ok: true, delivery: 'forwarded' } });
+    const presses = createCardPresses({ cardId: 'card_e', post: r.post, newId: r.newId });
+    assert.equal((await presses.press('pick', { once: true })).message, 'Saved, not delivered yet. Press again to retry.');
+    // The live card_state that follows a 202 records the press as owed: that must not lock its retry.
+    presses.adopt([{ action_id: 'pick', label: 'Pick', at: 't', delivery: 'owed', request_id: 'req-1' }], new Set(['pick']));
+    assert.equal(presses.locked('pick'), false, 'owed: the press can still be delivered');
+    assert.equal((await presses.press('pick', { once: true })).message, 'Sent ✓');
+    assert.deepEqual(r.sent.map((body) => body.request_id), ['req-1', 'req-1'], 'the retry is the same press');
+    assert.equal(presses.locked('pick'), true);
+
+    // A reload starts a new ledger: the recorded owed press is retried under its own id, whatever the form holds now.
+    const again = recorder();
+    const reloaded = createCardPresses({ cardId: 'card_e', post: again.post, newId: again.newId });
+    reloaded.adopt([{ action_id: 'pick', label: 'Pick', at: 't', delivery: 'owed', request_id: 'saved-7' }], new Set(['pick']));
+    assert.equal(reloaded.locked('pick'), false);
+    await reloaded.press('pick', { once: true, values: { note: 'changed' } });
+    assert.equal(again.sent[0].request_id, 'saved-7');
+    const counted = createCardPresses({ cardId: 'card_e', post: again.post, newId: again.newId });
+    counted.adopt([{ action_id: 'pick', label: 'Pick', at: 't', delivery: 'forwarded', request_id: 'saved-7' }], new Set(['pick']));
+    assert.equal(counted.locked('pick'), true, 'a delivered once press locks from history');
+    await counted.press('pick', { once: true });
+    assert.equal(again.sent.length, 1, 'a counted once control never posts again');
+});
+
+test('a press names the revision it was drawn from; a changed card is read again, a kept copy says it is out of date', async () => {
+    const dom = installCardDom();
+    const settle = async () => { for (let i = 0; i < 6; i += 1) await tick(); };
+    try {
+        const r = recorder({ status: 409, body: { ok: false, reason_code: 'card_stale', revision: 3 } });
+        const mount = document.createElement('div');
+        const stale = [];
+        mountCardComponents(mount, { ...CARD, revision: 2 }, { presses: createCardPresses({ cardId: 'card_d', post: r.post, newId: r.newId }),
+            onStale: (revision) => stale.push(revision) });
+        mount.querySelector('[data-widget-action]').click();
+        await settle();
+        assert.equal(r.sent[0].revision, 2);
+        assert.deepEqual(stale, [3], 'the feed reads the newer card');
+        assert.match(mount.querySelector('[data-widget-feedback]').textContent, /changed since it was drawn/);
+        assert.equal(mount.querySelector('[data-widget-action]').disabled, false, 'a stale press locks nothing');
+
+        const sent = [];
+        const prior = globalThis.fetch;
+        globalThis.fetch = async (url, init) => {
+            sent.push(JSON.parse(init.body));
+            return { status: 409, json: async () => ({ ok: false, reason_code: 'card_stale', revision: 5 }) };
+        };
+        try {
+            const board = document.createElement('div');
+            mountPinnedCard(board, { key: '_cards:card_d', skill: '_cards', tab_id: 'card_d', pinned_card: true, revision: '4',
+                render: { kind: 'declarative', components: CARD.components, data: CARD.data } });
+            board.querySelector('[data-widget-action]').click();
+            await settle();
+            assert.equal(sent[0].revision, 4, 'a kept card presses the revision it was kept at');
+            assert.match(board.querySelector('[data-widget-feedback]').textContent, /kept copy is out of date/);
+        } finally {
+            globalThis.fetch = prior;
+        }
+    } finally {
+        dom.restore();
+    }
+});

@@ -190,7 +190,7 @@ def test_an_oversized_or_binary_app_is_refused(tmp_path):
 def test_replace_updates_a_card_of_the_same_chat_in_place(tmp_path):
     ctx = _ctx(tmp_path)
     card_id = json.loads(_show_card(ctx, title="Vote", fallback_text="v1", components=[ACTION]))["card_id"]
-    record_submission(tmp_path, card_id, request_id="r1", action_id="book", label="Book it", values=None, once=False)
+    record_submission(tmp_path, card_id, request_id="r1", action_id="book", label="Book it", values=None, once=False, revision=1)
     _events(ctx)
     receipt = json.loads(_show_card(ctx, title="Vote (closed)", fallback_text="v2",
                                     components=[{"type": "callout", "text": "Closed"}], replace=card_id))
@@ -212,20 +212,20 @@ def test_presses_are_idempotent_per_request_and_once_keeps_the_first(tmp_path):
     card = write_card(tmp_path, chat_id=1, task_id="t", title="T", fallback_text="p", kind="components",
                       body={"components": [ACTION]})
     first = record_submission(tmp_path, card["card_id"], request_id="r1", action_id="dates", label="Dates",
-                              values={"from": "Mon"}, once=True)
+                              values={"from": "Mon"}, once=True, revision=1)
     assert first["duplicate"] is False and first["submission"]["delivered"] == "owed"
     again = record_submission(tmp_path, card["card_id"], request_id="r1", action_id="dates", label="Dates",
-                              values={"from": "Tue"}, once=True)
+                              values={"from": "Tue"}, once=True, revision=1)
     assert again["duplicate"] is True and again["submission"]["values"] == {"from": "Mon"}
     later = record_submission(tmp_path, card["card_id"], request_id="r2", action_id="dates", label="Dates",
-                              values=None, once=True)
+                              values=None, once=True, revision=1)
     assert later["winner"]["request_id"] == "r1" and "submission" not in later
     many = record_submission(tmp_path, card["card_id"], request_id="r3", action_id="book", label="Book it",
-                             values=None, once=False)
+                             values=None, once=False, revision=1)
     assert [row["action_id"] for row in submissions_summary(many["record"])] == ["dates", "book"]
     with pytest.raises(CardStoreError):
         record_submission(tmp_path, "card_ffffffffffffffff", request_id="r", action_id="a", label="a",
-                          values=None, once=False)
+                          values=None, once=False, revision=1)
 
 
 def test_the_oldest_presses_are_dropped_and_counted_beyond_the_bound(tmp_path):
@@ -233,7 +233,7 @@ def test_the_oldest_presses_are_dropped_and_counted_beyond_the_bound(tmp_path):
                       body={"components": [ACTION]})
     for index in range(MAX_SUBMISSIONS + 3):
         outcome = record_submission(tmp_path, card["card_id"], request_id=f"r{index}", action_id="book",
-                                    label="Book it", values=None, once=False)
+                                    label="Book it", values=None, once=False, revision=1)
     stored = outcome["record"]
     assert len(stored["submissions"]) == MAX_SUBMISSIONS and stored["submissions_dropped"] == 3
     assert stored["submissions"][0]["request_id"] == "r3"

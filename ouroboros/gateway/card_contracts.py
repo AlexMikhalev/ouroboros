@@ -22,12 +22,14 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
 class CardSubmissionSummary(TypedDict):
     """One recorded owner press: which control, its label as drawn, when, and its delivery
     (``delivered`` into the authoring task's mailbox, ``forwarded`` as the owner's message
-    after that task ended, ``owed`` while neither has happened)."""
+    after that task ended, ``owed`` while neither has happened). ``request_id`` retries an
+    owed press, after a reload too."""
 
     action_id: str
     label: str
     at: str
     delivery: Literal["owed", "delivered", "forwarded"]
+    request_id: str
 
 
 class CardOutbound(ChatReferenceFields):

@@ -705,12 +705,13 @@
 
 /**
  * One recorded owner press: `delivery` is `delivered` (the authoring task's mailbox), `forwarded` (the owner's
- * message after that task ended) or `owed`.
+ * message after that task ended) or `owed`; `request_id` retries an owed press, after a reload too.
  * @typedef {Object} CardSubmissionSummary
  * @property {string} action_id
  * @property {string} label
  * @property {string} at
  * @property {'owed'|'delivered'|'forwarded'} delivery
+ * @property {string} request_id
  */
 
 /**

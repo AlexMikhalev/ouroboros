@@ -2,8 +2,9 @@
 // Ouroboros put into a living card, drawn by widget_render.js in a CARD context — no skill route, the card's `data` as
 // what path fields read, only inline `data:` media — in the chat feed (chat_cards.js) and, once kept, on the Widgets
 // page (`mountPinnedCard`). Local components (tabs, details) never call the server. A press on an `action` or a `form`
-// is the owner's act: it goes to `POST /api/decisions` as `card:<card_id>:<submit.id>` (`createCardPresses`) and
-// comes back to Ouroboros as owner input.
+// is the owner's act: it goes to `POST /api/decisions` as `card:<card_id>:<submit.id>` with the card `revision` it was
+// drawn from (`createCardPresses`) and comes back to Ouroboros as owner input; a card that changed since answers
+// `card_stale`, so a kept copy never presses whatever control now has that id.
 import { apiFetch } from './api_client.js';
 import { applyChartTheme, onThemeChange } from './theme_palette.js';
 import { collectSafeFieldValues } from './ui_helpers.js';
@@ -15,6 +16,8 @@ export const CARD_RENDER_CONTEXT = Object.freeze({ routePath: () => '', routePre
 const COMMIT_TYPES = new Set(['action', 'form']);
 const SENT = { status: 'success', message: 'Sent ✓' };
 const OWED = { status: 'warning', message: 'Saved, not delivered yet. Press again to retry.' };
+const STALE = { status: 'warning', message: 'This card changed since it was drawn. Look at the new version first.' };
+const KEPT_STALE = { status: 'warning', message: 'This kept copy is out of date. Keep the new version from the chat.' };
 
 const newRequestId = () => globalThis.crypto?.randomUUID?.() || `card-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const sameValues = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -32,11 +35,12 @@ export async function postCardDecision(body) {
 }
 
 // What a press's answer means for its control: the feedback it shows, whether the same request id is retried by the
-// next press (no answer, a server failure, delivery still owed) and whether the control locks (gone, or a `once`
-// control that already counted).
+// next press (no answer, a server failure, delivery still owed), whether the control locks (gone, or a `once`
+// control that already counted) and whether the card changed since it was drawn (`stale`: its current revision).
 function pressOutcome(status, body = {}) {
     if (status === 200 && body.ok !== false) return { feedback: SENT, sent: true };
     if (status === 202) return { feedback: OWED, retry: true };
+    if (status === 409 && body.reason_code === 'card_stale') return { feedback: STALE, stale: Number(body.revision) || 1 };
     if (status === 409 && body.reason_code === 'card_action_once') {
         return { feedback: { status: 'success', message: 'Already sent ✓' }, lock: true };
     }
@@ -54,9 +58,11 @@ function pressOutcome(status, body = {}) {
 /**
  * The presses of one card, by `submit.id`. Each press is its own submission with a fresh `request_id`; a press that
  * got no answer, failed on the server or is still owed is retried by the next press with the SAME id (when its values
- * are the same), so the host records it once. A `once` control locks after its first press counted — here, or in the
- * card's recorded presses (`adopt`). `press(actionId, {values, once})` resolves to the control's feedback, or null
- * while that control's earlier press is still in flight.
+ * are the same), so the host records it once. A press the card records as still owed (`adopt`, after a reload too) is
+ * retried under its recorded id; for a `once` control that retry is the only press left, whatever the form now holds.
+ * A `once` control locks once its press was delivered or forwarded — here, or in the card's recorded presses.
+ * `press(actionId, {values, once, revision})` resolves to the control's feedback (with `stale`, the card's current
+ * revision, when it changed since it was drawn), or null while that control's earlier press is still in flight.
  */
 export function createCardPresses({ cardId, post = postCardDecision, newId = newRequestId }) {
     const retry = new Map();
@@ -65,27 +71,36 @@ export function createCardPresses({ cardId, post = postCardDecision, newId = new
     return {
         locked: (actionId) => locked.has(actionId),
         lockedFeedback: (actionId) => locked.get(actionId) || null,
-        /** The card's `submissions_summary`: a `once` control whose press was recorded stays locked. */
+        /** The card's `submissions_summary`: each control's latest press decides — owed is retried, a counted `once` locks. */
         adopt(summary, onceIds) {
-            for (const entry of Array.isArray(summary) ? summary : []) {
-                if (onceIds.has(entry?.action_id) && !locked.has(entry.action_id)) {
-                    locked.set(entry.action_id, entry.delivery === 'owed' ? { status: 'warning', message: 'Saved, not delivered yet.' } : SENT);
+            const latest = new Map((Array.isArray(summary) ? summary : []).filter((entry) => entry?.action_id)
+                .map((entry) => [entry.action_id, entry]));
+            for (const [actionId, entry] of latest) {
+                const once = onceIds.has(actionId);
+                if (entry.delivery !== 'owed') {
+                    if (once && !locked.has(actionId)) locked.set(actionId, SENT);
+                } else if (entry.request_id && !inFlight.has(actionId) && (once || !retry.has(actionId))) {
+                    retry.set(actionId, { requestId: entry.request_id, values: null, anyValues: once });
                 }
             }
         },
-        async press(actionId, { values = null, once = false } = {}) {
+        async press(actionId, { values = null, once = false, revision } = {}) {
             if (locked.has(actionId)) return locked.get(actionId);
             if (inFlight.has(actionId)) return null;
             const prior = retry.get(actionId);
-            const requestId = prior && sameValues(prior.values, values) ? prior.requestId : newId();
-            retry.set(actionId, { requestId, values });
+            const reuse = prior && (prior.anyValues || sameValues(prior.values, values));
+            const requestId = reuse ? prior.requestId : newId();
+            retry.set(actionId, { requestId, values, anyValues: Boolean(reuse && prior.anyValues) });
             inFlight.add(actionId);
-            const answer = await post({ request_id: requestId, decision_id: `card:${cardId}:${actionId}`, ...(values ? { values } : {}) });
+            const answer = await post({
+                request_id: requestId, decision_id: `card:${cardId}:${actionId}`,
+                ...(Number.isInteger(revision) ? { revision } : {}), ...(values ? { values } : {}),
+            });
             inFlight.delete(actionId);
             const outcome = pressOutcome(answer?.status ?? 0, answer?.body || {});
             if (!outcome.retry) retry.delete(actionId);
             if (outcome.lock || (once && outcome.sent)) locked.set(actionId, outcome.feedback);
-            return outcome.feedback;
+            return outcome.stale ? { ...outcome.feedback, stale: outcome.stale } : outcome.feedback;
         },
     };
 }
@@ -108,12 +123,13 @@ function drawnTree(components, presses) {
 }
 
 /**
- * Mount one component card: `card` carries the `CardResponse` fields `{card_id, components, data?,
+ * Mount one component card: `card` carries the `CardResponse` fields `{card_id, revision, components, data?,
  * submissions_summary?}`. `presses` is the card's ledger when the caller keeps it across mounts (a feed row released
  * and drawn again keeps its retry ids); `write(fn)` is the place's own DOM write (the feed keeps its reading position
- * through it). Returns `{update(card), dispose()}`; `update` draws a new revision in place.
+ * through it); `onStale(revision)` reads a card that changed since it was drawn (none: a kept copy says it is out of
+ * date). Returns `{update(card), dispose()}`; `update` draws a new revision in place.
  */
-export function mountCardComponents(mount, card, { presses = createCardPresses({ cardId: card.card_id }), write = (fn) => fn() } = {}) {
+export function mountCardComponents(mount, card, { presses = createCardPresses({ cardId: card.card_id }), write = (fn) => fn(), onStale = null } = {}) {
     const componentState = {};
     const formValues = {};
     const pendingActions = new Set();
@@ -154,11 +170,12 @@ export function mountCardComponents(mount, card, { presses = createCardPresses({
         pendingActions.add(key);
         delete componentState[`feedback:${key}`];
         write(render);
-        const feedback = await presses.press(actionId, { values, once: spec.submit.once === true });
+        const feedback = await presses.press(actionId, { values, once: spec.submit.once === true, revision: Number(current.revision) || undefined });
         if (disposed) return;
         pendingActions.delete(key);
-        if (feedback) componentState[`feedback:${key}`] = feedback;
+        if (feedback) componentState[`feedback:${key}`] = feedback.stale && !onStale ? KEPT_STALE : feedback;
         write(render);
+        if (feedback?.stale && onStale) onStale(feedback.stale);
     };
     const listen = (type, handler) => mount.addEventListener(type, handler, { signal: interactions.signal });
     listen('submit', (event) => {
@@ -211,9 +228,11 @@ export async function setCardPinned(cardId, pinned) {
     }
 }
 
-/** A kept card on the Widgets page (a `pinned_card` tab of skill `_cards`): the same host, presses to `card:`. */
+/** A kept card on the Widgets page (a `pinned_card` tab of skill `_cards`): the same host, presses to `card:` with the
+ *  revision it was kept at (a card replaced since says the copy is out of date). */
 export function mountPinnedCard(mount, tab) {
     const render = tab.render || {};
-    const mounted = mountCardComponents(mount, { card_id: tab.tab_id, components: render.components, data: render.data });
+    const mounted = mountCardComponents(mount, { card_id: tab.tab_id, revision: Number(tab.revision) || 1,
+        components: render.components, data: render.data });
     return () => mounted.dispose();
 }

@@ -29,8 +29,10 @@ class DecisionRequest(TypedDict):
     Routing requires the integer — its choice IS the option. Model waits
     instead require revision and action, with the matching action fields;
     persist_role defaults false, and an empty credential profile means Auto.
-    A card press carries only ``values``, and those only for a form action (keys are
-    the form's field names; JSON scalars, text at most 4000 characters, at most 50).
+    A card press carries ``revision`` (the card revision it was drawn from; a newer card
+    answers 409 ``card_stale`` with the current ``revision``) and ``values`` only for a
+    form action (keys are the form's field names; JSON scalars, text at most 4000
+    characters, at most 50).
     Each ingress validates its own closed field set before effects.
     """
 
@@ -78,7 +80,8 @@ class DecisionResponse(TypedDict, total=False):
     up included) or Panic saves nothing, nor does an unreadable (unknown) state.
 
     A card press is recorded per ``request_id`` (each press its own; ``once``
-    actions keep the first and answer 409 ``card_action_once`` with ``winner``).
+    actions keep the first and answer 409 ``card_action_once`` with ``winner``; a card
+    that changed since it was drawn answers 409 ``card_stale`` with its ``revision``).
     ``delivery`` says where it went: ``delivered`` into the authoring task's
     mailbox, ``forwarded`` as the owner's message after that task ended, or
     ``owed`` (202 with ``reason_code``; resend the same ``request_id``).

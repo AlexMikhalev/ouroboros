@@ -293,7 +293,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
                 host.className = 'chat-card-components';
                 record.body.replaceChildren(host);
                 setStatus(record, '');
-                record.mounted = mountCardComponents(host, body, { presses: pressLedger(record.id), write });
+                record.mounted = mountCardComponents(host, body, { presses: pressLedger(record.id), write, onStale: (revision) => load(record, revision) });
             });
         } else if (body.kind === 'widget') {
             mountWidget(record, body.widget);

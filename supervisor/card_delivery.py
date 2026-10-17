@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
-from ouroboros.card_store import submissions_summary
+from ouroboros.card_store import record_publication, submissions_summary
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_CARD, CHAT_OUTBOUND, publish_event
 from ouroboros.utils import utc_now_iso
@@ -52,6 +52,10 @@ def send_card(bridge: Any, record: Dict[str, Any], chat_id: int, *, task_id: str
              "ts": ts, "chat_id": int(chat_id), "task_id": task_id}
     if stored:
         frame.update(projection_fields(stored))
+        try:  # the row a late press answers (the owner's message replies to the card); never blocks delivery
+            record_publication(bus.DATA_DIR, identity["card_id"], int(chat_id), address=str(frame.get("row_address") or ""))
+        except (OSError, TimeoutError, ValueError):
+            pass
     stamp_project_thread(bus.DATA_DIR, frame)
     bridge.broadcast(frame)
     transport = bridge.chat_transport(chat_id)

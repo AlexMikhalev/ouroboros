@@ -105,23 +105,36 @@ def write_card(root: Any, *, chat_id: int, task_id: str, title: str, fallback_te
     return _update(_card_path(root, replace), mutate)
 
 
-def record_publication(root: Any, card_id: str, chat_id: int) -> Optional[Dict[str, Any]]:
-    """The chat the card's row was written to (a late press is forwarded there)."""
+def record_publication(root: Any, card_id: str, chat_id: int, *, address: str = "") -> Optional[Dict[str, Any]]:
+    """The chat the card's row was written to, and once stored that row's address: a late
+    press is forwarded there as the owner's reply to the card."""
     def mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not current or current.get("publication_chat_id") == chat_id:
+        if not current or (current.get("publication_chat_id") == chat_id
+                           and (not address or current.get("publication_address") == address)):
             return None
         current["publication_chat_id"] = chat_id
+        if address:
+            current["publication_address"] = address
         return current
 
     return _update(_card_path(root, card_id), mutate) or None
 
 
-def record_submission(root: Any, card_id: str, *, request_id: str, action_id: str, label: str,
-                      values: Optional[Dict[str, Any]], once: bool) -> Dict[str, Any]:
-    """Record one owner press, idempotent on ``request_id``.
+def find_submission(record: Dict[str, Any], request_id: str) -> Optional[Dict[str, Any]]:
+    """The press recorded under ``request_id`` (a retry of it delivers that press again)."""
+    return next((row for row in record.get("submissions") or []
+                 if isinstance(row, dict) and row.get("request_id") == request_id), None)
 
-    Returns ``{"record", "submission", "duplicate"}``, or ``{"record", "winner"}`` when a
-    ``once`` action was already pressed under another request.
+
+def record_submission(root: Any, card_id: str, *, request_id: str, action_id: str, label: str,
+                      values: Optional[Dict[str, Any]], once: bool, revision: int) -> Dict[str, Any]:
+    """Record one owner press of the card drawn at ``revision``, idempotent on ``request_id``.
+
+    Returns ``{"record", "submission", "duplicate"}``; ``{"record", "stale"}`` (the current
+    revision) when the card changed since it was drawn, so the press would name another
+    control; or ``{"record", "winner"}`` when a ``once`` action was already pressed under
+    another request. A press already recorded under ``request_id`` answers as a duplicate
+    whatever the card became since.
     """
     outcome: Dict[str, Any] = {}
 
@@ -129,10 +142,16 @@ def record_submission(root: Any, card_id: str, *, request_id: str, action_id: st
         if not current:
             raise CardStoreError("card_not_found", f"card {card_id} does not exist")
         submissions = current.setdefault("submissions", [])
-        prior = next((row for row in submissions if row.get("request_id") == request_id), None)
+        prior = find_submission(current, request_id)
+        if prior is not None:
+            outcome.update(submission=prior, duplicate=True)
+            return None
+        if int(current.get("revision") or 1) != revision:
+            outcome.update(stale=int(current.get("revision") or 1))
+            return None
         winner = next((row for row in submissions if row.get("action_id") == action_id), None) if once else None
-        if prior is not None or winner is not None:
-            outcome.update(submission=prior, duplicate=True) if prior is not None else outcome.update(winner=winner)
+        if winner is not None:
+            outcome.update(winner=winner)
             return None
         submission = {"request_id": request_id, "action_id": action_id, "label": label,
                       **({"values": values} if values is not None else {}), "at": utc_now_iso(), "delivered": "owed"}
@@ -160,9 +179,11 @@ def mark_delivery(root: Any, card_id: str, request_id: str, delivered: str) -> D
 
 
 def submissions_summary(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """What a surface shows under a card: each press's action, label, time and delivery."""
+    """What a surface shows under a card: each press's action, label, time and delivery, and
+    its ``request_id`` (an owed press is retried under it, after a reload too)."""
     return [{"action_id": str(row.get("action_id") or ""), "label": str(row.get("label") or row.get("action_id") or ""),
-             "at": str(row.get("at") or ""), "delivery": str(row.get("delivered") or "owed")}
+             "at": str(row.get("at") or ""), "delivery": str(row.get("delivered") or "owed"),
+             "request_id": str(row.get("request_id") or "")}
             for row in record.get("submissions") or [] if isinstance(row, dict)]
 
 
@@ -214,6 +235,6 @@ def unpin_card(root: Any, card_id: str) -> bool:
 
 __all__ = [
     "CARD_KINDS", "CardStoreError", "MAX_APP_BYTES", "MAX_PINS", "MAX_SUBMISSIONS",
-    "load_card", "mark_delivery", "pin_card", "pinned_cards", "read_app_bytes", "record_publication",
+    "find_submission", "load_card", "mark_delivery", "pin_card", "pinned_cards", "read_app_bytes", "record_publication",
     "record_submission", "store_app_bytes", "submissions_summary", "unpin_card", "valid_card_id", "write_card",
 ]
