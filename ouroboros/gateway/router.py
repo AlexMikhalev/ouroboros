@@ -75,6 +75,7 @@ def collect_routes(
     from ouroboros.gateway.logs import api_logs_tail
     from ouroboros.gateway.storage import storage_routes
     from ouroboros.gateway.marketplace import (
+        api_hub_installed,
         api_marketplace_info,
         api_marketplace_install,
         api_marketplace_installed,
@@ -203,6 +204,7 @@ def collect_routes(
         Route("/api/skills/{skill}/reconcile", endpoint=api_skill_reconcile, methods=["POST"]),
         Route("/api/marketplace/clawhub/search", endpoint=api_marketplace_search, methods=["GET"]),
         Route("/api/marketplace/clawhub/installed", endpoint=api_marketplace_installed, methods=["GET"]),
+        Route("/api/marketplace/ouroboroshub/installed", endpoint=api_hub_installed, methods=["GET"]),
         Route("/api/marketplace/clawhub/info/{slug:path}", endpoint=api_marketplace_info, methods=["GET"]),
         Route("/api/marketplace/clawhub/preview/{slug:path}", endpoint=api_marketplace_preview, methods=["GET"]),
         Route("/api/marketplace/clawhub/install", endpoint=api_marketplace_install, methods=["POST"]),
