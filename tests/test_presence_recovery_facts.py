@@ -152,13 +152,14 @@ def test_unknown_terminal_wake_does_not_rebrand_its_salvaged_outcome_as_silence(
 
 
 def test_retained_facts_survive_later_room_messages_in_existing_memory_lane(tmp_path):
-    from ouroboros.utils import append_jsonl, utc_now_iso
+    from ouroboros import dialogue_store
+    from ouroboros.utils import utc_now_iso
     from tests.test_memory_view_room import _install, _view
 
     _install(tmp_path)
     task, _ = _stored(tmp_path, child="admitted-child", source="A source phrase unavailable to another task reader.")
     assert record_unresolved_turn(tmp_path, task["id"])
-    append_jsonl(tmp_path / "logs" / "chat.jsonl", {
+    dialogue_store.append(tmp_path, "chat", {
         "ts": utc_now_iso(), "direction": "in", "chat_id": task["chat_id"], "text": "A later independent message.",
         "source": task["source"], "transport": {"provider": "telegram"},
     })
