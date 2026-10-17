@@ -1059,10 +1059,11 @@ reconciliation.
 Each room's bar has one status, right after its title: the short word in its
 status ink, then one mark, as on the sidebar's rows; no frame at rest, a neutral
 tint on hover and while open, a caret when it opens. A work is one request with
-its Continue episodes and whatever of them still lives (helpers, retained
-delegated runs, post-answer upkeep); the server gives each work and each room
-one status, and every surface (bar, Shade, sidebar, cards, Activity, tray)
-words that one status without deciding its own. The room says its busiest work:
+its Continue episodes and whatever of them still lives (helpers, delegated
+runs still working, post-answer upkeep); the server gives each work and each room
+one status, and every surface (bar, Shade, sidebar, cards, tray) words that
+one status without deciding its own; Activity's rows keep their queue words and
+take the work's controls. The room says its busiest work:
 working, then queued, waiting, paused. Live work moves three dots, queued work
 holds three still ones, a wait or a pause shows one, unconfirmed state a hollow
 ring. The mark turns amber while something waits for the owner (moving if work
