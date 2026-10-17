@@ -93,6 +93,7 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _periodic_supervisor_maintenance,
     _periodic_zombie_reconcile,
     _prune_delegated_snapshots,
+    _prune_worktrees,
     _reconcile_delegated_runs,
     _resume_interrupted_project_deletions,
     _run_startup_task_recovery,
@@ -101,7 +102,6 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _startup_review_pool_notice,
     _startup_custody_sweep,
     _startup_prune_sweeps,
-    _startup_worktree_prune,
 )
 from ouroboros.ui_translation import start_background as _start_ui_translation
 from supervisor.workspace_preparation import start_generation as _start_preparation_generation
