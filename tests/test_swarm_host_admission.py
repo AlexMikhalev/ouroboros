@@ -364,7 +364,9 @@ def test_existing_admission_refusal_text_and_order(host, failure):
 
 def _tcp_fallback_host(monkeypatch, request):
     """The host fixture over Windows' TCP socketpair, wherever this interpreter carries it."""
-    monkeypatch.setattr(socket, "socketpair", getattr(socket, "_fallback_socketpair", socket.socketpair))
+    if not hasattr(socket, "_fallback_socketpair"):
+        pytest.skip("this interpreter exposes no TCP socketpair fallback to exercise")
+    monkeypatch.setattr(socket, "socketpair", socket._fallback_socketpair)
     return request.getfixturevalue("host")
 
 

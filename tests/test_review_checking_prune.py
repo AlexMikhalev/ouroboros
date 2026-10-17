@@ -21,7 +21,9 @@ from ouroboros import review_checking as rc
 from ouroboros import review_checking_prune as rp
 from ouroboros import server_maintenance as sm
 from ouroboros.utils import utc_now_iso
-from tests.test_review_checkout_lifecycle import EDIT, LOG, TASK, _boom, _frozen, _seat, _thread, _work
+from tests.test_review_checkout_lifecycle import (
+    EDIT, LOG, TASK, _boom, _frozen, _seat, _thread, _work, directory_source,
+)
 
 LATER = 400 * 86400  # past any retention period
 
@@ -180,10 +182,10 @@ def test_views_used_since_the_process_began_are_kept(tmp_path, monkeypatch):
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "a.txt").write_bytes(b"1")
-    reused = rc.freeze_checking_source(subject, data_root=root)
+    reused = directory_source(subject, root)
     done = _seat(root, reused, "op-reused-done")
     (subject / "a.txt").write_bytes(b"2")
-    finished = rc.freeze_checking_source(subject, data_root=root)
+    finished = directory_source(subject, root)
     gone = _seat(root, finished, "op-done")
     views = root / "state" / "review_checkouts" / "views"
     (views / ".discarded-x.1234").mkdir()
@@ -203,7 +205,7 @@ def test_an_unnamed_view_goes_only_unused_and_past_retention(tmp_path, monkeypat
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "a.txt").write_bytes(b"1")
-    inventory = Path(rc.freeze_checking_source(subject, data_root=root)["view"])  # no seat names it
+    inventory = Path(directory_source(subject, root)["view"])  # no seat names it
     _custody(monkeypatch)
     rp.prune_review_checkouts(root, set(), views_since=time.time() + LATER)
     assert inventory.is_dir()  # unused since the process began, but younger than the retention period
@@ -227,9 +229,9 @@ def test_a_reuse_touches_the_view(tmp_path):
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "a.txt").write_bytes(b"1")
-    view = Path(rc.freeze_checking_source(subject, data_root=root)["view"])
+    view = Path(directory_source(subject, root)["view"])
     os.utime(view, (1, 1))
-    assert rc.freeze_checking_source(subject, data_root=root)["view"] == str(view)
+    assert directory_source(subject, root)["view"] == str(view)
     assert view.stat().st_mtime > time.time() - 60
 
 
@@ -339,7 +341,7 @@ def test_a_failing_ownership_read_keeps_every_view_its_seat_names(tmp_path, monk
     root, source = _frozen(tmp_path)
     area = _thread(root, source, "turn-1")
     (tmp_path / "subject" / "check.py").write_bytes(b"# another wave\n")
-    other = rc.freeze_checking_source(tmp_path / "subject", data_root=root)
+    other = directory_source(tmp_path / "subject", root)
     done = _seat(root, other, "op-done")
     _custody(monkeypatch, settled=[done])
     monkeypatch.setattr(rp, "_last_use", lambda _path: 0.0)  # every marker and view looks long unused
@@ -378,8 +380,8 @@ def test_a_second_concurrent_pass_skips(tmp_path, monkeypatch):
 
 def test_repeated_folder_reviews_leave_only_evidence(tmp_path, monkeypatch):
     """The 2026-10-16 class: 14 acceptance waves of two writable seats over a working folder
-    left 14 folder views and 28 copies. Each copy now goes with its receipt, and the views pass
-    removes the views of finished reviews."""
+    left 14 folder views and 28 copies. The folder is now read in place: no wave copies it,
+    and each seat keeps only what it publishes."""
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "model.bin").write_bytes(os.urandom(2 * 1024 * 1024))
@@ -392,12 +394,9 @@ def test_repeated_folder_reviews_leave_only_evidence(tmp_path, monkeypatch):
             (area / rc.EVIDENCE_DIRNAME / "verdict.log").write_bytes(LOG)
             receipt = rc.terminal_seat_evidence(root, TASK, seat, {"summary": {"state": "succeeded"}})
             assert receipt["status"] == "retained" and not area.exists()
-    _custody(monkeypatch)
-    rp.prune_review_checkouts(root, set(), views_since=time.time() + 1)
     checkouts = root / "state" / "review_checkouts"
-    assert list((checkouts / "views").iterdir()) == []
+    assert not (checkouts / "views").exists()
     assert sum(path.stat().st_size for path in checkouts.rglob("*") if path.is_file()) < 1024 * 1024
-
 
 def test_startup_and_periodic_passes_run_the_prune_and_owe_views_until_done(monkeypatch, tmp_path):
     calls, answers = [], [{"skipped": "views_busy"}, {"views_done": True}, {}]

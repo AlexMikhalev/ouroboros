@@ -101,13 +101,13 @@ def test_reviewer_binary_patch_over_the_bound_is_retained_and_reproduces_the_tre
 def test_reviewer_ordinary_file_over_the_bound_is_retained_whole_before_release(
     tmp_path, writable_engine, monkeypatch,  # noqa: F811
 ):
-    root, drive, written = _subject(tmp_path, "task_acceptance"), tmp_path / "drive", {}
+    root, drive, written = _subject(tmp_path, "skill_review"), tmp_path / "drive", {}  # a copied subject
 
     def edit(area):
         written["area"] = area
         written["sha"] = _write(area / "dataset.bin", OVER_BOUND)
 
-    actor = run_directory(root, drive, "task_acceptance", _source(root, drive, "task_acceptance"), monkeypatch, edit)
+    actor = run_directory(root, drive, "skill_review", _source(root, drive, "skill_review"), monkeypatch, edit)
     assert actor["status"] == "ok", actor
     receipt = actor["usage"]["checking_evidence"]
     assert receipt["status"] == "retained" and receipt["gaps"] == [], {k: receipt.get(k) for k in ("status", "gaps")}

@@ -23,6 +23,7 @@ from tests._review_session_route_shared import (  # noqa: F401 - autouse owned-g
     _owned_gateway_uses_each_test_transport,
 )
 from tests.test_review_checking import author  # noqa: F401
+from tests.test_review_checkout_lifecycle import directory_source
 from tests.test_review_session_rights import writable_engine  # noqa: F401
 from tests.test_review_thread_checking import (  # noqa: F401
     ThreadGateway,
@@ -110,7 +111,7 @@ def test_final_capture_inventory_matches_summary_after_a_failed_capture(
         source_root = tmp_path / "plain"
         source_root.mkdir()
         (source_root / "source.txt").write_bytes(b"immutable subject\n")
-        source = rc.freeze_checking_source(source_root, data_root=drive)
+        source = directory_source(source_root, drive)
     else:
         source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
     area = Path(rc.prepare_seat_area(drive, "task", "op", source))

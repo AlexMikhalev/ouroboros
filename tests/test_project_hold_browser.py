@@ -117,16 +117,18 @@ def test_project_hold_reload_reconnect_and_automatic_same_id_recovery(
                     page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
                     _open_project(page)
                     panel = page.locator(f"#panel-pchat-{PROJECT}")
+                    # The room's status word sits in the panel bar (host), right after its title.
                     page.wait_for_function("([id, text]) => document.getElementById(id)?.innerText.includes(text)",
-                                           arg=[f"panel-pchat-{PROJECT}", WAIT], timeout=30_000)
+                                           arg=["project-panel", WAIT], timeout=30_000)
                     detail = page.request.get(url + f"/api/tasks/{TASK}").json()
                     census = page.request.get(url + "/api/state").json()["active_chat_activities"]
                     row = next(a for a in census if a["activity_id"] == TASK)
                     assert detail["status"] == "scheduled" and row["project_admission_hold"]["label"] == WAIT
                     assert detail["project_admission_hold"]["label"] == WAIT and not calls
                     assert not any(a["phase"] == "working" for a in census)
-                    page.locator('#chat-messages [data-system-type="project_handoff"]').filter(has_text=WAIT).wait_for(
-                        state="attached", timeout=180_000)
+                    # Main keeps the SAME card for the work: the handoff row is data that makes it the portal.
+                    page.locator(f'#chat-messages .chat-live-card[data-portal="1"][data-task-id="{TASK}"]').filter(
+                        has_text=WAIT).wait_for(state="visible", timeout=180_000)
                     record(label, {"detail": detail, "census": census, "panel": panel.inner_text(),
                                    "main": page.locator("#chat-messages").inner_text()})
                     page.screenshot(path=str(evidence / f"{label}.png"))
@@ -153,7 +155,7 @@ def test_project_hold_reload_reconnect_and_automatic_same_id_recovery(
                 page.locator('[data-nav-page="chat"]').click()
                 _open_project(page)
                 page.wait_for_function("([id, text]) => !document.getElementById(id)?.innerText.includes(text)",
-                                       arg=[f"panel-pchat-{PROJECT}", WAIT], timeout=30_000)
+                                       arg=["project-panel", WAIT], timeout=30_000)
                 page.screenshot(path=str(evidence / "recovered.png"))
             except Exception:
                 page.screenshot(path=str(evidence / "zz-failure.png"))

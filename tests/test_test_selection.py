@@ -7,10 +7,10 @@ import pytest
 from ouroboros import test_selection as selection
 
 
-def write(repo, path, text="def test_ok(): pass\n"):
+def write(repo, path, text="def test_ok(): pass\n", newline=None):
     target = repo / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
+    target.write_text(text, encoding="utf-8", newline=newline)
 
 
 @pytest.fixture
@@ -145,6 +145,7 @@ def test_a_release_bump_alone_stays_selected_but_other_carrier_edits_run_full(re
     git("config", "user.email", "selection@example.invalid")
     git("config", "user.name", "Selection tests")
     git("config", "core.autocrlf", autocrlf)
+    git("config", "core.safecrlf", "false")
     project = '[project]\nname = "ouroboros"\nversion = "{}"\ndependencies = [{}]\n'
     write_carrier("VERSION", "7.7.0-rc.1\n")
     write_carrier("pyproject.toml", project.format("7.7.0rc1", ""))
