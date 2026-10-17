@@ -158,7 +158,8 @@ def switch_needs(repo_dir: Any, target_sha: str) -> Dict[str, bool]:
     """What the target tree cannot read, computed from the target before anything moves."""
     return {"facts": target_file_bytes(repo_dir, target_sha, "ouroboros/store.py") is None,
             "money": target_file_bytes(repo_dir, target_sha, "ouroboros/usage_store.py") is None,
-            "handles": target_file_bytes(repo_dir, target_sha, "ouroboros/evidence_packs.py") is None}
+            "handles": target_file_bytes(repo_dir, target_sha, "ouroboros/evidence_packs.py") is None,
+            "dialogue": target_file_bytes(repo_dir, target_sha, "ouroboros/dialogue_store.py") is None}
 
 
 def switch_or_reset(root: Any, repo_dir: Any, *, target_sha: str, target_ref: str, reason: str, door: str,
@@ -167,7 +168,8 @@ def switch_or_reset(root: Any, repo_dir: Any, *, target_sha: str, target_ref: st
     the intent and moves nothing (the seam exports and switches at the restart exit the door
     requests next); a target with it runs the door's own reset now, as before the store.
     Returns ``(ok, message, deferred)``."""
-    if switch_needs(repo_dir, target_sha)["facts"]:
+    needs = switch_needs(repo_dir, target_sha)
+    if needs["facts"] or needs.get("dialogue"):
         record_switch_intent(root, target_sha=target_sha, target_ref=target_ref, reason=reason, door=door)
         return True, (f"authority switch to {target_sha[:12]} recorded: the facts are exported and the checkout "
                       "moves at the restart exit"), True
@@ -422,6 +424,12 @@ def run_switch_seam(root: Any, *, repo_dir: Any, owner: Optional[Owner] = None, 
         if needs["handles"]:
             _progress(root, "handles")
             steps["handles"] = (restore_handles or evidence_packs.restore_checkpoint_handles)(root)
+            _write_receipt(root, receipt)
+        if needs.get("dialogue"):
+            from ouroboros.dialogue_import import export_for_older_body
+
+            _progress(root, "dialogue")
+            steps["dialogue"] = export_for_older_body(root)  # the post-cutover rows back into the chains
             _write_receipt(root, receipt)
     except (OSError, store.StoreError, UsageAccountingError) as exc:
         receipt["export"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "at": utc_now_iso()}

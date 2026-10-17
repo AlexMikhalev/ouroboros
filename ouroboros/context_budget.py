@@ -406,7 +406,7 @@ TOOLS_LOG_WARN_BYTES = 8_000_000
 SUPERVISOR_LOG_WARN_BYTES = 8_000_000
 TASK_REFLECTIONS_LOG_WARN_BYTES = 8_000_000
 # progress.jsonl is expected to be ROTATION-BOUNDED (the chat.jsonl rotation
-# pattern, 800KB cap in supervisor/state.py::rotate_chat_log_if_needed,
+# pattern, 800KB cap in supervisor/state.py::rotate_jsonl_log_if_needed,
 # generalized to progress by the perf/lifecycle sprint). 8MB = 10x that cap:
 # this warning fires only if rotation is broken or missing — a deliberate
 # regression tripwire, not a size preference.

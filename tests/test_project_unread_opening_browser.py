@@ -42,7 +42,7 @@ def _buried_room(data, monkeypatch, project_id, children, padding=0, chat_id=Non
     starts the search above them."""
     from ouroboros.projects_registry import create_project, get_project
     from supervisor import message_bus
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     chat_id = chat_id or create_project(data, project_id, name=project_id.replace("-", " ").title())["chat_id"]
     bridge = message_bus.LocalChatBridge({})
@@ -55,7 +55,7 @@ def _buried_room(data, monkeypatch, project_id, children, padding=0, chat_id=Non
     revision = get_project(data, project_id)["visible_revision"]
     for index in range(children):
         if padding and index == children - 150:
-            rotate_chat_log_if_needed(data, max_bytes=1)
+            rotate_jsonl_log_if_needed(data, "chat.jsonl", "chat", max_bytes=1)
         child = f"child-{index % 40}"
         filler = " filler" * padding * (index < children - 150)
         message_bus.send_with_budget(chat_id, f"Child word {index}{filler}", task_id=child, progress_meta={

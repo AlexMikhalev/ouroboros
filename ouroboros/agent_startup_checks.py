@@ -722,7 +722,7 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     rotation_expected = (
         "This log is expected to be rotation-bounded far below this "
         "threshold; rotation is broken or missing — investigate the "
-        "supervisor rotation tick (rotate_chat_log_if_needed pattern)."
+        "supervisor rotation tick (rotate_jsonl_log_if_needed)."
     )
     return (
         ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, rotation_expected),
@@ -734,7 +734,7 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             PROGRESS_LOG_WARN_BYTES,
             "progress.jsonl is expected to be rotation-bounded far below this "
             "threshold; rotation is broken or missing — investigate the "
-            "supervisor rotation tick (rotate_chat_log_if_needed pattern).",
+            "supervisor rotation tick (rotate_jsonl_log_if_needed).",
         ),
         (
             "state/scheduled_tasks.json",

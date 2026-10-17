@@ -102,12 +102,12 @@ def test_an_ungated_lease_is_not_lendable():
 # --- finding 3: reentry follows the chain from its cursor and names every gap ----------------------
 
 def test_rows_after_the_cursor_follow_a_rotation_into_the_archive(tmp_path):
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     _append(tmp_path, _row(KEY, "before the yield"))
     cursor = pc._chat_cursor(tmp_path)
     _append(tmp_path, _row(KEY, "first after"), _row(OTHER, "another thread"))
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     # The rotator renames the generation verbatim into archive/ and starts an empty live file.
     assert (tmp_path / "logs" / "chat.jsonl").stat().st_size == 0 and list((tmp_path / "archive").glob("chat_*.jsonl"))
     _append(tmp_path, _row(KEY, "second after"))
@@ -116,15 +116,15 @@ def test_rows_after_the_cursor_follow_a_rotation_into_the_archive(tmp_path):
 
 
 def test_a_log_absent_at_the_yield_reads_every_later_generation(tmp_path):
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     _append(tmp_path, _row(KEY, "old archived"))
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     time.sleep(1.1)  # archive names carry a one-second UTC stamp
     cursor = pc._chat_cursor(tmp_path)
     assert cursor["offset"] == 0 and cursor["after_archive"]
     _append(tmp_path, _row(KEY, "new one"))
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     _append(tmp_path, _row(KEY, "new two"))
     rows, gaps = pc._conversation_rows_since(tmp_path, cursor, KEY)
     assert [row["text"] for row in rows] == ["new one", "new two"] and gaps == []

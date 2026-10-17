@@ -156,7 +156,7 @@ ouroboros/ — agent core and shared runtime (§6)
   _usage_rows.py, _usage_money.py, _usage_response.py, usage_ledger.py, skill_review_usage.py — the one reducer, exact Decimal cash, the accounting usage normalizer, shared row rules and the money lock, the read-only Skill Review projection (§6 Usage ledger substrate vs. accounting policy)
   _usage_cache_splits.py — process-local cache split by task/provider/route/review; a missing entry prices a full cache write (§6)
   usage_store.py, usage_journal.py, openrouter_cost.py — `state/usage.sqlite`, its journal import and explicit OpenRouter price receipts (docs/USAGE_STORE.md)
-  store.py, store_import.py, store_switch.py, maintenance_jobs.py, dialogue_store.py, dialogue_import.py — the shared SQLite core (lazy per-thread connections, PERSIST or gated WAL with FULL, typed outcomes, inode-safe reads, export/fork disposal; docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`, durable job rows; boot import/reconcile §2, export before storeless switches §9; packer snapshots precede deletion locks, changed facts defer) and `state/dialog.sqlite` (chat/progress rows by chain coordinate, one `append` seam: dedup, room facts, dispatch obligation; addressed reads; cutover, archive-import job, rollback export; PERSISTENCE.md)
+  store.py, store_import.py, store_switch.py, maintenance_jobs.py, dialogue_store.py, dialogue_import.py — the shared SQLite core (docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`, job rows; boot import/reconcile §2, export before storeless switches §9) and `state/dialog.sqlite` (chat/progress rows by chain coordinate; one `append` seam: dedup, room facts, dispatch obligation; cutover, archive-import job, rollback export; PERSISTENCE.md)
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
@@ -478,7 +478,7 @@ ouroboros/ — agent core and shared runtime (§6)
     github.py — Issue, PR and checks tools (frozen tool module): the shared process binding selects the active Project; discovery reads token sources or native CLI configuration without an authentication probe; a refusal before the first `gh` launch is `completed_no_effect`
     github_checks.py — The reader behind `get_github_checks`: one commit's workflow runs, jobs, failure annotations and pull request rollup, as facts and named unavailable sources under one deadline
     parallel_review.py — Prepares and admits every seat before the review wave sends (§6 Surfaces and money admission)
-    plan_review_references.py — Reference projection with its own provenance rows (`logs/progress.jsonl`); no plan authority
+    plan_review_references.py — Reference projection with its own provenance rows (progress stream); no plan authority
     plan_review.py — `plan_task` entry: free write and read, the paid ask, typed `PLAN_*` refusals (§6 Plan construction and review)
     plan_ask.py — One ask: participants, body predicate, delivery, continuation, dispatch, settlement
     plan_review_runtime.py — Review-slot runtime of an ask (`run_plan_review_slots`, `plan_review_slots`, fit, deadline)
@@ -679,7 +679,7 @@ Birth identity is separate from PID presence. Linux mints boot-qualified ticks, 
 │   ├── observability/             ← private forensic ledger: blobs/<sha256>.json.gz, calls/<task_id>/<call_id>.json, packs/<task>.xz once settled
 │   ├── services/<task_id>/<service>.log ← service runner logs
 │   ├── logs/
-│   │   ├── chat.jsonl             ← frozen at the cutover (state/dialog.sqlite)
+│   │   ├── chat.jsonl             ← frozen at the cutover
 │   │   ├── progress.jsonl         ← frozen at the cutover
 │   │   ├── chat_annotations.jsonl ← routing status by client_message_id
 │   │   ├── events.jsonl           ← lifecycle, llm_round/llm_usage, errors

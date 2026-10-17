@@ -59,13 +59,13 @@ def test_large_single_message_is_fully_readable_inside_frozen_ceiling(tmp_path):
 
 
 def test_old_snapshot_remains_readable_after_new_reentry_and_rotation(tmp_path):
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     registry, ctx = _actor(tmp_path)
     cursor = pc._chat_cursor(tmp_path)
     _append(tmp_path, *[_row(KEY, f"row {i} " + "x" * 1000) for i in range(40)])
     old = _reader(pc.reentry_note(_binding(tmp_path, cursor), ctx))
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     new_cursor = pc._chat_cursor(tmp_path)
     _append(tmp_path, _row(KEY, "new boundary"))
     new = _reader(pc.reentry_note(_binding(tmp_path, new_cursor), ctx))
@@ -120,7 +120,7 @@ def test_unavailable_source_keeps_whole_observed_text_inline(tmp_path, monkeypat
 @pytest.mark.parametrize("failure", ["reader_absent", "write_failed", "readback_failed"])
 def test_unavailable_source_after_scan_budget_names_chain_gap_offsets(tmp_path, monkeypatch, failure):
     from ouroboros.presence_authority import presence_ceiling_payload
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     _, ctx = _actor(tmp_path)
     if failure == "reader_absent":
@@ -133,7 +133,7 @@ def test_unavailable_source_after_scan_budget_names_chain_gap_offsets(tmp_path, 
         monkeypatch.setattr(f"ouroboros.artifacts.{target}", fail)
     archived = _append(tmp_path, _row(KEY, "archived before park"))
     archive_bytes = archived.stat().st_size
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     _append(tmp_path, _row(KEY, "before park"))
     cursor = pc._chat_cursor(tmp_path)
     live = _append(tmp_path, _row("telegram:bot-1:elsewhere:0", "foreign " * 100),

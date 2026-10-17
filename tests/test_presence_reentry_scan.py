@@ -38,10 +38,10 @@ def _pages(registry, arguments):
 
 def test_matching_live_cursor_reads_new_rows_without_hashing_archive_headers(tmp_path, monkeypatch):
     from ouroboros import utils
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     _append(tmp_path, _row(KEY, "old archived row"))
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     assert list((tmp_path / "archive").glob("chat_*.jsonl"))
     live = _append(tmp_path, _row(KEY, "before this park"))
     cursor = pc._chat_cursor(tmp_path)
@@ -91,7 +91,7 @@ def test_frozen_actor_can_read_past_scan_budget_without_chat_history(tmp_path, m
 
 
 def test_tiny_pages_keep_one_oversized_row_whole_and_survive_rotation(tmp_path, monkeypatch):
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     registry, ctx = _actor(tmp_path)
     _append(tmp_path, _row(KEY, "before"))
@@ -104,7 +104,7 @@ def test_tiny_pages_keep_one_oversized_row_whole_and_survive_rotation(tmp_path, 
     first = _page(registry, arguments, source["history_start"])
     assert [row["text"] for row in first["rows"]] == [long_text]
     assert first["next_offset"] is not None
-    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     _append(tmp_path, _row(KEY, "new generation, after observation"))
     replay = _page(registry, arguments, source["history_start"])
     assert replay == first

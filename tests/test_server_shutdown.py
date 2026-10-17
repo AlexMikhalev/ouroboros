@@ -761,10 +761,11 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
     monkeypatch.setattr(state_mod, "init", noop)
     monkeypatch.setattr(state_mod, "init_state", lambda **_k: state_mod.StateRead("current", "primary", {}))
     monkeypatch.setattr(state_mod, "load_state", lambda: {"owner_chat_id": 7})
-    for name in ("save_state", "update_state", "append_jsonl", "update_budget_from_usage",
-                 "rotate_jsonl_log_if_needed"):
+    for name in ("save_state", "update_state", "append_jsonl", "update_budget_from_usage"):
         monkeypatch.setattr(state_mod, name, noop)
-    monkeypatch.setattr(state_mod, "rotate_chat_log_if_needed", _tick_head)
+    # The tick's first rotator call (events.jsonl; the dialogue chains no longer rotate) is the tick head.
+    monkeypatch.setattr(state_mod, "rotate_jsonl_log_if_needed",
+                        lambda root, name, *_a, **_k: _tick_head(root) if name == "events.jsonl" else None)
     for name in ("enqueue_task", "enforce_task_timeouts", "enqueue_evolution_task_if_needed",
                  "cancel_task_by_id", "queue_deep_self_review_task",
                  "sort_pending", "check_scheduled_tasks"):

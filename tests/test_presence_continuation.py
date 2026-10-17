@@ -489,7 +489,7 @@ def test_a_stop_after_the_wake_ends_before_a_free_conversation_is_taken_back(har
 
 def test_the_resuming_author_reads_across_a_rotation_of_the_chat_log(harness):
     """Finding 3: rows land in an archived generation and in the new live one; none are lost."""
-    from supervisor.state import rotate_chat_log_if_needed
+    from supervisor.state import rotate_jsonl_log_if_needed
 
     h = harness
     later = "And schedule the restore drill."
@@ -504,7 +504,7 @@ def test_the_resuming_author_reads_across_a_rotation_of_the_chat_log(harness):
     execution = h.start(event())
     execution.initial.result(timeout=30)
     assert quick_turn(h).text == "Noted."
-    rotate_chat_log_if_needed(h.data, max_bytes=1)
+    rotate_jsonl_log_if_needed(h.data, "chat.jsonl", "chat", max_bytes=1)
     assert list((h.data / "archive").glob("chat_*.jsonl"))
     assert quick_turn(h, 44, later).text == "Noted."
     h.release.set()

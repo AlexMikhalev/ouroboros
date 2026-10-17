@@ -701,7 +701,7 @@ def _run_supervisor(settings: dict) -> None:
         run_startup_phase(_loop_liveness, "startup:usage_store", lambda: usage_store.migrate_from_journal(pathlib.Path(DATA_DIR)))
         run_startup_phase(_loop_liveness, "startup:current_store", lambda: store_switch.require_published(DATA_DIR))  # published before any worker or recovery write
         from supervisor.state import control_is, load_state, save_state, update_state
-        from supervisor.state import append_jsonl, update_budget_from_usage, rotate_chat_log_if_needed, rotate_jsonl_log_if_needed
+        from supervisor.state import append_jsonl, update_budget_from_usage, rotate_jsonl_log_if_needed
         # The dialogue opened at the store's publication; this generation attaches to it.
         bridge = _open_dialogue(settings, stop_requested=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
 
@@ -859,12 +859,8 @@ def _run_supervisor(settings: dict) -> None:
     while not _restart_requested.is_set() and not _supervisor_stop.is_set() and not _exit_signalled.is_set():
         try:
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "events", new_tick=True), time.monotonic()
-            rotate_chat_log_if_needed(DATA_DIR)
-            # progress.jsonl rotates on the same supervisor tick (v6.90.x P2); its
-            # readers (history backfill, SSE replay, api_logs_tail, TB ATIF) are
-            # archive-chain-aware.
-            rotate_jsonl_log_if_needed(DATA_DIR, "progress.jsonl", "progress")
-            # CPL4-C1..C4 rotation train: the remaining unbounded hot logs rotate on the same tick with the same rotator.
+            # The dialogue chains (chat, progress) live in state/dialog.sqlite and were rotated one last
+            # time by the cutover; the remaining unbounded hot logs rotate on this tick with the one rotator.
             # events.jsonl went LAST behind chain-aware custody readers (the store import's custody fold, legacy usage
             # import, swarm rollup, worker boot verify) — rows keep replaying from archive/events_*.jsonl; tools/supervisor/
             # task_reflections readers are tail-bounded and archive-backfilled (memory.read_jsonl_tail, api_logs_tail).
