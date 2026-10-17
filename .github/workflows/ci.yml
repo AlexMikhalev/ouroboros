@@ -1847,6 +1847,9 @@ jobs:
           test -x "$MOUNT/Install CLI.command"
           APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$MOUNT/Ouroboros.app/Contents/Info.plist")"
           lipo -archs "$MOUNT/Ouroboros.app/Contents/MacOS/$APP_EXECUTABLE" | tr ' ' '\n' | grep -qx arm64
+          # Source handoff uses this interpreter, not the launcher's frozen imports.
+          HOME="$HOME_DIR" "$MOUNT/Ouroboros.app/Contents/Frameworks/python-standalone/bin/python3" -I -B -c \
+            'import webview, objc, AppKit, WebKit, PyObjCTools.AppHelper'
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
             "$MOUNT/Ouroboros.app/Contents/Resources/bin/ouroboros" --help >/dev/null
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
@@ -1885,6 +1888,9 @@ jobs:
           test -f "$SMOKE_ROOT/Ouroboros/_internal/repo_bundle_manifest.json"
           python scripts/fetch_claudexor_runtime.py --verify-only \
             --output-dir "$SMOKE_ROOT/Ouroboros/_internal/claudexor-runtime"
+          # Source handoff uses this interpreter, not the launcher's frozen imports.
+          HOME="$HOME_DIR" "$SMOKE_ROOT/Ouroboros/_internal/python-standalone/bin/python3" -I -B -c \
+            'import webview'
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
             "$SMOKE_ROOT/Ouroboros/bin/ouroboros" --help >/dev/null
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
@@ -2393,6 +2399,9 @@ jobs:
           $env:HOMEDRIVE = Split-Path -Qualifier $HomeDir
           $env:HOMEPATH = $HomeDir.Substring($env:HOMEDRIVE.Length)
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+          # Source handoff uses this interpreter, not the launcher's frozen imports.
+          & "$SmokeRoot\Ouroboros\_internal\python-standalone\python.exe" -I -B -c "import clr_loader, pythonnet, webview"
+          if ($LASTEXITCODE -ne 0) { throw "packaged source-handoff desktop imports failed: $LASTEXITCODE" }
           & "$SmokeRoot\Ouroboros\bin\ouroboros.cmd" --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "packaged CLI smoke failed: $LASTEXITCODE" }
           $env:OUROBOROS_DATA_DIR = Join-Path $env:RUNNER_TEMP "ouroboros-claudexor-smoke"
