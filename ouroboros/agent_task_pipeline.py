@@ -386,10 +386,10 @@ def recover_pending_root_post_task_synthesis(
     Startup retains its prior-worker proof. A steady-state caller supplies the
     queue's tri-state physical liveness and settlement interlock. A Pause an
     earlier version saved never runs: the steady-state pass ends it once
-    (``end_saved_late_phase_pause``), startup leaves it for that pass. Paid or
-    unknown legacy pending_once is indeterminate, just like a lost running phase.
-    A member that waits on its owner's Resume or on a recorded projection cause
-    rests (``obligations.DutyRest``); startup still visits paused members.
+    (``end_saved_late_phase_pause``), startup leaves it for that pass, and a rest an
+    earlier version left on its Resume is examined anyway. Paid or unknown legacy
+    pending_once is indeterminate, just like a lost running phase. A member that
+    waits on a recorded projection cause rests (``obligations.DutyRest``).
     """
     from types import SimpleNamespace
     from ouroboros.post_task_synthesis import end_saved_late_phase_pause
@@ -400,7 +400,7 @@ def recover_pending_root_post_task_synthesis(
     root = pathlib.Path(drive_root).resolve(strict=False)
     if not startup and owner_liveness is None:
         return 0  # An empty/foreign process-local map cannot prove physical absence.
-    recovered, rest = 0, DutyRest(root, "synthesis_recovery", name="synthesis", wake=("owner_resume",) if startup else (),
+    recovered, rest = 0, DutyRest(root, "synthesis_recovery", name="synthesis", wake=("owner_resume",),
                                   inputs={"terminal_deliveries": delivery_registry_stamp(root)})
     for stored in result_rows(root, "synthesis", exclude=exclude_task_ids, ids=rest.examine):
         if stop_requested and stop_requested():
