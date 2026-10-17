@@ -533,8 +533,9 @@ def settle_left_review(drive_root: Any, row: Dict[str, Any]) -> str:
 
 def _custody_root(record: Dict[str, Any]) -> pathlib.Path:
     """Where the wave's reviewer assignments and producer outcomes were written: the canonical custody
-    root (``review_custody.custody_root``), never the child drive of a headless or forked author, whose
-    review state alone holds the attempt row (``_left_attempt``). The reader falls back canonical→child."""
+    root (``review_custody.custody_root``) for every surface, never the child drive of a headless or
+    forked author (where an old wave's attempt row may still live, ``_left_attempt``). The reader falls
+    back canonical→child."""
     return pathlib.Path(record.get("canonical_root") or record["drive_root"])
 
 
@@ -544,12 +545,22 @@ def _left_attempt(record: Dict[str, Any]) -> Any:
 
     surface, task_id, retry_key = str(record["surface"]), str(record["task_id"]), str(record["retry_key"])
     attempt_no = int(record.get("attempt") or 0)
-    attempt = next((row for row in reversed(load_state(pathlib.Path(record["drive_root"])).attempts)
+    # Change attempts moved to canonical custody. Still read a pre-move legacy
+    # row if this left wave has not yet re-entered through its author's context.
+    roots = dict.fromkeys((_left_review_root(record), pathlib.Path(record["drive_root"])))
+    attempt = next((row for root in roots for row in reversed(load_state(root).attempts)
                     if row.tool_name == _LEFT_TOOLS.get(surface) and row.task_id == task_id
                     and row.review_retry_key == retry_key and attempt_no in (0, int(row.attempt or 0))), None)
     if attempt is None:
         raise LookupError("its attempt row is not in the review state")
     return attempt
+
+
+def _left_review_root(record: Dict[str, Any]) -> pathlib.Path:
+    """Where the wave's attempt row lives: canonical custody for ``review_change`` waves (change and
+    result, ``review_change_custody.review_state_root``), the author's own drive for commit waves."""
+    return pathlib.Path((record.get("canonical_root") if record.get("surface") in ("change", "result") else "")
+                        or record["drive_root"])
 
 
 def _left_rows(attempt: Any) -> Iterable[Tuple[str, str, Dict[str, Any]]]:
