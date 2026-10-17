@@ -13,6 +13,7 @@ import { attachmentCaption, attachmentViews, composerText, createComposerAttachm
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
 import { createMainWaiting } from './main_waiting.js';
+import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -147,8 +148,6 @@ import {
     saveChatInputHistory,
     senderLabel,
     shouldFirePanic,
-    supervisorReady,
-    bootPhase,
     taskCostMeta,
     taskCostProjection,
     unconfirmedForegroundCardIds,
@@ -450,9 +449,7 @@ export function createChatInstance({
     // Local user submissions awaiting server confirmation (clientMessageId
     // -> { clientMessageId, timestamp }).
     const pendingSubmissions = new Map();
-    // В9: Starting… until a snapshot says supervisor_ready; a disconnect forgets it.
-    let hostReady = false;
-    let hostBoot = null; // the boot phases the Starting… header paints; forgotten with readiness
+    const hostStart = createHostStart(); // В9 readiness and boot phases; a disconnect forgets both
     // Bounded conclusions retain known outcomes for later cards; reusable slots clear on settlement.
     const concludedDirectActivities = new Map();
     const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
@@ -613,8 +610,7 @@ export function createChatInstance({
         syncHeaderControlState(data ?? { accounting: { available: false } });
         handoffs?.snapshot(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
-        hostReady = supervisorReady(data) ?? hostReady;
-        hostBoot = bootPhase(data) ?? hostBoot;
+        hostStart.read(data);
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
             : data?.active_direct_turns;
@@ -3149,9 +3145,8 @@ export function createChatInstance({
     let headerControlInterval = null;
     if (asPanel) {
         // Late panels missed socket open; seed from the socket and latest snapshot.
-        hostReady = supervisorReady(stateSnapshots.latest?.()) ?? hostReady;
-        hostBoot = bootPhase(stateSnapshots.latest?.()) ?? hostBoot;
-        const seed = computeDerivedChatStatus({ supervisorStarting: !hostReady, bootPhase: hostBoot });
+        hostStart.read(stateSnapshots.latest?.());
+        const seed = computeDerivedChatStatus(hostStart.status());
         if (ws.isConnected?.()) setStatus(seed);
     } else headerControlInterval = setInterval(refreshHeaderControlState, 3000);
     // Both Main and late panels hydrate once; each instance filters its chat.
@@ -3372,8 +3367,7 @@ export function createChatInstance({
             ...chatStatusCounts(activeDirectActivities, liveCardRecords.values(), (id) => modelWaits.waiting(id)),
             isConnected: ws.isConnected ? ws.isConnected() : true,
             pendingSubmissionsCount: pendingSubmissions.size,
-            supervisorStarting: !hostReady,
-            bootPhase: hostBoot,
+            ...hostStart.status(),
         });
     }
 
@@ -3776,8 +3770,7 @@ export function createChatInstance({
             }
             return changed;
         });
-        hostReady = false;
-        hostBoot = null;
+        hostStart.forget();
         hideTypingIndicatorOnly();
         syncChatStatus();
         syncHeaderControlState({ accounting: { available: false } });
@@ -3789,7 +3782,7 @@ export function createChatInstance({
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        hostReady: () => hostReady });
+        hostReady: hostStart.ready });
 
     return {
         page,

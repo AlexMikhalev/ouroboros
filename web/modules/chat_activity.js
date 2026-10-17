@@ -13,6 +13,8 @@ import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, paintLiveDetail, taskActivityPresentation } from './task_phase_chip.js';
 import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
+import { startingStatus } from './host_starting_status.js';
+export { bootPhase, startingStatus, supervisorReady } from './host_starting_status.js';
 import {
     joinMarkdownHeadings, MARKDOWN_FENCED_CODE, accountedUpperBound,
     accountedUpperBoundWithChildren,
@@ -976,32 +978,6 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
         },
         latest: () => latest,
     };
-}
-
-// В9: one /api/state body's `supervisor_ready`, null when it states nothing. Only
-// true ends Starting…; a `supervisor_error` is not readiness and is not read here.
-export function supervisorReady(data) {
-    return typeof data?.supervisor_ready === 'boolean' ? data.supervisor_ready : null;
-}
-
-// The host's boot phases (`/api/state.boot`, the same object as `/api/health.boot`), null
-// when the body states none: `phase`, `dialogue_ready`, `tasks_ready`, `steps`, `error`.
-export function bootPhase(data) {
-    const boot = data?.boot;
-    return boot && typeof boot === 'object' && typeof boot.phase === 'string' ? boot : null;
-}
-
-// The Starting… header's words for a boot phase: the chat accepts messages while the
-// background tasks are still being restored, or the start failed (its cause rides the
-// title). Nothing known about the phase keeps the plain Starting….
-export function startingStatus(boot) {
-    const failedStep = Array.isArray(boot?.steps) ? boot.steps.find((step) => step?.state === 'failed') : null;
-    const title = String(boot?.error || (failedStep ? `${failedStep.name}: ${failedStep.error || ''}` : '') || '');
-    if (boot?.phase === 'failed') return { kind: 'starting', text: 'Start failed', title, showDots: false };
-    if (boot?.dialogue_ready === true) {
-        return { kind: 'starting', text: 'Chat ready, restoring background tasks', title, showDots: false };
-    }
-    return { kind: 'starting', text: 'Starting…', title, showDots: false };
 }
 
 /**
