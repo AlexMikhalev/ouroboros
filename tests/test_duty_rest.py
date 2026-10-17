@@ -413,3 +413,28 @@ def test_a_retained_settlements_basis_moves_with_a_commit_still_in_the_wal_log(t
     basis = settlement_basis(tmp_path, "kept", drive, drive)
     write_task_result(drive, "kept", "running", note="a commit the WAL log holds")
     assert settlement_basis(tmp_path, "kept", drive, drive) != basis
+
+
+def test_a_wal_log_that_comes_and_goes_without_a_commit_wakes_no_rest(tmp_path, monkeypatch):
+    """The log is opened empty by a reader and deleted at the last close: neither is a commit, so a
+    retained verdict stays rested across sweeps; a commit still moves the basis."""
+    import sqlite3
+
+    from ouroboros.task_custody import settlement_basis
+    from ouroboros.task_results import load_task_result
+
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+    monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")
+    drive = tmp_path / "task_drives" / "kept"
+    drive.mkdir(parents=True)
+    write_task_result(drive, "kept", "running")
+    write_task_result(tmp_path, "kept", "completed", result="r")
+    store.close_connections()  # the last close checkpoints the log into the database and deletes it
+    basis = settlement_basis(tmp_path, "kept", drive, drive)
+    for _sweep in range(2):
+        assert load_task_result(drive, "kept")["status"] == "running"  # a reader opens an empty log
+        assert settlement_basis(tmp_path, "kept", drive, drive) == basis
+        store.close_connections()
+        assert settlement_basis(tmp_path, "kept", drive, drive) == basis
+    write_task_result(drive, "kept", "running", note="a commit")
+    assert settlement_basis(tmp_path, "kept", drive, drive) != basis

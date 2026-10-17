@@ -175,6 +175,7 @@ def switch_or_reset(root: Any, repo_dir: Any, *, target_sha: str, target_ref: st
                       "moves at the restart exit"), True
     refusal = _hand_off_stores(pathlib.Path(root))
     if refusal:
+        store.forget_handoffs()
         return False, f"switch refused: a store could not be handed off ({refusal})", False
     ok, message = reset()
     return ok, message, False
@@ -376,6 +377,7 @@ def _refuse(root: pathlib.Path, intent: Dict[str, Any], receipt: Dict[str, Any],
     """Nothing switches: the intent is set aside, both authorities stay (restored if a previous
     attempt moved them); progress retains the reason for the next startup owner notice."""
     restored = _abandon(root, receipt)
+    store.forget_handoffs()  # this process keeps its stores
     refused = root / INTENT_REL.with_name(f"{INTENT_REL.stem}.refused-{_stamp()}.json")
     os.replace(root / INTENT_REL, refused)
     _progress(root, "refused", intent=intent, reason=reason, restored=restored, intent_moved_to=refused.name, **facts)

@@ -43,20 +43,19 @@ def startup_tree_exclusions(root):
 
 
 def _drive_stamps(root, task_id):
-    """Each own child drive of TASK_ID with its store's file identities (the database and its WAL
-    log, where a commit lives until a checkpoint): what a resting recovery waits on."""
+    """Each own child drive of TASK_ID with its store's identity (the database file and the commits
+    its WAL log still holds, ``store.log_identity``): what a resting recovery waits on."""
+    from ouroboros.store import log_identity
     from ouroboros.task_custody import own_child_drives
 
     stamps = []
     for drive in own_child_drives(root, task_id):
-        stamp = [str(drive)]
-        for name in ("current.sqlite", "current.sqlite-wal"):
-            try:
-                info = (drive / "state" / name).stat()
-                stamp.append([info.st_ino, info.st_size, info.st_mtime_ns])
-            except OSError:
-                stamp.append(None)
-        stamps.append(stamp)
+        database = drive / "state" / "current.sqlite"
+        try:
+            info = database.stat()
+            stamps.append([str(drive), info.st_ino, info.st_size, info.st_mtime_ns, log_identity(database)])
+        except OSError:
+            stamps.append([str(drive)])
     return stamps
 
 

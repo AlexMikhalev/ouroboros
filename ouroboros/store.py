@@ -663,8 +663,26 @@ atexit.register(close_connections)  # before module globals (including the inode
 
 
 # Files this process handed off (``prepare_handoff``): a later open in this process (the seam's own
-# receipt, a late writer before the exit) leaves their journal alone instead of choosing WAL again.
+# receipt, a late writer before the exit) leaves their journal alone instead of choosing WAL again,
+# until a refused switch hands them back (``forget_handoffs``); the next boot chooses again anyway.
 _HANDED_OFF: set = set()
+
+
+def forget_handoffs() -> None:
+    """Nothing switches after all (a refused door): this process keeps its stores and its journal choice."""
+    _HANDED_OFF.clear()
+
+
+def log_identity(path: Any) -> Optional[list]:
+    """The WAL log's identity while it holds frames (``[inode, size, mtime_ns]``), else ``None``. A
+    commit lives there until a checkpoint moves it into the database file; an empty or absent log
+    (opened empty by a reader, deleted at the last close) holds none, so its coming and going is no
+    change: a resting duty keyed on the database file plus this wakes on commits only."""
+    try:
+        info = os.stat(f"{os.fspath(path)}-wal")
+    except OSError:
+        return None
+    return [info.st_ino, info.st_size, info.st_mtime_ns] if info.st_size else None
 
 
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:

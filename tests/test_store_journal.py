@@ -1,6 +1,7 @@
 """WAL needs a fixed SQLite, enforced locks AND a positively identified local filesystem."""
 import contextlib
 import ctypes
+import os
 import pathlib
 import sqlite3
 import sys
@@ -235,7 +236,10 @@ def test_a_store_that_cannot_hand_off_refuses_the_door_reset(tmp_path, monkeypat
 
     monkeypatch.setattr(store, "prepare_handoff", busy)
     monkeypatch.setattr(store_switch, "switch_needs", lambda *_: {"facts": False, "money": False})
+    handed = os.path.abspath(store.store_path(tmp_path))
+    store._HANDED_OFF.add(handed)  # a store the refused door had already handed off
     ok, message, deferred = store_switch.switch_or_reset(
         tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="test", door="ui_rollback",
         reset=lambda: pytest.fail("the checkout moved past a store still in WAL"))
     assert (ok, deferred) == (False, False) and "checkpoint busy" in message
+    assert handed not in store._HANDED_OFF, "a refused door hands every store back to this process"
