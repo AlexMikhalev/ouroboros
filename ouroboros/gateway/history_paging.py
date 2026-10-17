@@ -268,11 +268,12 @@ def room_lens(data_dir: pathlib.Path, thread_id: int, project_chat_ids: set, sou
 
 def import_floor(root: pathlib.Path, source: str) -> int:
     """The coordinate below which the archive import has not reached yet (0 when it has): the
-    end of the newest pending segment. Rows below it are "still importing", never absent."""
-    from ouroboros.dialogue_import import pending_segments
-
-    return max((int(segment["base"]) + int(segment["size"]) for segment in pending_segments(root)
-                if segment["stream"] == source), default=0)
+    end of the newest pending segment (segments never overlap), one seek of the ledger's state
+    index whatever the archive holds. Rows below it are "still importing", never absent."""
+    with ds.transaction(root, write=False) as conn:
+        record = conn.execute("SELECT base + size AS stop FROM import_ledger INDEXED BY ledger_state "
+                              "WHERE stream=? AND state='pending' ORDER BY base DESC LIMIT 1", (source,)).fetchone()
+    return int(record["stop"]) if record else 0
 
 
 class HistorySource:

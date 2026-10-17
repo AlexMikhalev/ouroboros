@@ -193,10 +193,6 @@ def test_b3_state_warm_is_flat(measured):
     assert_flat(measured, "B3w")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU-Q1 / room-speed accepted-id record (IMPL_COMMON answer 4=A keeps it out of wave A): the first owner message "
-    "after a start folds the whole chat chain in supervisor.message_ingress._resync (k=1 -> k=30: open:archive "
-    "3 -> 32, read 0.08 -> 1.68 MB, json_loads 98 -> 2273)."))
 def test_b4_owner_message_on_a_cold_process_is_flat(measured):
     assert_flat(measured, "B4")
     for k in (K_SMALL, measured["large"]):
@@ -211,7 +207,6 @@ def test_b5_stop_of_a_tree_is_flat(measured):
     assert_flat(measured, "B5")
 
 
-@pytest.mark.xfail(strict=False, reason="room history owned by the room-speed PR")
 @pytest.mark.parametrize("tag", ["R_active", "R_late", "R_activew"])
 def test_room_history_is_flat(measured, tag):
     assert_flat(measured, tag)
