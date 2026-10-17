@@ -231,7 +231,7 @@ def test_actual_exit_consumers_keep_a_blocked_dispatch_visible_then_accept_exit(
         return original(data_root)
 
     monkeypatch.setattr(maintenance, "due", due)
-    monkeypatch.setattr(packer, "packer", unit)
+    monkeypatch.setattr(maintenance, "child", unit)
     spawns = []
     monkeypatch.setattr(maintenance, "spawn_maintenance_job", lambda *a: spawns.append(a) or _FakeChild(_QUIET))
     monkeypatch.setattr(server, "DATA_DIR", root)

@@ -640,6 +640,22 @@ def _initialize_runtime_state(settings: dict, *, stop_requested=None) -> None:
                      "controls stay unknown until it is readable", boot_state.quality, boot_state.reason)
 
 
+def _dialogue_cutover(root: pathlib.Path) -> None:
+    """The dialogue store takes over the live chat/progress files once per root (recent client ids
+    dedup before the first accepted message); a failure is this step's, and the dialogue still opens:
+    its writer seam needs no cutover and the next boot finishes it."""
+    from ouroboros.dialogue_import import cutover
+
+    BOOT.step_started("dialogue_cutover")
+    try:
+        cutover(root)
+    except Exception as exc:
+        log.warning("Dialogue cutover did not complete; the next boot repeats it", exc_info=True)
+        BOOT.step_ended("dialogue_cutover", error=f"{type(exc).__name__}: {exc}")
+        return
+    BOOT.step_ended("dialogue_cutover")
+
+
 def _open_dialogue(settings: dict, *, stop_requested=None):
     """Publish the chat bridge and bus once per process: from then on an owner message is
     accepted durably (its canonical chat row is written and the turn waits for its executor),
@@ -1368,6 +1384,7 @@ async def lifespan(app):
         providerless generation has no executor for them: its dialogue opens with the supervisor a
         later settings save starts."""
         if startup_provider_ready and not body_stop.is_set() and not pytest_default_real_data_dir:
+            _dialogue_cutover(lifespan_drive_root)
             _open_dialogue(settings, stop_requested=lambda: any(
                 e.is_set() for e in (body_stop, _supervisor_stop, _restart_requested, _exit_signalled)))
 

@@ -317,6 +317,13 @@ def _setup_job(name, data, monkeypatch):
         from tests.test_evidence_packs import _task
 
         _task(data, "settled", blobs=1)
+    elif name == "dialogue_import":
+        from ouroboros import dialogue_import
+        from tests._dialogue import seed
+
+        seed(data, archives={"chat_20261001T000000.jsonl": [{"ts": "2026-10-01T00:00:00Z", "direction": "in",
+                                                             "chat_id": 1, "text": "archived"}]})
+        dialogue_import.cutover(data)  # plans the archive segment; the job imports it
     elif name == "hot_facts":
         from ouroboros import store
 

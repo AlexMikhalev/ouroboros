@@ -172,6 +172,16 @@ def _tier(root: pathlib.Path) -> str:
     return tier
 
 
+def hand_off(root: Any) -> bool:
+    """``store.hand_off`` for the dialogue store: a WAL file is checkpointed into DELETE mode before
+    another body takes the root (a rollback-journal file is left untouched)."""
+    target = path(root)
+    if not store.wal_file(target):
+        return False
+    store.prepare_handoff(target, _tier(pathlib.Path(root)))  # WAL is never chosen on the name tier
+    return True
+
+
 def holds_dialogue_files(root: Any) -> bool:
     """Whether the root holds chain files the cutover would import (live rows or archive segments)."""
     root = pathlib.Path(root)

@@ -329,7 +329,7 @@ def _census(**over):
 @pytest.mark.parametrize("alive", [True, False])
 def test_restart_census_refuses_a_maintenance_exit_until_confirmed(tmp_path, monkeypatch, alive):
     import server
-    from ouroboros import evidence_packer, maintenance
+    from ouroboros import maintenance
 
     root = tmp_path / "data"
     root.mkdir()
@@ -337,7 +337,7 @@ def test_restart_census_refuses_a_maintenance_exit_until_confirmed(tmp_path, mon
     child = SimpleNamespace(poll=lambda: None if alive else 0, kill=lambda: signals.append("kill"))
     packer = maintenance.MaintenanceChild()
     packer._process = child
-    monkeypatch.setattr(evidence_packer, "packer", packer)
+    monkeypatch.setattr(maintenance, "child", packer)
     monkeypatch.setattr(server, "DATA_DIR", root)
     monkeypatch.setattr(server, "begin_owned_stop", lambda *_: None)
     monkeypatch.setattr(server, "stop_owned_work", lambda *_: {"state": "completed"})

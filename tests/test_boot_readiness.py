@@ -211,8 +211,15 @@ def test_an_owner_message_is_accepted_durably_while_recovery_still_runs_and_a_ta
 
     monkeypatch.setattr(srv, "has_startup_ready_provider", lambda _settings: True)
     monkeypatch.setattr(srv, "_start_supervisor_if_needed", supervisor_in_recovery)
-    chat_log = pathlib.Path(srv.DATA_DIR) / "logs" / "chat.jsonl"
-    before = chat_log.read_text(encoding="utf-8").count("boot-readiness-1") if chat_log.exists() else 0
+    from tests._dialogue import chat_rows
+
+    def stored():  # the canonical rows live in state/dialog.sqlite
+        try:
+            return [row for row in chat_rows(srv.DATA_DIR) if row.get("client_message_id") == "boot-readiness-1"]
+        except Exception:
+            return []
+
+    before = len(stored())
     try:
         with TestClient(srv.app) as client:
             assert recovery_entered.wait(10), "the supervisor started at publication, after the extensions"
@@ -225,7 +232,7 @@ def test_an_owner_message_is_accepted_durably_while_recovery_still_runs_and_a_ta
                 echo = socket.receive_json()
             assert echo["type"] == "chat" and echo["role"] == "user" and echo["ingress_accepted"] is True
             assert echo["client_message_id"] == "boot-readiness-1"
-            rows = [json.loads(line) for line in chat_log.read_text(encoding="utf-8").splitlines() if "boot-readiness-1" in line]
+            rows = stored()
             assert len(rows) - before == 1 and rows[-1]["text"] == "hello before repairs", "the canonical row is written"
             [update] = message_bus.try_get_bridge().get_updates(0, timeout=1)
             assert update["message"]["text"] == "hello before repairs", "the turn waits for its executor in the bridge"
@@ -324,3 +331,29 @@ def test_the_initialization_notice_says_why_the_message_was_not_saved(monkeypatc
         assert notice.startswith("⚠️ Startup failed") and "boot dependency refused" in notice
     finally:
         BOOT.reset()
+
+
+def test_the_dialogue_cutover_runs_before_the_dialogue_opens_and_a_failure_stays_a_step(tmp_path, monkeypatch):
+    import inspect
+
+    import server
+    from ouroboros import dialogue_import
+    from ouroboros.server_liveness import BOOT
+
+    source = inspect.getsource(server.lifespan)
+    assert source.index("_dialogue_cutover(lifespan_drive_root)") < source.index("_open_dialogue(settings")
+    BOOT.reset()
+    calls = []
+    monkeypatch.setattr(dialogue_import, "cutover", lambda root: calls.append(root))
+    server._dialogue_cutover(tmp_path)
+    steps = {row["name"]: row for row in BOOT.snapshot()["steps"]}
+    assert calls == [tmp_path] and steps["dialogue_cutover"]["state"] == "done"
+
+    def held(_root):
+        raise RuntimeError("append lock held")
+
+    monkeypatch.setattr(dialogue_import, "cutover", held)
+    server._dialogue_cutover(tmp_path)  # never raises: the dialogue still opens
+    steps = {row["name"]: row for row in BOOT.snapshot()["steps"]}
+    assert steps["dialogue_cutover"]["state"] == "failed" and "append lock held" in steps["dialogue_cutover"]["error"]
+    BOOT.reset()

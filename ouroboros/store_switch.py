@@ -184,8 +184,11 @@ def _hand_off_stores(root: pathlib.Path) -> str:
     """Every present store of the root and its retained drives leaves WAL before the door moves the
     checkout (``store.hand_off``); the refusal text when one cannot."""
     try:
+        from ouroboros import dialogue_store
+
         for drive in (root, *store_import.descendant_drives(root)):
             store.hand_off(drive)
+            dialogue_store.hand_off(drive)
         usage_store.hand_off(root)
     except (OSError, store.StoreError, UsageAccountingError) as exc:
         return f"{type(exc).__name__}: {exc}"

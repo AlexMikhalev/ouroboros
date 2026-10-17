@@ -337,6 +337,26 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
     return {"state": "done", "items": report["examined"]}
 
 
+def _dialogue_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Archive segments the cutover planned and the import has not read (``import_ledger`` pending);
+    a failed segment waits on its own input, which the runner compares, so it is no reason to spawn."""
+    from ouroboros import dialogue_import, dialogue_store
+
+    if row.get("state") == "failed":
+        return child
+    if not dialogue_store.present(root):
+        return False
+    return any(int(view.get("pending") or 0) for view in dialogue_import.import_status(root).values()
+               if isinstance(view, dict))
+
+
+def _dialogue_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    from ouroboros.dialogue_import import run_dialogue_import
+
+    row = run_dialogue_import(root, should_stop=should_stop) or {}
+    return {"state": str(row.get("state") or "unknown"), "items": int(row.get("done") or 0)}
+
+
 def _hot_facts_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
     """Rows written before the hot-fact columns (or by an older writer since) wait for a classification
     pass (``store_hot_facts.run_hot_facts``); a root without such rows has nothing to do. A failed pass
@@ -360,6 +380,7 @@ def _hot_facts_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
     "legacy_reconcile": (_legacy_due, _legacy_run),
+    "dialogue_import": (_dialogue_due, _dialogue_run),  # the owner's history: newest segments first
     "hot_facts": (_hot_facts_due, _hot_facts_run),
     "activity_backfill": (_activity_due, _activity_run),
     "child_ref_promotion": (_promotion_due, _promotion_run),
