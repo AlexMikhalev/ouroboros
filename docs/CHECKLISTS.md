@@ -664,32 +664,23 @@ Skills default to **disabled** and cannot be executed by `skill_exec`
 until review produces a fresh executable verdict. Skill review output is persisted
 to `~/Ouroboros/data/state/skills/<name>/review.json` with a content
 hash so an edit to the skill invalidates the previous verdict.
-`review.json`, `enabled.json`, `grants.json`, and marketplace/self-authored
-provenance are skill trust/control-plane state: they are mutated only
-through the review, toggle, launcher-grant, self-authored finalize,
-native launcher-seed trust, and marketplace paths, not through generic
-agent/browser file writes.
+`review.json`, `enabled.json`, `grants.json`, `install.json`, `owner_edit.json`
+and marketplace/self-authored provenance are skill trust/control-plane state:
+they are mutated only through the review, toggle, launcher-grant, self-authored
+finalize, installer and owner-edit paths, not through generic agent/browser
+file writes.
 
-Native launcher-seed trust (v6.31.0) is a named, hash-pinned, audited
-exception to manual first review: when the LAUNCHER itself writes a
-bundled native skill payload (bootstrap seed, post-bootstrap new seed,
-or version resync — all marked by `.seed-origin`), it stamps
-`review.json` with `status=clean`, `reviewer_models=["repo_commit_gate"]`,
-and `review_profile="native_seed"`, because those exact payload bytes
-already passed the repo commit gate's review wave. The verdict is bound to
-the post-seed content hash (lifecycle control files excluded), so ANY
-later edit flips it stale and non-executable exactly like an ordinary
-review; removing `.seed-origin` reclassifies the skill as user-managed.
-Zero-grant native seeds (no secret keys, no privileged permissions, only
-tool/subprocess surface) also auto-enable — but only when no explicit
-owner enable/disable choice exists yet; a version resync never overrides
-an owner's disable. The verdict is additionally bound to the marker at
-LOAD time: a `native_seed` review whose `.seed-origin` is gone reads back
-as pending (non-executable). The owner opt-out is
-`OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false`; the trust never extends to
-clawhub/external/self-authored skills. Packaged installs bind native-seed
-trust to the SHA-pinned `repo.bundle`; source-mode installs copy current
-worktree bytes and therefore lack that packaged-byte provenance.
+A source the owner trusts is the named, digest-pinned exception to a first
+review: the installer (built-ins included) writes the host-owned
+`install.json` with basis `trusted` and the exact release digest, and the
+gate admits those bytes only (`trusted_source`); any later edit leaves the
+release and is unreviewed again. No synthetic `clean` verdict is written,
+the deterministic preflight still gates the landed bytes, and a source's
+trust never rewrites earlier installs. A skill installed from a source that
+reviews each skill keeps blocker findings non-executable even under Advisory
+until the owner skips the review. Enablement of such installs is the
+owner's choice or the install's turn-on-when-ready request, never over an
+explicit Off. Built-in trust opt-out: `OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false`.
 `skip_advisory_review` records only the commit's skipped preflight: the repo
 review wave, both parts, still runs.
 
@@ -698,12 +689,9 @@ owner-state `data/state/skills/<skill>/self_authored.json` provenance,
 but outside Cyber Pro they do not bypass review on the agent's own initiative. `skill_review` routes them
 through the same tri-model skill review as marketplace and user-managed
 skills; no deterministic PASS or enablement is written automatically.
-EXCEPTION (C1, v6.39; narrowed hub extension in v6.43 — owner attestation): the OWNER
-may explicitly skip the EXPENSIVE LLM review for their OWN skill (`source=external` or
-self-authored) or for a hash-verified official OuroborosHub payload (fresh sidecar +
-live-catalog hash match, no extra runtime-reachable files) via the owner-only
-`POST /api/owner/skills/<skill>/attest-review`. Native, ClawHub, and unverified
-OuroborosHub payloads are not attestable. The DETERMINISTIC preflight floor still runs
+EXCEPTION (owner attestation, "Skip review" / "Turn on anyway"): the OWNER may skip the
+LLM review for the exact bytes of a skill from any origin via the owner-only
+`POST /api/owner/skills/<skill>/attest-review`. The DETERMINISTIC preflight floor still runs
 (409 on failure); only the LLM phase is skipped. The result is a durable `clean` verdict
 with `review_profile=owner_attested`, `reviewer_models=[owner_attestation]`, bound to
 `content_hash` (a content edit stales it) and valid only while the owner-issued
@@ -713,15 +701,17 @@ configuration does not turn a self-authored decision into an owner attestation. 
 expressed owner instruction through `skill_owner_action`; the shared host owner
 checks the actual caller, resolved member source, selected revision and source
 eligibility before invoking this same attestation. The model interprets the
-owner's words; a formatted reference alone grants nothing. This remains the
-only owner-issued review bypass.
+owner's words; a formatted reference alone grants nothing. Besides this and a
+trusted source, the only other acceptance without a review is an owner edit:
+the admitted selected-skill task the owner's own door started records
+`owner_edit.json` for each revision it writes.
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is default-on as of v6.10.0 (the owner
 may disable it), in which case a fresh executable review grants only
 manifest-declared settings keys and host permissions for that exact content
 hash; when disabled, key and permission grants remain explicit.
 
-The Skills UI Repair affordance and automatic repair both start ordinary managed
-development tasks. Keep the selected skill, source request and admitted payload
+The Skills UI Repair affordance starts an ordinary managed development task; no
+automatic repair exists. Keep the selected skill, source request and admitted payload
 revision; a legacy `task_constraint.mode="skill_repair"` record remains readable
 as a selected-resource binding, never a reduced execution profile. Ordinary file,
 shell, browser, delegation and functional skill operations remain available

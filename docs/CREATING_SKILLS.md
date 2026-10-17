@@ -26,21 +26,25 @@ both payload-local `.self_authored.json` and owner-state
 but they still go through the same tri-model skill review before they
 can run.
 
-**Owner attestation (skip review for your own or verified official skill).** For
-an external or self-authored skill, and for a hash-verified official
-OuroborosHub payload, the OWNER may skip the expensive LLM review via the
+**Owner attestation (Skip review / Turn on anyway).** For a skill from any
+origin, the OWNER may skip the expensive LLM review of its exact bytes via the
 **Skip review** action on the skill card (owner-only
 `POST /api/owner/skills/{skill}/attest-review`). The deterministic preflight +
-manifest-validation floor STILL runs (an invalid or unsafe payload is refused),
-and official-hub payloads are freshly rechecked against the live catalog before
-attestation is persisted. Only the tri-model LLM phase is skipped; the verdict
+manifest-validation floor STILL runs (an invalid or unsafe payload is refused).
+Only the LLM phase is skipped; the verdict
 is marked `owner-attested` (distinct from an LLM-clean badge) and does not
 confer publication readiness. Choosing Publish may still start the ordinary
 managed publication task, but attestation alone authorizes no outbound GitHub
 effect. Publication needs fresh critic authority or a later actual independent-review
-outcome acknowledged through qualified Advisory author finish (see Publishing). Native, ClawHub, and unverified
-OuroborosHub payloads are never attestable. The agent cannot self-attest (the
-marker is owner-state).
+outcome acknowledged through qualified Advisory author finish (see Publishing). The
+agent cannot self-attest (the marker is owner-state).
+
+**Accepted without a review.** A skill installed unchanged from a source the owner
+trusts (built-ins included) runs on its install record's basis for exactly that
+release; an edit by the selected-skill task the owner's own request started is
+recorded as an owner edit and keeps running as Modified. Any other edit makes the
+skill "Not reviewed yet". Blocker findings in a skill from a source that reviews
+each skill keep it off even under Advisory until the owner skips the review.
 
 There are three skill types:
 
@@ -52,7 +56,7 @@ There are three skill types:
 
 The **runtime ownership** of an installed skill is also tagged:
 
-- `native`: bundled with the launcher (e.g. `unix_computer_use`).
+- `native`: a built-in bundled with the app (e.g. `unix_computer_use`).
 - `self_authored`: created by Ouroboros itself in the current data
   plane; marked by `.self_authored.json` and reviewed through the
   standard tri-model skill-review path.
@@ -62,11 +66,11 @@ The **runtime ownership** of an installed skill is also tagged:
 
 User-authored or manually copied skills belong under
 `data/skills/external/<name>/`. The `native` bucket is reserved for
-launcher-seeded skills that carry a `.seed-origin` marker. That marker, not the
+built-in skills that carry a `.seed-origin` marker. That marker, not the
 directory name alone, is the ownership fact: an existing payload under
 `native/` without the marker is treated in place as user-managed `external`
 content. Ordinary top-level tasks can inspect, edit, run commands in, or
-delegate that payload without a migration. A marker-present launcher seed stays
+delegate that payload without a migration. A marker-present built-in stays
 read/review-only, and new skills are still created under `external/`.
 
 ## Manifest schema (`SKILL.md` frontmatter or `skill.json`)
@@ -641,19 +645,9 @@ mode makes the review executable. Qualified current Advisory author acceptance
 uses the same gate even when the original critic state stays pending. Editing the
 skill still invalidates those grants.
 
-Official OuroborosHub skills have one extra review profile. If the installed
-payload, live catalog file list, and `.ouroboroshub.json` hashes all match
-exactly — including the full local runtime-reachable file set — the
-`official_hub` profile applies. For such hash-verified official payloads it
-downgrades severity-driven hygiene/bug findings (`bug_hunting`,
-`companion_process_safety`, `extension_namespace_discipline`,
-`widget_module_safety`) to warnings, so re-reviewing an already-published skill
-is not blocked by style nits. Hard trust-boundary checklist items still
-aggregate to `blockers`, and deterministic preflight, unreadable/binary
-payloads, sensitive-shaped files, catalog hash mismatches, dependency failures,
-missing grants, disabled state, and stale reviews still block as usual. Editing
-the payload locally, adding an extra runtime-reachable file, or any
-sidecar/catalog hash drift drops back to ordinary local-skill review semantics.
+Every review, grant and acceptance is bound to the skill's release digest: its
+payload files plus its declared dependencies, without per-install notes, so the
+same release has one identity on every install.
 
 Transport and control skills are first-class control surfaces — a legitimate
 full replacement for the local UI, not demos. An owner may have no screen, no

@@ -25,7 +25,6 @@
  * @property {string=} reviewed_content_hash
  * @property {boolean=} executable_review
  * @property {string=} review_profile
- * @property {?boolean=} official_hub_verified  // null = no fresh hub catalog view yet (the page re-reads)
  * @property {?boolean=} owner_attestable
  * @property {{visible: boolean, publication_ready: boolean, task_start_allowed: boolean, disabled: boolean, state: string, reason: string}=} submit_hub
  * @property {?{code: "skill_conflict", skills: string[], omitted: number}=} conflict
@@ -63,7 +62,6 @@
  * @property {string=} reviewed_content_hash
  * @property {boolean=} executable_review
  * @property {string=} review_profile
- * @property {?boolean=} official_hub_verified
  * @property {?boolean=} owner_attestable
  * @property {Object=} submit_hub
  */
