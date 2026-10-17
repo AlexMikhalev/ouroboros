@@ -1,0 +1,240 @@
+"""The five writer/import facts the dialogue readers address (unit Q1c): the chain readers'
+counts (ordinals and stream positions), exact row ends and the skipped intervals, every legacy
+``(gen, line)`` alias with an indexed reverse lookup, the ``subagent_task_id`` probe, and a room
+revision that continues from the project's ``visible_revision``. Each fact is asserted against
+the old readers or the chain files themselves, in both directions, and the probes are pinned to
+their indexes (no scan of rows or addresses)."""
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+import pathlib
+import sqlite3
+from typing import Any, Dict, List, NamedTuple, Optional
+
+import pytest
+
+from ouroboros import chat_chain, dialogue_import as di, dialogue_positions as dp, dialogue_store as ds, store
+from ouroboros.utils import jsonl_generation_signature
+from tests._dialogue import seed
+
+
+def owner(cmid, *, chat_id=1, ts="2026-10-17T00:00:01+00:00", **extra):
+    return {"ts": ts, "direction": "in", "chat_id": chat_id, "client_message_id": cmid, "text": f"words {cmid}", **extra}
+
+
+def progress(task_id, text="step", **extra):
+    return {"ts": "2026-10-17T00:00:02+00:00", "type": "send_message", "is_progress": True, "direction": "out",
+            "task_id": task_id, "text": text, **extra}
+
+
+def encoded(row, **kwargs):
+    return json.dumps(row, ensure_ascii=False, **kwargs).encode("utf-8")
+
+
+class Expected(NamedTuple):
+    ordinal: int
+    pos: Optional[int]
+    end: int
+    gen: str
+    line: int
+
+
+def chain_oracle(root: pathlib.Path, stream: str) -> Dict[int, Expected]:
+    """What the chain files say about every stored row: its counts as the JSONL readers counted
+    them (every parsed object; chat rows outside A2A), its exact end, its generation and line."""
+    archive = root / "archive"
+    paths = sorted(archive.glob(f"{stream}_*.jsonl"), key=lambda p: p.name) + [root / "logs" / f"{stream}.jsonl"]
+    expected, seq, ordinal, pos = {}, 0, 0, 0
+    for path in paths:
+        if not path.exists():
+            continue
+        gen = str(jsonl_generation_signature(path).get("first_line_sha256") or "")
+        for number, raw in enumerate(path.read_bytes().splitlines(keepends=True), 1):
+            try:
+                row = json.loads(raw.decode("utf-8").strip()) if raw.strip() else None
+            except ValueError:
+                row = None
+            if isinstance(row, dict):
+                counted = stream == "chat" and not chat_chain.is_a2a_chat_id(row.get("chat_id", 1))
+                expected[seq] = Expected(ordinal, pos if counted else None, seq + len(raw), gen, number)
+                ordinal, pos = ordinal + 1, pos + int(counted)
+            seq += len(raw)
+    return expected
+
+
+A2A_ROW = {"ts": "2026-10-17T00:00:01+00:00", "chat_id": -5, "direction": "out", "text": "machine traffic"}
+COMPACT = encoded(owner("a2", chat_id=2), separators=(",", ":")) + b"\r\n"  # a compact CRLF line
+CHILD_ROW = {"ts": "2026-10-17T00:00:03+00:00", "direction": "out", "chat_id": 1, "task_id": "t1",
+             "subagent_task_id": "child-1", "text": "child words"}
+UNTERMINATED = encoded(owner("live-3"))  # the chain's last line, without its newline
+
+
+def chain_root(root: pathlib.Path, *, non_object: bool = True) -> None:
+    """Two chat archives plus a live file with A2A, skipped, blank, CRLF and unterminated lines;
+    a progress archive with a row that carries only ``subagent_task_id``. (``chat_chain``'s own
+    generation reader cannot read past a non-object JSON line; an oracle built on it leaves it out.)"""
+    seed(root, archives={
+        "chat_20261001T000000.jsonl": [owner("a1"), A2A_ROW, b"{not json\n", *([b"[1, 2]\n"] if non_object else []), b"\n",
+                                       COMPACT, owner("a3", chat_id=2, task_id="t1")],
+        "chat_20261002T000000.jsonl": [CHILD_ROW, owner("b2")],
+        "progress_20261001T000000.jsonl": [progress("t1", "step 1"), b"garbage\n",
+                                           {"ts": "2026-10-17T00:00:02+00:00", "subagent_task_id": "child-1",
+                                            "text": "child step"}, progress("t2")],
+    }, live={"chat": [owner("live-1"), {**A2A_ROW, "chat_id": "-7"}, UNTERMINATED],
+             "progress": [progress("t1", "live step")]})
+
+
+@contextlib.contextmanager
+def traced(monkeypatch):
+    """The expanded SQL statements and VM steps of every store transaction in the block."""
+    counts: Dict[str, Any] = {"statements": [], "steps": 0}
+    transaction = ds.transaction
+
+    @contextlib.contextmanager
+    def wrapped(*args, **kwargs):
+        with transaction(*args, **kwargs) as conn:
+            conn.set_trace_callback(counts["statements"].append)
+            conn.set_progress_handler(lambda: counts.__setitem__("steps", counts["steps"] + 1) or 0, 1)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+                conn.set_progress_handler(None, 0)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(ds, "transaction", wrapped)
+        yield counts
+
+
+def plans(root, statements: List[str]) -> List[str]:
+    """The query plan details of the traced statements (the probes replayed with their values)."""
+    details = []
+    with ds.transaction(root, write=False) as conn:
+        for sql in statements:
+            if sql.lstrip().upper().startswith(("SELECT", "UPDATE", "INSERT")):
+                details.extend(str(record[3]) for record in conn.execute(f"EXPLAIN QUERY PLAN {sql}"))
+    assert details, statements
+    return details
+
+
+def gen_of(root, name) -> str:
+    return jsonl_generation_signature(root / "archive" / name)["first_line_sha256"]
+
+
+# ---- fact 1: durable ordinals -------------------------------------------------------------------
+
+def test_ordinals_are_the_chain_readers_counts_and_unknown_until_the_archive_is_complete(tmp_path):
+    chain_root(tmp_path)
+    oracle = {stream: chain_oracle(tmp_path, stream) for stream in ds.STREAMS}
+    old = {(gen, line): pos for _i, _p, gen, line, _row, pos in chat_chain._stream_rows(chat_chain.generation_signatures(tmp_path))}
+    assert {(e.gen, e.line): e.pos for e in oracle["chat"].values() if e.pos is not None} == old, "the oracle is the old reader's"
+    live_gen = jsonl_generation_signature(tmp_path / "logs" / "chat.jsonl")["first_line_sha256"]
+    di.cutover(tmp_path)
+    live_seq = ds.rows_by_client_id(tmp_path, "live-1")[0].seq
+    for unsettled in (lambda: dp.ordinal_at(tmp_path, "chat", live_seq), lambda: dp.row_at_position(tmp_path, 0),
+                      lambda: dp.row_at_ordinal(tmp_path, "progress", 0), lambda: dp.generation_row(tmp_path, live_gen, 2),
+                      lambda: dp.generation_row(tmp_path, gen_of(tmp_path, "chat_20261001T000000.jsonl"), 0)):
+        with pytest.raises(ds.StoreMigrating, match="still importing"):
+            unsettled()
+    assert dp.generation_row(tmp_path, live_gen, 0).row == owner("live-1"), "inside an imported unit the cursor resolves"
+    assert dp.generation_row(tmp_path, live_gen, 1).row == owner("live-3"), "A2A rows take no position"
+    di.run_dialogue_import(tmp_path)
+    for stream in ds.STREAMS:
+        rows = ds.newest(tmp_path, stream, limit=1000)
+        assert {row.seq for row in rows} == set(oracle[stream])
+        counts = dp.ordinals_of(tmp_path, stream, [row.seq for row in rows])
+        for row in rows:
+            expected = oracle[stream][row.seq]
+            assert counts[row.seq] == (expected.ordinal, expected.pos) == dp.ordinal_at(tmp_path, stream, row.seq)
+            assert dp.row_at_ordinal(tmp_path, stream, expected.ordinal).seq == row.seq
+            if expected.pos is not None:
+                assert dp.row_at_position(tmp_path, expected.pos).seq == row.seq
+        assert dp.row_at_ordinal(tmp_path, stream, len(rows)) is None and dp.ordinals_of(tmp_path, stream, [1 << 40]) == {}
+    assert dp.row_at_position(tmp_path, len(old)) is None
+    assert dp.ordinal_at(tmp_path, "chat", ds.probe_rows(tmp_path, "chat", [("chat_id", -5)])[0].seq).pos is None
+
+
+def test_rows_appended_after_the_cutover_continue_the_same_counting(tmp_path):
+    chain_root(tmp_path)
+    di.cutover(tmp_path)
+    during = [ds.append(tmp_path, "chat", owner("during-1")), ds.append(tmp_path, "chat", {**A2A_ROW, "chat_id": -1}),
+              ds.append(tmp_path, "chat", owner("during-2"))]
+    with pytest.raises(ds.StoreMigrating):
+        dp.ordinal_at(tmp_path, "chat", during[0].seq)
+    di.run_dialogue_import(tmp_path)
+    objects, positions = len(chain_oracle(tmp_path, "chat")), 7
+    assert dp.ordinal_at(tmp_path, "chat", during[0].seq) == (objects, positions)
+    assert dp.ordinal_at(tmp_path, "chat", during[1].seq) == (objects + 1, None)
+    assert dp.ordinal_at(tmp_path, "chat", during[2].seq) == (objects + 2, positions + 1)
+    assert dp.row_at_position(tmp_path, positions + 1).seq == during[2].seq
+    later = ds.append(tmp_path, "progress", progress("t3"))
+    assert dp.ordinal_at(tmp_path, "progress", later.seq) == (len(chain_oracle(tmp_path, "progress")), None)
+    assert dp.row_at_ordinal(tmp_path, "progress", 4).seq == later.seq
+    fresh = tmp_path / "fresh"
+    first = ds.append(fresh, "chat", owner("first"))
+    assert dp.ordinal_at(fresh, "chat", first.seq) == (0, 0), "a root without chain files counts from zero at once"
+    assert dp.row_at_position(fresh, 1) is None
+    child = tmp_path / "child"
+    seed(child, live={"chat": [A2A_ROW, owner("only-live")]})  # a child root: its own small live file, no archive
+    appended = ds.append(child, "chat", owner("child-new"))
+    assert dp.ordinal_at(child, "chat", appended.seq) == (2, 1) and dp.row_at_position(child, 0).row == owner("only-live")
+
+
+def test_generation_cursors_resolve_as_the_old_consolidation_reader_did(tmp_path):
+    chain_root(tmp_path, non_object=False)
+    live = tmp_path / "logs" / "chat.jsonl"
+    paths = chat_chain._ordered_chat_generation_paths(live)
+    cases = []
+    for path in paths:
+        signature = jsonl_generation_signature(path)
+        for offset in range(len(chat_chain._read_chat_entries(path)) + 2):
+            segments, cursor, gap = chat_chain._resolve_generation_segments(
+                {"chat_log_signature": signature, "last_consolidated_offset": offset}, live)
+            pending = [entry for segment in segments for entry in chat_chain._read_chat_entries(segment)]
+            assert not gap
+            cases.append((signature["first_line_sha256"], offset, pending[cursor] if cursor < len(pending) else None))
+    di.cutover(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    for gen, offset, expected in cases:
+        found = dp.generation_row(tmp_path, gen, offset)
+        assert (None if found is None else found.row) == expected, (gen, offset)
+    assert dp.generation_row(tmp_path, "0" * 64, 0) is None and dp.generation_row(tmp_path, "", 0) is None
+    assert dp.generation_row(tmp_path, gen_of(tmp_path, "chat_20261002T000000.jsonl"), -1) is None
+
+
+def test_a_segment_that_joins_after_the_cutover_counts_at_its_chain_place(tmp_path):
+    chain_root(tmp_path)
+    di.cutover(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    exported = ds.append(tmp_path, "chat", owner("new"))
+    assert dp.ordinal_at(tmp_path, "chat", exported.seq) == (9, 7)
+    di.export_for_older_body(tmp_path)
+    seed(tmp_path, live={"chat": [owner("old-1"), {**A2A_ROW, "chat_id": -2}, owner("old-2")]})  # an older body appended
+    joined_gen = jsonl_generation_signature(tmp_path / "logs" / "chat.jsonl")["first_line_sha256"]
+    report = di.cutover(tmp_path)
+    assert report["chat"]["imported"] == {"status": "done", "rows": 4, "bad": 0}
+    old_1, old_2 = (ds.rows_by_client_id(tmp_path, cmid)[0] for cmid in ("old-1", "old-2"))
+    assert dp.ordinal_at(tmp_path, "chat", exported.seq) == (9, 7), "a row the export placed keeps its counts"
+    assert dp.ordinal_at(tmp_path, "chat", old_1.seq) == (10, 8) and dp.ordinal_at(tmp_path, "chat", old_2.seq) == (12, 9)
+    unit = ds.legacy_generation(tmp_path, joined_gen)
+    assert (unit["rows"], unit["stream_rows"], unit["ordinal_base"], unit["pos_base"]) == (4, 3, 9, 7)
+    assert dp.generation_row(tmp_path, joined_gen, 1).seq == old_1.seq and dp.generation_row(tmp_path, joined_gen, 2).seq == old_2.seq
+    assert ds.legacy_address(tmp_path, old_2.seq) == (joined_gen, 4)
+    after = ds.append(tmp_path, "chat", owner("after"))
+    assert dp.ordinal_at(tmp_path, "chat", after.seq) == (13, 10) and dp.row_at_ordinal(tmp_path, "chat", 11).row["chat_id"] == -2
+
+
+def test_a_segment_that_cannot_be_imported_makes_the_counts_a_typed_error(tmp_path):
+    seed(tmp_path, archives={"chat_20261001T000000.jsonl": [owner("archived")]}, live={"chat": [owner("live")]})
+    di.cutover(tmp_path)
+    live = ds.rows_by_client_id(tmp_path, "live")[0]
+    with pytest.raises(ds.StoreMigrating):
+        dp.ordinals_of(tmp_path, "chat", [live.seq])
+    (tmp_path / "archive" / "chat_20261001T000000.jsonl").write_text("changed after the cutover\n", encoding="utf-8")
+    di.run_dialogue_import(tmp_path)
+    with pytest.raises(store.StoreError, match="could not be imported"):
+        dp.ordinals_of(tmp_path, "chat", [live.seq])
+    with pytest.raises(store.StoreError, match="could not be imported"):
+        dp.row_at_position(tmp_path, 0)
