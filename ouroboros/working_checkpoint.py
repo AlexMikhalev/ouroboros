@@ -349,7 +349,7 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
     """Finalize a dead attempt whose answer the host already holds, instead of running its prompt again.
 
     Timeout reaping and dead-worker recovery consult this before admitting a fresh
-    model attempt, cancellation custody before cancelling a boot restore fence. With
+    model attempt, cancellation custody before settling a direct boot fence. With
     the answer out before the result store (owner 1A(1)) a death inside the store is
     an ordinary window; the authored answer must not be generated a second time.
     A registered answer — owed, exhausted,
@@ -358,8 +358,8 @@ def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, at
     reason ``finalization_incomplete``, the outbox's own text as the result and a
     host notice naming what stayed incomplete. An owed row keeps replaying through
     the outbox; an exhausted one is named as given up. Returns the stored terminal row, or None when no answer is
-    registered (the ordinary retry proceeds). A refused write raises: the caller's
-    existing no-retry fallback owns the attempt, never a second model run.
+    registered (the ordinary retry proceeds). Storage errors propagate; the
+    monotonic writer may instead return an already-settled row. Neither permits a new model run.
     """
     answer = registered_answer(registry_root if registry_root is not None else root, task_id)
     if not answer:

@@ -768,7 +768,7 @@ def _finalize_cancel_intent_on_miss(
     settles ``not_found`` too, the row untouched. And it must not bury a child
     that finished: when the row names a child drive, the child's own result is
     copied back BEFORE the cancelled write, so a crash of the split-drive
-    copy-back window cannot cost a completed answer. Nor does a restore fence
+    copy-back window cannot cost a completed answer. Nor does a direct restore fence
     bury an answer the host already owes or delivered under cancel text and a
     "no salvageable output" notice: that attempt is finalized from the answer.
     """
@@ -876,10 +876,12 @@ def _finalize_cancel_intent_on_miss(
         from ouroboros.working_checkpoint import adopt_registered_answer, registered_answer
         from supervisor.task_reaper import _deferred_reap_jobs
         registry_root = pathlib.Path(existing.get("budget_drive_root") or q.DRIVE_ROOT)
-        # A restore fence over an attempt whose answer the host positively holds finalizes from that
-        # answer, as timeout reaping and dead-worker recovery do; an unreadable registry keeps this lane.
-        adopt = bool(shutdown_cancel_text(active)) and registered_answer(registry_root, task_id).get("basis") in {
-            "owed", "exhausted", "delivered"}
+        # A direct restore fence keeps a positively held answer, like dead-worker recovery.
+        # Other cancel paths (including pooled restore) keep their existing outcome.
+        owner = existing.get("execution_owner")
+        adopt = (isinstance(owner, dict) and owner.get("kind") == "direct"
+                 and bool(shutdown_cancel_text(active))
+                 and registered_answer(registry_root, task_id).get("basis") in {"owed", "exhausted", "delivered"})
         adopted: Optional[Dict[str, Any]] = None
         # Under Q the health tick hands a retained reap back to its reaper wholly before or after
         # this write: an idle one replays over it; one out for its replay keeps the slot and the write.

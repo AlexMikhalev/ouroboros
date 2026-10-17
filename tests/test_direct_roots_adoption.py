@@ -286,6 +286,42 @@ def test_saved_working_state_is_held_for_resume_without_roster_or_snapshot(tmp_p
     assert budget_hold_fact(task) is None and task["_working_recovery"]["source_ref"]
 
 
+@pytest.mark.serial
+def test_registered_answer_takes_precedence_over_saved_work(tmp_path, monkeypatch):
+    from ouroboros import working_checkpoint as wc
+    from ouroboros.task_status import execution_owner_record
+    from supervisor.task_lifecycle import sweep_cancel_intents
+    from tests._budget_pause_exact_helpers import _loop_ctx
+
+    queue, _workers = _install(tmp_path, monkeypatch)
+    write_task_result(tmp_path, TID, STATUS_RUNNING, chat_id=1, task_attempt=1, _is_direct_chat=True,
+                      execution_owner=execution_owner_record(tmp_path, {"id": TID, "_attempt": 1}, "direct"))
+    _ctx, limit = _loop_ctx(tmp_path, TID, direct=True, attempt=1)
+    wc.save_round(limit, "pre_effect")
+    _register(tmp_path, TID, "delivered")
+    _crash_without_projections(tmp_path, monkeypatch, queue)
+    sweep_cancel_intents(now=time.time() + 60)
+    row = load_task_result(tmp_path, TID)
+    assert not any(task["id"] == TID for task in queue.PENDING)
+    assert row["result"] == ANSWER
+    assert row["reason_code"] == "finalization_incomplete"
+
+
+def test_pooled_restore_keeps_its_existing_outcome(qenv, monkeypatch):
+    from ouroboros.task_status import execution_owner_record
+
+    _bus(qenv, monkeypatch)
+    owner = execution_owner_record(qenv.drive, {"id": TID}, "pooled")
+    _crashed_turn(qenv.drive, owner=owner, answer="delivered")
+    write_task_result(qenv.drive, TID, STATUS_RUNNING, _is_direct_chat=False)
+    _restart_snapshot(qenv, monkeypatch, running=[{"id": TID, "chat_id": 1, "type": "task"}])
+    _next_generation(monkeypatch, qenv.drive)
+    handed, fenced, swept = _boot(qenv)
+    assert handed == [] and fenced == [TID] and swept[TID] == "cancelled"
+    assert load_task_result(qenv.drive, TID)["status"] == STATUS_CANCELLED
+    assert _readers(qenv.drive).cont["eligible"] is True
+
+
 def _live_actor(drive):
     from supervisor.active_activity import get_direct_activity_registry
 

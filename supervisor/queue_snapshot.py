@@ -313,9 +313,9 @@ def _retain_snapshot_pending(snapshot_pending: list, running_rows: list, *, stal
     carrier of work that ran on, so it is not retained at all and is fenced as
     the running work it names (its id is returned third). A RUNNING row whose
     durable pause was already complete is parked, never fenced; so is a direct
-    root the stop caught (``direct_caught``) in that state: a direct turn is
-    never a RUNNING row, so the roster is the only place the stop names it, and
-    handing such an id to the shutdown cancel fence would cancel a saved pause
+    root the stop caught (``direct_caught``) in that state: queue init's direct
+    handover names these non-pooled turns, and handing such an id to the
+    shutdown cancel fence would cancel a saved pause
     (#1196). Its queue record is rebuilt from the durable result the pause
     wrote (chat, lane fact, origin, metadata, attempt) and parked through the
     same path a RUNNING row takes; a turn with no complete pause (no row, no
