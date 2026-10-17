@@ -131,8 +131,11 @@ def settle(page):
 
 
 def nav_pages(page):
-    # TODO(L1 integration): remove DOM fallback once pages.js has landed.
-    return page.locator('[data-nav-page]').evaluate_all('rows => rows.map(e=>e.dataset.navPage)')
+    # The one registry of places (web/modules/pages.js): a new page is gated here with no further edit.
+    ids = page.evaluate("async () => (await import('/static/modules/pages.js')).PAGES.map(p => p.id)")
+    rows = page.locator('[data-nav-page]').evaluate_all('rows => rows.map(e=>e.dataset.navPage)')
+    assert sorted(ids) == sorted(rows), f'registry {ids} and rendered rows {rows} disagree'
+    return ids
 
 
 def open_nav(page, name):
