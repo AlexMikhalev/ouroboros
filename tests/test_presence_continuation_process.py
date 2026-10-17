@@ -42,10 +42,44 @@ def tmp_path(tmp_path):
     Retain this test's separate root and leave its address in pytest's tree,
     just like the other isolated session trees; never discard failure evidence.
     """
-    root = Path(tempfile.mkdtemp(prefix="ob-pres-", dir="/tmp"))
-    (tmp_path / "presence-root.txt").write_text(str(root), encoding="utf-8")
-    yield root
-    print(f"Presence fixture tree retained: {root}")
+    # Probe the real AF_UNIX bind with the multiprocessing name shape rather
+    # than assuming character count equals the platform's encoded byte limit.
+    probe_dir = tmp_path / "tmp" / "pymp-12345678"
+    probe_dir.mkdir(parents=True)
+    address = probe_dir / "listener-12345678"
+    with socket.socket(socket.AF_UNIX) as probe:
+        try:
+            probe.bind(str(address))
+        except OSError:
+            fits = False
+        else:
+            fits = True
+    address.unlink(missing_ok=True)
+    probe_dir.rmdir()
+    boundary = os.environ.get("OUROBOROS_TEST_TEMP_ROOT")
+    root = tmp_path if fits else Path(tempfile.mkdtemp(prefix="h", dir=boundary or "/tmp"))
+    if boundary and not fits:
+        from ouroboros.test_environment import declare_scratch
+        declare_scratch(root, "pytest-session")
+    if not fits:
+        (tmp_path / "presence-root.txt").write_text(str(root), encoding="utf-8")
+    try:
+        yield root
+    finally:
+        from ouroboros.test_evidence import diagnostic_directory, diagnostics_incomplete
+        import shutil
+        try:
+            evidence = diagnostic_directory(root / "evidence", "presence-" + root.name)
+            # These are this producer's diagnostic originals, not its DB/cache.
+            named = list(root.glob("*.log")) + list(root.glob("*.json")) + list(root.glob("*.jsonl"))
+            named += list((root / "data" / "logs").glob("*.jsonl"))
+            for path in named:
+                target = evidence / path.relative_to(root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+        except OSError as exc:
+            diagnostics_incomplete(str(exc))
+    print(f"Presence fixture tree {'owned by outer test run' if boundary else 'retained (no outer owner)'}: {root}")
 
 
 def eventually(read, *, seconds=45):

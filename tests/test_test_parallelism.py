@@ -156,9 +156,11 @@ def _run_pytest(tmp_path, files, *, workers, extra=(), owned=True):
                      f"raise SystemExit(pytest.main({args!r}))\n", encoding="utf-8")
     started = time.monotonic()
     if not owned:  # A bare run: the caller removed every inherited membership token.
+        # No launcher root either: its own evidence in tmp_path would otherwise retain the outer one.
+        env = {key: value for key, value in os.environ.items() if key != "OUROBOROS_TEST_TEMP_ROOT"}
         with log.open("w", encoding="utf-8") as output:
             proc = subprocess.Popen([sys.executable, str(entry)], cwd=ROOT,
-                                    env={**os.environ, budget.NESTED_WORKERS_ENV: str(workers)},
+                                    env={**env, budget.NESTED_WORKERS_ENV: str(workers)},
                                     stdout=output, stderr=subprocess.STDOUT)
         try:
             code = proc.wait(timeout=60)
@@ -272,7 +274,7 @@ def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fau
     # Gone or an unreaped corpse. Windows keeps an exited process (and its birth) readable
     # while a handle is open and ends Job members asynchronously, so its exit state decides.
     deadline = time.monotonic() + 15
-    while pl.process_start_time(pid) == born and pl.pid_is_alive(pid) and not pid_is_zombie(pid):
+    while pl.process_start_time(pid) == born and not pl.pid_provably_gone(pid) and not pid_is_zombie(pid):
         assert time.monotonic() < deadline, output
         time.sleep(0.05)
 

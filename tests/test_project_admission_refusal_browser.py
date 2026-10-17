@@ -30,6 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 
@@ -97,7 +98,17 @@ def _producers(monkeypatch, data_dir: Path, repo_dir: Path) -> SimpleNamespace:
     bridge, live_sends = _Bridge(), []
     monkeypatch.setattr(message_bus, "DATA_DIR", data_dir)
     monkeypatch.setattr(message_bus, "_BRIDGE", bridge)
-    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=live_sends.append))
+    from supervisor.event_observation import ObservedEventQueue
+
+    class _Bus(ObservedEventQueue):
+        """The supervisor's real two-lane bus (membership and atomic put included), recording each live send."""
+
+        def _put(self, item):
+            live_sends.append(item)
+            super()._put(item)
+
+    bus = _Bus()
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: bus)
     monkeypatch.setattr("ouroboros.server_owner_routing.threading", SimpleNamespace(Thread=_ImmediateThread))
     ctx = SimpleNamespace(
         DRIVE_ROOT=data_dir, PENDING=pending, RUNNING=running, WORKERS=pool, bridge=bridge,
@@ -288,7 +299,7 @@ def test_never_admitted_project_refusal_stays_an_origin_receipt(
 
     server = direct_server_with_data
     url, data_dir = server["url"], server["data_dir"]
-    evidence = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tmp_path) / "admission-consumer" / engine
+    evidence = producer_evidence_dir(tmp_path / "admission-consumer" / engine, "admission-consumer-" + engine)
     evidence.mkdir(parents=True, exist_ok=True)
     print(f"ADMISSION_EVIDENCE={evidence}")
     facts: dict = {"engine": engine}

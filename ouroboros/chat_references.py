@@ -19,14 +19,20 @@ def projection_fields(row: dict) -> dict:
 
 def reference_from_row(row: dict) -> dict:
     kind = str(row.get("type") or "message")
+    # A lifecycle row carrying an authored answer is that answer in Ouroboros's
+    # voice wherever Main shows it (project_answer.js::appendProjectRow); the
+    # address still hashes the raw System row.
+    answer = str(row.get("completion_answer") or "") if kind in {
+        "project_started", "project_handoff", "project_completion_summary"} else ""
     kind = ("question" if kind == "quiz" else "completion" if kind in
             {"project_completion_summary", "task_summary"} else
             "system" if row.get("direction") == "system" else "message")
-    role = {"in": "user", "out": "assistant", "system": "system"}.get(row.get("direction"), "system")
+    role = "assistant" if answer else {"in": "user", "out": "assistant", "system": "system"}.get(
+        row.get("direction"), "system")
     return {"address": format_address(row_address(row)), "chat_id": int(row.get("chat_id", 1)),
             "role": role, "author_label": str(row.get("sender_label") or
                                                {"user": "You", "assistant": "Ouroboros", "system": "System"}[role]),
-            "kind": kind, "snippet": " ".join(str(row.get("text") or row.get("caption") or "").split())[:160],
+            "kind": kind, "snippet": " ".join(str(answer or row.get("text") or row.get("caption") or "").split())[:160],
             "ts": str(row.get("ts") or ""), "task_id": str(row.get("task_id") or "")}
 
 

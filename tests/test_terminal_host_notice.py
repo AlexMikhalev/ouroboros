@@ -11,6 +11,7 @@ import pytest
 
 from ouroboros import agent_task_pipeline as pipeline, loop
 from ouroboros.task_results import load_task_result, write_task_result
+from ouroboros.test_evidence import diagnostic_directory
 from tests._delivery_candidate_shared import write_child, write_confirmed_disposition_fixture
 from tests.test_delivery_forced_finalization import _bind_host_pass, _forced_test_context
 from tests.test_ui_smoke_playwright import direct_server_with_data as _direct_server_with_data
@@ -744,7 +745,7 @@ def test_browser_renders_the_model_answer_without_a_host_bubble(direct_server_wi
             answer.wait_for(state="visible", timeout=15000)
             assert "Plan review remained open" not in answer.inner_text()
             assert page.locator(".chat-bubble.system").count() == 0
-            page.screenshot(path=str(data.parent / "terminal-host-notice.png"), full_page=True)
+            page.screenshot(path=str(diagnostic_directory(data.parent, "terminal-host-notice") / "terminal-host-notice.png"), full_page=True)
             page.reload(wait_until="domcontentloaded")
             answer.wait_for(state="visible", timeout=15000)
             assert answer.count() == 1 and page.locator(".chat-bubble.system").count() == 0

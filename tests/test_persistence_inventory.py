@@ -772,7 +772,8 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # (``ouroboros/preflight_qualification.py``; the existing receipts row).
 # 378 -> 379 (review copies' lifetime): the prune walks ``state/review_checkouts`` itself
 # (``ouroboros/review_checking_prune.py``; the existing seats and views rows).
-EXPECTED_SCAN_PATHS = 379
+# 379 -> 380: test_evidence stores full gate sources/results below source_handles/test-evidence.
+EXPECTED_SCAN_PATHS = 380
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

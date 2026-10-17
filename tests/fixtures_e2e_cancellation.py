@@ -383,7 +383,10 @@ def clone_repo(destination: pathlib.Path) -> pathlib.Path:
     worktree.
     """
     clone = pathlib.Path(destination) / "clone"
-    subprocess.run(["git", "clone", "--no-hardlinks", "-q", str(REPO_ROOT), str(clone)],
+    # Transport packs reachable history instead of copying the source's loose,
+    # unreachable objects. Still full history/all branches/tags, independently
+    # owned objects, no alternates or shared lifetime with the source.
+    subprocess.run(["git", "clone", "--no-local", "-q", str(REPO_ROOT), str(clone)],
                    check=True, capture_output=True)
     subprocess.run(["git", "checkout", "-B", "ouroboros"], cwd=str(clone),
                    check=True, capture_output=True)

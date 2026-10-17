@@ -1,18 +1,17 @@
 """Focused #1660 Main consumer regressions against an attested real candidate.
 
 Only provider judgments, producer inputs and deliberate client disconnection are
-fixtures. Every browser consumes the actual gateway and SPA. Artifact evidence
-is opt-in via OUROBOROS_BROWSER_EVIDENCE_OUT and is retained on failure.
+fixtures. Every browser consumes the actual gateway and SPA. Diagnostics use the
+managed evidence channel; OUROBOROS_BROWSER_EVIDENCE_OUT overrides the destination.
 """
 
 
 import json
-import os
 import uuid
-from pathlib import Path
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_native_owner_wait_browser import chat_connection
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
@@ -26,7 +25,8 @@ pytestmark = [pytest.mark.serial, pytest.mark.browser]
 
 
 def _controls_evidence(tmp_path, name):
-    destination = Path(os.environ.get("OUROBOROS_BROWSER_EVIDENCE_OUT") or tmp_path / "screenshots") / name
+    destination = producer_evidence_dir(tmp_path / "screenshots", "main-consumer-journeys",
+                                        env="OUROBOROS_BROWSER_EVIDENCE_OUT") / name
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 

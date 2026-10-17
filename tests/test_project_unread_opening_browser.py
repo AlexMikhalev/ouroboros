@@ -10,10 +10,12 @@ hidden room or a failed page ends that reach, and a later read never resumes it.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -66,11 +68,21 @@ def _buried_room(data, monkeypatch, project_id, children, padding=0, chat_id=Non
     return chat_id, revision
 
 
+def _cursor_kind(url):
+    """The read a history request's cursor names: ``older`` walks a chain's pages, ``page`` reads one
+    again, ``after`` takes what arrived since the window's newest read; None reads the newest page."""
+    cursor = parse_qs(urlparse(url).query).get("cursor")
+    if not cursor:
+        return None
+    return json.loads(base64.urlsafe_b64decode(cursor[0] + "=" * (-len(cursor[0]) % 4)))["kind"]
+
+
 class _Room:
-    """One client opening the unread room; older page requests are recorded, and one may be held or failed."""
+    """One client opening the unread room; older page requests are recorded, and one may be held or failed.
+    Every other history read with a cursor (an ``after`` read of new arrivals) is recorded in ``reads``."""
 
     def __init__(self, browser, url, project_id, hold=None, fail=None, init=()):
-        self.acks, self.older, self.held = [], [], []
+        self.acks, self.older, self.held, self.reads = [], [], [], []
         self.page, self.row = _client(browser, url, project_id, self.acks, init)
         self.project_id = project_id
 
@@ -82,7 +94,9 @@ class _Room:
                 route.fulfill(status=503, content_type="application/json", body='{"error": "unavailable"}')
             else:
                 route.continue_()
-        self.page.route(lambda url: _OLDER in url and "cursor=" in url, route)
+        self.page.route(lambda url: _OLDER in url and _cursor_kind(url) == "older", route)
+        self.page.on("request", lambda request: self.reads.append((_cursor_kind(request.url), request.url))
+                     if _OLDER in request.url and _cursor_kind(request.url) not in (None, "older") else None)
         self.messages = self.page.locator(PANEL)
 
     def open(self):
@@ -424,8 +438,8 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
                         room.page.evaluate("() => window.__receipts") if "late-room" in (posted.get("seen") or {})]
             cursor = room.page.request.get(f"{url}/api/ui/preferences").json()["project_seen_revision"]
             name = f"unread-opening-{engine}-reply-after-return"
-            evidence = _evidence(data, name, landed=landed, older=room.older, acks=room.acks, receipts=receipts,
-                                 cursor=cursor, revisions=[revision, newer])
+            evidence = _evidence(data, name, landed=landed, older=room.older, reads=room.reads, acks=room.acks,
+                                 receipts=receipts, cursor=cursor, revisions=[revision, newer])
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert read and _on_screen(landed), ("the opening reaches the reply the return named", landed, room.acks)
             assert len(room.older) == 5, ("four pages to the start, then the page holding the reply", room.older)
