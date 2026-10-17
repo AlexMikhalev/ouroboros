@@ -10,6 +10,20 @@ an older body or a client holds -- a ``history_id`` ``<stream>:<offset>``, a pag
 wake boundary, an export -- names the same row here. The two streams are paged separately,
 so each has its own coordinate space (``PRIMARY KEY (stream, seq)``).
 
+Beside its coordinate a row keeps its exact physical ``length`` (``seq + length`` is its end:
+the CRLF or compact JSON of an imported line is not re-encoded away), its ``ordinal`` -- the
+count the chain readers kept: every stored object of the stream (task-events v1 ``line``, the
+logs tail's ``_line``) and, for chat, ``pos`` -- the stream position outside A2A rows
+(``chat_chain._stream_rows``, the consolidation cursor, chronicle ``raw_range``). Both counts
+are stored relative to the row's unit (``segment``: an archive segment, or the stream's live
+unit for every row stored after the cutover) and become absolute through the unit's bases in
+``import_ledger``, settled by the transaction that completes the archive (newest first: the
+bases of every unit are known together, so an absolute ordinal is "still importing" before,
+never a guess; ``ouroboros.dialogue_positions`` answers by them). The lines the import skipped
+are the ``skipped`` intervals; every legacy ``(gen, line)`` alias is kept and indexed both
+ways; ``subagent_task_id`` is a probe column; a room's ``revision`` continues from the
+project's ``visible_revision`` at the cutover.
+
 ``append`` is the ONE writer seam: one ``BEGIN IMMEDIATE`` transaction writes the row, dedups
 a named owner message through the partial UNIQUE ``(chat_id, client_message_id)`` (a duplicate
 returns the existing row's receipt), moves the room's revision, last row and activity, and
@@ -53,7 +67,7 @@ log = logging.getLogger(__name__)
 STORE_REL = pathlib.Path("state/dialog.sqlite")
 LOCK_NAME = "dialog.lock"  # the name tier's one lock around every access
 IMPORT_LOCK_NAME = "dialog_import.lock"  # creation, cutover, tier changes
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # the file's ``user_version``; a file of another version is refused, never replaced
 STREAMS = ("chat", "progress")
 LIVE_REL = {"chat": pathlib.Path("logs/chat.jsonl"), "progress": pathlib.Path("logs/progress.jsonl")}  # the frozen chains
 WAIT_SEC = store.STORE_WAIT_SEC
@@ -63,19 +77,25 @@ DISPATCH_STATES = ("none", "pending", "dispatched", "completed", "abandoned")
 # Every probe names its index (``INDEXED BY``): the plan is a fact of the schema, not the planner's
 # estimate -- without statistics SQLite walks the primary key (every newer row of every room) instead.
 _PROBE_INDEX = {"chat_id": "dialogue_room", "task_id": "dialogue_task", "parent_task_id": "dialogue_parent",
-                "root_task_id": "dialogue_root", "origin": "dialogue_origin", "client_message_id": "dialogue_named",
-                "kind": "dialogue_kind"}
+                "root_task_id": "dialogue_root", "subagent_task_id": "dialogue_subagent", "origin": "dialogue_origin",
+                "client_message_id": "dialogue_named", "kind": "dialogue_kind"}
+_TASK_KEYS = ("task_id", "parent_task_id", "root_task_id", "subagent_task_id")  # every identifier a task's row may carry
+SKIPPED_KINDS = ("invalid", "non_object")  # a line that is not JSON; valid JSON that is not an object
 _SCHEMA = """
 CREATE TABLE dialogue (
-  stream TEXT NOT NULL, seq INTEGER NOT NULL, ts TEXT NOT NULL DEFAULT '', chat_id INTEGER,
-  task_id TEXT, parent_task_id TEXT, root_task_id TEXT, direction TEXT NOT NULL DEFAULT '', kind TEXT,
-  client_message_id TEXT, origin TEXT, dispatch TEXT, dispatch_input TEXT, body TEXT NOT NULL,
+  stream TEXT NOT NULL, seq INTEGER NOT NULL, length INTEGER NOT NULL, segment INTEGER NOT NULL,
+  ordinal INTEGER NOT NULL, pos INTEGER, ts TEXT NOT NULL DEFAULT '', chat_id INTEGER,
+  task_id TEXT, parent_task_id TEXT, root_task_id TEXT, subagent_task_id TEXT, direction TEXT NOT NULL DEFAULT '',
+  kind TEXT, client_message_id TEXT, origin TEXT, dispatch TEXT, dispatch_input TEXT, body TEXT NOT NULL,
   PRIMARY KEY (stream, seq)) WITHOUT ROWID;
 CREATE INDEX dialogue_room ON dialogue(stream, chat_id, seq);
 CREATE INDEX dialogue_room_ts ON dialogue(stream, chat_id, ts);
 CREATE INDEX dialogue_task ON dialogue(stream, task_id, seq) WHERE task_id IS NOT NULL;
 CREATE INDEX dialogue_parent ON dialogue(stream, parent_task_id, seq) WHERE parent_task_id IS NOT NULL;
 CREATE INDEX dialogue_root ON dialogue(stream, root_task_id, seq) WHERE root_task_id IS NOT NULL;
+CREATE INDEX dialogue_subagent ON dialogue(stream, subagent_task_id, seq) WHERE subagent_task_id IS NOT NULL;
+CREATE INDEX dialogue_ordinal ON dialogue(segment, ordinal);
+CREATE INDEX dialogue_pos ON dialogue(segment, pos) WHERE pos IS NOT NULL;
 CREATE INDEX dialogue_kind ON dialogue(stream, kind, seq) WHERE kind IS NOT NULL;
 CREATE INDEX dialogue_named ON dialogue(stream, client_message_id, chat_id, seq) WHERE client_message_id IS NOT NULL;
 CREATE INDEX dialogue_origin ON dialogue(stream, origin, seq) WHERE origin IS NOT NULL;
@@ -83,40 +103,58 @@ CREATE INDEX dialogue_inbound ON dialogue(stream, chat_id, seq) WHERE direction=
 CREATE UNIQUE INDEX dialogue_accepted ON dialogue(chat_id, client_message_id)
   WHERE direction='in' AND client_message_id IS NOT NULL AND dispatch IS NOT NULL;
 CREATE INDEX dialogue_pending ON dialogue(stream, seq) WHERE dispatch='pending';
-CREATE TABLE streams (stream TEXT PRIMARY KEY, next_seq INTEGER NOT NULL, cutover_seq INTEGER, files_seq INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE streams (stream TEXT PRIMARY KEY, next_seq INTEGER NOT NULL, cutover_seq INTEGER, files_seq INTEGER NOT NULL DEFAULT 0,
+  live INTEGER NOT NULL, next_ordinal INTEGER NOT NULL DEFAULT 0, next_pos INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE rooms (chat_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0, last_seq INTEGER,
   read_revision INTEGER NOT NULL DEFAULT 0, activity_at TEXT NOT NULL DEFAULT '');
-CREATE TABLE legacy_addresses (gen TEXT NOT NULL, line INTEGER NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (gen, line)) WITHOUT ROWID;
-CREATE TABLE import_ledger (stream TEXT NOT NULL, name TEXT NOT NULL, base INTEGER NOT NULL, size INTEGER NOT NULL,
-  mtime_ns INTEGER, state TEXT NOT NULL, rows INTEGER, bad INTEGER, gen TEXT, imported_at TEXT, PRIMARY KEY (stream, name));
+CREATE TABLE legacy_addresses (gen TEXT NOT NULL, line INTEGER NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (gen, line, seq)) WITHOUT ROWID;
+CREATE INDEX legacy_seq ON legacy_addresses(seq);
+CREATE TABLE skipped (stream TEXT NOT NULL, seq INTEGER NOT NULL, length INTEGER NOT NULL, kind TEXT NOT NULL,
+  PRIMARY KEY (stream, seq)) WITHOUT ROWID;
+CREATE TABLE import_ledger (id INTEGER PRIMARY KEY, stream TEXT NOT NULL, name TEXT NOT NULL, base INTEGER NOT NULL,
+  size INTEGER NOT NULL, mtime_ns INTEGER, state TEXT NOT NULL, rows INTEGER, stream_rows INTEGER, bad INTEGER, gen TEXT,
+  ordinal_base INTEGER, pos_base INTEGER, imported_at TEXT, UNIQUE (stream, name));
 CREATE INDEX ledger_state ON import_ledger(stream, state, base);
 CREATE INDEX ledger_gen ON import_ledger(gen) WHERE gen IS NOT NULL;
+CREATE INDEX ledger_ordinal ON import_ledger(stream, ordinal_base) WHERE ordinal_base IS NOT NULL;
+CREATE INDEX ledger_pos ON import_ledger(stream, pos_base) WHERE pos_base IS NOT NULL;
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
 class Row(NamedTuple):
-    """One stored row: its coordinate, the decoded body and its dispatch fact."""
+    """One stored row: its coordinate, the decoded body, its dispatch fact and its exact physical
+    length (``end`` is the coordinate right after it: its newline included, nothing re-encoded)."""
 
     stream: str
     seq: int
     row: Dict[str, Any]
     dispatch: Optional[str]
+    length: int
 
     @property
     def history_id(self) -> str:
         return f"{self.stream}:{self.seq}"
 
+    @property
+    def end(self) -> int:
+        return self.seq + self.length
+
 
 class Receipt(NamedTuple):
     """What ``append`` returns: the row's coordinate, the row as stored, whether an existing row
-    answered (a duplicate named message) and the dispatch fact after the transaction."""
+    answered (a duplicate named message), the dispatch fact after the transaction and the length."""
 
     stream: str
     seq: int
     row: Dict[str, Any]
     duplicate: bool
     dispatch: Optional[str]
+    length: int
+
+    @property
+    def end(self) -> int:
+        return self.seq + self.length
 
 
 # --- the file, its tier and its transactions -------------------------------------------------
@@ -172,6 +210,22 @@ def _tier(root: pathlib.Path) -> str:
     return tier
 
 
+def _open(path: pathlib.Path, tier: str, **kwargs: Any) -> sqlite3.Connection:
+    """``store.connect`` plus the schema gate: the header's ``user_version`` is this body's
+    ``SCHEMA_VERSION`` or the file is refused typed (``StoreLost``) -- there is no migration of a
+    dialogue store; it is never replaced either."""
+    conn = store.connect(path, tier, **kwargs)
+    try:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error:
+        conn.close()
+        raise
+    if version != SCHEMA_VERSION:
+        conn.close()
+        raise StoreLost(f"dialogue store schema {version}, this body needs {SCHEMA_VERSION}, never replaced: {path}")
+    return conn
+
+
 def hand_off(root: Any) -> bool:
     """``store.hand_off`` for the dialogue store: a WAL file is checkpointed into DELETE mode before
     another body takes the root (a rollback-journal file is left untouched)."""
@@ -212,8 +266,13 @@ def create(root: Any, *, tier: Optional[str] = None) -> pathlib.Path:
             with contextlib.closing(store.connect(tmp, tier, create=True)) as conn:
                 conn.executescript(_SCHEMA)
                 conn.execute(f"PRAGMA application_id = {_APPLICATION_ID[tier]}")
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.execute("BEGIN IMMEDIATE")
-                conn.executemany("INSERT INTO streams (stream, next_seq) VALUES (?, 0)", [(stream,) for stream in STREAMS])
+                for stream in STREAMS:
+                    # The stream's live unit: every row stored after the cutover counts in it.
+                    live = conn.execute("INSERT INTO import_ledger (stream, name, base, size, state) VALUES (?, ?, 0, 0, 'live')",
+                                        (stream, LIVE_REL[stream].name)).lastrowid
+                    conn.execute("INSERT INTO streams (stream, next_seq, live) VALUES (?, 0, ?)", (stream, live))
                 for key, value in (("schema_version", SCHEMA_VERSION), ("lock_tier", tier), ("created_at", utc_now_iso())):
                     conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(value)))
                 store.commit(conn)
@@ -279,7 +338,7 @@ def transaction(root: Any, *, write: bool, wait_sec: float = WAIT_SEC) -> Iterat
         if tier == TIER_NAME:
             stack.enter_context(store.name_lock(root, LOCK_NAME, timeout_sec=wait_sec))
         try:
-            conn = stack.enter_context(store.connection(path(root), tier, wait_sec=wait_sec))
+            conn = stack.enter_context(store.connection(path(root), tier, wait_sec=wait_sec, opener=_open))
             with store.transaction(conn, write=write, commit_wait_sec=wait_sec if tier == TIER_ENFORCED else None):
                 yield conn
         except sqlite3.Error as exc:
@@ -324,30 +383,45 @@ def facts(row: Dict[str, Any]) -> Dict[str, Any]:
             origin = None
     return {"ts": text("ts"), "chat_id": chat_id, "task_id": text("task_id") or None,
             "parent_task_id": text("parent_task_id") or None, "root_task_id": text("root_task_id") or None,
-            "direction": text("direction"), "kind": text("type") or None,
-            "client_message_id": text("client_message_id") or None, "origin": origin}
+            "subagent_task_id": text("subagent_task_id") or None, "direction": text("direction"),
+            "kind": text("type") or None, "client_message_id": text("client_message_id") or None, "origin": origin}
+
+
+def stream_row(stream: str, columns: Dict[str, Any]) -> bool:
+    """Whether the row takes a chat stream position (``pos``): a chat row outside A2A traffic, as
+    ``chat_chain._stream_rows`` and ``Memory.read_jsonl_tail_after_offset`` counted."""
+    return stream == "chat" and (columns["chat_id"] is None or columns["chat_id"] >= 0)
 
 
 def _row(record: sqlite3.Row) -> Row:
-    return Row(record["stream"], record["seq"], decode(record["body"]), record["dispatch"])
+    return Row(record["stream"], record["seq"], decode(record["body"]), record["dispatch"], record["length"])
 
 
-_SELECT = "SELECT stream, seq, body, dispatch FROM dialogue"
+_SELECT = "SELECT stream, seq, body, dispatch, length FROM dialogue"
 
 
 # --- the one writer seam ---------------------------------------------------------------------
 
-def insert_row(conn: sqlite3.Connection, stream: str, seq: int, row: Dict[str, Any], body: str, *,
-               dispatch: Optional[str] = None, dispatch_input: Optional[Dict[str, Any]] = None,
-               revision: int = 0) -> None:
+_INSERT = ("INSERT{} INTO dialogue (stream, seq, length, segment, ordinal, pos, ts, chat_id, task_id, parent_task_id, "
+           "root_task_id, subagent_task_id, direction, kind, client_message_id, origin, dispatch, dispatch_input, body) "
+           "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+
+
+def row_values(stream: str, seq: int, length: int, segment: int, ordinal: int, pos: Optional[int], columns: Dict[str, Any],
+               body: str, dispatch: Optional[str] = None, dispatch_input: Optional[Dict[str, Any]] = None) -> Tuple[Any, ...]:
+    """The ``_INSERT`` parameters of one row (``append`` and the importer share the column order)."""
+    return (stream, seq, length, segment, ordinal, pos, columns["ts"], columns["chat_id"], columns["task_id"],
+            columns["parent_task_id"], columns["root_task_id"], columns["subagent_task_id"], columns["direction"],
+            columns["kind"], columns["client_message_id"], columns["origin"], dispatch,
+            None if dispatch_input is None else json.dumps(dispatch_input, ensure_ascii=False), body)
+
+
+def insert_row(conn: sqlite3.Connection, stream: str, seq: int, row: Dict[str, Any], body: str, *, length: int,
+               segment: int, ordinal: int, pos: Optional[int], dispatch: Optional[str] = None,
+               dispatch_input: Optional[Dict[str, Any]] = None, revision: int = 0) -> None:
     """One row and its room facts inside the caller's transaction (``append`` and the importer)."""
     columns = facts(row)
-    conn.execute(
-        "INSERT INTO dialogue (stream, seq, ts, chat_id, task_id, parent_task_id, root_task_id, direction, kind, "
-        "client_message_id, origin, dispatch, dispatch_input, body) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (stream, seq, columns["ts"], columns["chat_id"], columns["task_id"], columns["parent_task_id"],
-         columns["root_task_id"], columns["direction"], columns["kind"], columns["client_message_id"], columns["origin"],
-         dispatch, None if dispatch_input is None else json.dumps(dispatch_input, ensure_ascii=False), body))
+    conn.execute(_INSERT.format(""), row_values(stream, seq, length, segment, ordinal, pos, columns, body, dispatch, dispatch_input))
     if columns["chat_id"] is not None:
         touch_room(conn, columns["chat_id"], seq if stream == "chat" else None, columns["ts"], revision)
 
@@ -389,23 +463,33 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
     named = columns["direction"] == "in" and bool(columns["client_message_id"])
     state = None if not named else ("pending" if dispatch is not None else "none")
     root = pathlib.Path(root)
+    length = len(body.encode("utf-8")) + 1
+    counted = stream_row(stream, columns)
     with transaction(root, write=True, wait_sec=wait_sec) as conn:
         if named:
             existing = _existing_named(conn, columns["chat_id"], columns["client_message_id"])
             if existing is not None:
-                return Receipt(existing["stream"], existing["seq"], decode(existing["body"]), True, existing["dispatch"])
-        seq = int(conn.execute("SELECT next_seq FROM streams WHERE stream=?", (stream,)).fetchone()["next_seq"])
+                return _receipt(existing)
+        marks = conn.execute("SELECT next_seq, live, next_ordinal, next_pos FROM streams WHERE stream=?", (stream,)).fetchone()
+        seq = int(marks["next_seq"])
         try:
-            insert_row(conn, stream, seq, row, body, dispatch=state, dispatch_input=dispatch, revision=int(bool(feed)))
+            insert_row(conn, stream, seq, row, body, length=length, segment=int(marks["live"]), ordinal=int(marks["next_ordinal"]),
+                       pos=int(marks["next_pos"]) if counted else None, dispatch=state, dispatch_input=dispatch,
+                       revision=int(bool(feed)))
         except sqlite3.IntegrityError:
             existing = _existing_named(conn, columns["chat_id"], columns["client_message_id"]) if named else None
             if existing is None:
                 raise
-            return Receipt(existing["stream"], existing["seq"], decode(existing["body"]), True, existing["dispatch"])
-        conn.execute("UPDATE streams SET next_seq=? WHERE stream=?", (seq + len(body.encode("utf-8")) + 1, stream))
+            return _receipt(existing)
+        conn.execute("UPDATE streams SET next_seq=?, next_ordinal=next_ordinal+1, next_pos=next_pos+? WHERE stream=?",
+                     (seq + length, int(counted), stream))
     if stream == "progress":
         _stream_live(row)
-    return Receipt(stream, seq, row, False, state)
+    return Receipt(stream, seq, row, False, state, length)
+
+
+def _receipt(existing: sqlite3.Row) -> Receipt:
+    return Receipt(existing["stream"], existing["seq"], decode(existing["body"]), True, existing["dispatch"], existing["length"])
 
 
 def append_quietly(root: Any, stream: str, row: Dict[str, Any], **kwargs: Any) -> Optional[Receipt]:
@@ -515,7 +599,7 @@ def pending_dispatches(root: Any) -> List[Tuple[Row, Dict[str, Any]]]:
     if not present(root):
         return []
     with transaction(root, write=False) as conn:
-        records = conn.execute("SELECT stream, seq, body, dispatch, dispatch_input FROM dialogue INDEXED BY dialogue_pending "
+        records = conn.execute("SELECT stream, seq, body, dispatch, length, dispatch_input FROM dialogue INDEXED BY dialogue_pending "
                                "WHERE stream='chat' AND dispatch='pending' ORDER BY seq").fetchall()
     return [(_row(record), json.loads(record["dispatch_input"] or "{}")) for record in records]
 
@@ -635,11 +719,10 @@ def main_candidates(root: Any, stream: str, *, exclude_chats: Iterable[int], pin
 
 
 def task_rows(root: Any, task_ids: Iterable[str], *, stream: str, after: int = -1, limit: int = 1000) -> List[Row]:
-    """A task tree's rows in one stream, oldest first: every row whose task, parent or root is one
-    of ``task_ids`` and lies after ``after`` (the timeline, the SSE follower, the recent-activity window)."""
-    keys: List[Tuple[str, Any]] = []
-    for task in task_ids:
-        keys.extend((("task_id", task), ("parent_task_id", task), ("root_task_id", task)))
+    """A task tree's rows in one stream, oldest first: every row whose task, parent, root or
+    ``subagent_task_id`` (a child's rows written under its parent's task) is one of ``task_ids``
+    and lies after ``after`` (the timeline, the SSE follower, the recent-activity window)."""
+    keys: List[Tuple[str, Any]] = [(column, task) for task in task_ids for column in _TASK_KEYS]
     return probe_rows(root, stream, keys, lower=after + 1, limit=limit, newest_first=False)
 
 
@@ -685,36 +768,55 @@ def rows_by_identity(root: Any, chat_id: Optional[int], ts: str, *, stream: str 
     return [_row(record) for record in records]
 
 
-def resolve_legacy(root: Any, gen: str, line: int) -> Optional[Row]:
-    """The chat row a legacy ``(gen, line)`` address names: ``gen`` the generation's first-line
-    sha256 (``utils.jsonl_generation_signature``), ``line`` its physical line number."""
+def legacy_candidates(root: Any, gen: str, line: int) -> List[Row]:
+    """Every chat row a legacy ``(gen, line)`` address may name, in chain order: ``gen`` the
+    generation's first-line sha256 (``utils.jsonl_generation_signature``), ``line`` its physical
+    line number. Two generations that start with the same line share a signature; the old
+    reader checked each against the address's chat, time and hash -- the caller still does."""
     if not gen or not line:
-        return None
+        return []
     with transaction(root, write=False) as conn:
-        record = conn.execute(
-            f"{_SELECT} WHERE stream='chat' AND seq=(SELECT seq FROM legacy_addresses WHERE gen=? AND line=?)",
-            (gen, int(line))).fetchone()
-    return None if record is None else _row(record)
+        records = conn.execute(f"{_SELECT} WHERE stream='chat' AND seq IN (SELECT seq FROM legacy_addresses WHERE gen=? AND line=?) "
+                               "ORDER BY seq", (gen, int(line))).fetchall()
+    return [_row(record) for record in records]
+
+
+def resolve_legacy(root: Any, gen: str, line: int) -> Optional[Row]:
+    """The first chat row (chain order) a legacy ``(gen, line)`` address names; ``legacy_candidates``
+    lists every alias when the generation signature repeats."""
+    candidates = legacy_candidates(root, gen, line)
+    return candidates[0] if candidates else None
 
 
 def legacy_address(root: Any, seq: int) -> Optional[Tuple[str, int]]:
-    """The ``(gen, line)`` an imported chat row had (``None`` for a row appended here)."""
+    """The ``(gen, line)`` an imported chat row had (``None`` for a row appended here); one indexed
+    probe (``legacy_seq``), whatever the other rooms imported."""
     with transaction(root, write=False) as conn:
-        record = conn.execute("SELECT gen, line FROM legacy_addresses WHERE seq=? LIMIT 1", (seq,)).fetchone()
+        record = conn.execute("SELECT gen, line FROM legacy_addresses INDEXED BY legacy_seq WHERE seq=? LIMIT 1", (seq,)).fetchone()
     return None if record is None else (record["gen"], record["line"])
 
 
 def legacy_generation(root: Any, gen: str) -> Optional[Dict[str, Any]]:
-    """The imported chat segment whose first-line signature is ``gen`` (its ledger row: ``name``,
-    ``base`` -- the coordinate of its first byte --, ``size``, ``rows``), so a legacy cursor
-    ``(gen, byte offset)`` is the coordinate ``base + offset``. ``None`` while the segment is
-    not imported yet (its signature is read at import) or never existed: a caller then reports
-    the range as still importing when ``dialogue_import.coverage`` says so, never as gone."""
+    """The imported chat segment whose first-line signature is ``gen`` (the first in chain order
+    when the signature repeats, as the chain reader chose): its ledger row -- ``id`` (the unit),
+    ``name``, ``base`` (the coordinate of its first byte; a legacy ``(gen, byte offset)`` cursor
+    is the coordinate ``base + offset``), ``size``, ``rows`` (its stored objects), ``stream_rows``
+    (its stream rows outside A2A), ``ordinal_base``/``pos_base`` (the absolute counts before its
+    first row, None until the archive is complete). ``None`` while the segment is not imported
+    yet (its signature is read at import) or never existed: a caller then reports the range as
+    still importing when ``dialogue_import.coverage`` says so, never as gone."""
     if not gen:
         return None
     with transaction(root, write=False) as conn:
-        record = conn.execute("SELECT * FROM import_ledger WHERE stream='chat' AND gen=? AND state='done'", (gen,)).fetchone()
+        record = conn.execute("SELECT * FROM import_ledger WHERE stream='chat' AND gen=? AND state='done' ORDER BY base LIMIT 1",
+                              (gen,)).fetchone()
     return None if record is None else dict(record)
+
+
+def _gaps(conn: sqlite3.Connection, stream: str, lower: int, upper: int) -> int:
+    return int(conn.execute("SELECT count(*) AS n FROM skipped WHERE stream=? AND seq>=? AND seq<?",
+                            (stream, lower, upper)).fetchone()["n"])
+
 
 
 def stream_end(root: Any, stream: str) -> int:
@@ -783,6 +885,8 @@ def range_coverage(root: Any, stream: str, *, lower: int = 0,
     Same answer as ``dialogue_import.coverage``, restricted to intersecting segments:
     an older pending archive does not make a fully imported recent page incomplete.
     Reading starts the root's normal cutover if needed, never the archive import job.
+    ``gaps`` (Q1c) counts the skipped lines starting in the range: imported, but holes a
+    reader names (``skipped_between``), never rows.
     """
     if stream not in STREAMS:
         raise ValueError(f"not a dialogue stream: {stream!r}")
@@ -791,8 +895,9 @@ def range_coverage(root: Any, stream: str, *, lower: int = 0,
             "SELECT state, count(*) AS n FROM import_ledger INDEXED BY ledger_state "
             "WHERE stream=? AND state IN ('pending', 'mismatch') AND base<? AND base+size>? "
             "GROUP BY state", (stream, _bound(upper), lower))} if lower < _bound(upper) else {}
+        gaps = _gaps(conn, stream, lower, _bound(upper))
     pending, mismatch = int(counts.get("pending", 0)), int(counts.get("mismatch", 0))
-    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch}
+    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps}
 
 
 def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[int] = None) -> None:

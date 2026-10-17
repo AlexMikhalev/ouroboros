@@ -19,6 +19,19 @@ a fact: ``coverage`` answers whether a coordinate range is imported, and a reade
 older rows" only inside the imported range. The archive stays frozen and is never deleted
 (BIBLE P1).
 
+Each imported segment is a counting unit: its rows keep the counts the chain readers kept
+(``ordinal`` among its objects, ``pos`` among its chat rows outside A2A) relative to the
+segment, its ledger row the totals (``rows``, ``stream_rows``) and the generation signature the
+old addresses carry (``gen``); the lines it skipped are recorded as ``skipped`` intervals with
+their exact bytes, and every ``(gen, line)`` alias of its chat rows is kept. The transaction that
+imports the last pending segment below the cutover settles the absolute bases of every unit
+(``_settle``): the archive's units in chain order, then the live unit the rows appended after
+the cutover count in -- so those rows continue the same counting. A segment that joins after the
+cutover (an older body ran) is imported synchronously by that cutover, before any new row, and
+its rows count in the live unit at their chain place. At every cutover a room's ``revision``
+rises to the project's ``projects.json`` ``visible_revision`` when that is higher, so a read
+marker a client holds keeps seeing new arrivals.
+
 ``export_for_older_body(root)`` appends every row the files do not hold yet (``seq >= files_seq``)
 back to ``logs/<stream>.jsonl`` in the exact line format, so an older body reads a chain whose
 coordinates are the store's; ``store_switch`` calls it before a root is handed to such a body.
@@ -32,7 +45,7 @@ import logging
 import os
 import pathlib
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
 from ouroboros import dialogue_store as ds
 from ouroboros import store
@@ -107,22 +120,35 @@ def _gen(data: bytes) -> str:
     return ""
 
 
-def segment_rows(data: bytes, base: int) -> Iterator[Tuple[int, int, str, Optional[Dict[str, Any]]]]:
-    """``(seq, line number, body, row)`` for every line: ``row`` is None for a blank or malformed
-    line (its bytes still count in the coordinates); the body is the exact line without its newline."""
+class Line(NamedTuple):
+    """One physical line of a segment: its coordinate, physical line number, exact length (the
+    line terminator included), the body without the terminator, the row (an object) or None,
+    and its ``kind``: ``row``, ``blank``, or a skipped ``invalid`` / ``non_object`` line."""
+
+    seq: int
+    number: int
+    length: int
+    body: str
+    row: Optional[Dict[str, Any]]
+    kind: str
+
+
+def segment_rows(data: bytes, base: int) -> Iterator[Line]:
+    """Every line of a segment as a ``Line``; a blank or skipped line holds no row but its bytes
+    still count in the coordinates (``seq + length`` is the next line's coordinate)."""
     position = base
     for number, raw in enumerate(data.splitlines(keepends=True), 1):
         line = raw[:-1] if raw.endswith(b"\n") else raw
         if line.endswith(b"\r"):
             line = line[:-1]
-        row = None
+        row, kind = None, "blank"
         if line.strip():
             try:
                 value = json.loads(line.decode("utf-8", errors="replace").strip())
+                row, kind = (value, "row") if isinstance(value, dict) else (None, "non_object")
             except ValueError:
-                value = None
-            row = value if isinstance(value, dict) else None
-        yield position, number, line.decode("utf-8", errors="replace"), row
+                kind = "invalid"
+        yield Line(position, number, len(raw), line.decode("utf-8", errors="replace"), row, kind)
         position += len(raw)
 
 
@@ -146,14 +172,55 @@ def cutover(root: Any) -> Dict[str, Any]:
             plan = segment_plan(root, stream)
             report[stream] = _plan(root, stream, plan)
             report[stream]["rotated"] = rotated.name if rotated else None
-            if rotated is not None:
-                report[stream]["imported"] = import_segment(root, stream, rotated.name)
+            # The final live segment now, and every segment that joined the chain at or beyond the
+            # cutover coordinate (an older body rotated during a downgrade): their rows count in the
+            # live unit, so they are stored before any new row is appended.
+            for segment in _live_tail(root, stream, rotated):
+                outcome = import_segment(root, stream, segment)
+                if rotated is not None and segment == rotated.name:
+                    report[stream]["imported"] = outcome
+                else:
+                    report[stream].setdefault("joined", []).append({"name": segment, **outcome})
         with ds.transaction(root, write=True) as conn:
+            report["rooms"] = _inherit_revisions(root, conn)
             marks = {record["stream"]: dict(record) for record in conn.execute("SELECT * FROM streams")}
             facts = {"at": utc_now_iso(), **{stream: marks[stream] for stream in ds.STREAMS}}
             ds._set_meta(conn, "cutover" if first else "reconciled", facts)
     report["first"] = first
     return report
+
+
+def _live_tail(root: pathlib.Path, stream: str, rotated: Optional[pathlib.Path]) -> List[str]:
+    """The pending segment names this cutover imports itself, in chain order."""
+    with ds.transaction(root, write=False) as conn:
+        names = [record["name"] for record in conn.execute(
+            "SELECT name FROM import_ledger WHERE stream=? AND state='pending' AND (base>=(SELECT cutover_seq FROM streams "
+            "WHERE stream=?) OR name=?) ORDER BY base", (stream, stream, rotated.name if rotated else ""))]
+    return names
+
+
+def _inherit_revisions(root: pathlib.Path, conn: Any) -> Dict[int, int]:
+    """Each project room's ``revision`` continues from the registry's ``visible_revision`` (never
+    below it): the unread counter a client's read marker compares against keeps its meaning."""
+    from ouroboros.projects_registry import list_reserved_projects
+
+    try:
+        projects = list_reserved_projects(root)
+    except Exception:
+        log.warning("dialogue cutover: the project registry of %s could not be read; room revisions start at 0", root,
+                    exc_info=True)
+        return {}
+    inherited: Dict[int, int] = {}
+    for project in projects:
+        try:
+            chat_id, revision = int(project.get("chat_id") or 0), int(project.get("visible_revision") or 0)
+        except (TypeError, ValueError):
+            continue
+        if chat_id > 0 and revision > 0:
+            conn.execute("INSERT INTO rooms (chat_id, revision) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET "
+                         "revision = max(rooms.revision, excluded.revision)", (chat_id, revision))
+            inherited[chat_id] = revision
+    return inherited
 
 
 def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -190,6 +257,7 @@ def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[s
         conn.execute("UPDATE streams SET next_seq=max(next_seq, ?), files_seq=max(files_seq, ?), "
                      "cutover_seq=coalesce(cutover_seq, ?) WHERE stream=?",
                      (end, total if not shifted else files_seq, total, stream))
+        _settle(conn, stream)  # a chain without archive segments settles its counts here
     return {"segments": len(plan), "added": added, "mismatched": mismatched, "shifted": shifted, "chain_bytes": total}
 
 
@@ -204,13 +272,16 @@ def pending_segments(root: Any) -> List[Dict[str, Any]]:
 
 
 def import_segment(root: Any, stream: str, name: str) -> Dict[str, Any]:
-    """One frozen segment into the store in ONE transaction: its rows at their chain coordinates,
-    the chat rows' legacy addresses, the rooms they touched, the ledger row ``done``. A segment
-    already imported (by this process or another) is left alone; one whose size is not the
-    ledger's is recorded ``mismatch`` and skipped."""
+    """One frozen segment into the store in ONE transaction: its rows at their chain coordinates
+    with their counts, the lines it skipped, the chat rows' legacy addresses, the rooms they
+    touched, the ledger row ``done`` with the segment's totals, and the units' absolute bases
+    when this segment completes the archive. A segment already imported (by this process or
+    another) is left alone; one whose size is not the ledger's is recorded ``mismatch`` and
+    skipped."""
     root = pathlib.Path(root)
     with ds.transaction(root, write=False) as conn:
         ledger = conn.execute("SELECT * FROM import_ledger WHERE stream=? AND name=?", (stream, name)).fetchone()
+        marks = conn.execute("SELECT cutover_seq, live FROM streams WHERE stream=?", (stream,)).fetchone()
     if ledger is None or ledger["state"] != "pending":
         return {"status": "skipped", "state": None if ledger is None else ledger["state"]}
     data = (root / "archive" / name).read_bytes()
@@ -218,36 +289,108 @@ def import_segment(root: Any, stream: str, name: str) -> Dict[str, Any]:
         with ds.transaction(root, write=True) as conn:
             conn.execute("UPDATE import_ledger SET state='mismatch' WHERE stream=? AND name=? AND state='pending'", (stream, name))
         return {"status": "mismatch", "size": len(data), "expected": ledger["size"]}
-    gen = _gen(data) if stream == "chat" else ""
-    rows, addresses, bad = [], [], 0
+    # An archive segment (below the cutover coordinate) is its own counting unit; one that joined
+    # later counts in the live unit, after every row stored so far.
+    archive = marks["cutover_seq"] is not None and int(ledger["base"]) < int(marks["cutover_seq"])
+    gen = _gen(data)
+    parsed, addresses, skipped = [], [], []
     touched: Dict[int, Tuple[Optional[int], str]] = {}
-    for seq, number, body, row in segment_rows(data, int(ledger["base"])):
-        if row is None:
-            bad += bool(body.strip())
+    objects = stream_rows = 0
+    for line in segment_rows(data, int(ledger["base"])):
+        if line.row is None:
+            if line.kind != "blank":
+                skipped.append((stream, line.seq, line.length, line.kind))
             continue
-        columns = ds.facts(row)
-        rows.append((stream, seq, columns["ts"], columns["chat_id"], columns["task_id"], columns["parent_task_id"],
-                     columns["root_task_id"], columns["direction"], columns["kind"], columns["client_message_id"],
-                     columns["origin"], body))
-        if gen:
-            addresses.append((gen, number, seq))
+        columns = ds.facts(line.row)
+        counted = ds.stream_row(stream, columns)
+        parsed.append((line, columns, objects, stream_rows if counted else None, counted))
+        objects, stream_rows = objects + 1, stream_rows + int(counted)
+        if gen and stream == "chat":
+            addresses.append((gen, line.number, line.seq))
         if columns["chat_id"] is not None:
             last_seq, last_ts = touched.get(columns["chat_id"], (None, ""))
-            touched[columns["chat_id"]] = (max(last_seq or -1, seq) if stream == "chat" else last_seq, max(last_ts, columns["ts"]))
+            touched[columns["chat_id"]] = (max(last_seq or -1, line.seq) if stream == "chat" else last_seq,
+                                           max(last_ts, columns["ts"]))
     with ds.transaction(root, write=True) as conn:
         current = conn.execute("SELECT state FROM import_ledger WHERE stream=? AND name=?", (stream, name)).fetchone()
         if current is None or current["state"] != "pending":
             return {"status": "skipped", "state": None if current is None else current["state"]}
-        conn.executemany(
-            "INSERT OR IGNORE INTO dialogue (stream, seq, ts, chat_id, task_id, parent_task_id, root_task_id, direction, "
-            "kind, client_message_id, origin, body) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        if archive:
+            rows = [ds.row_values(stream, line.seq, line.length, int(ledger["id"]), ordinal, pos, columns, line.body)
+                    for line, columns, ordinal, pos, _counted in parsed]
+        else:
+            rows = _live_rows(conn, stream, int(marks["live"]), int(ledger["base"]), int(ledger["size"]), parsed)
+        conn.executemany(ds._INSERT.format(" OR IGNORE"), rows)
         if addresses:
-            conn.executemany("INSERT OR REPLACE INTO legacy_addresses (gen, line, seq) VALUES (?,?,?)", addresses)
+            conn.executemany("INSERT OR IGNORE INTO legacy_addresses (gen, line, seq) VALUES (?,?,?)", addresses)
+        if skipped:
+            conn.executemany("INSERT OR IGNORE INTO skipped (stream, seq, length, kind) VALUES (?,?,?,?)", skipped)
         for chat_id, (last_seq, last_ts) in touched.items():
             ds.touch_room(conn, chat_id, last_seq, last_ts, 0)
-        conn.execute("UPDATE import_ledger SET state='done', rows=?, bad=?, gen=?, imported_at=? WHERE stream=? AND name=?",
-                     (len(rows), bad, gen or None, utc_now_iso(), stream, name))
-    return {"status": "done", "rows": len(rows), "bad": bad}
+        conn.execute("UPDATE import_ledger SET state='done', rows=?, stream_rows=?, bad=?, gen=?, imported_at=? "
+                     "WHERE stream=? AND name=?",
+                     (objects, stream_rows if stream == "chat" else None, len(skipped), gen or None, utc_now_iso(), stream, name))
+        if archive:
+            _settle(conn, stream)
+        else:
+            _segment_bases(conn, stream, int(ledger["id"]), int(ledger["base"]), int(ledger["size"]))
+    return {"status": "done", "rows": objects, "bad": len(skipped)}
+
+
+def _live_rows(conn: Any, stream: str, live: int, base: int, size: int, parsed: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+    """The rows of a segment that joined after the cutover, counted in the live unit: a row the
+    rollback export placed (already stored at its coordinate) keeps its counts; every other
+    takes the next ones, in chain order."""
+    present = {record["seq"] for record in conn.execute("SELECT seq FROM dialogue WHERE stream=? AND seq>=? AND seq<?",
+                                                        (stream, base, base + size))}
+    marks = conn.execute("SELECT next_ordinal, next_pos FROM streams WHERE stream=?", (stream,)).fetchone()
+    ordinal, pos = int(marks["next_ordinal"]), int(marks["next_pos"])
+    rows = []
+    for line, columns, _ordinal, _pos, counted in parsed:
+        if line.seq in present:
+            continue
+        rows.append(ds.row_values(stream, line.seq, line.length, live, ordinal, pos if counted else None, columns, line.body))
+        ordinal, pos = ordinal + 1, pos + int(counted)
+    conn.execute("UPDATE streams SET next_ordinal=?, next_pos=? WHERE stream=?", (ordinal, pos, stream))
+    return rows
+
+
+def _settle(conn: Any, stream: str) -> None:
+    """Once every segment below the cutover is imported: the absolute bases of the archive's
+    units in chain order, then of the live unit (the archive's totals), then of the segments
+    that joined after the cutover (``_segment_bases``). Settled once; cheap to ask again."""
+    marks = conn.execute("SELECT cutover_seq, live FROM streams WHERE stream=?", (stream,)).fetchone()
+    if marks["cutover_seq"] is None or conn.execute(
+            "SELECT ordinal_base FROM import_ledger WHERE id=?", (marks["live"],)).fetchone()["ordinal_base"] is not None:
+        return
+    if conn.execute("SELECT 1 FROM import_ledger WHERE stream=? AND base<? AND state IN ('pending', 'mismatch') LIMIT 1",
+                    (stream, marks["cutover_seq"])).fetchone():
+        return
+    ordinal = pos = 0
+    for unit in conn.execute("SELECT id, rows, stream_rows FROM import_ledger WHERE stream=? AND state='done' AND base<? "
+                             "ORDER BY base, id", (stream, marks["cutover_seq"])).fetchall():
+        conn.execute("UPDATE import_ledger SET ordinal_base=?, pos_base=? WHERE id=?", (ordinal, pos, unit["id"]))
+        ordinal, pos = ordinal + int(unit["rows"] or 0), pos + int(unit["stream_rows"] or 0)
+    conn.execute("UPDATE import_ledger SET ordinal_base=?, pos_base=? WHERE id=?", (ordinal, pos, marks["live"]))
+    for unit in conn.execute("SELECT id, base, size FROM import_ledger WHERE stream=? AND state='done' AND base>=? ORDER BY base",
+                             (stream, marks["cutover_seq"])).fetchall():
+        _segment_bases(conn, stream, int(unit["id"]), int(unit["base"]), int(unit["size"]))
+
+
+def _segment_bases(conn: Any, stream: str, unit: int, base: int, size: int) -> None:
+    """The absolute bases of a segment that joined after the cutover: the live unit's bases plus
+    the counts of its first stored rows (None while the live unit is unsettled, or without rows)."""
+    live = conn.execute("SELECT ordinal_base, pos_base FROM import_ledger WHERE id=(SELECT live FROM streams WHERE stream=?)",
+                        (stream,)).fetchone()
+    if live["ordinal_base"] is None:
+        return
+    first = conn.execute("SELECT ordinal FROM dialogue WHERE stream=? AND seq>=? AND seq<? ORDER BY seq LIMIT 1",
+                         (stream, base, base + size)).fetchone()
+    counted = conn.execute("SELECT pos FROM dialogue WHERE stream=? AND seq>=? AND seq<? AND pos IS NOT NULL ORDER BY seq LIMIT 1",
+                           (stream, base, base + size)).fetchone()
+    conn.execute("UPDATE import_ledger SET ordinal_base=?, pos_base=? WHERE id=?",
+                 (None if first is None else int(live["ordinal_base"]) + int(first["ordinal"]),
+                  None if counted is None else int(live["pos_base"]) + int(counted["pos"]), unit))
 
 
 def run_dialogue_import(root: Any, *, progress: Optional[Callable[[dict], None]] = None,
@@ -299,14 +442,15 @@ def coverage(root: Any, stream: str, seq: Optional[int] = None) -> Dict[str, Any
     False means a reader that found no rows there must say "still importing", never "no rows";
     ``pending`` counts the segments not yet imported below ``seq``, ``mismatch`` the ones it never will."""
     if not ds.present(root):
-        return {"imported": not ds.holds_dialogue_files(root), "pending": 0, "mismatch": 0}
+        return {"imported": not ds.holds_dialogue_files(root), "pending": 0, "mismatch": 0, "gaps": 0}
     bound = (1 << 62) if seq is None else int(seq)
     with ds.transaction(root, write=False) as conn:
         counts = {record["state"]: record["n"] for record in conn.execute(
-            "SELECT state, count(*) AS n FROM import_ledger WHERE stream=? AND state<>'done' AND base<? GROUP BY state",
-            (stream, bound))}
+            "SELECT state, count(*) AS n FROM import_ledger WHERE stream=? AND state IN ('pending', 'mismatch') AND base<? "
+            "GROUP BY state", (stream, bound))}
+        gaps = ds._gaps(conn, stream, 0, bound)
     pending, mismatch = int(counts.get("pending", 0)), int(counts.get("mismatch", 0))
-    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch}
+    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps}
 
 
 def import_status(root: Any) -> Dict[str, Any]:
@@ -318,7 +462,7 @@ def import_status(root: Any) -> Dict[str, Any]:
         for stream in ds.STREAMS:
             summary = {"segments": 0, "done": 0, "pending": 0, "mismatch": 0, "rows": 0, "pending_bytes": 0}
             for record in conn.execute("SELECT state, count(*) AS n, coalesce(sum(rows), 0) AS rows, sum(size) AS bytes "
-                                       "FROM import_ledger WHERE stream=? GROUP BY state", (stream,)):
+                                       "FROM import_ledger WHERE stream=? AND state<>'live' GROUP BY state", (stream,)):
                 summary["segments"] += record["n"]
                 summary[record["state"]] = record["n"]
                 summary["rows"] += record["rows"]
@@ -348,12 +492,13 @@ def scan_pending(root: Any, chat_id: Optional[int], client_message_id: str) -> O
         if b'"in"' not in data or not any(needle in data for needle in needles):
             continue
         found = None
-        for seq, _number, body, row in segment_rows(data, int(record["base"])):
-            if row is None or not any(needle in body.encode("utf-8") for needle in needles):
+        for line in segment_rows(data, int(record["base"])):
+            row = line.row
+            if row is None or not any(needle in line.body.encode("utf-8") for needle in needles):
                 continue
             if row.get("direction") == "in" and row.get("client_message_id") == client_message_id \
                     and ds.facts(row)["chat_id"] == chat_id:
-                found = ds.Row("chat", seq, row, None)  # the newest row naming the id, as the store answers
+                found = ds.Row("chat", line.seq, row, None, line.length)  # the newest row naming the id, as the store answers
         if found is not None:
             return found
     return None

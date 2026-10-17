@@ -62,7 +62,7 @@ def test_import_marker_only_intersects_unimported_range(tmp_path):
     [segment] = di.pending_segments(tmp_path)
     live = ds.rows_by_client_id(tmp_path, "owner-one")[0]
     assert ds.range_coverage(tmp_path, "chat", upper=live.seq) == {
-        "imported": False, "pending": 1, "mismatch": 0}
+        "imported": False, "pending": 1, "mismatch": 0, "gaps": 0}
     assert ds.range_coverage(tmp_path, "chat", lower=live.seq)["imported"]
     assert ds.range_coverage(tmp_path, "chat", upper=0)["imported"]
     with pytest.raises(ds.StoreMigrating, match="still importing"):
@@ -241,7 +241,7 @@ def test_mismatched_import_is_not_coverage_or_absence(tmp_path):
     path = tmp_path / "archive" / segment["name"]
     path.write_text("changed after cutover\n", encoding="utf-8")
     di.import_segment(tmp_path, "chat", segment["name"])
-    assert ds.range_coverage(tmp_path, "chat") == {"imported": False, "pending": 0, "mismatch": 1}
+    assert ds.range_coverage(tmp_path, "chat") == {"imported": False, "pending": 0, "mismatch": 1, "gaps": 0}
     with pytest.raises(ds.StoreError, match="could not be imported"):
         ds.require_imported(tmp_path, "chat")
     assert ds.range_coverage(tmp_path, "chat", lower=segment["base"] + segment["size"])["imported"]
