@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import review_checking as rc
+from tests.test_review_checkout_lifecycle import directory_source
 
 
 def _git(cwd, *args):
@@ -168,16 +169,17 @@ def test_named_evidence_is_frozen_with_the_subject_not_read_live_by_each_seat(au
     assert not (rc.seat_dir(data, "task", "op-2") / "area").exists()  # refused before any clone
 
 
-def test_an_ordinary_folder_is_one_retained_view_with_links_modes_and_empty_dirs(tmp_path):
+def test_an_ordinary_folder_is_read_in_place_and_a_view_keeps_links_modes_and_empty_dirs(tmp_path):
     folder, data = tmp_path / "plain", tmp_path / "data"
     folder.mkdir()
     (folder / "run.sh").write_text("echo hi\n")
     (folder / "run.sh").chmod(0o755)
     (folder / "empty").mkdir()
     (folder / "link").symlink_to("run.sh")
-    source = rc.freeze_checking_source(folder, data_root=data)
-    assert source["kind"] == "directory"
-    assert rc.freeze_checking_source(folder, data_root=data)["view"] == source["view"]  # unchanged folder, one view
+    assert rc.freeze_checking_source(folder, data_root=data) == {"kind": "workspace", "root": str(folder)}
+    assert not (data / "state" / "review_checkouts" / "views").exists()  # reading in place copies nothing
+    source = directory_source(folder, data)  # a skill payload's retained view still copies the folder whole
+    assert directory_source(folder, data)["view"] == source["view"]  # unchanged folder, one view
     area = pathlib.Path(rc.prepare_seat_area(data, "task", "op-1", source))
     assert os.readlink(area / "link") == "run.sh" and (area / "empty").is_dir()
     assert os.access(area / "run.sh", os.X_OK)
@@ -195,7 +197,7 @@ def test_directory_link_delta_compares_only_copyable_times(tmp_path, monkeypatch
     (folder / "target").write_bytes(b"original")
     for name in ("unchanged", "retargeted"):
         (folder / name).symlink_to("target")
-    source = rc.freeze_checking_source(folder, data_root=data)
+    source = directory_source(folder, data)
     area = pathlib.Path(rc.prepare_seat_area(data, "task", "op-1", source))
     (area / "retargeted").unlink()
     (area / "retargeted").symlink_to("different-target")
@@ -268,6 +270,9 @@ def test_instructions_name_the_copy_the_pristine_subject_and_no_apply(author, tm
     folder = {"kind": "directory", "root": "/payload", "view": "/views/x"}
     assert "reference repository stays /repo" in rc.checking_instructions("/copy", folder, "/repo")
     assert json.dumps(source)  # the frozen source is a plain, durable record
+    live = rc.checking_instructions("/seat", {"kind": "workspace", "root": "/task"}, "/task")
+    assert "live folder /task: read it in place" in live and "do not write it" in live
+    assert "starts empty" in live and "retains only .review-evidence/ as evidence" in live and "your copy's" not in live
 
 
 def test_a_rejoin_cannot_replace_the_original_checking_subject(author, tmp_path):

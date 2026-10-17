@@ -602,6 +602,7 @@ def park_owner_pause_warm(limit_ctx: Any, ctx: Any, *, fence: dict, detached: li
         model_sleep.end(ctx)
     if outcome == "control:owner_resume":
         messages.append(owner_pause_resume_notice(ctx, checkpoint, outcome))
+    model_sleep.announce_resumed(ctx, outcome)
     return outcome
 
 
@@ -883,11 +884,11 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
         raise RuntimeError("required owner wait has no worker continuation owner")
     checkpoint = checkpoint_owner_wait(ctx, messages, trace, usage, round_idx, tool_schemas, seen,
                                        review_binding=review_binding)
+    from ouroboros import model_sleep
+
     if not callable(callback):
         review_callback(ctx, checkpoint, messages)
     elif sleep := checkpoint.get("sleep"):
-        from ouroboros import model_sleep
-
         model_sleep.begin(ctx)
         checkpoint["sleep_started_at"] = ctx._model_sleep_started
         try:
@@ -901,6 +902,8 @@ def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
         outcome = callback(ctx, checkpoint)
         append_wake_notice(ctx, checkpoint, outcome, messages)
     ctx._owner_wait_requested, ctx._owner_wait_deadline_at, ctx._owner_wait_max_minutes = "", "", 0
+    if callable(callback):
+        model_sleep.announce_resumed(ctx, outcome)  # the same attempt prepares again, with no new start
 
 
 def park_for_left_review(tools: Any, limit_ctx: Any, content: Any, emit_progress: Any) -> bool:
@@ -1032,6 +1035,7 @@ def resume_native_loop(tools: Any, state: dict, messages: list, trace: dict,
     finally:
         if started is not None:
             model_sleep.end(ctx)
+    model_sleep.announce_resumed(ctx, outcome)
     ctx.owner_wait_resume = None
     plan, mode = rebind_restored_route(tools, state, messages)
     messages.append({"role": "user", "content": (

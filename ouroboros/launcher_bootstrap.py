@@ -72,7 +72,10 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
     from (``loaded_sha``, "" when unknown: never a relaunch) against the commit
     that now serves, over the loaded modules' repository paths plus ``launcher.py``.
     A packaged launcher loaded its modules from ``bundle_dir`` (PyInstaller names
-    them ``<pkg>/<module>.pyc`` there); they count under their repository paths.
+    them ``<pkg>/<module>.pyc`` or ``.py`` there); they count under their repository
+    paths. A path counts as named or resolved: a macOS app's bundle is
+    ``Contents/Frameworks``, whose ``<pkg>`` links into ``Contents/Resources``, so
+    there only the named path lies inside the bundle.
     """
     import sys
 
@@ -80,21 +83,21 @@ def launcher_sources_changed(repo_dir: pathlib.Path, loaded_sha: str | None = No
     head = checkout_sha(repo_dir)
     if not loaded_sha or not head or head == loaded_sha:
         return False
-    roots = [pathlib.Path(root).resolve() for root in (repo_dir, bundle_dir) if root]
+    roots = [pathlib.Path(os.path.abspath(root)) for root in (repo_dir, bundle_dir) if root]
+    roots += [root.resolve() for root in roots]
     loaded = {"launcher.py"}
     for module in list(sys.modules.values()):
         source = getattr(module, "__file__", None)
         if not source:
             continue
         try:
-            path = pathlib.Path(source).resolve()
+            named = pathlib.Path(os.path.abspath(source))
+            paths = (named, named.resolve())
         except OSError:
             continue
-        for root in roots:
-            if path.is_relative_to(root):
-                relative = path.relative_to(root)
-                loaded.add((relative.with_suffix(".py") if relative.suffix == ".pyc" else relative).as_posix())
-                break
+        relative = next((path.relative_to(root) for path in paths for root in roots if path.is_relative_to(root)), None)
+        if relative is not None:
+            loaded.add((relative.with_suffix(".py") if relative.suffix == ".pyc" else relative).as_posix())
     probe = subprocess.run(["git", "diff", "--quiet", loaded_sha, head, "--", *sorted(loaded)],
                            cwd=str(repo_dir), capture_output=True, check=False)
     return probe.returncode == 1

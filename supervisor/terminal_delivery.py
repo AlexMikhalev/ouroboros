@@ -85,7 +85,7 @@ _TERMINAL_ANSWER_ID = re.compile(r"final:(?P<task>[^:]+):[0-9a-f]{16}")
 # (``cascade:<root>:<request_id>``). Exactly three parts, so a ``:custody_notice`` /
 # ``:terminal_incident`` suffix, the Main mirror (``project-completion:``) and every
 # other row are never the answer. The Done gate reads debt through THIS family set.
-_TERMINAL_MESSAGE_ID = re.compile(r"(?:final|cancel|cascade):(?P<task>[^:]+):(?P<episode>[^:]+)")
+TERMINAL_MESSAGE_ID = re.compile(r"(?:final|cancel|cascade):(?P<task>[^:]+):(?P<episode>[^:]+)")
 
 
 def _mapping_rows(current: Dict[str, Any], key: str, *, strict: bool = False) -> Dict[str, Any]:
@@ -185,7 +185,7 @@ def terminal_answer_receipts(drive_root: Any, task_id: str) -> Dict[str, Any]:
         return fact
 
     def answer(did: str) -> bool:
-        match = _TERMINAL_MESSAGE_ID.fullmatch(did)
+        match = TERMINAL_MESSAGE_ID.fullmatch(did)
         return match is not None and match.group("task") == str(task_id)
 
     for did in (item for item in delivered if answer(item)):

@@ -1,4 +1,4 @@
-"""Non-Git review consumers retain typed changes before releasing their copies."""
+"""A skill seat retains its copy's typed changes before release; an ordinary folder is read in place."""
 from __future__ import annotations
 
 import json
@@ -23,6 +23,9 @@ from tests._review_session_route_shared import (  # noqa: F401 - transport fixtu
     fake_route,
 )
 from tests.test_review_session_rights import writable_engine  # noqa: F401
+
+
+COPY_SURFACES = ["skill_review"]  # the one non-Git subject still copied: ordinary folders are read in place
 
 
 def _subject(tmp_path, surface, *, links=False):
@@ -93,7 +96,7 @@ def _released(actor, area):
     return receipt["entries"], evidence
 
 
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_retains_content_deletions_and_evidence_before_release(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -127,7 +130,7 @@ def test_public_directory_consumer_retains_content_deletions_and_evidence_before
     assert (root / "to-link" / "old-child").read_bytes() == b"pristine child\n"
 
 
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_retains_links_before_release(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -169,7 +172,7 @@ def test_public_directory_consumer_retains_links_before_release(
     assert (outside / "private").read_bytes() == b"must not follow directory link\n"
 
 
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_retains_posix_modes_before_release(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -198,7 +201,7 @@ def test_public_directory_consumer_retains_posix_modes_before_release(
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO output requires POSIX")
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_names_unretainable_output_and_releases_the_copy(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -240,7 +243,7 @@ def test_directory_link_metadata_is_retained_whole_beside_the_paid_result(
         (area / rc.EVIDENCE_DIRNAME).mkdir()
         (area / rc.EVIDENCE_DIRNAME / "proof.log").write_bytes(b"proof\n")
 
-    actor = _run(root, drive, "task_acceptance", _source(root, drive, "task_acceptance"),
+    actor = _run(root, drive, "skill_review", _source(root, drive, "skill_review"),
                  monkeypatch, edit)
     entries, evidence = _released(actor, observed["area"])
     assert entries["long-link"]["before"] is None and entries["long-link"]["after"]["target"] == "x" * 512
@@ -288,7 +291,7 @@ def _require_same_stat_read_denial(tmp_path):
         pytest.skip("this host's ACL denial does not leave an unreadable same-mode file")
 
 
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_retains_same_stat_content_edit_before_release(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -312,7 +315,7 @@ def test_public_directory_consumer_retains_same_stat_content_edit_before_release
     assert (root / "new-target").read_bytes() == b"new\n"
 
 
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_keeps_copy_when_same_stat_bytes_are_unreadable(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -341,7 +344,7 @@ def test_public_directory_consumer_keeps_copy_when_same_stat_bytes_are_unreadabl
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink privileges vary on Windows")
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_compares_content_without_reading_through_links(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -372,7 +375,7 @@ def test_public_directory_consumer_compares_content_without_reading_through_link
 
 @pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
                     reason="needs POSIX permission bits that bind the test user")
-@pytest.mark.parametrize("surface", ["skill_review", "task_acceptance"])
+@pytest.mark.parametrize("surface", COPY_SURFACES)
 def test_public_directory_consumer_keeps_copy_when_a_subtree_cannot_be_listed(
     tmp_path, writable_engine, monkeypatch, surface,  # noqa: F811
 ):
@@ -396,3 +399,27 @@ def test_public_directory_consumer_keeps_copy_when_a_subtree_cannot_be_listed(
     assert receipt["status"] == "capture_failed"
     assert (observed["area"] / "locked" / "only-copy.log").read_bytes() == b"written before the folder was locked\n"
     assert (observed["area"] / "SKILL.md").is_file(), "an incomplete capture must not partially release the copy"
+
+
+def test_an_ordinary_folder_is_read_in_place_and_keeps_only_published_evidence(
+    tmp_path, writable_engine, monkeypatch,  # noqa: F811
+):
+    root, drive = _subject(tmp_path, "task_acceptance"), tmp_path / "drive"
+    observed = {}
+
+    def edit(area):
+        observed.update(area=area, started_empty=not any(area.iterdir()))
+        (area / "copied-to-run.txt").write_bytes((root / "new-target").read_bytes())
+        (area / rc.EVIDENCE_DIRNAME).mkdir()
+        (area / rc.EVIDENCE_DIRNAME / "proof.log").write_bytes(b"checked the live folder\n")
+
+    source = _source(root, drive, "task_acceptance")
+    assert source == {"kind": "workspace", "root": str(root)}
+    actor = _run(root, drive, "task_acceptance", source, monkeypatch, edit)
+    assert actor["status"] == "ok", actor
+    receipt = actor["usage"]["checking_evidence"]
+    assert observed["started_empty"] and receipt["status"] == "retained" and not observed["area"].exists()
+    kept = Path(receipt["evidence_dir"]) / "files"
+    assert (kept / rc.EVIDENCE_DIRNAME / "proof.log").read_bytes() == b"checked the live folder\n"
+    assert not (kept / "copied-to-run.txt").exists()  # scratch, not published evidence
+    assert not (drive / "state" / "review_checkouts" / "views").exists()  # nothing of the folder was copied

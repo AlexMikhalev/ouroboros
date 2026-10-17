@@ -1,29 +1,32 @@
 """Private checking copies for reviewer seats with configured technical rights (#1609).
 
-A reviewer whose configured access is ``workspace_write`` or ``full`` checks the
-review subject in its OWN copy instead of reading the author's tree. The subject
-is frozen ONCE per wave (``freeze_checking_source``), before any seat starts, so
-seats dispatched on either side of an author edit read the same input:
+A reviewer whose configured access is ``workspace_write`` or ``full`` works in its
+OWN folder. A Git or skill subject is frozen ONCE per wave (``freeze_checking_source``),
+before any seat starts, so seats dispatched on either side of an author edit read the
+same input; an ordinary folder is read live (owner decision 2026-10-17, 1A), so its
+seats see an author edit made during their review:
 
 - a Git root freezes a tree (``index``: the real staged index, the commit gate's
   subject; ``worktree``: the live tracked/untracked tree through a private index)
   over its HEAD, with the ignored evidence its sessions read (``.review-drive``)
   copied at that moment into a retained view;
-- an ordinary folder is copied once into a retained view under the data root.
+- an ordinary folder is not copied: it is read in place (``workspace``).
 
 Each seat then gets a copy keyed by its physical operation
 (``prepare_seat_area``): an independent clone (its own refs, stash, config and
 hooks; the source's objects borrowed read-only) whose HEAD is the subject's
-parent and whose index and worktree hold the frozen tree, or a copy of the view.
-The pristine subject stays readable beside it: the frozen tree object, the
-original root and the retained view. A rejoin of the same operation reuses the
+parent and whose index and worktree hold the frozen tree, a copy of a skill
+payload's retained view, or an empty working folder beside a workspace. A frozen
+subject stays readable beside it: the frozen tree object, the original root and the
+retained view. A rejoin of the same operation reuses the
 copy as the reviewer left it, never re-frozen or replaced; a copy remade later
 gets the frozen evidence views, never the root's current evidence.
 
 Nothing a seat changes is applied anywhere. When its run is terminal,
 ``capture_seat_evidence`` retains the copy's whole delta (a binary patch for Git;
 changed files, same-stat ones compared by content, and typed entry metadata for a
-folder) and the reviewer's files under ``.review-evidence/`` without a byte bound,
+skill copy; none for a workspace folder) and the reviewer's files under
+``.review-evidence/`` without a byte bound,
 writes the receipt, then deletes a one-shot copy, whatever process census the engine
 reports: a copy lives only as long as its review (owner decision 2026-10-12). A capture
 with named gaps still releases; one that could not list or read a path keeps the copy
@@ -187,7 +190,7 @@ def freeze_checking_source(root: Any, *, data_root: Any, subject: str = SUBJECT_
         return {"kind": "git_tree", "root": str(root_path), "parent": head, "tree": tree,
                 "evidence_views": {name: str(_retained_view(root_path / name, data_root))
                                    for name in _IGNORED_EVIDENCE_DIRS if (root_path / name).is_dir()}}
-    return {"kind": "directory", "root": str(root_path), "view": str(_retained_view(root_path, data_root))}
+    return {"kind": "workspace", "root": str(root_path)}  # read in place: nothing is copied
 
 
 
@@ -307,16 +310,24 @@ def _prepare_locked(data_root: Any, task_id: str, operation_id: str, source: Map
     home.mkdir(parents=True, exist_ok=True)
     atomic_write_json(marker, {**fresh, "materializing": True})
     try:
-        if source.get("kind") == "git_tree":
-            _materialize_git(area, source)
-        elif source.get("kind") == "directory":
-            shutil.copytree(str(source["view"]), area, symlinks=True)
-        else:
-            raise CheckingAreaUnavailable(f"unknown checking source kind {source.get('kind')!r}")
+        _materialize(area, source)
     except (OSError, subprocess.SubprocessError) as exc:
         raise CheckingAreaUnavailable(f"checking copy could not be created: {exc}") from exc
     atomic_write_json(marker, fresh)
     return str(area)
+
+
+def _materialize(area: pathlib.Path, source: Mapping[str, Any]) -> None:
+    """A seat's copy: a clone of a frozen tree, a copy of a retained view, or an empty folder."""
+    kind = source.get("kind")
+    if kind == "git_tree":
+        _materialize_git(area, source)
+    elif kind == "directory":
+        shutil.copytree(str(source["view"]), area, symlinks=True)
+    elif kind == "workspace":  # the reviewer reads the folder in place and copies what it runs
+        area.mkdir()
+    else:
+        raise CheckingAreaUnavailable(f"unknown checking source kind {kind!r}")
 
 
 def _materialize_git(area: pathlib.Path, source: Mapping[str, Any]) -> None:
@@ -387,18 +398,23 @@ def checking_instructions(area: str, source: Mapping[str, Any], root: str = "") 
                     "subject in its index and worktree, so `git diff --cached` is the subject until you change "
                     f"it, and `git diff {source.get('parent') or '4b825dc642cb6eb9a060e54bf8d69288fbee4904'} "
                     f"{source.get('tree')}` always is. The original root {source.get('root')} is read-only reference.")
+    elif source.get("kind") == "workspace":
+        pristine = (f"The subject is the live folder {source.get('root')}: read it in place by absolute path and "
+                    "do not write it. Your folder starts empty; copy into it what you want to run.")
     else:
         pristine = (f"The frozen subject is the retained folder view {source.get('view')} (read-only); "
                     f"the original folder is {source.get('root')}.")
-        if root and str(root) != str(source.get("root")):
-            pristine += f" Your session's reference repository stays {root}; read it by absolute path."
+    if root and source.get("kind") != "git_tree" and str(root) != str(source.get("root")):
+        pristine += f" Your session's reference repository stays {root}; read it by absolute path."
+    place, kept = (("folder", f"only {EVIDENCE_DIRNAME}/") if source.get("kind") == "workspace"
+                   else ("copy", "your copy's changes and that folder"))
     return (
-        f" CHECKING COPY: you run in a private checking copy at {area}. You may create files, "
+        f" CHECKING COPY: you run in a private checking {place} at {area}. You may create files, "
         "fixtures and tests there and run the checks you judge useful; nothing you change is applied "
         "to the reviewed candidate or creates an obligation to apply it, and your verdict is about the "
-        f"frozen subject, not about your edits. {pristine} Put any file worth keeping (logs, outputs, "
-        f"reproductions) under {EVIDENCE_DIRNAME}/ in your copy: the host retains your copy's changes and "
-        "that folder as evidence before releasing or refreshing the copy. Do not write the original root or any other "
+        f"subject, not about your edits. {pristine} Put any file worth keeping (logs, outputs, "
+        f"reproductions) under {EVIDENCE_DIRNAME}/ in your {place}: the host retains {kept} as evidence "
+        f"before releasing or refreshing the {place}. Do not write the original root or any other "
         "project; full access, where granted, is not an OS sandbox."
     )
 
@@ -701,9 +717,9 @@ def _capture_locked(data_root: Any, task_id: str, operation_id: str) -> Dict[str
             marker["capture_id"] = uuid.uuid4().hex
             evidence = _capture_directory(home, marker)
         evidence.mkdir(parents=True, exist_ok=True)
-        try:
-            delta = (_git_delta if source.get("kind") == "git_tree" else _directory_delta)(
-                area, source, evidence, budget, gaps)
+        compare = {"git_tree": _git_delta, "directory": _directory_delta}.get(str(source.get("kind")))
+        try:  # a workspace seat's folder started empty: what it publishes is its output
+            delta = compare(area, source, evidence, budget, gaps) if compare else {}
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
         # Named outputs still matter when the repository delta cannot be read.
@@ -814,12 +830,7 @@ def _thread_locked(data_root: Any, task_id: str, seat: str, source: Mapping[str,
         _retire_previous_turn(data_root, task_id, previous, area)
     staging = home.parent / f".next-{home.name}.{uuid.uuid4().hex}"
     try:
-        if source.get("kind") == "git_tree":
-            _materialize_git(staging, source)
-        elif source.get("kind") == "directory":
-            shutil.copytree(str(source["view"]), staging, symlinks=True)
-        else:
-            raise CheckingAreaUnavailable(f"unknown checking source kind {source.get('kind')!r}")
+        _materialize(staging, source)
         if area.exists():
             _remove_checking_area(area)
         staging.rename(area)
@@ -915,7 +926,7 @@ def session_checking(gateway: Any, *, custody_drive: Any, task_id: str, operatio
         if shape.access == "full":
             gateway.ensure_full_access(str(root))
     execution = {"isolation": "live", "delegated": True, "workspaceRoot": area,
-                 **({"workspaceKind": "directory"} if source.get("kind") == "directory" else {})}
+                 **({"workspaceKind": "directory"} if source.get("kind") != "git_tree" else {})}
     return {**thread_binding, "execution": execution,
             "instructions": CHECKING_REVIEWER_INSTRUCTIONS + checking_instructions(area, source, str(root)),
             "custody": {"authority_source": INVESTIGATION_AUTHORITY, "execution_root": area,

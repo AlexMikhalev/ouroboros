@@ -10,13 +10,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from ouroboros import dialogue_store
 from tests import _dialogue as dialogue_test
+from tests._shared import producer_evidence_dir
 from tests._store_shared import seed_result
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _SETTLE_RESTORE_FRAMES, _emit_ws_frame
@@ -178,9 +178,18 @@ def _open_project(page, project):
     return feed
 
 
+def _evidence_dir(tmp_path):
+    """One destination for this file's screenshots, DOM dumps and HTML receipts.
+
+    The DOM and terminal-child writers resolved HISTORY_UI_EVIDENCE_DIR privately and fell
+    back into tmp_path, so a released scratch kept the migrated screenshot and took them.
+    """
+    return producer_evidence_dir(tmp_path / "history-ui-evidence", "history-ui",
+                                 env="HISTORY_UI_EVIDENCE_DIR")
+
+
 def _screenshot(page, tmp_path, name):
-    root = Path(os.environ.get("HISTORY_UI_EVIDENCE_DIR") or tmp_path / "history-ui-evidence")
-    root.mkdir(parents=True, exist_ok=True)
+    root = _evidence_dir(tmp_path)
     page.screenshot(path=str(root / f"{name}.png"), full_page=False, animations="disabled")
 
 
@@ -315,8 +324,7 @@ def test_history_archive_navigation_arrival_retry_and_sparse_project(
                     assert len({row["text"] for row in records if row.get("text", "").startswith("history-progress-")}) == 726
                     mounted = page.locator(f"{MAIN} [data-history-id]").evaluate_all(
                         "nodes => nodes.map(node => node.dataset.historyId)")
-                    evidence = Path(os.environ.get("HISTORY_UI_EVIDENCE_DIR") or tmp_path / "history-ui-evidence")
-                    evidence.mkdir(parents=True, exist_ok=True)
+                    evidence = _evidence_dir(tmp_path)
                     (evidence / f"archive-dom-{browser_engine}-{width}.json").write_text(json.dumps(
                         page.locator(f"{MAIN} [data-history-id]").evaluate_all("""nodes => nodes.map(node => ({
                             id: node.dataset.historyId, tag: node.tagName, className: node.className,
@@ -472,8 +480,7 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     except AssertionError:
                         from tests.ci_evidence import output_dir
 
-                        evidence = output_dir(request.config) or Path(
-                            os.environ.get("HISTORY_UI_EVIDENCE_DIR") or tmp_path / "history-ui-evidence")
+                        evidence = output_dir(request.config) or _evidence_dir(tmp_path)
                         _capture_selection_failure(page, title, evidence, browser_engine, box, line_height)
                         raise
                     assert line.get_attribute("data-expanded") == "0", "drag selection must not activate the title"
@@ -541,8 +548,7 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     assert "EARLY_CHILD_NARRATION" in child.inner_text()
                     assert "TERMINAL_CHILD_RESULT" in child.inner_text()
                     assert child.locator(':scope > [data-live-summary-button] [data-live-phase]').inner_text() == "Done"
-                    evidence = Path(os.environ.get("HISTORY_UI_EVIDENCE_DIR") or tmp_path / "history-ui-evidence")
-                    evidence.mkdir(parents=True, exist_ok=True)
+                    evidence = _evidence_dir(tmp_path)
                     (evidence / f"terminal-child-{browser_engine}-{width}.html").write_text(child.evaluate("node => node.outerHTML"), encoding="utf-8")
                     _screenshot(page, tmp_path, f"terminal-child-{browser_engine}-{width}")
                     result_line = child.locator(':scope > [data-live-timeline] .chat-live-line').filter(has_text="TERMINAL_CHILD_RESULT").first

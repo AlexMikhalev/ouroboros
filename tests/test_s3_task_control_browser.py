@@ -23,6 +23,8 @@ import json
 import pytest
 
 from ouroboros import dialogue_store
+from ouroboros.test_evidence import diagnostic_directory
+
 from tests.test_ui_smoke_playwright import (
     direct_server_with_data as _direct_server_with_data,
 )
@@ -256,7 +258,7 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                 assert _menu_labels(menu) == EXPECTED_ACTIONS
                 _assert_menu_geometry(_menu_metrics(page, menu, trigger), placement="below")
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-chat-control-open.png"), full_page=False,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-chat-control-open.png"), full_page=False,
                 )
                 page.keyboard.press("Escape")
                 menu.wait_for(state="detached", timeout=10_000)
@@ -337,7 +339,7 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                 menu.wait_for(state="visible", timeout=10_000)
                 _assert_menu_geometry(_menu_metrics(page, menu, trigger), placement="above")
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-chat-control-flipped.png"), full_page=False,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-chat-control-flipped.png"), full_page=False,
                 )
                 page.keyboard.press("Escape")
                 menu.wait_for(state="detached", timeout=10_000)
@@ -378,7 +380,7 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                 menu.wait_for(state="visible", timeout=10_000)
                 _assert_menu_geometry(_menu_metrics(page, menu, trigger))
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-chat-control-narrow.png"), full_page=False,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-chat-control-narrow.png"), full_page=False,
                 )
                 page.keyboard.press("Escape")
                 menu.wait_for(state="detached", timeout=10_000)
@@ -447,7 +449,7 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                     ) is True
                 assert menu.evaluate("node => node.scrollTop") > 0
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-chat-control-short-scroll.png"),
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-chat-control-short-scroll.png"),
                     full_page=False,
                 )
                 page.keyboard.press("Escape")
@@ -523,7 +525,7 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
                 menu.wait_for(state="detached", timeout=10_000)
                 assert _chat_bubble_count(page) == bubbles_before
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-chat-control.png"), full_page=True,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-chat-control.png"), full_page=True,
                 )
             finally:
                 browser.close()
@@ -600,7 +602,7 @@ def test_s3_activity_tab_dropdown_parity_and_no_chat_hurry(direct_server_with_da
                 assert menu.evaluate("(node) => node.parentElement === document.body") is True
                 assert menu.evaluate("(node) => getComputedStyle(node).position") == "fixed"
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-activity-control-open.png"), full_page=True,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-activity-control-open.png"), full_page=True,
                 )
 
                 # Activity refresh replaces its subtree before awaiting network
@@ -633,7 +635,7 @@ def test_s3_activity_tab_dropdown_parity_and_no_chat_hurry(direct_server_with_da
                 # Belt-and-suspenders: no bubble anywhere mentions the control.
                 assert page.locator(".chat-bubble", has_text="Hurry up").count() == 0
                 page.screenshot(
-                    path=str(data_dir.parent / "s3-activity-control.png"), full_page=True,
+                    path=str(diagnostic_directory(data_dir.parent, "task-control") / "s3-activity-control.png"), full_page=True,
                 )
             finally:
                 browser.close()

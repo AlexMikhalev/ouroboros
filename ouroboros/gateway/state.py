@@ -335,7 +335,9 @@ _FINALIZING_MEMO_MAX = 1024
 
 
 def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
-    """One signature-keyed read serves outcome, finalizing, retry and question facts."""
+    """One signature-keyed read serves outcome, finalizing, retry and question facts.
+
+    ``{}`` is an absent document; a read that could not answer is ``{"unavailable": True}``."""
     from ouroboros.task_store import read_document
     from ouroboros.store_hot_facts import read
     from ouroboros.task_activity_facts import card_facts
@@ -345,7 +347,8 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
         hot = read(drive_root, task_id)
         key = (hot["write_seq"], hot["updated_at"]) if hot else None
     except Exception:
-        key = None
+        _FINALIZING_MEMO.pop(memo_id, None)
+        return {"unavailable": True}
     if key is None:
         _FINALIZING_MEMO.pop(memo_id, None)
         return {}
@@ -355,9 +358,9 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     try:
         data, key = read_document(drive_root, task_id, signed=True)
         if not isinstance(data, dict):
-            return {}
+            return {"unavailable": True}
     except Exception:
-        return {}
+        return {"unavailable": True}
     checkpoint = data.get("root_phase_checkpoint")
     synthesis = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
     wait = data.get("owner_wait") if isinstance(data.get("owner_wait"), dict) else {}
@@ -389,7 +392,7 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
              # An answered root's census row (D10) carries only its own routing identity.
              "row": {key: data[key] for key in ("chat_id", "project_id", "_is_direct_chat", "queued_at")
                      if key in data},
-             "owner_wait": {key: wait[key] for key in ("quiz_id", "state", "resume_reason")
+             "owner_wait": {key: wait[key] for key in ("quiz_id", "state", "resume_reason", "reason")
                             if key in wait},
              # The census pointer is the same complete row history and the live delivery carry
              # (project_dialogue.project_question_pointer): display fields ride along.
@@ -530,7 +533,7 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
 
 
 def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None,
-                                  decision_owners=None, owners_only: bool = False) -> list:
+                                  decision_owners=None, owners_only: bool = False, question_details: bool = True) -> list:
     """Copy live owners first, then read their control/phase facts in one store transaction."""
     from ouroboros.post_task_checkpoint import post_task_model_waits
     from ouroboros.store_hot_facts import snapshot
@@ -569,14 +572,17 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
         requests.extend(((drive_root, tid), (root, tid), (root, str(row.get("root_task_id") or tid))))
     if owners_only:  # which work is current, without the per-row control facts
         return _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
-                                         running_rows, late_owners, availability, decision_owners, True)
+                                         running_rows, late_owners, availability, decision_owners, True,
+                                         question_details)
     with snapshot(requests):
         return _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
-                                         running_rows, late_owners, availability, decision_owners, False)
+                                         running_rows, late_owners, availability, decision_owners, False,
+                                         question_details)
 
 
 def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
-                              running_rows, late_owners, availability, decision_owners, owners_only) -> list:
+                              running_rows, late_owners, availability, decision_owners, owners_only,
+                              question_details=True) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
     Additive beside ``active_direct_turns`` (kept unchanged for compatibility):
@@ -592,7 +598,8 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
     relabelled a managed task. ``owners_only`` keeps the same owners and rooms
     but skips every per-row phase, pause and question projection (each a store
     read): a reader that needs only which work is current (one room's history)
-    must not pay for the whole census. Never raises.
+    must not pay for the whole census. ``question_details=False`` skips optional Project/question
+    enrichment but retains phases, fences, waits and current result facts. Never raises.
     """
     activities = [dict(row) if owners_only else _direct_activity_pause_projection(drive_root, row, availability)
                   for row in direct_rows]
@@ -778,7 +785,7 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
         from ouroboros.project_dialogue import owner_wait_projection, project_question_pointer
         from ouroboros.projects_registry import list_reserved_projects
 
-        projects = {str(row["id"]): row for row in list_reserved_projects(drive_root)}
+        projects = {str(row["id"]): row for row in list_reserved_projects(drive_root)} if question_details else {}
     except Exception:
         # Without the registry no row's question can be resolved: every row
         # discloses that instead of reading as "no question pending".
@@ -790,7 +797,8 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
         try:
             from ouroboros.task_activity_facts import enrich_activity
             facts = _task_activity_facts(drive_root, str(activity.get("activity_id") or ""))
-            enrich_activity(activity, facts, projects)
+            if question_details:
+                enrich_activity(activity, facts, projects)
             display = dict(facts.get("display") or {})
             recorded_waits = display.pop("model_waits", {})
             attempt = int(activity.get("task_attempt") or 1)
@@ -813,6 +821,8 @@ def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_ro
             activity.update(display)
             if waits:
                 activity["model_waits"] = waits
+            if not question_details:
+                continue
             wait = facts.get("owner_wait", {})
             if not wait.get("quiz_id"):
                 continue

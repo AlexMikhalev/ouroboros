@@ -24,12 +24,12 @@ def test_short_sql_commit_at_entry_keeps_same_event_then_admits_once(env, monkey
     submitted = []
     real_submit = env.gen.submit
 
-    def submit(job):
+    def submit(job, *lane):
         # The F1 boundary: no preparation FIFO entry without the exact durable marker.
         row = env.row("entry-busy")
         assert row[prep.MARKER]["phase"] == prep.QUEUED
         submitted.append(row[prep.MARKER]["token"])
-        return real_submit(job)
+        return real_submit(job, *lane)
 
     monkeypatch.setattr(env.gen, "submit", submit)
     with database_reader(env.data, exclusive=True):
@@ -79,7 +79,7 @@ def test_contended_first_marker_retains_same_claim_and_readback(env, monkeypatch
     retained = bus.get(timeout=2)
     token = retained[prep._RETRY_TOKEN]
     assert queue.ADMISSION_RESERVATIONS == {"marker-busy": token}
-    assert not env.gen._jobs and env.gen._thread is None
+    assert not any(env.gen._jobs.values()) and not any(env.gen._threads.values())
     armed[0] = False
     assert env.dispatch_returns(retained)
     assert env.gen.wait_idle(_WAIT_SEC)

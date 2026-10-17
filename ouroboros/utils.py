@@ -90,9 +90,9 @@ def emit_cognitive_operation_event(
     """Publish one typed lifecycle fact for a live cognitive operation.
 
     This is deliberately a direct worker event, rather than a UI ``log_event``
-    envelope.  The supervisor uses it only to spare its idle rail while the
-    physical call is in flight; deadlines, budgets, cancellation and the
-    absolute task ceiling remain independent.  Callers may omit ``lease_until``
+    envelope. Work leases spare the idle rail; display-only wait marks classify
+    reply preparation without granting that exemption. Deadlines, budgets,
+    cancellation and the task ceiling stay independent. Omit ``lease_until``
     so the supervisor derives a bounded ceiling from the task it owns.
     """
     if event_queue is None:

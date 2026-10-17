@@ -53,6 +53,7 @@ if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") != "1":
     _PYTEST_DEFAULTS = _environment["isolated_environment"](
         _PYTEST_ROOT, _PYTEST_ROOT / "data" / "repo", source={},
     )
+    _environment["declare_scratch"](_PYTEST_ROOT, "pytest-session")
     if not _SAFE_TEMP_ROOT:
         for _key in ("TMPDIR", "TEMP", "TMP", "PYTEST_DEBUG_TEMPROOT"):
             _PYTEST_DEFAULTS.pop(_key, None)
@@ -142,10 +143,11 @@ def preflight_timeout_diagnostics(request, monkeypatch, tmp_path):
     from ouroboros import preflight_runner
     from ouroboros.platform_layer import collect_descendant_pids
 
-    trace_dir = tmp_path / "preflight-diagnostics"
+    from ouroboros.test_evidence import diagnostic_directory
+    trace_dir = diagnostic_directory(tmp_path / "preflight-diagnostics", "preflight-" + request.node.name)
 
     def install(*, dump_after=90):
-        trace_dir.mkdir()
+        trace_dir.mkdir(exist_ok=True)
         original_probe = preflight_runner._install_worker_probe
         original_kill = preflight_runner._terminate_preflight_tree
 
@@ -237,6 +239,8 @@ def _isolated_child_env(value) -> dict:
             pathlib.Path(child_env["OUROBOROS_DATA_DIR"]) / "settings.json")
     for key in _NEVER_INHERITED:
         child_env.pop(key, None)
+    if os.environ.get("OUROBOROS_TEST_EVIDENCE_ROOT"):  # the outer owner's durable evidence
+        child_env.setdefault("OUROBOROS_TEST_EVIDENCE_ROOT", os.environ["OUROBOROS_TEST_EVIDENCE_ROOT"])
     child_env["OUROBOROS_PYTEST_ACTIVE"] = "1"
     child_env["OUROBOROS_TEST_LIVE_DATA_ROOT"] = _PYTEST_CHILD_LIVE_ROOT
     # Custom env={} must retain every outer owner's attribution. Otherwise a
@@ -498,6 +502,12 @@ def pytest_cmdline_main(config):
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.addinivalue_line("markers", "scale: storage operation-count acceptance measurements")
+    evidence = os.environ.get("OUROBOROS_TEST_EVIDENCE_ROOT")
+    if evidence and _PYTEST_ROOT is not None and not getattr(config.option, "ci_evidence_dir", None):
+        config.option.ci_evidence_dir = str(pathlib.Path(evidence) / ("pytest-" + _PYTEST_ROOT.name))
+    selected = getattr(config.option, "ci_evidence_dir", None)
+    if selected and _SAFE_TEMP_ROOT and pathlib.Path(selected).resolve().is_relative_to(pathlib.Path(_SAFE_TEMP_ROOT).resolve()):
+        _environment["retain_tree"](_SAFE_TEMP_ROOT, f"explicit diagnostics remain inside scratch: {selected}")
     if _PYTEST_ROOT is not None:
         config.inicfg["cache_dir"] = str(_PYTEST_ROOT / "pytest-cache")
     _guard_test_tree_deletion(config)
@@ -558,6 +568,8 @@ def _claim_fresh_basetemp(root: pathlib.Path) -> str:
             claim.mkdir(mode=0o700)
         except FileExistsError:
             continue
+        from ouroboros.test_environment import declare_scratch
+        declare_scratch(claim, "pytest-basetemp")
         return str(claim / "t")
     raise pytest.UsageError(f"no free basetemp claim beneath {root}")
 

@@ -51,6 +51,7 @@ The contract publishes these as `core_paths` and `interface_paths`. A reverse pr
 The rules for a directory:
 - **Files are served as they are.** Every file is published under `/static/`, including dot-files. Point the setting at a dedicated build output, never a home or project folder.
 - **No Telegram script injection.** The core never rewrites a directory's HTML. A custom interface that runs as a Telegram Mini App must include Telegram's own script itself.
+- **macOS title bar.** The desktop window keeps its ordinary title bar unless the page's `<head>` declares `<meta name="ouroboros-window-chrome" content="integrated">`; a declaring page must then make room for the title bar the window reports in `data-window-chrome` and `--window-chrome-*` ([ARCHITECTURE "Navigation and shared UI contracts"](architecture/03-web-ui-pages-and-buttons.md#navigation-and-shared-ui-contracts)).
 - **Fallback to builtin, with an error.** The builtin interface is served instead, and `served_ui.error` says why, when the directory:
   - is relative, missing or not a directory;
   - has no `index.html`;

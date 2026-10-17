@@ -30,7 +30,7 @@ from tests._review_session_route_shared import (  # noqa: F401
     fake_route,
 )
 from tests.test_review_checking import _author_state, _git, author  # noqa: F401
-from tests.test_review_checkout_lifecycle import ABSENT, NO_CENSUS, SETTLED, UNSETTLED
+from tests.test_review_checkout_lifecycle import ABSENT, NO_CENSUS, SETTLED, UNSETTLED, directory_source
 
 
 class ThreadGateway(FakeGateway):
@@ -213,7 +213,7 @@ def test_directory_turns_keep_geometry_same_thread_and_frozen_evidence(tmp_path,
     source_dir, drive = tmp_path / "ordinary folder", tmp_path / "drive"
     source_dir.mkdir()
     (source_dir / "f.txt").write_bytes(b"A staged\n")
-    source = rc.freeze_checking_source(source_dir, data_root=drive)
+    source = directory_source(source_dir, drive)
     first = _run(source_dir, drive, source, access=access)
     area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
     receipt = Path(first["checking_evidence"]["evidence_dir"]) / "summary.json"
@@ -224,7 +224,7 @@ def test_directory_turns_keep_geometry_same_thread_and_frozen_evidence(tmp_path,
 
     (source_dir / "f.txt").write_bytes(b"B revised\n")
     thread_gateway.expected_subject = b"B revised\n"
-    second_source = rc.freeze_checking_source(source_dir, data_root=drive)
+    second_source = directory_source(source_dir, drive)
     thread_gateway.before_turn = lambda current: (
         current == area and not (current / "reviewer-test.txt").exists()
         and not (current / ".git").exists()) or pytest.fail("directory turn did not refresh its bound copy")
@@ -250,7 +250,7 @@ def test_failed_directory_turn_refreshes_after_its_capture_whatever_the_scope(tm
     source_dir, drive = tmp_path / "folder", tmp_path / "drive"
     source_dir.mkdir()
     (source_dir / "f.txt").write_bytes(b"A staged\n")
-    source = rc.freeze_checking_source(source_dir, data_root=drive)
+    source = directory_source(source_dir, drive)
 
     def failed_preparation(area):
         (area / ".git").mkdir()
@@ -402,7 +402,8 @@ def test_lost_turn_response_rejoins_original_copy_and_invocation(author, tmp_pat
     if ordinary_directory:
         root.mkdir()
         (root / "f.txt").write_bytes(b"A staged\n")
-    source = rc.freeze_checking_source(root, data_root=drive, subject=rc.SUBJECT_INDEX)
+    source = (directory_source(root, drive) if ordinary_directory
+              else rc.freeze_checking_source(root, data_root=drive, subject=rc.SUBJECT_INDEX))
     before, retry_state = _author_state(author), {}
     thread_gateway.lose_start_response = True
     with pytest.raises(TimeoutError):
@@ -488,7 +489,7 @@ def test_directory_capture_retains_named_coverage_bytes_and_digest(tmp_path):
     source_folder, drive = tmp_path / "payload", tmp_path / "drive"
     source_folder.mkdir()
     (source_folder / "SKILL.md").write_bytes(b"original skill\n")
-    source = rc.freeze_checking_source(source_folder, data_root=drive)
+    source = directory_source(source_folder, drive)
     assert source["kind"] == "directory"
     area = Path(rc.prepare_seat_area(drive, "task-1", "directory-op", source))
     declared = area / rc.EVIDENCE_DIRNAME

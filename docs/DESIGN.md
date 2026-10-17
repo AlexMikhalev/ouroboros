@@ -109,6 +109,14 @@ the design bible above; neither has a decorative background.
 On Windows the desktop window keeps its ordinary system caption, buttons, Snap and
 resizing; only their light or dark tint follows the painted palette — the system
 tint, not the page's colour — and a High Contrast theme keeps its own colours.
+On macOS the main window is one surface: the page reaches the top edge under a
+transparent title bar, the real traffic lights sit level with the header row, empty
+parts of that band drag the window, and a double-click follows the Mac's setting:
+Zoom, Minimize, Do Nothing or Fill. Fill relies on an available undocumented native
+action, not an imitation by Zoom. Its appearance follows Light or Dark and inherits
+under System. In full screen the bar hides until the pointer reveals it; the setup
+and error windows and a UI that does not declare it keep the ordinary title bar. A
+browser, another OS or an older desktop app reserves nothing.
 
 Appearance belongs to a browser profile or desktop client, not an account or
 server setting. Existing saved Light/Dark choices keep their meaning. Storage
@@ -1900,6 +1908,24 @@ uncertainty and unmet or unknown review obligations remain material. This phone
 projection never shortens full card reasons or rewrites outcomes. The status-only
 Main mirror follows the toggle too, but preserved intermediate content does not.
 Ordinary replies, files, questions and reply-editing Silent Mode remain independent. Unrecoverable old mirrors keep their text rather than guessing it is status-only. There is no new mode, cross-channel deduplication or retroactive rewrite.
+
+**Telegram typing means a reply is being prepared for that chat.** It is a
+native header cue, not a notification. While a reply the owner asked for is
+actively prepared and would reach a Telegram chat under the current mirror
+settings (Main and Project replies included), the bridge renews Telegram's
+typing action there, once per chat however many tasks back it, every few
+seconds at most. Ouroboros's own model and tool work counts; while that work
+waits, what it waits on counts when it works: a helper's own work, a delegated
+run the host currently observes running, or a review seat not waiting for model
+access. A running run's provider retry inside its engine carries no fact, so it
+reads as running. An intermediate message does not end the cue, and work
+resuming after a wait brings it back with no new start. By itself a question
+waiting for the owner, a wait for model access, a timer- or mail-only wait, a
+run queued or paused on its own question, Pause or Stop now renews nothing; a
+handed-off answer stops the helpers too, and background work nobody asked for
+and unknown state never count. An action already sent when the answer leaves
+may still be accepted after it, and Telegram may show the last action for up
+to five seconds more; no message, card, percentage or Stop button is added.
 
 **When the client runs.** Notifications are a property of a running client, and
 there is no push channel. On the desktop the Telegram bridge runs inside the same

@@ -331,6 +331,9 @@ python scripts/run_tests.py                  # full local battery (same as `make
 python scripts/run_tests.py tests/test_x.py  # focused run
 ```
 
+Both use `safe_test`: isolated HOME/data, scrubbed owner/provider environment,
+durable logs/source/diagnostics in `<checkout>/../.test-evidence` by default.
+
 `pyproject.toml` is the direct-dependency authority and `uv.lock` is the
 cross-platform resolution lock. Release builds install the generated
 `requirements-runtime.lock` compatibility export into embedded interpreters
