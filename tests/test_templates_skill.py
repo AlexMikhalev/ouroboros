@@ -2,11 +2,12 @@
 from pathlib import Path
 
 from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
-from ouroboros.extension_contributions import project_contributions
-from ouroboros.extension_ui_validation import validate_contributions
 
 
 def test_templates_are_instruction_contributions_that_project_to_drafts():
+    from ouroboros.extension_contributions import project_contributions
+    from ouroboros.extension_ui_validation import validate_contributions
+
     directory = Path(__file__).resolve().parents[1] / "skills" / "templates"
     manifest = parse_skill_manifest_text((directory / "SKILL.md").read_text())
     assert manifest.validate() == []
