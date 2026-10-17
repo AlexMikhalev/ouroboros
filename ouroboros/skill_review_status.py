@@ -238,7 +238,7 @@ def skill_review_gate(
     preflight failure recorded for the current bytes still refuses them. A skill
     installed from a source that reviews each skill (``acceptance["strict_review"]``)
     keeps blocker findings non-executable even under Advisory, until the owner skips
-    the review for these bytes.
+    the review for these bytes; an Advisory author acceptance is not one of its bases.
 
     Deterministic hard-gate failures (e.g. skill_preflight) are persisted as
     STATUS_PENDING by `_run_deterministic_preflight`, so they are non-executable
@@ -301,7 +301,7 @@ def skill_review_gate(
         executable = True
         reason = accepted
         summary = _ACCEPTANCE_SUMMARIES[accepted]
-    elif (author_current and author.get("action", "finish") == "finish"
+    elif (not strict_review and author_current and author.get("action", "finish") == "finish"
           and author["enforcement"] == "advisory" and enforcement == "advisory"
           and (raw_status != STATUS_PENDING or (terminal_basis and preflight_pass))):
         executable = True
@@ -357,10 +357,11 @@ def skill_review_gate(
     }
 
 
-def executable_review_requirement(gate: Dict[str, Any]) -> str:
-    """What a refused gate still needs: Advisory also admits a qualified author acceptance;
-    blocker findings in a skill from a source that reviews each skill need the owner."""
-    if str(gate.get("blocking_reason") or "") == "blocker_findings_need_owner":
+def executable_review_requirement(gate: Dict[str, Any], *, strict_review: bool = False) -> str:
+    """What a refused gate still needs: Advisory also admits a qualified author acceptance,
+    except for a skill from a source that reviews each skill (``strict_review``, the
+    acceptance fact beside the gate), whose blockers need the owner."""
+    if strict_review or str(gate.get("blocking_reason") or "") == "blocker_findings_need_owner":
         return "the owner's Skip review for these exact bytes, or a review without blocker findings"
     if str(gate.get("review_enforcement") or "") == "advisory":
         return "a current executable reviewer verdict or a qualified Advisory author acceptance of these exact bytes"

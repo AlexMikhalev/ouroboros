@@ -209,6 +209,30 @@ def test_review_source_blockers_need_the_owner_even_under_advisory(not_cyber):
                  stale=False)["executable_review"] is True
 
 
+@pytest.mark.parametrize("status", ["blockers", "pending"])
+def test_author_acceptance_is_not_a_basis_for_a_review_source(not_cyber, status):
+    """Under Advisory the author's finish runs ordinary skills' current bytes; a skill from
+    a source that reviews each skill needs a review without blockers or the owner's Skip."""
+    from ouroboros.review_records import build_author_disposition
+    from ouroboros.skill_review_status import executable_review_requirement, skill_review_gate
+
+    digest = "d" * 64
+    author = build_author_disposition(disposition="accepted", rationale="findings addressed",
+                                      subject_hash=digest, enforcement="advisory", action="finish")
+    if status == "pending":
+        author["review_reference"] = {
+            "surface": "skill", "basis": "unavailable", "job_id": "job-1", "content_hash": digest,
+            "finished_at": "2026-10-17T00:00:00Z", "status": "failed", "review_status": "pending",
+            "preflight": {"content_hash": digest, "status": "pass"}}
+    kwargs = dict(stale=False, enforcement="advisory", findings=[], author_disposition=author, current_hash=digest)
+    ordinary = skill_review_gate(status, **kwargs)
+    assert ordinary["executable_review"] is True and ordinary["blocking_reason"] == "author_accepted_advisory"
+    strict = skill_review_gate(status, acceptance={"basis": "review", "strict_review": True}, **kwargs)
+    assert strict["executable_review"] is False and strict["author_accepted"] is False
+    assert strict["blocking_reason"] == {"blockers": "blocker_findings_need_owner", "pending": "review_pending"}[status]
+    assert "Skip review" in executable_review_requirement(strict, strict_review=True)
+
+
 def test_install_record_feeds_the_loaded_gate(tmp_path, not_cyber):
     from ouroboros.skill_install_record import write_install_record
     from ouroboros.skill_loader import auto_grant_if_enabled, find_skill

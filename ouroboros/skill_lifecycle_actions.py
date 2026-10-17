@@ -47,6 +47,10 @@ def _review_facts(skill: Any, drive_root: Path) -> dict[str, Any]:
     }
 
 
+def _strict_review(skill: Any) -> bool:
+    """A source that reviews each skill: its blockers need the owner (skill_acceptance)."""
+    return bool((getattr(skill.review, "acceptance", None) or {}).get("strict_review"))
+
 
 def _caller_action_error(ctx: Any, action: str, owner_actor: str, owner_source: Any) -> tuple[str, dict]:
     if owner_actor:
@@ -116,8 +120,8 @@ def _toggle(skill: Any, drive_root: Path, repo_path: str, enabled: bool, actor: 
         if conflict:
             return _refusal("cannot enable while conflicting skills are enabled", conflict=conflict, **facts)
         if not facts["executable_review"]:
-            return _refusal("cannot enable until the review gate permits the current bytes: "
-                            f"{executable_review_requirement(facts['review_gate'])}", **facts)
+            need = executable_review_requirement(facts["review_gate"], strict_review=_strict_review(skill))
+            return _refusal(f"cannot enable until the review gate permits the current bytes: {need}", **facts)
         if not facts["grants"].get("all_granted", True):
             return _refusal("cannot enable until requested key and permission grants are approved", **facts)
         from ouroboros.skill_dependencies import skill_deps_not_ready
@@ -217,8 +221,8 @@ def prepare_skill_grant(skill: Any, drive_root: Path, items: list[str]) -> dict:
     if not (skill.manifest.is_script() or skill.manifest.is_extension()):
         return _refusal("key and permission grants are supported for script and extension skills", 400)
     if not facts["executable_review"]:
-        return _refusal("key and permission grants need the review gate to permit the current bytes: "
-                        f"{executable_review_requirement(facts['review_gate'])}", **facts)
+        need = executable_review_requirement(facts["review_gate"], strict_review=_strict_review(skill))
+        return _refusal(f"key and permission grants need the review gate to permit the current bytes: {need}", **facts)
     allowed_keys = requested_core_setting_keys(list(skill.manifest.env_from_settings or []))
     allowed_permissions = requested_skill_permissions(skill.manifest.permissions, skill.manifest.subscribe_events)
     permissions = {value.lower(): value for value in allowed_permissions}
