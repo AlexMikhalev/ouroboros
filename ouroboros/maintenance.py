@@ -275,6 +275,8 @@ def _hot_facts_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[
 # order. ``child`` is False for the server's look: a job may then decline to be a reason to spawn
 # (it still runs whenever the child runs for another reason).
 JOBS: Dict[str, tuple] = {
+    # Before the archive import: the drives it reconciles can leave dialogue work, which the import
+    # then finishes in the same pass (the next pass rests; tests/test_cost_contract.py B6).
     "legacy_reconcile": (_legacy_due, _legacy_run),
     "dialogue_import": (_dialogue_due, _dialogue_run),  # the owner's history: newest segments first
     "hot_facts": (_hot_facts_due, _hot_facts_run),

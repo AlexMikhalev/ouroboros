@@ -244,24 +244,14 @@ def _maintenance():
     return maintenance
 
 
-# The jobs the plan names; the maintenance module's own registry joins them once it exists.
-JOB_NAMES = tuple(dict.fromkeys(("activity_backfill", "child_ref_promotion", "drive_settlement", "evidence_discovery",
-                                 "temp_sweep", "legacy_reconcile", "sqlite_analyze",
-                                 *getattr(_maintenance(), "JOBS", {}))))
+# Every job the maintenance child runs: its own registry.
+JOB_NAMES = tuple(getattr(_maintenance(), "JOBS", {}))
 
 
 def job_runner(name: str) -> Callable[[pathlib.Path], Any]:
-    """One named job's run in this process: ``maintenance.run_job(root, name)`` once the job is registered,
-    WU1's ``store_import.run_legacy_reconcile`` for the legacy reconcile; skipped while absent."""
+    """One named job's run in this process: ``maintenance.run_job(root, name)``."""
     maintenance = _maintenance()
-    if maintenance is not None and name in getattr(maintenance, "JOBS", {}):
-        return lambda root: maintenance.run_job(root, name, should_stop=lambda: False)
-    if name == "legacy_reconcile":
-        from ouroboros import store_import
-        runner = getattr(store_import, "run_legacy_reconcile", None)
-        if runner is not None:
-            return lambda root: runner(root, progress=None, should_stop=lambda: False)
-    pytest.skip(f"maintenance job {name!r} does not exist on this tree yet")
+    return lambda root: maintenance.run_job(root, name, should_stop=lambda: False)
 
 
 def _rests_at_every_size(measured: Dict[Any, Any], run: Callable[[pathlib.Path], Any], what: str) -> None:
