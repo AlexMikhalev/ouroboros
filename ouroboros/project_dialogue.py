@@ -631,7 +631,7 @@ ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
     "skill_repair_payload_unreadable": "the skill's files could not be read",
     "skill_repair_admission_unwritable": "the skill repair request could not be recorded",
     "repair_promotion_failed": "the skill repair request could not be started",
-    "task_acceptance_fence": "the task tree is already being accepted",
+    "task_acceptance_fence": "the task tree is closing after its author stopped it",
     "invalid_task_depth": "the task depth was invalid",
     "promotion_persistence_failed": "the task record could not be saved",
     "routing_receipt_persist_failed": "the receipt could not be saved",

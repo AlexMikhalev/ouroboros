@@ -319,6 +319,20 @@ LEDGER_RECORD_PANELS = 5
 _LEDGER_PARSE = {"responded": "valid", "partial": "partial"}
 
 
+def _ledger_seat_executions(seat: Dict[str, Any]) -> List[Dict[str, str]]:
+    """What actually ran for one seat, when the reviewer row's own last execution proved it
+    (``review_ledger._apply_execution``); a requested route alone proves nothing."""
+    from ouroboros.review_execution_projection import normalize_review_executions
+
+    effective = seat.get("effective") if isinstance(seat.get("effective"), dict) else {}
+    if effective.get("source") != "reviewer_slot_last_execution":
+        return []
+    route, model = str(effective.get("route") or ""), str(effective.get("model") or "")
+    harness = route.split(":", 1)[1] if route.startswith("agent_session:") else ""
+    kind = "harness" if harness else ("native" if effective.get("delivery") == "retrieving" else "api")
+    return normalize_review_executions([{"kind": kind, "harness_id": harness, "model": model}])
+
+
 def _ledger_seat_actor(seat: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
     """One ledger seat as a card reviewer: the parts it was asked, each part's answer
     with its findings COUNTED (the bodies ride once, bounded, in ``findings``), and the
@@ -354,6 +368,7 @@ def _ledger_seat_actor(seat: Dict[str, Any], record: Dict[str, Any]) -> Dict[str
         "parts": parts, "answers": counted, "response_ref": _response_ref_projection(ref),
         "reason": _actor_reason(seat, str(seat.get("raw_text") or seat.get("failure_code") or "")
                                 if status not in _LEDGER_PARSE else ""),
+        "executions": _ledger_seat_executions(seat),
     }
     actor.update({key: seat[key] for key in _sub().TYPED_FAILURE_FACT_KEYS if seat.get(key) not in (None, "")})
     actor.update(_sub().disclosed_list_projection(
@@ -436,8 +451,8 @@ def compact_review_projection(review_runs: Any, records: Any = ()) -> Dict[str, 
     given review-ledger ``records`` (:func:`ledger_record_panel`), in their order."""
     panels: List[Dict[str, Any]] = []
     for index, raw_run in enumerate(review_runs or []):
-        if not isinstance(raw_run, dict):
-            continue
+        if not isinstance(raw_run, dict) or raw_run.get("surface") == "result":
+            continue  # a result run binds a ledger record, which projects as its own panel below
         request = raw_run.get("request") if isinstance(raw_run.get("request"), dict) else {}
         surface = str(request.get("surface") or "review")
         actors = [_review_actor_projection(actor, surface) for actor in (raw_run.get("actors") or []) if isinstance(actor, dict)]

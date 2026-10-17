@@ -613,6 +613,12 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
         if any(run.get("enforcement") == "blocking" and run.get("dispatch_refusal") == REASON_REVIEW_CYCLES_EXHAUSTED
                for run in runs):
             axis["blocked_reason"] = REASON_REVIEW_CYCLES_EXHAUSTED  # no review of this result could be bought
+        if axis.get("author_finish") or axis.get("blocked_reason"):
+            # The task card's cause sentence reads the decision shape (project_dialogue / log_events twins).
+            axis["acceptance_decision"] = {
+                "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "source": "result_review",
+                "reason": "author_finish" if axis.get("author_finish") else REASON_REVIEW_CYCLES_EXHAUSTED,
+                "enforcement": "advisory" if axis.get("author_finish") else "blocking"}
     tier = _aggregate_outcome_tier(_extract_outcome_tiers(runs))
     if tier and status != AWAITING_PROJECTION:  # a minority answer is not the panel's tier
         axis["outcome_tier"] = tier
