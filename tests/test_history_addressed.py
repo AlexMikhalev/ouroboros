@@ -140,7 +140,7 @@ def test_the_import_frontier_is_disclosed_and_never_read_past(tmp_path, monkeypa
          live={"chat": [row(2, "live 2"), row(3, "live 3")]})
     di.cutover(tmp_path)
     with monkeypatch.context() as narrow:
-        narrow.setattr(history_paging, "_RECENT_WINDOW_ROWS", 1)
+        narrow.setattr(history_paging, "_RECENT_WINDOW_BYTES", 1)
         status, bounded = history(tmp_path, n_human="1")
     assert status == 200 and [m["text"] for m in bounded["messages"]] == ["live 3"]
     assert "chat_importing" not in bounded["window"]["truncated_by"], "the page did not reach the frontier"

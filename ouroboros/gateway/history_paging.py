@@ -2,7 +2,7 @@
 
 A page is counted in the room's rows, never in bytes of a shared chain: the
 newest page holds the room's newest rows however far back they lie (read over a
-generous recent window, ``_RECENT_WINDOW_ROWS``, so lineage, overlays and late
+generous recent window, ``_RECENT_WINDOW_BYTES``, so lineage, overlays and late
 answers older than the quota's reach are still weighed by the quota logic), and
 each older page the next older ones (owner decisions 2026-10-05, DESIGN "History
 edges"). The chat and progress streams keep separate quotas (``human``,
@@ -39,11 +39,12 @@ from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_messag
 _SOURCES = ("chat", "progress")
 # One indexed probe page per room fact: a page's cost is the room's facts times this, never its history.
 _PROBE_ROWS = 200
-# The recent page reads at least this many of the room's newest rows per stream before its quota
-# ends it (the JSONL reader's 512 KB live window): the quota is applied over a generous window, so a
-# swarm's finished children, a late answer or a review overlay older than the quota's reach are still
-# weighed by ``history._apply_window_quotas`` (lineage anchoring, deferral to the first older page).
-_RECENT_WINDOW_ROWS = 1000
+# The recent page reads at least this many stored bytes of the room's newest rows per stream before
+# its quota ends it (the chain reader's 512 KB live window, now of the room's own rows): the quota is
+# applied over a generous window, so a swarm's finished children, a late answer or a review overlay
+# older than the quota's reach are still weighed by ``history._apply_window_quotas`` (lineage
+# anchoring, deferral to the first older page), and a room of long rows reads no more than it did.
+_RECENT_WINDOW_BYTES = 512 * 1024
 # Bound on the candidate rows one request decodes per stream; the cursor resumes where a read
 # stopped, so it bounds latency, never what a room can reach.
 _READ_CEILING_ROWS = 10_000
@@ -340,8 +341,8 @@ class HistorySource:
 
     def recent(self, want, counts):
         """The room's newest rows: newest first until ``want`` counted rows and at least the recent
-        window (``_RECENT_WINDOW_ROWS``), the import frontier or the read ceiling."""
-        return self._page(self.upper, want, counts, _READ_CEILING_ROWS, window=_RECENT_WINDOW_ROWS)
+        window (``_RECENT_WINDOW_BYTES``), the import frontier or the read ceiling."""
+        return self._page(self.upper, want, counts, _READ_CEILING_ROWS, window=_RECENT_WINDOW_BYTES)
 
     def older(self, before, want, counts, ceiling=None):
         """Consume one backward page of ``want`` counted rows below ``before``; the read ceiling
@@ -354,7 +355,7 @@ class HistorySource:
         return self._page(before, want, counts, _READ_CEILING_ROWS if ceiling is None else ceiling)
 
     def _page(self, before, want, counts, ceiling, window=0):
-        top, selected, counted, read = before, [], 0, 0
+        top, selected, counted, read, seen = before, [], 0, 0, 0
         while True:
             rows = self._candidates(self.floor, before)
             for entry in self._entries(rows):  # newest first
@@ -362,7 +363,8 @@ class HistorySource:
                 before = entry["history_position"]["offset"]
                 counted += bool(counts(entry))
                 read += 1
-                if (counted >= want and read >= window) or read >= ceiling:
+                seen += entry["_history_end"] - before  # the stored row's exact length
+                if (counted >= want and seen >= window) or read >= ceiling:
                     return list(reversed(selected)), before, self.gaps(before, top)
             if len(rows) < _PROBE_ROWS:  # the room's rows above the frontier are exhausted
                 return list(reversed(selected)), self.floor, self.gaps(self.floor, top)

@@ -234,9 +234,10 @@ def test_chat_history_reads_a_bounded_recent_window_with_zero_artifact_work(
         hours, rem = divmod(i, 3600)
         ds.append(tmp_path, "progress", {
             "ts": f"2026-08-08T{hours:02d}:{rem // 60:02d}:{rem % 60:02d}Z",
-            "content": f"telemetry-{i}", "task_id": "t1", "pad": "x" * 120,
+            "content": f"telemetry-{i}", "task_id": "t1", "pad": "x" * 600,
         })
-    assert ds.stream_end(tmp_path, "progress") > 3 * history_paging._RECENT_WINDOW_ROWS * 100
+    end = ds.stream_end(tmp_path, "progress")
+    assert end > 3 * history_paging._RECENT_WINDOW_BYTES
 
     decoded: list = []
     entries = history_paging.HistorySource._entries
@@ -260,7 +261,8 @@ def test_chat_history_reads_a_bounded_recent_window_with_zero_artifact_work(
 
     progress_decoded = [seq for source, seq in decoded if source == "progress"]
     assert progress_decoded  # the store served the endpoint
-    assert len(progress_decoded) <= history_paging._RECENT_WINDOW_ROWS + history_paging._PROBE_ROWS
+    row_bytes = end / 4000  # the fixture's rows have one length, give or take a digit
+    assert end - min(progress_decoded) <= history_paging._RECENT_WINDOW_BYTES + history_paging._PROBE_ROWS * row_bytes
     assert not any(name in ("progress.jsonl", "chat.jsonl") for name in opened), "no dialogue file is read"
     progress_rows = [row for row in messages if row.get("is_progress")]
     assert len(progress_rows) == 60

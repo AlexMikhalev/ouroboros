@@ -276,7 +276,7 @@ def test_one_malformed_registry_row_leaves_only_the_room_it_may_hold_unknown(roo
 @pytest.fixture
 def narrow_recent(monkeypatch):
     """A recent read that stops as soon as its quota is met (a large chat's window)."""
-    monkeypatch.setattr(history_paging, "_RECENT_WINDOW_ROWS", 1)
+    monkeypatch.setattr(history_paging, "_RECENT_WINDOW_BYTES", 1)
 
 
 def child_words(room, count: int, minute: int = 20) -> None:
