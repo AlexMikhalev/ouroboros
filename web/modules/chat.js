@@ -2620,6 +2620,7 @@ export function createChatInstance({
     }
 
     async function syncHistory({ fromReconnect = false } = {}) {
+        if (destroyed) return false;
         if (historySyncPromise) {
             // A reconnect joining an older read still owes a rebuild.
             if (fromReconnect) {
@@ -2640,6 +2641,7 @@ export function createChatInstance({
             const cardsAtStart = new Set(liveCardRecords.keys());
             // Replay can refill the feed without moving the reader's intent.
             const followingAtStart = reading.stick, generationAtStart = reading.generation;
+            const landedAtStart = historyPager.arrivalsLanded();
             try {
                 // No welcome until this read lands.
                 emptyWelcome?.historyPending();
@@ -2667,6 +2669,8 @@ export function createChatInstance({
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });
                 withStableViewport(() => releaseHistoryIds(!admitted || rechainRecent || reader
                     || historyPager.getState().canNewer ? [] : oldRecentIds));
+                // Arrivals that landed meanwhile may lie past this page: read them again.
+                if (historyPager.arrivalsLanded() !== landedAtStart) void historyPager.read();
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
@@ -3737,7 +3741,7 @@ export function createChatInstance({
         updateMessagesPadding();
         loadUiPreferences()
             // Reconnect refetches lost task_done; first open shares idle-gated hydration.
-            .then(() => (isReconnect ? historyPager.read({ fromReconnect: true })
+            .then(() => (isReconnect ? syncHistory({ fromReconnect: true })
                 : waitForHydrationWindow().then(awaitInitialHydration)))
             .then(() => {
                 if (reconnectBanner) {

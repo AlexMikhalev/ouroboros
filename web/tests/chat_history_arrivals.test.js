@@ -18,8 +18,8 @@ const ts = (n) => new Date(Date.UTC(2026, 9, 16, 12, 0, 0, n * 1000)).toISOStrin
 // `after:<k>` cursor returns the rows stored since that read; `older:<k>` the
 // page below. Every read answers with what was stored when it began.
 function historyServer({ window = 1000 } = {}) {
-    const rows = [], reads = [], cursors = [], refusals = [];
-    let gate = null, latest;  // the newest message the newest page names: computed, null (unknown) or set
+    const rows = [], reads = [], cursors = [], refusals = [], gates = new Map();
+    let latest;  // the newest message the newest page names: computed, null (unknown) or set
     const say = (n, extra = {}) => rows.push({ role: 'assistant', text: `answer ${n}`, ts: ts(n),
         history_id: `chat:${n}`, history_position: { source: 'chat', offset: n }, ...extra });
     const work = (n, taskId = 'task-1', extra = {}) => rows.push({ role: 'assistant', text: `step ${n}`, ts: ts(n),
@@ -43,7 +43,8 @@ function historyServer({ window = 1000 } = {}) {
         const kind = !cursor ? 'newest' : cursor.split(':')[0];
         reads.push(kind); cursors.push(cursor);
         const stored = rows.length;
-        if (gate && (!gate.kind || gate.kind === kind)) await gate.promise;
+        const gate = gates.get(kind) || gates.get('');
+        if (gate) await gate;
         const refusal = kind === 'after' && refusals.shift();
         if (refusal) return { ok: false, status: 409, json: async () => ({ messages: [], error: refusal, reason_code: refusal,
             has_more: true, next_cursor: cursor, window: { complete: false, truncated_by: [refusal] } }) };
@@ -65,8 +66,8 @@ function historyServer({ window = 1000 } = {}) {
         // Reads begun from now on (of `kind` only, when given) wait until the returned release.
         hold(kind = '') {
             let release;
-            gate = { kind, promise: new Promise((resolve) => { release = resolve; }) };
-            return () => { gate = null; release(); };
+            gates.set(kind, new Promise((resolve) => { release = resolve; }));
+            return () => { gates.delete(kind); release(); };
         },
         nameNewest(message) { latest = message; },
     };
@@ -167,6 +168,29 @@ test('an arrivals answer older than a newest read that landed meanwhile is dropp
     answers['after:9'] = arrivedRows([], 'after:9');
     await p.pager.read();
     assert.equal(p.calls.at(-1), 'after:9');
+});
+
+test('arrivals a newest page let go are read again, and a refusal of that read takes the newest page', async () => {
+    for (const refuse of [false, true]) {
+        let release, afterReads = 0;
+        const gate = new Promise((resolve) => { release = resolve; });
+        const p = arrivalsPager({ fetch: async (cursor) => {
+            if (cursor === null) { await gate; return newestPage('after:1', ['chat:1']); }
+            afterReads += 1;
+            if (refuse && afterReads === 2) throw Object.assign(new Error('history_delta_reset'), { status: 409 });
+            return arrivedRows(['chat:2'], 'after:2');
+        } });
+        p.pager.acceptRecent(newestPage());
+        const latest = p.pager.latest();  // begun before the arrivals below, it lands after them
+        await quiet();
+        await p.pager.read();
+        release();
+        await latest;
+        await quiet();
+        assert.deepEqual([p.calls.filter((cursor) => cursor === 'after:1').length, p.newest.length], [2, refuse ? 1 : 0],
+            refuse ? 'the refused re-read falls back to the newest page' : 'read again from the newest page\'s cursor');
+        p.pager.destroy();
+    }
 });
 
 test('a read of arrivals with a narration gap takes the newest page; an unfinished narration line does not', async () => {
@@ -300,7 +324,9 @@ test('a card finish takes one read of what arrived', async (t) => {
     assert.deepEqual(s.reads, ['newest', 'after'], 'one read of the rows stored since, not the window');
 });
 
-test('a reconnect of a hydrated room reads what arrived while it was away', async (t) => {
+test('a reconnect of a hydrated room reads its newest page: frames sent while it was away are lost', async (t) => {
+    // A running task's facts the socket carried (a question's wait ended, a phase) reach a window that
+    // missed them only through a whole read; its arrivals would bring its new rows but not those facts.
     const s = historyServer();
     s.say(1);
     const r = openRoom(t, s);
@@ -309,7 +335,10 @@ test('a reconnect of a hydrated room reads what arrived while it was away', asyn
     r.reconnect();
     await until(() => r.shown().includes('chat:2'));
     await quiet();
-    assert.deepEqual(s.reads, ['newest', 'after']);
+    assert.deepEqual(s.reads, ['newest', 'newest']);
+    s.say(3);
+    assert.equal((await r.instance.refreshHistory({ revision: 3 })).read, true);
+    assert.deepEqual(s.reads.slice(2), ['after'], 'arrivals go on from the page the reconnect read');
 });
 
 for (const refusal of ['history_delta_reset', 'history_view_changed']) {
@@ -348,6 +377,20 @@ test('a read of arrivals with a gap in the conversation takes the newest page in
     assert.deepEqual(s.reads, ['newest', 'after', 'newest'], 'an unfinished line may be the newest message: the newest page names it');
 });
 
+test('reconnects during a slow newest read fold into one more read', async (t) => {
+    const s = historyServer();
+    s.say(1);
+    const r = openRoom(t, s);
+    await r.instance.refreshHistory({ revision: 1 });
+    const release = s.hold('newest');
+    for (let index = 0; index < 10; index += 1) { r.reconnect(); await quiet(); }
+    assert.deepEqual(s.reads, ['newest', 'newest'], 'one newest read in flight');
+    release();
+    await until(() => s.reads.length >= 3);
+    await quiet();
+    assert.deepEqual(s.reads, ['newest', 'newest', 'newest'], 'ten reconnects, one queued rebuild');
+});
+
 test('triggers during a read of arrivals share one more read begun after them', async (t) => {
     const s = historyServer();
     s.say(1);
@@ -359,7 +402,6 @@ test('triggers during a read of arrivals share one more read begun after them', 
     await until(() => s.reads.length === 2);
     s.say(3);
     const second = r.instance.refreshHistory({ revision: 3 });
-    r.reconnect();
     s.say(4);
     const third = r.instance.refreshHistory({ revision: 4 });
     await quiet();
@@ -370,6 +412,30 @@ test('triggers during a read of arrivals share one more read begun after them', 
     assert.deepEqual(s.reads, ['newest', 'after', 'after'], 'three triggers, one queued read');
     assert.deepEqual([one.painted, two.painted, three.read], [false, false, true], 'the latest refresh decides');
     assert.deepEqual(['chat:2', 'chat:3', 'chat:4'].map((id) => r.shown().includes(id)), [true, true, true]);
+});
+
+test('arrivals that land while a whole newest read is in flight are read again when it lands', async (t) => {
+    const s = historyServer();
+    s.say(1);
+    const r = openRoom(t, s);
+    await r.instance.refreshHistory({ revision: 1 });
+    const releaseArrivals = s.hold('after');
+    s.say(2);
+    const first = r.instance.refreshHistory({ revision: 2 });  // arrivals in flight, holding chat:2
+    await until(() => s.reads.length === 2);
+    const second = r.instance.refreshHistory({ revision: 3 });  // queued behind them
+    const releaseNewest = s.hold('newest');
+    r.reconnect();  // a whole read begins: its page will not hold what is stored next
+    await until(() => s.reads.length === 3);
+    s.say(3);
+    releaseArrivals();
+    await Promise.all([first, second]);
+    await until(() => r.shown().includes('chat:3'));
+    releaseNewest();
+    await until(() => s.reads.length === 5);
+    await quiet();
+    assert.deepEqual(s.reads, ['newest', 'after', 'newest', 'after', 'after'], 'the page that let chat:3 go reads its arrivals');
+    assert.ok(r.shown().includes('chat:3'), 'the row stays shown');
 });
 
 test('arrivals that land while ↓ reads the present are read again on the page it lands', async (t) => {
@@ -467,24 +533,32 @@ test('review details of sixty cards hold at most two reads in flight, newest ask
     assert.deepEqual(started.slice(2, 4), ['owner-59', 'owner-58'], 'a room opens at its newest cards: they are read first');
 });
 
-test('a review detail read that never answers gives its slot back, and still answers its card when it lands', async (t) => {
+test('a review detail read that never answers is aborted at the slot bound: two connections at most, Retry after', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const started = [], release = {};
+    const started = [], release = {}, signals = {};
+    const open = () => started.filter((id) => !release[id].settled && !signals[id].aborted).length;
     const hydrator = createReviewHydrator({
-        fetchDetail: (taskId) => { started.push(taskId); return new Promise((resolve) => { release[taskId] = () => resolve({ id: taskId }); }); },
+        fetchDetail: (taskId, { signal } = {}) => {
+            started.push(taskId); signals[taskId] = signal;
+            return new Promise((resolve) => {
+                release[taskId] = () => { release[taskId].settled = true; resolve({ id: taskId }); };
+            });
+        },
         applyDetail: () => true,
     });
     const done = ['a', 'b', 'c'].map((id) => hydrator.hydrate(id, 'a'.repeat(64)));
     await quiet();
-    assert.deepEqual(started, ['a', 'b'], 'two in flight');
+    assert.deepEqual([started, open()], [['a', 'b'], 2], 'two in flight');
     t.mock.timers.tick(REVIEW_DETAIL_SLOT_MS - 1);
     await quiet();
     assert.deepEqual(started, ['a', 'b'], 'a slow read keeps its slot');
     t.mock.timers.tick(1);
     await quiet();
     assert.deepEqual(started, ['a', 'b', 'c'], 'two dead connections do not stall the rest');
-    for (const id of ['c', 'a', 'b']) release[id]();
-    assert.deepEqual((await Promise.all(done)).map(Boolean), [true, true, true], 'the late answers still reach their cards');
+    assert.ok(signals.a.aborted && signals.b.aborted, 'the lost reads are aborted, so their connections close');
+    assert.ok(open() <= REVIEW_DETAIL_READS, 'never more than two reads hold a connection');
+    release.c();
+    assert.deepEqual(await Promise.all(done), [false, false, true], 'the lost reads fail and await Retry; the next one lands');
 });
 
 test('review readers of two rooms share the bound, and a closed room\'s queued reads never start', async () => {
