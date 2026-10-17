@@ -153,13 +153,8 @@ def _settle_start_origin(task: Dict[str, Any]) -> float:
     return float(continuation.get("started_at") or time.time())
 
 
-def _restore_saved_clocks(ctx: Any, task: Dict[str, Any]) -> None:
-    """Bind this start's continuation carriers and restore the clocks they saved.
-
-    Runtime/ContextFit must disclose the original ceiling, so the saved state is
-    read here once: an owner-wait handoff, an exact pause grant (#1196), or a
-    same/new-ID retry continuing a frozen working checkpoint (#1563).
-    """
+def _load_start_continuation(ctx: Any, task: Dict[str, Any]) -> dict:
+    """Read the existing validated continuation before dispatch or context assembly."""
     ctx.owner_wait_resume = task.get("_owner_wait_resume")
     ctx.budget_pause_resume = task.get("_budget_pause_resume")
     ctx.working_recovery = task.get("_working_recovery")
@@ -168,20 +163,35 @@ def _restore_saved_clocks(ctx: Any, task: Dict[str, Any]) -> None:
     if not saved_wait and ctx.budget_pause_resume:
         from ouroboros.budget_pause import load_budget_pause
         saved_wait = load_budget_pause(ctx)  # same-ID budget continuation (#1196)
-    recovered = False
     if not saved_wait and isinstance(ctx.working_recovery, dict):
         from ouroboros.working_checkpoint import load_recovery
         try:
             saved_wait = load_recovery(ctx)  # same/new-ID recovery continues its clocks
-            recovered = True
         except Exception:
             saved_wait = {}  # the loop discloses the unreadable source itself
+    return saved_wait
+
+
+def _restore_saved_clocks(ctx: Any, task: Dict[str, Any], saved_wait: Optional[dict] = None) -> None:
+    """Restore clocks from the same start capture; the loop later revalidates its grant."""
+    if saved_wait is None:
+        saved_wait = _load_start_continuation(ctx, task)
+    else:
+        ctx.owner_wait_resume = task.get("_owner_wait_resume")
+        ctx.budget_pause_resume = task.get("_budget_pause_resume")
+        ctx.working_recovery = task.get("_working_recovery")
+    if saved_wait:
+        from ouroboros.settings_integrity import restore_cognition
+        from ouroboros.task_pacing import restore_cost_ceiling
+
+        restore_cognition(saved_wait.get("cognition"))
+        ctx._cost_ceiling = restore_cost_ceiling(ctx, saved_wait.get("cost_ceiling"))
     if saved_wait and ctx.model_wait_context is not None:
         from ouroboros.model_wait import adopt_handoff_clock, native_sleep_started_at
 
         model_state = saved_wait.get("model_wait") or {}
         # Both native waits and working recovery carry confirmed post-checkpoint clocks.
-        model_state = adopt_handoff_clock(model_state, ctx.working_recovery if recovered else ctx.owner_wait_resume)
+        model_state = adopt_handoff_clock(model_state, ctx.working_recovery if saved_wait.get("_working_handoff") else ctx.owner_wait_resume)
         if (saved_wait.get("_working_handoff") or {}).get("source_task_id", ctx.task_id) != ctx.task_id:
             # A new execution keeps the cumulative clock, without importing
             # the old task owner's model-choice/control overrides.
@@ -628,9 +638,15 @@ class OuroborosAgent:
             return None, [], {"authority_source_unavailable": authority_refusal}
         drive_logs = self.env.drive_path("logs")
         task = attach_task_contract(apply_consciousness_authority(task))
-        # THE resolution, before anything durable is written about this run: the
-        # RUNNING record below is the single atomic write that states model, effort,
-        # route, profile, effective executor and the one `capability_delta` together.
+        from types import SimpleNamespace
+        from ouroboros.settings_integrity import restore_cognition
+        saved_start = _load_start_continuation(SimpleNamespace(
+            task_id=str(task.get("id") or ""), task_attempt=task.get("_attempt"),
+            drive_root=self.env.drive_root, budget_drive_root=task.get("budget_drive_root"),
+            task_metadata=task.get("metadata") or {}, task_contract=task.get("task_contract") or {},
+        ), task)
+        restore_cognition(saved_start.get("cognition"))
+        # Resolve once, before the atomic RUNNING record stores all axes and capability_delta.
         dispatch = resolve_dispatch_axes(task)
         _record_executor_resolution(drive_logs, task, dispatch)
         sanitized_task = sanitize_task_for_event(task, drive_logs)
@@ -640,9 +656,7 @@ class OuroborosAgent:
                      **{key: str(task[key]) for key in ("root_task_id", "parent_task_id") if task.get(key)},
                      "activity_emitted_at": getattr(self, "_activity_emitted_at", None)})
         self._persist_running_record(task)
-        # Durable record first, live mirror second: the supervisor's RUNNING copy
-        # (and therefore the queue snapshot) learns the same resolution the record
-        # just persisted, across the process boundary.
+        # After persistence, mirror the same resolution to the supervisor/queue.
         emit_dispatch_resolution(self._event_queue, task, dispatch)
         self._emit_live_log(
             "context_building_started",
@@ -666,7 +680,6 @@ class OuroborosAgent:
                 })
             except Exception:
                 log.debug("Failed to emit subagent running progress", exc_info=True)
-
         task_metadata = dict(task.get("metadata") or {}) if isinstance(task.get("metadata"), dict) else {}
         for key in (
             "parent_task_id", "root_task_id", "session_id", "actor_id", "delegation_role", "role",
@@ -714,7 +727,6 @@ class OuroborosAgent:
             task_metadata["write_surface"] = str(_tc_meta["surface"])
         with self._owner_message_admission_lock:
             self._current_task_metadata = dict(task_metadata)
-
         from ouroboros.project_facts import resolve_project_id
 
         # Project scope flows to tools via ctx.project_id and to context build via
@@ -781,7 +793,7 @@ class OuroborosAgent:
         ctx.task_started_at = self._task_started_ts
         ctx.owner_wait_callback = getattr(self, "owner_wait_callback", None)
         ctx.review_wait_callback = getattr(self, "review_wait_callback", None)  # Presence review park (#1536)
-        _restore_saved_clocks(ctx, task)
+        _restore_saved_clocks(ctx, task, saved_start)
 
         if self._event_queue is not None:
             # Optional runtime seam consumed by loop.py.  Unit/direct contexts
@@ -944,6 +956,10 @@ class OuroborosAgent:
         # restart; a failed reload is disclosed loudly, not swallowed (#285).
         settings_snapshot = subagent_runtime.apply_task_start_settings_or_disclose(
             str(task.get("id") or ""), self._emit_live_log)
+        from ouroboros.settings_integrity import actor_settings_snapshot
+
+        settings_snapshot = actor_settings_snapshot(
+            settings_snapshot, task, getattr(self.env, "budget_drive_root", None) or self.env.drive_root)
 
         from ouroboros.usage_accounting import UsageScope, usage_scope
         from ouroboros.model_wait import task_model_wait_scope

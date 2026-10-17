@@ -283,8 +283,7 @@ export function createChatInstance({
         </div>
     `;
     if (idPrefix !== 'chat') {
-        // Instance-namespaced ids + mirror classes so the shared #chat-* CSS
-        // (extended with .chat-* twins) keeps styling secondary instances.
+        // Namespace ids; mirror classes retain the shared composer styling.
         page.querySelectorAll('[id]').forEach((el) => {
             if (el.id.startsWith('chat-')) {
                 el.classList.add(el.id);
@@ -310,10 +309,9 @@ export function createChatInstance({
     const scrollActivityDot = scrollBottomBtn?.querySelector('.chat-scroll-activity-dot');
     let nestedSubagentsExpanded = false;
     let _remoteActivityDepth = 0;
-    let ownerControls = null;
+    let ownerControls = null, cognitionRead = false;
 
-    // Instance lifecycle (P3): destroy() flips this so rAF loops and late async
-    // continuations become no-ops instead of touching a removed DOM subtree.
+    // Destroyed instances ignore late async work and animation frames.
     let destroyed = false;
     // Every ws.on subscription's disposer, released together in destroy().
     const wsDisposers = [];
@@ -560,6 +558,7 @@ export function createChatInstance({
             moreSummary.classList.toggle('has-active', anyActive);
         }
         ownerControls?.syncState(data);
+        if (projectId && !data?.projects?.some(project => project.id === projectId && project.cognition)) void refreshProjectCognition();
         const budget = headerBudgetPresentation(data);
         const budgetText = byId('budget-text');
         const budgetFill = byId('budget-bar-fill');
@@ -626,6 +625,17 @@ export function createChatInstance({
             }
         }
         syncChatStatus();
+    }
+
+    // Rooms outside the bounded sidebar still read their settings.
+    async function refreshProjectCognition() {
+        if (destroyed || cognitionRead) return;
+        cognitionRead = true;
+        try {
+            const room = await apiFetch(`/api/projects?chat_id=${encodeURIComponent(chatId)}`, { cache: 'no-store' });
+            if (room.ok && !destroyed) ownerControls?.syncState(await room.json());
+        } catch { /* Preserve the last room value, never substitute Main. */ }
+        finally { cognitionRead = false; }
     }
 
     async function refreshHeaderControlState(force = false) {
@@ -2782,9 +2792,7 @@ export function createChatInstance({
 
     (async () => {
         await loadUiPreferences();
-        // Main waits for the (bounded) idle hydration window;
-        // project instances pass straight through. The sticky single-flight
-        // below folds this trigger with the first socket open / refreshHistory.
+        // Main waits for hydration; Projects pass through. History reads share one flight.
         await waitForHydrationWindow();
         if (destroyed) return;
         // A message this tab kept across a reload that the first read (or its preview) did not show saved is in doubt.
@@ -2793,8 +2801,7 @@ export function createChatInstance({
         if (await awaitInitialHydration()) return reconcileUnsaved();
         try {
             const saved = JSON.parse(sessionStorage.getItem(storeKey(CHAT_STORAGE_KEY)) || '[]');
-            // A snapshot row is the addMessage option bag persistedHistory wrote;
-            // addMessage normalizes every option, so no field list is kept in sync.
+            // Replay the persisted addMessage options through the same normalizer.
             for (const { text, role, markdown, ts, ...restored } of saved) {
                 addMessage(text, role, !!markdown, ts || null, false, restored);
             }
@@ -2813,7 +2820,7 @@ export function createChatInstance({
         inputDraft = '';
     }
 
-    // The field's height follows its text up to the stylesheet cap (chat_input_sizing.js).
+    // Text height is capped by chat_input_sizing.js.
     const inputSizing = attachChatInputSizing(input);
     function resizeChatInput() {
         inputSizing.sync();
@@ -2839,7 +2846,7 @@ export function createChatInstance({
 
     async function sendMessage(planMode = false) {
         if (sendBtn.disabled) return;  // guard against Enter re-entry during async upload
-        if (ownerControls.hasPendingSave()) {  // an effort change lands before the message it would govern
+        if (ownerControls.hasPendingSave()) {  // both room settings land before the next message
             setSendBusy(true, 'Saving');
             try { if (!(await ownerControls.pendingSave())) return; } finally { setSendBusy(false); }
         }
@@ -2848,7 +2855,7 @@ export function createChatInstance({
         let uploadedAttachments = [];
         if (!text && !hasAttachments) return;
         if (hasAttachments) {
-            // Upload immediately before send; offline queueing would orphan files.
+            // Upload at Send; offline queuing orphans files.
             if (ws.ws?.readyState !== WebSocket.OPEN) {
                 showToast('Cannot attach file while offline. Reconnect and try again.', 'error');
                 return;
@@ -2863,7 +2870,7 @@ export function createChatInstance({
             } finally {
                 setSendBusy(false);
             }
-            // The model reads these names (an exact /restart stays the command); the bubble shows the server views.
+            // Model sees file names; /restart stays exact, bubbles use server views.
             text = composerText(text, uploadedAttachments.map((item) => item.view?.name || item.display_name));
         }
         if (!text) return;
@@ -2885,7 +2892,7 @@ export function createChatInstance({
             showToast('Connection lost before send. Reconnect and try again.', 'error');
             return;
         }
-        // One-shot: disarm Swarm now that the message is sent.
+        // Send consumes Swarm.
         if (planMode) setSwarm(false);
         if (hasAttachments) composer.clear();
         rememberInput(text);
@@ -2901,11 +2908,10 @@ export function createChatInstance({
             forceStick: true,
             attachments: uploadedAttachments.map((item) => item.view),
         });
-        // The socket took it; only the host's saved echo proves acceptance (its frame stays for Send again).
+        // Socket send is not acceptance; keep the frame until the host's saved echo.
         if (hasAttachments) unconfirmed.track({ ...frame, client_message_id: result.clientMessageId },
             { views: uploadedAttachments.map((item) => item.view), ts: sentTs });
-        // ws.send always coins a client_message_id for chat frames; guard
-        // only against a non-chat result shape.
+        // Chat sends carry their minted client_message_id.
         const pendingId = result?.clientMessageId || '';
         if (pendingId) {
             pendingSubmissions.set(pendingId, {
@@ -2922,8 +2928,7 @@ export function createChatInstance({
     // Send mode lives on DOM so CSS and click/Enter share one source.
     const sendGroup = page.querySelector('.chat-send-group');
 
-    // Swarm is a one-shot arm: the next send goes through plan_task multi-model
-    // brainstorm/planning, then the pill auto-disarms so it never sticks.
+    // Swarm requests planning once, then disarms.
     const swarmBtn = byId('swarm');
     function swarmArmed() {
         return swarmBtn?.dataset.armed === 'true';
@@ -2946,11 +2951,11 @@ export function createChatInstance({
 
     swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
 
-    // Nano/Low/Max and the effort range write global owner settings; one module owns them.
+    // Each composer owns its room's Context and Effort settings.
     ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
-        saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
+        projectId, saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
 
-    // Arrow wrappers avoid MouseEvent leaking into sendMessage(planMode).
+    // Do not pass MouseEvent as planMode.
     sendBtn.addEventListener('click', () => sendMessage(swarmArmed()));
     bindEnterSubmit(input, sendBtn);
     input.addEventListener('keydown', (e) => {
@@ -3056,8 +3061,7 @@ export function createChatInstance({
 
     installChatResizeObservers();
 
-    // Per-thread drafts survive destroy-on-close: save on input, restore on
-    // creation, clear on send.
+    // Per-thread drafts survive room closure; Send clears them.
     function saveInputDraft() {
         try {
             if (input.value) sessionStorage.setItem(storeKey(CHAT_DRAFT_KEY), input.value);

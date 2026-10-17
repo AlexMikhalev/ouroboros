@@ -434,6 +434,15 @@
  * `POST /api/owner/context-mode`.
  * @typedef {Object} OwnerContextModeRequest
  * @property {'nano'|'low'|'max'} mode
+ * @property {string=} project_id
+ */
+
+/**
+ * @typedef {Object} OwnerEffortRangeRequest
+ * @property {string} min
+ * @property {string} recommended
+ * @property {string} max
+ * @property {string=} project_id
  */
 
 /**

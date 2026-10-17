@@ -627,6 +627,7 @@ class ProjectEntry(TypedDict, total=False):
     name: str
     chat_id: int
     working_dir: str
+    cognition: ProjectCognition
     provenance: str
     clone_url: str
     trusted_at: str
@@ -768,15 +769,22 @@ class ActiveChatActivity(ActiveDirectTurn):
     can_resume: NotRequired[bool]
     cancelable: NotRequired[bool]
 
-class EffortRange(TypedDict):  # min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
+class EffortRange(TypedDict):  # helper min ≤ max; primary recommended is independent
     min: str
     recommended: str
     max: str
 
 
+class ProjectCognition(TypedDict):
+    context_mode: str
+    effort_range: EffortRange
+
+
 class OwnerEffortRangeResponse(TypedDict):
     ok: bool
     effort_range: EffortRange
+    project_id: str
+    cognition: ProjectCognition
 
 
 class StateResponse(TypedDict):
@@ -916,6 +924,8 @@ class OwnerAutoGrantResponse(TypedDict):
 class OwnerContextModeResponse(TypedDict):
     ok: bool
     context_mode: str
+    project_id: str
+    cognition: ProjectCognition
 
 
 class OwnerSafetyModeResponse(TypedDict):
@@ -1526,25 +1536,17 @@ __all__ = [
     "UpdateApplySuccessResponse", "UpdateApplyErrorResponse",
     "UpdateStatusReadyOutbound",
     "UpdateProgressChangedOutbound",
-    "ProjectCreateRequest",
-    "ProjectEntry",
-    "ProjectDeleteResponse",
+    "ProjectCreateRequest", "ProjectEntry", "ProjectDeleteResponse", "ProjectCognition",
     "FsDirsEntry", "FsDirsResponse",
     "TaskNamedOutbound",
-    "ErrorResponse",
-    "StatusResponse",
-    "HealthResponse",
-    "StateResponse",
+    "ErrorResponse", "StatusResponse", "HealthResponse", "StateResponse",
     "ActiveDirectTurn", "ActiveChatActivity",
     "EvolutionStateSnapshot",
     "SettingsNetworkMeta",
     "AvailableSubagentsSettingsMeta",
     "SettingsPolicyAxis", "SettingsPolicyState", "SettingsMeta",
     "SettingsSaveResponse",
-    "OwnerRuntimeModeResponse",
-    "OwnerAutoGrantResponse",
-    "OwnerContextModeResponse",
-    "OwnerSafetyModeResponse",
+    "OwnerRuntimeModeResponse", "OwnerAutoGrantResponse", "OwnerContextModeResponse", "OwnerSafetyModeResponse",
     "OwnerSkillPresenceRuntimeRequest", "OwnerSkillPresenceRuntimeResponse",
     "OnboardingCompleteRequest", "OnboardingCompleteResponse",
     "OnboardingSubagentsPreviewResponse",
@@ -1557,9 +1559,7 @@ __all__ = [
     "EvolutionDataResponse",
     "ScheduledTasksResponse", "ScheduleUpsertResponse", "ScheduleDeleteResponse", "ScheduleActionResponse",
     "UploadResponse",
-    "ExtensionsIndexResponse",
-    "ExtensionLiveSnapshot",
-    "WidgetTab",
+    "ExtensionsIndexResponse", "ExtensionLiveSnapshot", "WidgetTab",
     "WidgetsResponse",
     "SkillPublishPreflightResponse",
     "SkillLifecycleQueueResponse",

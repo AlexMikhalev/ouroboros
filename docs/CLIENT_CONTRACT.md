@@ -439,10 +439,10 @@ Every settings writer (Settings, setup, owner controls, language, desktop backgr
 
 **Owner controls.** Each saves one setting through the same writer:
 - `POST /api/owner/runtime-mode` `{mode}`: `light`, `advanced`, `pro` or `cyber_pro`; applies when the core next starts.
-- `POST /api/owner/context-mode` `{mode}`: `nano`, `low` or `max`. Lowering it while work is queued or running answers 409, except in `cyber_pro`.
+- `POST /api/owner/context-mode` `{mode, project_id?}`: `nano`, `low` or `max`; applies to new participants in that room, including while others run. Omitted `project_id` means Main.
 - `POST /api/owner/safety-mode` `{mode}`: `full`, `light` or `off`.
 - `POST /api/owner/auto-grant` `{enabled}`.
-- `POST /api/owner/effort-range` `{min, recommended, max}`, each a level of the effort scale (`none` to `ultra`) with min ≤ recommended ≤ max.
+- `POST /api/owner/effort-range` `{min, recommended, max, project_id?}`: effort tiers (`none` to `ultra`), min ≤ max; primary `recommended` is independent. Omitted `project_id` means Main. Both endpoints return `project_id` and the saved `cognition` (`context_mode`, `effort_range`); project summaries carry the same object. Main state fields remain Main's.
 
 `POST /api/owner/capability-ack` (`CapabilityAckRequest`) vouches for one exact route's maximum response or context window. It writes acknowledgement evidence, never settings, and a repeat overwrites it.
 
