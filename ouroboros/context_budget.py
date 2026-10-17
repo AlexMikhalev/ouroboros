@@ -418,7 +418,7 @@ PROGRESS_LOG_WARN_BYTES = 8_000_000
 # fired follow-up. 2MB ≈ thousands of ~1KB records: the point where a
 # per-tick full parse + atomic rewrite under the lock stops being free.
 SCHEDULED_TASKS_WARN_BYTES = 2_000_000
-# Compact root-task -> skill review index used by acceptance packet assembly.
+# Compact root-task -> skill review index read for a task's skill lifecycle facts.
 SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # memory/chronicle/records.jsonl is my memory's only authority and is never rotated
 # (records are never rewritten). Every task context decodes each acting page and part

@@ -606,15 +606,6 @@ def _finish_task_done_dispatch(
             except Exception:
                 log.warning("Owner pause/continue settlement check failed for %s", tree_root, exc_info=True)
     ctx.persist_queue_snapshot(reason="task_done")
-    # The early answer may already be receipted when split-drive copyback
-    # finishes. Normal and recovered publication converge here after releasing
-    # author custody; the existing ReviewOperation owns preparation and payment.
-    debt = final_task_result.get("acceptance_debt") or {}
-    delivery_id = (debt.get("delivery") or {}).get("delivery_id")
-    if task_id and delivery_id:
-        from supervisor.events_chat_delivery import _handoff_delivered_review
-
-        _handoff_delivered_review(ctx, str(task_id), str(delivery_id))
     try:
         ctx.bridge.push_log(task_done_event)
     except Exception:
