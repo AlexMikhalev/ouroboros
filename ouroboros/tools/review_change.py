@@ -42,7 +42,7 @@ from ouroboros.preflight_receipts import bind_execution_exhibit
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
     PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, load_record, new_record_id,
-    panel_facts, reduce_verdict, revise_record, row_verdict, write_record,
+    panel_facts, reduce_verdict, revise_record, row_verdict, seat_findings, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
@@ -540,13 +540,17 @@ def _forensic(ctx: ToolContext) -> Dict[str, Any]:
 
 
 def _open_seats(forensic: Dict[str, Any]) -> List[str]:
+    """Seats whose answer may still arrive. A seat whose custody is lost is terminal ("outcome
+    unknown, never re-sent"): it is a failed seat of a settled record, never a reason to keep
+    the record open for a re-issue that cannot change it."""
     rows = list(forensic.get("triad_raw", []))
     return [str(row.get("slot_id") or "") for row in rows
-            if bool(row.get("late_result_pending")) or str(row.get("operation_state") or "") in {"in_flight", "custody_lost"}]
+            if str(row.get("operation_state") or "") != "custody_lost"
+            and (bool(row.get("late_result_pending")) or str(row.get("operation_state") or "") == "in_flight")]
 
 
 def _seats_open(forensic: Dict[str, Any]) -> bool:
-    return bool(forensic.get("custody_lost")) or bool(_open_seats(forensic))
+    return bool(_open_seats(forensic))
 
 
 def _checkout_custody(ctx: ToolContext, forensic: Dict[str, Any]) -> Dict[str, Any]:
@@ -565,32 +569,6 @@ def _checkout_custody(ctx: ToolContext, forensic: Dict[str, Any]) -> Dict[str, A
     if git_mod._review_custody_pending(ctx):
         facts["review_custody_pending"] = True
     return facts
-
-
-def seat_findings(triad_raw: Sequence[Dict[str, Any]],
-                  additional: set) -> Tuple[List[dict], List[dict], List[dict]]:
-    """(critical, advisory, additional) FAIL items, each attributed to its seat
-    and the PART it answered (``answers`` by part; a record without ``answers``
-    is a packet seat whose ``parsed_items`` are the change's)."""
-    critical, advisory, extra = [], [], []
-
-    def _severity(item: Dict[str, Any]) -> str:
-        return "critical" if str(item.get("severity") or "").lower() == "critical" else "advisory"
-
-    for raw in triad_raw:
-        seat = str(raw.get("slot_id") or "")
-        answers = raw.get("answers") if isinstance(raw.get("answers"), dict) else None
-        if answers:
-            items = [(part, item) for part in PARTS for item in (answers.get(part) or {}).get("findings") or []
-                     if isinstance(item, dict)]
-        else:
-            items = [(PART_CHANGE, item) for item in raw.get("parsed_items") or []
-                     if isinstance(item, dict) and str(item.get("verdict") or "FAIL").upper() == "FAIL"]
-        for part, item in items:
-            severity = _severity(item)
-            finding = {**item, "seat_id": seat, "part": part, "severity": severity}
-            (extra if seat in additional else critical if severity == "critical" else advisory).append(finding)
-    return critical, advisory, extra
 
 
 def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forensic: Dict[str, Any]) -> Dict[str, Any]:
@@ -983,9 +961,16 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                 retention.update(_checkout_custody(ctx, forensic))
                 from ouroboros import review_pause
 
-                review_pause.watch_left_review(ctx, surface="change", retry_key=wave.retry_key, record_id=wave.record_id,
-                                               reissue="the same unchanged review_change call")
-            return _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
+                left = review_pause.watch_left_review(ctx, surface="change", retry_key=wave.retry_key,
+                                                      record_id=wave.record_id,
+                                                      reissue="the same unchanged review_change call")
+            result = _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
+            if result.get("state") == "pending" and left is None:
+                # Nobody waits for these seats any more: their record settles once they finish
+                # (at the latest when this task ended), whether or not the call is re-issued.
+                review_pause.owe_unwaited_review(ctx, surface="change", retry_key=wave.retry_key,
+                                                 record_id=str(result.get("record_id") or wave.record_id))
+            return result
 
 
 @contextlib.contextmanager

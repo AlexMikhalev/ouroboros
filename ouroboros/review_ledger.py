@@ -1047,6 +1047,91 @@ def settle_pending_payload(prior: Dict[str, Any], fresh: Dict[str, Any]) -> Dict
     return settled
 
 
+def seat_findings(triad_raw: Iterable[Dict[str, Any]],
+                  additional: set) -> tuple:
+    """(critical, advisory, additional) FAIL items, each attributed to its seat
+    and the PART it answered (``answers`` by part; a record without ``answers``
+    is a packet seat whose ``parsed_items`` are the change's)."""
+    critical, advisory, extra = [], [], []
+
+    def _severity(item: Dict[str, Any]) -> str:
+        return "critical" if str(item.get("severity") or "").lower() == "critical" else "advisory"
+
+    for raw in triad_raw:
+        seat = str(raw.get("slot_id") or "")
+        answers = raw.get("answers") if isinstance(raw.get("answers"), dict) else None
+        if answers:
+            items = [(part, item) for part in PARTS for item in (answers.get(part) or {}).get("findings") or []
+                     if isinstance(item, dict)]
+        else:
+            items = [(PART_CHANGE, item) for item in raw.get("parsed_items") or []
+                     if isinstance(item, dict) and str(item.get("verdict") or "FAIL").upper() == "FAIL"]
+        for part, item in items:
+            severity = _severity(item)
+            finding = {**item, "seat_id": seat, "part": part, "severity": severity}
+            (extra if seat in additional else critical if severity == "critical" else advisory).append(finding)
+    return critical, advisory, extra
+
+
+_OPEN_SEAT_STATES = frozenset({"in_flight", "pending_dispatch"})
+
+
+def seat_open(seat: Dict[str, Any]) -> bool:
+    """A seat whose answer may still arrive: a live controller holds it in flight or has not
+    dispatched it yet. ``custody_lost`` is terminal ("outcome unknown, never re-sent"), so it
+    never keeps a record pending."""
+    return str(seat.get("status") or "") == "pending" or str(seat.get("operation_state") or "") in _OPEN_SEAT_STATES
+
+
+def settle_from_collected(drive_root: Any, record_id: str, raws: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Settle a pending record from its seats' collected answers when its author no longer waits
+    for it (``review_pause``: a left or unwaited wave, collected at $0 from its recorded
+    assignments). ``raws`` are parsed seat rows (``triad_review.parse_seat_answers`` →
+    ``ReviewActorRecord.to_dict``) keyed by ``slot_id``; only seats the record still holds open
+    take an answer, the dispatch provenance stays, their FAIL items (``seat_findings``) join
+    the ones already recorded, and the verdict is reduced over the assigned seats. A seat still in flight keeps the record pending. ``None`` when no
+    such record exists; a settled record is returned as it is."""
+    try:
+        prior = load_record(drive_root, record_id)
+    except ValueError:
+        return None
+    if prior is None or prior.get("state") != STATE_PENDING:
+        return prior
+    by_slot = {str(raw.get("slot_id") or ""): raw for raw in raws if isinstance(raw, dict)}
+    task_id = str(prior.get("task_id") or "")
+    rows, applied = [], []
+    for row in prior.get("rows") or []:
+        seat = json.loads(json.dumps(row, default=str))
+        raw = by_slot.get(str(seat.get("seat_id") or ""))
+        if raw is not None and seat_open(seat):
+            _apply_raw(seat, raw)
+            applied.append(raw)
+            if seat.get("raw_text"):
+                seat.setdefault("source_refs", []).append(retain_text_source(
+                    drive_root, task_id, record_id=record_id, seat_id=str(seat["seat_id"]), role="response",
+                    part=",".join(seat.get("parts") or []), text=seat["raw_text"]))
+        seat.pop("raw_text", None)
+        rows.append(seat)
+    still_open = any(seat_open(seat) for seat in rows)
+    verdict = reduce_verdict([seat for seat in rows if not seat.get("additional")],
+                             dispatch_refusal=prior.get("dispatch_refusal"), pending=still_open)
+    verdict["per_row"].update({str(seat.get("seat_id") or ""): row_verdict(seat) for seat in rows if seat.get("additional")})
+    before = dict(prior.get("verdict") or {})
+    found = dict(zip(HEAVY_VERDICT_FIELDS, seat_findings(
+        applied, {str(seat.get("seat_id") or "") for seat in rows if seat.get("additional")})))
+    verdict.update({key: [*(before.get(key) or []), *found[key]] for key in HEAVY_VERDICT_FIELDS},
+                   degraded_reasons=list(before.get("degraded_reasons") or []))
+    known = [float(seat["usd"]) for seat in rows if isinstance(seat.get("usd"), (int, float))]
+    settled = {"rows": rows, "verdict": verdict, "state": STATE_PENDING if still_open else STATE_SETTLED,
+               "cost": {"usd": round(sum(known), 6), "unknown": len(known) < len(rows)}}
+
+    def _mutate(current: Dict[str, Any]) -> Dict[str, Any]:
+        # Another settlement (the author's own re-issue) may have landed meanwhile: it wins.
+        return current if current.get("state") != STATE_PENDING else {**current, **settled}
+
+    return revise_record(drive_root, record_id, _mutate)
+
+
 def mark_provenance_unknown(record: ReviewLedgerRecord) -> ReviewLedgerRecord:
     """A wave settled by an attempt that rejoined open custody WITHOUT the record of the
     attempt that dispatched it (a wave started before the ledger existed): the rules the
@@ -1133,6 +1218,7 @@ __all__ = [
     "distinct_model_facts", "find_reusable", "index_path", "index_row", "ledger_dir", "ledger_root", "load_record",
     "mark_provenance_unknown", "new_record_id", "normalize_model_name", "note_author_decision", "panel_facts", "read_source",
     "recent_records", "record_path", "record_sources_resolvable", "reduce_verdict", "retain_text_source", "reuse_key_digest",
-    "revise_record", "row_verdict", "rows_from_plan", "settle_pending_payload", "CouplingOutcome", "coupling_outcome",
-    "seat_parts", "source_ref_resolvable", "write_record",
+    "revise_record", "row_verdict", "rows_from_plan", "seat_findings", "seat_open", "settle_from_collected",
+    "settle_pending_payload",
+    "CouplingOutcome", "coupling_outcome", "seat_parts", "source_ref_resolvable", "write_record",
 ]

@@ -793,3 +793,17 @@ def test_the_dispatcher_binds_the_root_and_answers_with_the_record(h: Harness, m
     assert {project["record_id"], system["record_id"]} == set(h.written)
     refused = registry.execute("review_change", {"subject": "base..head", "base": "HEAD"})
     assert "TOOL_ARG_ERROR" in refused and len(h.wave.calls) == 2
+
+
+def test_a_seat_whose_custody_is_lost_never_keeps_a_wave_open():
+    """Two-sided: a seat still in flight keeps the wave pending; a seat whose custody is lost ("outcome
+    unknown, never re-sent") cannot change, so it never makes a record wait for a re-issue."""
+    from ouroboros.tools.review_change import _open_seats, _seats_open
+
+    lost = {"slot_id": "t2", "operation_state": "custody_lost", "late_result_pending": True}
+    running = {"slot_id": "t3", "operation_state": "in_flight", "late_result_pending": True}
+    done = {"slot_id": "t1", "operation_state": "settled", "late_result_pending": False}
+    assert _open_seats({"triad_raw": [done, lost], "custody_lost": True}) == []
+    assert not _seats_open({"triad_raw": [done, lost], "custody_lost": True})
+    assert _open_seats({"triad_raw": [done, lost, running]}) == ["t3"]
+    assert _seats_open({"triad_raw": [done, running]})
