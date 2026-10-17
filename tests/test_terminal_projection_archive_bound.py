@@ -17,8 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import dialogue_import, dialogue_store, terminal_projection as tp
-from ouroboros import dialogue_import as di, dialogue_store as ds
+from ouroboros import dialogue_import as di, dialogue_store as ds, terminal_projection as tp
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import events_chat_delivery as delivery
 from supervisor import terminal_delivery as td
