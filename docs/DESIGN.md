@@ -285,12 +285,13 @@ never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
 **Secret visibility has one meaning across Settings.** Show reveals the complete
-current value as selectable, read-only text below the unchanged editing field;
-long values wrap within the column. An edited value is shown from the local
-draft; an untouched saved value is read only when requested. A prefix or a
-configured-value placeholder is never a successful reveal. Hide removes that
-text and retains the draft. Viewing changes neither the dirty state nor the
-values submitted by Save or Test. Editing, clearing, reloading or leaving the
+current value as selectable, read-only text in the masked field's own place,
+never as a second field; long values wrap within the column. An edited value is
+shown from the local draft; an untouched saved value is read only when requested.
+A prefix or a configured-value placeholder is never a successful reveal. Hide
+brings back the unchanged masked field and its draft; typing a new value starts
+with Hide or Clear. Viewing changes neither the dirty state nor the values
+submitted by Save or Test. Clearing, renaming the entry, reloading or leaving the
 page closes the reveal, and a late read cannot reopen it. Built-in, custom,
 skill-requested and MCP header fields use the same interaction; loading Settings
 keeps saved secrets masked. Pending reads and failures are shown at the field.
@@ -434,7 +435,11 @@ derived from whatever generic opacity sits on the element.
 
 The connected Chat header says `Starting…` until a complete server-ready
 observation confirms the supervisor can assign work; a live socket alone means
-only that the UI transport is open. `Online` is reserved for a ready, idle
+only that the UI transport is open. The host's boot phases refine the word
+without changing the fact: `Chat ready, restoring background tasks` once the
+dialogue accepts messages durably while pooled work is still not admitted, and
+`Start failed` (its cause in the badge title) when the generation cannot become
+ready. `Online` is reserved for a ready, idle
 runtime; known queued, active or finalizing work keeps its own factual label. A
 durably accepted incoming message likewise proves acceptance, not that its task
 has begun or a model has read it.
@@ -1090,7 +1095,9 @@ the Available subagents roster, MCP servers, custom keys.
   new entry appears at the end of its own group, is scrolled into view (the
   shortest distance, without animation) and takes the caret in its first field.
   A button that stays in view while the entry it made is born off-screen has not
-  finished its job.
+  finished its job. Remove hands the caret the same way to the entry now in its
+  place (the next, else the previous), or to the add action once the group is
+  empty, never to the page.
 - A freshly added entry is an invitation, not an error. Where a list editor
   validates in the browser (today the Available subagents roster), the entry
   shows a neutral hint in its own meta line until the owner tries to save; the

@@ -5,6 +5,8 @@ Inference and reviewer transports are local scripts; lifecycle owners are real.
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import os
 from pathlib import Path
@@ -670,7 +672,7 @@ def test_tool_delivered_host_replay_and_poll_never_offer_duplicate_speech(tmp_pa
         assert final["status"] == "completed" and final["outcome"] == "tool_delivered"
         assert final["text"] == "" and final["output_ref"] == "" and final["outputs"] == []
         assert host.turn().json() == initial and host.work(ref).json() == final
-        rows = [json.loads(line) for line in (tmp_path / "data" / "logs" / "chat.jsonl").read_text().splitlines()]
+        rows = dialogue_test.log_rows(tmp_path / "data" / "logs" / "chat.jsonl")
         deliveries = [row for row in rows if row.get("type") == "presence_delivery"]
         assert len(deliveries) == 1 and deliveries[0]["text"] == ANSWER
         assert len(host.inputs()) == 3

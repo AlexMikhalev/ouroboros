@@ -6,8 +6,7 @@ an honest trajectory from the artifacts the installed adapter already writes:
 
 - ``agent/instruction.txt``                        -> the user step
 - ``agent/ouroboros-data/logs/tools.jsonl``        -> tool calls + observations
-- ``agent/ouroboros-data/logs/progress.jsonl``     -> agent narration between calls
-- ``agent/ouroboros-data/logs/chat.jsonl``         -> final answer
+- ``agent/ouroboros-data/state/dialog.sqlite``    -> narration and final answer
 - ``agent/ouroboros-task-result.json``             -> final answer fallback
 - ``agent/ouroboros-data/state/usage.sqlite``     -> physical subtree totals
   (``state/usage_attempts.jsonl`` for artifacts written before the usage store)
@@ -32,6 +31,7 @@ import json
 import math
 import runpy
 import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -61,12 +61,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def _read_jsonl_chain(data_dir: Path, name: str, archive_prefix: str) -> list[dict[str, Any]]:
     """Read ``logs/<name>`` plus its rotated ``archive/<prefix>_*.jsonl`` chain.
 
-    The runtime rotates chat.jsonl, progress.jsonl and — since the CPL4-C1/C2
-    rotation train — events.jsonl and tools.jsonl into ``archive/`` once they
+    The runtime rotates events.jsonl and tools.jsonl into ``archive/`` once they
     cross ~800KB. Rotation is suppressed in sentinel-marked isolated benchmark
     roots, but not every harness writes the sentinel — so the trajectory builder
     must read the full chain (oldest archive first, then live) rather than assume
-    a from-birth single file. Every ATIF source goes through here: a live-only
+    a from-birth single file. File telemetry goes through here: a live-only
     read of a rotated log publishes a trajectory missing its early tool calls,
     which is a FALSE trajectory, not a short one."""
     rows: list[dict[str, Any]] = []
@@ -78,6 +77,52 @@ def _read_jsonl_chain(data_dir: Path, name: str, archive_prefix: str) -> list[di
         rows.extend(_read_jsonl(path))
     rows.extend(_read_jsonl(data_dir / "logs" / name))
     return rows
+
+
+@contextmanager
+def _open_dialogue(path: Path):
+    """Read an exported trial store without importing the application or mutating it."""
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+        conn.execute("BEGIN")
+        yield conn
+
+
+def _dialogue_rows(data_dir: Path, stream: str, *, task_id: str = "", final: bool = False) -> list[dict[str, Any]]:
+    """Address the trial's task/tree in SQL; unknown import coverage refuses conversion.
+
+    Older artifacts without a task id request their whole trial stream. Frozen
+    JSONL is never a fallback: pre-store artifacts need the explicit dialogue
+    import before this read-only converter can certify their trajectory.
+    """
+    path = data_dir / "state/dialog.sqlite"
+    if not path.exists():
+        if ((data_dir / f"logs/{stream}.jsonl").exists()
+                or next((data_dir / "archive").glob(f"{stream}_*.jsonl"), None) is not None):
+            raise RuntimeError("Dialogue history is not imported; run the dialogue import on the trial data first")
+        return []
+    with _open_dialogue(path) as conn:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
+            raise RuntimeError("Unsupported dialogue store schema in trial artifacts")
+        incomplete = conn.execute("SELECT state FROM import_ledger WHERE stream=? AND state IN ('pending', 'mismatch') "
+                                  "LIMIT 1", (stream,)).fetchone()
+        if incomplete:
+            raise RuntimeError("A dialogue segment could not be imported" if incomplete[0] == "mismatch"
+                               else "Dialogue history is still importing")
+        if conn.execute("SELECT 1 FROM skipped WHERE stream=? LIMIT 1", (stream,)).fetchone():
+            raise RuntimeError("Dialogue history has recorded invalid intervals")
+        query = "SELECT seq, body FROM dialogue" + (" INDEXED BY dialogue_task" if task_id else "")
+        query, params = query + " WHERE stream=?", [stream]
+        if task_id:
+            query += " AND task_id=?"
+            params.append(task_id)
+            if not final:
+                query += " UNION SELECT seq, body FROM dialogue INDEXED BY dialogue_root WHERE stream=? AND root_task_id=?"
+                params.extend((stream, task_id))
+        if final:
+            query += " AND direction='out' AND kind IS NULL AND json_type(body, '$.text')='text' ORDER BY seq DESC LIMIT 1"
+        else:
+            query += " ORDER BY seq"
+        return [json.loads(body) for _seq, body in conn.execute(query, params)]
 
 
 def _read_text(path: Path) -> str:
@@ -248,7 +293,8 @@ def _detect_version(events: list[dict[str, Any]]) -> str | None:
 
 
 def _final_answer(agent_dir: Path) -> str:
-    chat = _read_jsonl_chain(agent_dir / "ouroboros-data", "chat.jsonl", "chat")
+    task_id = str(_read_json(agent_dir / "ouroboros-run-summary.json").get("task_id") or "")
+    chat = _dialogue_rows(agent_dir / "ouroboros-data", "chat", task_id=task_id, final=True)
     for row in reversed(chat):
         if row.get("type"):
             # Typed structural rows (quiz/links/document/photo/video,
@@ -327,11 +373,12 @@ def build_trajectory(
     """Build an ATIF trajectory dict from a Harbor trial ``agent/`` directory."""
     agent_dir = Path(agent_dir)
     data_dir = agent_dir / "ouroboros-data"
+    task_id = str(_read_json(agent_dir / "ouroboros-run-summary.json").get("task_id") or "")
     events = _read_jsonl_chain(data_dir, "events.jsonl", "events")
     tool_rows = _tool_call_steps(_read_jsonl_chain(data_dir, "tools.jsonl", "tools"))
     narration_rows = [
         r
-        for r in _read_jsonl_chain(agent_dir / "ouroboros-data", "progress.jsonl", "progress")
+        for r in _dialogue_rows(data_dir, "progress", task_id=task_id)
         if r.get("type") == "send_message" and isinstance(r.get("text"), str)
     ]
 

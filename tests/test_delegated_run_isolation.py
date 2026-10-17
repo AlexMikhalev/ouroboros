@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from ouroboros import delegate_custody as custody
+from ouroboros import delegate_custody as custody, store
 from ouroboros.store import STORE_REL
 from ouroboros.task_results import write_task_result
 from ouroboros.subagent_worktrees import (
@@ -1193,7 +1193,7 @@ class TestStartupGCFailClosed:
         custody._CUSTODY.clear()
         assert "gc-open" in custody.open_snapshot_ids(data)
         events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
-        store_path.chmod(0o000)  # the custody rows EXIST but cannot be READ: typed unreadable
+        store_path.chmod(0o000), store.close_connections()  # the custody rows EXIST but cannot be READ
         try:
             assert custody.custody_log_unreadable(data)
             srv._prune_delegated_snapshots()
@@ -1227,7 +1227,7 @@ class TestStartupGCFailClosed:
         assert custody.record_started(data, entry)
         custody._CUSTODY.clear()
         events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
-        store_path.chmod(0o000)  # the custody rows cannot be read...
+        store_path.chmod(0o000), store.close_connections()  # the custody rows cannot be read...
         events.chmod(0o000)  # ...and the chain cannot take the skip row
         try:
             with caplog.at_level(logging.ERROR, logger="server"):

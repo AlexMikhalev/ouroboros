@@ -491,8 +491,13 @@ def test_a_failed_install_keeps_the_enable_and_names_the_failure(windows_seeded,
         raise RuntimeError("pip install failed: no network")
 
     monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages", offline)
+    receipt = data / "state" / "native_seed.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text("{}", encoding="utf-8")
 
     assert _native_seed_dependency_pass(data, [WINDOWS], log) == [WINDOWS]
+    # the next boot reconciles instead of taking the unchanged-seed fast path
+    assert not receipt.exists()
 
     from ouroboros.extension_liveness import _deps_block_reason
 
