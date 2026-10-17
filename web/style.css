@@ -28,11 +28,6 @@ body {
 }
 
 /* App navigation shell: a docked sidebar column, a drawer in the stack layout. */
-.mobile-nav-toggle,
-.drawer-head {
-    display: none;
-}
-
 /* The shell's icon controls (☰, the drawer's ×, a Project's ×): one round neutral capsule holding one glyph, the
    chrome height on a desk and the touch minimum in the stack layout. Material: the "Airy dopamine" tail. */
 .shell-icon-control {
@@ -57,6 +52,11 @@ body {
 html[data-layout="stack"] .shell-icon-control {
     width: 44px;
     height: 44px;
+}
+/* A desk has a docked sidebar: no ☰ in the headers and no drawer head (the stack layout shows both). */
+.mobile-nav-toggle,
+.drawer-head {
+    display: none;
 }
 
 .nav-drawer-backdrop {
@@ -1024,16 +1024,18 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 .files-modal-input { margin-top: var(--space-3); }
 
+/* The one header (page_header.js; DESIGN "Shell"): one row, `☰ · title · status … actions · ×`. The leading
+   slot holds ☰ (shown by the stack layout), the title row the place's name and the room's status, the toolbar the
+   actions, the trailing slot a Project's ×. A description and a tab strip are not in the row: the lede is the
+   page's first quiet paragraph after it, the tabs their own strip. */
 .page-header,
 .app-page-header {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas:
-        "leading title toolbar"
-        "tabs tabs tabs";
-    align-items: start;
+    grid-template-areas: "leading title toolbar";
+    align-items: center;
     gap: var(--space-2) var(--space-3);
-    padding: var(--page-header-padding-y) var(--page-header-padding-x) var(--page-header-padding-bottom);
+    padding: var(--page-header-padding-y) var(--page-header-padding-x);
     background: transparent;
     backdrop-filter: none;
     flex-shrink: 0;
@@ -1044,9 +1046,9 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     grid-area: leading;
     display: flex;
     align-items: center;
-    align-self: start;
     min-width: 0;
 }
+.app-page-leading:empty { display: none; }
 
 .app-page-title-block {
     grid-area: title;
@@ -1060,31 +1062,44 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     min-width: 0;
 }
 
-.app-page-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    color: var(--accent);
-}
-
-.app-page-icon svg {
-    display: block;
-}
-
+/* One title style: the section size at 500 (a root's title), the primary ink, one line. */
 .page-header h2,
 .app-page-title {
     margin: 0;
-    font-size: 16px;
-    font-weight: 600;
+    min-width: 0;
+    font-size: var(--type-section);
+    font-weight: 500;
+    line-height: var(--line-title);
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.app-page-description {
-    margin: 2px 0 0;
+/* Where the sidebar's chosen row already names the place, a desk shows no title (the h2 stays for readers), and
+   a header with nothing else to say takes no room (owner Q3=A). A Project keeps its name in every layout. */
+html[data-layout="docked"] .app-page-header[data-sidebar-names] .app-page-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+html[data-layout="docked"] .app-page-header[data-empty] {
+    display: none;
+}
+
+/* The page's first quiet paragraph: body copy in the secondary ink, never header chrome. */
+.app-page-lede {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0 var(--page-header-padding-x) var(--space-3);
+    max-width: calc(76ch + 2 * var(--page-header-padding-x));
     color: var(--text-secondary);
-    font-size: 13px;
-    line-height: 1.35;
-    max-width: 760px;
+    font-size: var(--type-body);
+    line-height: var(--line-body);
 }
 
 .app-page-toolbar,
@@ -1097,7 +1112,6 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     gap: 8px;
     min-width: 0;
     justify-self: end;
-    align-self: start;
 }
 
 .app-page-toolbar {
@@ -1108,9 +1122,11 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     max-width: 100%;
 }
 
+/* The tab strip is its own strip under the header row (it scrolls sideways by design). */
 .app-page-tabs {
-    grid-area: tabs;
+    flex: 0 0 auto;
     min-width: 0;
+    padding: 0 var(--page-header-padding-x) var(--page-header-padding-bottom);
 }
 
 .app-tab-strip {
@@ -1281,7 +1297,11 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 .chat-header-more > summary {
     list-style: none;
+    display: inline-flex;
+    align-items: center;
 }
+.chat-header-more-glyph { display: none; }
+.chat-header-more-glyph > svg { display: block; width: 20px; height: 20px; }
 
 .chat-header-more > summary::-webkit-details-marker {
     display: none;
@@ -3628,26 +3648,57 @@ html[data-layout="stack"] #content {
     padding-left: 0;
     padding-bottom: var(--inset-bottom);
 }
-/* Restart / Panic / More is a short control set — let it wrap instead of
-   trapping the absolutely-positioned More menu inside an overflow-clip
-   (overflow:auto/hidden here is what made the dropdown invisible on mobile). */
-html[data-layout="stack"] .chat-header-actions {
-    display: flex;
-    max-width: 100%;
-    flex-wrap: wrap;
-}
-html[data-layout="stack"] .chat-page-header .chat-budget-pill,
-html[data-layout="stack"] .chat-page-header .status-badge {
-    order: 0;
-}
+/* The stack layout's header is one row of at most 56px at normal scale: `☰ · title · status … Panic · ⋯`
+   (owner Q4=A). Nothing wraps: the title ellipsizes, Restart and the budget are inside ⋯ (chat.js places them). */
 html[data-layout="stack"] .page-header,
 html[data-layout="stack"] .app-page-header {
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas:
-        "leading title"
-        "toolbar toolbar"
-        "tabs tabs";
-    padding: 10px 12px;
+    min-height: 56px;
+    padding: var(--space-2) var(--space-3);
+    padding-top: calc(var(--space-2) + var(--inset-top));
+    column-gap: var(--space-2);
+}
+html[data-layout="stack"] .chat-page-header {
+    flex-wrap: nowrap;
+}
+html[data-layout="stack"] .chat-page-header > .app-page-title-block {
+    flex: 1 1 0;
+}
+/* The actions keep their own width; the title block takes the rest (the status after the title ellipsizes last). */
+html[data-layout="stack"] .chat-page-header > .app-page-actions {
+    flex: 0 0 auto;
+}
+html[data-layout="stack"] .chat-header-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: var(--space-2);
+}
+html[data-layout="stack"] .chat-header-more > summary {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    justify-content: center;
+    border-radius: var(--pill-radius);
+}
+html[data-layout="stack"] .chat-header-more-word { display: none; }
+html[data-layout="stack"] .chat-header-more-glyph { display: inline-flex; }
+html[data-layout="stack"] .chat-header-more > summary.has-active::after {
+    top: 9px;
+    right: 9px;
+}
+html[data-layout="stack"] .chat-header-menu {
+    min-width: 220px;
+}
+/* Inside ⋯ the budget is a full-width amber row and Restart the last row. */
+html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {
+    width: 100%;
+    min-width: 0;
+    align-items: stretch;
+    text-align: left;
+}
+html[data-layout="stack"] .chat-header-menu > .chat-header-btn {
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
 }
 
 #chat-input-area,
@@ -7457,46 +7508,10 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     display: none;
 }
 
+/* The Project panel's bar is the one page header (app.js renders it); it keeps its own inset and hairline. */
 .project-panel-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
     padding: 10px 14px;
     border-bottom: 1px solid var(--project-18);
-}
-
-.project-panel-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.project-panel-close {
-    flex: 0 0 auto;
-}
-
-.project-panel-close {
-    border: 1px solid var(--accent-08);
-    background: var(--accent-04);
-    color: var(--text-secondary);
-    border-radius: var(--radius-md, 8px);
-    /* The bar's floating-chrome height (ui.css): close and status control share one line box. */
-    width: var(--chrome-control-h);
-    height: var(--chrome-control-h);
-    font-size: 16px;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.project-panel-close:hover {
-    color: var(--text-primary);
-    border-color: var(--accent);
 }
 
 /* The bars' icon controls wear the one focus ring (DESIGN §3 Focus), like every other control. */

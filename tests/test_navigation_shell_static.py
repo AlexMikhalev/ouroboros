@@ -91,10 +91,19 @@ def test_page_header_is_shared_foundation_for_top_pages():
     assert "trailingHtml" in header_js
     # Actual toolbar class composition/escaping is exercised by page_header.test.js.
     assert "'app-page-toolbar'" in header_js and "'app-page-actions'" in header_js
-    assert "grid-template-areas:" in css
-    assert '"leading title toolbar"' in css
-    assert '"tabs tabs tabs"' in css
-    assert "align-items: start;" in css
+    # One row: leading (☰) · title (with the room's status) · toolbar/trailing. A description is the page's
+    # first quiet paragraph after the header and a tab strip its own strip, so the row stays one row (P5).
+    assert 'grid-template-areas: "leading title toolbar";' in css
+    assert '"tabs tabs tabs"' not in css
+    assert "app-page-lede" in header_js and "app-page-description" not in header_js
+    assert "app-page-icon" not in header_js and "app-page-icon" not in css
+    # The Project panel's bar is the same component, rendered by app.js; index.html keeps no hand-written bar.
+    html = _read("web/index.html")
+    assert "project-panel-bar" not in html and "project-panel-close" not in html
+    app_js = _read("web/app.js")
+    assert "titleId: 'project-panel-title'" in app_js and "className: 'project-panel-bar project-inspector-header'" in app_js
+    assert "named: false" in app_js
+    assert "import { renderPageHeader } from './modules/page_header.js';" in app_js
     for path in (
         "web/modules/chat.js",
         "web/modules/files.js",
@@ -174,10 +183,21 @@ def test_project_panel_composer_and_welcome_contracts():
 
 def test_chat_header_controls_reorg_and_more_autodismiss():
     chat_js = _read("web/modules/chat.js")
-    # Restart + Panic are promoted to always-visible header buttons...
+    # Restart and Panic are header buttons; Panic always in the row, Restart visible in the row on a desk and
+    # inside the ⋯ menu in the stack layout, where the budget joins it (owner Q4=A): the same two nodes, placed by
+    # layout, so each keeps its one handler (confirmAndSendRestart; the budget's Dashboard → Costs click).
     assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in chat_js
     assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in chat_js
-    # ...and Consciousness / Evolve / Review move into the More overflow menu.
+    assert chat_js.count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
+    placement = chat_js.split("const placeHeaderControls = (layout) => {", 1)[1].split("};", 1)[0]
+    assert "if (layout === 'stack') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restartBtn);" in placement
+    assert "headerActions.insertBefore(restartBtn, panicBtn);" in placement
+    assert "placeHeaderControls(currentLayout());" in chat_js and "disposeHeaderPlacement = onLayoutChange(placeHeaderControls);" in chat_js
+    assert "disposeHeaderPlacement();" in chat_js
+    assert "await confirmAndSendRestart({ openConfirmDialog, ws });" in chat_js
+    # The stack layout's summary is the one ⋯ glyph; a desk keeps the word.
+    assert 'class="chat-header-more-word">More</span>' in chat_js and "${SHELL_ICONS.more}" in chat_js
+    # ...and Consciousness / Evolve / Review live in the More overflow menu.
     menu = chat_js.split('class="chat-header-menu"', 1)[1].split("</details>", 1)[0]
     assert 'data-chat-command="bg"' in menu
     assert 'data-chat-command="evolve"' in menu

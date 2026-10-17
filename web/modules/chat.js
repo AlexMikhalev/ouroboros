@@ -1,7 +1,8 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
 import { renderPageHeader } from './page_header.js';
-import { PAGE_ICONS } from './page_icons.js';
+import { SHELL_ICONS } from './page_icons.js';
+import { currentLayout, onLayoutChange } from './layout.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
@@ -206,7 +207,7 @@ export function createChatInstance({
     ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
-    asPanel = false, title = 'Chat',
+    asPanel = false, title = 'Main Chat',
     // app.js signal "a project panel is opening right now" — Main
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,
@@ -229,16 +230,17 @@ export function createChatInstance({
         ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
             title: title,
-            icon: PAGE_ICONS.chat,
             variant: 'overlay',
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
+            // Docked: Restart · Panic · More · budget in the row. Stack: Panic · ⋯ in the row, Restart and the
+            // budget inside ⋯ (owner Q4=A); the same two nodes, placed by layout below, so each keeps its one handler.
             actionsHtml: `
                 <div class="chat-header-actions" id="chat-header-actions">
                     <button class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
                     <button class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
                     <details class="chat-header-more">
-                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls">More</summary>
+                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls" aria-label="More agent controls"><span class="chat-header-more-word">More</span><span class="chat-header-more-glyph" aria-hidden="true">${SHELL_ICONS.more}</span></summary>
                         <div class="chat-header-menu">
                             <button class="chat-header-menu-item" type="button" data-chat-command="bg" title="Toggle background consciousness">Consciousness</button>
                             <button class="chat-header-menu-item" type="button" data-chat-command="evolve" title="Toggle evolution mode">Evolve</button>
@@ -304,6 +306,27 @@ export function createChatInstance({
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
     const budgetPill = byId('budget-pill');
+    // Stack: Restart and the budget live in the ⋯ menu; docked: in the row (owner Q4=A). One node each, moved
+    // by layout (layout.js), so the delegated command handler and the budget's own click stay the only handlers.
+    let disposeHeaderPlacement = () => {};
+    if (!asPanel && headerActions) {
+        const restartBtn = headerActions.querySelector('[data-chat-command="restart"]');
+        const panicBtn = headerActions.querySelector('[data-chat-command="panic"]');
+        const menu = headerActions.querySelector('.chat-header-menu');
+        const toolbar = budgetPill?.parentElement || null;
+        const placeHeaderControls = (layout) => {
+            if (!restartBtn || !menu) return;
+            if (layout === 'stack') {
+                if (budgetPill) menu.prepend(budgetPill);
+                menu.append(restartBtn);
+            } else {
+                headerActions.insertBefore(restartBtn, panicBtn);
+                if (budgetPill && toolbar) toolbar.insertBefore(budgetPill, headerActions.nextSibling);
+            }
+        };
+        placeHeaderControls(currentLayout());
+        disposeHeaderPlacement = onLayoutChange(placeHeaderControls);
+    }
     const attachBtn = byId('attach');
     const fileInput = byId('file-input');
     const attachmentPreview = byId('attachment-preview');
@@ -3110,6 +3133,7 @@ export function createChatInstance({
     }
 
     budgetPill?.addEventListener('click', () => {
+        budgetPill.closest('details')?.removeAttribute('open');  // inside ⋯ on the stack layout
         if (typeof openDashboardTab === 'function') openDashboardTab('costs');
         else if (typeof openSettingsTab === 'function') openSettingsTab('costs');
     });
@@ -3812,6 +3836,7 @@ export function createChatInstance({
             document.removeEventListener('visibilitychange', handlePageShown);
             if (documentClickHandler) document.removeEventListener('click', documentClickHandler);
             if (documentKeydownHandler) document.removeEventListener('keydown', documentKeydownHandler);
+            disposeHeaderPlacement();
             chatResizeObserver?.disconnect();
             chatResizeObserver = null;
             inputSizing.dispose();

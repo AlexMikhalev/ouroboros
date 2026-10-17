@@ -65,6 +65,7 @@ test('layout.js reads the painted attribute, falls back to the facts, and hears 
         addEventListener(type, fn) { this.listeners.set(type, fn); }, removeEventListener(type) { this.listeners.delete(type); } };
     assert.equal(mod.currentLayout({ root: { dataset: { layout: 'docked' } }, w }), 'docked');
     assert.equal(mod.currentLayout({ root: { dataset: {} }, w }), 'stack', 'no attribute yet: the facts answer');
+    assert.equal(mod.currentLayout({ root: { dataset: {} }, w: {} }), 'docked', 'no facts either: a window');
     assert.equal(mod.isStackLayout({ root: { dataset: { layout: 'stack' } }, w }), true);
     assert.throws(() => mod.layoutFacts({}), /theme\.js/);
     const seen = [];

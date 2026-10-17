@@ -1,0 +1,59 @@
+"""One header for every page and the Project panel (docs/DESIGN.md "Shell", plan P5, owner Q3=A, Q4=A).
+
+Docked: no visible title where the sidebar names the page (the h2 stays), the Project keeps its name, and a
+header with no actions renders no bar. Stack: one row of at most 56px, `☰ · title · status … Panic · ⋯`, the
+title one line and ellipsized; Restart and the budget inside ⋯. No icon anywhere."""
+from __future__ import annotations
+
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _read(rel: str) -> str:
+    return (REPO / rel).read_text(encoding="utf-8")
+
+
+def _rule(css: str, selector: str) -> str:
+    assert selector in css, selector
+    return css.split(selector, 1)[1].split("}", 1)[0]
+
+
+def test_docked_header_hides_a_title_the_sidebar_names_and_an_empty_bar():
+    css = _read("web/style.css")
+    hidden = _rule(css, 'html[data-layout="docked"] .app-page-header[data-sidebar-names] .app-page-title {')
+    assert "position: absolute" in hidden and "clip-path: inset(50%)" in hidden, "an accessible h2, not a removed one"
+    assert "display: none" in _rule(css, 'html[data-layout="docked"] .app-page-header[data-empty] {')
+    title = _rule(css, ".app-page-title {")
+    assert "font-size: var(--type-section)" in title and "font-weight: 500" in title
+    assert "white-space: nowrap" in title and "text-overflow: ellipsis" in title
+    assert ".app-page-icon" not in css and "app-page-description" not in css
+    lede = _rule(css, ".app-page-lede {")
+    assert "var(--type-body)" in lede and "var(--text-secondary)" in lede
+
+
+def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_the_menu():
+    css = _read("web/style.css")
+    row = _rule(css, 'html[data-layout="stack"] .app-page-header {')
+    assert "min-height: 56px" in row and "padding: var(--space-2) var(--space-3)" in row, row
+    assert "var(--inset-top)" in row
+    assert "flex-wrap: nowrap" in _rule(css, 'html[data-layout="stack"] .chat-page-header {')
+    assert "flex-wrap: nowrap" in _rule(css, 'html[data-layout="stack"] .chat-header-actions {')
+    summary = _rule(css, 'html[data-layout="stack"] .chat-header-more > summary {')
+    assert "width: 44px" in summary and "height: 44px" in summary
+    assert 'html[data-layout="stack"] .chat-header-more-word { display: none; }' in css
+    assert 'html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {' in css
+    # The ☰ and the × share the shell's one icon-control recipe; the Project's × is that recipe too.
+    assert 'class="shell-icon-control project-panel-close"' in _read("web/app.js")
+    assert 'class="shell-icon-control mobile-nav-toggle"' in _read("web/modules/page_header.js")
+    assert ".project-panel-title" not in css, "one title style"
+
+
+def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():
+    chat_js = _read("web/modules/chat.js")
+    assert "asPanel = false, title = 'Main Chat'," in chat_js
+    assert "PAGE_ICONS" not in chat_js
+    # room_work.js still finds the Project bar and Main's header to seat the status after the title.
+    room_work = _read("web/modules/room_work.js")
+    assert "panel?.querySelector?.('.project-panel-bar')" in room_work
+    assert "bar?.querySelector('.app-page-title-row')" in room_work

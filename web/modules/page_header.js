@@ -13,9 +13,20 @@ export function renderMobileNavToggle() {
     `;
 }
 
+/**
+ * The one header of every page AND the Project panel (docs/DESIGN.md "Shell", plan P5): one row, one height,
+ * one title style, one close control. `☰ · title · status … actions · ×`: the leading slot holds ☰ (the stack
+ * layout shows it), the title row takes the room's status after the title (room_work.js), the toolbar and the
+ * trailing slot end the row. A description is not header chrome: it is rendered as the page's first quiet
+ * paragraph right after the header (`.app-page-lede`), and a tab strip as its own strip under it, so the row
+ * stays one row. `named` says the sidebar's chosen row already names this place: on a desk such a header shows no
+ * title (the h2 stays for readers) and, with no actions, no bar at all; a Project keeps its name. No icon anywhere:
+ * `icon` is accepted for the callers that still pass one and ignored.
+ */
 export function renderPageHeader({
     title,
-    icon = '',
+    titleId = '',
+    icon = '',  // eslint-disable-line no-unused-vars -- the place is named by words, never a glyph (owner 5A)
     description = '',
     leadingHtml,
     toolbarHtml = '',
@@ -26,38 +37,42 @@ export function renderPageHeader({
     className = '',
     toolbarClass = '',
     showMobileNav = true,
+    named = true,
 } = {}) {
     const variantClass = variant ? `app-page-header-${escapeHtml(variant)}` : '';
-    const iconHtml = icon ? `<span class="app-page-icon" aria-hidden="true">${icon}</span>` : '';
     const leading = leadingHtml !== undefined
         ? leadingHtml
         : (showMobileNav ? renderMobileNavToggle() : '');
-    const descriptionHtml = description
-        ? `<p class="app-page-description">${escapeHtml(description)}</p>`
-        : '';
     const toolbar = (toolbarHtml || actionsHtml)
         ? `<div class="${classAttr(['app-page-toolbar', 'app-page-actions', escapeHtml(toolbarClass)])}">${toolbarHtml || actionsHtml}</div>`
         : '';
     const trailing = trailingHtml
         ? `<div class="app-page-trailing">${trailingHtml}</div>`
         : '';
+    const lede = description
+        ? `<p class="app-page-lede">${escapeHtml(description)}</p>`
+        : '';
     const tabs = tabsHtml
         ? `<div class="app-page-tabs">${tabsHtml}</div>`
         : '';
+    const facts = [
+        named ? ' data-sidebar-names' : '',
+        named && !toolbar && !trailing ? ' data-empty' : '',
+    ].join('');
+    const id = titleId ? ` id="${escapeHtml(titleId)}"` : '';
     return `
-        <div class="${classAttr(['page-header', 'app-page-header', variantClass, className])}">
+        <div class="${classAttr(['page-header', 'app-page-header', variantClass, className])}"${facts}>
             <div class="app-page-leading">${leading}</div>
             <div class="app-page-title-block">
                 <div class="app-page-title-row">
-                    ${iconHtml}
-                    <h2 class="app-page-title">${escapeHtml(title)}</h2>
+                    <h2 class="app-page-title"${id}>${escapeHtml(title)}</h2>
                 </div>
-                ${descriptionHtml}
             </div>
             ${toolbar}
             ${trailing}
-            ${tabs}
         </div>
+        ${lede}
+        ${tabs}
     `;
 }
 

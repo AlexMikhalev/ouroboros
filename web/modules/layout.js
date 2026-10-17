@@ -19,10 +19,13 @@ export function layoutFacts(w = win()) {
     return facts;
 }
 
-/** `docked` or `stack`: the attribute theme.js painted, else what it resolves right now. */
+/** `docked` or `stack`: the attribute theme.js painted, else what it resolves right now; a document with
+ * neither (a test's fake DOM) is a window, so docked, as theme.js itself falls back. */
 export function currentLayout({ root = rootOf(), w = win() } = {}) {
     const painted = root?.dataset?.layout;
-    return LAYOUTS.includes(painted) ? painted : layoutFacts(w).layout;
+    if (LAYOUTS.includes(painted)) return painted;
+    const resolved = w?.ouroLayout?.layout;
+    return LAYOUTS.includes(resolved) ? resolved : 'docked';
 }
 
 export function isStackLayout(options) {

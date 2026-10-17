@@ -29,6 +29,7 @@ import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
 import { initStorage } from './modules/storage.js';
 import { SHELL_ICONS, hydrateNavIcons } from './modules/page_icons.js';
+import { renderPageHeader } from './modules/page_header.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
@@ -76,6 +77,16 @@ const primarySidebar = document.getElementById('primary-sidebar');
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
+// The Project panel's header is the one page header (page_header.js): ☰ · name · status … ×. A Project is
+// named by its owner, not by the sidebar, so its name stays visible in every layout (owner Q3=A).
+projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({
+    title: '',
+    titleId: 'project-panel-title',
+    named: false,
+    variant: 'project',
+    className: 'project-panel-bar project-inspector-header',
+    trailingHtml: `<button id="project-panel-close" class="shell-icon-control project-panel-close" type="button" title="Close project thread" aria-label="Close project thread">${SHELL_ICONS.close}</button>`,
+}));
 const projectPanelBody = document.getElementById('project-panel-body');
 const projectPanelTitle = document.getElementById('project-panel-title');
 const navProjects = document.getElementById('nav-projects');
