@@ -1,0 +1,2 @@
+{"ok": {"kind": "git", "suggested_name": "Russian services", "found": ["2gis", "vkusvill", "sber-ring", "whoop-health", "gdelt-mcp", "sat3dgen", "agentrq-bridge"], "owner": "kuznetsoffandrey"},
+ "empty": {"kind": "git", "suggested_name": "", "found": [], "error": "No skills found here. A source is a repository with skill folders (each with a SKILL.md) or a catalog file."}}

@@ -1,0 +1,9 @@
+{
+  "sources": [
+    {"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": true},
+    {"id": "ouroboros", "name": "Ouroboros", "kind": "hub", "url": "https://github.com/razzant/OuroborosHub", "ref": "main", "part": "official", "trust": "trusted", "confirmed": false},
+    {"id": "ouroboros-community", "name": "Ouroboros Community", "kind": "hub", "url": "https://github.com/razzant/OuroborosHub", "ref": "main", "part": "community", "trust": "review", "confirmed": false},
+    {"id": "clawhub", "name": "ClawHub", "kind": "registry", "url": "https://clawhub.ai", "trust": "review", "confirmed": true},
+    {"id": "my-folder", "name": "My skills", "kind": "local", "path": "~/ouroboros-skills", "trust": "review", "confirmed": true}
+  ]
+}

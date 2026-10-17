@@ -127,14 +127,16 @@ export function cancelHarnessMaintenance(operationId) {
 }
 
 /**
- * Run the read-only publication preflight for one selected skill. Domain
- * states, including repairable findings, remain successful JSON responses;
- * only transport/admission refusals reject through fetchJson.
+ * Run the read-only publication preflight for one selected skill and the
+ * destination the owner chose ({source_id, mode}; omitted = the host's default).
+ * Domain states, including repairable findings, remain successful JSON
+ * responses; only transport/admission refusals reject through fetchJson.
  * @param {string} skill
+ * @param {{source_id: string, mode: 'origin'|'entry'|'new_entry'}|null} [destination]
  * @returns {Promise<import('./api_types.js').SkillPublishPreflightResponse>}
  */
-export function skillPublishPreflight(skill) {
-    return jsonPost(`/api/skills/${encodeURIComponent(skill)}/publish-preflight`, {});
+export function skillPublishPreflight(skill, destination = null) {
+    return jsonPost(`/api/skills/${encodeURIComponent(skill)}/publish-preflight`, destination ? { destination } : {});
 }
 
 /**
@@ -323,6 +325,37 @@ export function extensionRoutePath(skill, route, params = null) {
     const query = params instanceof URLSearchParams && String(params) ? `?${params}` : '';
     return `${extensionRoutePrefix(skill)}${cleanRoute}${query}`;
 }
+
+/**
+ * Skill sources and their catalogs (one lifecycle for every source kind). The
+ * catalog is served from the host's per-source cache and never waits for the
+ * network; `refresh` asks the host to re-read its sources in the background.
+ * Shapes: web/tests/fixtures/skills_v4/*.json.
+ */
+const sourcePath = (id) => `/api/skill-sources/${encodeURIComponent(id)}`;
+export const skillSourcesApi = {
+    list: () => fetchJson('/api/skill-sources', { cache: 'no-store' }),
+    /** @param {{url?: string, path?: string}} target @returns {Promise<{kind: string, suggested_name: string, found: string[], error?: string}>} */
+    probe: (target) => jsonPost('/api/skill-sources/probe', target),
+    /** @param {{url?: string, path?: string, name: string, trust: 'trusted'|'review'}} source */
+    add: (source) => jsonPost('/api/skill-sources', source),
+    /** @param {{name?: string, trust?: 'trusted'|'review', confirmed?: boolean}} changes */
+    update: (id, changes) => jsonPost(sourcePath(id), changes),
+    remove: (id) => jsonPost(`${sourcePath(id)}/remove`, {}),
+    refresh: (id) => jsonPost(`${sourcePath(id)}/refresh`, {}),
+    catalog: ({ refresh = false } = {}) => fetchJson(`/api/skill-catalog${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' }),
+    /** Loaded catalogs plus registry (ClawHub) hits for one query. */
+    search: ({ q = '', source = '' } = {}, init = {}) => fetchJson(
+        `/api/skill-catalog/search?${new URLSearchParams({ q, ...(source ? { source } : {}) })}`, { cache: 'no-store', ...init }),
+    item: (sourceId, name, init = {}) => fetchJson(
+        `/api/skill-catalog/item/${encodeURIComponent(sourceId)}/${encodeURIComponent(name)}`, { cache: 'no-store', ...init }),
+    /** @returns {Promise<{ok: boolean, job_id: string, name: string, basis: string, review_job_id?: string}>} */
+    install: (id, { turnOnWhenReady = true } = {}) => jsonPost('/api/skill-catalog/install', { id, turn_on_when_ready: turnOnWhenReady }),
+    /** The exact candidate the owner chose; the host confirms it against the current local digest. */
+    updateSkill: (name, mode, digest) => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`, { mode, digest }),
+    uninstallSkill: (name) => jsonPost(`/api/skills/${encodeURIComponent(name)}/uninstall`, {}),
+    starterSkills: () => fetchJson('/api/onboarding/starter-skills', { cache: 'no-store' }),
+};
 
 export function updateStrategyForPlan(plan = {}) {
     if (!plan.available) return '';

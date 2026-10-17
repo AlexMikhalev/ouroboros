@@ -1,0 +1,3 @@
+{"trusted": {"ok": true, "job_id": "job-1", "name": "duckduckgo", "basis": "trusted"},
+ "review": {"ok": true, "job_id": "job-2", "name": "whoop-health", "basis": "review", "review_job_id": "rev-2"},
+ "conflict": {"ok": false, "error": "A skill named weather is already installed (from Ouroboros).", "code": "name_taken"}}
