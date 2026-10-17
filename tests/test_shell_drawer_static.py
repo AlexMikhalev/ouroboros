@@ -23,10 +23,13 @@ def test_drawer_is_a_layer_with_one_close_control_where_the_menu_button_was():
     # The head row holds the × at the header's inset; there is no empty top band any more.
     assert "padding-top: calc(64px" not in css
     head = css.split('html[data-layout="stack"] .drawer-head {', 1)[1].split("}", 1)[0]
-    assert "display: flex" in head and "var(--inset-top)" in head and "var(--page-header-padding-y)" in head
+    assert "display: flex" in head and "var(--inset-top)" in head and "var(--chrome-inset)" in head and "min-height: 56px" in head
     assert ".mobile-nav-toggle,\n.drawer-head {\n    display: none;" in css, "docked: no drawer head"
     assert 'id="nav-drawer-close"' in html and 'aria-controls="primary-sidebar"' in html
-    assert html.index('class="drawer-head"') < html.index('data-nav-page="chat"')
+    # The head row comes first in the head zone; app.js appends Main's row after it (pages.js).
+    head = html.split('class="sidebar-head"', 1)[1].split('id="nav-projects"', 1)[0]
+    assert 'class="drawer-head"' in head and "rendered from the page registry" in head
+    assert "querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', renderNavRows('head'))" in app_js
     assert "navDrawerClose.innerHTML = SHELL_ICONS.close;" in app_js
     assert "navDrawerClose.addEventListener('click', () => setMobileDrawerOpen(false));" in app_js
     # ☰ stays in every header, the open Project included.

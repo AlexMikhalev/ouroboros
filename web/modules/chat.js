@@ -3,6 +3,7 @@ import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChat
 import { renderPageHeader } from './page_header.js';
 import { SHELL_ICONS } from './page_icons.js';
 import { currentLayout, onLayoutChange } from './layout.js';
+import { pageLabel } from './pages.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
@@ -207,7 +208,7 @@ export function createChatInstance({
     ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
-    asPanel = false, title = 'Main Chat',
+    asPanel = false, title = pageLabel('chat'),
     // app.js signal "a project panel is opening right now" — Main
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,

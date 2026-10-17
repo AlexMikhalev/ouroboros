@@ -155,7 +155,7 @@ html[data-layout="stack"] .shell-icon-control {
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
 :root[data-window-chrome="integrated"][data-layout="stack"] .drawer-head {
-    padding-top: max(calc(var(--page-header-padding-y) + var(--inset-top)), calc(var(--space-2) + var(--window-chrome-top)));
+    padding-top: max(calc(var(--chrome-inset) + var(--inset-top)), calc(var(--space-2) + var(--window-chrome-top)));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
 
@@ -694,9 +694,6 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     transition: transform 0.15s ease;
 }
 
-.nav-section-toggle[aria-expanded="false"] .nav-chevron {
-    transform: rotate(-90deg);
-}
 
 #divider {
     display: none;
@@ -3615,8 +3612,8 @@ html[data-layout="stack"] .sidebar-head {
 html[data-layout="stack"] .drawer-head {
     display: flex;
     align-items: center;
-    min-height: calc(44px + 2 * var(--page-header-padding-y));
-    padding: calc(var(--page-header-padding-y) + var(--inset-top)) 0 var(--page-header-padding-y);
+    min-height: 56px;  /* the header row's height: the × lands exactly on the ☰ */
+    padding: calc(var(--chrome-inset) + var(--inset-top)) 0 var(--chrome-inset);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
 html[data-layout="stack"] #primary-sidebar.open {
@@ -3653,8 +3650,8 @@ html[data-layout="stack"] #content {
 html[data-layout="stack"] .page-header,
 html[data-layout="stack"] .app-page-header {
     min-height: 56px;
-    padding: var(--space-2) var(--space-3);
-    padding-top: calc(var(--space-2) + var(--inset-top));
+    padding: var(--chrome-inset) var(--space-3);
+    padding-top: calc(var(--chrome-inset) + var(--inset-top));
     column-gap: var(--space-2);
 }
 html[data-layout="stack"] .chat-page-header {
@@ -7276,10 +7273,13 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 }
 
 .nav-projects-header .nav-chevron {
+    display: inline-flex;
     width: 16px;
     height: 16px;
     transform: rotate(90deg);
+    transition: transform 0.15s ease;
 }
+.nav-projects-header .nav-chevron > svg { width: 16px; height: 16px; }
 
 .nav-projects-header .nav-section-toggle[aria-expanded="false"] .nav-chevron {
     transform: rotate(0deg);

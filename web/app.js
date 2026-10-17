@@ -28,7 +28,8 @@ import { initActivity } from './modules/activity.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
 import { initStorage } from './modules/storage.js';
-import { SHELL_ICONS, hydrateNavIcons } from './modules/page_icons.js';
+import { SHELL_ICONS } from './modules/page_icons.js';
+import { renderNavRows, renderProjectsHeader } from './modules/pages.js';
 import { renderPageHeader } from './modules/page_header.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
@@ -74,6 +75,12 @@ const layers = createLayerStack();
 // Loopback-only debug hook, like __ouroWs: browser tests read the stack through it.
 window.__ouroLayers = layers;
 const primarySidebar = document.getElementById('primary-sidebar');
+// The places come from the one registry (pages.js): Main into the pinned head, the tools into the pinned foot
+// before the version, the Projects header into the middle zone. Nothing below looks a row up before this.
+primarySidebar?.querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', renderNavRows('head'));
+primarySidebar?.querySelector('.sidebar-foot-meta')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
+const navProjectsHeader = primarySidebar?.querySelector('.nav-projects-header');
+if (navProjectsHeader) navProjectsHeader.innerHTML = renderProjectsHeader();
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
@@ -287,7 +294,6 @@ if (navDrawerClose) {
     navDrawerClose.innerHTML = SHELL_ICONS.close;
     navDrawerClose.addEventListener('click', () => setMobileDrawerOpen(false));
 }
-hydrateNavIcons();
 
 // While a Project panel paints, Main defers first hydration (bounded in chat.js).
 let projectPanelOpeningSince = 0;

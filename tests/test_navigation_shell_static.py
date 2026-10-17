@@ -24,8 +24,10 @@ def test_navigation_shell_dom_has_sidebar_drawer_and_project_slots():
     assert '<aside id="project-panel"' in html
     assert 'data-mobile-nav-toggle' not in html
     assert 'id="nav-drawer-backdrop"' in html
-    assert 'data-nav-page="chat"' in html
-    assert 'class="nav-row-label"' in html
+    # The rows come from the page registry (pages.js), rendered by app.js into the sidebar's zones.
+    pages_js = _read("web/modules/pages.js")
+    assert 'data-nav-page="${escapeHtml(page.id)}"' in pages_js
+    assert '<span class="nav-row-label">${escapeHtml(page.label)}</span>' in pages_js
     assert 'id="nav-projects-list" class="nav-projects-list"' in html
     # The mobile trigger is shell-level (available on Skills/Dashboard/etc),
     # not a chat-only duplicate.

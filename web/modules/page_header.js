@@ -1,5 +1,6 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { SHELL_ICONS } from './page_icons.js';
+import { pageLabel } from './pages.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
@@ -24,6 +25,7 @@ export function renderMobileNavToggle() {
  * `icon` is accepted for the callers that still pass one and ignored.
  */
 export function renderPageHeader({
+    page = '',   // a registry id: the title is its label unless `title` says otherwise
     title,
     titleId = '',
     icon = '',  // eslint-disable-line no-unused-vars -- the place is named by words, never a glyph (owner 5A)
@@ -40,6 +42,7 @@ export function renderPageHeader({
     named = true,
 } = {}) {
     const variantClass = variant ? `app-page-header-${escapeHtml(variant)}` : '';
+    const words = title ?? pageLabel(page);
     const leading = leadingHtml !== undefined
         ? leadingHtml
         : (showMobileNav ? renderMobileNavToggle() : '');
@@ -65,7 +68,7 @@ export function renderPageHeader({
             <div class="app-page-leading">${leading}</div>
             <div class="app-page-title-block">
                 <div class="app-page-title-row">
-                    <h2 class="app-page-title"${id}>${escapeHtml(title)}</h2>
+                    <h2 class="app-page-title"${id}>${escapeHtml(words)}</h2>
                 </div>
             </div>
             ${toolbar}

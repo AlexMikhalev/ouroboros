@@ -35,7 +35,8 @@ def test_docked_header_hides_a_title_the_sidebar_names_and_an_empty_bar():
 def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_the_menu():
     css = _read("web/style.css")
     row = _rule(css, 'html[data-layout="stack"] .app-page-header {')
-    assert "min-height: 56px" in row and "padding: var(--space-2) var(--space-3)" in row, row
+    # 44px controls plus the 5px chrome inset above and below: 54, held at 56 by the min-height.
+    assert "min-height: 56px" in row and "padding: var(--chrome-inset) var(--space-3)" in row, row
     assert "var(--inset-top)" in row
     assert "flex-wrap: nowrap" in _rule(css, 'html[data-layout="stack"] .chat-page-header {')
     assert "flex-wrap: nowrap" in _rule(css, 'html[data-layout="stack"] .chat-header-actions {')
@@ -51,7 +52,7 @@ def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_
 
 def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():
     chat_js = _read("web/modules/chat.js")
-    assert "asPanel = false, title = 'Main Chat'," in chat_js
+    assert "asPanel = false, title = pageLabel('chat')," in chat_js
     assert "PAGE_ICONS" not in chat_js
     # room_work.js still finds the Project bar and Main's header to seat the status after the title.
     room_work = _read("web/modules/room_work.js")
