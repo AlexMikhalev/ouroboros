@@ -47,6 +47,18 @@ def _find_pyinstaller_cmd_pos(src: str) -> int:
     return -1
 
 
+def _python_standalone_extras(src: str, interpreter: str) -> tuple[set, list]:
+    """Extras of the locked exports a build script installs into ``interpreter``."""
+    exported = {
+        match.group(2): set(re.findall(r"--extra (\w+)", match.group(1)))
+        for match in re.finditer(r'^ *uv export (.*)--output-file "?(\$\w+)"?$', src, re.M)
+    }
+    lock_header = _read("requirements-runtime.lock").splitlines()[1]
+    exported["requirements-runtime.lock"] = set(re.findall(r"--extra (\w+)", lock_header))
+    installs = list(re.finditer(rf"^ *uv pip install --python {re.escape(interpreter)} .*-r (\S+)", src, re.M))
+    return set().union(*(exported[match.group(1).strip('"')] for match in installs)), installs
+
+
 # ---------------------------------------------------------------------------
 # build.sh  (macOS)
 # ---------------------------------------------------------------------------
@@ -205,6 +217,18 @@ class TestBuildSh:
         )
 
 
+    def test_source_handoff_interpreter_receives_the_desktop_extra(self):
+        """The source launcher needs desktop modules outside PyInstaller's archive."""
+        launcher = _read("launcher.py")
+        assert 'os.execv(EMBEDDED_PYTHON, [EMBEDDED_PYTHON, str(REPO_DIR / "launcher.py")' in launcher
+        src = _read("build.sh").replace("\\\n", " ")
+        extras, installs = _python_standalone_extras(src, "python-standalone/bin/python3")
+        assert "desktop" in extras, f"python-standalone receives only extras {sorted(extras)}"
+        assert "build" not in extras, "build tooling must stay out of the packaged interpreter"
+        symlink_pos = src.find("Normalizing python-standalone symlinks")
+        assert all(match.start() < symlink_pos < _find_pyinstaller_cmd_pos(src) for match in installs)
+
+
 def test_compileall_env_neutralization_actually_seals_bytecode(tmp_path):
     """BEHAVIORAL guard for WA6 / CRITICAL-1 (the string checks above can't catch
     an env re-inheritance regression). Every build script exports
@@ -357,6 +381,15 @@ class TestBuildLinuxSh:
             assert 'OUROBOROS_PACKAGED_BUNDLE_ROOT:-' not in src
             assert '$SCRIPT_DIR/../_internal' in src
 
+    def test_source_handoff_interpreter_receives_the_desktop_extra(self):
+        """Headless detection after the source handoff imports webview from python-standalone."""
+        assert "from webview.guilib import initialize" in _read("launcher.py")
+        src = _read("build_linux.sh").replace("\\\n", " ")
+        extras, installs = _python_standalone_extras(src, '"$PORTABLE_PYTHON"')
+        assert "desktop" in extras, f"python-standalone receives only extras {sorted(extras)}"
+        assert "build" not in extras, "build tooling must stay out of the packaged interpreter"
+        assert all(match.start() < _find_pyinstaller_cmd_pos(src) for match in installs)
+
 
 # ---------------------------------------------------------------------------
 # build_windows.ps1  (Windows / PowerShell)
@@ -376,6 +409,8 @@ class TestBuildWindowsPs1:
             "ripgrep runtime download",
             "Betterleaks runtime installation",
             "Agent dependency installation",
+            "Desktop dependency export",
+            "Desktop dependency installation",
             "Claudexor runtime seed fetch",
             "Chromium installation",
             "WebKit installation",
@@ -498,6 +533,16 @@ class TestBuildWindowsPs1:
             src = _read(name)
             assert r"%ROOT%\_internal\repo.bundle" in src
             assert 'set "ROOT=%ROOT%\\_internal"' in src
+
+    def test_source_handoff_interpreter_receives_the_desktop_extra(self):
+        """The source launcher prepares pythonnet from python-standalone before importing webview."""
+        runtime = _read("ouroboros/launcher_windows_runtime.py")
+        assert "from clr_loader import get_netfx" in runtime and "from pythonnet import set_runtime" in runtime
+        src = _read("build_windows.ps1").replace("`\n", " ")
+        extras, installs = _python_standalone_extras(src, '"python-standalone\\python.exe"')
+        assert "desktop" in extras, f"python-standalone receives only extras {sorted(extras)}"
+        assert "build" not in extras, "build tooling must stay out of the packaged interpreter"
+        assert all(match.start() < _find_pyinstaller_cmd_pos(src) for match in installs)
 
 
 # ---------------------------------------------------------------------------
