@@ -793,6 +793,7 @@ def run_delegated_review_session(
     gateway, route = None, session_route
     recovering, project_id, existing_project = False, "", ""  # also bound on early recovery failures
     observed, summary = {}, {}  # a failure after start still names what it observed
+    delivery_facts = dict(invocation.source_delivery or {})
     start_attempted, start_refused = False, False  # only submit witnesses POST entry
     try:
         record = custody.invocation_record(custody_drive, retry_token) if retry_token else None
@@ -806,8 +807,13 @@ def run_delegated_review_session(
             raise ReviewRouteUnavailable("delegated retry token has no durable invocation; refusing a second paid run",
                                          code="review_custody_lost")
         if recovering:
+            source_request = record.get("work_order_source_request") or {}
+            delivery_facts.update(source_request)
+            recovery_prompt = prompt
+            if source_request.get("original_prompt_sha256") == hashlib.sha256(prompt.encode("utf-8")).hexdigest():
+                recovery_prompt = str((run_request or {}).get("prompt") or "")
             route, project_id, existing_project, key, schema_asked = review_recovery_facts(
-                record, run_request, started_custody, prompt=prompt, root=root,
+                record, run_request, started_custody, prompt=recovery_prompt, root=root,
                 claimant_task_id=task_id, claimant_surface=surface, claimant_slot_id=slot_id,
                 claimant_operation_id=str(invocation.operation_id or ""))
             shape = recorded_review_shape(run_request)  # replay original rights and checking copy
@@ -875,7 +881,9 @@ def run_delegated_review_session(
             run_request = prepare_review_session_request(
                 invocation, route, prompt=prompt, root=root, ephemeral=ephemeral,
                 thread_id=thread_id, schema_asked=schema_asked,
-                shape=shape, execution=checking.get("execution"), instructions=checking.get("instructions", ""))
+                shape=shape, execution=checking.get("execution"), instructions=checking.get("instructions", ""),
+                input_limit=(getattr(gateway, "ask_input_limits", lambda: {})() or {}).get(route.route_id),
+                source_root=custody_drive, delivery_facts=delivery_facts)
         if not run_id:
             from ouroboros.budget_pause import dispatch_fenced
 
@@ -903,7 +911,8 @@ def run_delegated_review_session(
                     surface=surface, slot_id=slot_id,
                     # #112: pending recovery replays the request row's lineage.
                     root_task_id=root_task_id, parent_task_id=parent_task_id,
-                    review_source_delivery=dict(invocation.source_delivery or {}),
+                    review_source_delivery=delivery_facts,
+                    work_order_source_request=delivery_facts,
                     **usage_custody, **checking.get("custody", {}),
                 )
             except BillingAuthorityUnavailable as exc:  # Outer pre-start boundary owns cleanup; nothing sent.
@@ -998,6 +1007,7 @@ def run_delegated_review_session(
             "idempotent_recovery": recovering,
             "late_success_accepted": late_success,
             "settlement": settlement,
+            "review_source_delivery": delivery_facts,
             "route_id": str(entry.route_id), "run_dir": str(summary.get("runDir") or ""),
             # One final attempt, never the requested pool or a mixed summary route.
             "effective_route_ids": [observed["harness_id"]] if observed.get("harness_id") else [],
@@ -1438,6 +1448,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             "late_success_accepted": bool(facts.get("late_success_accepted")),
             "output_conformance": conformance,
             "settlement": facts["settlement"],
+            "review_source_delivery": facts.get("review_source_delivery") or {},
             # The ledger row is written by settle_run (record_subscription_session);
             # cost rides here for the actor record only, finality following the
             # spendEstimated fact, never re-derived.

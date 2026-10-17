@@ -369,6 +369,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         self._window: dict = {}
         self._previous_request: Optional[dict] = None
         self._episode_prompt: Optional[str] = None
+        self._initial_source: dict = {}
         self._raw_transcript: Optional[str] = None
         self._episode_usage: Dict[str, Any] = {}
         self._tool_receipts: List[Dict[str, Any]] = []
@@ -579,6 +580,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             coverage = {**coverage, "status": "incomplete", "reason": self._source_gap}
         facts = {"native_read_coverage": coverage, "native_history_source": history_ref,
                  "native_view_changes": self._view_changes, "native_source_gap": self._source_gap}
+        if self._initial_source:
+            facts["native_initial_source"] = self._initial_source
         if coverage["status"] == "incomplete":
             facts["native_incomplete"] = "required_source_coverage_incomplete"
         return facts
@@ -948,6 +951,28 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         ref = None if required is None else (
             policy.get("native_required_sources_ref") or self._store_source("required-sources", required))
         messages = native_first_send_messages(self.episode_prompt, ref)
+        # Only initial layout: later working views remain the reviewer's choice.
+        # Other surfaces may supply a large work order without the brief builder.
+        bound = native_episode_transcript_bound(self.assignment.request, self.assignment.slot)
+        if _wire_size(messages, schemas) >= native_landing_at(bound):
+            source = self._store_source("initial-brief", self.episode_prompt)
+            if source:
+                from ouroboros.tools.review_brief_coupling import paged_review_text
+                from ouroboros.tools.scope_required_sources import source_text_identity
+
+                self._initial_source = source
+                required = [{**row, "coverage_basis": "candidate_blob"}
+                            if row.get("coverage_basis") == "delivered_inline" else row
+                            for row in (required or [])]
+                required.append({"root": "artifact_store", "path": source["path"],
+                                 **source_text_identity(self.episode_prompt.encode("utf-8")),
+                                 "coverage_basis": "candidate_blob"})
+                policy["native_required_sources"] = required
+                ref = self._store_source("required-sources", required)
+                policy["native_required_sources_ref"] = ref
+                prompt = paged_review_text(self.episode_prompt, source, label="review brief", delegated=False)
+                prompt += "\nOUTPUT CONTRACT:\n" + self._output_contract()
+                messages = native_first_send_messages(prompt, ref)
         return registry, schemas, messages, _wire_size(messages, schemas)
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:

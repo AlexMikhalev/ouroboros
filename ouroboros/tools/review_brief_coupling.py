@@ -322,6 +322,18 @@ def _paged_diff_pointer(brief: BriefInputs, body: str, source: Dict[str, Any]) -
     )
 
 
+def paged_review_text(text: str, source: dict, *, label: str, delegated: bool) -> str:
+    """Disclose an exact, readable source in place of an oversized inline part."""
+    path = source.get("session_relative_path") if delegated else source["path"]
+    reader = (f"Read project-relative file `{path}` with your file tools" if delegated else
+              f'Read with read_file(root="artifact_store", path="{path}")')
+    return (f"The complete {label} is not inlined because of the initial delivery size. "
+            f"Nothing was truncated: {len(text)} characters, sha256 `{source['sha256']}`.\n"
+            f"{reader}, in ranges (start_line/max_lines or start_char for long lines), "
+            "until you have read the complete source. It contains the review assignment and "
+            "evidence; follow its instructions and output contract before judging.\n")
+
+
 # The managed subject keeps its authority wording on both deliveries: a reviewer
 # that re-derived `git diff --cached` itself would review the whole two-parent
 # candidate instead of the resolver's work.
@@ -636,9 +648,26 @@ def build_retrieving_brief(
                 delivery.update(diff_paging="unavailable",
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)
-    if delivery.get("diff_delivery") == "paged":
-        delivery["first_send_chars"] = _first_send_chars(
-            repo_dir, brief, task_text, required_ref if required_rows is not None else None)
+    measured = _first_send_chars(repo_dir, brief, task_text, required_ref if required_rows is not None else None)
+    from ouroboros.review_native_episode import native_landing_at
+
+    ceiling = SESSION_INLINE_DIFF_CEILING_CHARS if brief.delegated else native_landing_at(bound)
+    if measured >= ceiling:
+        # History, manifests and task evidence can exceed the layout even after
+        # the diff was paged. Keep the complete assembled brief as another source.
+        source = _store_review_source(repo_dir, brief, task_text.encode("utf-8"), "review-complete-brief")
+        if source.get("path"):
+            required_rows = [{**row, "coverage_basis": "candidate_blob"}
+                             if row.get("coverage_basis") == "delivered_inline" else row
+                             for row in (required_rows or [])]
+            required_rows = [*(required_rows or []), {**source["required_row"], "disposition": "review_subject"}]
+            required_ref = required_sources_ref(required_rows, staged_tree_sha=tree_sha)
+            task_text = paged_review_text(task_text, source, label="review brief", delegated=brief.delegated) + answer_format
+            delivery.update(brief_delivery="paged", brief_source=source)
+            measured = _first_send_chars(repo_dir, brief, task_text, required_ref)
+        else:
+            delivery.update(brief_paging="unavailable", brief_paging_reason=source.get("error") or "no_source_root")
+    delivery["first_send_chars"] = measured
 
     manifest: Dict[str, Any] = {
         "delivery": AGENTIC_RETRIEVAL_DELIVERY,
@@ -662,7 +691,7 @@ def build_retrieving_brief(
         "governance_tokens_estimate": governance.tokens_estimate,
         "preimage_sources": preimage_sources,
         "native_data_root": (str(brief.source_root or "") if preimage_sources
-                             or delivery.get("diff_delivery") == "paged" else ""),
+                             or delivery.get("diff_delivery") == "paged" or delivery.get("brief_delivery") == "paged" else ""),
         "first_send_bound": bound,
         "brief_chars": len(task_text),
         "sha": {"brief": hashlib.sha256(task_text.encode("utf-8")).hexdigest(),
