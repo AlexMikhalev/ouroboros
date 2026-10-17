@@ -109,7 +109,9 @@ def test_plus_menu_attaches_by_pointer_and_keyboard_in_both_themes(direct_server
                         page.wait_for_selector(MENU, state="visible", timeout=5_000)
                         opened = _facts(page)
                         assert opened["focus"] == "input", (where, opened["focus"])
-                        assert opened["expanded"] == "true" and opened["items"] == ["Attach file"], (where, opened)
+                        # Attach file first; the host's own "Make a button with Ouroboros…" closes the list.
+                        assert opened["expanded"] == "true" and opened["items"][0] == "Attach file", (where, opened)
+                        assert opened["items"][-1] == "Make a button with Ouroboros…", (where, opened)
                         menu = opened["menu"]
                         assert menu["bottom"] <= opened["plus"]["top"] + 0.5, (where, menu, opened["plus"])
                         assert menu["left"] >= 0 and menu["right"] <= opened["view"] + 0.5, (where, menu)
@@ -132,6 +134,13 @@ def test_plus_menu_attaches_by_pointer_and_keyboard_in_both_themes(direct_server
                         page.keyboard.press("Enter")
                         page.wait_for_selector(MENU, state="visible", timeout=5_000)
                         assert _facts(page)["focus"] == "item:attach", where
+                        # The live install's own items follow (a skill's sections, the host's last): arrows move
+                        # among them and wrap from the last back to Attach file.
+                        page.keyboard.press("ArrowDown")
+                        moved = _facts(page)["focus"]
+                        assert moved.startswith("item:") and moved != "item:attach", f"{where}: arrows move among the items"
+                        page.keyboard.press("End")
+                        assert _facts(page)["focus"] == "item:make-button", where
                         page.keyboard.press("ArrowDown")
                         assert _facts(page)["focus"] == "item:attach", f"{where}: arrows stay among the items"
                         page.keyboard.press("Escape")
@@ -233,7 +242,8 @@ def test_filled_slots_keep_the_capsules_line_and_step_aside_with_the_capsules(di
                     # take only the room left, clip what does not fit, and never shrink a chip.
                     assert after["rowHeight"] <= before["rowHeight"] + 0.5 and after["lines"] == 1, (where, before, after)
                     assert after["hosts"] == before["hosts"] and after["compact"] == before["compact"], (where, before, after)
-                    assert after["slot"]["display"] == "flex" and after["slot"]["overflow"] == "hidden", (where, after)
+                    # It clips sideways ("clip" keeps the chips' shadow below them where the engine supports it).
+                    assert after["slot"]["display"] == "flex" and after["slot"]["overflow"] in ("hidden", "clip"), (where, after)
                     assert after["slot"]["right"] <= after["rowRight"] + 0.5, (where, after)
                     assert after["chipsWhole"], (where, after)
                     if count == 6:

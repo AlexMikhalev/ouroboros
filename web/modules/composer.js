@@ -1,23 +1,26 @@
 // The Main and Project composer (docs/DESIGN.md "Controls and editable choices", "Composer owner controls",
 // "Chat attachments"): its markup inside the room's input dock, the message field (its growth, Enter, the input
 // recall and the room's draft), Swarm, the room's Context and Effort capsules with their readback, the "+" menu
-// (Attach file first, then the sections later controls set), the empty voice and chips slots, the staged
-// attachments with their paste and drop routes, and the send path that turns the draft into the owner's frame.
-// The room (chat.js) mounts the markup, namespaces its ids and shows in its feed what was sent.
+// (Attach file first, then the sections later controls set), the voice and chips slots, the staged attachments with
+// their paste and drop routes, and the send path that turns the draft into the owner's frame. Skills' "+" items and
+// chips follow the live contributions (composer_plus.js, composer_chips.js). The room (chat.js) mounts the markup,
+// namespaces its ids and shows in its feed what was sent.
 import { bindComposerFileTargets, cleanupUploadedAttachments } from './chat_media.js';
 import { composerText, createComposerAttachments } from './chat_attachments.js';
 import { loadChatInputHistory, saveChatInputHistory } from './chat_activity.js';
 import { clientSurfaceField } from './client_surface.js';
 import { apiClient, apiFetch } from './api_client.js';
 import { bindEnterSubmit, bindMenu } from './ui_interactions.js';
-import { strokeIcon } from './page_icons.js';
+import { controlIcon, strokeIcon } from './page_icons.js';
 import { createComposerOwnerControls } from './composer_owner_controls.js';
 import { attachChatInputSizing } from './chat_input_sizing.js';
 import { showToast } from './toast.js';
+import { bindComposerPlus } from './composer_plus.js';
+import { bindComposerChips } from './composer_chips.js';
 
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
-// The host icons a "+" item may name (`icon`); an unknown name draws none.
+// The host icons a "+" item may name (`icon`); other names draw from the control glyphs a skill may name.
 const PLUS_ICONS = {
     attach: strokeIcon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 16),
 };
@@ -68,11 +71,11 @@ export function createPlusMenu({ button, hostItems = [] }) {
         node.dataset.plusItem = String(spec.key || '');
         if (spec.title) node.title = String(spec.title);
         node.disabled = Boolean(spec.disabled);
-        if (PLUS_ICONS[spec.icon]) {
+        if (spec.icon) {
             const icon = doc.createElement('span');
             icon.className = 'chat-plus-icon';
             icon.setAttribute('aria-hidden', 'true');
-            icon.innerHTML = PLUS_ICONS[spec.icon];
+            icon.innerHTML = PLUS_ICONS[spec.icon] || controlIcon(spec.icon, 16);
             node.append(icon);
         }
         const label = doc.createElement('span');
@@ -387,7 +390,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
     }
     input.addEventListener('input', onInput);
 
-    return {
+    const composer = {
         input,
         // `setSections(sections)` adds items after Attach file; see createPlusMenu.
         plusMenu,
@@ -435,10 +438,13 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
         hasPendingWork: () => attachments.count > 0 || attachments.busy,
         destroy() {
             destroyed = true;
+            for (const dispose of contributed) dispose();
             plusMenu.destroy();
             attachments.destroy();
             ownerControls.destroy();
             inputSizing.dispose();
         },
     };
+    const contributed = [bindComposerPlus({ composer }), bindComposerChips({ composer, menu: createPlusMenu })];
+    return composer;
 }
