@@ -238,3 +238,34 @@ def test_a_segment_that_cannot_be_imported_makes_the_counts_a_typed_error(tmp_pa
         dp.ordinals_of(tmp_path, "chat", [live.seq])
     with pytest.raises(store.StoreError, match="could not be imported"):
         dp.row_at_position(tmp_path, 0)
+
+
+# ---- fact 2: exact row ends and the skipped intervals -----------------------------------------
+
+def test_rows_keep_their_exact_physical_length_and_skipped_lines_are_recorded_intervals(tmp_path):
+    chain_root(tmp_path)
+    oracle = chain_oracle(tmp_path, "chat")
+    raw = (tmp_path / "archive" / "chat_20261001T000000.jsonl").read_bytes()
+    bad, non_object = raw.index(b"{not json"), raw.index(b"[1, 2]")
+    di.cutover(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    for row in ds.newest(tmp_path, "chat", limit=1000):
+        assert row.end == row.seq + row.length == oracle[row.seq].end, "seq + length is the exact end"
+    compact = ds.rows_by_client_id(tmp_path, "a2")[0]
+    assert compact.length == len(COMPACT) and compact.end != compact.seq + len(ds.encode(compact.row)) + 1, "CRLF and compact JSON are not re-encoded away"
+    last = ds.rows_by_client_id(tmp_path, "live-3")[0]
+    assert last.length == len(UNTERMINATED) and last.end == ds.stream_end(tmp_path, "chat"), "the unterminated last line ends where the chain ends"
+    assert dp.skipped_between(tmp_path, "chat") == [dp.Skipped("chat", bad, len(b"{not json\n"), "invalid"),
+                                                     dp.Skipped("chat", non_object, len(b"[1, 2]\n"), "non_object")]
+    assert dp.skipped_between(tmp_path, "chat")[0].end == non_object and dp.skipped_between(tmp_path, "chat", lower=non_object + 1) == []
+    assert dp.skipped_between(tmp_path, "progress")[0].kind == "invalid" and len(dp.skipped_between(tmp_path, "progress")) == 1
+    assert ds.range_coverage(tmp_path, "chat") == {"imported": True, "pending": 0, "mismatch": 0, "gaps": 2}, "a skipped line is a gap, not coverage"
+    assert ds.range_coverage(tmp_path, "chat", lower=bad, upper=non_object)["gaps"] == 1
+    assert ds.range_coverage(tmp_path, "chat", lower=non_object + 1)["gaps"] == 0
+    assert di.coverage(tmp_path, "chat")["gaps"] == 2 and di.coverage(tmp_path, "chat", bad)["gaps"] == 0
+    with ds.transaction(tmp_path, write=False) as conn:
+        assert conn.execute("SELECT bad FROM import_ledger WHERE name='chat_20261001T000000.jsonl'").fetchone()["bad"] == 2, "the blank line is neither a row nor a gap"
+    receipt = ds.append(tmp_path, "chat", owner("appended", text="ünïcode"))
+    assert receipt.length == len(ds.encode(receipt.row).encode("utf-8")) + 1 and receipt.end == ds.stream_end(tmp_path, "chat")
+    assert ds.row_at(tmp_path, "chat", receipt.seq).end == receipt.end
+    assert ds.append(tmp_path, "chat", owner("appended")).end == receipt.end, "a duplicate answers the existing row's end"
