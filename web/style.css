@@ -2001,23 +2001,13 @@ body.resizing-panels { user-select: none; }
 /* The portal (work_portal.js): the same card in Main, collapsed for good, while its work lives in a
    Project room. Chip + quiet fact, title, one narration line (two at most), the foot (meta + its
    controls) and the Project reference footer. The room holds the timeline, reviews and children,
-   so they never render here, and the summary is reading content, not a disclosure. */
+   so they never render here, and the card has no disclosure. */
 .chat-live-card[data-portal="1"] > .chat-live-timeline,
 .chat-live-card[data-portal="1"] > [data-live-reviews-host],
 .chat-live-card[data-portal="1"] > .chat-subagents,
 .chat-live-card[data-portal="1"] > .chat-live-summary-button .chat-live-summary-side,
 .chat-live-card[data-portal="1"] > .chat-live-foot > .chat-live-foot-end > .chat-live-review-summary {
     display: none;
-}
-
-.chat-live-card[data-portal="1"] > .chat-live-summary-button {
-    cursor: auto;
-    -webkit-user-select: text;
-    user-select: text;
-}
-
-.chat-live-card[data-portal="1"] > .chat-live-summary-button:hover {
-    background: transparent;
 }
 
 .chat-live-card[data-portal="1"]:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-activity {
@@ -2030,43 +2020,16 @@ body.resizing-panels { user-select: none; }
     border-style: dashed;
 }
 
+/* The summary band (chip, title, episodes, latest line) is reading content: selectable, never a control,
+   and the pointer paints nothing on it or on the body below (owner 17.10: the half-card tint read as a seam). */
 .chat-live-summary-button {
     box-sizing: border-box;
     width: 100%;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
     /* The card's inset: --space-4 at the sides, --space-3 on top; the foot below closes it. */
     padding: var(--space-3) var(--space-4) 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    user-select: none;
-    text-align: left;
-}
-
-/* The card clips overflow, so the ring is the sanctioned inset variant. */
-.chat-live-summary-button:focus-visible {
-    outline: 2px solid var(--focus-accent-border);
-    outline-offset: -2px;
-}
-
-/* Content is copyable (DESIGN.md §5): the summary suppresses selection only on
-   its own chrome; a drag that selects text does not toggle the card. The summary
-   is a div[role=button] (keyboard-activated in chat.js) because WebKit never
-   lets text inside a real <button> be selected. */
-.chat-live-summary-button .chat-live-title,
-.chat-live-summary-button .chat-live-episodes,
-.chat-live-summary-button .chat-live-activity,
-.chat-live-foot .chat-live-meta {
-    -webkit-user-select: text;
-    user-select: text;
-}
-
-.chat-live-summary-button:hover {
-    background: var(--accent-05);
 }
 
 .chat-live-summary {
@@ -2118,13 +2081,52 @@ body.resizing-panels { user-select: none; }
     min-width: 0;
 }
 
+/* The card's one disclosure: "N notes · Show details ⌄" is a real button, the only thing on the card that
+   opens it. A quiet control: no body at rest, the quiet tint under a hovering pointer, a press deepens it, the
+   shared ring for the keyboard. Its pill's padding is paid back by an equal negative margin, so it stands where
+   its words stand. */
 .chat-live-summary-side {
+    position: relative;
+    box-sizing: content-box;
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
     flex-shrink: 0;
     /* One title line (title type size, not the inherited body size). */
     min-height: calc(1.45 * var(--type-body));
+    margin: calc(var(--space-1) * -1) calc(var(--space-2) * -1);
+    padding: var(--space-1) var(--space-2);
+    border: 0;
+    border-radius: var(--pill-radius);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    transition: var(--motion-tone);
+}
+
+@media (hover: hover) {
+    .chat-live-summary-side:hover { background: var(--tone-quiet-hover); }
+}
+
+.chat-live-summary-side:active {
+    background: var(--tone-quiet-hover);
+    filter: var(--press);
+}
+
+.chat-live-summary-side:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
+
+/* A finger's target (DESIGN §5): under a coarse pointer a small control's hit area grows around its centre to
+   the shared touch minimum; its box, look and neighbours stay where they are. */
+@media (pointer: coarse) {
+    .chat-live-summary-side::after {
+        content: "";
+        position: absolute;
+        inset: min(0px, calc((100% - var(--touch-target-min)) / 2));
+    }
 }
 
 .chat-live-phase,
@@ -2441,8 +2443,8 @@ body.resizing-panels { user-select: none; }
 .chat-episode-history > summary:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 .chat-episode-history[open] > [data-live-reviews-host] > .chat-live-reviews { display: block; }
 
-/* Why a chip word or an amount reads as it does: part of the expanded card, which the
-   summary button opens by pointer, touch and keyboard (never a hover-only title); selectable. */
+/* Why a chip word or an amount reads as it does: part of the expanded card, which its
+   Show details button opens by pointer, touch and keyboard (never a hover-only title); selectable. */
 .chat-live-details {
     display: flex;
     flex-direction: column;
@@ -2757,9 +2759,9 @@ body.resizing-panels { user-select: none; }
     }
 
     /* A narrow card keeps its counts and chevron beside the chip (the chevron already says it opens);
-       the words would push them onto a row of their own. */
+       the words would push them onto a row of their own, so they leave the row and stay the button's name. */
     .chat-live-card:not(.subagent) > .chat-live-summary-button .chat-live-toggle {
-        display: none;
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
     }
 
     .chat-live-line-toggle {
@@ -2880,9 +2882,13 @@ body.resizing-panels { user-select: none; }
     -webkit-line-clamp: 1;
     line-clamp: 1;
 }
-.chat-live-card.subagent .chat-live-toggle,
 .chat-live-card.subagent .chat-live-meta:empty {
     display: none;
+}
+
+/* The child's `Show details` words are the root's to show: off the row, they stay its button's name. */
+.chat-live-card.subagent .chat-live-toggle {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
 
 .chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-foot > .chat-live-meta {

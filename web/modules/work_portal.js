@@ -40,12 +40,8 @@ export function bindWorkPortal(record, project = {}) {
     let changed = false;
     if (root.dataset.portal !== '1') { root.dataset.portal = '1'; changed = true; }
     if (root.dataset.projectId !== projectId) { root.dataset.projectId = projectId; changed = true; }
-    // In this form the summary is not a disclosure (the room holds what it would open), so it is not
-    // a control at all: no role, no tab stop, no expanded state. The reference below is the one door.
-    const summary = record.summaryButtonEl;
-    for (const attr of ['role', 'tabindex', 'aria-expanded', 'aria-controls']) {
-        if (summary?.hasAttribute(attr)) { summary.removeAttribute(attr); changed = true; }
-    }
+    // In this form the card discloses nothing (the room holds what it would open): its "Show details"
+    // button is hidden (style.css) and the summary stays reading content. The reference below is the one door.
     // An unnamed Project reads `Project` (the reference's own rule), never its id.
     const target = { id: projectId, name: key(project?.name) };
     if (!record.portalRefEl || !record.portalRefEl.isConnected) {

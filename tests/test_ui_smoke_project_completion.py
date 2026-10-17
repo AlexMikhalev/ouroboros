@@ -100,7 +100,7 @@ def test_ui_project_completion_pointer_keeps_project_history_scoped(direct_serve
                 task_card = panel.locator(f'.chat-live-card[data-task-id="{task_id}"]')
                 task_card.wait_for(state="visible", timeout=10_000)
                 assert task_card.locator(".chat-live-phase").inner_text().strip() == "Done"
-                task_card.locator("[data-live-summary-button]").click()
+                task_card.locator("[data-live-disclosure]").click()
                 task_card.get_by_text(
                     "Project progress: nested delegation is running.",
                     exact=False,

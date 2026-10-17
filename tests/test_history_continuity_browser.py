@@ -236,7 +236,7 @@ def test_project_room_terminal_lines_separate_end_and_notification(direct_server
                     card = page.locator(f'{feed} .chat-live-card[data-task-id="{task_id}"]')
                     card.wait_for(state='attached')
                     if card.get_attribute('data-expanded') != '1':
-                        card.locator(':scope > [data-live-summary-button]').click()
+                        card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
                     found[task_id] = card.locator(':scope > [data-live-timeline]').inner_text()
                 return found
 
@@ -451,7 +451,7 @@ def _open_nested_full_output(page, url, project):
     for card in (parent, child):
         card.wait_for(state='attached')
         if card.get_attribute('data-expanded') != '1':
-            card.locator(':scope > [data-live-summary-button]').click()
+            card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
     line = child.locator(':scope > [data-live-timeline] > .chat-live-line.expandable')
     line.locator('[data-live-line-toggle]').click()
     body = line.locator(':scope > .chat-live-line-body-full')

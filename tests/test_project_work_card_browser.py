@@ -171,6 +171,7 @@ def test_project_rows_bind_the_works_own_cards_never_an_entry(project_chat, tmp_
     assert transfer.locator('.chat-live-actions > .btn-primary').all_text_contents() == ["Resume"]
     # The summary is reading content in a portal: no disclosure, no stop.
     assert creation.locator(':scope > [data-live-summary-button]').evaluate("e=>['role','tabindex','aria-expanded'].map(n=>e.getAttribute(n))") == [None, None, None]
+    expect(creation.locator('[data-live-disclosure]')).to_be_hidden()
     geometry = creation.evaluate("""card => { const c = card.getBoundingClientRect();
         const box = (sel) => { const r = card.querySelector(sel).getBoundingClientRect(); return {l: r.left - c.left, r: c.right - r.right, h: r.height}; };
         return {overflow: card.scrollWidth > card.clientWidth + 1, footer: box(':scope > .chat-live-bound-pointer'),
