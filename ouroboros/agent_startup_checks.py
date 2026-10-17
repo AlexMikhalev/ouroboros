@@ -711,7 +711,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     from ouroboros.context_budget import (
         CHRONICLE_JOURNAL_WARN_BYTES,
         EVENTS_LOG_WARN_BYTES,
-        PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
         SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
         SUPERVISOR_LOG_WARN_BYTES,
@@ -729,13 +728,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, rotation_expected),
         ("logs/supervisor.jsonl", SUPERVISOR_LOG_WARN_BYTES, rotation_expected),
         ("logs/task_reflections.jsonl", TASK_REFLECTIONS_LOG_WARN_BYTES, rotation_expected),
-        (
-            "logs/progress.jsonl",
-            PROGRESS_LOG_WARN_BYTES,
-            "progress.jsonl is expected to be rotation-bounded far below this "
-            "threshold; rotation is broken or missing — investigate the "
-            "supervisor rotation tick (rotate_jsonl_log_if_needed).",
-        ),
         (
             "state/scheduled_tasks.json",
             SCHEDULED_TASKS_WARN_BYTES,

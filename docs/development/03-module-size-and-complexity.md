@@ -105,6 +105,8 @@ CHECKLISTS item 9 `perf_lifecycle` advises on changed readers, startup/shutdown,
 endpoints, pollers, subscriptions and timers. A new interactive append-only store reader
 must enroll in `agent_startup_checks.py::hot_store_growth_notes` in the same commit,
 with a justified threshold in `context_budget.py`; unenrolled stores evade the tripwire.
+The frozen `logs/progress.jsonl` export is no longer enrolled: dialogue producers
+write `state/dialog.sqlite`, so its file size cannot diagnose a failed rotator.
 
 `tests/test_store_boot.py` measures `prepare_startup_state` at 50/500
 frozen results and 20/200 child stores with process caches cleared. Connections,

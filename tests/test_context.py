@@ -356,22 +356,18 @@ def _grow_ledger(path, size: int) -> None:
 
 
 class TestHotStoreGrowthInvariant:
-    def test_progress_growth_warns_above_threshold(self, tmp_path):
-        from ouroboros.context_budget import PROGRESS_LOG_WARN_BYTES
-
+    def test_frozen_progress_export_is_not_a_hot_store(self, tmp_path):
         env = _make_health_env(tmp_path)
-        _grow_file(tmp_path / "logs" / "progress.jsonl", PROGRESS_LOG_WARN_BYTES + 1)
+        _grow_file(tmp_path / "logs" / "progress.jsonl", 8_000_001)
 
         result = build_health_invariants(env)
-        assert "HOT STORE GROWTH" in result
-        assert "logs/progress.jsonl" in result
-        assert "rotation" in result  # remediation pointer
+        assert "HOT STORE GROWTH" not in result
 
     def test_exactly_at_threshold_stays_silent(self, tmp_path):
-        from ouroboros.context_budget import PROGRESS_LOG_WARN_BYTES
+        from ouroboros.context_budget import TOOLS_LOG_WARN_BYTES
 
         env = _make_health_env(tmp_path)
-        _grow_file(tmp_path / "logs" / "progress.jsonl", PROGRESS_LOG_WARN_BYTES)
+        _grow_file(tmp_path / "logs" / "tools.jsonl", TOOLS_LOG_WARN_BYTES)
 
         result = build_health_invariants(env)
         assert "HOT STORE GROWTH" not in result
@@ -425,10 +421,10 @@ class TestHotStoreGrowthInvariant:
 
     def test_isolated_benchmark_sentinel_suppresses_warnings(self, tmp_path):
         from supervisor.state import ISOLATED_BENCHMARK_SENTINEL
-        from ouroboros.context_budget import PROGRESS_LOG_WARN_BYTES
+        from ouroboros.context_budget import TOOLS_LOG_WARN_BYTES
 
         env = _make_health_env(tmp_path)
-        _grow_file(tmp_path / "logs" / "progress.jsonl", PROGRESS_LOG_WARN_BYTES + 1)
+        _grow_file(tmp_path / "logs" / "tools.jsonl", TOOLS_LOG_WARN_BYTES + 1)
         (tmp_path / ISOLATED_BENCHMARK_SENTINEL).write_text("isolated\n", encoding="utf-8")
 
         result = build_health_invariants(env)
