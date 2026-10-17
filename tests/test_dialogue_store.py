@@ -295,24 +295,15 @@ def test_the_archive_import_resumes_after_an_interruption_and_imports_every_row_
     assert ds.room(tmp_path, 2)["revision"] == 0, "imported rows do not count as unread"
 
 
-def test_a_named_message_is_answered_by_the_store_alone_while_older_segments_import(tmp_path, monkeypatch):
-    """The cutover stores the live file before any message is accepted, so a retried message names
-    a stored row; an id only an older, still-importing segment holds is history no delivery in
-    flight can name. The answer never opens a frozen file: the message path costs no archive."""
+def test_a_miss_during_the_import_is_checked_against_the_pending_segments(tmp_path, monkeypatch):
     _legacy_root(tmp_path)
     di.cutover(tmp_path)
-    opened = []
-    real_open = pathlib.Path.open
-    monkeypatch.setattr(pathlib.Path, "read_bytes", lambda path: opened.append(path) or pytest.fail(f"read {path}"))
-    monkeypatch.setattr(pathlib.Path, "open", lambda path, *a, **k: (opened.append(path) if "archive" in path.parts else None)
-                        or real_open(path, *a, **k))
-    assert ds.accepted_row(tmp_path, 1, "live-1").row["text"] == "живая", "the live file was stored at the cutover"
-    assert ds.accepted_row(tmp_path, 2, "c0-1") is None, "older history is not read on the message path"
-    assert opened == []
-    monkeypatch.undo()
+    assert ds.accepted_row(tmp_path, 2, "c0-1").row["text"] == "сообщение 0-1", "found in a segment not yet imported"
+    assert ds.accepted_row(tmp_path, 1, "c0-1") is None and ds.accepted_row(tmp_path, 2, "absent") is None
     di.run_dialogue_import(tmp_path)
-    assert ds.accepted_row(tmp_path, 2, "c0-1").row["text"] == "сообщение 0-1", "found once its segment is imported"
-    assert ds.accepted_row(tmp_path, 1, "c0-1") is None and ds.accepted_row(tmp_path, 1, "absent") is None
+    monkeypatch.setattr(di, "scan_pending", lambda *a, **k: pytest.fail("no scan once the import is complete"))
+    assert ds.accepted_row(tmp_path, 2, "c0-1").row["text"] == "сообщение 0-1"
+    assert ds.accepted_row(tmp_path, 1, "absent") is None
 
 
 def test_legacy_gen_line_addresses_resolve_to_the_row_the_chain_reader_returned(tmp_path):

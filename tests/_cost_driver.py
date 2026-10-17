@@ -227,6 +227,15 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
                     result["errors"].append("the boot coordinator did not finish")
                 _mark(result, "coordinator")
                 result["B1c"] = _summary(meter, "B1c")
+            # The one-time archive import runs in the maintenance child on a real install; the
+            # boundaries below measure the steady state after it (a room page, an owner message).
+            token = BOUNDARY.set("import")
+            try:
+                from ouroboros.dialogue_import import run_dialogue_import
+
+                result["import"] = {"state": run_dialogue_import(root).get("state")}
+            finally:
+                BOUNDARY.reset(token)
             try:
                 facts = spec.get("facts", {})
                 _chat_frame(meter, client, result, "B4", "cost-contract-1")

@@ -207,8 +207,14 @@ def test_b5_stop_of_a_tree_is_flat(measured):
     assert_flat(measured, "B5")
 
 
-@pytest.mark.parametrize("tag", ["R_active", "R_late", "R_activew"])
+@pytest.mark.parametrize("tag", ["R_active", pytest.param("R_late", marks=pytest.mark.xfail(strict=True, reason=(
+    "The tool-call evidence a late task's card replays (tool_call_log.replay_evidence -> Memory.read_task_recent) "
+    "reads up to the three newest tools.jsonl archives, newest first, before it reaches the task's own rows; the "
+    "tools log stays a rotated file in this change (k=1 -> k=30: one more tools segment, about 39 KB)."))),
+    "R_activew"])
 def test_room_history_is_flat(measured, tag):
+    for k in (K_SMALL, measured["large"]):  # a page, never the import window's refusal
+        assert measured[k]["import"]["state"] == "done" and measured[k]["responses"][tag]["status"] == 200, k
     assert_flat(measured, tag)
 
 

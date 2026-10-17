@@ -74,7 +74,7 @@ def test_a_landed_row_whose_handoff_was_lost_is_dispatched_once_by_the_first_ret
 def test_the_recovery_performs_an_owed_dispatch_once_without_reading_any_chain(tmp_path, monkeypatch):
     """A crash between the commit and the handoff: when the bus opens again the pending obligation
     is selected through its index and dispatched exactly once; retries and a second recovery rejoin."""
-    from ouroboros import utils
+    from ouroboros import dialogue_import, utils
     from supervisor import message_bus
 
     bridge, _echoes = _web_bridge(tmp_path, monkeypatch)
@@ -86,6 +86,7 @@ def test_the_recovery_performs_an_owed_dispatch_once_without_reading_any_chain(t
     reads = []
     real_chain = utils.jsonl_chain_handles
     monkeypatch.setattr(utils, "jsonl_chain_handles", lambda *a, **k: reads.append(a) or real_chain(*a, **k))
+    monkeypatch.setattr(dialogue_import, "scan_pending", lambda *a, **k: reads.append(a) or None)
     next_bridge = message_bus.LocalChatBridge()
     assert message_bus.recover_pending_dispatches(next_bridge, tmp_path) == 1
     assert next_bridge._inbox.qsize() == 1 and reads == [], "from the obligation, not from a chain"

@@ -728,15 +728,21 @@ def task_rows(root: Any, task_ids: Iterable[str], *, stream: str, after: int = -
 
 def accepted_row(root: Any, chat_id: Optional[int], client_message_id: str) -> Optional[Row]:
     """The inbound row ``(chat_id, client_message_id)`` names (the newest), as the full chain scan
-    answered. The store alone answers, also while older archive segments still import: the
-    cutover stores the live file (and every segment that joined after it) before the first
-    message is accepted, so a redelivered or retried message names a stored row; a segment still
-    importing holds only history from before that boot, which no delivery in flight can name."""
+    answered. While the chat archive is still importing, a miss is checked against the segments
+    not yet imported (``dialogue_import.scan_pending``): unknown is never answered "absent"."""
     if not client_message_id:
         return None
     with transaction(root, write=False) as conn:
         record = _existing_named(conn, chat_id, client_message_id)
-    return None if record is None else _row(record)
+        importing = record is None and conn.execute(
+            "SELECT 1 FROM import_ledger WHERE stream='chat' AND state='pending' LIMIT 1").fetchone() is not None
+    if record is not None:
+        return _row(record)
+    if importing:
+        from ouroboros.dialogue_import import scan_pending
+
+        return scan_pending(root, chat_id, client_message_id)
+    return None
 
 
 def rows_by_client_id(root: Any, client_message_id: str, *, stream: str = "chat", chat_id: Any = -1,
