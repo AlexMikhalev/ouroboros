@@ -36,7 +36,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
 supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors and current call observations behind `/api/state`; typing receipts remain separate, with no queue records (§3 Direct turns and the activity block)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
-  message_ingress.py — one accepted row per message id before dispatch, through a process-local chat-chain index
+  message_ingress.py — one accepted row per message id, its dispatch a durable obligation (§4 WebSocket chat)
   workers.py — worker pool: forkserver on Linux, spawn elsewhere, never fork: a child forked from the multi-threaded supervisor inherits a held import lock and wedges
   worker_assignment.py, worker_chat_lane.py, direct_pause.py, worker_health.py, worker_pool_lifecycle.py, worker_process.py, worker_promotion.py — pool leaves: assignment, chat-lane admission and inline same-id park, crash recovery, lifecycle and tree kill, the worker child, promotion (§5; §6 Owner routing verbs)
   worker_owner_wait.py — a required owner wait lends its active slot; the task stays RUNNING, custodied (§5)
@@ -130,7 +130,7 @@ ouroboros/ — agent core and shared runtime (§6)
   loop_tool_execution.py, tool_call_log.py — tool dispatch, results, per-invocation counting
   deadline_utils.py — deadline parsing and the transport-vs-logical wait seam
   observability.py, source_retention.py — private CAS: equal histories stored once, gzip-1, hardlinks (§10)
-  evidence_packs.py, evidence_packer.py — task-local xz packs, refreshed census/pass; reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE.md)
+  evidence_packs.py, evidence_packer.py — task-local xz packs, packed by a maintenance job (§5); reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE.md)
   finalization_timing.py — final-event phase fields and `task_finalization_timing` (§6)
   process_logging.py — per-process logging bootstrap; the server is the sole `server.log` writer; the launcher copies the server pipe, byte-capped, into `agent_stdout.log`
   model_send_seal.py — the invariant `model-visible ⟺ logged` for `model_send`: a mismatch is a typed durable fact, not a blocked call (docs/MODEL_SEND_OBSERVABILITY.md)
@@ -160,7 +160,7 @@ ouroboros/ — agent core and shared runtime (§6)
   _usage_rows.py, _usage_money.py, _usage_response.py, usage_ledger.py, skill_review_usage.py — the one reducer, exact Decimal cash, the accounting usage normalizer, shared row rules and the money lock, the read-only Skill Review projection (§6 Usage ledger substrate vs. accounting policy)
   _usage_cache_splits.py — process-local cache split by task/provider/route/review; a missing entry prices a full cache write (§6)
   usage_store.py, usage_journal.py, openrouter_cost.py — `state/usage.sqlite`, its journal import and explicit OpenRouter price receipts (docs/USAGE_STORE.md)
-  store.py, store_import.py, store_switch.py, maintenance_jobs.py, dialogue_store.py, dialogue_import.py — the shared SQLite core (docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`, job rows; boot import/reconcile §2, export before storeless switches §9) and `state/dialog.sqlite` (chat/progress rows by chain coordinate; one `append` seam: dedup, room facts, dispatch obligation; cutover, archive-import job, rollback export; PERSISTENCE.md)
+  store.py, store_import.py, store_switch.py, dialogue_store.py, dialogue_import.py, dialogue_positions.py — the shared SQLite core (docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`; boot import/reconcile §2, export before storeless switches §9) and `state/dialog.sqlite` (chat/progress rows by chain coordinate, their ordinals and import intervals; one `append` seam: dedup, room facts, dispatch obligation; cutover, archive-import job, rollback export; PERSISTENCE.md)
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
   storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3 Dashboard)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
@@ -189,7 +189,7 @@ ouroboros/ — agent core and shared runtime (§6)
   safety.py — Safety Supervisor call (typed outcomes: §6 Safety Supervisor outcomes)
   consciousness.py, consciousness_wake.py — the background alarm admitting an ordinary Main turn through the supervisor tick (`handle_wake_direct`); the complete wake user input and `wake_task_metadata` envelope (§6 Background consciousness)
   consciousness_authority.py, consciousness_allowance.py — Dispatch-bound autonomy ceilings (keeping the owner-turn prompt prefix) and the rolling 24-hour spend allowance (§6 Background consciousness and Evolution)
-  chat_chain.py, chat_references.py — the chat generation chain (archives, then live), index-free row addresses, Reply facts, `retain_memory_source` (§6)
+  chat_chain.py, chat_references.py — addressed dialogue reads: content identities, legacy `(gen, line)` hints, Reply facts, `retain_memory_source` (§6)
   chronicle_store.py — append-only chronicle: pages/parts, version-bound accounts and separate common-view selections; disposable index (§6 Durable memory)
   chronicle_import.py, memory_nomination_receipts.py, memory_inventory.py — one model-free import of prior dialogue memory as `legacy` records; frozen-cursor nominations imported once as marks; what is open or folded (§6 Durable memory)
   consolidator.py — shared Light transport and scratchpad compression; writes no knowledge (§6)
@@ -291,7 +291,7 @@ ouroboros/ — agent core and shared runtime (§6)
   launcher_bootstrap.py, runtime_venv.py — Bundle-to-repo bootstrap, launch options, managed sync, native-host artifact synchronization and `--runtime-venv` for launcher.py (§2)
   launcher_onboarding.py — First-run onboarding as the desktop launcher presents it: the gateway /onboarding page (§2)
   launcher_server_reaper.py — POSIX same-install stray-server termination by the PID-lock-owning launcher (Runtime topology below)
-  launcher_readiness.py — The launcher's `/api/health` probe (Runtime topology below)
+  launcher_readiness.py — The launcher's `/api/health` probe (§2 Boot order)
   launcher_windows_runtime.py — Windows-only pythonnet/pywebview runtime preparation
   launcher_background.py — Desktop background mode: close vs quit, the one consent question, second-launch activation (§9); `DesktopApi`, the alert half the bridge's `MainApi` inherits (§3)
   launcher_appearance.py — A desktop window's native Windows caption takes the light or dark tint of its page's painted palette (§3)
@@ -342,7 +342,7 @@ ouroboros/ — agent core and shared runtime (§6)
   skill_review_runner.py — Writes `review_job.json` and `skill_review_*` events; separate review, dependency and extension outcomes; a replayed verdict never overrides an owner disable
   server_auth.py — Non-localhost network gate via `OUROBOROS_NETWORK_PASSWORD`; warns when unset (§8)
   server_control.py, server_entrypoint.py, server_runtime.py, server_web.py — `restart_current_process` and `execute_panic_stop`; CLI parsing, data-root admission and port binding; startup wiring and WS liveness; `ServedUI` (§4 main interface) and `read_author_kit_assets(repo_dir)`
-  server_process.py, server_liveness.py, server_boot.py, server_maintenance.py, server_restart.py, server_owner_routing.py, server_routing_context.py — Server leaves the composition root calls: per-process facts, the boot document and coordinator plus wedge detection, the boot coordinator's steps (§2 Boot order), drive upkeep, restart operations, owner-message routing and its per-turn facts (§9)
+  server_process.py, server_liveness.py, server_boot.py, server_maintenance.py, server_restart.py, server_owner_routing.py, server_routing_context.py — Server leaves the composition root calls: per-process facts, the boot document, coordinator and wedge detection, the coordinator's steps (§2 Boot order), drive upkeep, restart operations, owner-message routing and its per-turn facts (§9)
   terminal_cost_reconciliation.py — Usage recovery/projection (§6 Budget tracking)
   task_continuation.py — Durable review continuation state
   task_results.py — Task-result merge-writes (one store transaction) and typed readers; the locked `task_acceptance_review_accounting` claim is unknown without a recoverable terminal host run, never permission to re-dispatch (§6 Task acceptance)
@@ -363,7 +363,7 @@ ouroboros/ — agent core and shared runtime (§6)
   browser_policy.py — The browser tool's target and control-request policy: task-granted concrete origins, metadata/private/reserved refusals, the three-valued `runtime_service_kind` (§6 MCP and browser-facing external tools)
   skill_payload_binding.py — Skill payload targeting: `.seed-origin` distinguishes native from external; read/list/search only for read profiles
   utils.py — SSOT for atomic JSON, timestamps, hashes, sanitization, subprocess helpers, `truncate_review_artifact`
-  jsonl_tail.py — `JsonlChainSnapshot` owns captured byte reads for history, wake and Presence reentry; bounded filtered tails serve history, logs, routing and task context
+  jsonl_tail.py — `JsonlChainSnapshot` (captured byte reads of a file chain; the swarm rollup) and the bounded filtered tail over the rotated file logs for logs, routing and task context
   markdown_source.py — Byte-preserving Markdown structure shared by books and knowledge notes; physical ranges tied to source SHA; `MarkdownSourceError` keeps a missing grammar or malformed YAML visible without replacing original bytes
   world_profiler.py — Generates WORLD.md
   contracts/ — Frozen ABI package (§11)
@@ -571,7 +571,7 @@ Ordinary-directory delegated sessions submit `execution.workspaceKind=directory`
 
 Host sign-in startup is an owner opt-in (Behavior, §3) whose only authority is the OS registration. `desktop_autostart.py` picks the adapter (Windows HKCU `Run`; macOS LaunchAgent with `--launch-intent automatic` and no `KeepAlive`; Linux systemd unit for deb/rpm, XDG autostart for AppImage/tar), available only to a packaged host whose launcher exports a new enough `OUROBOROS_APP_VERSION`. States: `unavailable`, `off`, `on`, `other_copy`, `disabled_by_os`; the launcher Panic gate and saved-pause recovery keep authority; `context.py` records `runtime_env.autostart` and the effective `keep_running_after_close` at task start as host facts. Keep running after close is the second control: `OUROBOROS_DESKTOP_KEEP_RUNNING`, an owner choice stored in settings, offered where the launcher exports `OUROBOROS_DESKTOP_BACKGROUND=1` (Windows and macOS windows); with both on, a sign-in start begins hidden with an indicator. Close, quit and Panic in that mode: §9.
 
-`launcher.py` owns the PID lock, bundle bootstrap, server process, presentation, restart and cleanup outside the managed repo; `server.py` is the self-editable inner runtime. The launcher's readiness wait has no clock: it probes `/api/health` for as long as its child lives (per-probe HTTP timeouts are transport bounds), opens the window at the first answer (the SPA shows the boot phases) and fails at once when the child exits before it served; exit 42 and the crash fuse keep their meaning. The native packages' opt-in systemd unit passes `--launch-intent automatic` so Panic survives, with no restart policy: the launcher owns restarts and the crash fuse ([packaging/systemd/README.md](../../packaging/systemd/README.md)). Spawn custody: POSIX children start in a new session and process group; Windows creates the server suspended, assigns a kill-on-close Job, then resumes, refusing to run without Job custody; only the shared daemon requests breakaway. The launcher records `data/state/server_process.json` with the child's measured birth/command fingerprint and signals only that re-proved identity; an unmeasurable or unconfirmed predecessor keeps its record and blocks the next generation; forced cleanup spares the shared daemon subtree (§9).
+`launcher.py` owns the PID lock, bundle bootstrap, server process, presentation, restart and cleanup outside the managed repo; `server.py` is the self-editable inner runtime. Its readiness wait has no clock (§2 Boot order). The native packages' opt-in systemd unit passes `--launch-intent automatic` so Panic survives, with no restart policy: the launcher owns restarts and the crash fuse ([packaging/systemd/README.md](../../packaging/systemd/README.md)). Spawn custody: POSIX children start in a new session and process group; Windows creates the server suspended, assigns a kill-on-close Job, then resumes, refusing to run without Job custody; only the shared daemon requests breakaway. The launcher records `data/state/server_process.json` with the child's measured birth/command fingerprint and signals only that re-proved identity; an unmeasurable or unconfirmed predecessor keeps its record and blocks the next generation; forced cleanup spares the shared daemon subtree (§9).
 
 Admission: every server entry (`server.main`, an imported app's lifespan) holds `<data>/state/server.lock` for life (`server_entrypoint.admit_data_root`): one server per data root, whatever its repository, PID file or port; records and bindings stay evidence; a running pre-lock server goes undetected.
 
