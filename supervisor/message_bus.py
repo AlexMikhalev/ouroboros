@@ -294,6 +294,10 @@ class LocalChatBridge:
         else:
             self._chat_transports.pop(chat_id, None)
 
+    def chat_transport(self, chat_id: Any) -> Dict[str, Any]:
+        """A copy of the reply transport bound to ``chat_id`` (``{}`` when none), as its events carry it."""
+        return dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+
     def configure_from_settings(self, settings: Dict[str, Any]) -> None:
         """Compatibility no-op; chat bridges are skills now."""
         return None
@@ -424,7 +428,7 @@ class LocalChatBridge:
         # without it render escaped). The old best-effort strip here predated
         # that client contract and only made live diverge from history replay.
         message_ts = ts or utc_now_iso()
-        transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+        transport = self.chat_transport(chat_id)
         meta = dict(progress_meta or {})
         msg = {
             "type": "text",
@@ -543,7 +547,7 @@ class LocalChatBridge:
             publish_event(CHAT_OUTBOUND, {
                 **payload,
                 "text": "",
-                "transport": dict(self._chat_transports.get(int(chat_id or 0), {}) or {}),
+                "transport": self.chat_transport(chat_id),
             })
         if (
             str(status or "") == "needs_manual_target"
@@ -611,7 +615,6 @@ class LocalChatBridge:
 
         if self._broadcast_fn:
             self._broadcast_fn(payload)
-        typing_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         publish_event(CHAT_TYPING, {
             "chat_id": int(chat_id or 0),
             "action": str(action or ""),
@@ -619,7 +622,7 @@ class LocalChatBridge:
             "client_message_id": str(client_message_id or ""),
             "phase": str(phase or "thinking"),
             "kind": str(kind or ""),
-            "transport": typing_transport,
+            "transport": self.chat_transport(chat_id),
         })
         return True
 
@@ -677,10 +680,9 @@ class LocalChatBridge:
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
-        photo_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         publish_event(CHAT_PHOTO, {
             "chat_id": int(chat_id or 0),
-            "transport": photo_transport,
+            "transport": self.chat_transport(chat_id),
             "caption": str(caption or ""),
             "image_base64": b64_str,
             "mime": str(mime or ""),
@@ -742,10 +744,9 @@ class LocalChatBridge:
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
-        video_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         publish_event(CHAT_VIDEO, {
             "chat_id": int(chat_id or 0),
-            "transport": video_transport,
+            "transport": self.chat_transport(chat_id),
             "caption": str(caption or ""),
             "video_base64": b64_str,
             "mime": str(mime or ""),
@@ -824,10 +825,9 @@ class LocalChatBridge:
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
-        document_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         publish_event(CHAT_DOCUMENT, {
             "chat_id": int(chat_id or 0),
-            "transport": document_transport,
+            "transport": self.chat_transport(chat_id),
             "caption": str(caption or ""),
             "file_base64": b64_str,
             "mime": str(mime or ""),
@@ -882,10 +882,9 @@ class LocalChatBridge:
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
-        links_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         publish_event(CHAT_LINKS, {
             "chat_id": int(chat_id or 0),
-            "transport": links_transport,
+            "transport": self.chat_transport(chat_id),
             "title": safe_title,
             "actions": validated,
             "ts": ts,
@@ -1014,7 +1013,7 @@ class LocalChatBridge:
             _advance_project_visible_revision(chat_id)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
-        quiz_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+        quiz_transport = self.chat_transport(chat_id)
         publish_event(CHAT_QUIZ, {
             "chat_id": int(chat_id or 0),
             "transport": quiz_transport,
@@ -1125,7 +1124,7 @@ class LocalChatBridge:
                 log.debug("quiz_state broadcast failed", exc_info=True)
         # The WebSocket reaches only the SPA. Transport skills need the same
         # lifecycle fact to edit an already delivered card without a reload.
-        quiz_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+        quiz_transport = self.chat_transport(chat_id)
         publish_event(CHAT_QUIZ_STATE, {**msg, "transport": quiz_transport})
 
     def push_log(self, event: dict):
