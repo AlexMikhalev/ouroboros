@@ -190,11 +190,21 @@ def cutover(root: Any) -> Dict[str, Any]:
             facts = {"at": utc_now_iso(), **{stream: marks[stream] for stream in ds.STREAMS}}
             ds._set_meta(conn, "cutover" if first else "reconciled", facts)
             ds._set_meta(conn, "archive_tails", _archive_tails(root))  # what this plan saw (``_replan_owed``)
-            for stream in ds.STREAMS:  # a rotated live file is archive now: an export batch it held is settled
-                if report[stream].get("rotated"):
+            for stream in ds.STREAMS:
+                # A live file rotated into the archive (by this run, or by one a stop interrupted after the
+                # rename: the live file is now shorter than the batch's offset) holds no export batch any more.
+                batch = ds._meta(conn, f"export_batch:{stream}")
+                if batch and (report[stream].get("rotated") or _live_size(root, stream) < int(batch.get("offset") or 0)):
                     conn.execute("DELETE FROM meta WHERE key=?", (f"export_batch:{stream}",))
     report["first"] = first
     return report
+
+
+def _live_size(root: pathlib.Path, stream: str) -> int:
+    try:
+        return (root / ds.LIVE_REL[stream]).stat().st_size
+    except FileNotFoundError:
+        return 0
 
 
 def _archive_tails(root: pathlib.Path) -> Dict[str, List[Any]]:

@@ -462,10 +462,13 @@ def test_a_torn_export_that_a_boot_cutover_took_in_never_refuses_later_exports(t
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0
 
 
-def test_a_cutover_that_rotates_an_exported_prefix_settles_the_unwritten_batch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("interruption", ["none", "after_the_rename", "final_transaction"])
+def test_a_cutover_that_rotates_an_exported_prefix_settles_the_unwritten_batch(tmp_path, monkeypatch, interruption):
     """A batch recorded but never written (the append itself failed), then a boot whose cutover rotated
     the live file holding only rows exported before: the rotation settles the record, and the retry
-    exports the batch's rows once into the new live file instead of refusing every time."""
+    exports the batch's rows once into the new live file instead of refusing every time. A cutover
+    stopped after its rename leaves the record to the next run, which rotates nothing and still settles
+    it (the live file is shorter than the batch's offset)."""
     import os
 
     di.cutover(tmp_path)
@@ -486,8 +489,19 @@ def test_a_cutover_that_rotates_an_exported_prefix_settles_the_unwritten_batch(t
     monkeypatch.setattr(os, "open", real_open)
     assert ds.meta(tmp_path, "export_batch:chat") is not None
     exported_before = live.read_bytes()
+    if interruption != "none":
+        def stopped(*_args):
+            raise OSError(5, f"the cutover stopped: {interruption}")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(di, "_plan" if interruption == "after_the_rename" else "_archive_tails", stopped)
+            with pytest.raises(OSError):
+                di.cutover(tmp_path)
+        assert live.read_bytes() == b"" and ds.meta(tmp_path, "export_batch:chat") is not None
+        store.close_connections()
     report = di.cutover(tmp_path)  # the next boot rotates the live file of exported rows
-    assert report["chat"]["rotated"] and ds.meta(tmp_path, "export_batch:chat") is None
+    assert bool(report["chat"]["rotated"]) == (interruption == "none")
+    assert ds.meta(tmp_path, "export_batch:chat") is None
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 1
     assert live.read_bytes() == ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
     archived = b"".join(path.read_bytes() for path in sorted((tmp_path / "archive").glob("chat_*.jsonl")))
