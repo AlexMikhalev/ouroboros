@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ouroboros import dialogue_store as ds
+from ouroboros.chat_chain import format_address, row_address
 from ouroboros.gateway.history import (
     _collect_progress_rows,
     _fold_task_bound_skill_reviews,
@@ -35,7 +36,7 @@ def test_duplicate_lifecycle_pointer_replays_without_a_fake_task(tmp_path):
 
 def test_plan_reference_replays_from_progress_without_visible_text(tmp_path):
     progress = tmp_path / "logs" / "progress.jsonl"
-    ds.append(tmp_path, "progress", {
+    stored = ds.append(tmp_path, "progress", {
         "ts": "2026-08-25T00:00:00Z", "type": "review_reference",
         "surface": "plan_review", "task_id": "task-1",
         "presentation_owner_task_id": "task-1", "review_fingerprint": "a" * 64,
@@ -48,6 +49,7 @@ def test_plan_reference_replays_from_progress_without_visible_text(tmp_path):
     )
     assert quota == 0
     assert rows == [{
+        "row_address": format_address(row_address(stored.row)),
         "text": "", "role": "assistant", "ts": "2026-08-25T00:00:00Z",
         "is_progress": True, "markdown": False, "task_id": "task-1",
         "system_type": "review_reference", "surface": "plan_review",
