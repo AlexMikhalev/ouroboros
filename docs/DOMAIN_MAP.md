@@ -52,7 +52,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D14** | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · |
 | **D15** | ✓ | · | ✓ | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | ✓ | ✓ | ✓ | · |
 | **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · |
-| **D17** | ✓ | · | · | ✓ | · | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
+| **D17** | ✓ | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
 | **D18** | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | · |
 | **D19** | · | · | · | · | · | · | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | · |
 | **D20** | · | · | · | ✓ | ✓ | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **118**
+- lazy-only cross-domain pairs: **117**
   - D01->D10
   - D01->D11
   - D02->D05
@@ -161,7 +161,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D16->D09
   - D16->D11
   - D17->D02
-  - D17->D05
   - D17->D07
   - D17->D09
   - D17->D13
@@ -348,7 +347,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D05 — Tool surfaces: files, code, shell, media, external
 
-- `ouroboros/artifact_clone.py`
+- `ouroboros/artifact_storage.py`
 - `ouroboros/artifacts.py`
 - `ouroboros/browser_policy.py`
 - `ouroboros/chat_uploads.py`

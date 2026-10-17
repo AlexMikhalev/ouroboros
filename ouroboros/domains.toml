@@ -124,7 +124,7 @@ D20 = "Presence"
 "ouroboros/agent_task_pipeline.py" = "D01"
 "ouroboros/anthropic_native_custody.py" = "D02"
 "ouroboros/argv_budget.py" = "D13"
-"ouroboros/artifact_clone.py" = "D05"
+"ouroboros/artifact_storage.py" = "D05"
 "ouroboros/artifacts.py" = "D05"
 "ouroboros/chat_uploads.py" = "D05"
 "ouroboros/repo_diff_capture.py" = "D05"
@@ -1032,6 +1032,7 @@ allowed = [
   "D16->D18",
   "D17->D01",
   "D17->D04",
+  "D17->D05",
   "D17->D06",
   "D17->D08",
   "D17->D11",
@@ -1155,7 +1156,6 @@ lazy_only = [
   "D16->D09",
   "D16->D11",
   "D17->D02",
-  "D17->D05",
   "D17->D07",
   "D17->D09",
   "D17->D13",

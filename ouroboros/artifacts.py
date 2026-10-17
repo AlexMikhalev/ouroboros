@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from ouroboros.artifact_clone import clone_file
+from ouroboros.artifact_storage import clone_file
 from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, write_bytes_atomic
 from ouroboros.headless import ARTIFACT_STATUS_FAILED, ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
 from ouroboros.outcome_receipt_store import is_verification_receipts_path
@@ -1229,7 +1229,7 @@ def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -
 def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any = None) -> Dict[str, Any]:
     """Publish a verified file copy atomically; preserve any prior bytes on failure. Inside a
     ``task_custody.publication_fence`` a closed generation starts no copy. A block-sharing clone
-    (``artifact_clone``) is taken where the filesystem gives one, its own bytes verified; else streamed."""
+    (``artifact_storage``) is taken where the filesystem gives one, its own bytes verified; else streamed."""
     source_path, destination = (pathlib.Path(source) if isinstance(source, (str, os.PathLike)) else None), pathlib.Path(destination)
     if source_path is not None and not destination.is_symlink() and source_path.resolve(strict=False) == destination.resolve(strict=False):
         return stream_artifact_file(source, expected=expected)

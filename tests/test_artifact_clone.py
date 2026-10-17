@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import artifact_clone, artifacts
+from ouroboros import artifact_storage, artifacts
 
 
 def _measured(path):
@@ -72,8 +72,8 @@ def test_an_unavailable_clone_falls_back_to_the_streamed_copy_with_the_same_iden
             raise OSError("clone unavailable")
         return False
 
-    monkeypatch.setattr(artifact_clone, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(artifact_clone, "_clonefile", refused)
+    monkeypatch.setattr(artifact_storage, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(artifact_storage, "_clonefile", refused)
     monkeypatch.setattr(artifacts, "stream_artifact_file", observed)
     measured = artifacts.copy_artifact_file(source, destination, expected=_measured(source))
     assert streamed == [True] and measured == _measured(destination) == _measured(source)
@@ -126,4 +126,4 @@ def test_a_refused_linux_clone_leaves_no_empty_destination(tmp_path, monkeypatch
     source, destination = tmp_path / "a", tmp_path / "b"
     source.write_bytes(b"bytes")
     monkeypatch.setattr(fcntl, "ioctl", lambda *a: (_ for _ in ()).throw(OSError(95, "not supported")))
-    assert artifact_clone.clone_file(source, destination) is False and not destination.exists()
+    assert artifact_storage.clone_file(source, destination) is False and not destination.exists()
