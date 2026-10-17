@@ -230,7 +230,7 @@
     --chat-photo-min-box: calc(var(--touch-target-min) + 14px);
     --chat-media-bubble-max: 520px;
     --chat-attach-thumb-size: 28px;
-    /* The smallest comfortable touch target for a coarse pointer (a phone). */
+    /* The smallest comfortable touch target; a coarse pointer (a phone) raises it to a finger's 44px (below). */
     --touch-target-min: 36px;
     --vvh: 100dvh;
     /* Quote panel glass (DESIGN "Replies"): the shell colour at one alpha, so a quote reads lighter than the bubble it sits in. */
@@ -703,8 +703,8 @@ textarea.ui-control { resize: vertical; }
    backing (Main: `.chat-page-header::before`), and what a bar discloses unfolds from the bar's bottom edge as one
    Shade (room_work.css), never as a box glued to one control or one group. */
 @media (pointer: coarse) {
-    /* A coarse pointer (a phone) raises the whole family together to the shared touch minimum. */
-    :root { --chrome-control-h: var(--touch-target-min); }
+    /* A coarse pointer (a phone) raises the shared touch minimum to a finger's 44px, and the whole family with it. */
+    :root { --touch-target-min: 44px; --chrome-control-h: var(--touch-target-min); }
 }
 .ui-chrome-group {
     position: relative;
