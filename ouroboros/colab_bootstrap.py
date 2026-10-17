@@ -446,9 +446,10 @@ def ensure_native_telegram_live(
     timeout: float = 180.0,
     request: Optional[Callable[..., tuple]] = None,
 ) -> Dict[str, Any]:
-    """Grant, enable, and configure the bundled native Telegram skill.
+    """Grant, enable, and configure the built-in Telegram skill.
 
-    The native payload is seeded and hash-trusted by the launcher. Headless
+    The starter selection installs the built-in with its install record (trusted
+    by default, so the gate admits exactly those bytes). Headless
     Colab only performs the same owner-policy steps the Skills UI would perform:
     grant the API-projected missing items when persisted auto-grant is enabled,
     enable the skill, then save its Telegram settings. It never installs from a

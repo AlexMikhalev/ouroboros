@@ -66,11 +66,11 @@ The **runtime ownership** of an installed skill is also tagged:
 
 User-authored or manually copied skills belong under
 `data/skills/external/<name>/`. The `native` bucket is reserved for
-launcher-seeded skills that carry a `.seed-origin` marker. That marker, not the
+built-in skills that carry a `.seed-origin` marker. That marker, not the
 directory name alone, is the ownership fact: an existing payload under
 `native/` without the marker is treated in place as user-managed `external`
 content. Ordinary top-level tasks can inspect, edit, run commands in, or
-delegate that payload without a migration. A marker-present launcher seed stays
+delegate that payload without a migration. A marker-present built-in stays
 read/review-only, and new skills are still created under `external/`.
 
 ## Manifest schema (`SKILL.md` frontmatter or `skill.json`)
