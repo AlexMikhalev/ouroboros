@@ -782,7 +782,11 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # (``__extension_imports/*``, ``.extension-*.lock``), ``state/dialog.sqlite`` and its name-tier lock
 # ``state/dialog.lock`` (``ouroboros/dialogue_store.py``; one section-3 row that also names the cutover
 # and import-job locks).
-EXPECTED_SCAN_PATHS = 387
+# 387 -> 391 (plugin-first, living cards): the card store ``state/cards``, its per-card
+# ``state/cards/<card_id>.json`` records and content-addressed ``state/cards/apps/<sha256>.html``
+# app bytes (one section-4 row), and the Keep-on-Widgets pins ``state/pinned_cards.json`` (its
+# own section-2 row; ``ouroboros/card_store.py`` writes all four).
+EXPECTED_SCAN_PATHS = 391
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
