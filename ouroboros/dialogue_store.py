@@ -42,7 +42,7 @@ import os
 import pathlib
 import sqlite3
 import uuid
-from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
 from ouroboros import store
 from ouroboros.store import StoreBusy, StoreError, StoreLost, StoreMigrating, TIER_ENFORCED, TIER_NAME
@@ -398,6 +398,16 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
     return Receipt(stream, seq, row, False, state)
 
 
+def append_quietly(root: Any, stream: str, row: Dict[str, Any], **kwargs: Any) -> Optional[Receipt]:
+    """``append`` for a best-effort writer (a progress frame, a host summary): a store failure is
+    logged and answered ``None``, as ``append_jsonl`` answered ``False``; the live frame still goes out."""
+    try:
+        return append(root, stream, row, **kwargs)
+    except (StoreError, OSError, ValueError):
+        log.warning("dialogue row not stored in %s (%s)", path(root), stream, exc_info=True)
+        return None
+
+
 def _stream_live(row: Dict[str, Any]) -> None:
     """The live frame a progress row's writer owed through ``append_jsonl``'s sink (``utils.set_log_sink``):
     the file is gone, the one live frame is not. Chat rows have their own live channel."""
@@ -413,48 +423,66 @@ def _stream_live(row: Dict[str, Any]) -> None:
 
 # --- the dispatch obligation -----------------------------------------------------------------
 
-def dispatch_state(root: Any, chat_id: Optional[int], client_message_id: str) -> Optional[str]:
-    """The accepted row's dispatch fact (``None`` for no row, an imported row or an unnamed one)."""
+def dispatch_facts(root: Any, chat_id: Optional[int], client_message_id: str) -> Optional[Dict[str, Any]]:
+    """The accepted row's dispatch facts: ``state`` and, once handed over, the ``process`` (the
+    custody session that took it) and ``dispatcher``; ``None`` for no row, an imported row or
+    an unnamed one."""
     if not client_message_id or not present(root):
         return None
     with transaction(root, write=False) as conn:
-        record = _existing_named(conn, chat_id, client_message_id)
-    return None if record is None else record["dispatch"]
+        record = conn.execute(
+            "SELECT dispatch, dispatch_input FROM dialogue INDEXED BY dialogue_named WHERE stream='chat' AND client_message_id=? "
+            "AND chat_id IS ? AND direction='in' ORDER BY seq DESC LIMIT 1", (client_message_id, chat_id)).fetchone()
+    if record is None or record["dispatch"] is None:
+        return None
+    recorded = json.loads(record["dispatch_input"] or "{}")
+    return {"state": record["dispatch"], "process": str(recorded.get("process") or ""),
+            "dispatcher": str(recorded.get("dispatcher") or "")}
+
+
+def dispatch_state(root: Any, chat_id: Optional[int], client_message_id: str) -> Optional[str]:
+    facts_ = dispatch_facts(root, chat_id, client_message_id)
+    return None if facts_ is None else facts_["state"]
 
 
 def _move_dispatch(root: Any, chat_id: Optional[int], client_message_id: str, *, states: Tuple[str, ...],
-                   to: str) -> bool:
+                   process: str) -> bool:
     if not client_message_id or not present(root):
         return False
     with transaction(root, write=True) as conn:
         cursor = conn.execute(
-            "UPDATE dialogue INDEXED BY dialogue_named SET dispatch=? WHERE stream='chat' AND client_message_id=? "
+            "UPDATE dialogue INDEXED BY dialogue_named SET dispatch='dispatched', "
+            "dispatch_input=json_set(coalesce(dispatch_input, '{}'), '$.process', ?) WHERE stream='chat' AND client_message_id=? "
             f"AND chat_id IS ? AND direction='in' AND dispatch IN ({','.join('?' * len(states))})",
-            (to, client_message_id, chat_id, *states))
+            (process, client_message_id, chat_id, *states))
         return cursor.rowcount == 1
 
 
-def claim_dispatch(root: Any, chat_id: Optional[int], client_message_id: str) -> bool:
+def claim_dispatch(root: Any, chat_id: Optional[int], client_message_id: str, *, process: str = "") -> bool:
     """Take the owed dispatch of an accepted row (pending -> dispatched): the durable "entered"
-    mark. Exactly one caller wins -- the acceptor, a same-id retry or the recovery."""
-    return _move_dispatch(root, chat_id, client_message_id, states=("pending",), to="dispatched")
+    mark, with the ``process`` (custody session) that takes it. Exactly one caller wins -- the
+    acceptor, a same-id retry or the recovery."""
+    return _move_dispatch(root, chat_id, client_message_id, states=("pending",), process=process)
 
 
-def note_dispatched(root: Any, chat_id: Optional[int], client_message_id: str) -> bool:
+def note_dispatched(root: Any, chat_id: Optional[int], client_message_id: str, *, process: str = "") -> bool:
     """The entry mark of a named acceptance that owed no bus dispatch (``none`` -> dispatched):
     its caller hands it to its own dispatcher now."""
-    return _move_dispatch(root, chat_id, client_message_id, states=("none", "pending"), to="dispatched")
+    return _move_dispatch(root, chat_id, client_message_id, states=("none", "pending"), process=process)
 
 
 def complete_dispatch(root: Any, chat_id: Optional[int], client_message_id: str) -> bool:
-    """The handoff returned (dispatched -> completed; the recorded input is dropped); a callback
-    that raised after entry leaves ``dispatched``, which is ambiguous and never replayed."""
+    """The handoff returned (dispatched -> completed; the recorded input shrinks to the dispatcher
+    and the process); a callback that raised after entry leaves ``dispatched``, which is
+    ambiguous and never replayed."""
     if not client_message_id or not present(root):
         return False
     with transaction(root, write=True) as conn:
         cursor = conn.execute(
-            "UPDATE dialogue INDEXED BY dialogue_named SET dispatch='completed', dispatch_input=NULL WHERE stream='chat' "
-            "AND client_message_id=? AND chat_id IS ? AND direction='in' AND dispatch='dispatched'", (client_message_id, chat_id))
+            "UPDATE dialogue INDEXED BY dialogue_named SET dispatch='completed', dispatch_input=json_object("
+            "'dispatcher', json_extract(dispatch_input, '$.dispatcher'), 'process', json_extract(dispatch_input, '$.process')) "
+            "WHERE stream='chat' AND client_message_id=? AND chat_id IS ? AND direction='in' AND dispatch='dispatched'",
+            (client_message_id, chat_id))
         return cursor.rowcount == 1
 
 

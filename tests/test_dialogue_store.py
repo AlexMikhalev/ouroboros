@@ -119,12 +119,13 @@ def test_dispatch_obligation_moves_exactly_once_and_recovery_lists_only_the_pend
     ds.append(tmp_path, "chat", chat("n", "own dispatcher"))
     ds.append(tmp_path, "chat", chat("q", "also owed", chat_id=2), dispatch={"text": "also owed"})
     assert [(row.row["client_message_id"], payload["text"]) for row, payload in ds.pending_dispatches(tmp_path)] == [("p", "owed"), ("q", "also owed")]
-    assert ds.claim_dispatch(tmp_path, 1, "p") and not ds.claim_dispatch(tmp_path, 1, "p"), "one claim"
-    assert ds.dispatch_state(tmp_path, 1, "p") == "dispatched"
-    assert not ds.complete_dispatch(tmp_path, 1, "n") and ds.note_dispatched(tmp_path, 1, "n")
+    assert ds.claim_dispatch(tmp_path, 1, "p", process="host-1") and not ds.claim_dispatch(tmp_path, 1, "p"), "one claim"
+    assert ds.dispatch_facts(tmp_path, 1, "p") == {"state": "dispatched", "process": "host-1", "dispatcher": ""}
+    assert not ds.complete_dispatch(tmp_path, 1, "n") and ds.note_dispatched(tmp_path, 1, "n", process="host-1")
     assert ds.complete_dispatch(tmp_path, 1, "p") and ds.dispatch_state(tmp_path, 1, "p") == "completed"
     with ds.transaction(tmp_path, write=False) as conn:
-        assert conn.execute("SELECT dispatch_input FROM dialogue WHERE client_message_id='p'").fetchone()[0] is None, "the input is dropped once handed over"
+        assert json.loads(conn.execute("SELECT dispatch_input FROM dialogue WHERE client_message_id='p'").fetchone()[0]) == {"dispatcher": None, "process": "host-1"}, "the input shrinks once handed over"
+    assert ds.dispatch_facts(tmp_path, 1, "absent") is None and ds.dispatch_facts(tmp_path, 1, "") is None
     assert not ds.claim_dispatch(tmp_path, 1, "n"), "a row that owed no bus dispatch is never handed over"
     assert ds.abandon_dispatch(tmp_path, 2, "q", "inputs gone") and ds.dispatch_state(tmp_path, 2, "q") == "abandoned"
     assert ds.pending_dispatches(tmp_path) == []

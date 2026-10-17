@@ -46,7 +46,7 @@ from typing import Any, Callable, Iterator
 
 from ouroboros.usage_accounting import current_usage_scope
 from ouroboros.task_store import patch_handoff, put_handoffs
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import utc_now_iso
 
 
 class ModelWaitInterrupted(RuntimeError):
@@ -782,7 +782,9 @@ class TaskModelWait:
         if self.event_queue is not None:
             self.event_queue.put(event)
         else:
-            append_jsonl(pathlib.Path(self.canonical_root) / "logs" / "progress.jsonl", event)
+            from ouroboros import dialogue_store
+
+            dialogue_store.append_quietly(pathlib.Path(self.canonical_root), "progress", event)
 
     def _drain_controls(self) -> None:
         from ouroboros.owner_mailbox import KIND_MODEL_WAIT, _mailbox_path, drain_owner_entries

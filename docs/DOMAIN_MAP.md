@@ -18,17 +18,17 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D08 | Supervisor: queue, workers, events & runtime control | 62 | 0 |
 | D09 | Cancellation, owner control & process custody | 23 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
-| D11 | Gateway, server & Web UI | 81 | 0 |
+| D11 | Gateway, server & Web UI | 84 | 0 |
 | D12 | Settings & configuration | 20 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 58 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
-| D17 | Projects, workspaces & task results | 36 | 0 |
-| D18 | Launcher, packaging, platform & shared substrate | 25 | 0 |
+| D17 | Projects, workspaces & task results | 38 | 0 |
+| D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 11 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **748** | **0** |
+| **total** | | **754** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -49,9 +49,9 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D11** | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **D12** | · | ✓ | ✓ | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | · | · | · | · | ✓ | · | · |
 | **D13** | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | · |
-| **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | · | ✓ | ✓ | · |
+| **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · |
 | **D15** | ✓ | · | ✓ | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
-| **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · |
+| **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · |
 | **D17** | ✓ | · | · | ✓ | · | ✓ | · | ✓ | · | · | ✓ | · | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
 | **D18** | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | · |
 | **D19** | · | · | · | · | · | · | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | · |
@@ -143,7 +143,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D14->D01
   - D14->D07
   - D14->D08
-  - D14->D17
   - D14->D20
   - D15->D02
   - D15->D05
@@ -161,6 +160,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D16->D07
   - D16->D08
   - D16->D09
+  - D16->D11
   - D17->D02
   - D17->D03
   - D17->D05
@@ -693,6 +693,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/extensions.py`
 - `ouroboros/gateway/files.py`
 - `ouroboros/gateway/harness_maintenance.py`
+- `ouroboros/gateway/health_contracts.py`
 - `ouroboros/gateway/history.py`
 - `ouroboros/gateway/history_contracts.py`
 - `ouroboros/gateway/history_paging.py`
@@ -737,9 +738,11 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/update_progress.py`
 - `ouroboros/gateway/widgets.py`
 - `ouroboros/gateway/ws.py`
+- `ouroboros/maintenance.py`
 - `ouroboros/notice_receipts.py`
 - `ouroboros/obligations.py`
 - `ouroboros/server_auth.py`
+- `ouroboros/server_boot.py`
 - `ouroboros/server_entrypoint.py`
 - `ouroboros/server_liveness.py`
 - `ouroboros/server_maintenance.py`
@@ -931,8 +934,10 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/retention.py`
 - `ouroboros/routing_wait.py`
 - `ouroboros/store.py`
+- `ouroboros/store_hot_facts.py`
 - `ouroboros/store_import.py`
 - `ouroboros/task_custody.py`
+- `ouroboros/task_reads.py`
 - `ouroboros/task_result_schema.py`
 - `ouroboros/task_results.py`
 - `ouroboros/task_status.py`
@@ -959,6 +964,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/launcher_appearance.py`
 - `ouroboros/launcher_background.py`
 - `ouroboros/launcher_bootstrap.py`
+- `ouroboros/launcher_readiness.py`
 - `ouroboros/launcher_server_reaper.py`
 - `ouroboros/launcher_tray.py`
 - `ouroboros/launcher_tray_macos.py`

@@ -158,25 +158,39 @@ def cutover(root: Any) -> Dict[str, Any]:
 
 def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Record the chain's segments in the ledger (new ones pending) and move the stream's
-    coordinates: ``next_seq`` and ``files_seq`` never below the chain's length."""
+    coordinates: ``next_seq`` and ``files_seq`` never below the chain's length. A segment a
+    store-unaware body appended WITHOUT the rollback export (its chain place lies beyond what
+    the files hold, under coordinates the store already gave to appended rows) is placed after
+    ``next_seq`` instead: its rows are never lost, at the price of their chain offsets."""
     total = sum(segment["size"] for segment in plan)
-    added = mismatched = 0
+    added = mismatched = shifted = 0
     with ds.transaction(root, write=True) as conn:
+        marks = conn.execute("SELECT next_seq, files_seq FROM streams WHERE stream=?", (stream,)).fetchone()
+        next_seq, files_seq = int(marks["next_seq"]), int(marks["files_seq"])
         known = {record["name"]: dict(record) for record in conn.execute(
             "SELECT * FROM import_ledger WHERE stream=?", (stream,))}
+        end = total
         for segment in plan:
             kept = known.get(segment["name"])
             if kept is None:
+                base = segment["base"]
+                if files_seq <= base < next_seq:
+                    base, shifted = next_seq, shifted + 1
+                next_seq = max(next_seq, base + segment["size"])
+                end = max(end, base + segment["size"])
                 conn.execute("INSERT INTO import_ledger (stream, name, base, size, mtime_ns, state) VALUES (?,?,?,?,?,'pending')",
-                             (stream, segment["name"], segment["base"], segment["size"], segment["mtime_ns"]))
+                             (stream, segment["name"], base, segment["size"], segment["mtime_ns"]))
                 added += 1
-            elif (kept["base"], kept["size"]) != (segment["base"], segment["size"]) and kept["state"] != "mismatch":
-                # A frozen segment that changed size or place: its rows may not be where the ledger says.
+            elif (kept["base"], kept["size"]) != (segment["base"], segment["size"]) and kept["state"] != "mismatch" \
+                    and not (kept["base"] > segment["base"] and kept["size"] == segment["size"]):
+                # A frozen segment that changed size or place: its rows may not be where the ledger says
+                # (a segment placed after ``next_seq`` keeps its recorded place).
                 conn.execute("UPDATE import_ledger SET state='mismatch' WHERE stream=? AND name=?", (stream, segment["name"]))
                 mismatched += 1
         conn.execute("UPDATE streams SET next_seq=max(next_seq, ?), files_seq=max(files_seq, ?), "
-                     "cutover_seq=coalesce(cutover_seq, ?) WHERE stream=?", (total, total, total, stream))
-    return {"segments": len(plan), "added": added, "mismatched": mismatched, "chain_bytes": total}
+                     "cutover_seq=coalesce(cutover_seq, ?) WHERE stream=?",
+                     (end, total if not shifted else files_seq, total, stream))
+    return {"segments": len(plan), "added": added, "mismatched": mismatched, "shifted": shifted, "chain_bytes": total}
 
 
 # --- importing segments ----------------------------------------------------------------------
@@ -323,20 +337,25 @@ def scan_pending(root: Any, chat_id: Optional[int], client_message_id: str) -> O
         pending = conn.execute("SELECT name, base FROM import_ledger WHERE stream='chat' AND state='pending' ORDER BY base DESC").fetchall()
     if not pending:
         return None
-    needle = json.dumps(client_message_id, ensure_ascii=False).encode("utf-8")
+    # A writer may have escaped the id (``ensure_ascii``) or not: both spellings are candidates.
+    needles = {json.dumps(client_message_id, ensure_ascii=False).encode("utf-8"),
+               json.dumps(client_message_id, ensure_ascii=True).encode("utf-8")}
     for record in pending:
         try:
             data = (root / "archive" / record["name"]).read_bytes()
         except OSError:
             continue
-        if needle not in data or b'"in"' not in data:
+        if b'"in"' not in data or not any(needle in data for needle in needles):
             continue
+        found = None
         for seq, _number, body, row in segment_rows(data, int(record["base"])):
-            if row is None or needle not in body.encode("utf-8"):
+            if row is None or not any(needle in body.encode("utf-8") for needle in needles):
                 continue
             if row.get("direction") == "in" and row.get("client_message_id") == client_message_id \
                     and ds.facts(row)["chat_id"] == chat_id:
-                return ds.Row("chat", seq, row, None)
+                found = ds.Row("chat", seq, row, None)  # the newest row naming the id, as the store answers
+        if found is not None:
+            return found
     return None
 
 
@@ -361,8 +380,11 @@ def _export_stream(root: pathlib.Path, stream: str) -> Dict[str, Any]:
 
     with ds.transaction(root, write=False) as conn:
         marks = conn.execute("SELECT next_seq, files_seq FROM streams WHERE stream=?", (stream,)).fetchone()
-        records = conn.execute("SELECT seq, body FROM dialogue WHERE stream=? AND seq>=? ORDER BY seq",
-                               (stream, marks["files_seq"])).fetchall()
+        # The rows the files do not hold: appended after ``files_seq`` and not inside an imported segment.
+        records = conn.execute(
+            "SELECT seq, body FROM dialogue WHERE stream=? AND seq>=? AND NOT EXISTS (SELECT 1 FROM import_ledger "
+            "WHERE import_ledger.stream=dialogue.stream AND state='done' AND base<=seq AND seq<base+size) ORDER BY seq",
+            (stream, marks["files_seq"])).fetchall()
     if not records:
         return {"rows": 0, "from": marks["files_seq"], "to": marks["next_seq"]}
     live = root / ds.LIVE_REL[stream]

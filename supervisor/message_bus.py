@@ -13,13 +13,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ouroboros.artifacts import store_chat_media_bytes
-from ouroboros.chat_uploads import attachment_views, claim_refs, same_message, stored_refs
+from ouroboros.chat_uploads import attachment_views, claim_refs, stored_refs
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_QUIZ_STATE, CHAT_TYPING, CHAT_VIDEO, publish_event
-from supervisor.state import append_jsonl, load_state
-from supervisor.message_ingress import _INGRESS_LOCK, _accepted_web_message, _take_undispatched, _write_marked, _enter_dispatch, delivery_facts
+from ouroboros import dialogue_store
+from ouroboros.store import StoreError
+from supervisor.state import load_state
+from supervisor.message_ingress import _INGRESS_LOCK, delivery_facts, dispatcher_name, hand_over, obligation, rejoin_or_refuse
 from supervisor.message_ingress import (  # noqa: F401 - the named ingress's public names stay importable here
-    _UNDISPATCHED, accept_local_message, accepted_chat_message, acceptance_undispatched, record_inbound_message)
+    accept_local_message, accepted_chat_message, record_inbound_message, recover_pending_dispatches)
 from ouroboros.project_dialogue import ROOM_FIXED_ROW_TYPES
 from ouroboros.projects_registry import RoomResolver, stamp_project_thread
 from ouroboros.tools.core import (
@@ -138,6 +140,11 @@ def init(
     TOTAL_BUDGET_LIMIT = total_budget_limit
     BUDGET_REPORT_EVERY_MESSAGES = budget_report_every
     _BRIDGE = chat_bridge
+    if drive_root is not None:
+        try:  # the dispatches a crash left owed: handed over once, through the bus that opens now
+            recover_pending_dispatches(chat_bridge, drive_root)
+        except StoreError:
+            log.warning("Owed dispatches could not be recovered at bus init", exc_info=True)
 
 
 def get_bridge() -> "LocalChatBridge":
@@ -355,33 +362,42 @@ class LocalChatBridge:
 
         log_text = clean_text or str(image_caption or "").strip() or attachment_placeholder(image_base64, metadata)
         placeholder = not clean_text  # a web caption is the gateway's own ``[user attachment: …]`` label
-        # The canonical row precedes echo/dispatch: neither WS nor Queue survives
-        # restart. Its returned witness lets dequeue validation avoid a chat scan.
+        # The canonical row precedes echo/dispatch: neither WS nor Queue survives restart.
+        # The row, its receipt and the dispatch obligation are ONE store transaction; the
+        # returned witness lets dequeue validation avoid any chat read.
+        from ouroboros.process_custody import current_custody_session_id
+
+        name = dispatcher_name(dispatch)
         with _INGRESS_LOCK:
-            row = _accepted_web_message(thread_id, client_message_id)
-            if row is not None:
-                # A redelivered frame names the accepted message: the same words AND the same
-                # ordered attachment content rejoin it (no second row); anything else under that id
-                # is refused, claiming none of its uploads. A rejoin dispatches only by taking this
-                # process's proof that the row never entered dispatch (once); unknown never replays.
-                if row.get("source") != "web":
-                    raise ValueError("client_message_id is already bound to another source")
-                if not same_message(row, log_text, stored_refs(metadata.get("chat_attachments"))):
-                    raise ValueError("client_message_id was already used for a different message")
-                ts, attachments = str(row.get("ts") or ts), row.get("attachments")
-                log_text, placeholder = str(row.get("text") or log_text), row.get("text_placeholder") is True
-                if handed := _take_undispatched((thread_id, client_message_id)):
-                    claim_refs(metadata.get("chat_attachments"), DATA_DIR)  # the copies it stages are kept
-            else:
-                handed = True
+            row = accepted_chat_message(DATA_DIR, thread_id, client_message_id) if client_message_id else None
+            fresh = False
+            if row is None:
                 attachments = claim_refs(metadata.get("chat_attachments"), DATA_DIR)  # DELETE refuses them now
-                row = _write_marked((thread_id, client_message_id), lambda: log_chat(
-                    "in", thread_id, 1, log_text, ts=ts, source="web",
+                message = dict(
+                    chat_id=thread_id, user_id=1, source="web",
+                    sender_session_id=sender_session_id, client_message_id=message_id,
+                    image_base64=image_base64, image_mime=image_mime,
+                    image_caption=image_caption, task_metadata=metadata,
+                )
+                receipt = accept_chat(
+                    thread_id, 1, log_text, ts=ts, source="web",
                     sender_session_id=sender_session_id, client_message_id=message_id,
                     client_surface=(metadata.get("client_surface") if isinstance(metadata.get("client_surface"), dict) else None),
-                    require_write=True, ensure_record_boundary=True,
                     message_meta={"attachments": attachments, "text_placeholder": placeholder},
-                ))
+                    dispatch=obligation(name, clean_text, message))
+                row, fresh = receipt.row, not receipt.duplicate
+            if fresh:
+                handed = True
+            else:
+                # A redelivered frame names the accepted message: the same words AND the same
+                # ordered attachment content rejoin it (no second row); anything else under that id
+                # is refused, claiming none of its uploads. A rejoin dispatches only by taking the
+                # row's still-owed dispatch (once); a dispatch that began is never replayed.
+                rejoin_or_refuse(row, "web", log_text, stored_refs(metadata.get("chat_attachments")))
+                ts, attachments = str(row.get("ts") or ts), row.get("attachments")
+                log_text, placeholder = str(row.get("text") or log_text), row.get("text_placeholder") is True
+                if handed := dialogue_store.claim_dispatch(DATA_DIR, thread_id, message_id, process=current_custody_session_id()):
+                    claim_refs(metadata.get("chat_attachments"), DATA_DIR)  # the copies it stages are kept
             if handed:
                 ref = build_owner_message_ref(chat_id=thread_id, client_message_id=message_id, ts=ts, text=log_text)
                 message = dict(
@@ -392,8 +408,10 @@ class LocalChatBridge:
                     accepted_source_ref=ref, accepted_source_row=row,
                 )
                 if dispatch is None:
-                    _enter_dispatch(row)
+                    if fresh:
+                        hand_over(DATA_DIR, thread_id, message_id, name)  # the durable "entered" mark
                     self.enqueue_local_message(clean_text, **message)
+                    dialogue_store.complete_dispatch(DATA_DIR, thread_id, message_id)
         try:
             if self._broadcast_fn:
                 # The echo is the accepted row as history replays it (text, time, views, placeholder
@@ -412,8 +430,10 @@ class LocalChatBridge:
                 self._broadcast_fn(echo)
         finally:
             if dispatch is not None and handed:
-                _enter_dispatch(row)
+                if fresh:
+                    hand_over(DATA_DIR, thread_id, message_id, name)  # entered now, not at the echo
                 dispatch(clean_text, **message)  # Accepted work survives an echo/disconnect failure.
+                dialogue_store.complete_dispatch(DATA_DIR, thread_id, message_id)
 
     def enqueue_local_message(
         self,
@@ -754,7 +774,7 @@ class LocalChatBridge:
             caption or "Photo attachment",
             ts=msg["ts"],
             task_id=str(task_id or ""),
-            record_type="photo",
+            record_type="photo", feed=True,
             mime=str(mime or ""),
             download_url=download_url,
             download_url_compat=download_url_compat,
@@ -816,7 +836,7 @@ class LocalChatBridge:
             caption or "Video attachment",
             ts=msg["ts"],
             task_id=str(task_id or ""),
-            record_type="video",
+            record_type="video", feed=True,
             mime=str(mime or ""),
             download_url=download_url,
             download_url_compat=download_url_compat,
@@ -899,7 +919,7 @@ class LocalChatBridge:
             caption or f"📎 {safe_name}",
             ts=ts,
             task_id=str(task_id or ""),
-            record_type="document",
+            record_type="document", feed=True,
             filename=safe_name,
             mime=str(mime or ""),
             download_url=str(download_url or ""),
@@ -952,7 +972,7 @@ class LocalChatBridge:
             owner_id = 0
         if log_chat(
             "out", int(chat_id or 0), owner_id, safe_title, ts=ts,
-            task_id=str(task_id or ""), record_type="links",
+            task_id=str(task_id or ""), record_type="links", feed=True,
             actions=validated, title=safe_title,
         ):
             _advance_project_visible_revision(chat_id)
@@ -1052,7 +1072,7 @@ class LocalChatBridge:
             owner_id = 0
         if log_chat(
             "out", int(chat_id or 0), owner_id, payload["question"], ts=ts,
-            task_id=str(task_id or ""), record_type="quiz",
+            task_id=str(task_id or ""), record_type="quiz", feed=True,
             client_message_id=f"quiz_publication:{task_id}:{qid}",
             require_write=True,
             quiz={
@@ -1336,7 +1356,7 @@ def budget_line(force: bool = False) -> str:
         return ""
 
 
-def log_chat(
+def _chat_record(
     direction: str,
     chat_id: int,
     user_id: int,
@@ -1363,9 +1383,8 @@ def log_chat(
     message_meta: Optional[Dict[str, Any]] = None,
     drive_root=None,
     require_write: bool = False,
-    ensure_record_boundary: bool = False,
-) -> Optional[dict]:
-    """Return the stored row, or None on a best-effort failure; require_write still raises."""
+) -> Tuple[Any, Optional[dict]]:
+    """``(root, the chat row as every reader expects it)``; ``(None, None)`` without a data root."""
     root = drive_root if drive_root is not None else DATA_DIR
     if root:
         from pathlib import Path
@@ -1475,18 +1494,49 @@ def log_chat(
             record["quiz"] = dict(quiz)
         if size_bytes is not None:
             record["size_bytes"] = int(size_bytes)
-        written = append_jsonl(
-            root / "logs" / "chat.jsonl", record,
-            require_lock=require_write, ensure_record_boundary=ensure_record_boundary or require_write,
-        )
-        if written:
-            from ouroboros.notice_receipts import record as record_notice_receipt
-            record_notice_receipt(root, record)
-        if require_write and not written:
-            raise RuntimeError("canonical message acceptance could not be persisted")
-        return record if written else None
+        return root, record
     elif require_write:
         raise RuntimeError("canonical message acceptance requires a data root")
+    return None, None
+
+
+def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: bool = False,
+             require_write: bool = False, ensure_record_boundary: bool = False, **fields: Any) -> Optional[dict]:
+    """Store one chat row (``dialogue_store.append``): the stored row, or None on a best-effort
+    failure; ``require_write`` raises instead. ``feed`` moves the room's revision in the same
+    transaction (a standalone message the owner has not read). A named inbound row is a named
+    acceptance: an existing row of that id answers (no second row). ``ensure_record_boundary`` is
+    the retired chain writer's parameter, accepted for its callers."""
+    root, record = _chat_record(direction, chat_id, user_id, text, require_write=require_write, **fields)
+    if record is None:
+        return None
+    try:
+        receipt = dialogue_store.append(root, "chat", record, feed=feed)
+    except (StoreError, OSError, ValueError) as exc:
+        if require_write:
+            raise RuntimeError("canonical message acceptance could not be persisted") from exc
+        log.warning("chat row not stored in %s", root, exc_info=True)
+        return None
+    if not receipt.duplicate:
+        from ouroboros.notice_receipts import record as record_notice_receipt
+        record_notice_receipt(root, record)
+    return receipt.row
+
+
+def accept_chat(chat_id: int, user_id: int, text: str, *, dispatch: Optional[Dict[str, Any]] = None,
+                **fields: Any) -> "dialogue_store.Receipt":
+    """A named acceptance's canonical write: the inbound row, its dedup, the room and the dispatch
+    obligation in ONE transaction, answered with the store's receipt (``duplicate`` when an
+    earlier delivery's row answered). A store failure is ``RuntimeError`` (nothing landed)."""
+    root, record = _chat_record("in", chat_id, user_id, text, require_write=True, **fields)
+    try:
+        receipt = dialogue_store.append(root, "chat", record, dispatch=dispatch)
+    except (StoreError, OSError, ValueError) as exc:
+        raise RuntimeError("canonical message acceptance could not be persisted") from exc
+    if not receipt.duplicate:
+        from ouroboros.notice_receipts import record as record_notice_receipt
+        record_notice_receipt(root, record)
+    return receipt
 
 
 def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
@@ -1556,8 +1606,9 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         }
         if progress_meta:
             progress_record.update(dict(progress_meta))
-        append_jsonl(DATA_DIR / "logs" / "progress.jsonl", progress_record)
+        dialogue_store.append_quietly(DATA_DIR, "progress", progress_record)
     else:
+        feed = not is_task_card_message(progress_meta)  # only stored feed rows count as unread
         stored = log_chat(
             # S3 (Q4): a typed SYSTEM row persists as direction="system", the
             # role history replay already maps to a system rendering — so the
@@ -1574,11 +1625,12 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             message_meta=progress_meta,
             require_write=require_write,
             ensure_record_boundary=ensure_record_boundary,
+            feed=feed,
         )
 
     if _text.strip() in ("", "\u200b"):
         return
-    if not is_progress and stored and not is_task_card_message(progress_meta):  # only stored feed rows count
+    if not is_progress and stored and feed:
         _advance_project_visible_revision(chat_id)
     # Budget footers belong in dashboard/status flows, not every chat reply.
     full = _text

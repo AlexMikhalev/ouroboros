@@ -42,6 +42,15 @@ def runtime(tmp_path, monkeypatch):
     return SimpleNamespace(root=tmp_path, bridge=bridge, frames=frames, task=task)
 
 
+def _readable_by_the_chain_reader(root):
+    """Transition (unit Q1b migrates the chat readers onto the dialogue store): the readers still
+    read the chain files, so the rows the store holds are exported to them first -- the exact
+    bytes an older body reads. Drop this call when the readers read the store."""
+    from ouroboros.dialogue_import import export_for_older_body
+
+    export_for_older_body(root)
+
+
 def _ask(runtime, quiz_id, *, chat_id=1):
     block = record_asked(
         runtime.root, runtime.task["id"], quiz_id=quiz_id, chat_id=chat_id,
@@ -67,9 +76,9 @@ def _answer(runtime, quiz_id, *, request_id, index=0, comment=""):
 
 
 def _facts(runtime):
-    rows, coverage = Memory(runtime.root).read_chat_generations()
-    assert coverage["snapshot_stable"] and not coverage["gaps"]
-    return [row for row in rows if row.get("type") == "quiz_answer"]
+    from tests._dialogue import chat_rows
+
+    return [row for row in chat_rows(runtime.root) if row.get("type") == "quiz_answer"]
 
 
 def test_answers_survive_eighteen_quizzes_mailbox_gc_and_rotation(runtime):
@@ -136,6 +145,7 @@ def test_a_late_answer_keeps_its_evidence_row_and_also_enters_dialogue(runtime, 
     assert fact["quiz"]["answered_after_terminal"] is True
     assert fact["quiz"]["comment"] == "  After the fact  "
 
+    _readable_by_the_chain_reader(runtime.root)
     rows, coverage = Memory(runtime.root).read_chat_generations()
     assert coverage["snapshot_stable"]
     inbound = [row for row in rows
@@ -213,6 +223,7 @@ def test_competing_answers_preserve_only_the_recorded_winner(runtime, monkeypatc
     assert {fact["client_message_id"] for fact in facts} == {"quiz_answer:task-quiz:race"}
     if force_overlap:
         assert len(facts) == 2
+    _readable_by_the_chain_reader(runtime.root)
     source = read_room_source(runtime.root, 1, task_id=runtime.task["id"])
     [fact] = [row for row in source["rows"] if row.get("type") == "quiz_answer"]
     assert decision(fact["quiz"]) == decision(winner)
@@ -277,6 +288,7 @@ def test_history_recovers_evicted_answer_without_an_extra_bubble(runtime):
         _ask(runtime, qid)
         assert _answer(runtime, qid, request_id=qid, index=1, comment=f"choice-{index}")[0] == 200
     cleanup_task_mailbox(runtime.root, runtime.task["id"])
+    _readable_by_the_chain_reader(runtime.root)
     response = asyncio.run(make_chat_history_endpoint(runtime.root)(
         SimpleNamespace(query_params={"n_human": "100", "thread": "1"})))
     messages = json.loads(response.body)["messages"]
@@ -301,6 +313,7 @@ def test_recent_room_and_history_share_parent_root_and_origin_membership(runtime
         message_bus.log_chat("out", 1, 0, field, task_id="child-" + field,
                              message_meta={field: "parent"}, drive_root=runtime.root)
     # The memory view's open rows of the Project's room (``memory_inventory``): the lineage of both rows.
+    _readable_by_the_chain_reader(runtime.root)
     rows = [meta for _address, meta, _pos in open_room_rows(runtime.root, project["chat_id"])]
     assert {row["task_id"] for row in rows} == {"child-parent_task_id", "child-root_task_id"}
     assert open_room_rows(runtime.root, 1) == []  # bound by lineage: not Main's
