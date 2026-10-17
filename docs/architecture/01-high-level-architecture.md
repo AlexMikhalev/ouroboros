@@ -684,7 +684,7 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── registry.md            ← memory awareness map
 │   │   └── owner_mailbox/         ← per-task owner messages
 │   ├── projects/<id>/knowledge/   ← per-project facts with provenance sidecars
-│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz once settled
+│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz once its row is terminal
 │   ├── services/<task_id>/<service>.log ← service runner logs
 │   ├── logs/
 │   │   ├── chat.jsonl             ← frozen at the cutover

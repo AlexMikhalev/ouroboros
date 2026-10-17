@@ -10,8 +10,8 @@ inputs decodes no history body, copies nothing and commits nothing.
 Server half: ``child`` (``MaintenanceChild``). The supervisor's maintenance dispatcher calls
 ``tick`` at the end of each reconcile pass and on its first tick of a process (``owed``;
 ``request`` asks again, e.g. after a boot scheduled a job). ``tick`` only reserves the one slot:
-its thread reads cheap facts (``due``: the job rows, the store revision, the money and delivery
-file identities) and spawns the child only when one of them says work may wait, never because
+its thread reads cheap facts (``due``: the job rows, the store revision, the terminal rows' count
+and write sum) and spawns the child only when one of them says work may wait, never because
 time passed. The spawn is the existing custodied one (``startup_historical_audit.
 spawn_maintenance_job``: session custody, its own process group, a parent lifeline; ``stop`` and
 ``live_children`` serve the Panic and exit census). Queue-owned work (orphan recovery, drive
@@ -55,20 +55,6 @@ def _store_facts(root: pathlib.Path) -> Dict[str, Any]:
         return {"revision": txn.revision(),
                 "promotions": {task_id: _plain(txn.row(task_id, "write_seq", "updated_at"))
                                for task_id in members_in(txn, "promotions")}}
-
-
-def _record_settled(root: pathlib.Path, name: str, baseline: int, *, quiet: bool = True, **facts: Any) -> Dict[str, Any]:
-    """Merge FACTS into the job row and record ``quiet_at``: the store revision this very write
-    leaves when nothing but this job committed since BASELINE (read before the job looked) and
-    the job left nothing to look at again (QUIET), else ``None``, which keeps the job due."""
-    key = maintenance_jobs.PREFIX + name
-    with store.open_store(root, write=True) as txn:
-        current = txn.meta(key)
-        row = {**(current if isinstance(current, dict) else {}), **facts}
-        row["quiet_at"] = baseline + 1 if quiet and txn.revision() == baseline else None
-        row["updated_at"] = _now()
-        txn.set_meta(key, row)
-    return row
 
 
 def _now() -> str:
@@ -197,30 +183,33 @@ def _analyze_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 
 
 def _packing_inputs(root: pathlib.Path) -> Dict[str, Any]:
+    """The facts the packing rule reads, cheaply: the terminal rows' count and write sum (a task
+    closing or a closed task written again moves it; a live task's writes do not), whether archived
+    usage segments wait, and whether any loose evidence exists at all."""
     from ouroboros import evidence_packer
 
-    return {"external": _plain(evidence_packer.external_revision(root)),
+    return {"terminal": _plain(evidence_packer.terminal_revision(root)),
             "archive_pending": evidence_packer.archive_pending(root),
             "loose": any(_any_entry(root / rel) for rel in ("observability/calls", "task_results/artifacts"))}
 
 
 def _packing_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
-    """Settled evidence may wait when archived usage segments wait, or when loose evidence exists
-    and the store moved since the last quiet pass or the money/delivery files changed identity."""
+    """Evidence may wait when archived usage segments wait, or when loose evidence exists and the
+    terminal rows moved since the last pass, or the last pass unlinked (one more look is owed: it
+    records the moved directories' stamps)."""
     inputs = _packing_inputs(root)
     return inputs["archive_pending"] or (inputs["loose"] and (
-        row.get("quiet_at") != facts["revision"] or row.get("external") != inputs["external"]))
+        row.get("terminal") != inputs["terminal"] or not row.get("quiet")))
 
 
 def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
     """Discovery (archive first, then the first changed task stamp) and, when it finds work, one
-    packing pass with its own fresh census. A pass that unlinked moved its tasks' directories,
-    which owes one more look (it records their new stamps), so it records no quiet fact. A raised
-    discovery or pass records nothing either: the job stays due for the next look (per-task
-    faults are the pass's own counters)."""
+    packing pass with its own fresh census. The inputs are read before the pass and recorded after
+    it, so a task closing during the pass makes the next look differ. A pass that unlinked records
+    ``quiet: False``. A raised discovery or pass records nothing: the job stays due for the next
+    look (per-task faults are the pass's own counters)."""
     from ouroboros import evidence_packer, evidence_packs as packs
 
-    baseline = _store_facts(root)["revision"]
     inputs = _packing_inputs(root)
     report: Dict[str, Any] = {"status": "completed", **dict.fromkeys(evidence_packer.COUNTERS, 0)}
     if evidence_packer.packing_pending(root, should_stop):
@@ -228,8 +217,8 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
         packs.record_storage_pack(root, phase=report["status"], **{key: report[key] for key in evidence_packer.COUNTERS})
     if should_stop():
         return {"state": "pending", "items": report["examined"]}
-    _record_settled(root, "evidence_packing", baseline, quiet=not report["unlinked"], state="done",
-                    external=inputs["external"], packed=report["packed"], examined=report["examined"])
+    maintenance_jobs.record(root, "evidence_packing", state="done", terminal=inputs["terminal"],
+                            quiet=not report["unlinked"], packed=report["packed"], examined=report["examined"])
     return {"state": "done", "items": report["examined"]}
 
 

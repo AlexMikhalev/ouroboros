@@ -126,12 +126,10 @@ def test_discovery_does_not_rebuild_a_missing_index(root, monkeypatch):
     assert not (packs.packs_dir(root) / packs.INDEX_NAME).exists()
 
 
-@pytest.mark.parametrize("busy", ["facts", "packs", "packs_sql", "packs_sql_cached", "money"])
+@pytest.mark.parametrize("busy", ["facts", "packs", "packs_sql", "packs_sql_cached"])
 def test_real_contention_never_waits_and_discovery_defers_without_recording(root, monkeypatch, busy):
     """The server's look never waits on a held store (it defers the spawn); in the child,
     discovery under contention defers too and records nothing, so the job stays due."""
-    from ouroboros import usage_store
-
     _task(root, "candidate", blobs=1)
     with packs.open_index(root):
         pass
@@ -139,16 +137,13 @@ def test_real_contention_never_waits_and_discovery_defers_without_recording(root
         with packs.open_index(root):
             pass
         assert str(packs.packs_dir(root) / packs.INDEX_NAME) in packs._VALIDATED
-    if busy == "money":
-        with usage_store.hold(root, write=True):
-            pass
     spawns = []
     monkeypatch.setattr(maintenance, "spawn_maintenance_job", lambda *a: spawns.append(a) or _FakeChild(_QUIET))
     unit = maintenance.MaintenanceChild()
 
     def held():
-        if busy in {"facts", "packs_sql", "packs_sql_cached", "money"}:
-            path = {"facts": root / "state/current.sqlite", "money": root / usage_store.STORE_REL,
+        if busy in {"facts", "packs_sql", "packs_sql_cached"}:
+            path = {"facts": root / "state/current.sqlite",
                     "packs_sql": packs.packs_dir(root) / packs.INDEX_NAME}[busy.removesuffix("_cached")]
             conn = sqlite3.connect(path, timeout=0)
             conn.execute("BEGIN EXCLUSIVE")

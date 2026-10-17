@@ -8,7 +8,8 @@ that owes it. The owner-held sets (``custody_open``, closing custody receipts of
 sets, ``unknowns``, witnesses) are rows of the ``obligations`` table. ``members``
 reads both halves in one transaction; no set is a file any more (the importer
 reads the old set files once, the exporter writes them back for an older body).
-Every set owes work except the declared ``RECORD_SETS``, which are kept facts.
+Each set is owed to, and retired by, its own owner; no reader derives a global
+settlement from them (the evidence packer packs a task once its row is terminal).
 
 A periodic duty passes over its members through ``DutyRest``: a member it cannot
 progress now gets a typed outcome in the ``duty_rest`` record set, and the next pass
@@ -27,17 +28,7 @@ from ouroboros.store import StoreError
 BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs",
              "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns",
              "pause_notices", "pause_notice_receipts", "owner_questions")
-# Owed work: a task with a row here is not settled (the evidence packer's predicate). A stored set declared
-# in neither tuple owes too (an older or newer body's duty, an imported set file): an unknown duty never packs.
-DUTY_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs", "promotions", "custody_open",
-             "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses", "owner_questions",
-             "late_review_marks")
-# Kept facts, never owed: chat notice receipts, custody marks, definite start refusals, duty rests and the
-# delegated invocation records (``delegate_invocation``: an invocation's first request and last start, the
-# first request of an operation/slot, each custody event's order); owed custody work is ``custody_open``.
-REST_SET = "duty_rest"
-RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused", REST_SET,
-               "custody_invocations", "custody_operation_invocations", "custody_event_ordinals")
+REST_SET = "duty_rest"  # the typed outcomes of ``DutyRest``: kept facts of a duty's pass, never debt
 ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exactly when the store is
 _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "drive_root")
 
