@@ -73,7 +73,7 @@ def test_a_card_becomes_one_row_one_frame_and_two_bus_events(tmp_path, wired):
     identity = {"card_id": card["card_id"], "kind": "components", "title": "Flights", "revision": 1}
     assert row["type"] == "card" and row["direction"] == "out" and row["task_id"] == "task-1"
     assert row["text"] == "A 9:00 or B 12:00" and row["card"] == identity
-    assert "components" not in json.dumps(row)  # the body stays in the store
+    assert "Book it" not in json.dumps(row) and "submit" not in json.dumps(row)  # the body stays in the store
     [frame] = [f for f in frames if f.get("type") == "card"]
     assert frame["card"] == identity and frame["fallback_text"] == row["text"] and frame["ts"] == row["ts"]
     assert frame["role"] == "assistant" and frame["chat_id"] == 1 and frame["row_address"]
