@@ -808,6 +808,17 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
         time.sleep(POLL_PAUSE_S)
         return time.monotonic() + walk_s < deadline
 
+    def disclose_wait_stop(answer, walk_s: float):
+        remaining_s = deadline - time.monotonic()
+        if plan.timeout_ms > 0 and remaining_s > 0:
+            answer["stopped_before_timeout_ms"] = int(remaining_s * 1000)
+            answer["last_walk_ms"] = int(walk_s * 1000)
+            answer["hint"] += (
+                ". Wait stopped early because another walk at the last pace would not have "
+                "finished before the deadline; call element_act again to look again"
+            )
+        return answer
+
     polls = 0
     while True:
         polls += 1
@@ -830,7 +841,7 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
             if keep_waiting(walk_s):
                 continue
             waited_ms = int((time.monotonic() - started) * 1000)
-            return unreadable_error(len(found), unread, scanned, waited_ms, polls)
+            return disclose_wait_stop(unreadable_error(len(found), unread, scanned, waited_ms, polls), walk_s)
         indexes = list(range(len(found)))
         choice = choose(indexes, plan.select.nth)
         if choice.which == "one":
@@ -869,12 +880,12 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
         if keep_waiting(walk_s):
             continue
         reason, hint = not_found(hit_limit, plan.select.nth is not None, bool(found))
-        return {
+        return disclose_wait_stop({
             "ok": False, "reason": reason, "hint": hint,
             "matched": len(found), "nodes_scanned": scanned,
             "searched_whole_window": hit_limit is None,
             "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
-        }
+        }, walk_s)
 
 
 def _guard_live_match(element, select) -> None:
@@ -918,8 +929,9 @@ def find_in_session(automation, plan, hwnd_value: int):
         found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, hwnd_value, plan.select, plan.max_nodes, plan.max_depth, by
         )
-        # Every find sweep gets at least SWEEP_MS, so a last look begun at the
-        # deadline still reads the window whole: find waits its full timeout_ms.
+        # With no matches, find polls until timeout_ms. A last look gets at least
+        # SWEEP_MS, but reads the whole window only if one walk fits that budget.
+        # A longer timeout_ms cannot ensure that final walk finishes.
         if found or time.monotonic() >= deadline:
             matched = len(found)
             waited_ms = int((time.monotonic() - started) * 1000)

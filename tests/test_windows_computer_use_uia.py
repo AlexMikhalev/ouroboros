@@ -300,7 +300,8 @@ def test_an_unreadable_twin_makes_act_refuse_instead_of_invoking_the_other():
     assert result["ok"] is False and result["reason"] == "unreadable_candidates"
     assert result["matched"] == 1 and result["unreadable"] == 1
     assert result["unreadable_candidates"][0]["unread"] == ["name"]
-    assert result["searched_whole_window"] is False
+    assert result["searched_whole_window"] is False and result["polls"] == 1
+    assert "stopped_before_timeout_ms" not in result and "last_walk_ms" not in result
     assert not [call for call in calls if call[0] == "Invoke"]
 
 
@@ -532,12 +533,40 @@ def test_act_does_not_start_a_re_poll_that_cannot_finish_at_the_last_walks_pace(
     assert result["nodes_scanned"] == 3 and result["waited_ms"] <= 3000
 
 
-def test_act_answers_from_the_last_walk_when_a_pause_oversleeps_the_deadline(monkeypatch):
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_act_discloses_an_early_stop_after_a_slow_first_walk_then_fast_walks(monkeypatch, unreadable):
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    monkeypatch.setattr(win_uia, "POLL_PAUSE_S", 0.125)  # exact binary fractions
+    calls = Calls()
+    root = dialog(calls, make(calls, "a", 50000, name="A", fail_cached={30005} if unreadable else ()))
+    automation = Automation(root)
+    walks = []
+
+    def fetch(hwnd, cache):
+        walks.append(clock.now)
+        clock.now += 1.25 if len(walks) == 1 else 0.125
+        return root
+
+    automation.ElementFromHandleBuildCache = fetch
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "no such element"}, "do": "focus"})
+
+    result = win_uia.act_in_session(automation, plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == ("unreadable_candidates" if unreadable else "not_found")
+    assert result["polls"] == len(walks) == 7 and result["matched"] == 0
+    assert result["waited_ms"] == 2750 and result["stopped_before_timeout_ms"] == 250
+    assert result["last_walk_ms"] == 125
+    assert "another walk at the last pace" in result["hint"] and "call element_act again" in result["hint"]
+
+
+@pytest.mark.parametrize("wake_at", [3.0, 3.2])
+def test_act_answers_from_the_last_walk_when_a_pause_reaches_or_oversleeps_the_deadline(monkeypatch, wake_at):
     # A scheduler can wake the pause late; a sweep started past the deadline would
     # be cut before its first node.
     class Late(Clock):
         def sleep(self, seconds):
-            self.now += seconds + (0.3 if self.now > 2.7 else 0.0)
+            self.now = wake_at if self.now > 2.7 else self.now + seconds
 
     monkeypatch.setattr(win_uia, "time", Late())
     calls = Calls()
@@ -548,10 +577,11 @@ def test_act_answers_from_the_last_walk_when_a_pause_oversleeps_the_deadline(mon
 
     assert result["reason"] == "not_found" and result["searched_whole_window"] is True
     assert result["nodes_scanned"] == 3
+    assert "stopped_before_timeout_ms" not in result and "last_walk_ms" not in result
 
 
 def test_find_takes_its_last_look_at_the_end_of_the_wait(monkeypatch):
-    # Find sweeps get their own SWEEP_MS, so the look begun at the deadline is
+    # This small window fits in SWEEP_MS, so a look begun at the deadline is
     # whole: an element that appears in the final pause is still found.
     clock = Clock()
     monkeypatch.setattr(win_uia, "time", clock)

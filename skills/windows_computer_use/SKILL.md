@@ -71,6 +71,7 @@ licence and attribution; the contribution's licensing is a separate matter.
   answer a field the selector names" are different answers
   (`searched_whole_window`, `reason`, `unreadable_candidates`) and are never
   confused: an unreadable candidate makes `element_act` refuse.
+  `stopped_before_timeout_ms` and `last_walk_ms` disclose an early wait stop.
 - Ids index one answer only; re-find elements by `automation_id`/`hwnd`.
 
 ## Honesty rules
