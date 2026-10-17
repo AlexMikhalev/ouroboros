@@ -91,6 +91,17 @@ def test_ordinary_arguments_keep_exactly_one_note_each(cmd, subject):
     assert "passed to the program as an ordinary argument; run_command starts no shell" in notes
 
 
+@pytest.mark.parametrize(("cmd", "subjects"), [
+    (["echo", ">$HOME"], ['literal env reference "$HOME"']),  # one element: one note, never two
+    (["echo", "$HOME", "2>/dev/null"], ['literal env reference "$HOME"', 'redirect-looking argument "2>/dev/null"']),
+    (["sh", "-c", "cat", ">$HOME"], ['redirect-looking argument ">$HOME"']),  # no env note under a shell head
+])
+def test_each_argv_element_gets_at_most_one_note(cmd, subjects):
+    notes = _literal_argv_notes(cmd)
+    assert notes.count("SHELL_LITERAL_ARGV_NOTE") == len(subjects)
+    assert all(subject in notes for subject in subjects)
+
+
 def test_the_guard_and_the_note_read_one_inline_operand():
     from ouroboros.shell_parse import inline_operand_start, inline_shell_command
 

@@ -239,7 +239,7 @@ def _project_store_reader_hint(parts: list) -> str:
     layout the path helpers below own (#1612). One text answers reads, writes, listings
     and edits, so it names the exact read/write pair and never more access than those
     tools already grant; anything they do not address is said plainly."""
-    from ouroboros.knowledge import INDEX_FILE
+    from ouroboros.knowledge import ALWAYS_ACTIVE_TOPICS, INDEX_FILE, sanitize_topic
 
     pid, rest = (parts[0], "/".join(parts[1:])) if parts else ("", "")
     if rest and explicit_project_id_ok(pid):
@@ -248,9 +248,16 @@ def _project_store_reader_hint(parts: list) -> str:
         if rest in (shelf, f"{shelf}/{INDEX_FILE}"):
             return f"This is a project knowledge shelf: knowledge_list({scope}) lists it."
         if rest.startswith(shelf + "/") and rest.endswith(".md") and len(rest) > len(shelf) + 4:
-            topic = f"topic={rest[len(shelf) + 1:-3]!r}"
-            return (f"This is a project knowledge topic: knowledge_read({topic}, {scope}) reads it and "
-                    f"knowledge_write({topic}, {scope}, content=...) writes it.")
+            try:  # the knowledge owner's own topic rules decide what a call would address
+                topic = sanitize_topic(rest[len(shelf) + 1:-3])
+            except ValueError:
+                return f"This file is not addressable as a knowledge topic; knowledge_list({scope}) lists the shelf."
+            if topic in ALWAYS_ACTIVE_TOPICS:
+                return (f"Topic {topic!r} is global-only: knowledge_read/knowledge_write(topic={topic!r}) address "
+                        "the global note even with a project scope, so no knowledge tool addresses this project copy.")
+            return (f"This is a project knowledge topic: knowledge_read(topic={topic!r}, {scope}) reads it and "
+                    f"knowledge_write(topic={topic!r}, {scope}, content=..., expected_revision=...) writes it; "
+                    "expected_revision is the revision knowledge_read returned, omitted only to create a missing note.")
         part = {
             project_workpad_path(pid).relative_to(own).as_posix(): (
                 "workpad", f"workpad_read(project_id='{pid}')",

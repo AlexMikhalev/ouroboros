@@ -174,7 +174,14 @@ def test_generic_tools_deny_project_store_live(tmp_path, monkeypatch):
      "journal_read(project_id='proj_x', source='reflections') reads it", "it writes it"),
     ("projects/proj_x/knowledge/notes/arch.md",
      "knowledge_read(topic='notes/arch', scope='project:proj_x') reads it and "
-     "knowledge_write(topic='notes/arch', scope='project:proj_x', content=...) writes it", "root task"),
+     "knowledge_write(topic='notes/arch', scope='project:proj_x', content=..., expected_revision=...) writes it; "
+     "expected_revision is the revision knowledge_read returned", "root task"),
+    ("projects/proj_x/knowledge/patterns.md", "Topic 'patterns' is global-only", "scope='project:proj_x'"),
+    ("projects/proj_x/knowledge/overview.md", "Topic 'overview' is global-only", "scope='project:proj_x'"),
+    ("projects/proj_x/knowledge/improvement-backlog.md", "Topic 'improvement-backlog' is global-only",
+     "scope='project:proj_x'"),
+    ("projects/proj_x/knowledge/_index.md",
+     "not addressable as a knowledge topic; knowledge_list(scope='project:proj_x') lists the shelf", "topic="),
     ("projects/proj_x/knowledge", "knowledge_list(scope='project:proj_x') lists it", "workpad_read"),
     ("projects/proj_x/knowledge/index-full.md", "knowledge_list(scope='project:proj_x') lists it", "topic="),
     ("projects/proj_x/.project.json", "No scoped reader or writer addresses this path", "reads it"),
@@ -215,6 +222,36 @@ def test_project_store_refusal_hint_reaches_the_target_only_within_existing_auth
     child = types.SimpleNamespace(task_id="child", drive_root=cfg.DATA_DIR, project_id="",
                                   task_metadata={"delegation_role": "subagent"})
     assert _workpad_read(child, "proj_x").startswith("⚠️ TOOL_FORBIDDEN")
+
+
+def test_project_knowledge_hints_match_what_the_knowledge_tools_address(tmp_path, monkeypatch):
+    """#1612: replacing a named project note needs the revision a read returns, and a
+    reserved topic named with a project scope reaches the global note, not this copy."""
+    import json
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path / "data")
+    from ouroboros.project_facts import project_store_access_block
+    from ouroboros.tools.knowledge import _knowledge_read, _knowledge_write
+    from ouroboros.tools.registry import ToolContext
+
+    shelf = cfg.DATA_DIR / "projects" / "proj_x" / "knowledge"
+    shelf.mkdir(parents=True)
+    (shelf / "arch.md").write_text("PROJECT NOTE\n", encoding="utf-8")
+    (shelf / "patterns.md").write_text("PROJECT COPY\n", encoding="utf-8")
+    (cfg.DATA_DIR / "memory" / "knowledge").mkdir(parents=True)
+    (cfg.DATA_DIR / "memory" / "knowledge" / "patterns.md").write_text("GLOBAL PATTERNS\n", encoding="utf-8")
+    ctx = ToolContext(repo_dir=tmp_path / "repo", drive_root=cfg.DATA_DIR)
+
+    assert "expected_revision=" in project_store_access_block("projects/proj_x/knowledge/arch.md")
+    assert "revision_required" in _knowledge_write(ctx, "arch", "NEW\n", scope="project:proj_x")
+    read = _knowledge_read(ctx, "arch", scope="project:proj_x")
+    revision = json.loads(read.split("\n", 1)[0].removeprefix("[Knowledge source] "))["revision"]
+    assert _knowledge_write(ctx, "arch", "NEW\n", scope="project:proj_x", expected_revision=revision).startswith("✅")
+    assert (shelf / "arch.md").read_text(encoding="utf-8") == "NEW\n"
+
+    assert "global-only" in project_store_access_block("projects/proj_x/knowledge/patterns.md")
+    reserved = _knowledge_read(ctx, "patterns", scope="project:proj_x")
+    assert "GLOBAL PATTERNS" in reserved and "PROJECT COPY" not in reserved
 
 
 def test_project_store_write_refusal_names_the_writer_and_its_current_project_limit(tmp_path, monkeypatch):
