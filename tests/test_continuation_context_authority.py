@@ -164,6 +164,32 @@ def test_a_stored_legacy_narrative_is_the_notes_row_and_main_never_substitutes(t
         assert note is None
 
 
+def test_an_ordinary_fold_names_its_notes_for_the_successor_and_a_noteless_view_clears_them(tmp_path):
+    """17.10 review: the notes row read only review-history selections, so a task that folded ordinary
+    work handed its successor nothing. Every applied fold now names the surviving notes in the result."""
+    from types import SimpleNamespace
+
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+    from ouroboros.main_context_authority import WORKING_NOTES_FIELD, predecessor_notes_message, publish_working_notes
+    from ouroboros.task_results import load_task_result, write_task_result
+    from tests.test_context_renewal import NOTE, _noted
+
+    task_id = "ordinary-fold-root"
+    write_task_result(tmp_path, task_id, "running", result="")
+    folded = _noted(tmp_path)
+    ref = publish_working_notes(SimpleNamespace(task_id=task_id, drive_root=tmp_path), folded)
+    assert load_task_result(tmp_path, task_id)[WORKING_NOTES_FIELD] == ref
+    task = {"id": "next", "text": "continue", "budget_drive_root": str(tmp_path),
+            "predecessor_authority_source": _pull_source(task_id)}
+    assert validate_task_authority_sources(SimpleNamespace(drive_root=tmp_path, budget_drive_root=tmp_path), task) == {}
+    note = predecessor_notes_message(task, drive_root=tmp_path)
+    assert NOTE in note["content"] and WORKING_NOTES_FIELD in note["content"]
+    plain = [row for row in folded if not isinstance(row.get("content"), list)]  # a view whose notes were retired
+    assert publish_working_notes(SimpleNamespace(task_id=task_id, drive_root=tmp_path), plain) is None
+    assert load_task_result(tmp_path, task_id)[WORKING_NOTES_FIELD] is None
+    assert predecessor_notes_message(task, drive_root=tmp_path) is None
+
+
 def test_a_narrative_only_in_the_chat_log_is_the_notes_row_by_its_exact_task(tmp_path):
     """Records written before narratives were stored beside the result keep theirs in the chat
     log; the notes row reads it by exact task identity from the dialogue store, nothing else."""

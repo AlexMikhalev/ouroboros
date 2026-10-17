@@ -26,6 +26,8 @@ from ouroboros.store import StoreError
 # The typed kind of the predecessor-notes row (``_host_context_kind``): a plain host
 # prose row the mind folds like any dialogue unit; the key never reaches the wire.
 PREDECESSOR_NOTES_NAME = "predecessor_notes"
+#: Task-result field naming the mind's surviving authored notes after its latest applied fold.
+WORKING_NOTES_FIELD = "working_notes"
 
 
 def project_helper_predecessor_authority(
@@ -139,10 +141,11 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
 
     Only the task that materialized a named predecessor at its own start carries it
     (the successor); a child's contract spread carries the brief and its reader alone.
-    The notes are the actor capsules the predecessor kept in its selected
-    review-history view — the working views its mind authored and chose to keep, in
-    order — or, on records earlier versions wrote, its authored narrative stored beside the
-    result or in the chat log (``project_dialogue.resolve_legacy_continuation_narrative``). The
+    The notes are the actor capsules still in the predecessor's view after its latest
+    applied fold (``WORKING_NOTES_FIELD``, ``publish_working_notes``) — every note its mind
+    authored and kept, in order; on records written before that field, the capsules of its
+    selected review-history view, else its authored narrative stored beside the result or in
+    the chat log (``project_dialogue.resolve_legacy_continuation_narrative``). The
     row is a plain host prose row (``_host_context_kind``): the mind folds it like any
     dialogue unit, the fold's checkpoint retains its exact text, and the header names
     the exact source. A pointer whose source cannot be read yields a typed gap row;
@@ -164,9 +167,14 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
     reader = f"get_task_result(task_id={owner!r}, include_authority=True)"
     try:
         saved = load_task_result(drive_root, owner, strict=True) or {}
+        working = saved.get(WORKING_NOTES_FIELD)
         selection = saved.get(view.SELECTED_VIEW_FIELD)
         narrative = saved.get("continuation_narrative")
-        if selection:
+        if isinstance(working, Mapping):
+            texts = [str(text) for text in json.loads(read_actor_source_bytes(drive_root, owner, working))["notes"]]
+            where = (f"{reader} -> {WORKING_NOTES_FIELD}; the retained bytes are "
+                     f"{json.dumps(working, ensure_ascii=False, sort_keys=True)} of task {owner}")
+        elif selection:
             record = view.load_review_history_view(selection, lambda ref: read_actor_source_bytes(drive_root, owner, ref))
             texts = [capsule["content"][0]["text"] for capsule in view.selected_actor_capsules(record)]
             where = (f"{reader} -> {view.SELECTED_VIEW_FIELD}; the retained bytes are "
@@ -199,5 +207,44 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
             "content": "\n\n".join([header, *texts])}
 
 
-__all__ = ["PREDECESSOR_NOTES_NAME", "predecessor_notes_message", "project_main_task_authority",
+def publish_working_notes(ctx: Any, messages: Any) -> Optional[Dict[str, Any]]:
+    """Name the mind's surviving authored notes in its task result after an applied fold.
+
+    Every actor capsule of the folded view, in order, is retained once as exact bytes and named by
+    ``WORKING_NOTES_FIELD``; a successor reads them as its notes row (``predecessor_notes_message``),
+    whether or not the fold touched review history. A view with no notes left clears the field. A
+    failed write keeps the fold: the notes stay in the transcript and its checkpoints.
+    """
+    import logging
+
+    from ouroboros.artifacts import store_actor_source_bytes
+    from ouroboros.context_compaction import _capsule_metadata
+    from ouroboros.task_results import write_task_result
+
+    def note_text(row: Mapping[str, Any]) -> str:
+        capsule, meta = _capsule_metadata(row)
+        return str(row["content"][0].get("text") or "") if capsule and meta and meta.get("authorship") == "actor" else ""
+
+    root = getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None)
+    task = str(getattr(ctx, "task_id", "") or "")
+    if not root or not task:
+        return None  # no durable task result to name them in (a bare tool context)
+    texts = [text for text in (note_text(row) for row in messages) if text.strip()]
+    try:
+        ref = None
+        if texts:
+            raw = json.dumps({"task_id": task, "notes": texts}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ref = store_actor_source_bytes(root, task, category="context_checkpoints",
+                                           source_id="working-notes-" + hashlib.sha256(raw).hexdigest(), data=raw,
+                                           extension="json")
+        write_task_result(root, task, "running", strict_existing_dict=True, _field_projector=lambda existing, _new: {
+            "status": existing.get("status") or "running", WORKING_NOTES_FIELD: ref})
+        return ref
+    except (OSError, ValueError, TypeError, KeyError, StoreError):
+        logging.getLogger(__name__).warning("Working notes of %s were not named in its result", task, exc_info=True)
+        return None
+
+
+__all__ = ["PREDECESSOR_NOTES_NAME", "WORKING_NOTES_FIELD", "predecessor_notes_message", "publish_working_notes",
+           "project_main_task_authority",
            "project_helper_predecessor_authority"]
