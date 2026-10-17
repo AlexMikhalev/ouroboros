@@ -43,6 +43,12 @@ def test_every_settings_tab_contains_long_copy_and_controls(subscription_ui, wid
     assert all(r['overflow'] <= 1 and r['stripLeft'] >= -1 and r['stripRight'] <= 1
                for r in results.values()), json.dumps(results, indent=2)
 
+    # Prove this guard observes the owner's original notification-label leak.
+    page.locator('[data-settings-tab="appearance"]').click()
+    legacy = page.add_style_tag(content='.local-toggle { white-space: nowrap; }')
+    assert page.locator('.settings-scroll').evaluate('s => s.scrollWidth - s.clientWidth') > 1
+    legacy.evaluate('el => el.remove()')
+
     # A component must also fit an embedded narrow column at a wide viewport,
     # where viewport-specific one-column overrides cannot rescue its tracks.
     page.set_viewport_size({"width": 1280, "height": 844})
