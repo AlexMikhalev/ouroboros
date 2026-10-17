@@ -138,6 +138,7 @@ def _migrated_sources() -> dict[str, str]:
         "web/model_roles.css": _decommented(_read("web/model_roles.css")),
         "web/model_wait.css": _decommented(_read("web/model_wait.css")),
         "web/room_work.css": _decommented(_read("web/room_work.css")),
+        "web/cards.css": _decommented(_read("web/cards.css")),
         "web/style.css (migrated regions)": _migrated_style_region(),
     }
 

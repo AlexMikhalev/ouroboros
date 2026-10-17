@@ -302,6 +302,7 @@ export function createChatInstance({
         senderLabel,
         stampNodeTimestamp,
         onDomWrite: withStableViewport,
+        replies, composer: () => composer,
     });
     const mainWaiting = isMain ? createMainWaiting({ page, messagesDiv, insertMessageNode, stampNodeTimestamp,
         openSettings: openSettingsTab, refresh: () => refreshHeaderControlState(true), mutate: withStableViewport,
@@ -2423,14 +2424,7 @@ export function createChatInstance({
                         portals.row(msg, msg.text, { historyId: msg.history_id, historyPosition: msg.history_position, taskId });
                         continue;
                     }
-                    // Render media before final handling: a mid-task delivery cannot finish its card.
-                    if (['document', 'photo', 'video', 'links', 'quiz'].includes(msg.msg_type)) {
-                        if (msg.msg_type === 'document') appendDocumentBubble(msg);
-                        else if (msg.msg_type === 'links') appendLinksMessage(msg);
-                        else if (msg.msg_type === 'quiz') appendQuizMessage(msg);
-                        else appendMediaBubble(msg);
-                        continue;
-                    }
+                    if (appendDelivery(msg)) continue;
                     if (subagentChildParents.has(taskId) && childRowPlacement(msg) === 'line') {
                         insertCardIfNeeded(taskId); routeSubagentProgressToCard(taskId, msg, true); continue;
                     }
@@ -3435,22 +3429,21 @@ export function createChatInstance({
         }
     });
 
-    const { appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage } =
-        chatMedia.wireDeliveries({
-            onWs,
-            isMyThread,
-            hideTypingIndicatorOnly,
-            syncChatStatus,
-            incrementUnreadIfNeeded,
-            seenMessageKeys,
-            rememberMessageKey,
-            chatMediaMessageKey,
-            documentMessageKey,
-            buildQuizCard: chatDecision.buildQuizCard,
-            applyQuizStateFrame: chatDecision.applyQuizStateFrame,
-            messagesRoot: () => messagesDiv,
-            deliverContentMutation: withRemoteActivity,
-        });
+    const { appendDelivery, appendQuizMessage } = chatMedia.wireDeliveries({
+        onWs,
+        isMyThread,
+        hideTypingIndicatorOnly,
+        syncChatStatus,
+        incrementUnreadIfNeeded,
+        seenMessageKeys,
+        rememberMessageKey,
+        chatMediaMessageKey,
+        documentMessageKey,
+        buildQuizCard: chatDecision.buildQuizCard,
+        applyQuizStateFrame: chatDecision.applyQuizStateFrame,
+        messagesRoot: () => messagesDiv,
+        deliverContentMutation: withRemoteActivity,
+    });
 
     let wsHasConnectedOnce = false;
 
