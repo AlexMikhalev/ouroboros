@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+import subprocess
 
 import pytest
 
@@ -23,13 +24,14 @@ LIMIT = {"scope": "turn_text", "unit": "unicode_scalars", "limit": 1_048_576,
 
 @pytest.mark.parametrize("large", [True, False])
 @pytest.mark.parametrize("access", ["readonly", "full"])
-@pytest.mark.parametrize("git_workspace", [True, False])
-def test_complete_session_turn_pages_only_when_transport_requires_it(tmp_path, large, access, git_workspace):
+@pytest.mark.parametrize("workspace", ["git_ignored", "git_unignored", "directory"])
+def test_complete_session_turn_pages_only_when_transport_requires_it(tmp_path, large, access, workspace):
     root, checking, data = (tmp_path / name for name in ("repo", "checking", "data"))
     for tree in (root, checking):
-        if git_workspace:
+        if workspace != "directory":
             _staged_repo(tree)
-            (tree / ".git" / "info" / "exclude").write_text(".review-drive/\n", encoding="utf-8")
+            if workspace == "git_ignored":
+                (tree / ".git" / "info" / "exclude").write_text(".review-drive/\n", encoding="utf-8")
         else:
             tree.mkdir()
     prompt = "Review exact evidence 😀\n" * (60_000 if large else 10)
@@ -48,6 +50,10 @@ def test_complete_session_turn_pages_only_when_transport_requires_it(tmp_path, l
         target = checking if access == "full" else root
         assert (target / source["session_relative_path"]).read_text(encoding="utf-8") == prompt
         assert "not inlined" in request["prompt"] and source["sha256"] in request["prompt"]
+        if workspace != "directory":
+            status = subprocess.run(["git", "status", "--porcelain", "--", ".review-drive"],
+                cwd=target, capture_output=True, text=True, check=True)
+            assert not status.stdout
     else:
         assert request["prompt"] == prompt and not facts.get("turn_sources")
 

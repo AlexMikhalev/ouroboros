@@ -259,8 +259,9 @@ def _store_review_source(
     existing actor-readable artifact store — the store a native episode's
     ``read_file(root="artifact_store", …)`` resolves under its data root. A
     delegated harness has no artifact store, only the project, so its brief
-    additionally materializes the byte-exact copy inside the review's already
-    git-ignored ``.review-drive`` view. A store the host cannot write is not a
+    additionally materializes the byte-exact copy inside the review's
+    git-ignored ``.review-drive`` view (locally excluded in an external project).
+    A store the host cannot write is not a
     refusal: the caller keeps the inline diff or the unavailable-preimage
     diagnostic, with the reason stated in either case.
     """
@@ -283,6 +284,20 @@ def _store_review_source(
 
         view = materialize_commit_review_session_view(
             {"source_ref": ref, "task_id": task_id, "data_root": root}, repo_dir)
+        if view.get("session_source_status") != "ready" and (repo_dir / ".git").exists():
+            # External projects need not carry Ouroboros's .gitignore. Keep the
+            # generated input out of their candidate without editing tracked files.
+            from ouroboros.utils import run_cmd
+
+            try:
+                exclude = repo_dir / run_cmd(["git", "rev-parse", "--git-path", "info/exclude"], cwd=repo_dir).strip()
+                exclude.parent.mkdir(parents=True, exist_ok=True)
+                with exclude.open("a", encoding="utf-8") as stream:
+                    stream.write("\n/.review-drive/\n")
+                view = materialize_commit_review_session_view(
+                    {"source_ref": ref, "task_id": task_id, "data_root": root}, repo_dir)
+            except (OSError, RuntimeError) as exc:
+                return {"error": f"{type(exc).__name__}: {exc}"}
         if view.get("session_source_status") != "ready" and not (repo_dir / ".git").exists():
             # Project-scoped review also supports ordinary non-Git workspaces;
             # no Git ignore check is meaningful there.
