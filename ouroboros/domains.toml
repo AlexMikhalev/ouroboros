@@ -176,6 +176,7 @@ D20 = "Presence"
 "ouroboros/context_source_view.py" = "D03"
 "ouroboros/context_fit.py" = "D03"
 "ouroboros/context_anchor.py" = "D03"  # this conversation's own size anchor and accepted-input floor
+"ouroboros/context_renewal.py" = "D03"  # the refusal path's floor: the same task in a fresh view of its record
 "ouroboros/context_health.py" = "D03"
 "ouroboros/context_layout.py" = "D03"
 "ouroboros/context_mode_compat.py" = "D03"
@@ -1140,7 +1141,6 @@ lazy_only = [
   "D16->D08",
   "D16->D09",
   "D17->D02",
-  "D17->D03",
   "D17->D05",
   "D17->D07",
   "D17->D09",

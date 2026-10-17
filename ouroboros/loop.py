@@ -709,12 +709,9 @@ def run_llm_loop(
             ctx.context_fit_plan, ctx.active_context_mode = context_fit_plan, active_context_mode
             if (msg is None and str(accumulated_usage.get("_last_llm_error_kind") or "") == "llm_output_exhausted"
                     and not provider_no_call_source(accumulated_usage, False)[0]):
-                # Output exhaustion is no outage, the primary's (no route walk) or a configured
-                # candidate's (the walk keeps its kind): no wait, no provider terminal. One host fact,
-                # then the next ordinary round decides under the existing round, time and money
-                # limits. A round still holding an unresolved attempt may start no new generation,
-                # so it keeps the recovery below (provider_no_call_source decides). The provider
-                # answered, so the recovery above already ended any wait episode.
+                # Output exhaustion is no outage (primary or configured candidate): no wait, no provider
+                # terminal; one host fact, then the next round decides under the round, time and money
+                # limits. A round holding an unresolved attempt keeps the recovery below (provider_no_call_source).
                 _append_or_merge_user_message(
                     messages, _output_exhausted_notice(accumulated_usage.get("_last_llm_output_exhausted")))
                 pending_no_tool_budget = True  # an unfinished no-tool round keeps the same budget tail (#1223)
@@ -725,6 +722,9 @@ def run_llm_loop(
                 drive_root=drive_root, drive_logs=drive_logs, task_id=task_id, model=active_model,
                 emit_progress=emit_progress, incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen):
                 free_redial = True
+                continue
+            from ouroboros.context_renewal import renew_after_refusal
+            if msg is None and renew_after_refusal(limit_ctx, tools):  # owner Q1=A: the same task in a fresh view
                 continue
             if msg is None:
                 # Exact actor routes skip generic substitution and fail as infrastructure.
