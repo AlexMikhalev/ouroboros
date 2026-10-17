@@ -274,7 +274,7 @@ def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fau
     # Gone or an unreaped corpse. Windows keeps an exited process (and its birth) readable
     # while a handle is open and ends Job members asynchronously, so its exit state decides.
     deadline = time.monotonic() + 15
-    while pl.process_start_time(pid) == born and pl.pid_is_alive(pid) and not pid_is_zombie(pid):
+    while pl.process_start_time(pid) == born and not pl.pid_provably_gone(pid) and not pid_is_zombie(pid):
         assert time.monotonic() < deadline, output
         time.sleep(0.05)
 
