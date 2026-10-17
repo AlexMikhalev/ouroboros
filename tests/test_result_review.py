@@ -285,3 +285,37 @@ def test_pending_review_finish_delivers_over_a_running_review_unless_blocking(tm
     assert ("pending_review=finish" in shown[0]) is delivered
     ctx._acceptance_pending_review_choice = "finish"
     assert (result_review_at_delivery(ctx, "FINAL ANSWER: 2", {"tool_calls": []}, shown.append) is False) is delivered
+
+
+@pytest.mark.parametrize("runtime, enforcement, finish_delivers", [
+    ("pro", "advisory", True), ("cyber_pro", "blocking", True), ("pro", "blocking", False)])
+def test_a_running_review_the_mind_started_is_waited_for_unless_it_chose_to_finish(
+        tmp_path, monkeypatch, runtime, enforcement, finish_delivers):
+    import pathlib
+
+    import ouroboros.tools.review_change as review_change_mod
+    import ouroboros.tools.review_result as review_result
+    from ouroboros.body_candidate import serving_repo_dir_for
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="auto", enforcement=enforcement)
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", runtime)
+    answer = "The summary is in summary.md."
+    subject = review_result.result_subject(ctx, SimpleNamespace(answer=""),
+                                           governance_root=pathlib.Path(serving_repo_dir_for(ctx)), answer=answer)
+    rows = [{"record_id": "rl-mind", "state": "pending", "subject": {"diff_sha": subject.diff_sha}}]
+    monkeypatch.setattr(review_result, "_result_rows", lambda ctx: rows)
+    collected = []
+    monkeypatch.setattr(review_change_mod, "run_review_change",
+                        lambda ctx, **kwargs: collected.append(kwargs) or {"state": "pending", "record_id": "rl-mind"})
+    shown = []
+
+    assert review_result.result_review_at_delivery(ctx, answer, {"tool_calls": []}, shown.append) is True, \
+        "the default is to wait for the review the mind started (in Cyber Pro too)"
+    assert collected and collected[0]["subject"] == "result" and "still running" in shown[0]
+    ctx._acceptance_pending_review_choice = "finish"
+    assert (review_result.result_review_at_delivery(ctx, answer, {"tool_calls": []}, shown.append) is False) \
+        is finish_delivers, "an explicit finish is honoured unless Blocking outside Cyber Pro"
+    rows[0]["subject"] = {"diff_sha": "another-answer"}
+    ctx._acceptance_pending_review_choice = "wait"
+    assert review_result.result_review_at_delivery(ctx, answer, {"tool_calls": []}, shown.append) is False, \
+        "a review of an earlier answer never holds this one"

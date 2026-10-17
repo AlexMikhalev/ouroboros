@@ -357,6 +357,15 @@ def settled_result_record(ctx: Any, subject_sha: str, rows: Optional[List[Dict[s
     return None
 
 
+def running_result_review(rows: List[Dict[str, Any]], subject_sha: str) -> str:
+    """The record id of this task's result review of exactly this subject that is still running, else ``""``."""
+    for row in rows:
+        if (str((row.get("subject") or {}).get("diff_sha") or "") == subject_sha
+                and row.get("state") == "pending"):
+            return str(row.get("record_id") or "pending")
+    return ""
+
+
 def _supersede_other_result_runs(llm_trace: Dict[str, Any], subject_sha: str) -> None:
     """A result run of an earlier answer never speaks for this one: superseded, never deleted."""
     for run in llm_trace.get("review_runs") or []:
@@ -428,7 +437,9 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     reviewed yet is reviewed by the host, through the same wave as a mind's own call. The outcome reaches
     the mind before delivery: a PASS delivers; otherwise its findings are shown once (``hold(text)``), then
     Advisory and Cyber Pro deliver on the mind's next decision while Blocking holds until a review passes
-    the result or the task stops. A child is never forced and Presence speech is never held."""
+    the result or the task stops. A review of this result the mind started that is still running is
+    collected the same way: the delivery waits for it unless a nonblocking install's mind chose
+    ``pending_review=finish``. A child is never forced and Presence speech is never held."""
     from ouroboros.config import get_task_review_mode
 
     mode = get_task_review_mode()
@@ -450,13 +461,22 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     record = settled_result_record(ctx, subject.diff_sha, rows)
     if record is None and subject.diff_sha in (getattr(ctx, "_result_review_refused", None) or set()):
         return False  # its $0 refusal was shown: no review of this result can be bought, nothing holds it
-    if record is None and required:
+    # A review of exactly this result that the mind started and that is still running is collected like
+    # the floor's own, in every mode but Off: the delivery waits for it unless the mind chose to finish.
+    running = running_result_review(rows, subject.diff_sha) if record is None and not required else ""
+    if running:
+        ctx._result_review_pending = running
+        if (pending_review_choice_offered(ctx)
+                and str(getattr(ctx, "_acceptance_pending_review_choice", "") or "") == "finish"):
+            return False  # the mind chose to finish; the reviewers settle later and leave a mark
+    if record is None and (required or running):
         from ouroboros import review_pause
 
         try:
             with review_pause.receptive_author(review_pause.receptive_binding(ctx)):
                 outcome = run_review_change(ctx, subject="result", answer=str(content or ""),
-                                            reason="Required: the host's review of a result with produced work")
+                                            reason=("Required: the host's review of a result with produced work"
+                                                    if required else "Collect the running review of this result"))
         except ReviewChangeArgumentError as exc:
             log.warning("Required result review of %s not dispatched: %s", getattr(ctx, "task_id", ""), exc)
             return False
