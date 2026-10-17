@@ -257,10 +257,12 @@ def _inherit_revisions(root: pathlib.Path, conn: Any) -> Dict[int, int]:
 
 def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Record the chain's segments in the ledger (new ones pending) and move the stream's
-    coordinates: ``next_seq`` and ``files_seq`` never below the chain's length. A segment a
-    store-unaware body appended WITHOUT the rollback export (its chain place lies beyond what
-    the files hold, under coordinates the store already gave to appended rows) is placed after
-    ``next_seq`` instead: its rows are never lost, at the price of their chain offsets."""
+    coordinates: ``next_seq`` and ``files_seq`` never below the chain's length. A new segment whose
+    chain place lies under coordinates the store already gave to other rows -- one a store-unaware
+    body appended WITHOUT the rollback export, or one whose name sorts before imported segments (a
+    clock set back, a copy from a backup) -- is placed after ``next_seq`` instead: its rows are
+    never lost, at the price of their chain offsets. A segment that starts with the very row the
+    store holds at its place (the rollback export's lines, continued by an older body) keeps it."""
     total = sum(segment["size"] for segment in plan)
     added = mismatched = shifted = 0
     with ds.transaction(root, write=True) as conn:
@@ -273,8 +275,8 @@ def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[s
             kept = known.get(segment["name"])
             if kept is None:
                 base = segment["base"]
-                if files_seq <= base < next_seq:
-                    base, shifted = next_seq, shifted + 1
+                if base < next_seq and not _continues_store(root, conn, stream, segment):
+                    base, shifted = next_seq, shifted + 1  # its place is taken: there its rows would be lost
                 next_seq = max(next_seq, base + segment["size"])
                 end = max(end, base + segment["size"])
                 conn.execute("INSERT INTO import_ledger (stream, name, base, size, mtime_ns, state) VALUES (?,?,?,?,?,'pending')",
@@ -291,6 +293,21 @@ def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[s
                      (end, total if not shifted else files_seq, total, stream))
         _settle(conn, stream)  # a chain without archive segments settles its counts here
     return {"segments": len(plan), "added": added, "mismatched": mismatched, "shifted": shifted, "chain_bytes": total}
+
+
+def _continues_store(root: pathlib.Path, conn: Any, stream: str, segment: Dict[str, Any]) -> bool:
+    """Whether ``segment`` starts with the row the store already holds at its chain place: the
+    exported lines of a rollback, which a re-cutover takes back at their own coordinates."""
+    try:
+        with open(root / "archive" / segment["name"], "rb") as handle:
+            first = handle.readline()
+    except OSError:
+        return False
+    stored = conn.execute("SELECT body, length FROM dialogue WHERE stream=? AND seq=?",
+                          (stream, segment["base"])).fetchone()
+    line = next(iter(segment_rows(first, segment["base"])), None)
+    return (stored is not None and line is not None and line.row is not None
+            and line.length == stored["length"] and line.row == ds.decode(stored["body"]))
 
 
 # --- importing segments ----------------------------------------------------------------------

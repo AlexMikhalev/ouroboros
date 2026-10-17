@@ -482,3 +482,19 @@ def test_only_the_segment_whose_bytes_changed_is_refused_never_the_ones_it_moved
         assert ds.range_coverage(tmp_path, "chat", lower=row["base"], upper=row["base"] + row["size"]) == {
             "imported": True, "pending": 0, "mismatch": 0, "gaps": 0}
 
+
+def test_a_segment_that_sorts_before_imported_ones_is_stored_after_them_never_lost(tmp_path):
+    """A segment that appears after the cutover with an older name (a clock set back, a copy from a
+    backup) used to be planned onto coordinates the import had already given away: its rows were
+    dropped while the ledger and coverage said "imported". It is placed after every stored row."""
+    def row(tag, index):
+        return {"ts": "2026-09-01T00:00:00Z", "chat_id": 1, "direction": "in", "text": f"{tag}-{index}"}
+
+    seed(tmp_path, archives={"chat_20260901T000000.jsonl": [row("A", index) for index in range(5)]})
+    di.run_dialogue_import(tmp_path)
+    seed(tmp_path, archives={"chat_20260801T000000.jsonl": [row("B", index) for index in range(5)]})
+    di.run_dialogue_import(tmp_path)
+    texts = [entry.row["text"] for entry in ds.newest(tmp_path, "chat", limit=100)]
+    assert sorted(texts) == sorted([f"A-{index}" for index in range(5)] + [f"B-{index}" for index in range(5)])
+    assert ds.range_coverage(tmp_path, "chat") == {"imported": True, "pending": 0, "mismatch": 0, "gaps": 0}
+
