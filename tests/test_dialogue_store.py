@@ -439,23 +439,25 @@ def test_an_export_interrupted_before_its_coordinate_moved_finishes_the_batch_on
 def test_a_torn_export_that_a_boot_cutover_took_in_never_refuses_later_exports(tmp_path, monkeypatch):
     """An export cut inside a row, then a boot whose cutover took the live file in (its whole rows
     imported, the cut line a skipped interval) before the seam retried: the batch record is stale,
-    and later exports start afresh instead of refusing every time."""
+    and later exports start afresh from the files' coordinate instead of refusing every time. The
+    row the write cut stays a skipped interval in the files (it is in the store)."""
     di.cutover(tmp_path)
-    for row in (chat("after-1", "после"), chat("", "ответ после", direction="out")):
+    rows = [chat("after-1", "после"), chat("", "ответ после", direction="out"), chat("after-2", "ещё")]
+    for row in rows:
         ds.append(tmp_path, "chat", row)
+    encoded = [ds.encode(row).encode("utf-8") + b"\n" for row in rows]
     live = tmp_path / "logs" / "chat.jsonl"
     real_now = di.utc_now_iso
     monkeypatch.setattr(di, "utc_now_iso", lambda *_a: (_ for _ in ()).throw(SystemExit("died")))
     with pytest.raises(SystemExit):
         di.export_for_older_body(tmp_path)
     monkeypatch.setattr(di, "utc_now_iso", real_now)
-    data = live.read_bytes()
-    live.write_bytes(data[:len(data) - 7])  # the second row's write was cut short
-    di.cutover(tmp_path)  # the next boot: a non-empty live file is planned again
-    assert live.stat().st_size == 0 and ds.meta(tmp_path, "export_batch:chat") is not None
-    ds.append(tmp_path, "chat", chat("after-2", "ещё"))
-    report = di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]
-    assert report["rows"] == 1 and live.read_bytes() == ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
+    live.write_bytes(b"".join(encoded)[:len(encoded[0]) + 7])  # the kill came inside the second row
+    report = di.cutover(tmp_path)  # the next boot plans the non-empty live file again
+    assert report["chat"]["rotated"] and ds.range_coverage(tmp_path, "chat")["gaps"] == 1
+    assert ds.meta(tmp_path, "export_batch:chat") is not None
+    exported = di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]
+    assert exported["rows"] == 1 and live.read_bytes() == encoded[2], "the rows after the files' coordinate, once"
     assert ds.meta(tmp_path, "export_batch:chat") is None
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0
 
