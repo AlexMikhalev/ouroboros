@@ -70,32 +70,41 @@ def background_env(presentation: str) -> dict:
     return {BACKGROUND_ENV: "1" if presentation == "desktop_window" and sys.platform in ("win32", "darwin") else ""}
 
 
-WORKING_PHASES = ("thinking", "working", "finalizing")  # the page's own set (web/modules/project_activity.js)
+TRAY_LINE_MAX = 63  # the Windows notify-icon tooltip limit (launcher_tray.py)
 
 
 def status_line(port: int) -> str:
-    """The indicator's state line from the server's own ``/api/state``: work only from confirmed phases,
-    and an unknown state said as unknown (not ready, an error, an incomplete census, an unknown phase)."""
+    """The indicator's state line from the server's own ``/api/state`` work projection: a work is working,
+    pausing, paused or waiting as the server classified it, an incomplete projection is said as unknown, and
+    what waits for the owner is counted (gateway/work_status.py)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/api/state", timeout=5) as response:
             state = json.loads(response.read().decode("utf-8"))
-        rows = state["active_chat_activities"]
-        phases = [str(row.get("phase") or "") for row in rows]
+        works = [work for work in state["works"] if isinstance(work, dict)]
+        summary = state["work_summary"]
     except Exception:
         return "Ouroboros: not responding"
     if state.get("supervisor_error"):
         return "Ouroboros: error, tasks are not running"
     if state.get("supervisor_ready") is not True:
         return "Ouroboros: starting"
-    if state.get("active_chat_activities_complete") is not True or not set(phases) <= {
-            *WORKING_PHASES, "queued", "budget_pausing", "budget_paused"}:
+    if state.get("works_complete") is not True or not isinstance(summary, dict) or summary.get("confirmed") is not True \
+            or any(work.get("activity") == "unknown" for work in works):
         return "Ouroboros: activity unconfirmed"
-    working = sum(phase in WORKING_PHASES for phase in phases)
-    if working:
-        return f"Ouroboros: working on {working} task{'' if working == 1 else 's'}"
-    if "budget_pausing" in phases:  # settling its Pause: neither working nor paused yet, as on the page
-        return "Ouroboros: pausing"
-    return "Ouroboros: paused" if "budget_paused" in phases else "Ouroboros: waiting"
+    working = [work for work in works if work.get("activity") == "working"]
+    moving = [work for work in working if work.get("transition") != "pausing"]
+    if moving:
+        line = f"Ouroboros: working on {len(moving)} task{'' if len(moving) == 1 else 's'}"
+    elif working:  # settling its Pause: neither working nor paused yet, as on the page
+        line = "Ouroboros: pausing"
+    elif any(work.get("activity") == "paused" for work in works):
+        line = "Ouroboros: paused"
+    else:
+        line = "Ouroboros: waiting"
+    waits = sum(bool(work.get("turn")) for work in works)
+    if waits:
+        line += f" · {waits} {'waits' if waits == 1 else 'wait'} for you"
+    return line if len(line) <= TRAY_LINE_MAX else line[:TRAY_LINE_MAX - 1] + "…"
 
 
 def signin_startup_on(port: int) -> bool:
