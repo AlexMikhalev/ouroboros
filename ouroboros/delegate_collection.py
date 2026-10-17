@@ -249,6 +249,8 @@ def collect_terminal(root, run_id: str, *, gateway=None, detail: dict | None = N
                 and not disposition_refusal(root, entry)):
             try:
                 capture = capture_terminal_patch_for_drive(root, entry, gateway=gateway, retain_investigation=False)
+                if isinstance(capture, dict) and capture.get("status") == "failed":  # a typed failure stays owed
+                    raise RuntimeError(str(capture.get("note") or "patch capture failed"))
             except Exception as exc:
                 errors.append(f"capture:{type(exc).__name__}")
                 _collection_failure(entry, "capture", exc, failures)

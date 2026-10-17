@@ -434,7 +434,11 @@ derived from whatever generic opacity sits on the element.
 
 The connected Chat header says `Starting…` until a complete server-ready
 observation confirms the supervisor can assign work; a live socket alone means
-only that the UI transport is open. `Online` is reserved for a ready, idle
+only that the UI transport is open. The host's boot phases refine the word
+without changing the fact: `Chat ready, restoring background tasks` once the
+dialogue accepts messages durably while pooled work is still not admitted, and
+`Start failed` (its cause in the badge title) when the generation cannot become
+ready. `Online` is reserved for a ready, idle
 runtime; known queued, active or finalizing work keeps its own factual label. A
 durably accepted incoming message likewise proves acceptance, not that its task
 has begun or a model has read it.

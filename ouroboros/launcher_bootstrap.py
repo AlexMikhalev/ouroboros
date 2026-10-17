@@ -606,6 +606,7 @@ def _per_skill_version_resync(
     log_obj: Any,
     *,
     drive_root: pathlib.Path | None = None,
+    failures: list[str] | None = None,
 ) -> int:
     """Re-seed only marker-owned native skills whose seed version changed.
 
@@ -614,6 +615,7 @@ def _per_skill_version_resync(
     """
     if not seed_dir.is_dir() or not native_root.is_dir():
         return 0
+    failures = failures if failures is not None else []
     upgraded = 0
     for entry in sorted(seed_dir.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):
@@ -630,10 +632,12 @@ def _per_skill_version_resync(
         seed_manifest = _read_skill_manifest(entry)
         target_manifest = _read_skill_manifest(target)
         if seed_manifest is None or target_manifest is None:
+            failures.append(entry.name)
             continue
         seed_version = str(seed_manifest.version or "").strip()
         target_version = str(target_manifest.version or "").strip()
         if not seed_version or not target_version:
+            failures.append(entry.name)
             continue
         if seed_version == target_version:
             try:
@@ -647,6 +651,7 @@ def _per_skill_version_resync(
                     manifest_scripts=target_manifest.scripts,
                 )
             except Exception as exc:
+                failures.append(entry.name)
                 log_obj.warning(
                     "Native skill %s version %s payload comparison unavailable (%s)",
                     entry.name, seed_version, type(exc).__name__,
@@ -671,6 +676,8 @@ def _per_skill_version_resync(
             new_version=seed_version,
         ):
             upgraded += 1
+        else:
+            failures.append(entry.name)
     return upgraded
 
 
@@ -827,7 +834,7 @@ def _carry_grants_across_reseed(
         log_obj.warning("Grant carry across re-seed failed for %s", skill_dir, exc_info=True)
 
 
-def _migrate_control_file_hashes(target_root: pathlib.Path, log_obj: Any) -> None:
+def _migrate_control_file_hashes(target_root: pathlib.Path, log_obj: Any) -> bool:
     """One-shot re-pin for reviews recorded with the legacy control-file hash.
 
     v6.31 excluded lifecycle control files (``.seed-origin``) from the payload
@@ -838,7 +845,7 @@ def _migrate_control_file_hashes(target_root: pathlib.Path, log_obj: Any) -> Non
     """
     native_root = target_root / "native"
     if not native_root.is_dir():
-        return
+        return True
     try:
         from ouroboros.skill_loader import (
             compute_content_hash,
@@ -846,10 +853,11 @@ def _migrate_control_file_hashes(target_root: pathlib.Path, log_obj: Any) -> Non
             save_review_state,
         )
     except Exception:
-        return
+        return False
     # Only native-bucket payloads are affected by the exemption (the hash for
     # other buckets is byte-identical before/after the semantics change), so
     # scanning native/ alone is complete by construction.
+    complete = True
     for entry in sorted(native_root.iterdir()):
         try:
             if not entry.is_dir() or not (entry / ".seed-origin").is_file():
@@ -876,10 +884,13 @@ def _migrate_control_file_hashes(target_root: pathlib.Path, log_obj: Any) -> Non
                 skill.name,
             )
         except Exception:
+            complete = False
             log_obj.debug("Control-file hash migration failed for %s", entry, exc_info=True)
+    return complete
 
 
-def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj: Any) -> int:
+def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj: Any, *,
+                      failures: list[str] | None = None) -> int:
     """Copy seed skills into ``target_root/native/`` once, guarded by a marker.
 
     The marker preserves deletion intent: after first bootstrap, an empty
@@ -887,6 +898,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
     """
     if not seed_dir.is_dir():
         return 0
+    failures = failures if failures is not None else []
     native_root = target_root / "native"
     try:
         # Prefer the canonical layout helper; fall back to manual mkdir.
@@ -898,6 +910,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             for bucket in ("native", "clawhub", "external"):
                 (target_root / bucket).mkdir(parents=True, exist_ok=True)
     except OSError as exc:
+        failures.append("data_root")
         log_obj.warning("Skills data root setup failed: %s", exc)
         return 0
 
@@ -911,6 +924,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
                 skill.name for skill in discover_skills(target_root.parent)
             }
         except Exception:
+            failures.append("installed_names")
             log_obj.warning(
                 "New native skill seeding skipped: installed skill names could not be inspected",
                 exc_info=True,
@@ -926,6 +940,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             if dest.exists() or not any((entry / candidate).is_file() for candidate in ("SKILL.md", "skill.json")):
                 continue
             if name in installed_names:
+                failures.append(name)  # still owed if the conflicting installation is removed
                 log_obj.warning(
                     "New bundled native skill %s was not seeded because an installed payload already uses that name",
                     name,
@@ -942,6 +957,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
                 installed_names.add(name)
                 _stamp_native_seed_trust(target_root.parent, dest, log_obj)
             except OSError as exc:
+                failures.append(name)
                 log_obj.warning("Failed to copy new bundled native skill %s -> %s: %s", entry, dest, exc)
         return copied
 
@@ -950,14 +966,17 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
     try:
         existing = [p for p in native_root.iterdir() if not p.name.startswith(".")]
     except OSError:
+        failures.append("native_root")
         existing = []
     if existing:
+        failures.append("post_bootstrap_pending")  # the next pass offers the named late additions
         try:
             marker_path.write_text(
                 "Bootstrap inferred from pre-existing native/ contents.\n",
                 encoding="utf-8",
             )
         except OSError as exc:
+            failures.append("bootstrap_marker")
             log_obj.warning("Failed to write %s: %s", marker_path, exc)
         return 0
 
@@ -979,6 +998,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             copied += 1
             _stamp_native_seed_trust(target_root.parent, dest, log_obj)
         except OSError as exc:
+            failures.append(entry.name)
             log_obj.warning("Failed to copy seed skill %s -> %s: %s", entry, dest, exc)
 
     # Always mark completion so subsequent launches do not retry seeding.
@@ -988,6 +1008,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             encoding="utf-8",
         )
     except OSError as exc:
+        failures.append("bootstrap_marker")
         log_obj.warning("Failed to write %s: %s", marker_path, exc)
 
     if copied:
@@ -999,32 +1020,83 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
 
 
 def ensure_data_skills_seeded() -> int:
-    """Seed native skills once, then version-resync marker-owned native skills."""
+    """Read the seed-version completion fact; reconcile only a new/unknown version."""
     import logging as _logging
     from ouroboros.config import DATA_DIR, REPO_DIR
 
-    log_obj = _logging.getLogger(__name__)
-    seed_dir = pathlib.Path(REPO_DIR) / "skills"
-    target_root = pathlib.Path(DATA_DIR) / "skills"
-    copied = _seed_skills_into(seed_dir, target_root, log_obj)
-    drive_root = pathlib.Path(DATA_DIR)
+    return _ensure_native_seed_version(pathlib.Path(REPO_DIR), pathlib.Path(DATA_DIR),
+                                       _logging.getLogger(__name__))
+
+
+def _native_seed_identity(repo_dir: pathlib.Path) -> dict[str, Any] | None:
+    """The committed seed tree, without reading its payloads. Dirty/unknown stays uncached."""
+    if not (repo_dir / ".git").exists():
+        return None
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "--", "skills"],
+                                cwd=str(repo_dir), capture_output=True, text=True, timeout=10)
+        if status.returncode or status.stdout.strip():
+            return None
+        tree = subprocess.run(["git", "rev-parse", "--verify", "HEAD:skills"], cwd=str(repo_dir),
+                              capture_output=True, text=True, timeout=10)
+        if tree.returncode or not tree.stdout.strip():
+            return None
+        return {"schema_version": 1, "repo": str(repo_dir.resolve()), "seed_tree": tree.stdout.strip(),
+                "post_bootstrap_seeds": sorted(_POST_BOOTSTRAP_NEW_NATIVE_SEEDS)}
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> int:
+    """One shared launcher/server completion, published only after the whole seed pass.
+
+    The identity is the committed seed tree plus the declared post-bootstrap seeds, so
+    unrelated commits keep it; name collisions and failed phases stay incomplete, and
+    the previous receipt is removed before mutation so a partial upgrade cannot hide a
+    later downgrade.
+    """
+    from ouroboros.utils import atomic_write_json
+
+    receipt = drive_root / "state" / "native_seed.json"
+    identity = _native_seed_identity(repo_dir)
+    if identity and _read_json_file(receipt) == identity:
+        return 0
+    # A partly applied new seed must not inherit an old receipt on rollback.
+    try:
+        receipt.unlink(missing_ok=True)
+    except OSError:
+        log_obj.warning("Native seed receipt could not be invalidated; seeding deferred", exc_info=True)
+        return 0
+    seed_dir, target_root = repo_dir / "skills", drive_root / "skills"
+    failures: list[str] = []
+    copied = _seed_skills_into(seed_dir, target_root, log_obj, failures=failures)
     try:
         # One-shot v6.31 hash-semantics migration (control files left the hash).
-        _migrate_control_file_hashes(target_root, log_obj)
+        if not _migrate_control_file_hashes(target_root, log_obj):
+            failures.append("control_hashes")
     except Exception:  # pragma: no cover - defensive
+        failures.append("control_hashes")
         log_obj.warning("Control-file hash migration raised", exc_info=True)
     try:
         upgraded = _per_skill_version_resync(
             seed_dir, target_root / "native", log_obj,
-            drive_root=drive_root,
+            drive_root=drive_root, failures=failures,
         )
     except Exception:  # pragma: no cover - defensive
+        failures.append("version_resync")
         log_obj.warning("Native skill version-resync raised", exc_info=True)
         upgraded = 0
     try:
-        cleanup_orphaned_seed_markers(seed_dir, target_root / "native", log_obj)
+        if not cleanup_orphaned_seed_markers(seed_dir, target_root / "native", log_obj):
+            failures.append("orphaned_markers")
     except Exception:  # pragma: no cover - defensive
+        failures.append("orphaned_markers")
         log_obj.warning("Orphaned seed-marker cleanup raised", exc_info=True)
+    if identity and not failures and identity == _native_seed_identity(repo_dir):
+        try:
+            atomic_write_json(receipt, identity)
+        except OSError:
+            log_obj.warning("Native seed receipt not recorded; the next boot reconciles again", exc_info=True)
     return copied + upgraded
 
 
@@ -1032,13 +1104,14 @@ def cleanup_orphaned_seed_markers(
     seed_dir: pathlib.Path,
     native_root: pathlib.Path,
     log_obj,
-) -> None:
+) -> bool:
     """Strip seed markers for native skills no longer shipped in ``repo/skills``.
 
     Payloads stay in place; only ownership is reclassified to user-managed.
     """
     if not native_root.is_dir():
-        return
+        return True
+    complete = True
     for entry in native_root.iterdir():
         if not entry.is_dir() or entry.name.startswith("."):
             continue
@@ -1055,19 +1128,17 @@ def cleanup_orphaned_seed_markers(
                 entry.name,
             )
         except OSError:  # pragma: no cover - defensive
+            complete = False
             log_obj.warning(
                 "Failed to strip orphaned .seed-origin from %s",
                 entry, exc_info=True,
             )
+    return complete
 
 
 def bootstrap_native_skills(context: BootstrapContext) -> None:
-    """Best-effort one-time copy of ``repo/skills/*`` into the data plane."""
-    _seed_skills_into(
-        context.repo_dir / "skills",
-        context.data_dir / "skills",
-        context.log,
-    )
+    """Share the server's seed-version receipt, including upgrade and downgrade resync."""
+    _ensure_native_seed_version(context.repo_dir, context.data_dir, context.log)
 
 
 def bootstrap_repo(context: BootstrapContext) -> bool:

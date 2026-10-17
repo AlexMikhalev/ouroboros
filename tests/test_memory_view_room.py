@@ -259,6 +259,7 @@ def _install(root):
         encoding="utf-8")
     (memory / "dialogue_meta.json").write_text(json.dumps({
         "chat_log_signature": jsonl_generation_signature(archive), "last_consolidated_offset": 2}), encoding="utf-8")
+    shared.import_all(root)  # the legacy chain is imported before the chronicle activates, as the upgrade does
     assert ChronicleStore(root).ensure_activated()["kind"] == "activation"
     return rooms, rows
 
