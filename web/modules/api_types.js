@@ -156,6 +156,8 @@
  * @property {boolean=} skipSubscriptionPresets
  * @property {Object=} OUROBOROS_SUBAGENTS
  * @property {boolean=} allow_empty_review_pool  // confirms saving agents that leave no review row
+ * @property {string[]=} starter_skills  // catalog ids installed once after completion; absent: the default list
+ * @property {Object<string, string>=} skill_source_trust  // {hub row id: trusted|review}; marks them confirmed
  */
 /**
  * POST /api/onboarding/subagents/preview accepts the same open provider/local draft and subscription

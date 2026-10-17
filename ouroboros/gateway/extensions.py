@@ -23,7 +23,6 @@ from ouroboros.gateway._helpers import (
     request_repo_dir as _request_repo_dir,
 )
 from ouroboros.gateway.extension_receipts import extension_process_receipt, extension_reconcile_receipt
-from ouroboros.marketplace.ouroboroshub import display_catalog_files
 from ouroboros.skill_lifecycle_queue import (
     queue_snapshot,
     run_blocking_preserving_cancellation,
@@ -239,7 +238,9 @@ def _build_extensions_index(drive_root, repo_path):
     from ouroboros.extension_loader import extension_name_prefix, runtime_state_for_loaded_skill
 
     live_snapshot = snapshot()
-    hub_catalog_files = display_catalog_files()  # one view per response, never a fetch
+    from ouroboros.skill_source_catalog import listing_install_fields, listing_snapshots
+
+    source_snapshots = listing_snapshots(drive_root)  # cached catalogs only, never a fetch
     # Scan data plane plus optional external checkout; bootstrap copies native refs.
     skills = discover_skills(drive_root, repo_path=repo_path)
     unique_skills = [
@@ -357,6 +358,8 @@ def _build_extensions_index(drive_root, repo_path):
                 "review_findings": [],
                 "skill_review": {},
                 "grants": {},
+                "install": None,
+                "category": [],
             })
             catalog.append(entry)
             continue
@@ -364,8 +367,9 @@ def _build_extensions_index(drive_root, repo_path):
         health = read_extension_health(drive_root, s.name) if s.manifest.is_extension() else None
         entry.update({
             **_review_fields(
-                s, github_token_configured=_gh_token_configured, hub_catalog_files=hub_catalog_files,
+                s, github_token_configured=_gh_token_configured,
             ),
+            **listing_install_fields(drive_root, s, source_snapshots),
             "conflict": skill_conflict_status(s, skills),
             "load_error": runtime_states.get(s.name, {}).get("load_error", s.load_error),
             "desired_live": runtime_states.get(s.name, {}).get("desired_live", False),
@@ -459,7 +463,7 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
         load_error = loaded.load_error
     # The hub hint hashes payload bytes: off the event loop, like the index.
     review_fields = await asyncio.to_thread(
-        lambda: _review_fields(loaded, hub_catalog_files=display_catalog_files()),
+        lambda: _review_fields(loaded),
     )
     return JSONResponse(
         {
