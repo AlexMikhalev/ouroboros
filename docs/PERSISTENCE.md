@@ -24,8 +24,10 @@ row here, count-anchored both ways.
   atomic rename to `archive/<prefix>_<ts>.jsonl` under the append lock. The
   supervisor tick rotates `events.jsonl`, `tools.jsonl`, `supervisor.jsonl` and
   `task_reflections.jsonl`; `chat.jsonl` and `progress.jsonl` were rotated one
-  last time by the dialogue cutover (`state/dialog.sqlite`). Readers walk
-  `archive/<stem>_*.jsonl` in chronological name order;
+  last time by the dialogue cutover (`state/dialog.sqlite`); their frozen
+  segments are read only by the import job (`dialogue_import`), every
+  chat/progress reader is an addressed store query. Readers of the file logs
+  walk `archive/<stem>_*.jsonl` in chronological name order;
   `utils.jsonl_chain_handles` prevents rotation races by opening live first
   and deduplicating inodes.
 - **`archive/` is durable history, never GC'd** (BIBLE P1): readers backfill

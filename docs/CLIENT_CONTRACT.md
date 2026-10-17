@@ -323,7 +323,7 @@ Frames sent while you were disconnected are not resent: history and the task rea
   - `409 history_view_changed`: which rows belong to the thread changed (its projects or task bindings); start again without a cursor;
   - `409 history_delta_reset`: since an `after_cursor`, more arrived than one read replays, a stored row could not be read, owner-message annotations changed, a task the window shows settled or changed after it settled, or a shown skill operation ended; read the newest page again (in a busy room this is a common answer, not a rare one);
   - `503 history_source_unavailable` or `migrating`.
-- **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, or a stream gap such as `chat_source_unavailable`). Never treat an incomplete window as an empty conversation. `coverage` reports which stored bytes were delivered, for clients that page; it says nothing about chronology.
+- **Incomplete windows.** `window.complete` is true only when nothing bounded the read; `window.truncated_by` names each cause (`quota`, `page`, `lineage_cap`, a stream gap such as `chat_malformed_jsonl`, or `chat_importing`/`progress_importing`: older rows exist below the archive import's frontier and are not readable yet; the older page that would cross it answers 503 `reason_code: migrating`, retry later). Never treat an incomplete window as an empty conversation. `coverage` reports which stored coordinates were delivered, for clients that page; it says nothing about chronology.
 
 ## 6. Projects and tasks
 
@@ -623,7 +623,7 @@ Ouroboros runs connected coding subscriptions through its bundled agent engine, 
 
 **Versions and diagnostics:**
 - `GET /api/git/log` lists recent commits and tags (`GitLogResponse`), the choices for a rollback.
-- `GET /api/logs/{name}` tails one log (`chat`, `progress`, `events`, `tools` or `supervisor`; `limit` 1 to 2000, default 100; `task_id` filters). An unknown name answers 404 with the allowed names.
+- `GET /api/logs/{name}` tails one log (`chat`, `progress`, `events`, `tools` or `supervisor`; `limit` 1 to 2000, default 100; `task_id` filters). An unknown name answers 404 with the allowed names. `chat` and `progress` are read from the dialogue store: `_line` is the row's durable position among every stored object of its stream, and while the archive import has not settled those counts the endpoint answers 503 `reason_code: migrating` (retry shortly), never a guessed number; the file logs' `_line` is a position within the read window.
 - `GET /api/storage` reads the last disk-usage measurement without measuring; `POST /api/storage/measure` starts one bounded measurement or joins the running one (202 either way).
 - `GET /api/evolution-data` returns the evolution chart's points (`force` recomputes).
 

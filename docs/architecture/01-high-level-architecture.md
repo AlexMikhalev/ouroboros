@@ -428,8 +428,7 @@ ouroboros/ — agent core and shared runtime (§6)
     host_service.py — Loopback-only Host Service API (§12)
     host_notify.py — POST /notify beside the Host Service: a granted skill's sentence becomes one signed `skill_notice` System row in the owner's chat (§12)
     history.py — Shared Chat room/quiz/media/review/terminal projection and cost-breakdown factories
-    history_paging.py — A room's own pages over retained chat/progress JSONL chains, frozen room-bound cursors, read gaps, a Project's `latest_arrival`; no stored history copy (§3 History reads and the SSE v2 transport)
-    history_segments.py — Per-archive summaries: a Project read skips archives without its rows
+    history_paging.py — A room's own pages over the dialogue store (`RoomLens`: one indexed probe per room fact), frozen room-bound cursors, gaps, the import frontier, a Project's `latest_arrival`; no stored history copy (§3 History reads and the SSE v2 transport)
     cost_breakdown.py — Ledger-derived dashboard buckets and root-task detail over the same physical-attempt authority
     projects.py — GET/POST /api/projects, /from-task, /update, /delete
     _helpers.py — Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work

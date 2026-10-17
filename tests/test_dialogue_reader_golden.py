@@ -16,6 +16,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from ouroboros import dialogue_import
 from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.gateway.logs import api_logs_tail
 from ouroboros.gateway.task_events import api_task_events
@@ -58,6 +59,8 @@ def conversation(root):
     })
     seed_result(root, "golden-task", {"task_id": "golden-task", "status": "completed",
                                     "ts": "2026-10-01T00:00:10Z", "result": "Finished"})
+    # The readers read the store: the cutover takes the live files, the archive job the rest.
+    assert dialogue_import.run_dialogue_import(root)["state"] == "done"
     return room
 
 
