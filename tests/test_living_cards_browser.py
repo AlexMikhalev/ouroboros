@@ -135,6 +135,13 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                     assert inner.locator("body").get_attribute("data-theme") == theme, where
                     page.screenshot(path=str(evidence / f"living-cards-{engine}-{theme}-{width}.png"), full_page=False,
                                     animations="disabled")
+                    feed = page.evaluate("""(id) => { const r = document.querySelector(`#page-chat .chat-card-bubble[data-card-id="${id}"]`)
+                        ?.getBoundingClientRect(); const dock = document.querySelector('#page-chat .chat-input-wrap')?.getBoundingClientRect();
+                        return { bottom: r?.bottom, dock: dock?.top }; }""", ids["app"])
+                    assert feed["bottom"] <= feed["dock"] + 0.5, (where, "the newest card stays above the composer", feed)
+                    for kind in ("components", "widget"):
+                        page.locator(f'.chat-card-bubble[data-card-id="{ids[kind]}"]').screenshot(
+                            path=str(evidence / f"living-cards-{engine}-{theme}-{width}-{kind}.png"), animations="disabled")
                     if (theme, width) != ("light", 1280):
                         continue
 

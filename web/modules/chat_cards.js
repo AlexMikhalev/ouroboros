@@ -189,7 +189,9 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         const host = document.createElement('div');
         host.className = 'chat-card-frame-host';
         write(() => { record.body.replaceChildren(host); setStatus(record, ''); });
-        record.fit = createInlineFit(host, record.toggle);
+        // A frame's height changes the feed like any other write: through the room's reading position.
+        const inline = createInlineFit(host, record.toggle);
+        record.fit = { fit: (height) => write(() => inline.fit(height)), dispose: () => inline.dispose() };
         const controller = new AbortController();
         let dispose = null;
         const done = (fn) => { if (controller.signal.aborted) fn?.(); else dispose = fn; };
