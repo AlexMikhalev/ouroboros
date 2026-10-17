@@ -243,20 +243,20 @@ def test_projected_attempt_metadata_keeps_both_results():
 
 def test_merge_requests_the_exact_head_and_reports_refusals(monkeypatch):
     from ouroboros import skill_publish_github as github
-    from ouroboros.tools.github import GhResult
+    from ouroboros.skill_publish_client import GitHubError
 
     calls = []
 
-    def fake(args, _ctx, **_kwargs):
-        calls.append(args)
-        if "7" in args[3]:
-            return GhResult(True, json.dumps({"merged": True, "sha": "A" * 40}), 0, None, "")
-        return GhResult(False, "⚠️ GH_ERROR: Base branch was modified (HTTP 405)", 1, 405, "exit")
+    def fake(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if "/7/" in path:
+            return {"merged": True, "sha": "A" * 40}
+        raise GitHubError("Base branch was modified", http_status=405)
 
-    monkeypatch.setattr(github, "_gh_run", fake)
-    assert github.merge_pull_request(types.SimpleNamespace(), "o", "r", 7, "b" * 40) == {"merged": True,
-                                                                                         "commit": "a" * 40}
-    assert calls[0] == ["api", "-X", "PUT", "/repos/o/r/pulls/7/merge", "-f", f"sha={'b' * 40}",
-                        "-f", "merge_method=squash"]
+    monkeypatch.setattr(github, "request", fake)
+    assert github.merge_pull_request(types.SimpleNamespace(), "o", "r", 7, "b" * 40) == {
+        "merged": True, "commit": "a" * 40}
+    assert calls[0] == ("PUT", "/repos/o/r/pulls/7/merge",
+                        {"body": {"sha": "b" * 40, "merge_method": "squash"}, "timeout": 60})
     refused = github.merge_pull_request(types.SimpleNamespace(), "o", "r", 8, "b" * 40)
     assert refused["merged"] is False and refused["http_status"] == 405 and "405" in refused["error"]

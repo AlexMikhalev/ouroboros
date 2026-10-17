@@ -187,7 +187,7 @@ def _validate_local_skill(
     if not github_token_from_env_or_settings():
         raise _PublishFailure(
             "github_token_missing",
-            "Add GitHub authority in Settings -> Secrets, then retry.",
+            "Add a GitHub token in Settings to publish",
         )
     try:
         binding = binding or build_resolved_resource_binding(

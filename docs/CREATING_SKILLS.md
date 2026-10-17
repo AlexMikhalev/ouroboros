@@ -1682,8 +1682,9 @@ fetched.
 
 ### Publishing
 
-Finish the local payload and configure `GITHUB_TOKEN` in Settings → Secrets,
-then choose **Publish** on the skill or ask Ouroboros in chat
+Finish the local payload and configure `GITHUB_TOKEN` in Settings → Secrets;
+publication uses HTTPS directly and needs no `gh` CLI. Choose **Publish** on
+the skill or ask Ouroboros in chat
 (`submit_skill_to_hub`). The destination is where the skill came from, else the
 hub, unless the owner picks another:
 
@@ -1701,6 +1702,11 @@ hub, unless the owner picks another:
   the GitHub account may push there, the pull request is merged at once and
   the skill is published; otherwise it waits for that repository's
   maintainers.
+
+**My skills** is an optional private `<login>/ouroboros-skills` repository,
+created or connected when you choose it with your configured GitHub token.
+It is added as a trusted git source and carries your skills between your
+Ouroboros installations.
 
 The result reports separately whether the files reached the repository
 (`files_published`: `pull_request` or `merged`) and whether a catalog lists

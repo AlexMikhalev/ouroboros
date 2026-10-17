@@ -260,3 +260,11 @@ def test_scanner_resolver_uses_canonical_budget_data_root(monkeypatch, tmp_path)
     executable = skill_publish._scanner_executable(ctx)
     assert executable.status == "missing"
     assert seen == [canonical_root.resolve(strict=False)]
+
+
+def test_missing_token_names_settings_in_one_plain_sentence(monkeypatch):
+    monkeypatch.setattr(skill_publish, "github_token_from_env_or_settings", lambda: "")
+    with pytest.raises(skill_publish._PublishFailure) as caught:
+        skill_publish._validate_local_skill(types.SimpleNamespace(), "demo")
+    assert caught.value.reason_code == "github_token_missing"
+    assert caught.value.repair_hint == "Add a GitHub token in Settings to publish"
