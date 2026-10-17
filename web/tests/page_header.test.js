@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPageHeader } from '../modules/page_header.js';
+import { bindHeaderControlPlacement, renderPageHeader } from '../modules/page_header.js';
 
 test('page headers retain their toolbar contract with an optional chrome recipe', () => {
     for (const field of ['toolbarHtml', 'actionsHtml']) {
@@ -33,6 +33,41 @@ test('one header: no icon, the lede and the tabs are siblings after the row, a P
     assert.match(project, /data-mobile-nav-toggle/, '☰ is in every header, the Project included');
     assert.match(renderPageHeader({ title: 'x', titleId: '"><i>' }), /id="&quot;&gt;&lt;i&gt;"/);
     assert.doesNotMatch(renderPageHeader({ title: 'x', showMobileNav: false }), /data-mobile-nav-toggle/);
+});
+
+test('Restart and the budget are the same nodes, placed by layout: the row on a desk, the ⋯ menu on a phone', () => {
+    const node = (name, parent) => {
+        const el = { name, children: [], parentElement: null,
+            get nextSibling() { const i = this.parentElement.children.indexOf(this); return this.parentElement.children[i + 1] || null; },
+            detach() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); },
+            prepend(x) { x.detach(); x.parentElement = this; this.children.unshift(x); },
+            append(x) { x.detach(); x.parentElement = this; this.children.push(x); },
+            insertBefore(x, ref) { x.detach(); x.parentElement = this; const i = ref ? this.children.indexOf(ref) : -1; if (i < 0) this.children.push(x); else this.children.splice(i, 0, x); },
+            querySelector(sel) { const all = []; (function walk(n) { for (const c of n.children) { all.push(c); walk(c); } }(this)); return all.find((c) => c.sel === sel) || null; } };
+        if (parent) parent.append(el);
+        return el;
+    };
+    const toolbar = node('toolbar');
+    const actions = node('actions', toolbar);
+    const restart = node('restart', actions); restart.sel = '[data-chat-command="restart"]';
+    const panic = node('panic', actions); panic.sel = '[data-chat-command="panic"]';
+    const details = node('details', actions);
+    const menu = node('menu', details); menu.sel = '.chat-header-menu';
+    const budget = node('budget', toolbar);
+    const status = node('status', toolbar);
+    const listeners = new Map();
+    globalThis.window = { ouroLayout: { layout: 'stack' }, addEventListener: (t, fn) => listeners.set(t, fn), removeEventListener: (t) => listeners.delete(t) };
+    globalThis.document = { documentElement: { dataset: {} } };
+    const dispose = bindHeaderControlPlacement({ headerActions: actions, budgetPill: budget });
+    assert.deepEqual(menu.children.map((c) => c.name), ['budget', 'restart'], 'stack: the budget first, Restart last, inside ⋯');
+    assert.deepEqual(actions.children.map((c) => c.name), ['panic', 'details']);
+    listeners.get('ouro:layout-changed')({ detail: { layout: 'docked' } });
+    assert.deepEqual(actions.children.map((c) => c.name), ['restart', 'panic', 'details'], 'docked: Restart back before Panic');
+    assert.deepEqual(toolbar.children.map((c) => c.name), ['actions', 'budget', 'status'], 'the budget back after the actions');
+    dispose();
+    assert.equal(listeners.size, 0);
+    assert.equal(typeof bindHeaderControlPlacement({ headerActions: null }), 'function', 'no actions: a no-op disposer');
+    delete globalThis.window; delete globalThis.document;
 });
 
 test('the optional toolbar class cannot create an HTML attribute or node', () => {

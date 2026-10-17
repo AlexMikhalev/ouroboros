@@ -191,10 +191,12 @@ def test_chat_header_controls_reorg_and_more_autodismiss():
     assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in chat_js
     assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in chat_js
     assert chat_js.count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
-    placement = chat_js.split("const placeHeaderControls = (layout) => {", 1)[1].split("};", 1)[0]
-    assert "if (layout === 'stack') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restartBtn);" in placement
-    assert "headerActions.insertBefore(restartBtn, panicBtn);" in placement
-    assert "placeHeaderControls(currentLayout());" in chat_js and "disposeHeaderPlacement = onLayoutChange(placeHeaderControls);" in chat_js
+    header_js = _read("web/modules/page_header.js")
+    placement = header_js.split("export function bindHeaderControlPlacement(", 1)[1].split("\n}\n", 1)[0]
+    assert "if (layout === 'stack') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restart);" in placement
+    assert "headerActions.insertBefore(restart, panic);" in placement
+    assert "place(currentLayout());" in placement and "return onLayoutChange(place);" in placement
+    assert "bindHeaderControlPlacement({ headerActions, budgetPill })" in chat_js
     assert "disposeHeaderPlacement();" in chat_js
     assert "await confirmAndSendRestart({ openConfirmDialog, ws });" in chat_js
     # The stack layout's summary is the one ⋯ glyph; a desk keeps the word.

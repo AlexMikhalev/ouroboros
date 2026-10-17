@@ -1,6 +1,7 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { SHELL_ICONS } from './page_icons.js';
 import { pageLabel } from './pages.js';
+import { currentLayout, onLayoutChange } from './layout.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
@@ -77,6 +78,30 @@ export function renderPageHeader({
         ${lede}
         ${tabs}
     `;
+}
+
+/**
+ * Main's header controls by layout (owner Q4=A): docked keeps Restart in the row and the budget after the
+ * actions; the stack layout moves the same two nodes into the ⋯ menu (the budget first, Restart last), so each
+ * keeps its one handler and its one id. Returns the disposer of the layout subscription.
+ */
+export function bindHeaderControlPlacement({ headerActions, budgetPill = null } = {}) {
+    const restart = headerActions?.querySelector?.('[data-chat-command="restart"]');
+    const panic = headerActions?.querySelector?.('[data-chat-command="panic"]');
+    const menu = headerActions?.querySelector?.('.chat-header-menu');
+    const toolbar = budgetPill?.parentElement || null;
+    if (!restart || !menu) return () => {};
+    const place = (layout) => {
+        if (layout === 'stack') {
+            if (budgetPill) menu.prepend(budgetPill);
+            menu.append(restart);
+        } else {
+            headerActions.insertBefore(restart, panic);
+            if (budgetPill && toolbar) toolbar.insertBefore(budgetPill, headerActions.nextSibling);
+        }
+    };
+    place(currentLayout());
+    return onLayoutChange(place);
 }
 
 // SSOT for a segmented single-select control (the settings effort/mode toggles):
