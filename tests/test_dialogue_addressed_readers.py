@@ -551,3 +551,19 @@ def test_benchmark_dialogue_queries_do_equal_work_with_foreign_rooms(tmp_path, m
         assert rows == [own]
         measurements.append(dict(measured))
     assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
+
+
+def test_the_sidebar_keeps_every_project_while_the_archive_imports(tmp_path):
+    from ouroboros import dialogue_import as di
+    from ouroboros.projects_registry import create_project, projects_summary
+
+    quiet = create_project(tmp_path, "quiet-room", name="Quiet")
+    seed(tmp_path, archives={"chat_20261001T000000.jsonl": [{"ts": "2026-10-01T00:00:00Z", "direction": "in",
+                                                             "chat_id": 1, "text": "old"}]})
+    di.cutover(tmp_path)  # the archive segment is planned, not imported yet
+    listed = projects_summary(tmp_path)
+    assert [row["id"] for row in listed] == [quiet["id"]] and listed[0]["has_thread_activity"] is False
+    with pytest.raises(ds.StoreMigrating):  # the addressed room still answers its typed outcome
+        projects_summary(tmp_path, chat_id=quiet["chat_id"])
+    di.run_dialogue_import(tmp_path)
+    assert projects_summary(tmp_path, chat_id=quiet["chat_id"])[0]["has_thread_activity"] is False

@@ -1396,12 +1396,19 @@ def projects_summary(drive_root: Any, *, limit: int = 50, chat_id: Any = None) -
             # A progress row without a timestamp still proves activity. A bare read
             # marker can create an empty room too, so presence of the room alone cannot.
             active = bool(ds.probe_rows(drive_root, "progress", [("chat_id", project["chat_id"])], limit=1))
-        if not active and not absence_covered:
-            for stream in ("chat", "progress"):
-                ds.require_imported(drive_root, stream)
-                if ds.range_coverage(drive_root, stream)["gaps"]:
-                    raise ds.StoreError("dialogue history has gaps; room activity is unknown")
-            absence_covered = True
+        if not active and absence_covered is False:  # None: already unknown for this request
+            try:
+                for stream in ("chat", "progress"):
+                    ds.require_imported(drive_root, stream)
+                    if ds.range_coverage(drive_root, stream)["gaps"]:
+                        raise ds.StoreError("dialogue history has gaps; room activity is unknown")
+                absence_covered = True
+            except (ds.StoreMigrating, ds.StoreError):
+                if chat_id is not None:
+                    raise  # the addressed room answers its typed outcome
+                # The sidebar keeps every room while the archive imports: an unproved room reads as
+                # not yet active (as before the import found its rows), never as a missing project.
+                absence_covered = None
         out.append({
             "id": project.get("id"),
             "name": project.get("name"),
