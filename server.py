@@ -728,6 +728,8 @@ def _run_supervisor(settings: dict) -> None:
         _bootstrap_ok = bool(ok)
         if not ok:
             log.error("Supervisor bootstrap failed: %s", msg)
+        from ouroboros.store_import import note_current_stamp
+        note_current_stamp(DATA_DIR)  # the stamp the bootstrap just wrote: the legacy detector's observation
 
         from supervisor.queue import (
             enqueue_task, enforce_task_timeouts, enqueue_evolution_task_if_needed,

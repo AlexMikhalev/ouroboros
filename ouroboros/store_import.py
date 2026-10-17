@@ -135,6 +135,23 @@ def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -
     return True
 
 
+def note_current_stamp(root: Any) -> None:
+    """After the supervisor's bootstrap stamped ``current_sha`` (this body's own): the legacy job sees
+    that observation now, so an older body that runs next and stamps its SHA again is a new excursion
+    even when no boot of this body read the stamp in between. Writes only when it changes."""
+    from ouroboros import maintenance_jobs
+
+    root = pathlib.Path(root)
+    try:
+        stamp = json.loads((root / "state/state.json").read_text(encoding="utf-8")).get("current_sha")
+        job = maintenance_jobs.job(root, "legacy_reconcile") or {}
+    except (OSError, ValueError, AttributeError, store.StoreError):
+        return  # an unreadable stamp or store observes nothing
+    if (isinstance(stamp, str) and stamp and job.get("observed_sha")
+            and job.get("last_observed", job.get("observed_sha")) != stamp):
+        maintenance_jobs.record(root, "legacy_reconcile", last_observed=stamp)
+
+
 def ensure_current_store(root: Any, *, with_children: bool = True, rederive: bool = False,
                          body_sha: Optional[str] = None) -> Dict[str, Any]:
     """Open a published root in one read transaction. Import absent roots once.
