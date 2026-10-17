@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from ouroboros import dialogue_store
+
 pytestmark = pytest.mark.browser
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HTML = """<html data-theme="dark"><head><link rel="stylesheet" href="/static/ui.css">
@@ -29,9 +31,8 @@ def test_history_and_activity_recover_without_owner_action(tmp_path, width, monk
 
     published = False
     data_root = tmp_path / "data"
-    (data_root / "logs").mkdir(parents=True)
-    (data_root / "logs/chat.jsonl").write_text(json.dumps({"direction": "in", "chat_id": 1,
-        "text": "Saved owner message", "ts": "2026-10-11T09:00:00Z"}) + "\n", encoding="utf-8")
+    dialogue_store.append(data_root, "chat", {"direction": "in", "chat_id": 1,
+        "text": "Saved owner message", "ts": "2026-10-11T09:00:00Z"})
     monkeypatch.setattr("ouroboros.gateway.state._chat_activities_snapshot_safe", lambda *_, **__: [])
     published_history = json.loads(_assemble_history_response(data_root, 1, 150, 150))
     assert published_history["window"]["complete"] is True
