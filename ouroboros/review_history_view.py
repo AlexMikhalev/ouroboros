@@ -500,7 +500,9 @@ def review_index_view(mandatory: Mapping[str, Any], family: str, *, task_id: str
         address(author.get("source") or author.get("source_ref"), "the current author plan (spec, prose, disposition)")
     view = {key: copy.deepcopy(value) for key, value in mandatory.items() if key not in _INDEX_ADDRESSED}
     view["decision_rows"] = [
-        {**copy.deepcopy(row), "source": address(row.get("source"), f"source of a {row.get('decision_kind')} decision")
+        {**copy.deepcopy(row), "source": address(row.get("source"), (
+            "the author's selected review view (notes, groups and covered sources)"
+            if row.get("decision_kind") == "actor_history_group" else f"source of the {row.get('decision_kind')} decision"))
          or copy.deepcopy(row.get("source"))} if isinstance(row, Mapping) else copy.deepcopy(row)
         for row in mandatory.get("decision_rows") or []]
     waves = mandatory.get("rounds") or []

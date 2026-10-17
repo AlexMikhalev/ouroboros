@@ -380,6 +380,11 @@ def _groups(messages):
     return [row for row in _index(messages)[-1]["decision_rows"] if row["decision_kind"] == "actor_history_group"]
 
 
+def _anchor(messages, group):
+    """The immutable selected-view source a group row's address key resolves to."""
+    return _index(messages)[-1]["addresses"][group["source"]]["source_ref"]
+
+
 def _tail_fold(ctx, messages, note):
     before = deepcopy(messages)
     before.extend([call("read_file", {"path": "unrelated.txt"}, "unrelated-tail"),
@@ -406,7 +411,7 @@ def test_explicit_larger_group_retires_covered_groups_preserves_disjoint_and_exa
     assert len(groups) == 2 and {g["remark"] for g in groups} == {"Account 2", "Merged account"}
     assert not any(g["reason"] in {notes[0]["reason"], notes[1]["reason"]} for g in groups)
     disjoint = next(g for g in groups if g["remark"] == "Account 2")
-    assert disjoint["source"] == {"source_ref": source, "field": "review_notes[2]"}
+    assert _anchor(merged, disjoint) == view._immutable_ref(source)  # the unchanged group keeps its old exact source
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, source) == original
     assert _groups(_capture(ctx)) == groups
     saved = view.load_review_history_view(receipt["selected_review_history_view"],
@@ -450,8 +455,8 @@ def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(
     revised, receipt, _ = apply_local(ctx, first, SECOND, all_units=True, review_notes=[changed])
     pointer = receipt["selected_review_history_view"]
     group = _groups(revised)[0]
-    assert group["reason"] == changed["reason"] and group["source"]["source_ref"] == pointer["source_ref"]
-    assert group["source"]["source_ref"] != old_source
+    assert group["reason"] == changed["reason"] and _anchor(revised, group) == view._immutable_ref(pointer["source_ref"])
+    assert _anchor(revised, group) != view._immutable_ref(old_source)
     assert _groups(_capture(ctx)) == [group]
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, old_source) == old_bytes
     saved = view.load_review_history_view(pointer, lambda ref: read_actor_source_bytes(ctx.drive_root, ctx.task_id, ref))
