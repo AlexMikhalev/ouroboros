@@ -144,7 +144,12 @@ test('the hub merges page-module providers, and Read aloud uses the chosen engin
     registered = [{ key: device.key, kind: 'tts', impl }, { key: online.key, kind: 'tts', impl: { ...impl, label: 'Cloud' } }];
     for (const fn of providerListeners) fn();
     assert.ok(notices >= 2, 'a page module registering is a change');
-    assert.equal(speech.readAloud().key, device.key, 'nothing chosen: a live engine on this device first');
+    assert.equal(speech.readAloud().key, device.key, 'nothing chosen: a live engine on this device');
+    registered = [{ key: online.key, kind: 'tts', impl: { ...impl, label: 'Cloud' } }];
+    for (const fn of providerListeners) fn();
+    assert.equal(speech.readAloud(), null, 'nothing chosen and only an engine that sends words away: none');
+    registered = [{ key: device.key, kind: 'tts', impl }, { key: online.key, kind: 'tts', impl: { ...impl, label: 'Cloud' } }];
+    for (const fn of providerListeners) fn();
     await speech.chooseVoice('v-1');
     assert.equal(speech.voiceId(), 'v-1');
     await speech.choose('tts', online.key);

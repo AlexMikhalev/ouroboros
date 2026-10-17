@@ -257,7 +257,7 @@ def test_read_aloud_reads_one_reply_shows_stop_and_offers_honest_voices(subscrip
     voices.wait_for()
     assert voices.locator(".voice-menu-name").all_inner_texts() == ["Automatic", "Local Anna", "Online Ben"]
     assert voices.locator(".voice-menu-line").all_inner_texts() == [
-        "A voice on this device first", "On this device · en-US", "Online voice · en-US"], "local only when the browser says so"
+        "A voice on this device", "On this device · en-US", "Online voice · en-US"], "local only when the browser says so"
     box = voices.bounding_box()
     assert box["x"] >= 0 and box["x"] + box["width"] <= width + 0.5, box
     setup_browser.capture(page, f"read-aloud-voices-{width}-{scheme}")

@@ -137,12 +137,11 @@ export function createSpeechHub({ store, save = payload => apiClient.saveUiPrefe
         chooseVoice: id => remember({ tts_voice: String(id || '') }),
         voiceId: () => String(voicePref().tts_voice || ''),
         /** The Read aloud engine: the chosen one (even when it cannot run: it says why), else a live one on this
-         * device, else any live one; null when there is none. */
+         * device; null when there is none (an engine that sends the words away is only ever chosen). */
         readAloud() {
             const chosen = registry.selected('tts');
             if (chosen.key) return chosen;
-            const live = registry.list('tts').filter(row => row.available);
-            return live.find(row => row.destination === 'device') || live[0] || null;
+            return registry.list('tts').find(row => row.available && row.destination === 'device') || null;
         },
         async enableOffer(offer) {
             const result = await post(`/api/skills/${encodeURIComponent(offer.skill)}/toggle`, { enabled: true });

@@ -126,7 +126,7 @@ export function registerReadAloud({ speech = getSpeech(), registry = getMessageA
         let voices = [];
         try { voices = provider?.available ? provider.impl.voices() : []; } catch { voices = []; }
         const chosen = speech.voiceId();
-        item(tr('read_aloud.automatic', 'Automatic'), tr('read_aloud.automatic_line', 'A voice on this device first'),
+        item(tr('read_aloud.automatic', 'Automatic'), tr('read_aloud.automatic_line', 'A voice on this device'),
             !chosen, () => speech.chooseVoice(''));
         for (const voice of voices) {
             item(voice.label, [voiceDestination(voice), voice.lang].filter(Boolean).join(' · '), voice.id === chosen,

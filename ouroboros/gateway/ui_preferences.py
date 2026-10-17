@@ -22,7 +22,7 @@ from ouroboros.utils import atomic_write_json, read_json_dict
 DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     "widget_order": [],
     # Engine choices are contribution keys; tts_voice is the chosen provider's voice id
-    # (empty = the provider's own pick, a voice on this device first).
+    # (empty = the provider's own pick, a voice on this device).
     "voice": {"stt": "", "tts": "", "tts_voice": ""},
     "contributions": {"hidden": [], "order": []},
     # Owner override of a widget card's launch policy, keyed "<skill>:<tab_id>" with a

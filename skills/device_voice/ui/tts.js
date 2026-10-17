@@ -23,12 +23,14 @@ export function createDeviceVoice(env = globalThis) {
             if (!synth || !Utterance) return Promise.reject(new Error('Read aloud is unavailable here.'));
             if (signal?.aborted) return Promise.resolve();
             const options = voices();
+            // Without a chosen voice only a local one speaks: an online voice sends the words away, so it is chosen.
             const selected = voice ? options.find(item => item.voiceURI === voice)
                 : options.find(item => item.localService === true && (!lang || item.lang === lang))
-                    || options.find(item => item.localService === true) || options[0];
+                    || options.find(item => item.localService === true);
             if (voice && !selected) return Promise.reject(new Error('The chosen voice is no longer available. Choose another voice.'));
             // Waiting for the browser to load its voices is explicit, never a guessed local voice.
-            if (!selected) return Promise.reject(new Error('No voices are available yet. Try Read aloud again.'));
+            if (!options.length) return Promise.reject(new Error('No voices are available yet. Try Read aloud again.'));
+            if (!selected) return Promise.reject(new Error('No voice on this device. To use an online voice, choose it in the Read aloud menu.'));
             return new Promise((resolve, reject) => {
                 const utterance = new Utterance(text);
                 utterance.voice = selected;

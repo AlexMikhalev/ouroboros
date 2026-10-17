@@ -1502,7 +1502,7 @@ named with its reason in the chooser. Read aloud is a saved reply's action
 (Replies): the reply's words with code announced, not read; one reply at a
 time, Stop on the one being read; Panic and leaving the page stop it. With
 no engine chosen it uses one on this device. The row menu's Read aloud
-voice… lists Automatic (a voice on this device first) and every voice, "On
+voice… lists Automatic (a voice on this device) and every voice, "On
 this device" only when the browser marks it local, otherwise "Online voice".
 
 ### Conversation activity block

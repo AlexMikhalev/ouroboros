@@ -164,7 +164,7 @@ test('the voice door is in the row menu only; its menu names each voice On this 
         const menu = doc.body.querySelector('.voice-menu');
         const items = menu.children.map((item) => [item.children.map((part) => part.textContent), item.getAttribute('aria-checked')]);
         assert.deepEqual(items, [
-            [['Automatic', 'A voice on this device first'], 'true'],
+            [['Automatic', 'A voice on this device'], 'true'],
             [['Milena', 'On this device · ru-RU'], 'false'],
             [['Google русский', 'Online voice · ru-RU'], 'false'],
         ], 'never local unless the browser says so');

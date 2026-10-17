@@ -117,7 +117,10 @@ test('missing API and removed chosen voice are explicit; voices can appear after
     fixture.setVoices([]); await assert.rejects(provider.speak('text'), /No voices/);
     fixture.setVoices([{ voiceURI: 'new', name: 'New', localService: false }]);
     assert.equal(provider.voices()[0].local, false);
+    await assert.rejects(provider.speak('text'), /No voice on this device/, 'only online voices: none is picked unasked');
+    assert.equal(fixture.spoken.length, 0);
     const result = provider.speak('text', { voice: 'new' }); provider.stop(); await result;
+    assert.equal(fixture.spoken[0].voice.voiceURI, 'new', 'a chosen online voice still speaks');
 });
 
 test('both host modules use API 1 registration and idempotent abort/dispose only', () => {
