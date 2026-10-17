@@ -93,7 +93,8 @@ export function createCardPresses({ cardId, post = postCardDecision, newId = new
             if (locked.has(actionId)) return locked.get(actionId);
             if (inFlight.has(actionId)) return null;
             const prior = retry.get(actionId);
-            const reuse = prior && (prior.anyValues || sameValues(prior.values, values));
+            // A once control has one press: whatever the form holds now, its next press is that press again.
+            const reuse = prior && (prior.anyValues || once || sameValues(prior.values, values));
             const requestId = reuse ? prior.requestId : newId();
             retry.set(actionId, { requestId, values, anyValues: Boolean(reuse && prior.anyValues) });
             inFlight.add(actionId);

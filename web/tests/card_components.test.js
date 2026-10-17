@@ -239,3 +239,17 @@ test('a once press that lost to another press still owed retries that one; a del
     assert.deepEqual(r.sent.map((body) => body.request_id), ['req-1', 'first'], 'the second press retries the winner');
     assert.equal(presses.locked('pick'), true);
 });
+
+test('a once control has one press: after an unanswered press, an edited form retries that press', async () => {
+    const r = recorder({ status: 0, body: { error: 'Failed to fetch' } }, { status: 200, body: { ok: true } });
+    const presses = createCardPresses({ cardId: 'card_g', post: r.post, newId: r.newId });
+    await presses.press('dates', { once: true, values: { from: 'Mon' } });
+    await presses.press('dates', { once: true, values: { from: 'Tue' } });
+    assert.deepEqual(r.sent.map((body) => body.request_id), ['req-1', 'req-1'], 'never a second press of a once control');
+
+    const other = recorder({ status: 0, body: {} });
+    const ordinary = createCardPresses({ cardId: 'card_g', post: other.post, newId: other.newId });
+    await ordinary.press('note', { values: { text: 'a' } });
+    await ordinary.press('note', { values: { text: 'b' } });
+    assert.deepEqual(other.sent.map((body) => body.request_id), ['req-1', 'req-2'], 'an ordinary form with new values is a new press');
+});
