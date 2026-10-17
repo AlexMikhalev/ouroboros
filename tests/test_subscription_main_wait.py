@@ -62,7 +62,6 @@ def main_call(live_wait, monkeypatch):
     from ouroboros import context
     monkeypatch.setattr(context, "_context_fit_route", route_evidence)
     monkeypatch.setattr(loop, "_server_web_allowed_by_task", lambda _ctx: False)
-    monkeypatch.setattr(loop, "_run_main_reclaim", lambda *_a, **_kw: pytest.fail("No completed work may be replayed"))
     return ctx, gateway, controller, events, decide, observations
 
 

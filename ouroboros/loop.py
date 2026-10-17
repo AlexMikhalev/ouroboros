@@ -869,8 +869,6 @@ from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentiona
 from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional public re-exports
     _CompactionRoundContext,
     _drain_incoming_messages,
-    _context_reclaim_passes,
-    _context_reclaim_materializations,
     _context_overflow_retries,
     _run_round_compaction,
     _RoundLimitContext,
@@ -916,8 +914,6 @@ from ouroboros.loop_model_call import (  # noqa: E402, F401 -- intentional publi
     _measure_main_context_view,
     _physical_context_for_fit,
     _dispatch_round_model,
-    _run_main_reclaim,
-    _measure_after_reclaim,
     _reproject_actual_overflow_low,
     _failed_capture_is_comparable,
     _strict_context_shrink_predicate,

@@ -651,8 +651,13 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     anchor, anchor_round = usage.get("_context_anchor_input_tokens"), usage.get("_context_anchor_round")
     accepted = usage.get("_context_accepted_input_tokens") if measured else None
     reading = usage.get("_context_window_reading_tokens") if measured else None
+    from ouroboros.context_anchor import refused_input
+
+    refused = refused_input(usage, getattr(ctx, "context_fit_plan", None)) if measured else None
     parts = [_round_fact(ctx, tool_ctx), f"mode {ctx.active_context_mode}", f"model {ctx.active_model}"]
-    largest = f" (largest accepted input {int(accepted):,})" if accepted else ""
+    notes = [note for note in (f"largest accepted input {int(accepted):,}" if accepted else "",
+                               f"refused at ~{int(refused):,}" if refused else "") if note]
+    largest = f" ({'; '.join(notes)})" if notes else ""
     if capacity is None and reading is not None and accepted:
         parts.append(f"window above {int(accepted):,}: this model accepted that input, the stated {int(reading):,} is below it")
     else:
@@ -668,7 +673,7 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
         parts.append(f"input ~{int(estimate):,} before this line ({how}) + reply {int(reserve or 0):,}")
         # Free room is the window's, stated only on a measured input; the economy target is its own fact.
         parts.append(f"free ~{int(capacity) - int(estimate) - int(reserve or 0):,}"
-                     if capacity is not None and anchor is not None else "free unknown")
+                     if capacity is not None and anchor is not None and not refused else "free unknown")
         if target is not None:
             floor = int(usage.get("_context_response_reserve_tokens") or reserve or 0)
             excess = int(estimate) + floor - int(target)

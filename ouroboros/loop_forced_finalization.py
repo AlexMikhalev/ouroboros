@@ -828,7 +828,6 @@ def _forced_physical_context(ctx: _RoundLimitContext, messages: List[Dict[str, A
     disposition = measure_main_fit(
         plan, messages, getattr(ctx, "tool_schemas", None), profile=_main_context_profile(plan, mode),
         rendered_mode=mode, round_id=round_id, reasoning_effort=ctx.active_effort,
-        automatic_pass_used=(str(plan.route_fp or ""), round_id) in _loop()._context_reclaim_materializations(tools_ctx),
         anchor=anchor, accepted_input_tokens=accepted)
     _remember_main_fit(ctx, disposition)
     return _physical_context_for_fit(disposition)

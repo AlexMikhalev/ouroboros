@@ -315,24 +315,8 @@ def _drain_incoming_messages(
     return controls
 
 
-def _context_reclaim_passes(tool_ctx: Any) -> set[Tuple[str, str]]:
-    passes = getattr(tool_ctx, "_context_reclaim_passes", None)
-    if not isinstance(passes, set):
-        passes = set()
-        tool_ctx._context_reclaim_passes = passes
-    return passes
-
-
-def _context_reclaim_materializations(tool_ctx: Any) -> set[Tuple[str, str]]:
-    materialized = getattr(tool_ctx, "_context_reclaim_materializations", None)
-    if not isinstance(materialized, set):
-        materialized = set()
-        tool_ctx._context_reclaim_materializations = materialized
-    return materialized
-
-
-def _context_overflow_retries(tool_ctx: Any) -> set[Tuple[str, str, str]]:
-    """Per-task ``(route_fp, round_id, rung)`` latch of the refusal ladder (``OVERFLOW_RUNGS``)."""
+def _context_overflow_retries(tool_ctx: Any) -> set[Tuple[str, str]]:
+    """Per-task ``(round_id, pass)`` record of the refusal passes (``REFUSAL_PASSES``): once per round, any route."""
     retries = getattr(tool_ctx, "_context_overflow_retries", None)
     if not isinstance(retries, set):
         retries = set()
@@ -1058,8 +1042,11 @@ def _publish_reclaimed_transcript(ctx: Any, rebuilt: list) -> None:
     prune_reclaim_trace_refs(ctx.tools._ctx, ctx.messages)
 
 
-def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any:
-    """Publish a model-free source view, measuring the sealed candidate with its next facts line."""
+def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str, goal_tokens: Optional[int] = None) -> Any:
+    """Publish a model-free source view, measuring the sealed candidate with its next facts line.
+
+    ``goal_tokens`` is the refusal's measured target (``loop_model_call._refusal_target``); without
+    one the pass takes its whole category, never one unit sized by a missing number."""
     from ouroboros.context_budget import ContextReclaimRequest
     from ouroboros.context_compaction import context_reclaim_transcript_sha256, emergency_address_view
     from ouroboros.loop_messages import append_context_facts
@@ -1087,7 +1074,7 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any
         route_fp=measurement.route_fp, round_id=measurement.round_id,
         transcript_sha256=context_reclaim_transcript_sha256(ctx.messages),
         measurement_basis=measurement.measurement_basis, measurement_density=measurement.measurement_density,
-        reclaim_goal_tokens=max(1, int(measurement.reclaim_goal_tokens)), allow_partial_shrink=True,
+        reclaim_goal_tokens=int(goal_tokens) if goal_tokens else 2**31 - 1, allow_partial_shrink=True,
     )
     rebuilt, receipt = emergency_address_view(
         ctx.messages, request, rung=rung,
@@ -1107,23 +1094,25 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any
     return receipt
 
 
-def _coarsen_memory_view(ctx: Any, fit: Any) -> bool:
+def _coarsen_memory_view(ctx: Any, fit: Any, *, saving: Optional[int] = None) -> bool:
     """Narrow memory beside the actual transcript without inventing a smaller route window.
 
-    The refusal is the evidence: the view saves at least the measured capacity deficit, and at
-    least one element when the estimate still fits, from the level it shows (no target or
-    working margin reapplied, nothing addressed unfolds)."""
+    The refusal is the evidence: the view saves the refusal's measured ``saving`` (else the capacity
+    deficit, else at least one element) from the level it shows (no target or working margin
+    reapplied, nothing addressed unfolds)."""
     plan = ctx.context_fit_plan
     measurement = fit.measurement
-    if plan is None or measurement.capacity_total_tokens is None or getattr(plan, "core", None) is None:
+    if plan is None or getattr(plan, "core", None) is None:
         return False
     mode = str(ctx.active_context_mode or "max")
     before = plan.projection(mode).system_content_json
+    capacity = measurement.capacity_total_tokens
     rebound = plan.reproject_for_route(
-        window_tokens=int(measurement.capacity_total_tokens), known_window=True,
+        window_tokens=int(capacity or 0), known_window=capacity is not None,
         ratio=float(plan.projection(mode).calibration_ratio or 1.0),
         output_reserve=int(plan.output_reserve_tokens), tool_schemas=ctx.tool_schemas, start_mode=mode,
-        current_messages=ctx.messages, refused_tokens=max(1, int(measurement.capacity_deficit_tokens or 0)),
+        current_messages=ctx.messages,
+        refused_tokens=max(1, int(saving or measurement.capacity_deficit_tokens or 0)),
     )
     if rebound.projection(mode).system_content_json == before:
         return False

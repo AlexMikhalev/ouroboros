@@ -325,7 +325,6 @@ def _native(main_call, monkeypatch, tmp_path, *, task_text="hi", owner_mode="low
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     monkeypatch.setattr(fallback_cooldown, "is_cooling_down", lambda *_a: False)
     monkeypatch.setattr(loop_transport, "upstream_transport_reachable", lambda *_a, **_kw: pytest.fail("no probe"))
-    monkeypatch.setattr(loop, "_run_main_reclaim", loop_model_call._run_main_reclaim)  # the ladder's own helper rung
     monkeypatch.setattr(context_compaction, "_call_summarizer", lambda *_a, **_kw: pytest.fail("no helper model"))
     windows = {}
 

@@ -1,4 +1,4 @@
-"""This conversation's own window facts: its size anchor and its accepted-input floor.
+"""This conversation's own window facts: its size anchor, its accepted floor and its refused sizes.
 
 Main measures every candidate on the conversation it belongs to. The last request a model
 accepted in this task gives the provider-reported input U and the host's raw estimate B of
@@ -6,8 +6,9 @@ that same candidate; the next candidate is ``U + (B' - B) * U / B``. Another tas
 says nothing reliable about this one: its composition and size differ (17.10.2026: a 97k
 helper request's density, borrowed by a 900k release task, hid a full window). The largest
 input a model accepted here is a floor under its window: a stated window below it is no
-window. Both live in the task's usage, so a working checkpoint keeps them and a new
-execution starts cold. Data and arithmetic only; the loop records and reads them.
+window. The smallest estimate a model refused here bounds it from above and clears the
+free room the facts state. All live in the task's usage, so a working checkpoint keeps
+them and a new execution starts cold. Data and arithmetic only; the loop records them.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 #: working checkpoint; a new execution starts without them).
 INPUT_ANCHOR_KEY = "_context_input_anchor"
 ACCEPTED_INPUTS_KEY = "_context_accepted_inputs"
+REFUSED_INPUTS_KEY = "_context_refused_inputs"  # model key -> the smallest estimate it refused in this task
 
 
 @dataclass(frozen=True)
@@ -97,3 +99,20 @@ def main_input_anchor(usage: Optional[Mapping[str, Any]], plan: Any, *,
                              round=int(row.get("round") or 0),
                              rewritten=rewrite_epoch is None or int(row.get("rewrite_epoch") or 0) != rewrite_epoch)
     return anchor, (int(floor) if floor else None)
+
+
+def record_refused_input(usage: Dict[str, Any], plan: Any, estimate_tokens: int) -> None:
+    """Remember the smallest input estimate ``plan``'s model refused by size in this task."""
+    if plan is None or int(estimate_tokens or 0) <= 0:
+        return
+    refused = usage.setdefault(REFUSED_INPUTS_KEY, {})
+    key = _anchor_model_key(plan)
+    refused[key] = min(int(refused.get(key) or estimate_tokens), int(estimate_tokens))
+
+
+def refused_input(usage: Optional[Mapping[str, Any]], plan: Any) -> Optional[int]:
+    """The smallest estimate ``plan``'s model refused here, or None."""
+    if not isinstance(usage, Mapping) or plan is None:
+        return None
+    value = (usage.get(REFUSED_INPUTS_KEY) or {}).get(_anchor_model_key(plan))
+    return int(value) if value else None

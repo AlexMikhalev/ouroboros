@@ -121,7 +121,6 @@ def test_actual_refusal_runs_the_host_copies_rung_before_any_helper(tmp_path, mo
         _remember_main_fit(trial, measured)
         return measured
     monkeypatch.setattr(loop, "_measure_round_main_fit", measure)
-    monkeypatch.setattr(loop, "_run_main_reclaim", lambda *_a, **_kw: pytest.fail("the helper must not run before rung a"))
 
     def dispatch(ctx, disposition, *, candidate_predicate=None, max_tokens=None, **_kwargs):
         sends.append(list(ctx.messages))
@@ -162,7 +161,6 @@ def test_a_model_free_wake_delivery_earns_the_first_retry_before_any_rung(tmp_pa
     sends = []
     monkeypatch.setattr(loop, "_measure_round_main_fit", _measure_cycle([_fit()]))
     monkeypatch.setattr(loop_model_call, "_project_wake_input", lambda ctx, *, overflowed=False: overflowed)
-    monkeypatch.setattr(loop, "_run_main_reclaim", lambda *_a, **_kw: pytest.fail("no rung before the delivery retry"))
 
     def dispatch(ctx, disposition, *, candidate_predicate=None, **_kwargs):
         sends.append(candidate_predicate)

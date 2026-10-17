@@ -77,22 +77,13 @@ OWNER_LOW_TARGET_TOKENS = 250_000
 OWNER_NANO_TARGET_TOKENS = 85_000
 NANO_MIN_HEADROOM_TOKENS = 8_192
 
-# Low-water sizing of the automatic context-reclaim pass. The TRIGGER is
-# unchanged: a positive deficit against the binding boundary (the smaller known
-# of the owner target T and the route capacity W), one pass per route+round.
-# Only the SIZE of the requested pass changes: goal = deficit +
-# ceil(boundary / RECLAIM_LOW_WATER_DIVISOR), and 0 without a deficit. A pass
-# sized to the deficit alone lands exactly AT the boundary, so the next round's
-# ordinary growth re-arms it (a summarizer pass nearly every round). Sized this
-# way it lands about an eighth of the boundary below (~125K tokens on a 1M
-# route, ~31K under the 250K Low target), so the next pass needs that much real
-# growth. Structural constant, not a setting: 8 (12.5 % of the boundary) is a
-# disclosed design choice, not a measured optimum; change it here and only here
-# (tests/test_context_budget_ssot.py pins it). Cost: older history is condensed
-# sooner and each summarizer pass is larger. The materializer, its receipts and
-# the route+round latch are unchanged; the checkpoint event records requested
-# margin versus achieved headroom (context_fit.measure_main_fit,
-# loop_model_call._run_main_reclaim).
+# The owner's return-after-fold slack (L33 2=A): a recovery pass after a size refusal
+# sheds the measured excess plus ceil(boundary / RECLAIM_LOW_WATER_DIVISOR), so the
+# next round's ordinary growth does not meet the same wall at once
+# (loop_model_call._refusal_target, context_fit.reclaim_low_water_margin). Structural
+# constant, not a setting: 8 (12.5 % of the boundary) is a disclosed design choice,
+# not a measured optimum; change it here and only here
+# (tests/test_context_budget_ssot.py pins it).
 RECLAIM_LOW_WATER_DIVISOR = 8
 
 # Working room the memory view's physical floor leaves under a known route
