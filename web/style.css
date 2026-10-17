@@ -2088,6 +2088,12 @@ body.resizing-panels { user-select: none; }
     row-gap: var(--space-2);
 }
 
+/* The status box spans its row and centres its own chip, so an empty status (a terminal projection) starts at
+   the row's top with the disclosure instead of floating to the row's middle. */
+.chat-live-card:not(.subagent) > .chat-live-summary-button .chat-live-summary-main {
+    align-self: stretch;
+}
+
 .chat-live-card:not(.subagent) > .chat-live-summary-button .chat-live-title {
     order: 3;
     flex: 1 1 100%;
@@ -2767,39 +2773,34 @@ body.resizing-panels { user-select: none; }
         margin-inline-start: 0;
     }
 
-    /* Equal inline inset on both sides: a child sits --space-3 + --space-2 from its root card's border on
-       the left (where the thread line runs) and on the right; no child border meets the root's border. */
+    /* Equal inline inset on both sides, paid once: a child sits --space-1 inside the thread line on the left
+       and inside its root card's border on the right, so no child border meets the root's border. Deeper
+       levels keep only their rail and frame; any wider per-level inset collapses a depth-10 child on a phone. */
     .chat-subagents {
-        margin-inline: var(--space-3);
-        padding-inline: var(--space-2);
+        margin-inline: 0;
+        padding-inline: var(--space-1);
     }
 
     .chat-subagents .chat-subagents {
-        padding-inline-start: 0;
+        padding-inline: 0;
     }
 
     /* A COLLAPSED nested child keeps its one-line identity row — status chip ·
        role · `N notes` · chevron — over its model/executor metadata (DESIGN.md
        §5) instead of dropping the title to a third band once its own inline
-       width crosses this threshold (#623). The title is already nowrap/ellipsis
-       here; it keeps the same 160px demand the mobile readability floor uses,
-       and only when even that cannot share the row do the side controls wrap
-       under it. Higher specificity than the .chat-live-title rule above, so the
-       cascade decides, not source order. */
-    .chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title {
-        order: 0;
-        flex: 1 1 160px;
-        min-width: 0;
-    }
-
-    /* On a phone the collapsed child's identity row stays one row: the role name ellipsizes before its
-       `N notes` count would drop to a row of its own. */
+       width crosses this threshold (#623). The row never wraps: the side
+       controls keep their size and the role (nowrap/ellipsis, below) takes the
+       rest, so a long role ellipsizes before its `N notes` count would drop to
+       a row of its own. Higher specificity than the .chat-live-title rule
+       above, so the cascade decides, not source order. */
     .chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button > .chat-live-summary {
         flex-wrap: nowrap;
     }
 
     .chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title {
+        order: 0;
         flex: 1 1 0;
+        min-width: 0;
     }
 
     .chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-summary-side {
@@ -2840,8 +2841,8 @@ body.resizing-panels { user-select: none; }
    label is the root's) over its metadata row (model, harness chip with the run count,
    cost, last update, docked Reviews count). Only its narration line waits for
    expansion. The title stays on one line and stays IN the identity row at every
-   width (the narrow-regime rule above gives it a 160px demand and lets the side
-   controls wrap under it instead). Activity now stays visible beneath it. */
+   width (in the narrow regime above it ellipsizes before the side controls
+   would leave the row). Activity now stays visible beneath it. */
 .chat-live-card.subagent .chat-live-title {
     font-weight: 400;
     color: var(--text-secondary);

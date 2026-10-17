@@ -2327,6 +2327,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         "is_progress": True,
     }]
     long_url = "https://example.com/" + "nested-segment-without-breaks-" * 18 + "final"
+    long_role = "accessibility-and-localization-reviewer"
     parent_id = "layout-root"
     for depth in range(1, 11):
         child_id = f"layout-child-{depth:02d}"
@@ -2341,7 +2342,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             "subagent_task_id": child_id,
             "parent_task_id": parent_id,
             "root_task_id": "layout-root",
-            "subagent_role": "pty-tests",
+            "subagent_role": long_role if depth == 1 else "pty-tests",
             "model": "google/gemini-3.6-flash",
             "status": "completed",
             "result": f"Depth {depth} complete. Full evidence: {long_url}",
@@ -2386,6 +2387,8 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 clientWidth: card.clientWidth,
                 scrollWidth: card.scrollWidth,
                 titleWidth: titleRect.width,
+                titleClient: title.clientWidth,
+                titleScroll: title.scrollWidth,
                 titleHeight: titleRect.height,
                 titleLines: lineHeight > 0 ? titleRect.height / lineHeight : 99,
                 titleTop: titleRect.top,
@@ -2428,23 +2431,25 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         # Narrow regime: the side controls share the chip row, the title takes its own
         # full-width row below both.
         # Main and side controls start on one flex row. A terminal projection may
-        # make the main box zero-height; their shared top still distinguishes it
+        # leave the main box empty; their shared top still distinguishes it
         # from a real wrap, whose row gap would move the side down.
         assert abs(facts["rootSideTop"] - facts["rootMainTop"]) <= 1, facts
         assert facts["rootTitleTop"] >= max(facts["rootMainBottom"], facts["rootSideBottom"]) - 1, facts
         assert all(card["scrollWidth"] <= card["clientWidth"] + 1 for card in facts["cardFacts"]), facts
-        assert min(card["titleWidth"] for card in facts["cardFacts"]) >= 160, facts
+        assert min(card["titleWidth"] for card in facts["cardFacts"] if not card["collapsedChild"]) >= 160, facts
         assert 0.9 <= min(card["titleLines"] for card in facts["cardFacts"]), facts
         assert max(card["titleLines"] for card in facts["cardFacts"]) <= 2.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]
                    if not card["collapsedChild"]) <= 3.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]
                    if card["collapsedChild"]) <= 1.2, facts
-        # #623: a collapsed child keeps its identity row — the title beside the
-        # chip, the summary at most two bands (the side wraps under only when a
-        # 160px title cannot share the row), never a third band for the title.
+        # #623: a collapsed child keeps its identity row: its title beside the chip
+        # and side controls, whole if short, ellipsized if long (child-01).
+        assert page.get_by_role("button", name=long_role).count() == 1
         for card in facts["cardFacts"]:
             if card["collapsedChild"]:
+                assert 0 < card["titleClient"] and (
+                    card["titleScroll"] > card["titleClient"] + 1) == (card["id"] == "layout-child-01"), card
                 assert abs(card["titleTop"] - card["mainTop"]) <= 4, card
                 assert card["summaryBottom"] - card["mainTop"] <= 2.2 * card["titleHeight"] + 8, card
         assert all(card["activityTitle"] is None for card in facts["cardFacts"]), facts
@@ -2526,7 +2531,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert abs(facts["width"] - 32) <= 1 and abs(facts["height"] - 32) <= 1, facts
         assert facts["centerDelta"] <= 1 and abs(facts["gap"] - 8) <= 1, facts
         assert facts["toolbarOverlap"] == 0 and facts["previewOverlap"] == 0, facts
-        assert facts["boxShadow"] == "none", facts
+        assert facts["boxShadow"] != "none", facts
         return facts
 
     try:
@@ -2600,14 +2605,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 for card in wide_facts[:2]:
                     assert abs(card["mainTop"] - card["sideTop"]) <= 1, wide_facts
                 # #623: the depth-2 collapsed child is in the 560px container regime
-                # (wrap allowed) yet keeps ONE identity row: chip, title, side controls.
+                # yet keeps ONE identity row: chip, title, side controls.
                 deep = wide_facts[2]
-                assert deep["wrap"] == "wrap", wide_facts
                 assert abs(deep["titleTop"] - deep["mainTop"]) <= 4, wide_facts
                 assert abs(deep["mainTop"] - deep["sideTop"]) <= 1, wide_facts
 
                 # The 620-700px column (laptop with the project panel open): the root
-                # card takes up to 620px there and keeps its single-row header.
+                # card takes up to 620px there.
                 wide.set_viewport_size({"width": 1004, "height": 750})
                 wide.wait_for_timeout(250)
                 owner_facts = wide.evaluate(
@@ -2621,7 +2625,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 )
                 assert 700 <= owner_facts["column"] <= 740, owner_facts
                 # 80% of a 700-740px column is below the 620px floor, so the floor wins.
-                assert abs(owner_facts["width"] - 620) <= 1 and owner_facts["wrap"] == "nowrap", owner_facts
+                assert abs(owner_facts["width"] - 620) <= 1, owner_facts
                 # The width is monotonic across the 620px chatcol breakpoint: against
                 # its containing block's content width the card is
                 # min(content, max(80% of content, 620px)) at every column width.

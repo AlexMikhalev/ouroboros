@@ -131,24 +131,32 @@ def test_git_candidate_includes_dirty_untracked_deleted_and_renamed_inputs(repo)
         selection.select_tests(repo, base="missing-base")
 
 
-@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])  # CRLF: a Windows checkout's bytes
-def test_a_release_bump_alone_stays_selected_but_other_carrier_edits_run_full(repo, newline):
+@pytest.mark.parametrize("eol", ["\n", "\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("autocrlf", ["false", "true"])
+def test_a_release_bump_alone_stays_selected_but_other_carrier_edits_run_full(repo, eol, autocrlf):
+    def write_carrier(path, text):
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.replace("\n", eol).encode("utf-8"))
+
     def git(*args):
         return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True).stdout.decode().strip()
     git("init", "-q")
     git("config", "user.email", "selection@example.invalid")
     git("config", "user.name", "Selection tests")
+    git("config", "core.autocrlf", autocrlf)
+    git("config", "core.safecrlf", "false")
     project = '[project]\nname = "ouroboros"\nversion = "{}"\ndependencies = [{}]\n'
-    write(repo, "VERSION", "7.7.0-rc.1\n", newline)
-    write(repo, "pyproject.toml", project.format("7.7.0rc1", ""), newline)
-    write(repo, "web/package.json", '{\n  "version": "7.7.0-rc.1"\n}\n', newline)
+    write_carrier("VERSION", "7.7.0-rc.1\n")
+    write_carrier("pyproject.toml", project.format("7.7.0rc1", ""))
+    write_carrier("web/package.json", '{\n  "version": "7.7.0-rc.1"\n}\n')
     git("add", ".")
     git("commit", "-qm", "base")
-    write(repo, "VERSION", "7.7.0-rc.2\n", newline)  # P9: every numbered release bumps the carriers
-    write(repo, "pyproject.toml", project.format("7.7.0rc2", ""), newline)
-    write(repo, "web/package.json", '{\n  "version": "7.7.0-rc.2"\n}\n', newline)
+    write_carrier("VERSION", "7.7.0-rc.2\n")  # P9: every numbered release bumps the carriers
+    write_carrier("pyproject.toml", project.format("7.7.0rc2", ""))
+    write_carrier("web/package.json", '{\n  "version": "7.7.0-rc.2"\n}\n')
     assert selection.select_tests(repo).tier == "selected"
-    write(repo, "pyproject.toml", project.format("7.7.0rc2", '"requests"'), newline)
+    write_carrier("pyproject.toml", project.format("7.7.0rc2", '"requests"'))
     result = selection.select_tests(repo)
     assert result.tier == "full" and ("pyproject.toml", "verification apparatus changed") in result.reasons
 
