@@ -5,6 +5,7 @@ header with no actions renders no bar. Stack: one row of at most 56px, `☰ · t
 title one line and ellipsized; Restart and the budget inside ⋯. No icon anywhere."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -55,6 +56,13 @@ def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_
     assert 'class="shell-icon-control project-panel-close"' in _read("web/app.js")
     assert 'class="shell-icon-control mobile-nav-toggle"' in _read("web/modules/page_header.js")
     assert ".project-panel-title" not in css, "one title style"
+
+
+def test_header_actions_take_the_chrome_height_under_a_finger():
+    css = _read("web/style.css")
+    gated = css.split("@media (pointer: coarse) {\n    .app-page-toolbar :is(.btn, button),", 1)[1].split("}", 1)[0]
+    assert "min-height: var(--chrome-control-h)" in gated
+    assert re.search(r"@media \(pointer: coarse\) \{[^}]*--chrome-control-h: var\(--touch-target-min\)", _read("web/ui.css"), re.S)
 
 
 def test_the_place_name_wins_over_the_status_word_and_the_status_keeps_its_target():

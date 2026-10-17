@@ -1139,6 +1139,15 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     max-width: 100%;
 }
 
+/* Under a finger every header action is one of the header's controls: the chrome height, which ui.css raises to
+   the touch minimum on a coarse pointer (Refresh, a Project's ×, the bars' icon controls alike). */
+@media (pointer: coarse) {
+    .app-page-toolbar :is(.btn, button),
+    .app-page-trailing button {
+        min-height: var(--chrome-control-h);
+    }
+}
+
 /* The tab strip is its own strip under the header row (it scrolls sideways by design). */
 .app-page-tabs {
     flex: 0 0 auto;
