@@ -233,10 +233,14 @@ def test_child_cold_rejoin_survives_drive_removal_at_cap(tree, monkeypatch, surf
         restarted = dataclasses.replace(child)
         result = _call(restarted, **ask)
         if legacy == 'lost':
-            assert result['state'] == 'pending' and result['aggregate'] != 'PASS', result
+            # Without its assignment proof the seat's outcome is unknown and it is never re-sent
+            # (custody_lost is terminal): the wave settles with no verdict instead of staying
+            # pending forever, and nothing new is bought.
+            assert (result['state'], result['aggregate']) == ('settled', 'QUORUM_FAILED'), result
             assert result['record_id'] == original['record_id'] and len(_starts()) == 1
-            again = _call(dataclasses.replace(child), **ask)
-            assert again['state'] == 'pending' and again['aggregate'] != 'PASS', again
+            again = _call(dataclasses.replace(child), **ask)  # the same round rejoins at $0
+            assert (again['state'], again['aggregate'], again['record_id']) == (
+                'settled', 'QUORUM_FAILED', original['record_id']), again
             [paid] = load_state(parent.drive_root).attempts
             assert paid.paid and paid.triad_raw_results[0]['operation_id'] == operation
             assert len(_starts()) == 1
