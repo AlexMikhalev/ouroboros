@@ -314,3 +314,24 @@ def test_repeated_generation_signatures_keep_every_alias(tmp_path):
         found, resolution = chat_chain.resolve_row(tmp_path, chat_chain.row_address(row.row, gen=gen, line=2))
         assert resolution["status"] == "ok" and found == row.row
     assert ds.legacy_address(tmp_path, ds.append(tmp_path, "chat", owner("appended")).seq) is None
+
+
+# ---- fact 4: task aliases --------------------------------------------------------------------------
+
+def test_rows_whose_only_task_identifier_is_subagent_task_id_are_found_by_the_task_probes(tmp_path, monkeypatch):
+    chain_root(tmp_path)
+    di.cutover(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    alias = ds.append(tmp_path, "progress", {"subagent_task_id": "selected", "text": "visible in the timeline"})
+    ds.append(tmp_path, "progress", {"subagent_task_id": "other", "text": "another child"})
+    own = ds.append(tmp_path, "progress", progress("selected", "the task's own row"))
+    assert [row.seq for row in ds.task_rows(tmp_path, ["selected"], stream="progress")] == [alias.seq, own.seq]
+    assert [row.seq for row in ds.task_rows(tmp_path, ["selected"], stream="progress", after=alias.seq)] == [own.seq]
+    assert ds.task_rows(tmp_path, ["absent"], stream="progress") == []
+    assert [row.row["text"] for row in ds.task_rows(tmp_path, ["child-1"], stream="progress")] == ["child step"], "populated by the import"
+    assert [row.row["text"] for row in ds.task_rows(tmp_path, ["child-1"], stream="chat")] == ["child words"]
+    assert ds.facts(alias.row)["subagent_task_id"] == "selected" and ds.facts(own.row)["subagent_task_id"] is None
+    with traced(monkeypatch) as counts:
+        assert [row.seq for row in ds.probe_rows(tmp_path, "progress", [("subagent_task_id", "selected")])] == [alias.seq]
+    details = plans(tmp_path, counts["statements"])
+    assert any("dialogue_subagent" in detail for detail in details) and not any(detail.startswith("SCAN") for detail in details), details
