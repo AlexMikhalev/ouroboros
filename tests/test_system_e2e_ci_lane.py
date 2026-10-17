@@ -49,8 +49,6 @@ def test_manual_and_release_callers_share_one_full_browser_lane():
 
     push = yaml.safe_load(push_path.read_text(encoding="utf-8"))
     assert set(_triggers(push)) == {"workflow_dispatch"}
-    assert set(_triggers(_workflow())) == {"push", "workflow_dispatch"}
-    assert _triggers(_workflow())["push"] == {"tags": ["v*"]}
     assert _triggers(push)["workflow_dispatch"]["inputs"]["diagnostic"]["options"] == ["full", "viewport", "inflight"]
     assert push["jobs"]["ui-smoke"]["uses"] == caller["uses"]
 

@@ -366,11 +366,8 @@ def test_terminal_bench_claim_applies_disclosed_reward_hack_correction():
     assert "+3.17 PP" not in surfaces[3]
 
 
-def test_site_build_checks_remain_in_manual_and_release_qualification():
+def test_site_build_checks_remain_in_manual_qualification():
     workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    triggers = yaml.load(workflow, Loader=yaml.BaseLoader)["on"]
-    assert set(triggers) == {"push", "workflow_dispatch"}
-    assert triggers["push"] == {"tags": ["v*"]}
     assert "pnpm --dir site build" in workflow
     assert "git status --porcelain --untracked-files=all -- docs/" in workflow
     assert "git diff --exit-code -- docs/" in workflow

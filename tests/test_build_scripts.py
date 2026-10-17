@@ -1215,17 +1215,11 @@ def test_ci_step_outcome_references_resolve_to_prior_step_ids():
 def test_release_tags_and_manual_browser_runs_keep_unfiltered_entrypoints():
     import yaml
 
-    # General branch/PR CI is intentionally absent, but no path limits release tags.
-    ci = yaml.safe_load(_ci_workflow())
-    ci_push = ci.get("on", ci.get(True))["push"]
-    assert ci_push == {"tags": ["v*"]}
-    assert set(ci.get("on", ci.get(True))) == {"push", "workflow_dispatch"}
-
+    # The event matrix is owned by test_platform_ci_events; check the full-lane caller here.
     push = yaml.safe_load((_REPO_PATH / ".github/workflows/ui-browser-push.yml").read_text(encoding="utf-8"))
     trigger = push.get("on", push.get(True))
     assert list(trigger) == ["workflow_dispatch"], "the UI-only entry is manual and adds no paid lane"
     assert trigger["workflow_dispatch"]["inputs"]["diagnostic"]["options"] == ["full", "viewport", "inflight"]
-    assert "paths" not in ci_push and "paths-ignore" not in ci_push
     assert push["jobs"]["ui-smoke"]["uses"] == "./.github/workflows/ui-browser.yml"
 
     shared = yaml.safe_load((_REPO_PATH / ".github/workflows/ui-browser.yml").read_text(encoding="utf-8"))

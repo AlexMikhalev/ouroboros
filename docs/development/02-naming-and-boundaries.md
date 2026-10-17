@@ -170,12 +170,11 @@ scanned.
 
 Size is pairwise: a change ends each composed book, entrypoint included, no
 larger than at its event base, so text it adds is paid by shortening the same
-book. A stored budget only moved up and per-change grants made every growth a
-cheap self-raise; comparing tip with base leaves no number to raise. The
-`size_ratchet` lane retains its event-based policy: owner/member/collaborator PRs
-and `ouroboros` pushes block growth; other events warn. Those automatic triggers
-are disabled (ARCHITECTURE §8); local balance checks and review still apply.
-The owner's `book-growth` label exempts its PR and exact landing commit. Local surfaces never block: the edit
+book. With ordinary push/PR CI disabled (ARCHITECTURE §8), manual/tag runs
+lack a per-change base and skip the book comparison; they do not certify this rule.
+Local qualification supplies `OURO_SIZE_RATCHET_BASE_REF` explicitly; review
+checks the actual contribution. The owner's `book-growth` label can exempt it.
+Local surfaces never block: the edit
 tools, `plan_task`, the free `preflight_review(deterministic_only=True)` diagnostic
 and `codebase_health` report the running balance as a fact. Contribution is measured
 against the displayed merge-base of the cached official development ref; an unknown

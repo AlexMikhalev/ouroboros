@@ -132,8 +132,8 @@ forwards a focused run. Inside Ouroboros a reviewed commit (`commit_reviewed` /
 its unsigned receipt of an identical complete run, unless `skip_tests` is set, so
 running it by hand first is optional rather than a second requirement. Ordinary
 PR/branch cloud CI is disabled: local verification and independent review remain.
-Maintainers may dispatch CI for an exact candidate; release tags retain the full
-gate. If the full battery could
+Maintainers may dispatch CI for a reviewed candidate; review outside code before
+that secret-bearing run. Release tags retain the full gate. If the full battery could
 not finish on your machine or within your budget, say so — `NOT_RUN` with the
 reason — and deliver the focused evidence; never report it as green.
 

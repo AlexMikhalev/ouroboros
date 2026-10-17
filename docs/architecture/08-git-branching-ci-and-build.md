@@ -10,11 +10,11 @@ The local `ouroboros-stable` ref is also a recovery fallback maintained by expli
 
 ### CI topology
 
-Ordinary cloud CI runs only on dispatch or `v*` tags, not branch pushes or PRs: later cross-platform feedback buys runner capacity, not weaker local tests or review. `ci.yml` retains the full release graph; UI/provider wrappers are manual-only with unchanged filenames. Claudexor integration, Hub validation and non-test publishing keep their triggers.
+Ordinary cloud CI runs only on dispatch or `v*` tags, not branch pushes or PRs: later cross-platform feedback buys runner capacity, not weaker local tests or review. `ci.yml` retains the full release graph; UI/provider wrappers are manual-only with unchanged filenames. Claudexor integration and non-test publishing keep their triggers; Hub-repository validation is separate.
 
 | Tier | Jobs | Trust boundary |
 |---|---|---|
-| Read-only checks | `quick-test`, `sqlite-floor` (SQLite 3.37.2), `betterleaks-platform-smoke`, `benchmark-methodology` | `quick-test` runs on dispatch; the others on dispatch/tags, without provider secrets. PR-specific jobs/predicates remain dormant; no `pull_request_target` |
+| Read-only checks | `quick-test`, `sqlite-floor` (SQLite 3.37.2), `betterleaks-platform-smoke`, `benchmark-methodology` | Dispatch-only except `benchmark-methodology` also on tags. Pre-tag dispatch supplies SQLite, scanner and quick/site checks. PR predicates stay dormant; no provider secrets |
 | Android source/build proof | `android-test` | Every run; `android/tests`, release tests and disposable-key APK compilation; no publisher secrets |
 | Android emulator proof | `android-emulator-smoke` | Tags or verified `android/` changes; install/start and same-UID PackageInstaller readback on an x86_64 API matrix; no publisher secrets |
 | Browser consumer proof | `ui-browser.yml`, called by `ci.yml` and `ui-browser-push.yml` | One complete lane for manual/tag qualification; `ui-browser-push.yml` separately offers manual full or partial diagnostics. Tags/dispatch never take the documentation-only skip. Four `ui-shard` jobs, one `ui-manifest` collection and the `ui-smoke` verdict, which reconciles the shards against the manifest and refuses a red session. No schedule, no provider secrets |

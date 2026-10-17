@@ -102,6 +102,19 @@ def test_ordinary_matrix_requires_admitted_manual_or_tag_event(event, ref, base,
     assert job["runs-on"] == "$" + "{{ matrix.os }}"
 
 
+@pytest.mark.parametrize("name", ["quick-test", "sqlite-floor", "betterleaks-platform-smoke"])
+@pytest.mark.parametrize("event,ref,expected", [
+    ("workflow_dispatch", "refs/heads/candidate", True),
+    ("push", "refs/tags/v7.7.0", False),
+    ("push", "refs/heads/ouroboros", False),
+    ("pull_request", "refs/pull/42/merge", False),
+])
+def test_additional_pre_tag_checks_require_manual_dispatch(name, event, ref, expected):
+    admitted = _triggered(WORKFLOW, event, ref) and bool(_value(
+        WORKFLOW["jobs"][name]["if"], event=event, ref=ref, base="ouroboros"))
+    assert admitted is expected
+
+
 def test_dormant_pr_predicates_keep_checkout_and_base_evidence_secret_free():
     triggers = WORKFLOW.get("on") or WORKFLOW[True]  # PyYAML's YAML 1.1 spelling of "on".
     assert "pull_request" not in triggers

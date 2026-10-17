@@ -2,7 +2,7 @@
 #
 # Tier 1 (Quick):       Manual                                                        → Ubuntu-only tests
 # Tier 2 (Full):        Manual / tag                                                   → Full 3-OS matrix
-# Tier 1.5 (SQLite floor): Manual / tag                                                → store modules on ubuntu-22.04's system SQLite 3.37.2
+# Tier 1.5 (SQLite floor): Manual                                                      → store modules on ubuntu-22.04's system SQLite 3.37.2
 # Tier 2.5 (Integration): Manual / tag                                                 → Real-provider tests, reusable provider-canary.yml
 # Tier 2.6 (Skill smoke): Manual / tag                                                 → LIVE OuroborosHub install smoke + review/grant/enable checks (paid)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
@@ -41,7 +41,7 @@ on:
   # scheduled run would report the DEFAULT BRANCH in github.ref, which is why
   # the paid lanes below keep their `!= 'schedule'` guards.
 
-# Read-only is sufficient for tests and fork PRs. The release job overrides
+# Read-only is sufficient for the test jobs. The release job overrides
 # this narrowly with contents: write when publishing a tag.
 permissions:
   contents: read
@@ -593,7 +593,7 @@ jobs:
           --count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
           --summary "$GITHUB_STEP_SUMMARY"
 
-  # Fork-safe PR proof for the one native secret-scanner dependency. This job
+  # Manual proof for the one native secret-scanner dependency. This job
   # carries no provider or repository secret: it exercises the explicit pinned
   # installer, managed resolver, license/version checks, and redaction-safe real
   # scanner smoke on each supported desktop OS family.
