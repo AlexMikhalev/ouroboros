@@ -220,7 +220,10 @@ def test_host_notes_stay_in_place_as_system_steps_never_the_models_message(tmp_p
     steps = build_trajectory(agent)["steps"]
 
     assert [s["step_id"] for s in steps] == list(range(1, len(steps) + 1))
-    assert [s["source"] for s in steps] == ["user", "system", "agent", "system", "system", "agent"]
+    # The model's words before the toast stay before it, as their own step.
+    assert [s["source"] for s in steps] == ["user", "agent", "system", "agent", "system", "system", "agent"]
+    assert steps[1] == {"step_id": 2, "source": "agent", "message": "💬 Planning.",
+                        "timestamp": "2026-07-04T18:01:00+00:00"}
     host = [s for s in steps if s["source"] == "system"]
     assert [(s["message"], s["timestamp"]) for s in host] == [
         (toast, "2026-07-04T18:01:30+00:00"),
@@ -228,8 +231,40 @@ def test_host_notes_stay_in_place_as_system_steps_never_the_models_message(tmp_p
         ("Older typed notice.", "2026-07-04T18:02:40+00:00"),
     ]
     assert all(set(s) == {"step_id", "source", "message", "timestamp"} for s in host)
-    assert steps[2]["message"] == "💬 Planning." and steps[2]["tool_calls"]
+    assert steps[3]["message"] == "" and steps[3]["tool_calls"]
     assert steps[-1]["message"] == "Wrapping up.\n\nDone: created the file."
+
+
+def test_a_call_precedes_the_host_notes_its_own_execution_emitted(tmp_path: Path) -> None:
+    """Review of #539: a settled row is stamped at settlement, so notes the host wrote
+    DURING a call sorted ahead of the step whose narration and call caused them. A call
+    with a logged start is placed there; its timestamp stays what the model saw (#1316)."""
+    agent = _make_agent_dir(tmp_path)
+    logs = agent / "ouroboros-data/logs"
+    ts = "2026-07-04T18:01:{:02d}+00:00".format
+    _write_jsonl(logs / "progress.jsonl", [
+        {"ts": ts(0), "type": "send_message", "text": "💬 Plan first.", "role": "assistant", "narration": True},
+        {"ts": ts(5), "type": "send_message", "text": "💬 Plan review started", "role": "system",
+         "system_type": "host_progress", "narration": False},
+        {"ts": ts(50), "type": "send_message", "text": "💬 Plan review finished", "role": "system",
+         "system_type": "host_progress", "narration": False},
+    ])
+    call = {"tool": "plan_task", "args": {"goal": "x"}, "invocation_id": "plan"}
+    _write_jsonl(logs / "tools.jsonl", [
+        {**call, "ts": ts(1), "type": "tool_call_started"},
+        {**call, "ts": "2026-07-04T18:02:00+00:00", "type": "tool_call", "result_preview": "plan ok", "status": "ok"},
+    ])
+    trajectory = build_trajectory(agent)
+    steps = trajectory["steps"]
+
+    assert [s["source"] for s in steps] == ["user", "agent", "system", "system", "agent"]
+    assert [s["step_id"] for s in steps] == list(range(1, len(steps) + 1))
+    assert trajectory["final_metrics"]["total_steps"] == len(steps)
+    caused = steps[1]
+    assert caused["message"] == "💬 Plan first." and caused["tool_calls"][0]["function_name"] == "plan_task"
+    assert caused["timestamp"] == "2026-07-04T18:02:00+00:00"
+    assert [s["message"] for s in steps[2:4]] == ["💬 Plan review started", "💬 Plan review finished"]
+    assert all("tool_calls" not in s for s in steps[2:4])
 
 
 def test_build_trajectory_minimal_dir(tmp_path: Path) -> None:
