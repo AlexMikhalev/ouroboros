@@ -468,9 +468,8 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
 })
 
 
-def completion_control_call(name: str, args: object = None) -> bool:
-    """Host-owned local completion identity, independent of presentation or success.
-    ``args`` is accepted for the callers' shape; no completion tool needs it now."""
+def completion_control_call(name: str) -> bool:
+    """Host-owned local completion identity, independent of presentation or success."""
     return name in {"finish_task", "presence_finish"}
 
 

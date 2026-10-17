@@ -101,7 +101,7 @@ def _emit_live_log(tools: ToolRegistry, payload: Dict[str, Any]) -> None:
 
 
 def _publish_settlement(tools, drive_logs, row):
-    if completion_control_call(str(row.get("tool") or ""), row.get("args")):
+    if completion_control_call(str(row.get("tool") or "")):
         row["completion_control"] = True
     action = routing_action_for_tool(str(row.get("tool") or ""))
     if action:
@@ -1002,7 +1002,7 @@ def _execute_with_timeout(
     # Host-stamped control calls are receipts, not substantive work.
     action = routing_action_for_tool(fn_name)
     receipt = {"routing_action": action} if action else {}
-    if completion_control_call(fn_name, _tc_args(tc)):
+    if completion_control_call(fn_name):
         receipt["completion_control"] = True
     # Durable/live start share identity for replay deduplication.
     live = _with_correlation({
@@ -1482,7 +1482,7 @@ def process_tool_results(
             trace_args = {"_repr": repr(exec_result["args_for_log"])}
         llm_trace["tool_calls"].append({
             "tool": fn_name,
-            **({"completion_control": True} if completion_control_call(fn_name, trace_args) else {}),
+            **({"completion_control": True} if completion_control_call(fn_name) else {}),
             "tool_call_id": exec_result["tool_call_id"],
             "args": trace_args,
             # Review sees the same complete/bounded tool view that Main saw.
