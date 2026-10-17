@@ -7,6 +7,7 @@ catalog's enabled/review gate. No GET loads code, reconciles, writes or fetches.
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict
 
 if TYPE_CHECKING:
@@ -57,7 +58,7 @@ def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) 
     from ouroboros.extension_contributions import project_contributions
     from ouroboros.extension_registry_state import live_contribution_problems, live_contribution_projection
     from ouroboros.extension_ui_validation import CONTRIBUTION_ICONS, validate_contributions
-    from ouroboros.gateway.ui_preferences import _stored_preferences
+    from ouroboros.gateway.ui_preferences import DEFAULT_UI_PREFERENCES, _stored_preferences
     from ouroboros.skill_loader import discover_skills, skill_conflict_status
 
     if skills is None:
@@ -81,7 +82,10 @@ def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) 
                            "label": item["label"], "title": item["title"], "destination": item["destination"],
                            "install_size": item.get("install_size", ""), "enabled": False}
                           for item in clean if item.get("provides") == "stt")
-    prefs = _stored_preferences(drive_root / "state" / "ui_preferences.json")
+    try:
+        prefs = _stored_preferences(drive_root / "state" / "ui_preferences.json")
+    except ValueError:  # a stored value this release refuses (a hand edit, a newer release's) never fails the Skills page
+        prefs = copy.deepcopy(DEFAULT_UI_PREFERENCES)
     voice = {}
     for kind in ("stt", "tts"):
         key = prefs["voice"][kind]

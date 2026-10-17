@@ -206,6 +206,19 @@ def test_preferences_merge_and_missing_provider_stays_selected(tmp_path, monkeyp
         assert http.post("/api/ui/preferences", json={"voice": {"stt": "x" * 120}, "contributions": {"hidden": [str(i) for i in range(64)]}}).status_code == 200
 
 
+def test_a_stored_preference_this_release_refuses_never_fails_the_skills_page(tmp_path, monkeypatch):
+    installed(tmp_path, entries=[STT])
+    prefs = tmp_path / "state" / "ui_preferences.json"
+    prefs.parent.mkdir(parents=True, exist_ok=True)
+    with client(tmp_path, monkeypatch) as http:
+        prefs.write_text(json.dumps({"voice": {"stt": "demo:speech"}}), encoding="utf-8")
+        assert http.get("/api/ui/contributions").json()["voice"]["stt"]["key"] == "demo:speech", "a good value is read"
+        prefs.write_text(json.dumps({"voice": {"stt": 5}, "contributions": {"hidden": "x"}}), encoding="utf-8")
+        catalog = http.get("/api/ui/contributions")
+        assert catalog.status_code == 200 and catalog.json()["voice"]["stt"]["reason"] == "not_selected"
+        assert http.get("/api/extensions").status_code == 200
+
+
 def test_speech_and_ordinary_uploads_keep_existing_cap(tmp_path, monkeypatch):
     skill = installed(tmp_path, entries=[STT], permissions=["route"])
     extension_loader._publish_out_of_process_registration(skill, catalog={"routes": [
