@@ -1,10 +1,14 @@
 """Skills in the page, over the static SPA in a real engine (no runtime): a saved reply's contributed action between
-Reply and Copy and in the row menu, a page module that registers its provider beside one that throws (one notice, the
-page keeps working), and the ways to start without page modules: `?plugins=off`, the boot marker of a start that did
-not finish, and the chat header's Restart without plugins."""
+Reply and Copy and in the row menu; a page module that registers its provider and writes into the draft beside one
+that throws (one notice, the page keeps working); the "+" menu's skill sections and host items doing their verbs by
+pointer and keyboard; contributed chips on the capsule row at 320, 360 and 1280 px in both themes, folding into one
+"+N" whose list holds the rest; and the ways to start without page modules: `?plugins=off`, the boot marker of a
+start that did not finish, and the chat header's Restart without plugins."""
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
@@ -19,11 +23,13 @@ BROKEN_URL = "/api/extensions/broken/ui/r1/ui/panel.js"
 MODULES = {
     VOICE_URL: """export function mount(ctx) {
         window.voiceContext = Object.keys(ctx).sort();
+        window.voiceCtx = ctx;
         ctx.providers.register('tts', {label: 'Device voice', voices: () => [], speak: async () => {}, stop() {}});
         return {dispose() { window.voiceDisposed = true; }};
     }""",
     BROKEN_URL: "export function mount() { throw new Error('the panel broke'); }",
 }
+TONES = ["ok", "warn", "bad", "muted"]
 
 
 def _item(key, **extra):
@@ -32,18 +38,33 @@ def _item(key, **extra):
             "icon": "", "order": 0, "revision": "r1", "render": {"kind": "declarative", "url": ""}, **extra}
 
 
-PROJECTION = {
-    "contributions": [
-        _item("lists:save", placement="message.action", label="Save to list", title="Keep this answer in a list",
-              icon="list", action={"verb": "notice", "text": "Saved to Groceries"}),
-        _item("voice:tts", provides="tts", runtime="client", destination="device", skill_label="Device voice",
-              label="Device voice", render={"kind": "host", "url": VOICE_URL}),
-        _item("broken:panel", placement="composer.plus", action={"verb": "notice", "text": "unused"},
-              render={"kind": "host", "url": BROKEN_URL}),
-    ],
-    "offers": {"stt": []}, "voice": {}, "icons": [], "problems": {},
-    "preferences": {"voice": {"stt": "", "tts": ""}, "contributions": {"hidden": [], "order": []}},
-}
+def _chip(index):
+    return _item(f"chips{index}:chip", placement="composer.chips", label=f"Meter {index}", order=100 + index,
+                 source={"url": f"/api/extensions/chips{index}/chip", "refresh_s": 60},
+                 action={"verb": "notice", "text": f"Meter {index} pressed"})
+
+
+def projection(chips=0):
+    return {
+        "contributions": [
+            _item("templates:simpler", placement="composer.plus", label="Explain simpler", icon="sparkle", order=10,
+                  action={"verb": "draft.insert", "text": "Explain your last answer more simply."}),
+            _item("lists:add", placement="composer.plus", label="Add to list", icon="list", order=20,
+                  action={"verb": "skill.request", "route": "add", "with": "draft", "then": "clear_draft",
+                          "url": "/api/extensions/lists/add"}, route_url="/api/extensions/lists/add"),
+            _item("lists:save", placement="message.action", label="Save to list", title="Keep this answer in a list",
+                  icon="list", action={"verb": "notice", "text": "Saved to Groceries"}),
+            _item("voice:tts", provides="tts", runtime="client", destination="device", skill_label="Device voice",
+                  label="Device voice", render={"kind": "host", "url": VOICE_URL}),
+            _item("broken:panel", placement="composer.plus", action={"verb": "notice", "text": "unused"},
+                  render={"kind": "host", "url": BROKEN_URL}),
+            *(_chip(index) for index in range(1, chips + 1)),
+        ],
+        "offers": {"stt": []}, "voice": {}, "icons": [], "problems": {},
+        "preferences": {"voice": {"stt": "", "tts": ""}, "contributions": {"hidden": [], "order": []}},
+    }
+
+
 HISTORY = {"messages": [
     {"role": "user", "text": "What do we need from the shop?", "chat_id": 1, "source": "web",
      "ts": "2026-10-17T09:00:00Z", "history_id": "h-0", "row_address": "row:1@2026-10-17T09:00:00Z#aaaaaaaaaaaa"},
@@ -52,30 +73,42 @@ HISTORY = {"messages": [
 ], "progress": []}
 
 
-def open_app(ui, path="/", *, width=1280, scheme="dark"):
+def open_app(ui, path="/", *, width=1280, scheme="dark", state=None):
+    """The SPA over routed gateway data; `state["chips"]` sets how many chips the projection carries (mutable)."""
     page = ui["page"]
-    loaded = []
+    state = state if state is not None else {}
+    state.setdefault("chips", 0)
+    loaded, posted = [], []
     origin = urlparse(ui["url"]).netloc
     page.route("**/*", lambda route: route.fallback()
                if urlparse(route.request.url).netloc == origin else route.abort())
     page.route("**/api/ui/contributions*", lambda route: route.fulfill(
-        content_type="application/json", body=json.dumps(PROJECTION)))
+        content_type="application/json", body=json.dumps(projection(state["chips"]))))
     page.route("**/api/chat/history*", lambda route: route.fulfill(
         content_type="application/json", body=json.dumps(HISTORY)))
 
-    def module(route):
-        path = urlparse(route.request.url).path
-        loaded.append(path)
+    def extension(route):
+        request = route.request
+        path = urlparse(request.url).path
         if path in MODULES:
+            loaded.append(path)
             route.fulfill(content_type="text/javascript", body=MODULES[path])
+        elif path.endswith("/chip"):
+            index = int(path.split("/")[3].removeprefix("chips"))
+            route.fulfill(content_type="application/json", body=json.dumps(
+                {"text": f"{index * 7}%", "tone": TONES[index % 4], "title": f"Meter {index} in detail"}))
+        elif path == "/api/extensions/lists/add" and request.method == "POST":
+            posted.append(request.post_data_json)
+            route.fulfill(content_type="application/json", body=json.dumps({"notice": "Added to Groceries"}))
         else:
+            loaded.append(path)
             route.fulfill(status=404, body="")
-    page.route("**/api/extensions/**", module)
+    page.route("**/api/extensions/**", extension)
     page.set_viewport_size({"width": width, "height": 800})
     page.emulate_media(color_scheme=scheme)
     page.goto(ui["url"] + path)
     page.wait_for_selector("#chat-input", state="attached")
-    return page, loaded
+    return page, loaded, posted
 
 
 def toast(page, text):
@@ -84,7 +117,7 @@ def toast(page, text):
 
 @pytest.mark.parametrize("width,scheme", [(360, "light"), (360, "dark"), (1280, "light"), (1280, "dark")])
 def test_a_saved_reply_offers_the_skill_action_and_a_failing_page_module_costs_only_itself(subscription_ui, width, scheme):
-    page, loaded = open_app(subscription_ui, width=width, scheme=scheme)
+    page, loaded, _posted = open_app(subscription_ui, width=width, scheme=scheme)
     answer = page.locator(".chat-bubble.assistant").first
     action = answer.locator(".chat-message-actions > .chat-message-action")
     action.wait_for()
@@ -118,13 +151,147 @@ def test_a_saved_reply_offers_the_skill_action_and_a_failing_page_module_costs_o
         .getHostModules().clientProviders('tts').map((entry) => entry.key)""")
     assert providers == ["voice:tts"]
     assert sorted(set(loaded)) == [BROKEN_URL, VOICE_URL]
+    # A page module writes into the visible room's draft through its context, never by reaching into the composer.
+    assert page.evaluate("window.voiceCtx.draft.insert('Read this back to me')") is True
+    assert page.locator("#chat-input").input_value() == "Read this back to me"
     page.locator("#chat-input").fill("still typing")
     assert page.locator("#chat-input").input_value() == "still typing"
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "no horizontal page scroll"
 
 
+@pytest.mark.parametrize("width,scheme", [(1280, "light"), (360, "dark")])
+def test_plus_lists_skill_sections_then_host_items_and_each_does_its_verb(subscription_ui, width, scheme):
+    page, _loaded, posted = open_app(subscription_ui, width=width, scheme=scheme)
+    toast(page, "Broken stopped working").wait_for()  # its "+" item is off with it
+    field = page.locator("#chat-input")
+    field.click()
+    page.click("#page-chat #chat-plus")
+    menu = page.locator(".chat-plus-menu")
+    menu.wait_for()
+    items = menu.locator("[role=menuitem]").all_inner_texts()
+    assert [text.strip() for text in items] == [
+        "Attach file", "Explain simpler", "Add to list", "Make a button with Ouroboros…"], items
+    assert menu.locator(".chat-plus-label").all_inner_texts() == ["Templates", "Lists", "Ouroboros"], \
+        "each skill under its label, the host's own items last under Ouroboros's"
+    assert menu.locator("[data-plus-item='templates:simpler'] svg").count() == 1, "a skill's glyph from the host set"
+    box = menu.bounding_box()
+    assert box["x"] >= 0 and box["x"] + box["width"] <= width + 0.5, box
+    assert page.evaluate("document.activeElement.id") == "chat-input", "a pointer leaves the field its focus"
+    capture_name = f"plus-menu-{width}-{scheme}"
+    setup_browser.capture(page, capture_name)
+    menu.locator("[data-plus-item='templates:simpler']").click()
+    assert field.input_value() == "Explain your last answer more simply.", "a template only fills the draft"
+    assert not posted
+    # The keyboard: Enter on "+" moves into the menu; Add to list sends the draft to its own route, then clears it.
+    field.fill("Buy milk")
+    page.focus("#page-chat #chat-plus")
+    page.keyboard.press("Enter")
+    menu.wait_for()
+    assert page.evaluate("document.activeElement.dataset.plusItem") == "attach"
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("ArrowDown")
+    assert page.evaluate("document.activeElement.dataset.plusItem") == "lists:add"
+    page.keyboard.press("Enter")
+    toast(page, "Added to Groceries").wait_for()
+    assert posted == [{"text": "Buy milk"}]
+    page.wait_for_function("document.querySelector('#chat-input').value === ''")
+    # The host's own item starts a request for the owner to finish; nothing is sent.
+    page.click("#page-chat #chat-plus")
+    menu.locator("[data-plus-item='make-button']").click()
+    assert field.input_value() == "Make me a button in the + menu that "
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "no horizontal page scroll"
+
+
+ROW = """() => {
+    const page = document.querySelector('#page-chat');
+    const row = page.querySelector('.chat-toolbar-row');
+    const slot = row.querySelector('[data-composer-chips]');
+    const rect = (node) => node.getBoundingClientRect();
+    const chips = [...slot.querySelectorAll('.chat-composer-chip:not(.chat-chip-more)')];
+    const more = slot.querySelector('.chat-chip-more');
+    const style = getComputedStyle(slot);
+    return {
+        slotStyle: { overflowX: style.overflowX, maxWidth: style.maxWidth, flex: style.flex, width: rect(slot).width,
+            left: rect(slot).left, clientWidth: slot.clientWidth, scrollWidth: slot.scrollWidth, folded: slot.dataset.folded || '' },
+        children: [...row.children].map((node) => [node.className, rect(node).left, rect(node).right]),
+        moreWidth: more && !more.hidden ? rect(more).width : null,
+        lines: new Set([...row.children].filter((node) => rect(node).width > 0).map((node) => Math.round(rect(node).top))).size,
+        rowHeight: rect(row).height, rowRight: rect(row).right, compact: row.dataset.ownerCompact || '',
+        hosts: [...row.children].filter((node) => node !== slot && rect(node).width > 0)
+            .map((node) => [node.className, Math.round(rect(node).width * 2) / 2]),
+        shown: chips.filter((chip) => !chip.hidden).map((chip) => ({ key: chip.dataset.chipKey, right: rect(chip).right,
+            whole: chip.scrollWidth <= chip.clientWidth + 1, name: chip.getAttribute('aria-label') })),
+        valued: chips.every((chip) => chip.querySelector('.chat-chip-value').textContent !== ''),
+        folded: more && !more.hidden ? Number(more.textContent.slice(1)) : 0,
+        moreRight: more && !more.hidden ? rect(more).right : null,
+        slot: { right: rect(slot).right, hidden: slot.hidden },
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+}"""
+
+
+def _record(evidence):
+    root = os.environ.get("OUROBOROS_UI_EVIDENCE_DIR")
+    if root:
+        (Path(root) / "chips-rows.json").write_text(json.dumps(evidence, indent=1), encoding="utf-8")
+
+
+def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subscription_ui):
+    state = {"chips": 0}
+    page, _loaded, _posted = open_app(subscription_ui, state=state)
+    evidence = {}
+    for scheme in ("light", "dark"):
+        for width in (320, 360, 1280):
+            page.set_viewport_size({"width": width, "height": 800})
+            page.emulate_media(color_scheme=scheme)
+            state["chips"] = 0
+            page.goto(subscription_ui["url"] + "/")
+            page.wait_for_selector("#chat-input", state="attached")
+            page.wait_for_timeout(300)
+            before = page.evaluate(ROW)
+            for count in (1, 6):
+                where = f"{scheme} {width}px {count} chip(s)"
+                state["chips"] = count
+                page.goto(subscription_ui["url"] + "/")
+                page.wait_for_function(
+                    """(count) => { const chips = document.querySelectorAll('#page-chat .chat-composer-chip:not(.chat-chip-more)');
+                        return chips.length === count
+                            && [...chips].every((chip) => chip.querySelector('.chat-chip-value').textContent !== ''); }""",
+                    arg=count)
+                page.wait_for_timeout(300)
+                after = page.evaluate(ROW)
+                evidence[where] = {"before": before, "after": after}
+                _record(evidence)
+                # One line; the host capsules keep their place, width and words; every chip shown is whole and inside.
+                assert after["lines"] == 1 and after["rowHeight"] <= before["rowHeight"] + 0.5, (where, before, after)
+                assert after["hosts"] == before["hosts"] and after["compact"] == before["compact"], (where, before, after)
+                assert all(chip["whole"] and chip["right"] <= after["slot"]["right"] + 0.5 for chip in after["shown"]), (where, after)
+                assert len(after["shown"]) + after["folded"] == count, (where, after)
+                assert after["overflow"] <= 0, (where, after)
+                for chip in after["shown"]:
+                    index = int(chip["key"].split(":")[0].removeprefix("chips"))
+                    assert chip["name"] == f"Meter {index} {index * 7}%", (where, chip)
+                setup_browser.capture(page, f"chips-{scheme}-{width}-{count}")
+                if after["folded"]:
+                    assert after["moreRight"] <= after["slot"]["right"] + 0.5, (where, after)
+                    page.click("#page-chat .chat-chip-more")
+                    listed = page.locator(".chat-plus-menu [role=menuitem]")
+                    listed.first.wait_for()
+                    assert listed.count() == after["folded"], (where, listed.all_inner_texts())
+                    hidden_first = count - after["folded"] + 1
+                    assert listed.first.inner_text().strip() == f"Meter {hidden_first} {hidden_first * 7}%", where
+                    listed.first.click()
+                    toast(page, f"Meter {hidden_first} pressed").wait_for()
+                else:
+                    page.click(f"#page-chat .chat-composer-chip[data-chip-key='chips1:chip']")
+                    toast(page, "Meter 1 pressed").wait_for()
+    afters = [value["after"] for value in evidence.values()]
+    assert any(after["folded"] for after in afters), "six chips on a phone fold"
+    assert any(not after["folded"] and len(after["shown"]) == 1 for after in afters), "one chip shows whole"
+
+
 def test_plugins_off_starts_without_page_code_and_its_notice_restarts_with_it(subscription_ui):
-    page, loaded = open_app(subscription_ui, "/?plugins=off#chat")
+    page, loaded, _posted = open_app(subscription_ui, "/?plugins=off#chat")
     notice = toast(page, "Started without plugins.")
     notice.wait_for()
     page.locator(".chat-bubble.assistant .chat-message-action").wait_for()
@@ -137,7 +304,7 @@ def test_plugins_off_starts_without_page_code_and_its_notice_restarts_with_it(su
 
 
 def test_restart_without_plugins_in_the_more_menu_and_a_start_that_did_not_finish(subscription_ui):
-    page, loaded = open_app(subscription_ui)
+    page, loaded, _posted = open_app(subscription_ui)
     page.wait_for_function("Array.isArray(window.voiceContext)")
     page.locator(".chat-header-more > summary").click()
     door = page.get_by_role("button", name="Restart without plugins")
