@@ -421,16 +421,13 @@ def test_load_runtime_state_rejects_invalid_port_before_http(monkeypatch):
 
 
 def test_recent_thoughts_discloses_long_entry_and_reconstructible_source(tmp_path):
+    from ouroboros import dialogue_store as ds
+
     plugin = _load_plugin()
     data = tmp_path / "data"
-    log = data / "logs" / "progress.jsonl"
-    log.parent.mkdir(parents=True)
     timestamp = "2026-07-30T10:11:12Z"
     task_id = "task-abcdef123456"
-    log.write_text(
-        json.dumps({"ts": timestamp, "task_id": task_id, "text": "x" * 300}) + "\n",
-        encoding="utf-8",
-    )
+    ds.append(data, "progress", {"ts": timestamp, "task_id": task_id, "text": "x" * 300})
 
     class Api:
         @staticmethod
@@ -440,17 +437,17 @@ def test_recent_thoughts_discloses_long_entry_and_reconstructible_source(tmp_pat
     text = plugin._load_recent_thoughts(Api())
 
     assert "OMISSION NOTE: truncated at 100 chars; original length 300" in text
-    assert f"Full ref: data/logs/progress.jsonl @ {timestamp} task {task_id}" in text
-    assert text.endswith("Showing up to 4 recent entries. Full source: data/logs/progress.jsonl")
+    assert f"Full ref: data/state/dialog.sqlite (progress) @ {timestamp} task {task_id}" in text
+    assert text.endswith("Showing up to 4 recent entries. Full source: data/state/dialog.sqlite (progress)")
 
 
 def test_recent_thoughts_preserves_short_entry_and_discloses_list_projection(tmp_path):
+    from ouroboros import dialogue_store as ds
+
     plugin = _load_plugin()
     data = tmp_path / "data"
-    log = data / "logs" / "progress.jsonl"
-    log.parent.mkdir(parents=True)
     note = "plain short entry byte intact"
-    log.write_text(json.dumps({"text": note}) + "\n", encoding="utf-8")
+    ds.append(data, "progress", {"text": note})
 
     class Api:
         @staticmethod
@@ -459,7 +456,7 @@ def test_recent_thoughts_preserves_short_entry_and_discloses_list_projection(tmp
 
     assert plugin._load_recent_thoughts(Api()) == (
         f"• {note}\n\n"
-        "Showing up to 4 recent entries. Full source: data/logs/progress.jsonl"
+        "Showing up to 4 recent entries. Full source: data/state/dialog.sqlite (progress)"
     )
 
 
