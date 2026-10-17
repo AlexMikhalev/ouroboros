@@ -139,9 +139,14 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # numbered read views (both cursors count source characters, never display
     # numbers), explicit omitted-root semantics and ordered same-file edit_text
     # replacements; editor calls run in call order and `force` confirms only an
-    # intentional shrink.
+    # intentional shrink. The composed catalog retains both independent changes:
+    # public long-line search_code windows name the first match and read_file range;
+    # #1660 escalate adds explicit close (action, quiz_id, question_task_id, reason),
+    # registered materials and retention after task end. Only ask's validator requires
+    # question. The exact hash below pins their union; parameter types/defaults and
+    # required keys outside escalate, all other schemas and handler owners stay intact.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "e1093d0a47f57a73ac033524ae3c55c365c1d6646504db0e73a8f5d2ada461eb"
+        "5db47ba14469af3dceea9d20a40257f7eccb4599b047f879e7f691bfdd856cdf"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

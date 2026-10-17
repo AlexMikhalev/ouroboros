@@ -948,6 +948,8 @@ def _outcome_payload(
         "extension_load_error": getattr(outcome, "extension_load_error", None),
         "extension_live_loaded": getattr(outcome, "extension_live_loaded", None),
     }
+    if getattr(outcome, "dispatch_refusal_code", ""):
+        payload["dispatch_refusal_code"] = outcome.dispatch_refusal_code
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
     if job is not None:
@@ -1207,7 +1209,8 @@ def _on_finished(
     return _callback
 
 
-def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJob) -> Dict[str, Any]:
+def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJob, gate: Dict[str, Any]) -> Dict[str, Any]:
+    """The invocation stays pending; execution authority describes the selected current bytes."""
     return {
         "skill": skill_name,
         "status": "pending",
@@ -1215,8 +1218,8 @@ def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJ
         "reviewer_models": [],
         "findings": [],
         "error": f"review already {duplicate.status} for this skill/content hash",
-        "review_gate": skill_review_gate("pending"),
-        "executable_review": False,
+        "review_gate": gate,
+        "executable_review": gate["executable_review"],
         "deps_status": "not_required",
         "deps_error": "",
         "extension_action": None,
@@ -1256,7 +1259,12 @@ def _review_result_message(outcome: Any) -> str:
     status = normalize_skill_review_status(str(getattr(outcome, "status", "") or STATUS_PENDING))
     summary = _review_finding_summary(outcome)
     gate = skill_review_gate(status)
-    if gate["executable_review"]:
+    cyber = gate.get("blocking_reason") == "cyber_authority"
+    if cyber:
+        # Cyber Pro's permission to run is not the critic's outcome: name the outcome.
+        prefix = {STATUS_WARNINGS: "Review passed with findings", STATUS_BLOCKERS: "Review found blockers",
+                  STATUS_PENDING: "Review pending"}.get(status, "Review passed")
+    elif gate["executable_review"]:
         prefix = "Review executable with findings" if status in {STATUS_WARNINGS, STATUS_BLOCKERS} else "Review executable"
     elif status == STATUS_WARNINGS:
         prefix = "Review warnings blocked by current enforcement"
@@ -1276,7 +1284,7 @@ def _review_result_message(outcome: Any) -> str:
         if auto_granted_permissions:
             auto_parts.append(f"permissions: {', '.join(auto_granted_permissions)}")
         base = base + f" | auto-granted: {'; '.join(auto_parts)}"
-    return base
+    return base + (" | Cyber Pro: execution is Ouroboros's decision, not a review result" if cyber else "")
 
 
 async def run_skill_review_lifecycle(
@@ -1451,7 +1459,7 @@ def run_skill_review_lifecycle_blocking(
             ),
         )
     except DuplicateLifecycleJobError as exc:
-        return _duplicate_payload(skill_name, content_hash, exc.job)
+        return _duplicate_payload(skill_name, content_hash, exc.job, selected.review.gate_for(content_hash))
     except TimeoutError as exc:
         _mark_review_job_timeout(
             drive_root, skill_name, content_hash, reason=f"{type(exc).__name__}: {exc}",

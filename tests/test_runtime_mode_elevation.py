@@ -702,7 +702,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert data["status"] == "saved"
     assert data.get("agent_task_running") is True
     warnings = data.get("warnings") or []
-    assert any("keeps the configuration it started with" in w for w in warnings), warnings
+    assert any("keeps the models, reviewers and subagents it started with" in w for w in warnings), warnings
     assert any("next task" in w for w in warnings), warnings
 
     # No running task -> no warning noise.
@@ -711,7 +711,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert resp2.status_code == 200, resp2.text
     data2 = resp2.json()
     assert "agent_task_running" not in data2
-    assert not any("keeps the configuration" in w for w in (data2.get("warnings") or []))
+    assert not any("An agent task is running" in w for w in (data2.get("warnings") or []))
 
 
 def test_started_predicate_is_read_only_and_never_constructs_the_agent(monkeypatch):
@@ -772,9 +772,7 @@ def test_owner_context_mode_endpoint_persists_and_hot_applies(isolated_settings,
     from ouroboros.gateway import settings as settings_mod
 
     api_owner_context_mode = settings_mod.api_owner_context_mode
-    # This positive case owns its idle precondition. Other xdist tests exercise
-    # the process-global supervisor queues and must not make the endpoint test
-    # order-dependent; the following test covers the busy rejection explicitly.
+    # Existing actors retain their own choice; this owner save is for future actors.
     monkeypatch.setattr(settings_mod, "_has_running_agent_tasks", lambda: False)
 
     _seed_disk(isolated_settings, {
@@ -792,7 +790,8 @@ def test_owner_context_mode_endpoint_persists_and_hot_applies(isolated_settings,
     response = client.post("/api/owner/context-mode", json={"mode": "low"})
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"ok": True, "context_mode": "low"}
+    assert response.json()["ok"] is True and response.json()["context_mode"] == "low"
+    assert response.json()["project_id"] == "" and response.json()["cognition"]["context_mode"] == "low"
     on_disk = json.loads(isolated_settings.read_text(encoding="utf-8"))
     assert on_disk["OUROBOROS_CONTEXT_MODE"] == "low"
     assert on_disk["OUROBOROS_RUNTIME_MODE"] == "pro"
@@ -808,7 +807,7 @@ def test_owner_context_mode_endpoint_persists_and_hot_applies(isolated_settings,
     assert os.environ["OUROBOROS_CONTEXT_MODE"] == "low"
 
 
-def test_owner_context_mode_endpoint_refuses_lowering_while_task_runs(isolated_settings, monkeypatch):
+def test_owner_context_mode_endpoint_saves_next_choice_while_task_runs(isolated_settings, monkeypatch):
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
@@ -824,10 +823,8 @@ def test_owner_context_mode_endpoint_refuses_lowering_while_task_runs(isolated_s
     app.state.drive_root = isolated_settings.parent
     response = TestClient(app).post("/api/owner/context-mode", json={"mode": "low"})
 
-    assert response.status_code == 409, response.text
-    assert "only be lowered while Ouroboros is idle" in response.text
-    assert "queued or running work" in response.text
-    assert json.loads(isolated_settings.read_text(encoding="utf-8"))["OUROBOROS_CONTEXT_MODE"] == "max"
+    assert response.status_code == 200, response.text
+    assert json.loads(isolated_settings.read_text(encoding="utf-8"))["OUROBOROS_CONTEXT_MODE"] == "low"
 
 
 def test_owner_context_mode_idle_predicate_covers_pending_and_direct_chat_busy(monkeypatch):

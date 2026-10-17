@@ -18,8 +18,7 @@ from ouroboros import startup_historical_audit as audit
 def test_maintenance_completion_contract(tmp_path, monkeypatch, kind, case):
     module = packer if kind == "packer" else audit
     job = packer.EvidencePacker() if kind == "packer" else audit.HistoricalAudit()
-    counters = ({"packed": 1, "candidates": 2, "raw": 3, "compressed": 1,
-                 "unlinked": 1, "kept": 0, "busy": 0, "faults": 0, "archived": 0}
+    counters = ({**dict.fromkeys(packer._COUNTERS, 0), "packed": 1, "candidates": 2, "raw": 3, "compressed": 1, "unlinked": 1}
                 if kind == "packer" else
                 {"facts_written": 1, "manifests_checked": 2, "wall_seconds": 0, "cpu_seconds": 0})
     status = case if case in {"unknown", "failed"} else "completed"
@@ -77,6 +76,10 @@ def test_maintenance_completion_contract(tmp_path, monkeypatch, kind, case):
 
     monkeypatch.setattr(module, "spawn_maintenance_job", spawn)
     if kind == "packer":
+        # Exercise the real discovery boundary: this completion test needs pending work.
+        archive = tmp_path / packer.packs.USAGE_ARCHIVE_REL
+        archive.mkdir(parents=True)
+        (archive / "segment_ep1_0001.jsonl").write_text("{}\n", encoding="utf-8")
         monkeypatch.setattr(packer.packs, "record_storage_pack", record)
     else:
         monkeypatch.setattr(job, "_record", record)

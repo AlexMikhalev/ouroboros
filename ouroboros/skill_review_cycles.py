@@ -39,7 +39,7 @@ import hashlib
 import json
 import logging
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from ouroboros.review_cycles import emit_review_cycles_exhausted, review_max_cycles
 from ouroboros.skill_review_history import iter_history_rows_bounded, load_history
@@ -157,7 +157,9 @@ def skill_review_contract_fingerprint(
             if str(access or "readonly") != "readonly":
                 row["access"] = str(access)
         identity = {"reviewer_rows": sorted(rows, key=lambda row: row["slot_id"])}
-        if any(row["route"] == "agent_session" for row in rows):
+        # Every retrieving seat (a session or a native api row) receives the retrieving
+        # assignment and frozen-payload delivery, so its serialization is the contract.
+        if any(row["route"] == "agent_session" or row.get("delivery") == "native" for row in rows):
             from ouroboros.skill_review_passes import skill_review_session_contract_hash
 
             session_contract = skill_review_session_contract_hash()
@@ -503,6 +505,7 @@ def skill_review_cycles_refusal(
         content_hash=str(content_hash or ""),
         review_contract_fingerprint=str(contract_fingerprint or ""),
         error=message,
+        dispatch_refusal_code="LEGACY_BLOCKED",
     )
 
 
@@ -656,25 +659,33 @@ def skill_review_wave_binding(ctx, skill, drive_root, content_hash, contract_fp,
     }
 
 
-def select_skill_review_resume(ctx, skill, drive_root, binding):
+def preceding_review_row(ctx, drive_root, skill_name):
+    """The one history row an explicitly admitted lifecycle may resume (the latest), else ``None``.
+
+    Read once per review: its recorded wave lays out the packs (``skill_review.review_skill``)
+    and ``select_skill_review_resume`` judges the same row."""
+    if not str(getattr(ctx, "_skill_review_lifecycle_job_id", "") or ""):
+        return None
+    rows = load_history(drive_root, skill_name, limit=1)
+    return rows[-1] if rows else None
+
+
+def select_skill_review_resume(ctx, skill, drive_root, binding, previous):
     """Only the immediately preceding, unsuperseded logical wave can resume.
 
-    Called by an explicitly admitted lifecycle, never a poll/startup sweep.
-    Selection grants CAS reconciliation, not a verdict or physical dispatch.
+    Called by an explicitly admitted lifecycle, never a poll/startup sweep, with the
+    row ``preceding_review_row`` read. Selection grants CAS reconciliation, not a
+    verdict or physical dispatch.
     """
     ctx._skill_review_resume = None
     ctx._skill_review_logged_errors = frozenset()
     ctx._skill_review_wave_binding = binding
     job_id = str(getattr(ctx, "_skill_review_lifecycle_job_id", "") or "")
-    if not job_id:
+    if not job_id or not previous:
         return False
     from ouroboros.skill_review_runner import review_job_state_path
     from ouroboros.utils import update_json_locked
 
-    rows = load_history(drive_root, skill.name, limit=1)
-    if not rows:
-        return False
-    previous = rows[-1]
     wave = previous.get("review_wave")
     recorded = wave.get("binding") if isinstance(wave, dict) else None
     # Today's roster and prompt contract govern a new panel. Collection owns
@@ -713,10 +724,12 @@ def review_wave_budget_block(
     skill_name: str,
     file_packs: List[str],
     models: List[str],
+    whole_models: Sequence[str] = (),
 ) -> Optional[str]:
     """Return a human-readable refusal when the review wave cannot fit the
     remaining budget (global or root axis, the binding one named), else None.
-    Read-only; emits one typed event."""
+    ``models`` are packet seats priced per pack; ``whole_models`` are native seats
+    that review the whole payload once. Read-only; emits one typed event."""
     from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 
     # Estimate the WHOLE wave: a chunked oversized skill runs one full
@@ -736,13 +749,15 @@ def review_wave_budget_block(
             pass
     packs = max(1, len(file_packs))
     total_chars = sum(len(pack) + governance_chars for pack in file_packs)
-    # One admission slot per PHYSICAL reviewer call (models x packs), each
-    # sized at the average per-pack prompt: the input estimate sums to the
-    # exact wave total while the per-call output reservation also multiplies
-    # by the pack count (a models-only wave under-reserved chunked output).
+    whole_chars = sum(len(pack) for pack in file_packs) + governance_chars
+    # One admission slot per PHYSICAL reviewer call (packet models x packs, each
+    # sized at the average per-pack prompt, plus one whole-payload call per native
+    # seat): the input estimate sums to the wave total while the per-call output
+    # reservation multiplies by the calls (a models-only wave under-reserved output).
+    calls = list(models) * packs + list(whole_models)
     admission = review_wave_budget_gate(
-        ctx, surface="skill_review", models=list(models) * packs,
-        prompt_chars=total_chars // packs,
+        ctx, surface="skill_review", models=calls,
+        prompt_chars=[total_chars // packs] * (len(models) * packs) + [whole_chars] * len(whole_models),
         extra={"skill_name": skill_name, "packs": packs},
     )
     if admission is None:

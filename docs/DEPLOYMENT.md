@@ -108,6 +108,61 @@ without `OUROBOROS_NETWORK_PASSWORD`, but the Settings UI no longer blocks
 ordinary settings saves such as API-key updates. Do not use this flag on an
 open LAN or public port.
 
+## The Main Interface and a Separately Hosted One
+
+`OUROBOROS_UI_DIR` chooses what the core serves at `/` and `/static/*`:
+empty for the builtin interface, `none` for no main page, or an absolute (or `~`)
+directory with its own `index.html`, laid out like `web/`. It applies when the
+server starts, so a saved change waits for a restart. A saved value, an empty one
+included, beats the environment variable; the environment counts only while the
+setting was never saved, and Ouroboros never copies it into `settings.json`. To
+return to the builtin interface, clear the setting (in Settings → Advanced, or in
+`settings.json` while Ouroboros is stopped), restart and reopen the address.
+`GET /api/state` reports what is actually served as `served_ui`.
+
+- A directory is trusted, not sandboxed: every file in it, dot-files included, is
+  published under `/static/`, so point it at a dedicated build output. Its HTML is
+  served unchanged; a custom interface used as a Telegram Mini App includes
+  Telegram's script itself.
+- A directory that is relative, missing, has no `index.html` or contains the
+  core's data, source or settings tree is not applied: the builtin interface
+  serves and `served_ui.error` says why.
+- A selected directory may also supply complete `onboarding.html` and
+  `auth/index.html` pages. The login's `auth/` assets are public before sign-in;
+  publish only that page's public build files there. Missing optional pages
+  fall back whole to builtin. `/onboarding?builtin=1` and
+  `/auth/login?builtin=1` keep builtin recovery without changing the setting.
+  API writers and password checks remain the core's (§2–4 of CLIENT_CONTRACT).
+- With `none`, `/` answers a 404 page and `/static/*` 404; windows that open the
+  core's own address (desktop, Android, Telegram) show that page too. The API,
+  the WebSocket, sign-in, the setup wizard (`/onboarding`, with its own assets
+  under `/onboarding/static/`), extension routes and files keep working.
+
+An interface hosted elsewhere must share one browser origin with the core:
+cross-origin access and mounting under a sub-path are not supported. A reverse
+proxy sends the core's prefixes (`core_paths` in `GET /api/contract`: `/api`,
+`/auth`, `/onboarding`, `/ws`) to the core and everything else to the interface
+host, passes WebSocket upgrades, keeps request bodies and event streams
+unbuffered and never answers a core path with the interface's page. Client rules
+are in [`CLIENT_CONTRACT.md`](CLIENT_CONTRACT.md); a verified Caddy setup with
+its coverage limits is in [`examples/separate_ui/`](examples/separate_ui/).
+
+The password gate asks only non-loopback clients, and behind a proxy the client
+is what the proxy says. uvicorn takes `X-Forwarded-For` and `X-Forwarded-Proto`
+only from the addresses in `FORWARDED_ALLOW_IPS` (default `127.0.0.1`), using
+the last `X-Forwarded-For` entry that is not such a proxy:
+
+- A proxy on the core's machine must set `X-Forwarded-For` to the peer it saw.
+  Without the header every visitor reaches the core as loopback, and a proxy that
+  passes a visitor's own header through unchanged lets that visitor claim
+  loopback; either way the password is skipped. A browser on the proxy's machine
+  is loopback by design.
+- A proxy on another machine must be listed in `FORWARDED_ALLOW_IPS`; otherwise
+  the core treats the proxy itself as the client and does not see TLS, so the
+  session cookie is not marked `Secure`.
+- Visitors who are not loopback need `OUROBOROS_FILE_BROWSER_DEFAULT` for Files;
+  without it the path-addressed `/api/files/*` operations refuse them.
+
 ## Extra CA Certificates
 
 Ouroboros verifies its own provider calls (OpenRouter, OpenAI-compatible endpoints,

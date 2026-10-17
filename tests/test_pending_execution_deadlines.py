@@ -19,6 +19,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, workers
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests._store_shared import delete_result, result_exists, unreadable_result
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -45,7 +46,7 @@ def clock(host, monkeypatch):  # noqa: F811
     monkeypatch.setattr(time, "time", lambda: now[0])
     monkeypatch.setattr(queue, "load_state", lambda: {})
     monkeypatch.setattr(workers, "load_state", lambda: {})
-    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=frames.append))
+    monkeypatch.setattr(workers, "get_event_q", lambda **_kw: SimpleNamespace(put=frames.append))
     monkeypatch.setattr("supervisor.state.budget_remaining", lambda *_a, **_kw: 5)
     monkeypatch.setattr("supervisor.worker_owner_wait.maintain_owner_wait_capacity", lambda: None)
     workers.WORKERS.clear()  # no worker capacity: the timeout tick alone settles a pending-only queue
@@ -566,8 +567,8 @@ def test_a_restored_row_keeps_its_budget_and_carry_until_resume_and_assignment(h
     assert clock.jobs.empty() and not clock.frames
     assert queue.resume_budget_paused_task("pending")["ok"]
     dispatched = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=dispatched.append))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=dispatched.append)))
     workers.assign_tasks()
     clock.reap()
     assert not host.attempts
@@ -590,8 +591,8 @@ def test_a_timeout_retry_never_regrants_spent_execution(host, clock, monkeypatch
     assert requeued and attempt == 2
     assert host.pending[0]["_execution_handoff_sec"] == 200 and host.pending[0]["execution_timeout_sec"] == 500
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         proc=SimpleNamespace(), in_q=SimpleNamespace(put=sent.append))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=sent.append)))
     monkeypatch.setattr(queue, "get_task_abs_ceiling_sec", lambda: None)
     monkeypatch.setattr(queue, "FINALIZATION_GRACE_SEC", 0)
     reaps = stdqueue.Queue()
@@ -607,3 +608,38 @@ def test_a_timeout_retry_never_regrants_spent_execution(host, clock, monkeypatch
     job = reaps.get_nowait()
     assert job["runtime_sec"] == 500 and job["terminal_reason"] == "absolute_ceiling"
     assert not job["will_retry"] and not host.pending and not host.attempts
+
+
+def test_pending_deadline_salvage_reads_history_outside_the_supervisor_queue_lock(host, clock, monkeypatch):  # noqa: F811
+    """The salvage answer is owed before the terminal row, but its response-history read (a
+    manifest scan and a full copy) runs before Q is taken: admission and control never wait on it."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ouroboros import observability
+
+    add_task(host, clock)
+    clock.now[0] += 100
+    queue.enforce_task_timeouts()
+    entered, release = threading.Event(), threading.Event()
+    actual = observability.latest_llm_response_text
+
+    def paused_reader(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return actual(*args, **kwargs)
+
+    monkeypatch.setattr(observability, "latest_llm_response_text", paused_reader)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(clock.reap)
+        try:
+            assert entered.wait(5)
+            responsive = queue._queue_lock.acquire(blocking=False)
+            if responsive:
+                queue._queue_lock.release()
+        finally:
+            release.set()
+        future.result(timeout=10)
+    assert responsive, "the deadline salvage read holds Q and blocks supervisor admission and control"
+    stored = load_task_result(host.root, "pending")
+    assert stored["status"] == "failed"  # the settlement itself still completes

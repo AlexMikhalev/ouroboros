@@ -30,6 +30,7 @@ from tests._review_session_route_shared import (  # noqa: F401
     fake_route,
 )
 from tests.test_review_checking import _author_state, _git, author  # noqa: F401
+from tests.test_review_checking_scope import ABSENT, NO_CENSUS, SETTLED, UNSETTLED
 
 
 class ThreadGateway(FakeGateway):
@@ -48,6 +49,7 @@ class ThreadGateway(FakeGateway):
         self.before_turn = None
         self.handles = {}
         self.lose_start_response = False
+        self.process_scope = ABSENT  # summary.processScope; an older engine omits the key
 
     def ensure_full_access(self, root):
         self.trust.append(root)
@@ -94,6 +96,8 @@ class ThreadGateway(FakeGateway):
     def get_run(self, run_id, **kwargs):
         detail = super().get_run(run_id, **kwargs)
         detail["summary"]["state"] = self.terminal_state
+        if self.process_scope is not ABSENT:
+            detail["summary"]["processScope"] = self.process_scope
         if self.terminal_state != "succeeded":
             detail["summary"]["failure"] = {
                 "code": self.failure_code, "safeMessage": "The reviewer probe failed",
@@ -200,8 +204,89 @@ def test_successful_turns_refresh_subject_in_same_thread_and_retain_each_output(
     assert create["workspace"] == "delegated" and create["workspaceRoot"] == str(area)
     assert create["mode"] == "agent" and create["access"] == access
     assert thread_gateway.trust == ([str(author), str(author)] if access == "full" else [])
-    assert all("execution" not in request and "scope" not in request
+    assert all(request["execution"] == {"isolation": "live"} and "scope" not in request
                for _, request, _ in thread_gateway.turn_requests)
+
+
+@pytest.mark.parametrize("access", ["workspace_write", "full"])
+def test_directory_turns_keep_geometry_same_thread_and_frozen_evidence(tmp_path, thread_gateway, access):
+    from ouroboros import delegate_custody as custody
+
+    source_dir, drive = tmp_path / "ordinary folder", tmp_path / "drive"
+    source_dir.mkdir()
+    (source_dir / "f.txt").write_bytes(b"A staged\n")
+    source = rc.freeze_checking_source(source_dir, data_root=drive)
+    first = _run(source_dir, drive, source, access=access)
+    area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
+    receipt = Path(first["checking_evidence"]["evidence_dir"]) / "summary.json"
+    preserved = receipt.read_bytes()
+    assert source["kind"] == "directory" and not (area / ".git").exists()
+    _assert_coverage(first["checking_evidence"], ThreadGateway.coverage(1))
+    assert (source_dir / "f.txt").read_bytes() == b"A staged\n"
+
+    (source_dir / "f.txt").write_bytes(b"B revised\n")
+    thread_gateway.expected_subject = b"B revised\n"
+    second_source = rc.freeze_checking_source(source_dir, data_root=drive)
+    thread_gateway.before_turn = lambda current: (
+        current == area and not (current / "reviewer-test.txt").exists()
+        and not (current / ".git").exists()) or pytest.fail("directory turn did not refresh its bound copy")
+    second = _run(source_dir, drive, second_source, operation="op-2", access=access,
+                  thread_id=first["thread_id"])
+    assert first["thread_id"] == second["thread_id"] == "thread-1"
+    assert second["turn_id"] == "turn-2" and len(thread_gateway.thread_requests) == 1
+    assert len(thread_gateway.turn_requests) == 2 and not thread_gateway.start_requests
+    for _, wire, key in thread_gateway.turn_requests:
+        assert wire["execution"] == {"workspaceKind": "directory", "isolation": "live"}
+        stored = custody.invocation_record(drive, key)["request"]
+        assert stored["execution"] == {"workspaceKind": "directory", "isolation": "live",
+                                       "delegated": True, "workspaceRoot": str(area)}
+        assert stored["access"] == wire["access"] == access
+    assert receipt.read_bytes() == preserved
+    _assert_coverage(second["checking_evidence"], ThreadGateway.coverage(2))
+    assert sorted(path.name for path in source_dir.iterdir()) == ["f.txt"]
+    assert (source_dir / "f.txt").read_bytes() == b"B revised\n"
+
+
+@pytest.mark.parametrize("settled", [False, True], ids=["unsettled", "settled"])
+def test_failed_directory_copy_residue_refreshes_only_after_permitted_capture(tmp_path, thread_gateway, settled):
+    source_dir, drive = tmp_path / "folder", tmp_path / "drive"
+    source_dir.mkdir()
+    (source_dir / "f.txt").write_bytes(b"A staged\n")
+    source = rc.freeze_checking_source(source_dir, data_root=drive)
+
+    def failed_preparation(area):
+        (area / ".git").mkdir()
+        (area / ".git" / "index.lock").write_bytes(b"")
+
+    thread_gateway.before_turn = failed_preparation
+    thread_gateway.terminal_state = "failed"
+    thread_gateway.failure_code = "workspace_unavailable"
+    thread_gateway.process_scope = SETTLED if settled else UNSETTLED
+    with pytest.raises(ClaudexorUnavailable) as caught:
+        _run(source_dir, drive, source)
+    assert caught.value.code == "workspace_unavailable"
+    evidence = caught.value.checking_evidence
+    assert evidence["status"] == "retained" and evidence["refresh_safe"] is settled
+    captured = Path(evidence["evidence_dir"]) / "summary.json"
+    preserved = captured.read_bytes()
+    area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
+    assert (area / ".git" / "index.lock").is_file()
+    thread_gateway.terminal_state = "succeeded"
+    thread_gateway.before_turn = lambda current: (
+        current == area and not (current / ".git").exists()
+    ) or pytest.fail("refresh carried the failed preparation's synthetic Git directory")
+    if settled:
+        second = _run(source_dir, drive, source, operation="op-2", thread_id="thread-1")
+        assert second["thread_id"] == "thread-1" and second["turn_id"] == "turn-2"
+        assert thread_gateway.turn_requests[-1][1]["execution"]["workspaceKind"] == "directory"
+    else:
+        with pytest.raises(ReviewRouteUnavailable) as blocked:
+            _run(source_dir, drive, source, operation="op-2", thread_id="thread-1")
+        assert blocked.value.code == "review_checking_copy_unavailable"
+        assert (area / ".git" / "index.lock").read_bytes() == b""
+    assert len(thread_gateway.turn_requests) == (2 if settled else 1)
+    assert captured.read_bytes() == preserved
+    assert sorted(path.name for path in source_dir.iterdir()) == ["f.txt"]
 
 
 @pytest.mark.parametrize("state,failure_code", [
@@ -233,6 +318,69 @@ def test_failed_terminal_turn_keeps_named_output_and_original_error(author, tmp_
     assert (area / rc.EVIDENCE_DIRNAME / "coverage.xml").read_bytes() == ThreadGateway.coverage(1)
     _assert_coverage(evidence, ThreadGateway.coverage(1))
     assert _author_state(author) == before
+
+
+@pytest.mark.parametrize("scope,refreshes", [
+    (ABSENT, True), (SETTLED, True), (NO_CENSUS, True), (None, False), (UNSETTLED, False),
+    ({**NO_CENSUS, "survivors": 1}, False), ({**NO_CENSUS, "unreadable": 1}, False),
+    ({**NO_CENSUS, "coverage": "marker"}, False),
+], ids=["absent", "settled", "no-census", "null", "unsettled", "no-census-survivor", "no-census-unreadable",
+        "mixed-coverage"])
+def test_process_scope_decides_whether_the_next_turn_refreshes_the_copy(author, tmp_path, thread_gateway, scope, refreshes):  # noqa: F811
+    """A succeeded turn whose scope is unknown (``null``: the engine holds no readable
+    record, e.g. a run that succeeded before an engine upgrade and is first captured after
+    it) or unsettled delivers its answer and evidence, keeps the copy as left and refuses
+    the next turn typed before any send; an absent key (an older engine) or a settled
+    scope refreshes the copy, and so does the engine's census-less answer (Windows) under
+    the owner's weaker permission, which each receipt names beside the engine's facts."""
+    drive = tmp_path / "drive"
+    source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
+    before = _author_state(author)
+    thread_gateway.process_scope = scope
+    left_over = []
+    thread_gateway.before_turn = lambda area: left_over.append((area / "reviewer-test.txt").exists())
+    first = _run(author, drive, source)
+    assert first["text"] == '{"findings": []}' and first["run_id"] == "run-1"
+    _assert_coverage(first["checking_evidence"], ThreadGateway.coverage(1))
+    assert first["checking_evidence"]["refresh_safe"] is refreshes
+    compatible = scope == NO_CENSUS
+    assert first["checking_evidence"].get("release_basis") == (rc.RELEASE_WITHOUT_CENSUS if compatible else None)
+    assert first["checking_evidence"].get("process_scope") == (NO_CENSUS if compatible else None)
+    area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
+    if refreshes:
+        second = _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+        assert second["turn_id"] == "turn-2" and left_over == [False, False], "turn 2 starts on a fresh copy"
+        _assert_coverage(second["checking_evidence"], ThreadGateway.coverage(2))
+        assert second["checking_evidence"]["refresh_safe"] is True
+        assert second["checking_evidence"].get("release_basis") == first["checking_evidence"].get("release_basis")
+        assert second["checking_evidence"].get("process_scope") == first["checking_evidence"].get("process_scope")
+    else:
+        assert first["checking_evidence"]["retention_reason"] == "writer_quiescence_unverified"
+        with pytest.raises(ReviewRouteUnavailable) as blocked:
+            _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+        assert blocked.value.code == "review_checking_copy_unavailable"
+        assert (area / "reviewer-test.txt").read_bytes() == b"reviewer turn 1\n" and left_over == [False]
+    assert len(thread_gateway.turn_requests) == (2 if refreshes else 1)
+    assert len(thread_gateway.thread_requests) == 1 and not thread_gateway.start_requests
+    assert not thread_gateway.cancels and _author_state(author) == before
+
+
+def test_engine_upgrade_between_turns_reuses_the_stored_receipt(author, tmp_path, thread_gateway):  # noqa: F811
+    drive = tmp_path / "drive"
+    source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
+    first = _run(author, drive, source)  # an older engine: no projection, refresh-safe capture
+    stored = Path(first["checking_evidence"]["evidence_dir"]) / "summary.json"
+    stored_bytes = stored.read_bytes()
+    thread_gateway.process_scope = None  # upgraded engine: no readable scope record of run-1 or run-2
+    assert rc.terminal_seat_evidence(drive, "task-1", "op-1", thread_gateway.get_run("run-1")) == first["checking_evidence"]
+    assert stored.read_bytes() == stored_bytes
+    second = _run(author, drive, source, operation="op-2", thread_id=first["thread_id"])
+    assert second["turn_id"] == "turn-2", "the stored receipt still opens the next turn"
+    assert not second["checking_evidence"]["refresh_safe"]  # the new turn's own scope is unknown
+    with pytest.raises(ReviewRouteUnavailable) as blocked:
+        _run(author, drive, source, operation="op-3", thread_id=first["thread_id"])
+    assert blocked.value.code == "review_checking_copy_unavailable"
+    assert len(thread_gateway.turn_requests) == 2 and stored.read_bytes() == stored_bytes
 
 
 def test_unobserved_terminal_keeps_copy_and_blocks_next_subject(author, tmp_path, thread_gateway, monkeypatch):  # noqa: F811
@@ -278,25 +426,39 @@ def test_capture_failure_preserves_copy_and_successful_response(author, tmp_path
     assert (area / rc.EVIDENCE_DIRNAME / "coverage.xml").read_bytes() == ThreadGateway.coverage(1)
 
 
-def test_lost_turn_response_rejoins_original_copy_and_invocation(author, tmp_path, thread_gateway):  # noqa: F811
+@pytest.mark.parametrize("ordinary_directory", [False, True], ids=["git", "directory"])
+def test_lost_turn_response_rejoins_original_copy_and_invocation(author, tmp_path, thread_gateway, ordinary_directory):  # noqa: F811
+    from ouroboros import delegate_custody as custody
+
     drive = tmp_path / "drive"
-    source = rc.freeze_checking_source(author, data_root=drive, subject=rc.SUBJECT_INDEX)
+    root = tmp_path / "ordinary" if ordinary_directory else author
+    if ordinary_directory:
+        root.mkdir()
+        (root / "f.txt").write_bytes(b"A staged\n")
+    source = rc.freeze_checking_source(root, data_root=drive, subject=rc.SUBJECT_INDEX)
     before, retry_state = _author_state(author), {}
     thread_gateway.lose_start_response = True
     with pytest.raises(TimeoutError):
-        _run(author, drive, source, retry_state=retry_state)
+        _run(root, drive, source, retry_state=retry_state)
     area = rc.seat_dir(drive, "task-1", "thread:plan_review:t1") / "area"
     assert (area / rc.EVIDENCE_DIRNAME / "coverage.xml").read_bytes() == ThreadGateway.coverage(1)
     pending = retry_state["pending_invocation_id"]
-    facts = _run(author, drive, None, retry_state=retry_state, reconcile_only=True)
+    recorded = custody.invocation_record(drive, pending)["request"]
+    facts = _run(root, drive, None, retry_state=retry_state, reconcile_only=True)
     _assert_coverage(facts["checking_evidence"], ThreadGateway.coverage(1))
     assert facts["idempotent_recovery"] and facts["run_id"] == "run-1"
     assert facts["checking_evidence"]["refresh_safe"]
     assert len(thread_gateway.thread_requests) == len(thread_gateway.turns) == 1
     assert len(thread_gateway.turn_requests) == 2
     assert [row[2] for row in thread_gateway.turn_requests] == [pending, pending]
+    assert thread_gateway.turn_requests[0] == thread_gateway.turn_requests[1]
+    assert custody.invocation_record(drive, pending)["request"] == recorded
+    assert recorded["execution"].get("workspaceKind") == ("directory" if ordinary_directory else None)
     assert not thread_gateway.start_requests
     assert _author_state(author) == before and area.is_dir()
+    if ordinary_directory:
+        assert sorted(path.name for path in root.iterdir()) == ["f.txt"]
+        assert (root / "f.txt").read_bytes() == b"A staged\n"
 
 
 def test_pre_floor_writable_thread_refuses_without_a_fresh_run(author, tmp_path, thread_gateway):  # noqa: F811
@@ -350,6 +512,7 @@ def test_readonly_thread_keeps_legacy_binding(author, tmp_path, thread_gateway):
     assert create["scope"] == {"kind": "project", "root": str(author)}
     assert create["mode"] == "ask" and create["access"] == "readonly"
     assert create["workspace"] == "in_place" and "workspaceRoot" not in create
+    assert all("execution" not in request for _, request, _ in thread_gateway.turn_requests)
     assert not thread_gateway.trust and not thread_gateway.start_requests
     assert not first["checking_evidence"] and not second["checking_evidence"]
     assert _author_state(author) == before

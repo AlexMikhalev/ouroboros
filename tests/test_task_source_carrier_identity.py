@@ -40,16 +40,17 @@ def _compact(ref: dict) -> dict:
 
 
 def _record_plan(root: pathlib.Path, task_id: str) -> tuple[dict, dict]:
-    """The real plan-review writer: exact wave and spec sources plus the hot index."""
-    from ouroboros.tools import plan_review_artifacts, plan_spec
+    """A finished plan-review record as the retired engine's exact-wave writer left it: exact
+    wave and spec sources plus the hot index (``tests/_legacy_plan_shared.record_exact_wave``)."""
+    from ouroboros.contracts.task_contract import normalize_acceptance_claims
+    from ouroboros.tools import plan_spec
+    from tests import _legacy_plan_shared as legacy
 
-    spec, errors = plan_spec.normalize_spec({"goal": "Keep the tower", "acceptance_claims": ["three levels"]})
-    assert not errors
+    spec = {"goal": "Keep the tower", "acceptance_claims": normalize_acceptance_claims(["three levels"])}
     wave = {"schema_version": 2, "cycle_index": 1, "request_fingerprint": FINGERPRINT, "goal": spec["goal"],
             "spec": spec, "spec_hash": plan_spec.spec_hash(spec), "aggregate": "GREEN", "closed": True,
             "findings": [], "dispositions": [], "paid": True}
-    plan_review_artifacts.record_exact_wave(root, task_id, wave, copy.deepcopy(wave),
-                                            need_evidence_seen=[], page_size=32)
+    legacy.record_exact_wave(root, task_id, copy.deepcopy(wave))
     return spec, load_task_result(root, task_id)["plan_review_state"]
 
 
@@ -270,7 +271,9 @@ def test_a_pending_legacy_row_heals_on_one_retry_and_leaves_the_ledger(tmp_path)
 def test_a_complete_legacy_row_is_readable_in_memory_and_never_rewritten(tmp_path):
     """No pending ledger row will retry it: the read projection restores, nothing writes."""
     from ouroboros.agent_startup_checks import task_result_authority_projection
-    from ouroboros.task_results import load_plan_review_state, task_result_path
+    from ouroboros.store import open_store
+    from ouroboros.task_results import load_plan_review_state
+    from ouroboros.task_store import signature
     from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
 
     task_id = "legacy-complete"
@@ -278,14 +281,16 @@ def test_a_complete_legacy_row_is_readable_in_memory_and_never_rewritten(tmp_pat
     damaged, facts = _legacy_damage(plan, task_id)
     write_task_result(tmp_path, task_id, "completed", result="done", plan_review_state=damaged,
                       child_ref_promotion=_promotion("complete", facts, []))
-    path = task_result_path(tmp_path, task_id)
-    raw = path.read_bytes()
+    with open_store(tmp_path, write=False) as txn:
+        raw, revision = txn.body_text(task_id), signature(tmp_path, task_id, txn=txn)
 
     authority = task_result_authority_projection(load_task_result(tmp_path, task_id), drive_root=tmp_path)
 
     assert "plan_review_source_gap" not in authority
     assert authority["plan_review_state"]["waves"][-1]["spec"] == spec
-    assert path.read_bytes() == raw
+    with open_store(tmp_path, write=False) as txn:
+        assert txn.body_text(task_id) == raw
+        assert signature(tmp_path, task_id, txn=txn) == revision
     with pytest.raises(PlanReviewSourceUnavailable):
         load_plan_review_state(tmp_path, task_id)  # deciders stay strict
 

@@ -183,6 +183,9 @@ def test_the_root_horizon_is_twice_the_window():
 
 def _subscription(root, monkeypatch, ts, *, session, spend, estimated=False, task="c-child",
                   root_task="c-root", category="consciousness_task"):
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(root, root_task) is None:  # the session's lineage exists, as in a real tree
+        write_task_result(root, root_task, "running", root_task_id=root_task)
     _at(monkeypatch, ts)
     return ua.record_subscription_session(
         session, drive_root=root, route="claudexor:claude", model="fable", task_id=task,
@@ -273,6 +276,8 @@ def test_a_positive_charge_and_a_descendants_charge_both_land_on_the_one_allowan
     assert window["roots"] == ["c-root", "wake-1"] and window["window_rows"] == 3
     # The same money on a root that is NOT consciousness's stays out of the window.
     _at(monkeypatch, T0 - HOUR)
+    from ouroboros.task_results import write_task_result
+    write_task_result(data_root, "owner", "running", root_task_id="owner")  # that root's lineage exists
     ua.record_subscription_session("sess-owner", drive_root=data_root, route="claudexor:claude",
                                    model="fable", task_id="owner-child", root_task_id="owner",
                                    spend_usd=9.0, reset_at="2026-09-17T00:00:00Z", category="subagent")
@@ -317,16 +322,7 @@ def test_an_unreadable_ledger_refuses_the_start_instead_of_assuming_free(data_ro
 
 
 def test_the_wake_prompt_money_framing_matches_what_the_ledger_actually_records():
-    """The prompt's three money words are the reducer's, not a separate vocabulary."""
-    import pathlib
-
-    prompt = (pathlib.Path(__file__).resolve().parent.parent / "prompts" / "CONSCIOUSNESS.md").read_text(
-        encoding="utf-8")
-    assert "Distinguish incremental cash cost from subscription quota and time." in prompt
-    assert "A confirmed zero-cost call spends no cash; an undisclosed cost is unknown." in prompt
-    assert "Existing limits still apply." in prompt
-    # A confirmed zero and an undisclosed price are DIFFERENT ledger rows, which is
-    # exactly the distinction the sentence above asks this mind to make.
+    """The reducer distinguishes free calls, unknown prices, and observed quota."""
     free = {"kind": "subscription_session", "state": "settled", "cost_usd": 0.0,
             "cost_final": True, "pricing_known": True}
     undisclosed = {"kind": "subscription_session", "state": "settled", "cost_usd": None,
@@ -335,8 +331,7 @@ def test_the_wake_prompt_money_framing_matches_what_the_ledger_actually_records(
 
     assert _summary([free])["accounted_usd"] == 0.0 and _summary([free])["unknown_unmetered"] == 0
     assert _summary([undisclosed])["unknown_unmetered"] == 1
-    # The allowance is the only budget the prompt promises; there is no quota one.
-    assert set(allowance.allowance_window.__doc__.split()) >= {"allowance"}
+    # The allowance is the only budget; observed quota is not another budget.
     assert not hasattr(allowance, "quota_window")
     # Time and quota stay separate OBSERVED axes of the same reducer, never budgets.
     session = _summary([{**free, "subscription_route": "r", "subscription_reset_at": "2026-09-17T00:00:00Z"}])

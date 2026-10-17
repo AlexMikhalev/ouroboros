@@ -174,6 +174,7 @@ from ouroboros.tools.followup import _handle_schedule_followup
 from ouroboros.tools.registry import ToolContext
 from tests.test_schedule_transition_repair import _api
 from tests.test_worker_crash_retry import _make_worker
+from tests.worker_pool_support import affirm_ready
 base, stage, source, crash_point = pathlib.Path(sys.argv[1]), *sys.argv[2:]
 root, repo, folder = base / "data", base / "repo", base / "folder"
 root.mkdir(exist_ok=True); repo.mkdir(exist_ok=True)
@@ -223,7 +224,7 @@ else:
     assert len(workers.PENDING) == 1
     task = workers.PENDING[0]
     assert task["workspace_root"] == str(folder.resolve())
-    worker = _make_worker(alive=True, busy_task_id=None, exitcode=None)
+    worker = affirm_ready(_make_worker(alive=True, busy_task_id=None, exitcode=None))
     workers.WORKERS[0] = worker
     state.budget_remaining = lambda *_a, **_k: 10.0
     workers.assign_tasks()

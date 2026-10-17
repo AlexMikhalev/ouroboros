@@ -128,9 +128,12 @@ OURO_SIZE_RATCHET_BASE_REF=upstream/ouroboros python -m pytest -o addopts="" tes
 Use the exact target-base SHA when verifying a frozen range. Without a base,
 the reference-book comparison is skipped. `python scripts/run_tests.py tests/test_x.py`
 forwards a focused run. Inside Ouroboros a reviewed commit (`commit_reviewed` /
-`vcs_commit_reviewed`) runs the complete battery in its hermetic gate unless
-`skip_tests` is set, so running it by hand first is optional rather than a
-second requirement; for a pull request, CI is that gate. If the full battery could
+`vcs_commit_reviewed`) runs the complete battery in its hermetic gate, or reuses
+its unsigned receipt of an identical complete run, unless `skip_tests` is set, so
+running it by hand first is optional rather than a second requirement. Ordinary
+PR/branch cloud CI is disabled: local verification and independent review remain.
+Maintainers may dispatch CI for a reviewed candidate; review outside code before
+that secret-bearing run. Release tags retain the full gate. If the full battery could
 not finish on your machine or within your budget, say so — `NOT_RUN` with the
 reason — and deliver the focused evidence; never report it as green.
 
@@ -156,12 +159,12 @@ fresh agent session. Reviewing in the authoring conversation does not count.
 The main review path is an **agentic checklist review**: the reviewer reads
 the repository with its own tools and covers the "Coupling questions"
 section of [`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) — every one of its
-eight items (`intent_alignment`, `forgotten_touchpoints`,
-`cross_surface_consistency`, `regression_surface`, `prompt_doc_sync`,
-`architecture_fit`, `cross_module_bugs`, `implicit_contracts`) — following
-that checklist's output contract: one JSON array covering all eight items,
-PASS rows mandatory and justified with a concrete artifact, FAIL rows with
-severity (a critical FAIL names an exact file/symbol).
+items (`intent_alignment`, `forgotten_touchpoints`,
+`cross_surface_consistency`, `regression_surface`, `architecture_fit`,
+`implicit_contracts`) — following that checklist's output contract: one JSON
+array covering every item, PASS rows as a one-line pointer to what was checked
+(or `N/A — <reason>`), FAIL rows with severity (a critical FAIL names an exact
+file/symbol).
 
 Give the reviewer the issue or goal, non-goals, exact base and head SHAs, and
 repository access. The reviewer must not edit the candidate. Use this compact
@@ -177,9 +180,9 @@ Inspect the complete diff, touched files, relevant callers, tests, and docs.
 
 Cover the Coupling questions from docs/CHECKLISTS.md exactly:
 output a JSON array of objects with the keys "item", "verdict" (PASS/FAIL),
-"severity" (critical/advisory), and "reason", covering all eight checklist
-items per its output contract — PASS rows are mandatory and justified with a
-concrete artifact; a critical FAIL names an exact file/symbol. Then report
+"severity" (critical/advisory), and "reason", covering every checklist
+item per its output contract — a PASS row is a one-line pointer to what was
+checked; a critical FAIL names an exact file/symbol. Then report
 any further findings with severity and file/line references, checks
 performed, coverage limitations, and one verdict: PASS, NEEDS_CHANGES, or
 INCOMPLETE. Do not report PASS when required material was unavailable.

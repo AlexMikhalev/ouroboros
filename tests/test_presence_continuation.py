@@ -67,7 +67,7 @@ def harness(tmp_path, monkeypatch):
     from ouroboros import review_custody
     from ouroboros.review_execution import ReviewAttemptResult
 
-    for name, value in {"OUROBOROS_TASK_REVIEW_MODE": "auto", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking",
+    for name, value in {"OUROBOROS_TASK_REVIEW_MODE": "required", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking",
                         "OUROBOROS_REVIEW_MAX_CYCLES": "3", "OUROBOROS_MAX_ROUNDS": "12",
                         "OUROBOROS_SAFETY_MODE": "off", "MCP_ENABLED": "false"}.items():
         monkeypatch.setenv(name, value)
@@ -158,10 +158,12 @@ def harness(tmp_path, monkeypatch):
             ctx = registry._ctx
             ctx.is_direct_chat = True
             ctx.task_metadata = dict(task["metadata"])
-            # Auto review by the typed contract: Auto/Required eligibility is unchanged.
             ctx.task_contract = {**task["task_contract"], "expected_output": "A complete status report."}
             # The agent's own RUNNING write: the contract is the root's review-cap authority.
             write_task_result(data, task["id"], "running", task_contract=ctx.task_contract, root_task_id=task["id"])
+            # Required reviews the report the turn retained (#1731); a declared output alone buys no panel.
+            from ouroboros.artifacts import store_task_artifact_bytes
+            store_task_artifact_bytes(data, task["id"], "report.txt", ANSWER.encode())
             ctx.task_attempt, ctx.current_chat_id = 1, task["chat_id"]
             ctx.review_wait_callback = getattr(self, "review_wait_callback", None)
             registry.override_handler("chat_history", lambda *_a, **_kw: "Synthetic history")
@@ -311,8 +313,9 @@ def test_a_correction_with_identical_text_is_a_new_output(harness, monkeypatch):
 def test_cyber_keeps_the_released_author_for_its_criticism(harness, monkeypatch, version):
     h = harness
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    monkeypatch.setattr("ouroboros.acceptance_settlement.acceptance_wait_chosen", lambda _ctx: False)
-    h.script = [finish("nominate", message=ANSWER),
+    # Cyber waits by default too (#1737): only the author's explicit finish releases early.
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    h.script = [finish("nominate", message=ANSWER, pending_review="finish"),
                 lambda _messages: finish("again", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)]
     execution = h.start(event(version=version))
     initial = execution.initial.result(timeout=30)
@@ -540,10 +543,34 @@ def test_an_advisory_fail_is_answered_by_the_same_author_with_a_typed_stance(har
     assert author["rationale"] and author["enforcement"] == "advisory"
 
 
-def test_presence_finish_refuses_a_stance_without_its_rationale(harness):
+@pytest.mark.parametrize("stance", ["", "partial"])
+def test_an_advisory_fail_is_finished_without_a_separate_rationale(harness, monkeypatch, stance):
+    """The Presence door follows the common rule: an informed Advisory finish, stance optional, needs no rationale."""
+    h = harness
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    h.verdict = "FAIL"
+    corrected = ANSWER + " The backup window is 02:00-03:00 UTC."
+
+    def after_feedback(messages):
+        assert "acceptance-one: FAIL" in str(messages)
+        return finish("correct", message=corrected, **({"author_disposition": stance} if stance else {}))
+
+    h.script = [finish("nominate", message=ANSWER), after_feedback]
+    execution = h.start(event())
+    initial = execution.initial.result(timeout=30)
+    h.release.set()
+    final = execution.result.result(timeout=60)
+    assert final.text == corrected and h.calls == 2 and len(h.reviews) == 1
+    decision = load_task_result(h.data, initial.task_id)["review_status"]["acceptance_decision"]
+    assert (decision["reason"], decision["status"]) == ("author_finish", "finalized_unaccepted")
+    author = decision["author_disposition"]
+    assert (author["disposition"], author["reviewer_signal"], author["source"]) == (stance, "FAIL", "presence_finish")
+    assert author["rationale"] == "Explicit completion selection."
+
+
+def test_presence_finish_refuses_an_unknown_stance(harness):
     from ouroboros.tools.presence import _finish_presence
 
     ctx = SimpleNamespace(task_contract={"capability_ceiling": {}}, _completion_request=None)
-    for disposition, rationale in (("accepted", ""), ("approved", "why")):
-        text = _finish_presence(ctx, "message", message=ANSWER, author_disposition=disposition, rationale=rationale)
-        assert "author_disposition" in text and ctx._completion_request is None
+    text = _finish_presence(ctx, "message", message=ANSWER, author_disposition="approved", rationale="why")
+    assert "author_disposition" in text and ctx._completion_request is None

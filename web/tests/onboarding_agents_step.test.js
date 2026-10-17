@@ -634,7 +634,7 @@ test('a generated draft whose rows carry no Reviewer mark is refused, never fini
         ]);
         assert.equal(step.allowEmptyReviewPool, false);
         assert.match(dom.nodes.get('onboarding-available-subagents').innerHTML,
-            /No row is marked Reviewer, so reviews will not run and will report “not performed”\./);
+            /No row is marked Reviewer, so the main model reviews alone: one model, no second opinion\./);
     } finally {
         step.detach();
         store.dispose();

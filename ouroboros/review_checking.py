@@ -21,12 +21,21 @@ copy as the reviewer left it, never re-frozen or replaced; a copy remade later
 gets the frozen evidence views, never the root's current evidence.
 
 Nothing a seat changes is applied anywhere. When its run is terminal,
-``capture_seat_evidence`` retains the copy's delta (a binary patch for Git;
-changed files and typed entry metadata for a folder) and the reviewer's files under
-``.review-evidence/``. A completed capture may release a one-shot copy only when
-its caller has observed normal success in the exact run's daemon detail; thread
-copies remain at their bound path and refresh after successful capture. An incomplete capture keeps the
-copy and names the gap. A full-access copy is not an OS sandbox.
+``capture_seat_evidence`` retains the copy's whole delta (a binary patch for Git;
+changed files, same-stat ones compared by content, and typed entry metadata for a
+folder) and the reviewer's files under ``.review-evidence/``, with no byte bound
+(investigations pass their own). A path it cannot list or read leaves it incomplete.
+A completed capture may release a one-shot copy only when
+the copy-use policy for the exact run's daemon detail permits it
+(``checking_copy_release``: eligible success or an explicitly settled failure;
+the weaker census-less permission applies to success only); thread copies remain at their bound path and refresh only after
+such a capture. ``refresh_safe`` records that permission, never proof that writers
+ended. An incomplete capture keeps the copy and names the gap. Git's inventory omits
+untracked special entries and ignored outputs outside ``.review-evidence/``; the latter
+are listed, not retained. Frozen ``.review-drive`` inputs are excluded too: reviewer
+edits there are not kept. Unbounded capture can increase peak storage and delay the
+answer; a full volume leaves failed generations beside the copy. A full-access copy is
+not an OS sandbox.
 """
 
 from __future__ import annotations
@@ -40,7 +49,7 @@ import shutil
 import stat
 import subprocess
 import uuid
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
@@ -49,10 +58,13 @@ log = logging.getLogger(__name__)
 EVIDENCE_DIRNAME = ".review-evidence"
 # Ignored views a reviewer session reads from its root (review_evidence).
 _IGNORED_EVIDENCE_DIRS = (".review-drive",)
-# Retained bytes per seat: patch, changed files, directory metadata and named evidence.
-# Over-limit patches stream to disk, not RAM; a named gap keeps the checking copy.
+# The named-evidence bound an evidence-only investigation passes; a named gap keeps its
+# copy. Reviewer seats keep whole outputs: their copy goes only after its delta is kept.
 EVIDENCE_RETAIN_BYTES = 64 * 1024 * 1024
 SUBJECT_INDEX, SUBJECT_WORKTREE = "index", "worktree"
+# The owner's Windows choice (quiz b532d214, 2026-10-13): a copy keeps working where the
+# engine has no census, with the incomplete cleanup disclosed. Weaker than settled.
+RELEASE_WITHOUT_CENSUS = "unsupported_census_compatibility"
 
 
 class CheckingAreaUnavailable(RuntimeError):
@@ -127,6 +139,10 @@ def _out(result: subprocess.CompletedProcess) -> str:
     return (result.stdout or b"").decode("utf-8", "replace").strip()
 
 
+def _raise_walk_error(error: OSError) -> None:
+    raise error  # a skipped subtree is not a complete inventory
+
+
 def _stat_digest(root: pathlib.Path) -> str:
     """Identity of an ordinary folder's current entries (path, kind, size, times,
     mode, link target): two freezes of an unchanged folder share one view."""
@@ -179,24 +195,53 @@ def frozen_checking_source(frozen: Any, *, data_root: Any) -> Dict[str, Any]:
                                for name in _IGNORED_EVIDENCE_DIRS if (reading_root / name).is_dir()}}
 
 
-def _retained_view(folder: pathlib.Path, data_root: Any, *, payload: bool = False) -> pathlib.Path:
-    """One retained copy of a folder as it is now, under the install's data root
-    beside the isolated review checkouts (named by its stat digest; no GC)."""
+class _ViewRejected(CheckingAreaUnavailable):
+    """A copy that does not carry the identity its view name binds."""
+
+
+def _accepts(accept: Any, view: pathlib.Path) -> bool:
+    try:
+        return bool(accept(view))
+    except Exception:  # an unreadable published view proves nothing its name binds
+        return False
+
+
+def _retained_view(folder: pathlib.Path, data_root: Any, *, payload: bool = False, name: str = "",
+                   copy: Any = None, accept: Any = None) -> pathlib.Path:
+    """One retained copy of a folder under the install's data root beside the
+    isolated review checkouts (no GC): the whole folder as it is now, named by its
+    stat digest, or what ``copy(folder, destination)`` writes, named by the caller's
+    ``name``. ``accept`` checks the staged copy before it is published and a reused
+    view again, replacing one that fails, so a name never keeps bytes it does not
+    bind. A failed copy removes only its own staging."""
     views = pathlib.Path(data_root) / "state" / "review_checkouts" / "views"
-    container = views / (_stat_digest(folder) + ("-payload" if payload else ""))
+    container = views / ((name or _stat_digest(folder)) + ("-payload" if payload else ""))
     # Skill inventory semantics include the physical bucket: a native lifecycle
     # marker is exempt only there, never in an arbitrary folder by the same name.
     relative = pathlib.Path(folder.parent.name) / folder.name if payload else pathlib.Path(".")
     view = container / relative
+    if accept is not None and view.is_dir() and not _accepts(accept, view):
+        discarded = views / f".discarded-{container.name}.{uuid.uuid4().hex[:8]}"
+        try:
+            container.rename(discarded)
+        except FileNotFoundError:
+            pass  # a concurrent freeze replaced it first
+        shutil.rmtree(discarded, ignore_errors=True)
     if not view.is_dir():
         staging = views / f".{container.name}.{uuid.uuid4().hex[:8]}"
-        shutil.copytree(folder, staging / relative, symlinks=True)
         try:
+            if copy is None:
+                shutil.copytree(folder, staging / relative, symlinks=True)
+            else:
+                copy(folder, staging / relative)
+            if accept is not None and not accept(staging / relative):
+                raise _ViewRejected(f"the copy of {folder} does not carry the identity of {container.name}")
             staging.rename(container)
         except OSError:
-            shutil.rmtree(staging, ignore_errors=True)  # a concurrent freeze landed it first
-            if not view.is_dir():
+            if not view.is_dir():  # else a concurrent freeze landed it first
                 raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     return view
 
 
@@ -261,19 +306,40 @@ def _frozen_evidence_views(source: Mapping[str, Any]) -> List[tuple]:
     return views
 
 
-def bound_directory_source(folder: Any, *, data_root: Any, expected_hash: str, content_hash_of: Any) -> Dict[str, Any]:
+def bound_directory_source(folder: Any, *, data_root: Any, expected_hash: str, content_hash_of: Any,
+                           copy: Any = None) -> Dict[str, Any]:
     """A retained folder view whose content hash is the one the review packs were
     built from (a skill payload at loader hash H): a payload that moved to H2
-    meanwhile is never handed to a seat that reviews H."""
+    meanwhile is never handed to a seat that reviews H.
+
+    Without ``copy`` the view is the whole folder — dependencies, links, modes and
+    empty folders — named by its stat digest: a writable seat's checking baseline.
+    With ``copy`` (a skill's loader inventory, for read-only seats) it is named by the
+    folder and H and checked before it is published, so metadata or dependency-cache
+    churn that leaves H unchanged reuses the same view instead of copying again."""
+    moved = {"unavailable": "the payload changed after its review packs were built"}
     try:
         folder = pathlib.Path(folder).resolve()
-        source = {"kind": "directory", "root": str(folder),
-                  "view": str(_retained_view(folder, data_root, payload=True))}
-        if content_hash_of(pathlib.Path(source["view"])) != expected_hash:
-            return {"unavailable": "the payload changed after its review packs were built"}
+
+        def matches(view: pathlib.Path) -> bool:
+            return content_hash_of(pathlib.Path(view)) == expected_hash
+
+        if copy is None:
+            view = _retained_view(folder, data_root, payload=True)
+            if not matches(view):
+                return moved
+        else:
+            identity = hashlib.sha256(f"{folder}\0{expected_hash}".encode("utf-8", "surrogateescape")).hexdigest()
+            view = _retained_view(folder, data_root, payload=True, name=f"inventory-{identity[:24]}",
+                                  copy=copy, accept=matches)
+    except _ViewRejected:
+        # A folder still at H means the copier could not reproduce it (a link to a
+        # file the loader skips is not copied), not that the payload moved.
+        return {"unavailable": "a copy of the payload's loader inventory does not reproduce its "
+                               "reviewed hash"} if _accepts(matches, folder) else moved
     except Exception as exc:  # an unreadable payload is the loader's typed fact, not a crash here
         return {"unavailable": f"{type(exc).__name__}: {exc}"}
-    return {**source, "content_hash": str(expected_hash)}
+    return {"kind": "directory", "root": str(folder), "view": str(view), "content_hash": str(expected_hash)}
 
 
 def checking_instructions(area: str, source: Mapping[str, Any], root: str = "") -> str:
@@ -300,9 +366,9 @@ def checking_instructions(area: str, source: Mapping[str, Any], root: str = "") 
     )
 
 
-def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path, budget: List[int],
+def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path, budget: List[float],
                   gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Copy regular files byte-exact into the evidence store within the seat's budget."""
+    """Copy regular files byte-exact into the evidence store within the caller's byte budget."""
     kept: List[Dict[str, Any]] = []
     for relative in paths:
         source = area / relative
@@ -320,20 +386,24 @@ def _retain_files(area: pathlib.Path, paths: List[str], files_dir: pathlib.Path,
     return kept
 
 
-def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: List[int],
+def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: List[float],
                           gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Retain declared checking outputs independently of product-patch filters.
 
     Links are not dereferenced: a linked output is a gap and keeps the working
-    copy, not a receipt claiming its target's bytes were retained.
+    copy, not a receipt claiming its target's bytes were retained. So is an entry
+    that is neither a file nor a folder; a folder that cannot be listed raises.
     """
     declared = area / EVIDENCE_DIRNAME
     if declared.is_symlink():
         gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_symlink"})
         return []
+    if declared.exists() and not declared.is_dir():
+        gaps.append({"path": EVIDENCE_DIRNAME, "reason": "evidence_root_not_directory"})
+        return []
     paths: List[str] = []
     if declared.is_dir():
-        for current, dirs, files in os.walk(declared, followlinks=False):
+        for current, dirs, files in os.walk(declared, onerror=_raise_walk_error, followlinks=False):
             for name in sorted(dirs + files):
                 path = pathlib.Path(current) / name
                 relative = path.relative_to(area).as_posix()
@@ -341,11 +411,13 @@ def retain_named_evidence(area: pathlib.Path, files_dir: pathlib.Path, budget: L
                     gaps.append({"path": relative, "reason": "evidence_symlink"})
                 elif path.is_file():
                     paths.append(relative)
+                elif name in files:
+                    gaps.append({"path": relative, "reason": "unsupported_entry_type"})
     return _retain_files(area, sorted(paths), files_dir, budget, gaps)
 
 
 def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.Path,
-               budget: List[int], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+               budget: List[float], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
     from ouroboros.subagent_worktrees import (
         payload_capture_git_env, payload_git_metadata_refusal, stage_raw_payload_inventory,
     )
@@ -365,7 +437,16 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
             metadata, _, name = entry.partition(b"\t")
             if metadata.startswith(b"160000 "):
                 gitlinks[name.decode("utf-8", "surrogateescape")] = metadata.split()[1]
-        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=env)
+        listing_env = {**env, "LC_ALL": "C", "LANGUAGE": "C",
+                       **{key: "0" for key in os.environ if key.startswith("GIT_TRACE")}}
+        inventory = _git(area, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=listing_env)
+        listing_warning = inventory.stderr.decode("utf-8", "replace").strip()
+        # Git exits zero for an unlistable directory. Other warnings (for example
+        # a symlinked ignore file) do not prove missing entries and must not block
+        # the next reviewer turn. Pin the diagnostic locale for this CLI boundary.
+        if any(line.startswith("warning: could not open directory ") for line in listing_warning.splitlines()):
+            raise CheckingAreaUnavailable("the checking copy could not be fully listed: "
+                                          + listing_warning)
         paths, kept_gitlinks = set(), []
         for raw in sorted(set(inventory.stdout.split(b"\0"))):
             if not raw:
@@ -418,28 +499,54 @@ def _git_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.
     else:
         budget[0] -= patch_size
     return {"after_tree": after, "patch_sha256": patch_sha, "patch_bytes": patch_size,
+            "listing_warning": listing_warning,
             "patch_retained": patch.exists(),
             "changed": changed.splitlines(), "ignored_not_retained": ignored}
 
 
+def _open_regular(path: pathlib.Path) -> Any:
+    """A file the inventory saw as regular; a link swapped in since is refused, not followed."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or path.is_symlink():  # Windows: no O_NOFOLLOW
+            raise CheckingAreaUnavailable(f"{path} stopped being a regular file during capture")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _same_bytes(left: pathlib.Path, right: pathlib.Path) -> bool:
+    """Chunked equality; an unreadable side raises, because uncompared bytes are not unchanged."""
+    with _open_regular(left) as one, _open_regular(right) as two:
+        while True:
+            chunk = one.read(1 << 20)
+            if chunk != two.read(1 << 20):
+                return False
+            if not chunk:
+                return True
+
+
 def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pathlib.Path,
-                     budget: List[int], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+                     budget: List[float], gaps: List[Dict[str, Any]]) -> Dict[str, Any]:
     view = pathlib.Path(str(source["view"]))
 
-    def walk_error(error: OSError) -> None:
-        raise error  # a skipped subtree is not a complete inventory
-
     def entries(root: pathlib.Path) -> Dict[str, Dict[str, Any]]:
-        # The copy preserved every file's size, mode and mtime, so an entry whose
-        # stat moved is one the reviewer wrote (identical rewrites included).
+        # The copy preserved every file's size, mode and mtime: an entry whose stat
+        # moved is one the reviewer wrote, and a same-stat file is compared by content
+        # (a timestamp-preserving rewrite keeps its stat). Symlink mtime is
+        # comparable only where copystat supports no-follow utime.
         found = {}
-        for current, dirs, files in os.walk(root, onerror=walk_error, followlinks=False):
+        for current, dirs, files in os.walk(root, onerror=_raise_walk_error, followlinks=False):
             for name in dirs + files:
                 path = pathlib.Path(current) / name
                 info = path.lstat()
                 entry: Dict[str, Any] = {"mode": stat.S_IMODE(info.st_mode)}
                 if stat.S_ISLNK(info.st_mode):
-                    entry.update(kind="symlink", target=os.readlink(path), mtime_ns=info.st_mtime_ns)
+                    entry.update(kind="symlink", target=os.readlink(path))
+                    if os.utime in os.supports_follow_symlinks:
+                        entry["mtime_ns"] = info.st_mtime_ns
                 elif stat.S_ISDIR(info.st_mode):
                     entry.update(kind="directory")
                 elif stat.S_ISREG(info.st_mode):
@@ -450,10 +557,11 @@ def _directory_delta(area: pathlib.Path, source: Mapping[str, Any], evidence: pa
         return found
 
     before, after = entries(view), entries(area)
-    changed = sorted(path for path, state in after.items() if before.get(path) != state)
+    changed = sorted(path for path, state in after.items() if before.get(path) != state or (
+        state["kind"] == "file" and not _same_bytes(view / path, area / path)))
     removed = sorted(set(before) - set(after))
     for path in changed:
-        if after[path]["kind"] == "special":
+        if after[path]["kind"] == "special" and pathlib.PurePosixPath(path).parts[0] != EVIDENCE_DIRNAME:
             gaps.append({"path": path, "reason": "unsupported_entry_type"})
     # Links are data, never dereferenced into the files store; directory modes
     # and removals survive in the receipt even after a successful copy release.
@@ -487,29 +595,76 @@ def _capture_directory(home: pathlib.Path, marker: Mapping[str, Any]) -> pathlib
     return home / (f"evidence-{capture_id}" if capture_id else "evidence")
 
 
-def checking_writers_settled(detail: Mapping[str, Any]) -> bool:
-    """Whether the exact GET /v2/runs/:id detail permits capture then refresh.
+def checking_copy_release(detail: Mapping[str, Any]) -> Union[bool, str]:
+    """The copy-use POLICY for the exact GET /v2/runs/:id detail: may a complete capture
+    release a one-shot copy or refresh a thread copy? ``True``, ``False``, or the weaker
+    ``RELEASE_WITHOUT_CENSUS``.
 
     The daemon persists normal success after awaiting the runner, including
     adapter completion and cleanup. Early answers/runFacts and generic terminal
     states do not establish this boundary. No universal native exit code is
     required: Codex's ordinary app-server teardown deliberately stops its process.
     This covers engine-owned writers, not arbitrary detached processes or OS
-    containment. Failed, interrupted and unobserved runs keep their copies.
+    containment, so not even ``True`` proves that every writer ended. Failed,
+    cancelled or interrupted runs require the engine's literal ``processScope.settled:
+    true``. Absent, null or unsettled failure scopes and unobserved runs keep their copies.
+
+    An engine that settles a run's process scope always projects ``summary.processScope``
+    into the detail: the compact outcome (``{settled, coverage, completeness, census,
+    survivors, unreadable}``), or an explicit ``null`` when it has no readable record of
+    the run (its write or parse failed, or the run predates the projection). The key
+    decides on success: absent is an engine older than the projection, so the legacy boundary stands;
+    ``null`` or an invalid value is unknown, and an outcome releases only when SETTLED
+    (every member ended or confirmed gone). The one unsettled exception is the engine's
+    answer where no census exists (Windows): ``census: unsupported``, ``coverage:
+    tree_only``, ``completeness: not_provable``, ``settled: false``, zero survivors and
+    zero unreadable. On success it answers ``RELEASE_WITHOUT_CENSUS``, the owner's compatibility
+    choice: copies keep working as before the projection, and the receipt names that
+    basis beside the engine's facts, kept verbatim. A detached leftover may still write
+    into a released copy. Other unknown or unsettled outcomes keep the copy
+    (survivors may still write into it) while its evidence is captured and the review
+    verdict kept and delivered unchanged; nothing here starts another review. A run that
+    succeeded before an engine upgrade but is first captured after it therefore keeps its
+    copy, and a thread seat refuses its next turn; a receipt captured earlier is reused as
+    stored.
     """
     summary = detail.get("summary")
-    return isinstance(summary, Mapping) and summary.get("state") == "succeeded"
+    if not isinstance(summary, Mapping):
+        return False
+    if summary.get("state") != "succeeded":
+        scope = summary.get("processScope")
+        # A tuple compares malformed (even unhashable) states without raising.
+        return (summary.get("state") in ("failed", "cancelled", "interrupted")
+                and isinstance(scope, Mapping) and scope.get("settled") is True)
+    if "processScope" not in summary:  # never .get(): it cannot tell absent from null
+        return True
+    scope = summary["processScope"]
+    if not isinstance(scope, Mapping):
+        return False
+    if scope.get("settled") is True:
+        return True
+    return RELEASE_WITHOUT_CENSUS if _census_unsupported(scope) else False
+
+
+def _census_unsupported(scope: Mapping[str, Any]) -> bool:
+    """Exactly the engine's census-less outcome: nothing read, nothing counted alive."""
+    return (scope.get("census") == "unsupported" and scope.get("coverage") == "tree_only"
+            and scope.get("completeness") == "not_provable" and scope.get("settled") is False
+            and all(type(scope.get(key)) is int and scope.get(key) == 0 for key in ("survivors", "unreadable")))
 
 
 def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
-                          release: bool = False) -> Dict[str, Any]:
+                          release: Union[bool, str] = False,
+                          process_scope: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Retain one terminal seat's changes as evidence, then remove its copy.
 
-    By default the copy is retained. Normal run consumers request release using
-    ``checking_writers_settled`` on the exact run detail. A thread
-    copy is always retained; each operation has its own immutable evidence store.
-    Never raises: a capture that could not complete keeps the copy (recoverable)
-    and returns the gap; ``{}`` means this operation had no checking copy.
+    By default the copy is retained. Normal run consumers pass ``checking_copy_release``
+    of the exact run detail as ``release``; under ``RELEASE_WITHOUT_CENSUS`` a complete
+    capture's new receipt names that basis (``release_basis``) beside the engine's
+    compact ``process_scope``, verbatim. A thread copy is always retained; each operation has
+    its own immutable evidence store. Never raises: a capture that could not complete
+    keeps the copy (recoverable) and returns the gap; ``{}`` means this operation had
+    no checking copy.
     """
     home = seat_dir(data_root, task_id, operation_id)
     area, evidence = home / "area", home / "evidence"
@@ -557,7 +712,7 @@ def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
         except (OSError, ValueError):
             return {"status": "released_without_summary", "evidence_dir": str(evidence)}
     gaps: List[Dict[str, Any]] = []
-    budget = [EVIDENCE_RETAIN_BYTES]
+    budget = [float("inf")]  # reviewers retain whole outputs; only investigations pass a bound
     delta: Dict[str, Any] = {}
     errors = []
     try:
@@ -583,6 +738,9 @@ def capture_seat_evidence(data_root: Any, task_id: str, operation_id: str, *,
             summary["error"] = "; ".join(errors)
         summary["area"] = str(area)
         summary["refresh_safe"] = bool(thread_seat and release and not gaps and not errors)
+        if release == RELEASE_WITHOUT_CENSUS and not gaps and not errors:  # permission, not proof: settled stays false
+            summary.update(release_basis=RELEASE_WITHOUT_CENSUS,
+                           process_scope=dict(process_scope) if isinstance(process_scope, Mapping) else None)
         if not release:
             summary["retention_reason"] = "writer_quiescence_unverified"
         atomic_write_json(evidence / "summary.json", summary)
@@ -617,7 +775,8 @@ def thread_seat_area(data_root: Any, task_id: str, seat: str, source: Mapping[st
     The engine binds this exact root at creation. No synthetic commits or engine
     worktrees: HEAD, index, working bytes and ignored inputs remain host-owned.
     Refresh is allowed only after the preceding operation's complete capture
-    and normal-success settlement. Recovery of that operation reuses it.
+    under a copy-use policy that permits it (``refresh_safe``). Recovery of that
+    operation reuses it.
     """
     home = seat_dir(data_root, task_id, f"thread:{seat}")
     area = home / "area"
@@ -644,7 +803,8 @@ def thread_seat_area(data_root: Any, task_id: str, seat: str, source: Mapping[st
             except (OSError, ValueError):
                 captured = {}
             if not previous_op or captured.get("status") != "retained" or not captured.get("refresh_safe"):
-                raise CheckingAreaUnavailable("previous thread turn has no complete, quiescent evidence capture; copy retained")
+                raise CheckingAreaUnavailable("previous thread turn has no complete evidence capture that permits "
+                                              "a refresh; copy retained")
     staging = home / f".next-{uuid.uuid4().hex}"
     home.mkdir(parents=True, exist_ok=True)
     try:
@@ -715,6 +875,7 @@ def session_checking(gateway: Any, *, custody_drive: Any, task_id: str, operatio
             "this reviewer seat holds configured write access but its wave froze no checking source"
             + (f" ({source['unavailable']})" if source else "") + "; nothing was started",
             code="review_checking_source_missing")
+    thread_binding = {}
     if thread_seat:
         from ouroboros.review_thread_continuity import require_delegated_review_threads
 
@@ -734,24 +895,22 @@ def session_checking(gateway: Any, *, custody_drive: Any, task_id: str, operatio
         except (CheckingAreaUnavailable, OSError, subprocess.SubprocessError) as exc:
             raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
                                          code="review_checking_copy_unavailable") from exc
-        return {"thread_root": area, "thread_id": saved_thread, "instructions": CHECKING_REVIEWER_INSTRUCTIONS + checking_instructions(
-                    area, source, str(root)),
-                "custody": {"authority_source": INVESTIGATION_AUTHORITY, "execution_root": area,
-                            "target_root": str(root)}}
-    if not delegated_execution_workspace_root(gateway, shape, str(root)):
-        raise ReviewRouteUnavailable(
-            "the serving engine cannot bind a private execution root, so a reviewer with write access "
-            "cannot be kept out of the reviewed root; nothing was started", code="review_checking_root_unsupported")
-    try:
-        area = prepare_seat_area(custody_drive, task_id, operation_id, source)
-    except (CheckingAreaUnavailable, OSError) as exc:
-        raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
-                                     code="review_checking_copy_unavailable") from exc
-    if shape.access == "full":
-        gateway.ensure_full_access(str(root))
+        thread_binding = {"thread_root": area, "thread_id": saved_thread}
+    else:
+        if not delegated_execution_workspace_root(gateway, shape, str(root)):
+            raise ReviewRouteUnavailable(
+                "the serving engine cannot bind a private execution root, so a reviewer with write access "
+                "cannot be kept out of the reviewed root; nothing was started", code="review_checking_root_unsupported")
+        try:
+            area = prepare_seat_area(custody_drive, task_id, operation_id, source)
+        except (CheckingAreaUnavailable, OSError) as exc:
+            raise ReviewRouteUnavailable(f"private checking copy unavailable: {exc}",
+                                         code="review_checking_copy_unavailable") from exc
+        if shape.access == "full":
+            gateway.ensure_full_access(str(root))
     execution = {"isolation": "live", "delegated": True, "workspaceRoot": area,
                  **({"workspaceKind": "directory"} if source.get("kind") == "directory" else {})}
-    return {"execution": execution,
+    return {**thread_binding, "execution": execution,
             "instructions": CHECKING_REVIEWER_INSTRUCTIONS + checking_instructions(area, source, str(root)),
             "custody": {"authority_source": INVESTIGATION_AUTHORITY, "execution_root": area,
                         "target_root": str(root)}}
@@ -784,15 +943,17 @@ def wave_checking_source(session_root: Any, slots: Any, *, data_root: Any,
 
 def terminal_seat_evidence(data_root: Any, task_id: str, operation_id: str,
                            detail: Any) -> Dict[str, Any]:
-    """Capture only an observed terminal; release only at exact normal success.
+    """Capture only an observed terminal; release only as ``checking_copy_release``
+    permits for the exact detail.
 
-    Normal results and timeout/interaction cancellation receipts share this
-    boundary. An unknown writer retains its original copy even when a terminal
-    failure supplies enough evidence to capture its current contents.
+    Normal results, attach-only collection and timeout/interaction cancellation
+    receipts share this boundary. An unknown writer retains its original copy even
+    when a terminal failure supplies enough evidence to capture its current contents;
+    a later settled read recaptures into a new generation before release.
     """
     from ouroboros.delegate_custody import is_terminal
 
     if not isinstance(detail, dict) or not is_terminal(detail):
         return {}
-    return capture_seat_evidence(data_root, task_id, operation_id,
-                                 release=checking_writers_settled(detail))
+    return capture_seat_evidence(data_root, task_id, operation_id, release=checking_copy_release(detail),
+                                 process_scope=detail["summary"].get("processScope"))

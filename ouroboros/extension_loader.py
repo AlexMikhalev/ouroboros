@@ -609,7 +609,7 @@ def load_extension(
     gate = runtime_state.get("review_gate") or skill.review.gate_for(current_hash)
     if not gate.get("executable_review", False):
         return (
-            f"skill {skill.name!r} must carry a fresh executable review "
+            f"skill {skill.name!r} has no current executable review authority "
             f"(status={skill.review.status!r}, "
             f"stale={skill.review.is_stale_for(current_hash)}, "
             f"reason={gate.get('blocking_reason')})"

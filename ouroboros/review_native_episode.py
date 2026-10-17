@@ -51,7 +51,9 @@ from ouroboros.triad_review import review_output_shape
 from ouroboros.delegate_custody_usage import observe_failed_review_send
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
+    BillingAuthorityUnavailable,
     BudgetExceeded,
+    ControlAuthorityUnavailable,
     physical_attempt_limit,
 )
 from ouroboros.utils import utc_now_iso
@@ -244,13 +246,21 @@ def native_episode_prompt(surface: str, role_hint: str, task: str, output_contra
     ])
 
 
-def native_first_send_messages(prompt: str) -> List[Dict[str, Any]]:
-    """Cache the completed assignment, stable throughout this review episode."""
+def native_first_send_messages(prompt: str, required_sources_ref: Any = None) -> List[Dict[str, Any]]:
+    """Cache the completed assignment, stable throughout this review episode: the
+    task plus the required-manifest reference when the surface declared one
+    (``None``: no manifest). ``_open_episode`` and every pre-dispatch measure
+    build the opening here."""
     from ouroboros.tools.review_helpers import cached_prompt_blocks
 
+    task = prompt if required_sources_ref is None else prompt + (
+        "\nRequired source manifest: " + json.dumps(required_sources_ref, ensure_ascii=False)
+        + "\nSources marked delivered_inline are already included in full. Read the other required "
+        "sources through their exact physical addresses, using multiple working views as needed. "
+        "Observed read coverage remains diagnostic evidence beside your findings.")
     return [
         {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
-        {"role": "user", "content": cached_prompt_blocks(prompt)},
+        {"role": "user", "content": cached_prompt_blocks(task)},
     ]
 
 
@@ -316,18 +326,18 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
 
 def native_first_send_chars(
     root: str, *, surface: str, role_hint: str, slot_id: str, session_task: str,
-    output_contract: str, task_id: str = "",
+    output_contract: str, task_id: str = "", required_sources_ref: Any = None,
 ) -> int:
     """The wire size of a native episode's FIRST send — the prompt its first
     ``reserve_attempt`` prices (every later round reserves itself, on the
     ledger, against the transcript it has grown to). Built from the same
-    work-order, message objects, schemas and measure ``_open_episode`` uses,
-    so the commit gate's wave admission prices a native seat the way the
-    ledger will; the registry is built read-only against ``root`` and
-    discarded."""
+    work-order, message objects (the declared manifest reference included),
+    schemas and measure ``_open_episode`` uses, so an initial layout decision and
+    the wave admission price a native seat the way the ledger will; the registry
+    is built read-only against ``root`` and discarded."""
     _registry, _ctx, schemas = inspection_registry(root, root, task_id)
     prompt = native_episode_prompt(surface, role_hint, str(session_task or "").strip(), output_contract, slot_id)
-    return _wire_size(native_first_send_messages(prompt), schemas)
+    return _wire_size(native_first_send_messages(prompt, required_sources_ref), schemas)
 
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
@@ -749,9 +759,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
-                        # The paid ledger refusing the NEXT send is the money
-                        # floor landing, not a transport fault: name it.
-                        end_reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error"
+                        # A budget or authority refusal of the NEXT send is not a transport fault.
+                        end_reason = ("budget_exhausted" if isinstance(exc, BudgetExceeded) else "billing_authority_unavailable"
+                                      if isinstance(exc, BillingAuthorityUnavailable) else "control_authority_unavailable"
+                                      if isinstance(exc, ControlAuthorityUnavailable) else "transport_error")
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             # A send that was physically dispatched IS a round
@@ -762,7 +773,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             self._observe_sent_view(messages, schemas)
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         observe_failed_review_send(self.usage_observer, exc)
-                        if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
+                        if isinstance(exc, (BudgetExceeded, BillingAuthorityUnavailable, ControlAuthorityUnavailable)) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
                 self._rounds_used, last_send_chars = round_idx, transcript_chars  # a returned send is the last physical send
@@ -932,17 +943,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "the repository root the reviewer episode runs in",
                 code="session_root_missing")
         registry, schemas = self._inspection_registry(root, drive_root)
-        prompt = self.episode_prompt
-        required = (self.assignment.request.policy or {}).get("native_required_sources")
-        if required is not None:
-            ref = (self.assignment.request.policy or {}).get("native_required_sources_ref") or self._store_source("required-sources", required)
-            prompt += "\nRequired source manifest: " + json.dumps(ref, ensure_ascii=False)
-            prompt += (
-                "\nSources marked delivered_inline are already included in full. Read the other required "
-                "sources through their exact physical addresses, using multiple working views as needed. "
-                "Observed read coverage remains diagnostic evidence beside your findings."
-            )
-        messages = native_first_send_messages(prompt)
+        policy = self.assignment.request.policy or {}
+        required = policy.get("native_required_sources")
+        ref = None if required is None else (
+            policy.get("native_required_sources_ref") or self._store_source("required-sources", required))
+        messages = native_first_send_messages(self.episode_prompt, ref)
         return registry, schemas, messages, _wire_size(messages, schemas)
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
@@ -999,13 +1004,22 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 return registry.execute_result(name, args)
 
         with abandoned_on_timeout(timeout) as submit:
-            future = submit(execute)
+            from ouroboros.tool_custody import submit_tool_future
+            from ouroboros.tool_call_log import new_invocation
+            context = getattr(registry, "_ctx", None)
+            from ouroboros.model_wait import current_model_wait
+            owner = current_model_wait()
+            attempt = owner.attempt if owner is not None else getattr(context, "task_attempt", 1)
+            invocation = new_invocation("", {}, attempt)
+            future, release = submit_tool_future(context, invocation["invocation_id"], name, submit, execute)
             try:
                 return future_result(future, timeout)
             except (TimeoutError, concurrent.futures.TimeoutError):
                 if future.done():
                     raise
                 raise _ToolAbandoned(tool_timeout_text(name, timeout)) from None
+            finally:
+                release()
 
     def _execute_inspection_call(
         self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],

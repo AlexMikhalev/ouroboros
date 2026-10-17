@@ -38,9 +38,10 @@ from ouroboros.config import (
     adaptive_quorum, get_finalization_grace_sec, get_llm_transport_read_timeout_sec, get_review_enforcement,
     get_runtime_mode, get_task_abs_ceiling_sec, operation_window_sec,
 )
+from ouroboros.preflight_receipts import bind_execution_exhibit
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
-    PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, new_record_id,
+    PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, load_record, new_record_id,
     panel_facts, reduce_verdict, revise_record, row_verdict, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
@@ -389,6 +390,26 @@ class _Wave:
     # The open attempt row of this same round on this task that the wave collects
     # instead of paying again (review_change_custody.pending_round_attempt); None = new.
     rejoin: Any = None
+    # The test execution exhibit an in-process caller supplied, bound to ``frozen``
+    # (preflight_receipts.bind_execution_exhibit); a tool call never supplies one.
+    execution: Dict[str, Any] = dataclasses.field(default_factory=lambda: {"status": "unobserved"})
+
+
+def _dispatched_execution(ctx: ToolContext, record_id: str, attempt: Any) -> Dict[str, Any]:
+    """The original exhibit, from the ledger or the paid request if dispatch crashed
+    before the ledger write. Legacy absence stays unobserved, never today's fact."""
+    from ouroboros.review_evidence import pending_commit_review_evidence
+
+    try:
+        record = load_record(ledger_root(ctx), record_id) or {}
+    except (OSError, ValueError):
+        record = {}
+    if record:
+        return dict(record.get("preflight_execution") or {"status": "unobserved"})
+    collector = SimpleNamespace(**vars(ctx))
+    collector._pending_review_attempt = attempt
+    collector._current_review_retry_key = attempt.review_retry_key
+    return pending_commit_review_evidence(collector, "preflight_execution") or {"status": "unobserved"}
 
 
 def _round_sha(request: ReviewChangeRequest, frozen: Any) -> str:
@@ -445,7 +466,7 @@ _CTX_FIELDS = (
     "_review_paid_stamp", "_review_reserved_roster", "_review_reserved_operations",
     "_review_pending_invocation_checkpoint", "_last_review_slot_executions", "_pending_review_attempt",
     "_commit_preflight", "_commit_review_panel",
-    "_review_dispute_history", "_review_dispute_input",
+    "_review_dispute_history", "_review_dispute_input", "_preflight_execution",
 )
 
 
@@ -464,6 +485,7 @@ def _wave_context(ctx: ToolContext, wave: _Wave) -> Iterator[None]:
         ctx._current_review_contract_fingerprint = wave.contract_fp
         ctx._review_history, ctx._review_iteration_count, ctx._coupling_review_history = [], 0, {}
         ctx._review_dispute_history, ctx._review_dispute_input = None, None
+        ctx._preflight_execution = wave.execution
         yield
     finally:
         for name, value in saved.items():
@@ -513,6 +535,7 @@ def _forensic(ctx: ToolContext) -> Dict[str, Any]:
         # This wave's seat executions (``reviewer_slot_config.record_reviewer_slot_execution``
         # keeps them on the wave's ctx), never the process-wide last-execution projection.
         "slot_executions": dict(getattr(ctx, "_last_review_slot_executions", {}) or {}),
+        "preflight_execution": dict(getattr(ctx, "_preflight_execution", None) or {"status": "unobserved"}),
     }
 
 
@@ -609,6 +632,7 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
         "critical_findings": critical, "advisory_findings": advisory, "additional_findings": additional,
         "tests": {"policy": "NOT_RUN", "result": "unknown"},
         "preflight": {"status": "not_performed", "record_id": ""},
+        "preflight_execution": dict(forensic.get("preflight_execution") or {"status": "unobserved"}),
         "reuse_key": wave.reuse_key if refusal is None else "", "retry_key": wave.retry_key,
         "composition": str(wave.panel.facts.get("composition") or "full_pool"),
         "composition_reason": str(wave.panel.facts.get("reason") or ""),
@@ -760,10 +784,9 @@ def system_review_row(reviewer: str = "", effort: str = "") -> Any:
     handle, pool member or not, else the direct Main row; ``effort`` is the call's
     order (a compound route keeps its own)."""
     from ouroboros import reviewer_slot_config as slots
-    from ouroboros.deep_self_review import main_review_row
 
     if not reviewer:
-        row = main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
+        row = slots.main_review_row()  # Main's own failure (an invalid pin document) is not a catalog refusal
     else:
         try:
             row = slots.catalog_review_row(None, reviewer)
@@ -898,6 +921,9 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     most one paid wave, one ledger record. A deterministic call error raises
     ``ReviewChangeArgumentError`` before any reviewer is paid."""
     binding = args.pop("_resolved_binding", None)
+    # In-process callers (the commit gate's look, the contributor lane) hand the test
+    # execution they established; the tool surface has no such argument.
+    supplied_execution = args.pop("_preflight_execution", None)
     request = parse_request(args)
     if request.subject == "system":
         return run_system_review(ctx, reviewer=request.reviewers[0] if request.reviewers else "",
@@ -912,7 +938,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                              head=request.head, governance_root=str(governance), surface=request.surface,
                              body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # The gate's own subject (the body's staged index against HEAD) is read on its live
-    # root exactly as the gate reads it; every other subject is materialized in an
+    # root exactly as the gate reads it unless its interactive author may leave the wave
+    # on an addressed message (``_read_subject``); every other subject is materialized in an
     # isolated checkout, where every delivery reads the frozen tree, at the path of this
     # TASK's custody of its ROUND (identity c plus the task that keys attempt rows): a
     # rerun of the round reads the checkout its open operation still may, another
@@ -920,10 +947,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     # it (review_subject.isolated_checkout).
     retention: Dict[str, Any] = {}
     task_id = str(getattr(ctx, "task_id", "") or "")
-    frozen_subject = (contextlib.nullcontext(freeze_subject(ctx, spec)) if is_gate_subject(spec)
-                      else isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
-                          review_retry_key(identity, round_sha=_round_sha(request, identity)), task_id=task_id)))
-    with frozen_subject as frozen:
+    unfrozen: List[str] = []
+    with _read_subject(ctx, spec, request, retention, task_id, unfrozen) as frozen:
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
         # Locate an already-paid round before consulting mutable pool settings.
@@ -937,9 +962,13 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
             panel = compose_panel(request, adds_only=request.surface == SURFACE and layer == "body"
                                   and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
         with _panel_in_force(panel):
-            wave = _prepare_wave(ctx, request, frozen, panel, root=root, fact=fact, layer=layer, rejoin=rejoin)
+            wave = dataclasses.replace(_prepare_wave(ctx, request, frozen, panel, root=root, fact=fact, layer=layer,
+                                                     rejoin=rejoin),
+                                       execution=bind_execution_exhibit(supplied_execution, frozen))
             if rejoin is not None:
-                wave = dataclasses.replace(wave, rejoin=rejoin, record_id=str(rejoin.review_record_id or wave.record_id))
+                record_id = str(rejoin.review_record_id or wave.record_id)
+                wave = dataclasses.replace(wave, rejoin=rejoin, record_id=record_id,
+                                           execution=_dispatched_execution(ctx, record_id, rejoin))
             else:
                 prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
                 if prior is not None:
@@ -950,8 +979,42 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
             with _wave_context(ctx, wave):
                 outcome = _dispatch(ctx, wave)
                 forensic = _forensic(ctx)
+                forensic["degraded_reasons"] = [*forensic["degraded_reasons"], *unfrozen]
                 retention.update(_checkout_custody(ctx, forensic))
+                from ouroboros import review_pause
+
+                review_pause.watch_left_review(ctx, surface="change", retry_key=wave.retry_key, record_id=wave.record_id,
+                                               reissue="the same unchanged review_change call")
             return _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
+
+
+@contextlib.contextmanager
+def _read_subject(ctx: ToolContext, spec: Any, request: ReviewChangeRequest, retention: Dict[str, Any],
+                  task_id: str, unfrozen: List[str]) -> Iterator[Any]:
+    """Every subject but the gate's own is read in this round's isolated checkout. A
+    receptive author (``review_pause``) may leave the wave, so its gate subject is read
+    there too; a checkout that cannot be prepared keeps the live synchronous read, disclosed."""
+    from ouroboros import review_pause
+
+    def isolated() -> Any:
+        return isolated_checkout(ctx, spec, retain=lambda: retention, token=lambda identity: checkout_token(
+            review_retry_key(identity, round_sha=_round_sha(request, identity)), task_id=task_id))
+    if not is_gate_subject(spec):
+        with isolated() as frozen:
+            yield frozen
+        return
+    if review_pause.receptive_active():
+        with contextlib.ExitStack() as stack:
+            try:
+                frozen = stack.enter_context(isolated())
+            except Exception as exc:
+                unfrozen.append(f"receptive_wait_unavailable: the reviewed subject could not be frozen "
+                                f"({type(exc).__name__}: {exc}); this wave kept the synchronous wait on the live index")
+            else:
+                yield frozen
+                return
+    with review_pause.receptive_author(None):
+        yield freeze_subject(ctx, spec)
 
 
 def _handle_review_change(
@@ -961,15 +1024,25 @@ def _handle_review_change(
     coupling_only: Optional[List[str]] = None, reviewer_effort: str = "", review_rebuttal: str = "",
     treat_as_body: bool = False, _resolved_binding: Any = None,
 ) -> str:
+    from ouroboros import review_pause
+
+    ctx._left_review_wait = None  # a new review act is the author's explicit next choice
     try:
-        result = run_review_change(
-            ctx, root=root, workspace_root=workspace_root, subject=subject, base=base, head=head, surface=surface,
-            goal=goal, scope=scope, author_questions=author_questions, reviewers=reviewers, reason=reason,
-            coupling_only=coupling_only, reviewer_effort=reviewer_effort, review_rebuttal=review_rebuttal,
-            treat_as_body=treat_as_body, _resolved_binding=_resolved_binding)
+        # The tool's interactive author may leave the wave on an addressed message (the
+        # operator script's synchronous entry binds nothing).
+        with review_pause.receptive_author(review_pause.receptive_binding(ctx)):
+            result = run_review_change(
+                ctx, root=root, workspace_root=workspace_root, subject=subject, base=base, head=head, surface=surface,
+                goal=goal, scope=scope, author_questions=author_questions, reviewers=reviewers, reason=reason,
+                coupling_only=coupling_only, reviewer_effort=reviewer_effort, review_rebuttal=review_rebuttal,
+                treat_as_body=treat_as_body, _resolved_binding=_resolved_binding)
     except ReviewChangeArgumentError as exc:
         return argument_refusal(ctx, "TOOL_ARG_ERROR (review_change)", [str(exc)], effect="No reviewer was dispatched.")
     result.pop("usage", None)
+    if (getattr(ctx, "_left_review_wait", None) or {}).get("surface") == "change":
+        result["message"] = ("An addressed message reached you while the reviewers ran: this call returned and their "
+                             "paid work continues separately; a [Review settled] notice follows the whole wave. "
+                             + str(result.get("message") or ""))
     text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
     return f"{result['message']}\n\n{text}" if result.get("message") else text
 
@@ -987,8 +1060,10 @@ _DESCRIPTION = (
     "written to the review ledger. commit_reviewed stays the only landing in the system repository; use "
     "review_change by judgment for any other root (it never starts on its own and never runs tests: "
     "tests.policy=NOT_RUN). Subjects: base..head (commits), index (staged) or worktree (live) against base "
-    "(default HEAD); every subject but the body's own staged index is frozen and read in an isolated checkout of "
-    "its tree. Rules follow the subject: the body is read against the body "
+    "(default HEAD), frozen and read in an isolated checkout of its tree (only a synchronous caller reads the body's "
+    "own staged index live). An addressed message while the wave runs returns its pending outcome: the reviewers "
+    "continue, a [Review settled] notice follows, and the same unchanged call collects it at $0. "
+    "Rules follow the subject: the body is read against the body "
     "layer, anything else against the universal core checklist. Panel: for a body subject outside Cyber Pro the "
     "review pool stands and reviewers only add seats; otherwise reviewers IS the panel (omitted = the whole pool) "
     "and reason records why — its counted seats are pool rows, an enabled row outside the pool is an added "

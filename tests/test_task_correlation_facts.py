@@ -2,7 +2,7 @@
 
 import json
 import queue
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -150,24 +150,34 @@ def test_llm_api_error_names_its_operation_and_attempts_only_when_the_failure_ca
     assert "operation_id" not in plain_row and plain_row["ledger_attempt_ids"] == []
 
 
-def test_intrinsic_checkpoint_discloses_the_same_binding_ceiling_as_text(monkeypatch):
+def test_facts_line_discloses_the_same_binding_ceiling_as_the_stop(monkeypatch):
+    """The periodic [PACING] checkpoint is gone (#1748); the facts line names the ceiling
+    the loop decides on and the tree's known spend against it, each bound by name."""
     from ouroboros import task_pacing as pacing
+    from ouroboros.loop_messages import _money_facts
 
-    monkeypatch.setattr(pacing, "get_pacing_interval_sec", lambda: 1)
     ceiling = pacing.CostCeiling(state="active", ceiling_usd=80, root_cap_usd=100, basis="root_cap")
-    now = datetime.now(timezone.utc)
-    note = pacing.build_intrinsic_pacing_note(SimpleNamespace(_cost_ceiling=ceiling),
-        created=now - timedelta(seconds=60), now=now, round_idx=4, accumulated_usage={"cost": 10},
-        tree_cost_provider=lambda: {"settled_usd": 20, "accounted_usd": 20, "root_limit_usd": 100})
-    assert note.checkpoint["cost_ceiling"] == pacing.cost_ceiling_disclosure(ceiling)
-    assert note.checkpoint["tree_cap_usd"] == 100
-    assert "$80.00 in-task cost ceiling" in note.text
+    parts = _money_facts({"cost_ceiling": ceiling, "tree": {
+        "settled_usd": 20, "accounted_usd": 23, "root_limit_usd": 100, "age_sec": 4.2},
+        "wallet": {"status": "no_global_limit"}})
+    joined = " | ".join(parts)
+    assert "shared wallet: no global limit" in joined
+    assert "hard tree cap $100.00" not in joined  # named once, inside the tree line
+    assert "in-task cost ceiling $80.00 (root_cap)" in joined
+    assert "~$20.00 of $80.00 in-task cost ceiling ($100.00 hard tree cap)" in joined
+    assert "+$3.00 open holds not counted" in joined and "ledger snapshot 4 s old" in joined
+    degraded = " | ".join(_money_facts({"cost_ceiling": ceiling, "tree": {
+        "settled_usd": 20, "accounted_usd": 20, "root_limit_usd": 100, "integrity_degraded": True}}))
+    assert "task tree spend unknown (ledger integrity degraded)" in degraded and "$20.00" not in degraded
+    assert "hard tree cap $100.00" in degraded  # the bound itself is still known
 
 
 def test_terminal_delegation_rows_keep_existing_root_and_parent(tmp_path, monkeypatch):
     from ouroboros import delegate_custody as custody
 
     monkeypatch.setattr(custody, "_CUSTODY", {})
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "root", "running", root_task_id="root")  # the child's real root
     row = custody.RunCustody(run_id="correlated", task_id="child", root_task_id="root", parent_task_id="parent",
                              route_id="route", ledger_root=str(tmp_path))
     custody.record_started(tmp_path, row)

@@ -102,12 +102,14 @@ def _intents_path(drive_root: Any) -> pathlib.Path:
 
 
 @contextmanager
-def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
+def cancellation_projection_lock(drive_root: Any, *, wait: bool = True) -> Iterator[None]:
     """Hold the same short lock used by cancel-intent mutators.
 
     Cross-store decisions such as a paid acceptance claim use this only while
     committing their own atomic row.  If cancellation linearizes first they see
     it; if this lock wins first, the claim linearizes before cancellation.
+    ``wait=False`` tries once (an automatic caller under Q); the refusal's
+    ``reason`` keeps the acquisition outcome, so contention stays distinct.
     """
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
@@ -116,9 +118,13 @@ def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
 
     path = _intents_path(drive_root)
     lock_path = path.with_name(path.name + ".lock")
-    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True)
+    outcome: Dict[str, Any] = {}
+    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True, outcome=outcome,
+                                          **({} if wait else {"timeout_sec": 0.0}))
     if lock_fd is None:
-        raise TimeoutError("cancel-intent projection lock unavailable")
+        error = TimeoutError("cancel-intent projection lock unavailable")
+        error.reason = outcome.get("reason", "unknown")
+        raise error
     try:
         yield
     finally:
@@ -867,7 +873,7 @@ def active_intent(
 
 
 def resolve_owner_stop_intent(
-    drive_root: Any, task_id: str,
+    drive_root: Any, task_id: str, *, propagate_busy: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Return the durable owner-stop key/row for a physical retry task.
 
@@ -884,6 +890,9 @@ def resolve_owner_stop_intent(
     exact = active_intent(drive_root, tid)
     if isinstance(exact, dict) and stop_policy(exact) == STOP_POLICY_FINALIZE:
         return tid, exact
+    if exact is not None:
+        return tid, {}  # A known immediate intent needs no lineage read.
+    from ouroboros.store import StoreBusy
     try:
         from ouroboros.task_results import load_task_result
 
@@ -900,6 +909,10 @@ def resolve_owner_stop_intent(
         ):
             return tid, {}
         return logical_root, logical
+    except StoreBusy:
+        if propagate_busy:
+            raise
+        return tid, {}
     except Exception:
         log.debug(
             "owner-stop intent resolution failed for physical task %s",
@@ -1340,9 +1353,14 @@ def migrate_legacy_cancel_latches(drive_root: Any, *, records=None) -> List[str]
     return migrated
 
 
-def cancel_state_fields(drive_root: Any, task_id: str) -> Dict[str, Any]:
-    """Typed public projection: ``{"cancel_state": "pending", ...}`` or ``{}``."""
-    intent = active_intent(drive_root, task_id)
+def cancel_state_fields(drive_root: Any, task_id: str, *, intents: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Typed public projection: ``{"cancel_state": "pending", ...}`` or ``{}``; ``intents`` is a
+    batch reader's one ``active_intents`` read (``task_reads``) instead of a read per task."""
+    if intents is None:
+        intent = active_intent(drive_root, task_id)
+    else:
+        row = intents.get(str(task_id))
+        intent = dict(row) if isinstance(row, dict) else None
     if intent is None:
         return {}
     fields: Dict[str, Any] = {"cancel_state": "pending"}
@@ -1356,7 +1374,7 @@ def cancel_state_fields(drive_root: Any, task_id: str) -> Dict[str, Any]:
     return fields
 
 
-def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bool:
+def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False, propagate_busy: bool = False) -> bool:
     """Both cancel-pending carriers in ONE predicate — fail-soft.
 
     The durable intent projection is the live authority; the legacy
@@ -1365,6 +1383,8 @@ def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bo
     both, or a task wedged in the old shape still accepts new owner messages
     while the supervisor is tearing it down.
     """
+    from ouroboros.store import StoreBusy
+
     try:
         if has_active_intent(drive_root, task_id, strict=strict):
             return True
@@ -1373,12 +1393,20 @@ def cancel_pending(drive_root: Any, task_id: str, *, strict: bool = False) -> bo
             raise
         log.debug("cancel-pending intent read failed for %s", task_id, exc_info=True)
     try:
-        from ouroboros.task_results import STATUS_CANCEL_REQUESTED, load_task_result
+        from ouroboros.task_results import STATUS_CANCEL_REQUESTED, load_task_result, validate_task_id
 
-        status = str(
-            (load_task_result(drive_root, task_id, strict=strict) or {}).get("status") or ""
-        )
+        if strict:
+            result = load_task_result(drive_root, task_id, strict=True) or {}
+        else:
+            from ouroboros.task_store import task_facts
+            tid = validate_task_id(task_id)
+            result = task_facts(drive_root, where="task_id=?", params=(tid,)).get(tid, {})
+        status = str(result.get("status") or "")
         return status == STATUS_CANCEL_REQUESTED
+    except StoreBusy:
+        if strict or propagate_busy:
+            raise
+        return False
     except Exception:
         if strict:
             raise

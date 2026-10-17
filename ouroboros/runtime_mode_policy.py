@@ -169,12 +169,16 @@ SAFETY_CRITICAL_PATHS = frozenset({
     # the git_ops family).
     "ouroboros/tools/registry_guard_process.py",
     "ouroboros/tools/registry_guards.py",
-    # F3.1 typed-organ leaves: the registry class body and the typed result
-    # vocabulary re-homed out of the protected registry — same label parity.
+    # F3.1 typed-organ leaves: the registry class body and argument/target
+    # resolution re-homed out of the protected registry — same label parity.
     "ouroboros/tools/registry_core.py",
+    "ouroboros/tools/tool_resolution.py",
+    # The tool ABI in its own right: the descriptor every built-in instantiates
+    # (and declares its safety policy on) with the catalog that keeps extension
+    # and MCP names from shadowing it, the context every handler receives and
+    # the typed result contract shared by tools, the loop and the UI.
     "ouroboros/tools/tool_catalog.py",
     "ouroboros/tools/tool_context.py",
-    "ouroboros/tools/tool_resolution.py",
     "ouroboros/tools/tool_result.py",
     "prompts/SAFETY.md",
 })
@@ -186,12 +190,11 @@ FROZEN_CONTRACT_PATH_PREFIXES = (
 FROZEN_CONTRACT_PATHS = frozenset({
     "tests/test_contracts.py",
     "docs/CHECKLISTS.md",
-    # The standing-disclosure archive is the same binding reviewer contract as
-    # its parent — extracted for pack size, not demoted (#447 stage 3).
-    "docs/CHECKLISTS_ARCHIVE.md",
     "ouroboros/gateway/contracts.py",
-    "ouroboros/size_ratchet_manifest.py",
 })
+# Deliberately unlisted: the generated size manifest is a record its validator
+# (ouroboros/review.py) only lets shrink and official CI enforces, and the
+# checklist archive is an append-only record whose additions pass commit review.
 
 # The whole git_ops family as ONE derived constant (owner decision, batch 5
 # item 15): the facade plus its G1 leaves. Every protection inventory that
@@ -202,14 +205,9 @@ GIT_OPS_FAMILY_PATHS = frozenset(
 )
 
 RELEASE_INVARIANT_PATHS = frozenset({
+    # ci.yml decides which jobs release-preflight requires; the paid
+    # provider-canary workflows it calls reach no install and stay unlisted.
     ".github/workflows/ci.yml",
-    # The provider-canary job `release-preflight` requires keeps its body in a
-    # reusable workflow and its branch-push trigger in a wrapper — both outside
-    # the protected ci.yml, neither moving any of the risk — so every inventory
-    # that protects the parent must cover them (label parity — same rule as
-    # the G1 block below).
-    ".github/workflows/provider-canary.yml",
-    ".github/workflows/provider-canary-push.yml",
     "Ouroboros.spec",
     "build.sh",
     "build_linux.sh",

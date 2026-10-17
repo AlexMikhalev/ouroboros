@@ -15,6 +15,7 @@ import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _loop_ctx, _quiet_external, _supervisor_ctx
 from tests.test_acceptance_fence_transport import _pooled_agent, _Supervisor
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -47,7 +48,10 @@ def _direct_paused(tmp_path, monkeypatch, *, park="inline", rail="budget", chang
     write_task_result(tmp_path, TASK, "running", root_task_id=TASK, _is_direct_chat=True)
     write_task_result(tmp_path, "child", "running", parent_task_id=TASK, root_task_id=TASK)
     workers.PENDING.append({"id": "child", "root_task_id": TASK, "parent_task_id": TASK})
-    trace = {"tool_calls": []}
+    # Required reviews what the host observed this turn produce (#1731); the
+    # expected_output above is a declaration, not production.
+    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "deliverable.md"},
+                             "is_error": False, "status": "ok"}]}
     assert loop._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="Complete deliverable", task_id=TASK, task_type="task",
         llm_trace=trace, drive_root=tmp_path, messages=limit.messages, emit_progress=lambda *_a: None)
@@ -107,9 +111,9 @@ def _pooled_resume(tmp_path, monkeypatch, queue, workers, *, consume=True):
 
     assert queue.resume_budget_paused_task(TASK)["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
                                          proc=SimpleNamespace(pid=os.getpid(), is_alive=lambda: True),
-                                         in_q=SimpleNamespace(put=lambda row: sent.append(dict(row))))
+                                         in_q=SimpleNamespace(put=lambda row: sent.append(dict(row)))))
     workers.assign_tasks()
     assert len(sent) == 1 and TASK in workers.RUNNING
     ctx, _limit = _loop_ctx(tmp_path, TASK, direct=True)

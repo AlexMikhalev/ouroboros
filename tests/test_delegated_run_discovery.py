@@ -107,6 +107,9 @@ def _top(geo, task_id, *, forked=False, predecessor=""):
 
 
 def _child(geo, task_id, parent, *, acting=False):
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(geo.canonical, parent) is None:  # a child's root exists before it runs
+        write_task_result(geo.canonical, parent, "running", root_task_id=parent)
     ctx = ToolContext(repo_dir=geo.repo, drive_root=_drive(geo, task_id), task_id=task_id)
     ctx.budget_drive_root = str(geo.canonical)
     ctx.task_metadata = {"delegation_role": "subagent", "parent_task_id": parent, "root_task_id": parent,
@@ -163,12 +166,20 @@ def _receipts(geo):
 def _publish_terminal_result(geo, task_id, status="cancelled"):
     """The owner's terminal boundary: the real audit producer, then the real recorder."""
     from ouroboros.delegate_terminal import record_terminal_reconciliation, terminal_reconcile_task
-    from ouroboros.task_results import write_task_result
+    from ouroboros.task_results import load_task_result, write_task_result
 
     write_task_result(geo.canonical, task_id, status, result="stopped", reason_code="server_shutdown")
     audit = terminal_reconcile_task(geo.canonical, task_id)
     assert audit["audit_status"] == "ok", audit
-    assert record_terminal_reconciliation(geo.canonical, task_id, audit)
+    record_terminal_reconciliation(geo.canonical, task_id, audit)
+    # Output retention may already have published this exact disclosure. Its
+    # idempotent recorder need not write twice; the actual published facts must match.
+    stored = load_task_result(geo.canonical, task_id)
+    assert stored["delegated_runs_unreconciled"] == audit["unreconciled"]
+    published = stored["delegate_terminal_reconciliation"]
+    for field in ("open_run_ids", "pending_invocation_ids", "undisposed_patch_run_ids",
+                  "terminal_runs", "deferred_project_retirements"):
+        assert published[field] == audit[field]
     return audit
 
 
@@ -243,11 +254,13 @@ def test_a_root_continue_reads_its_old_nanny_childs_answer_after_drive_cleanup(g
     for reader in (continuation, parent):
         refused = _execute(reader, "read_file", root="artifact_store", path=str(canonical_file))
         assert refused.text.startswith("⚠️") and "outside selected root=artifact_store" in refused.text
-    # runtime_data reaches it only where the reader's runtime root IS the canonical drive.
-    blocked = _execute(continuation, "read_file", root="runtime_data", path=str(canonical_file))
-    assert blocked.text.startswith("⚠️") and "outside selected root=runtime_data" in blocked.text
-    via_runtime = _execute(parent, "read_file", root="runtime_data", path=str(canonical_file))
-    assert (via_runtime.text.startswith("⚠️")) is parent_forked
+        # Canonical runtime_data READ parity: an absolute path reaches the original from a
+        # forked reader too; a relative one keeps the fork's own (here absent) bytes.
+        via_runtime = _execute(reader, "read_file", root="runtime_data", path=str(canonical_file))
+        assert via_runtime.status == "ok" and not via_runtime.text.startswith("⚠️"), via_runtime.text[:300]
+        relative = str(canonical_file.relative_to(geo.canonical))
+        local = _execute(reader, "read_file", root="runtime_data", path=relative)
+        assert ("DATA_NOT_YET_CREATED" in local.text) is (pathlib.Path(reader.drive_root) != geo.canonical), local.text[:300]
 
     listed = _execute(continuation, "get_task_result", task_id=NANNY).text
     assert '"staged_output"' in listed and source["sha256"] in listed, "the receipt names the answer"
@@ -375,7 +388,8 @@ def test_a_retry_reader_stages_into_its_own_store_and_the_starter_receipt_names_
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
 
-    ctx = retry_context(tmp_path, monkeypatch, split=True)  # retry-b on a forked drive
+    ctx = retry_context(tmp_path, monkeypatch, split=True,
+                        fixed_ownership_clock=True)  # retry-b on a forked drive
     held = durable_run(ctx, owner="retry-a")
     bind_gateway(monkeypatch, TerminalGateway(output="V" * 120_000))
     wait = call(ctx, "delegate_wait", run_id=held.run_id)
@@ -574,13 +588,17 @@ def test_unknown_engine_facts_stay_absent_and_the_line_stays_bounded(tmp_path):
     assert custody.replay(tmp_path)["run-00"].engine_locator == {}
 
 
-def test_one_custody_replay_serves_every_delegated_line(tmp_path, monkeypatch):
+def test_one_custody_read_serves_every_delegated_line(tmp_path, monkeypatch):
+    from ouroboros import delegate_custody_current as current
+
     _settle(tmp_path)
-    calls = []
-    real = custody.replay
-    monkeypatch.setattr(custody, "replay", lambda *a, **k: calls.append(1) or real(*a, **k))
+    calls, replays = [], []
+    real, real_replay = current.health_runs, custody.replay
+    monkeypatch.setattr(current, "health_runs", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(custody, "replay", lambda *a, **k: replays.append(1) or real_replay(*a, **k))
     assert "OWN DELEGATED RUN ENDED" in _health(tmp_path)
     assert calls == [1]
+    assert replays == []
 
 
 def test_the_context_builder_passes_the_actual_attempt(tmp_path, monkeypatch):

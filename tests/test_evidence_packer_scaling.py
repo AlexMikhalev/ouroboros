@@ -45,7 +45,9 @@ def test_unrelated_changes_do_not_wake_swept_task(root, monkeypatch, change):
     monkeypatch.setattr(packer, "spawn_maintenance_job", lambda *a: pytest.fail("unrelated change spawned a packer"))
     assert packer.task_stamps(root, "packed") == before
     assert packer.changed_tasks(root) == []
-    assert not unit.tick(root, REPO)
+    assert unit.tick(root, REPO)
+    unit._thread.join(10)
+    assert not unit._thread.is_alive()
 
 
 @pytest.mark.parametrize("blocker", ["money", "delivery"])
@@ -97,7 +99,9 @@ def test_money_and_deliveries_read_once_for_all_tasks(root, monkeypatch, operati
     monkeypatch.setattr(usage_store, "_connect", connect)
     monkeypatch.setattr(utils, "read_json_dict", read)
     if operation == "tick":
-        assert not unit.tick(root, REPO)
+        assert unit.tick(root, REPO)
+        unit._thread.join(10)
+        assert not unit._thread.is_alive()
     else:
         getattr(packer, operation)(root)
     queries = [sql for sql in statements if "FROM attempts" in sql and sql.startswith("SELECT")]

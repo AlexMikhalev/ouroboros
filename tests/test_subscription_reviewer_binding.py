@@ -67,10 +67,9 @@ def test_plan_fit_excludes_only_the_small_account_of_same_model(accounts):
     from ouroboros.tools.plan_review_runtime import plan_slot_fit
 
     slots = _slots()
-    accepted, rejected, error = plan_slot_fit(slots, prompt_chars=1_200_000, quorum=1)
+    accepted, rejected = plan_slot_fit(slots, prompt_chars=1_200_000)
     assert [slot.slot_id for slot in accepted] == ["review-b"]
     assert [row["slot_id"] for row in rejected] == ["review-a"]
-    assert not error
 
 
 def test_retrieving_seat_sizing_uses_frozen_role_pin_and_not_main(accounts):

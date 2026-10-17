@@ -4,12 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from ouroboros import task_pacing as pacing, usage_accounting as accounting
+from ouroboros.settings_integrity import task_settings_snapshot
 from tests._usage_store_testing import ledger_rows
 
 
@@ -75,7 +77,8 @@ def test_request_override_does_not_inherit_another_limits_provenance(root):
 def _run_task_scoped(root, monkeypatch, scoped):
     from ouroboros.agent import OuroborosAgent
 
-    monkeypatch.setattr("ouroboros.subagent_runtime.apply_task_start_settings_or_disclose", lambda *_: None)
+    monkeypatch.setattr("ouroboros.subagent_runtime.apply_task_start_settings_or_disclose",
+                        lambda *_: task_settings_snapshot({}, os.environ))
     monkeypatch.setattr("ouroboros.model_wait.task_model_wait_scope", lambda **_: nullcontext())
     host = SimpleNamespace(env=SimpleNamespace(drive_root=root), _emit_live_log=lambda *_: None,
                            _event_queue=None, _handle_task_scoped=scoped)
@@ -247,7 +250,7 @@ def delivered_tool(name, ident, *, duration=None, error=False):
             "args_for_log": {}, "result_meta": {"duration_ms": duration}}
 
 
-@pytest.mark.parametrize("mode", ["intrinsic", "deadline", "cost"])
+@pytest.mark.parametrize("mode", ["deadline", "cost"])
 def test_real_note_transport_keeps_counts_measured_time_and_open_spend(root, monkeypatch, mode):
     from ouroboros import loop, loop_tool_execution
 
@@ -267,13 +270,12 @@ def test_real_note_transport_keeps_counts_measured_time_and_open_spend(root, mon
     ], messages, trace, lambda *_: None, tools=tools)
     monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda _q, _id, _logs, payload: checkpoints.append(payload))
     monkeypatch.setattr(loop, "_loop_tree_accounting", lambda **_: None)
-    monkeypatch.setattr(pacing, "get_pacing_interval_sec", lambda: 600)
     def inject():
         if mode == "cost":
             return loop._maybe_inject_cost_budget_milestone(messages, tools,
                 budget_remaining_usd=100, accumulated_usage=usage,
                 cost_ceiling=pacing.CostCeiling(state="active", ceiling_usd=2))
-        return loop._maybe_inject_time_budget_milestone(messages, tools, round_idx=7, accumulated_usage=usage)
+        return loop._maybe_inject_time_budget_milestone(messages, tools, accumulated_usage=usage)
 
     scope = accounting.UsageScope(drive_root=root, task_id="a", root_task_id="a", global_limit_usd=100)
     with accounting.usage_scope(scope):
@@ -311,6 +313,24 @@ def test_real_note_transport_keeps_counts_measured_time_and_open_spend(root, mon
         assert json.loads(rendered) == facts
         monkeypatch.setattr(accounting, "usage_breakdown", lambda *_a, **_kw: pytest.fail("read before next milestone"))
         assert not inject()
+
+
+def test_no_time_bound_means_no_periodic_pacing_note_at_any_elapsed_time(root, monkeypatch):
+    """#1748 negative witness: the 10-minute [PACING] note is gone. Without an explicit
+    deadline or execution budget no time notice fires however long the task runs; the
+    facts line carries elapsed time every round instead."""
+    from ouroboros import loop
+
+    checkpoints, messages = [], []
+    monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda _q, _id, _logs, payload: checkpoints.append(payload))
+    for elapsed in (601, 3601, 7201):
+        started = (datetime.now(timezone.utc) - timedelta(seconds=elapsed)).isoformat()
+        ctx = SimpleNamespace(task_id="a", drive_root=root, task_metadata={"started_at": started},
+                              _accumulated_usage={"cost": 1.0}, task_contract={})
+        assert loop._maybe_inject_time_budget_milestone(
+            messages, SimpleNamespace(_ctx=ctx), accumulated_usage={"cost": 1.0}) is False
+    assert messages == [] and checkpoints == []
+    assert not hasattr(pacing, "build_intrinsic_pacing_note")
 
 
 def test_unknown_duration_and_unavailable_ledger_do_not_erase_the_note(root, monkeypatch):

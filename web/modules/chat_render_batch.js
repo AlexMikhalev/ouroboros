@@ -70,7 +70,10 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
             const host = statusHost && noteText && (error || incomplete || approximate) ? statusHost : root;
             if (note.parentNode !== host) host.appendChild(note);
             note.classList.toggle('chat-history-status', host === statusHost);
-            const buttonHidden = migrating || (!error && !snapshot.canOlder && !(coverage.horizonGap && !snapshot.canNewer) && !hydrating);
+            // A grown room's exhausted chain offers the way on (it rebases to the present); a chain a navigation
+            // began ends at its older end: ↓ is the way to the present.
+            const buttonHidden = migrating || (!error && !snapshot.canOlder
+                && !(coverage.horizonGap && !snapshot.away) && !hydrating);
             const fields = [
                 [button, { textContent: hydrating ? 'Loading saved history…' : loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load more history',
@@ -293,7 +296,8 @@ export function syncLiveCardToggle(record) {
     const text = expanded ? 'Hide details' : 'Show details';
     const ariaExpanded = expanded ? 'true' : 'false';
     if (record.toggleEl.textContent !== text) record.toggleEl.textContent = text;
-    if (record.summaryButtonEl?.getAttribute('aria-expanded') !== ariaExpanded) {
+    // A Main portal's summary is content, not a disclosure (work_portal.js): it states no expanded state.
+    if (record.root.dataset.portal !== '1' && record.summaryButtonEl?.getAttribute('aria-expanded') !== ariaExpanded) {
         record.summaryButtonEl?.setAttribute('aria-expanded', ariaExpanded);
     }
 }
@@ -653,7 +657,9 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
             if (!isRendered(node)) return false;
             const currentOffset = node.getBoundingClientRect().top
                 - messagesDiv.getBoundingClientRect().top;
-            messagesDiv.scrollTop += currentOffset - offset;
+            // A node still in place leaves the feed alone: even a write of the
+            // same scrollTop stops a scroll the engine animates (WebKit's End).
+            if (currentOffset !== offset) messagesDiv.scrollTop += currentOffset - offset;
             return true;
         };
 
@@ -861,4 +867,19 @@ export function upsertToolFoldRow(record, view, ts, rawTs) {
     return updateLiveTimelineItem(record, view, {
         ts: first ? ts : '', rawTs, syntheticKey, headline: view.headline, inPlaceByKey: true,
     });
+}
+
+/** Replay places evidence at its earliest recorded call observation. A surviving start
+ *  outranks the history carrier, which can predate the calls it merely delivers. Without a
+ *  recorded start, retain an earlier carrier (legacy late-settlement placement); no missing
+ *  timestamp is reconstructed, and a partial history cannot prove the task's first call. */
+export function replayedEvidenceTs(evidence, carrierTs) {
+    let at = carrierTs, best = Infinity, observedStart = false;
+    for (const { ts, fact } of evidence?.observations || []) {
+        const time = /^\d{4}-\d\d-\d\dT/.test(ts) ? Date.parse(ts) : NaN;
+        if (Number.isFinite(time) && fact === 'started') observedStart = true;
+        if (time < best) [at, best] = [ts, time];
+    }
+    const carrier = Date.parse(carrierTs);
+    return observedStart || !Number.isFinite(carrier) || best < carrier ? at : carrierTs;
 }

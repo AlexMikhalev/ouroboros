@@ -1,11 +1,10 @@
 """Model-wait ownership, controls and execution clocks preserve the live task."""
 
 import contextvars
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import asyncio
 import json
 import queue
-import threading
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
@@ -202,6 +201,7 @@ def test_quota_wait_rejoins_call_without_replaying_tools_and_keeps_ledger(elapse
     assert len(usage["ledger_attempt_ids"]) == 2
     rows = list(events.queue)
     assert rows[0]["state"] == "waiting" and rows[-1]["state"] == "resolved"
+    assert all(row["requires_owner_action"] is False for row in rows)
     assert rows[-1]["resolution"] == "resource_available" and rows[-1]["credential_harness"] == "actual-harness"
     assert rows[-1]["revision"] > rows[0]["revision"]
     assert all(row["worker_slot_held"] is True and row["is_progress"] is False for row in rows)
@@ -315,28 +315,36 @@ def test_async_cancellation_resolves_only_its_wait_and_keeps_shared_task(live_wa
     root, transport, client, controller, events, _decide = live_wait
     transport.results = [_refusal()]
     transport.dispatch = ["not_started"]
-    entered = threading.Event()
+    entered, resolved = Future(), Future()
 
     def catalog(*_, **_kw):
-        entered.set()
+        if not entered.done():
+            entered.set_result(None)
         raise ClaudexorUnavailable("subscription_window_exhausted", "not ready")
 
+    original_put = events.put
+
+    def record(event):
+        original_put(event)
+        if event["state"] == "resolved" and not resolved.done():
+            resolved.set_result(event)
+
     monkeypatch.setattr(client, "claudexor_model_catalog", catalog)
+    monkeypatch.setattr(events, "put", record)
 
     async def run():
         task = asyncio.create_task(client.chat_async([{"role": "user", "content": "hi"}], MODEL, model_role="main"))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        terminal = None
-        while terminal is None:
-            event = await asyncio.to_thread(events.get, True, 2)
-            if event["state"] == "resolved":
-                terminal = event
+        try:
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            task.cancel()
+        terminal = await asyncio.wrap_future(resolved)
         assert terminal["resolution"] == "caller_cancelled"
 
-    asyncio.run(run())
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert not controller.closed and len(transport.accepted_operations) == 1
     assert all(row["state"] == "resolved" for row in load_task_result(root, "task-one")["model_waits"].values())
 
@@ -603,8 +611,9 @@ def test_supervisor_reordering_keeps_latest_union_clock_and_never_marks_progress
                           bridge=SimpleNamespace(push_log=pushed.append))
     first = {"type": "task_model_wait", "task_id": "task-one", "wait_id": "wait-a", "revision": 1,
              "task_attempt": 1, "state": "waiting", "is_progress": False,
+             "requires_owner_action": True,
              "quota_clock": {"revision": 1, "elapsed_sec": 0.0, "active": True, "observed_at": 100.0}}
-    last = {**first, "revision": 3, "state": "resolved",
+    last = {**first, "revision": 3, "state": "resolved", "requires_owner_action": False,
             "quota_clock": {"revision": 3, "elapsed_sec": 20.0, "active": False, "observed_at": 120.0}}
     sibling = {**first, "wait_id": "wait-b", "revision": 2}
     for event in (last, first, sibling):
@@ -612,6 +621,8 @@ def test_supervisor_reordering_keeps_latest_union_clock_and_never_marks_progress
     meta = task_queue.RUNNING["task-one"]
     assert meta["task"]["model_waits"]["wait-a"]["state"] == "resolved"
     assert meta["task"]["model_waits"]["wait-b"]["state"] == "waiting"
+    assert meta["task"]["model_waits"]["wait-a"]["requires_owner_action"] is False
+    assert meta["task"]["model_waits"]["wait-b"]["requires_owner_action"] is True
     assert projection.quota_waited_seconds(meta, 200.0) == 20.0
     assert "last_progress_at" not in meta and len(pushed) == len(persisted) == 2
 
@@ -654,6 +665,7 @@ def test_confirmed_mixed_pool_waits_and_heals_on_the_same_live_call(elapsed_quot
     assert len(usage["ledger_attempt_ids"]) == 2
     rows = list(events.queue)
     assert rows[0]["reason"] == rows[-1]["reason"] == "auth_quota"
+    assert all(row["requires_owner_action"] is False for row in rows)
     assert rows[0]["credential_profile_id"] == "", "A mixed pool has no single login target"
     assert rows[0]["quota_clock"]["active"] is True
     assert rows[-1]["state"] == "resolved" and rows[-1]["resolution"] == "resource_available"

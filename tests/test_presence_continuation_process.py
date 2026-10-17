@@ -62,13 +62,14 @@ def eventually(read, *, seconds=45):
 
 
 class Host:
-    def __init__(self, root, generation, mode, scenario="incoming"):
+    def __init__(self, root, generation, mode, scenario="incoming", *, with_event_bus=False):
         self.root, self.generation = root, generation
         self.ready = root / f"ready-{generation}.json"
         env = isolated_environment(root, ROOT)
         self.log = (root / f"host-{generation}.log").open("w")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tests.presence_lifecycle_host", str(root), str(generation), mode, scenario],
+            [sys.executable, "-m", "tests.presence_lifecycle_host", str(root), str(generation), mode, scenario,
+             *(["--fixture-event-bus"] if with_event_bus else [])],
             cwd=ROOT, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True,
         )
         self.client = None
@@ -255,8 +256,9 @@ def test_direct_exec_restart_interrupts_same_pid_author_without_replaying_effect
                  "model_calls_after_exec": len(host.inputs()), "foreign_observer_state": controller_state(original)}
         (tmp_path / "exec-facts.json").write_text(json.dumps(facts, indent=2))
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "unresolved"
+        assert interrupted.json()["disposition"] == "retained"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == before["presence_continuation"].get("outputs", [])
         for _ in range(2):
             assert host.turn().json() == initial
@@ -324,8 +326,9 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
         assert second_host.turn().json() == first
         interrupted = second_host.work(ref)
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "unresolved"
+        assert interrupted.json()["disposition"] == "retained"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == continuation["outputs"]
         assert len(second_host.inputs()) == 2  # no automatic author and no original event regeneration
         legacy = second_host.turn(version=0)
@@ -408,8 +411,10 @@ def second_park_with_late_child(host):
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
 @pytest.mark.parametrize("ending", ["complete", "stop"])
 def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path, mode, ending):
-    host = Host(tmp_path, 1, mode, "late_child")
+    host = Host(tmp_path, 1, mode, "late_child", with_event_bus=ending == "stop")
     try:
+        if ending == "stop":
+            assert host.info["event_bus_children"]
         initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         pending = host.work(ref)
@@ -443,16 +448,17 @@ def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path
     cleanup = json.loads((tmp_path / "process-cleanup-1.json").read_text())
     assert cleanup["remaining_children"] == [] and cleanup["resource_tracker_joined"]
     if ending == "stop":
-        # Releasing the pending reviewer after Stop emits a late notice through
-        # the real manager-backed event bus. Both support processes must be
-        # joined by the fixture, before the parent's group assertion runs.
+        # The bus existed before this author started. Both owned support
+        # processes must be joined before the parent's group assertion runs.
         assert cleanup["event_bus_children"] and cleanup["resource_tracker_pid"], cleanup
+        assert set(host.info["event_bus_children"]) <= set(cleanup["event_bus_children"])
 
 
 def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path):
     """Deterministically expose the stop/advisory race; never infer cleanup from HTTP 200."""
-    host = Host(tmp_path, 1, "advisory", "late_child_close_barrier")
+    host = Host(tmp_path, 1, "advisory", "late_child_close_barrier", with_event_bus=True)
     try:
+        assert host.info["event_bus_children"]
         initial, record = second_park_with_late_child(host)
         ref = initial["continuation_ref"]
         assert host.client.post("/fixture/stop", json={"task_id": ref}).status_code == 200
@@ -478,6 +484,7 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
     cleanup = json.loads((tmp_path / "process-cleanup-1.json").read_text())
     assert cleanup["remaining_children"] == [] and cleanup["resource_tracker_joined"]
     assert cleanup["event_bus_children"] and cleanup["resource_tracker_pid"], cleanup
+    assert set(host.info["event_bus_children"]) <= set(cleanup["event_bus_children"])
 
 
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
@@ -495,10 +502,10 @@ def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_pat
     second_host = Host(tmp_path, 2, mode, "late_child")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "unresolved"
         child_ref = interrupted.json().get("child_work_ref")
         assert child_ref == LATE_CHILD, interrupted.text
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert interrupted.json()["outputs"] == record["presence_continuation"]["outputs"]
         assert record["presence_continuation"]["child_work_ref"] == child_ref
         child = second_host.work(child_ref)
@@ -589,8 +596,8 @@ def test_proactive_caller_process_death_and_recycle_preserve_interrupted_work(tm
     second_host = Host(tmp_path, 2, mode, "proactive")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "unresolved"
+        assert "text" not in interrupted.json() and "output_ref" not in interrupted.json()
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert len(second_host.inputs()) == 2

@@ -4,10 +4,12 @@ tiers and the bulk-reader allowlist."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import pathlib
 import random
+import sqlite3
 import subprocess
 import sys
 from decimal import Decimal
@@ -64,23 +66,27 @@ def _min_known(values):
 
 def _assert_summaries_equal_oracle(root):
     with usage_store.read(root) as txn:
-        rows = txn.attempts()
-        stored = {(record["scope"], record["key"]) for record in txn.conn.execute(
-            "SELECT scope, key FROM summaries WHERE rows > 0")}
-        expected: dict = {}
-        for row in rows:
-            for address in _addresses(row):
-                expected.setdefault(address, []).append(row)
-        assert stored == set(expected), sorted(stored ^ set(expected))[:10]
-        for (scope, key), addressed in expected.items():
-            bucket = txn.bucket(scope, key)
-            assert bucket.render_breakdown() == oracle._breakdown_bucket(addressed), (scope, key)
-            assert bucket.render_summary() == oracle._summary(addressed), (scope, key)
-            if scope == "root":
-                assert bucket.min_cap() == _min_known(row.get("root_limit_usd") for row in addressed), key
-            if scope == "group":
-                assert bucket.min_cap() == _min_known(
-                    row.get("billing_group_limit_usd", row.get("root_limit_usd")) for row in addressed), key
+        _assert_txn_summaries_equal_oracle(txn)
+
+
+def _assert_txn_summaries_equal_oracle(txn):
+    rows = txn.attempts()
+    stored = {(record["scope"], record["key"]) for record in txn.conn.execute(
+        "SELECT scope, key FROM summaries WHERE rows > 0")}
+    expected: dict = {}
+    for row in rows:
+        for address in _addresses(row):
+            expected.setdefault(address, []).append(row)
+    assert stored == set(expected), sorted(stored ^ set(expected))[:10]
+    for (scope, key), addressed in expected.items():
+        bucket = txn.bucket(scope, key)
+        assert bucket.render_breakdown() == oracle._breakdown_bucket(addressed), (scope, key)
+        assert bucket.render_summary() == oracle._summary(addressed), (scope, key)
+        if scope == "root":
+            assert bucket.min_cap() == _min_known(row.get("root_limit_usd") for row in addressed), key
+        if scope == "group":
+            assert bucket.min_cap() == _min_known(
+                row.get("billing_group_limit_usd", row.get("root_limit_usd")) for row in addressed), key
 
 
 def _money(rng):
@@ -179,17 +185,44 @@ def _random_history(rng, attempts):
         yield step
 
 
-@pytest.mark.parametrize("seed", range(12))
-def test_every_summary_equals_the_frozen_fold_over_its_addressed_attempts(root, seed):
+def _summary_history(seed):
     rng = random.Random(seed)
     # Imported aggregates first: weight multiplies counts, never cash or tokens.
-    write_compacted_journal(root, [
+    groups = [
         {"attempt_id": f"fold-{index}", "task_id": rng.choice(["t1", "t2"]), "root_task_id": rng.choice(["r1", "r2"]),
          "model": "m1", "provider": "openai", "category": "task", "source": "old", "pricing_known": True,
          "folded_attempt_count": rng.randrange(1, 40), "cost_usd": str(_money(rng)), "cost_final": True,
          "reservation_upper_bound_usd": "1.5", "prompt_tokens": rng.randrange(0, 900),
-         **({"root_limit_usd": "9"} if index % 2 else {})} for index in range(3)])
-    for step in _random_history(rng, 70):
+         **({"root_limit_usd": "9"} if index % 2 else {})} for index in range(3)]
+    return groups, tuple(_random_history(rng, 70))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_every_summary_equals_the_frozen_fold_over_its_addressed_attempts(root, seed):
+    groups, history = _summary_history(seed)
+    write_compacted_journal(root, groups)
+    # Import the actual compacted journal, then keep every transition and SQL
+    # round trip without fsyncing a disk transaction for each generated step.
+    with contextlib.closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.row_factory = sqlite3.Row
+        with usage_store.read(root) as imported:
+            imported.conn.backup(conn)
+        for step in history:
+            conn.execute("BEGIN IMMEDIATE")
+            txn = usage_store.Txn(conn, root, write=True)
+            txn.write(step, txn.attempt(step["attempt_id"]))
+            txn.commit()
+        # A fresh transaction reads persisted SQL values, not the writer's buckets.
+        _assert_txn_summaries_equal_oracle(usage_store.Txn(conn, root, write=False))
+
+
+@pytest.mark.parametrize("seed", [0, 5, 11])
+def test_generated_summary_histories_survive_durable_commits_and_reopen(root, seed):
+    # All transition endings and one-shot kinds occur in these histories;
+    # the complete 12-seed fold above retains the larger arithmetic population.
+    groups, history = _summary_history(seed)
+    write_compacted_journal(root, groups)
+    for step in history:
         with usage_store.hold(root) as txn:
             txn.write(step, txn.attempt(step["attempt_id"]))
     _assert_summaries_equal_oracle(root)
@@ -273,6 +306,8 @@ def test_a_recovery_that_raced_a_settlement_leaves_it_authoritative(root):
 
 
 def test_one_shots_compare_identity_not_payload(root):
+    from ouroboros.task_results import write_task_result
+    write_task_result(root, "r", "running", root_task_id="r")  # the session's real root
     first = ua.record_subscription_session("session", drive_root=root, route="r", model="first",
                                            task_id="t", root_task_id="r", spend_usd=1.0)
     before = ledger_rows(root)

@@ -44,7 +44,8 @@ def dispatch_accepted_restart(bridge, text: str, *, callback=None, **message) ->
     def reply(body, status=""):
         bridge.activate_update_transport(message)
         send_with_budget(message["chat_id"], body, role="system", system_type="command_reply",
-                         **host_operation_reply_kwargs(message.get("accepted_source_ref"), status))
+                         **host_operation_reply_kwargs(message.get("accepted_source_ref"), status,
+                                                       str(message.get("client_message_id") or "")))
 
     identity = {key: message[key] for key in ("source", "user_id", "chat_id")}
     action = callback(text, **identity, reply=reply,
@@ -367,6 +368,15 @@ def execute_panic_stop(
         attempt("services", lambda: kill_all_services(data_dir, request_only=True))
         attempt("companions", lambda: panic_kill_all(request_only=True))
         attempt("restart-successor", stop_restart_successor)
+        # One more bounded request attempt: every live member of the installation scope
+        # (marker, recorded task groups, the engine's recorded runs) by re-measured identity,
+        # excluding this server, its launcher and pid 1; a restart successor carries the
+        # marker and is one more owned stop. The durable pending record is written first, so
+        # whatever this process cannot finish before the hard exit is completed by the
+        # launcher or the next start. Never a condition for the exit, never a wait.
+        from ouroboros.process_scope import panic_scope_census
+
+        attempt("scope-census", lambda: panic_scope_census(data_dir))
         children = multiprocessing.active_children()
         for child in children:
             attempt(f"child-{child.pid}", lambda child=child: kill_worker_tree(

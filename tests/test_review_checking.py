@@ -114,16 +114,17 @@ def test_a_failed_capture_keeps_the_recoverable_copy_and_names_the_gap(author, t
     assert evidence["status"] == "capture_failed" and area.exists()
 
 
-def test_evidence_over_the_bound_keeps_the_copy(author, tmp_path, monkeypatch):
+def test_reviewer_evidence_ignores_the_investigation_bound(author, tmp_path, monkeypatch):
     data = tmp_path / "data"
-    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 4)
+    monkeypatch.setattr(rc, "EVIDENCE_RETAIN_BYTES", 4)  # investigations' bound; it never binds a reviewer
     source = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
     area = pathlib.Path(rc.prepare_seat_area(data, "task", "op-1", source))
     (area / rc.EVIDENCE_DIRNAME).mkdir()
     (area / rc.EVIDENCE_DIRNAME / "big.log").write_text("more than four bytes")
     evidence = rc.capture_seat_evidence(data, "task", "op-1", release=True)
-    assert evidence["status"] == "partial" and evidence["gaps"][0]["reason"] == "evidence_budget_exceeded"
-    assert area.exists() and evidence["area"] == str(area)
+    assert evidence["status"] == "retained" and evidence["gaps"] == []
+    retained = pathlib.Path(evidence["evidence_dir"]) / "files" / rc.EVIDENCE_DIRNAME / "big.log"
+    assert retained.read_text() == "more than four bytes" and not area.exists()
 
 
 def test_a_worktree_subject_freezes_the_live_tree_once(author, tmp_path):
@@ -187,6 +188,39 @@ def test_an_ordinary_folder_is_one_retained_view_with_links_modes_and_empty_dirs
     assert evidence["changed"] == ["result.txt"] and [f["path"] for f in evidence["files"]] == ["result.txt"]
 
 
+@pytest.mark.parametrize("link_times_supported", [False, True])
+def test_directory_link_delta_compares_only_copyable_times(tmp_path, monkeypatch, link_times_supported):
+    folder, data = tmp_path / "plain", tmp_path / "data"
+    folder.mkdir()
+    (folder / "target").write_bytes(b"original")
+    for name in ("unchanged", "retargeted"):
+        (folder / name).symlink_to("target")
+    source = rc.freeze_checking_source(folder, data_root=data)
+    area = pathlib.Path(rc.prepare_seat_area(data, "task", "op-1", source))
+    (area / "retargeted").unlink()
+    (area / "retargeted").symlink_to("different-target")
+    supported = os.supports_follow_symlinks - {os.utime}
+    monkeypatch.setattr(os, "supports_follow_symlinks", supported | {os.utime} if link_times_supported else supported)
+    lstat = pathlib.Path.lstat
+
+    def changed_link_time(path):
+        info = lstat(path)
+        if path.parent == area and path.name in {"unchanged", "retargeted"}:
+            # Deterministic copy-time drift, independent of the host's timestamp resolution.
+            before = lstat(pathlib.Path(source["view"]) / path.name)
+            return SimpleNamespace(st_mode=info.st_mode, st_mtime_ns=before.st_mtime_ns + 1_000_000_000)
+        return info
+
+    monkeypatch.setattr(pathlib.Path, "lstat", changed_link_time)
+    evidence = rc.capture_seat_evidence(data, "task", "op-1", release=True)
+    assert evidence["status"] == "retained" and evidence["gaps"] == []
+    assert evidence["changed"] == (["retargeted", "unchanged"] if link_times_supported else ["retargeted"])
+    assert evidence["files"] == []  # links stay typed metadata, never dereferenced
+    change = evidence["entries"]["retargeted"]
+    assert change["before"]["target"] == "target" and change["after"]["target"] == "different-target"
+    assert ("mtime_ns" in change["after"]) is link_times_supported
+
+
 def test_a_payload_copy_must_carry_the_reviewed_hash(tmp_path):
     folder = tmp_path / "skill"
     folder.mkdir()
@@ -218,9 +252,9 @@ def test_a_thread_refresh_keeps_frozen_index_and_parent_without_synthetic_commit
     (author / "f.txt").write_text("A staged\nround two\n")
     _git(author, "add", "f.txt")
     second = rc.freeze_checking_source(author, data_root=data, subject=rc.SUBJECT_INDEX)
-    with pytest.raises(rc.CheckingAreaUnavailable, match="quiescent"):
+    with pytest.raises(rc.CheckingAreaUnavailable, match="no complete evidence capture that permits a refresh"):
         rc.thread_seat_area(data, "task", "plan_review:t1", second, operation_id="turn-2")
-    # This synchronous test owns all writers; capture acknowledges quiescence.
+    # This synchronous test owns all writers; its capture is granted the refresh permission.
     retained = rc.capture_seat_evidence(data, "task", "turn-1", release=True)
     assert retained["refresh_safe"] and area.is_dir()
     with pytest.raises(rc.CheckingAreaUnavailable, match="same thread operation"):

@@ -15,6 +15,7 @@ from ouroboros import delegate_custody as dc
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
 from tests.test_owner_continue import NONCE, _interrupted
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -248,8 +249,8 @@ def test_live_held_continue_resume_selects_same_successor_and_assigns_it(tmp_pat
     assert resumed["ok"] and resumed["selection"] == "budget_hold_released", resumed
     assert next(row for row in workers.PENDING if row["id"] == successor_id) is successor
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         active_capacity=True, in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         active_capacity=True, in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == [successor_id]
     assert workers.RUNNING[successor_id]["task"]["id"] == successor_id

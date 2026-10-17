@@ -65,12 +65,14 @@ def _quiet_probe(monkeypatch):
 
     monkeypatch.setattr(daemon_mod, "ensure_owned_gateway",
                         lambda **_k: SimpleNamespace(close=lambda: None), raising=False)
+    monkeypatch.setattr(daemon_mod, "read_owned_gateway",  # the loop exit attaches only
+                        lambda **_k: SimpleNamespace(close=lambda: None), raising=False)
     monkeypatch.setattr(
         progress_mod, "bounded_poll",
         lambda _gw, _run, _sec, **_k: {"summary": {"state": "running"}, "lastSeq": 1},
     )
     released = []
-    monkeypatch.setattr(custody, "release_task_runs", lambda root, tid: released.append(tid))
+    monkeypatch.setattr(custody, "release_task_runs", lambda root, tid, **_k: released.append(tid))
     yield released
 
 

@@ -377,7 +377,7 @@ export function renderSettingsPage() {
                 <section class="settings-panel" data-settings-panel="behavior">
                     <div class="form-section">
                         <h3>Review Enforcement</h3>
-                        <div class="settings-section-copy"><code>Advisory</code> keeps review visible but non-blocking. <code>Blocking</code> stops commits and reviewed-skill activation when critical findings remain unresolved.</div>
+                        <div class="settings-section-copy"><code>Advisory</code> keeps review visible but non-blocking. <code>Blocking</code> stops commits and reviewed-skill activation when critical findings remain unresolved, outside Cyber Pro Access.</div>
                         <div class="settings-effort-card">
                             <label>Enforcement Mode</label>
                             <input id="s-review-enforcement" type="hidden" value="advisory">
@@ -395,7 +395,7 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Task Result Review</h3>
-                        <div class="settings-section-copy">Auto and Required run the root-owned review panel for queued/headless work and substantive direct results. Pure conversation and routing controls are skipped. Once review applies, both follow the selected Advisory or Blocking policy.</div>
+                        <div class="settings-section-copy">Auto reviews a result when Ouroboros requests it. Required also reviews material actually produced or observed effects. Off starts no new task-result review, including manual or historical requests; already running reviews can still return feedback. Waiting works in every access mode; Cyber feedback remains advisory.</div>
                         <div class="settings-effort-card">
                             <label>Task Result Review</label>
                             <input id="s-task-review-mode" type="hidden" value="auto">
@@ -412,7 +412,7 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Max Review Cycles</h3>
-                        <div class="settings-section-copy">Limits paid review waves, including dispatched technical failures: plan and task review per task, commit review per root task, and skill review per root task or manual snapshot. The last review still permits author corrections within ordinary task limits; explicit task-local author limits remain separate. Collection and exact replay are free. Advisory allows an explicit decision after receiving feedback or a disclosed unavailable result; Blocking still requires reviewer approval. <code>&infin;</code> removes the count cap, while deadlines, budgets and lifecycle limits still apply.</div>
+                        <div class="settings-section-copy">Limits paid review waves, including dispatched technical failures: plan and task review per task, commit review per root task, and skill review per root task or manual snapshot. The last review still permits author corrections within ordinary task limits; explicit task-local author limits remain separate. Collection and exact replay are free. Advisory allows an explicit decision after receiving feedback or a disclosed unavailable result; Blocking still requires reviewer approval outside Cyber Pro. <code>&infin;</code> removes the count cap, while deadlines, budgets and lifecycle limits still apply.</div>
                         <div class="settings-effort-card">
                             <label>Max Review Cycles</label>
                             <input id="s-review-max-cycles" type="hidden" value="2">
@@ -437,7 +437,7 @@ export function renderSettingsPage() {
                             <code>Light</code> blocks repo self-modification but allows reviewed + enabled skills to run.
                             <code>Advanced</code> is the default &mdash; self-modify the evolutionary layer; protected core/contract/release files stay guarded by the shared runtime-mode policy.
                             <code>Pro</code> can edit protected core/contract/release surfaces, but commits still go through the normal review gate; Advanced remains limited to the evolutionary layer.
-                            <code>Cyber Pro</code> grants the full host and configuration authority, including credentials, models, Supervisor configuration and protected rewrites. Review scope and enforcement stay owner-controlled. Review Enforcement remains independent, so <code>Blocking</code> stays available in Cyber Pro.
+                            <code>Cyber Pro</code> grants the full host and configuration authority, including credentials, models, Supervisor configuration and protected rewrites. Review still runs and the Review Enforcement choice is kept, but review findings do not block actions in Cyber Pro: they are evidence for Ouroboros, which decides.
                             <br><strong>Human controlled:</strong> desktop builds ask the launcher for native confirmation before saving a mode change.
                             Web/Docker sessions save mode changes through the owner endpoint; the new mode takes effect after restart.
                         </div>
@@ -939,6 +939,19 @@ export function renderSettingsPage() {
                                 <label for="s-extra-ca-bundle">Extra CA bundle (PEM)</label>
                                 <input id="s-extra-ca-bundle" placeholder="/path/to/extra-ca.pem" class="ui-control" name="s-extra-ca-bundle" type="text" aria-describedby="s-extra-ca-bundle-help">
                                 <div class="settings-inline-note ui-field-help" id="s-extra-ca-bundle-help">Absolute or <code>~</code>-prefixed path to a PEM file on the machine that runs Ouroboros (its own filesystem, not the device showing this page). Leave empty unless a provider fails with a certificate error.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <h3>Main Interface</h3>
+                        <div class="settings-section-copy">The page this Ouroboros serves at its own address. Chats, tasks, files, settings, onboarding, skill widgets and the API keep working with every choice. Applies at the next restart.</div>
+                        <div class="form-row">
+                            <div class="form-field ui-field">
+                                <label for="s-ui-dir">Interface directory</label>
+                                <input id="s-ui-dir" placeholder="Empty for built-in, none, or /path/to/interface" class="ui-control" name="s-ui-dir" type="text" spellcheck="false" aria-describedby="s-ui-dir-help s-ui-dir-applied">
+                                <div class="settings-inline-note ui-field-help" id="s-ui-dir-help">Empty: the built-in interface. <code>none</code>: no main page, for an interface hosted separately behind the same address. Otherwise an absolute or <code>~</code>-prefixed path, on the machine that runs Ouroboros, to a trusted directory with its own <code>index.html</code>; an invalid path or missing entrypoint keeps the built-in interface and says why below. File permissions still need to allow the server to read the selected files. After the restart the built-in page reloads into the new choice; a page from a directory or another host refreshes itself and only reconnects. To return to the built-in interface, clear this field (from any interface, or in <code>settings.json</code> while Ouroboros is stopped), restart, and reopen the Ouroboros address. An <code>OUROBOROS_UI_DIR</code> environment value shows here until a choice is saved; a saved choice, empty included, wins.</div>
+                                <div class="settings-inline-status" id="s-ui-dir-applied" role="status" aria-live="polite" hidden></div>
                             </div>
                         </div>
                     </div>

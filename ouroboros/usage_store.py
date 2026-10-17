@@ -592,8 +592,10 @@ class Txn:
             raise UsageAccountingError(f"conflicting settled-row identity: {attempt_id}")
         return self.attempt(attempt_id)
 
-    def commit(self) -> None:
+    def commit(self, *, wait_sec: Optional[float] = None) -> None:
         if not self.committed:
+            if wait_sec is not None:
+                self.conn.execute(f"PRAGMA busy_timeout = {max(0, int(wait_sec * 1000))}")
             _commit(self.conn)
             self.committed = True
 
@@ -619,7 +621,9 @@ def _commit(conn: sqlite3.Connection) -> None:
         _core.commit(conn)
     except sqlite3.OperationalError as exc:
         if _busy(exc):
-            raise UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention") from exc
+            error = UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention")
+            error.rollback_confirmed = getattr(exc, "rollback_confirmed", False)
+            raise error from exc
         raise UsageAccountingError(f"usage store commit failed: {exc}") from exc
 
 
@@ -711,7 +715,10 @@ def _typed(exc: sqlite3.Error) -> UsageAccountingError:
     (the waits' business), a damaged file is ``UsageLedgerCorrupt`` (unknown,
     never zero), anything else an ``UsageAccountingError``."""
     if isinstance(exc, sqlite3.OperationalError) and _busy(exc):
-        return UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        error = UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        if hasattr(exc, "rollback_confirmed"):
+            error.rollback_confirmed = exc.rollback_confirmed
+        return error
     if isinstance(exc, sqlite3.DatabaseError) and not isinstance(
             exc, (sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.ProgrammingError)):
         return UsageLedgerCorrupt(f"usage store unreadable: {exc}")

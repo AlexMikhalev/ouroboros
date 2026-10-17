@@ -148,7 +148,7 @@ def test_an_open_plan_review_is_stated_beside_the_child_fact() -> None:
         "review": {"status": "degraded", "acceptance_decision": {
             "status": "finalized_unaccepted", "reason": "review_skipped_deadline_reserve"}}}}
     assert _completion_verdict(reviewed, {}) == (
-        f"{TASK_CAUSE_PHRASES['review_skipped_deadline_reserve'][:-1]} · {_CHILD_CLAUSE} · "
+        f"{_CHILD_CLAUSE} · {TASK_CAUSE_PHRASES['review_skipped_deadline_reserve'][:-1]} · "
         f"{TASK_CAUSE_PHRASES['terminal_plan_review_open']}.")
 
 
@@ -230,7 +230,7 @@ def test_the_event_and_the_row_render_one_reason_line_over_the_shared_fixture() 
     fixture = (pathlib.Path(__file__).resolve().parents[1]
                / "web" / "tests" / "fixtures" / "outcome_phase_parity.json")
     cases = json.loads(fixture.read_text(encoding="utf-8"))["cases"]
-    asserted = [case for case in cases if case.get("acceptance_clause")]
+    asserted = [case for case in cases if "acceptance_clause" in case]
     assert len(asserted) >= 5, "the fixture lost its cause-line cases"
     for case in asserted:
         record, clause = case["record"], case["acceptance_clause"]

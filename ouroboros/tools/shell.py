@@ -531,7 +531,7 @@ def _run_shell(
         result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected, meta=process_meta), cmd)
         return _disclose_output_audit_failure(ctx, result, audit_error)
     except OwnerPauseRefused as exc:
-        return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+        return _publish_tool_result(ctx, launch_refusal_result(exc))
     except subprocess.TimeoutExpired:
         _publish_unfinished_process_facts(ctx, _command_start_ts, timed_out=True)
         # Timeout-created scratch still needs its exclusion fingerprint.
@@ -697,11 +697,12 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("run_command", {
             "name": "run_command",
             "description": (
-                "Run a bounded foreground command in an allowed cwd; returns stdout+stderr and the resolved cwd. "
-                "cmd MUST be an array of strings, never one shell string. A builtin as cmd[0] (cd, export, ...) "
-                "is refused: use cwd= or [\"sh\", \"-c\", \"cd x && a | b\"] (also for pipes/chaining). "
+                "Run a bounded foreground command in an allowed cwd; returns stdout+stderr and resolved cwd. "
+                "cmd MUST be a string array, not one shell string. A builtin as cmd[0] (cd, export, ...) "
+                "is refused: use cwd= or [\"sh\", \"-c\", \"cd x && a | b\"] (also pipes/chaining). "
                 "A background child (&, nohup) is no service: holding stdout/stderr it stalls the call until "
-                "timeout_sec, and once the call returns nothing tracks it (use start_service). "
+                "timeout_sec; it ends with this task (local POSIX runs only; start_service keep_alive=true "
+                "outlives the task). "
                 "Prefer read_file, search_code/query_code, write_file/edit_text to cat/head/sed, grep/find, redirects."
             ),
             "parameters": {"type": "object", "properties": {

@@ -220,7 +220,7 @@ def index_tier(root: pathlib.Path) -> str:
     return store.TIER_ENFORCED if kernel_file_locks_enforced(root / "state" / store.LOCK_NAME) else store.TIER_NAME
 
 
-def _index_valid(path: pathlib.Path, tier: str) -> bool:
+def _index_valid(path: pathlib.Path, tier: str, *, wait_sec: float = INDEX_WAIT_SEC) -> bool:
     identity = store.file_identity(path)
     if identity is None:
         return False
@@ -234,9 +234,13 @@ def _index_valid(path: pathlib.Path, tier: str) -> bool:
     if store.header_tier(path, _APPLICATION_ID) != tier:
         return False
     try:
-        with contextlib.closing(store.connect(path, tier, wait_sec=INDEX_WAIT_SEC)) as conn:
+        with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
             ok = conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
             version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    except sqlite3.OperationalError as exc:
+        if store.busy(exc):
+            raise store.StoreBusy("evidence index validation busy", reason="contention") from exc
+        return False
     except sqlite3.Error:
         return False
     valid = ok and version is not None and version[0] == str(INDEX_SCHEMA_VERSION)
@@ -278,13 +282,18 @@ def _rebuild_index(root: pathlib.Path, path: pathlib.Path, tier: str) -> None:
     store.fsync_directory(path.parent)
 
 @contextlib.contextmanager
-def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_SEC) -> Iterator[sqlite3.Connection]:
+def open_index(root: Any, *, write: bool = False, wait_sec: float = INDEX_WAIT_SEC,
+               rebuild: bool = True) -> Iterator[sqlite3.Connection]:
     """One transaction on the index cache under the name lock; a missing, damaged or
-    other-version cache is rebuilt from the sidecars first. ``store.StoreBusy`` on contention."""
+    other-version cache is rebuilt from the sidecars first. ``rebuild=False`` is
+    advisory discovery: unavailable cache raises instead of walking all sidecars.
+    ``store.StoreBusy`` on contention."""
     root = pathlib.Path(root)
     path, tier = packs_dir(root) / INDEX_NAME, index_tier(root)
     with store.name_lock(root, INDEX_LOCK_NAME, timeout_sec=wait_sec):
-        if not _index_valid(path, tier):
+        if not _index_valid(path, tier, wait_sec=wait_sec):
+            if not rebuild:
+                raise sqlite3.DatabaseError("evidence index requires reconstruction")
             _rebuild_index(root, path, tier)
         with contextlib.closing(store.connect(path, tier, wait_sec=wait_sec)) as conn:
             with store.transaction(conn, write=write):
@@ -380,8 +389,12 @@ def read_loose_gzip(path: pathlib.Path, max_bytes: Optional[int] = None) -> byte
     return raw
 
 
-def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_bytes: Optional[int] = None) -> bytes:
-    """Verified loose bytes, then every pack placement, then admissible retained roots."""
+def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_bytes: Optional[int] = None,
+               admit: Optional[Callable[[pathlib.Path], None]] = None) -> bytes:
+    """Verified loose bytes, then every pack placement, then admissible retained roots.
+
+    ``admit`` (optional) sees each loose or pack file before it is opened; what it
+    raises propagates, so a refusal never becomes a miss, corruption or fallback."""
     root = pathlib.Path(root)
     sha256, kind, size = blob_ref_fields(ref)
     if expected_kind is not None and kind != expected_kind:
@@ -391,6 +404,8 @@ def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_
     failure: Optional[Exception] = None
     for candidate in _blob_roots(root, ref, sha256, kind):
         loose = candidate / "observability" / "blobs" / f"{sha256}.{kind}.gz"
+        if admit is not None:
+            admit(loose)
         try:
             raw = read_loose_gzip(loose, max_bytes)
             if size in (-1, len(raw)) and hashlib.sha256(raw).hexdigest() == sha256:
@@ -408,6 +423,8 @@ def blob_bytes(root: Any, ref: Any, *, expected_kind: Optional[str] = None, max_
             failure = exc
             continue
         for located in placements:
+            if admit is not None:
+                admit(located[0])
             try:
                 if max_bytes is not None and int(located[1]["size"]) > max_bytes:
                     raise ValueError("blob exceeds byte limit")
@@ -590,8 +607,8 @@ def pending_restore_bytes(root: Any) -> int:
 
 
 def settlement_obligations(root: Any, *, txn: Optional[store.Txn] = None, cache: Optional[dict] = None) -> dict:
-    """Read every non-receipt set once, indexed by all recorded task owners.
-    Reuse for a candidate pass or fresh unlink census; task-local rows form its revision key."""
+    """Read every set once but the declared ``obligations.RECORD_SETS`` (an undeclared stored set owes too), indexed
+    by all recorded task owners. Reuse for a candidate pass or fresh unlink census; task-local rows form its revision key."""
     from ouroboros import obligations
 
     if txn is None:
@@ -601,8 +618,7 @@ def settlement_obligations(root: Any, *, txn: Optional[store.Txn] = None, cache:
     if cache is not None and cache.get("revision") == revision:
         return cache["rows"]
     by_task: dict = {}
-    names = set(obligations.BOOT_SETS) | set(store.FLAG_COLUMNS) | set(txn.set_names())
-    for name in sorted(names - set(obligations.RECEIPT_SETS)):
+    for name in sorted((set(obligations.DUTY_SETS) | set(txn.set_names())) - set(obligations.RECORD_SETS)):
         for identity, entry in obligations.members_in(txn, name).items():
             owners = {str(identity)} | {str(f.get("task_id") or "") for f in
                                       (entry, entry.get("custody") or {}, entry.get("request") or {})}
@@ -663,8 +679,9 @@ def task_settlement_facts(root: Any, task_id: str, *, obligation_rows: Optional[
     }
 
 
-def settlement_external(root: Any) -> dict:
-    """One money query and one outbox read for every task in a pass; None stays unknown."""
+def settlement_external(root: Any, *, timeout_sec: Optional[float] = None) -> dict:
+    """One money query and outbox read per pass. A bounded advisory read propagates
+    unavailability to defer discovery; ordinary child reads keep unknown as None."""
     from ouroboros import usage_store
     from ouroboros.usage_ledger import LEDGER_REL
     from supervisor.terminal_delivery import pending_deliveries
@@ -673,15 +690,20 @@ def settlement_external(root: Any) -> dict:
     money = set()
     if (root / usage_store.STORE_REL).exists() or (root / LEDGER_REL).exists():
         try:
-            with usage_store.hold(root, write=False, migrate=False) as txn:
+            with usage_store.hold(root, write=False, migrate=False,
+                                  **({"timeout_sec": timeout_sec} if timeout_sec is not None else {})) as txn:
                 money = {row[0] for row in txn.conn.execute(
                     "SELECT DISTINCT task_id FROM attempts WHERE kind='attempt' "
                     "AND state IN ('reserved','dispatched','unresolved')")}
         except Exception:
+            if timeout_sec is not None:
+                raise
             money = None
     try:
         delivery = {str(event.get("task_id") or "") for event in pending_deliveries(root, strict=True)}
     except Exception:
+        if timeout_sec is not None:
+            raise
         delivery = None
     return {"money": money, "delivery": delivery}
 
@@ -789,7 +811,11 @@ def _member_source_bytes(root: pathlib.Path, task_id: str, member: Dict[str, Any
 
 
 def write_pack(root: Any, task_id: str, generation: int, members: List[Dict[str, Any]]) -> Tuple[pathlib.Path, Dict[str, Any]]:
-    """Pack + sidecar to temp names, fsync both, publish the pack, then the sidecar LAST."""
+    """Pack + sidecar to temp names, fsync both, publish the pack, then the sidecar LAST. Checkpoints lead
+    (the sidecar's prefix rule), then blobs smallest first by ``(size, sha256)``: in one stream a small
+    response or error decodes from a short prefix; the sidecar's offsets stay the readers' only map."""
+    members = sorted(members, key=lambda m: (0, 0, "", "") if m["kind"] == CHECKPOINT
+                     else (1, int(m["size"]), m["sha256"], m["kind"]))
     root, directory = pathlib.Path(root), packs_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
     pack_path, sidecar_path = directory / pack_name(task_id, generation), directory / sidecar_name(task_id, generation)
@@ -948,7 +974,8 @@ def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list
     already = {_member_key(m) for s in generations for m in s["members"]}
     members = loose_members(root, task_id)
     fresh = [m for m in members if _member_key(m) not in already]
-    report: Dict[str, Any] = {"task_id": str(task_id), "generation": None, "members": 0, "raw": 0, "packed": 0}
+    report: Dict[str, Any] = {"task_id": str(task_id), "generation": None, "members": 0, "raw": 0, "packed": 0,
+                              "verified_bytes": 0}
     if not fresh and not any(m["source"].is_file() for m in members):
         return report  # nothing can be unlinked: do not decompress historical generations
     if fresh:
@@ -965,10 +992,12 @@ def pack_task(root: Any, task_id: str, *, keep_shas: set, listing: Optional[list
         pack_path = packs_dir(root) / pack_name(task_id, sidecar["generation"])
         verify_pack(pack_path, sidecar)  # from disk, EVERY member, before any unlink
         index_upsert(root, pack_path, {**sidecar, "verified_at": utc_now_iso()})
+        report["verified_bytes"] += int(sidecar["raw_total"])
     write_unpacker(root)
     report.update(unlink_loose(root, task_id, generations, keep_shas=keep_shas, revision=revision,
                                sweep=sweep, members=members))
-    record_storage_pack(root, phase="packed", **report)
+    if report["members"] or report["unlinked"]:  # a row records production, never a re-visit
+        record_storage_pack(root, phase="packed", **report)
     return report
 
 
@@ -989,7 +1018,8 @@ def archive_usage_segments(root: Any) -> Dict[str, int]:
                     digest.update(chunk)
                     size += len(chunk)
                     writer.write(chunk)
-            with open(tmp, "rb") as handle:
+            # Windows FlushFileBuffers requires a handle opened for writing.
+            with open(tmp, "rb+") as handle:
                 os.fsync(handle.fileno())
         _atomic_overwrite(target, compress)
         atomic_write_json(meta, {"name": source.name, "size": size, "sha256": digest.hexdigest()}, fsync=True)

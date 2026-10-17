@@ -119,14 +119,6 @@ def repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[1]
 
 
-def _string_constants(tree: ast.AST) -> Iterator[str]:
-    """Every string literal, including the literal parts of f-strings (an
-    ``ast.JoinedStr`` holds its constant runs as ``ast.Constant`` children)."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            yield node.value
-
-
 def _sources(root: pathlib.Path) -> Iterator[tuple[str, ast.AST]]:
     for path in sorted((root / "ouroboros").rglob("*.py")):
         rel = path.relative_to(root).as_posix()
@@ -138,54 +130,27 @@ def _sources(root: pathlib.Path) -> Iterator[tuple[str, ast.AST]]:
             continue
 
 
-def harvested_identifiers(root: pathlib.Path | None = None) -> tuple[str, ...]:
-    """Every ``⚠️ IDENTIFIER`` a producer can emit, harvested from the tree."""
-    found: set[str] = set(_INTERPOLATED_IDENTIFIERS)
-    for _rel, tree in _sources(root or repo_root()):
-        for value in _string_constants(tree):
-            found.update(match.group(1) for match in _MARKER_RE.finditer(value))
-    return tuple(sorted(found))
+class ProducerHarvest(NamedTuple):
+    """Immutable facts from one candidate read; no source buffers or ASTs escape."""
+
+    identifiers: tuple[str, ...]
+    native_codes: tuple[str, ...]
+    native_pairs: tuple[tuple[str, str], ...]
 
 
-def harvested_native_codes(root: pathlib.Path | None = None) -> tuple[str, ...]:
-    """Every ``ToolResult`` code a producer publishes NATIVELY, whether or not its
-    text is a literal.
+def harvest_producers(root: pathlib.Path | None = None) -> ProducerHarvest:
+    """Read the current tree once for all three independent coverage oracles.
 
-    ``harvested_native_pairs`` sees only producers whose first line is statically
-    known, so a producer that assembles its text at runtime — every extension and
-    MCP terminal, the protected-write refusal, the binding-error family — was
-    invisible to the differential: its code could change status without a single
-    corpus case moving. This is the set the coverage assertion closes over.
+    Tests may share this value for a session. There is deliberately no path-keyed
+    cache: a new call, including a golden-generation call, reads the live tree.
     """
-    found: set[str] = set()
-    for _rel, tree in _sources(root or repo_root()):
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name not in _NATIVE_CALLS:
-                continue
-            code = ""
-            for keyword in node.keywords:
-                if keyword.arg == "code" and isinstance(keyword.value, ast.Constant):
-                    code = str(keyword.value.value)
-            for arg in node.args:
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and _CODE_RE.fullmatch(arg.value):
-                    code = code or arg.value
-            if code:
-                found.add(code)
-    return tuple(sorted(found))
-
-
-def harvested_native_pairs(root: pathlib.Path | None = None) -> tuple[tuple[str, str], ...]:
-    """Every ``(code, identifier)`` pair a producer publishes with a statically
-    known text. This is the axis the text corpus cannot see: where a producer's
-    code and its own first line disagree, the cutover changes the answer even
-    though no identifier moved."""
+    identifiers: set[str] = set(_INTERPOLATED_IDENTIFIERS)
+    codes: set[str] = set()
     pairs: set[tuple[str, str]] = set()
     for _rel, tree in _sources(root or repo_root()):
         for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                identifiers.update(match.group(1) for match in _MARKER_RE.finditer(node.value))
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
@@ -210,9 +175,26 @@ def harvested_native_pairs(root: pathlib.Path | None = None) -> tuple[tuple[str,
                         text = literal
                         break
             marker = _MARKER_RE.match(text.strip())
+            if code:
+                codes.add(code)
             if code and marker:
                 pairs.add((code, marker.group(1)))
-    return tuple(sorted(pairs))
+    return ProducerHarvest(tuple(sorted(identifiers)), tuple(sorted(codes)), tuple(sorted(pairs)))
+
+
+def harvested_identifiers(root: pathlib.Path | None = None) -> tuple[str, ...]:
+    """Every ``⚠️ IDENTIFIER`` a producer can emit, harvested from the tree."""
+    return harvest_producers(root).identifiers
+
+
+def harvested_native_codes(root: pathlib.Path | None = None) -> tuple[str, ...]:
+    """Native codes, including producers whose assembled text has no literal marker."""
+    return harvest_producers(root).native_codes
+
+
+def harvested_native_pairs(root: pathlib.Path | None = None) -> tuple[tuple[str, str], ...]:
+    """Native code/identifier pairs; a producer's code and text may disagree."""
+    return harvest_producers(root).native_pairs
 
 
 def _leading_literal(node: ast.AST) -> str:
@@ -310,7 +292,11 @@ _PRODUCER_SHAPES = (
     # tools/registry_core.py::ToolRegistry._execute_legacy_text (owner Batch4): the
     # owner paused the tree before this call's launch handoff; nothing ran.
     ("owner_pause_not_started", "knowledge_read", "⚠️ OWNER_PAUSE_NOT_STARTED: NOT STARTED — the owner paused this task tree before this operation was launched. Nothing ran; it may be issued again after Resume. (owner_pause)", "OWNER_PAUSE_NOT_STARTED", (("owner_pause_not_started", True),)),
+    # Historical emitted wording stays in the legacy corpus; current producers
+    # preserve phase/cause separately and are exercised by live round-trip tests.
     ("owner_launch_authority_unavailable", "knowledge_read", "⚠️ OWNER_LAUNCH_AUTHORITY_UNAVAILABLE: NOT STARTED — launch authority is temporarily unavailable. Nothing was submitted; retry when authority is available.", "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE", (("owner_pause_not_started", True),)),
+    ("owner_operation_refused", "knowledge_read", "⚠️ OWNER_OPERATION_REFUSED: This submission was refused; the invocation may already have effects. Reconcile those effects before repeating the call. (owner_pause)", "OWNER_OPERATION_REFUSED", (("owner_pause_not_started", False),)),
+    ("tool_admission_unavailable", "knowledge_read", "⚠️ TOOL_ADMISSION_UNAVAILABLE: NOT STARTED — the tool handler was not entered. (store_unavailable; launch reason: permission_denied)", "TOOL_ADMISSION_UNAVAILABLE", (("owner_pause_not_started", True), ("launch_reason", "permission_denied"))),
     ("stop_action_conflict", "cancel_task", "⚠️ STOP_ACTION_CONFLICT: stop_action_conflict; nothing was changed.", "STOP_ACTION_CONFLICT", ()),
     ("resource_policy", "read_file", "⚠️ RESOURCE_POLICY_BLOCKED: task_contract.resource_policy protects 'blackbox'.", "RESOURCE_POLICY_BLOCKED", ()),
     ("cognitive_redirect", "write_file", "⚠️ COGNITIVE_TOOL_REQUIRED: cognitive memory is not written via 'write_file'.", "COGNITIVE_TOOL_REQUIRED", ()),
@@ -472,12 +458,14 @@ _PRODUCER_SHAPES = (
 )
 
 
-def build_corpus(root: pathlib.Path | None = None) -> tuple[Case, ...]:
-    """Every classified input, in a stable order."""
-    root = root or repo_root()
+def build_corpus(
+    root: pathlib.Path | None = None, *, producers: ProducerHarvest | None = None,
+) -> tuple[Case, ...]:
+    """Every classified input, in a stable order; optionally reuse one explicit read."""
+    producers = harvest_producers(root) if producers is None else producers
     cases: list[Case] = []
 
-    for identifier in harvested_identifiers(root):
+    for identifier in producers.identifiers:
         for shape, detail in _DETAIL_SHAPES:
             cases.append(Case(
                 key=f"ident:{identifier}:{shape}",
@@ -527,7 +515,7 @@ def build_corpus(root: pathlib.Path | None = None) -> tuple[Case, ...]:
             text=envelope + body,
         ))
 
-    for code, identifier in harvested_native_pairs(root):
+    for code, identifier in producers.native_pairs:
         cases.append(Case(
             key=f"native:{code}:{identifier}",
             subject=f"native:{code}:{identifier}",

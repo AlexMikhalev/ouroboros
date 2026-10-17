@@ -51,6 +51,23 @@ RETAIN_OWNER_PAUSE = "saved_owner_pause_park"
 HOLD_SAVED_SLEEP_RECOVERY = "saved_sleep_recovery"
 
 
+def exact_pause_row(task: Any) -> bool:
+    """Whether a queue row carries an exact saved-pause locator, not an admission grant."""
+    pause = task.get("_budget_pause") if isinstance(task, dict) else None
+    # Marker writers stamp a boolean; a truthy string or malformed marker
+    # keeps ordinary drain/parent-interrupted settlement.
+    return isinstance(pause, dict) and pause.get("exact_continuation") is True
+
+
+def conserve_unreadable_pending(task: dict) -> bool:
+    """Live and restored saved work survives a failed result observation under its own hold."""
+    from ouroboros.project_admission import hold_unreadable_result
+
+    # Saved pauses already have their locator/hold; Project work needs
+    # its verification hold installed by the unreadable-result rule.
+    return bool(exact_pause_row(task) or hold_unreadable_result(task) or task.get("_owner_wait_resume"))
+
+
 def saved_sleep_hold_reason(result_root: Any, *, owner_restart: bool = False) -> str:
     """Read the existing stop carriers; an ordinary recovery asserts no owner action.
 
@@ -341,7 +358,8 @@ def retain_sleep_checkpoint(root: pathlib.Path, task_id: str, attempt: int, *, d
     pause = {"pause_id": pause_id, "pause_generation": int(old.get("pause_generation") or 0) + 1,
              "task_attempt": attempt, "state": STATE_PAUSED, "reason": "sleep", "rail": RAIL_MODEL_SLEEP,
              "scope": "task", "source_ref": source, "retained_owner_wait_id": wait["wait_id"],
-             "sleep": wait["sleep"], "sleep_seen": state.get("seen") or [],
+             "sleep": {**wait["sleep"], "interaction_seen": state.get("sleep_interaction_seen") or {}},
+             "sleep_seen": state.get("seen") or [],
              "execution_drive_root": wait.get("execution_drive_root"), "started_at": wait.get("started_at"),
              "paused_at": float(wait.get("sleep_started_at") or time.time()),
              "paused_duration_sec": float(wait.get("budget_paused_sec") or 0),
@@ -804,7 +822,7 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
     host already owes, or no usable source keeps the ordinary interrupted path.
     """
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
-    from supervisor.events_budget import HOLD_SAVED_WORK, hold_budget_row
+    from supervisor.events_budget import HOLD_SAVED_WORK, continue_consumed_resume_selection, hold_budget_row
 
     returning = set((transaction or {}).get("return_ids") or [])
     rows = [row for row in rows or () if isinstance(row, dict)]
@@ -828,6 +846,8 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
             fold_consumed_resume(row, root)  # a consumption whose notification died with the process
             fold_running_clock(task, row)  # confirmed waits newer than the saved source (#939)
             stamp_execution_handoff(task, row)
+            if auto:
+                continue_consumed_resume_selection(task, stored.get("budget_pause") or {})
         except Exception:
             log.warning("Saved work of %s unreadable at restore; ordinary interrupted path", task_id, exc_info=True)
             continue

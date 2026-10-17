@@ -28,7 +28,7 @@ from ouroboros.task_status import (
     wait_for_effective_tasks,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.utils import truncate_review_artifact, utc_now_iso
+from ouroboros.utils import truncate_review_artifact
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 
 
@@ -300,26 +300,11 @@ def _get_task_result(
             status="unavailable", code="LEGACY_UNAVAILABLE",
             text=f"Task {task_id}: unknown or not yet registered",
         ))
-    from ouroboros.project_sources import CLONE_TIMEOUT_SEC
-    from ouroboros.routing_wait import is_emitted_admission_stub
+    from ouroboros.promotion_intent import promotion_intent_notice
 
-    if is_emitted_admission_stub(data):
-        # #1160: a promote whose admission the supervisor has not confirmed yet is
-        # PENDING, not unknown. Answering "unknown or not yet registered" read as
-        # "your promote never happened" and invited the second promote that mints a
-        # duplicate root; the id stays reserved and this read is the reconciliation.
-        since = str((data.get("promotion_admission") or {}).get("emitted_at") or "")
-        return _publish_tool_result(ctx, ToolResult(
-            status="unavailable", code="LEGACY_UNAVAILABLE",
-            text=(
-                f"Task {task_id}: admission pending since {since} (now {utc_now_iso()}) - the promote "
-                "was emitted and this row carries no supervisor receipt yet, neither scheduled nor "
-                f"refused. Read get_task_result({task_id}) again before promoting the same work: a "
-                f"promote that prepares a source can stay pending for up to {CLONE_TIMEOUT_SEC // 60} "
-                "minutes. A new promote is a NEW task id; this row does not forbid one, and whether "
-                "this one is lost is yours to judge from the two times above."
-            ),
-        ))
+    notice = promotion_intent_notice(task_id, data)
+    if notice:
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=notice))
     if presence_reentry_sha256:
         from ouroboros.presence_continuation import reentry_source_projection
 
@@ -934,7 +919,8 @@ def _await_as_sleep(ctx: ToolContext, mode: str, **chosen: Any) -> str:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR", text=f"⚠️ TOOL_ARG_ERROR (await_messages): {exc}",
             meta={"operation_outcome": "completed_no_effect"}))
-    return json.dumps(outcome, ensure_ascii=False)
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK",
+        text=json.dumps(outcome, ensure_ascii=False), meta={"sleep_question_notice": bool(outcome.get("questions"))}))
 
 
 def await_messages_entry() -> ToolEntry:
@@ -962,8 +948,12 @@ def await_messages_entry() -> ToolEntry:
             "own, the exit of your own `services` (warm only: the start each has now; a replaced, stopped "
             "or lost one wakes you as unknown, never as success), and/or `wake_at`/`wake_after_sec`; with "
             "nothing selected any addressed mail wakes you. The "
-            "owner's messages and controls always wake you; unselected mail waits unread. Warm keeps your "
-            "process and browser (a pooled slot is lent meanwhile); you choose which fits. A source that is "
+            "owner's messages, controls and typed descendant escalations always wake you; other unselected mail waits unread. Warm keeps your "
+            "process and browser (a pooled slot is lent meanwhile). Cold saves your continuation and releases "
+            "the process only after the body accepts custody of your bound external runs; local services "
+            "still need warm sleep. A new question from any ordinary run you own also wakes you, even "
+            "if not selected; reviewer runs stay with their panel. Question sources are delivered, not answered. "
+            "Retaining an external writer retains its project lane. A source that is "
             "already ready answers at once. Sleep does not count as execution time; an explicit deadline "
             "still applies. A settled task is not a successful one: read its result when you wake."
         ),
@@ -974,7 +964,7 @@ def await_messages_entry() -> ToolEntry:
             "mode": {"type": "string", "enum": ["in_slot", "warm", "cold"],
                      "description": "in_slot (default) holds your slot for timeout_sec; warm/cold is a sleep."},
             "senders": {"type": "array", "items": {"type": "string"},
-                        "description": "Sleep: task ids whose mail wakes you (others' mail stays unread)."},
+                        "description": "Sleep: task ids whose ordinary mail wakes you; owner input and descendant escalations bypass this filter."},
             "tasks": {"type": "array", "items": {"type": "string"},
                       "description": "Sleep: task ids whose terminal (any settled status) wakes you."},
             "runs": {"type": "array", "items": {"type": "string"},

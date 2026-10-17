@@ -936,9 +936,9 @@ def _matching_projection(drive_root: Any, call: Dict[str, Any]) -> Dict[str, Any
     return payload
 
 
-# sanitize_tool_args_for_log's transport markers — the ONE list. The reflection
-# pointer's cut detection reads the same names, so a marker shape added there is
-# never missed here (and the colons keep a literal value like "_truncated" out).
+# sanitize_tool_args_for_log's transport markers — the ONE list, so a marker shape
+# added there is never missed here (the colons keep a literal value like
+# "_truncated" out).
 SANITIZER_OMISSION_MARKERS = (
     "<TRUNCATED:", '"_depth_limit":', '"_truncated":', '"_repr":', '"_error":',
 )
@@ -1190,6 +1190,10 @@ def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -
                 observation.st_mtime_ns, observation.st_ctime_ns)
     from ouroboros.store import open_for_read  # a held store file keeps its locks (no new descriptor to close)
 
+    # Reject pipes/devices before opening: the descriptor check alone comes too
+    # late for a FIFO with no writer. Keep the post-open checks for path changes.
+    if source_path is not None and not stat.S_ISREG(source_path.stat().st_mode):
+        raise OSError(f"artifact source is not a regular file: {path}")
     with open_for_read(source_path) if source_path is not None else nullcontext(path) as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode):

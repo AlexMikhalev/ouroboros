@@ -16,9 +16,10 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from ouroboros.config import (
     DATA_DIR,
+    SAVED_CHOICE_SETTINGS,
     SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS,
     apply_settings_to_env as _apply_settings_to_env,
-    load_settings, resolve_port_file,
+    coerce_settings_raw, load_settings, resolve_port_file,
 )
 from ouroboros.config import ENDPOINT_AUTHORED_SETTINGS as _ENDPOINT_AUTHORED_SETTINGS
 from ouroboros.config import ENDPOINT_WRITTEN_SETTINGS as _ENDPOINT_WRITTEN_SETTINGS, ENDPOINT_WRITERS as _ENDPOINT_WRITERS
@@ -762,7 +763,8 @@ def review_pool_payload(snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, 
     try:
         if state.get("state") == "error":
             raise ValueError(str(state.get("error") or "the review pool could not be read"))
-        slots = review_pool_slots(env)
+        # The catalog's pool rows: an empty pool's Main seat is no catalog row (Settings says it).
+        slots = [slot for slot in review_pool_slots(env) if slot.subagent_id]
         handles = roster_handles(parse_configured_subagents(raw), env) if items else {}
     except ValueError as exc:
         payload["config_error"] = str(exc)
@@ -792,23 +794,20 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
 
 def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+    from ouroboros.composer_cognition import main_cognition, request_project_id, update_project_cognition
 
+    if not isinstance(body, dict):
+        return unsaved_error("JSON body must be an object.", 400)
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     from ouroboros.context_mode_compat import VALID_CONTEXT_MODES
 
     if raw_mode not in set(VALID_CONTEXT_MODES):
         return unsaved_error("'mode' must be one of: " + ", ".join(VALID_CONTEXT_MODES), 400)
     next_mode = _config.normalize_context_mode(raw_mode)
-    digest = settings_document_digest()
-    previous_mode = _config.get_owner_context_mode()
-    cyber = runtime_mode_at_least(_config.get_runtime_mode(), "cyber_pro")
-    if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
-        return unsaved_error(
-            "Context mode can only be lowered while Ouroboros is idle. "
-            "Wait until no queued or running work remains, then choose the working context.",
-            409,
-        )
+    try:
+        project_id = request_project_id(body)
+    except ValueError as exc:
+        return unsaved_error(str(exc), 400)
 
     def _set_context_mode(current: Dict[str, Any]) -> Dict[str, Any]:
         current["OUROBOROS_CONTEXT_MODE"] = next_mode
@@ -819,30 +818,26 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         return current
 
     with settings_document_mutation():
-        # Re-prove the ordinary-mode idle policy under the lock: either the queue
-        # or the previous mode may have changed while this writer waited. The
-        # digest alone cannot attest idleness. Cyber can choose the next mode
-        # during work; existing task snapshots retain their original settings.
-        previous_mode = _config.get_owner_context_mode()
-        if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
-            return unsaved_error(
-                "Context mode can only be lowered while Ouroboros is idle. "
-                "Wait until no queued or running work remains, then choose the working context.",
-                409,
-            )
-        # This endpoint IS the author of both keys, so they persist even at the shipped default.
-        # The digest binds the idle refusal above to the document this write replaces.
-        _owner_update_settings(_set_context_mode, digest,
-                               authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
-        # Same-lock projection: see api_owner_auto_grant.
-        os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
-        os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+        if project_id:
+            try:
+                old, cognition = update_project_cognition(request_drive_root(request), project_id, context_mode=next_mode)
+            except ValueError as exc:
+                return unsaved_error(str(exc), 404, code="project_unavailable")
+            previous_mode = old["context_mode"]
+        else:
+            previous_mode = main_cognition()["context_mode"]
+            digest = settings_document_digest()
+            _owner_update_settings(_set_context_mode, digest,
+                                   authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
+            os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
+            os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+            cognition = main_cognition()
     _owner_audit(
         request,
         "context_mode",
-        {"context_mode": next_mode, "previous_context_mode": previous_mode},
+        {"project_id": project_id, "context_mode": next_mode, "previous_context_mode": previous_mode},
     )
-    return JSONResponse({"ok": True, "context_mode": next_mode})
+    return JSONResponse({"ok": True, "project_id": project_id, "context_mode": next_mode, "cognition": cognition})
 
 
 @owner_write_guard
@@ -1220,6 +1215,28 @@ def _effort_range_tiers(body: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
     return body, ""
 
 
+def _network_exposure_warning(current: Dict[str, Any]) -> str:
+    """Post-save notice only; validation and persistence stay with the settings writer."""
+    try:
+        from ouroboros.server_auth import is_loopback_host
+        desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
+        desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
+        if desired_host and not is_loopback_host(desired_host) and not desired_password:
+            if _trust_nonlocal_bind_without_password_enabled():
+                return (
+                    "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD=1 allows this "
+                    "non-localhost bind without Ouroboros's internal Network Password. "
+                    "Use only behind ingress auth, VPN, private networking, or an auth proxy."
+                )
+            return (
+                "Server Bind Host is non-localhost and Network Password is empty; "
+                "after restart the app will be reachable on the network without a password."
+            )
+    except Exception:
+        pass
+    return ""
+
+
 def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
     # Everything below the write is a POST-commit step. The broad handler at the
     # bottom used to answer a failure there with "400, nothing saved" while the
@@ -1367,10 +1384,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         # A catalog save retires the former review lanes: the pool replaces them.
         if catalog_saved:
             current.pop(REVIEW_LANES_KEY, None)
-        all_changed = [
-            k for k in current
-            if str(current.get(k, "") or "") != str(old_effective_settings.get(k, "") or "")
-        ]
+        # Typed as every reader types them: a float field resent as "20" is no change from 20.0.
+        typed = coerce_settings_raw(current)
+        all_changed = [k for k in current if str(typed.get(k, "") or "") != str(old_effective_settings.get(k, "") or "")]
         if catalog_saved and str(old_effective_settings.get(REVIEW_LANES_KEY) or "").strip():
             all_changed.append(REVIEW_LANES_KEY)
         if runtime_changed:
@@ -1392,6 +1408,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         # Only an explicit Cyber context choice authors the pair; an unrelated save
         # preserves omission and cannot change a running task's captured settings.
         authored_keys = tuple(key for key in ("OUROBOROS_SAFETY_MODE",) if key in all_changed)
+        # Presence in the request is the explicit choice, even when its value
+        # equals the environment/default. An unrelated merged save is not.
+        authored_keys += tuple(key for key in body if key in SAVED_CHOICE_SETTINGS)
         if runtime_mode_at_least(current_runtime_mode, "cyber_pro") and "OUROBOROS_CONTEXT_MODE" in body:
             authored_keys += tuple(_CONTEXT_MODE_KEYS)
         _owner_write_settings(
@@ -1428,24 +1447,9 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             get_bridge().configure_from_settings(current)
         except Exception:
             pass
-        try:
-            from ouroboros.server_auth import is_loopback_host
-            desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
-            desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
-            if desired_host and not is_loopback_host(desired_host) and not desired_password:
-                if _trust_nonlocal_bind_without_password_enabled():
-                    warnings.append(
-                        "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD=1 allows this "
-                        "non-localhost bind without Ouroboros's internal Network Password. "
-                        "Use only behind ingress auth, VPN, private networking, or an auth proxy."
-                    )
-                else:
-                    warnings.append(
-                        "Server Bind Host is non-localhost and Network Password is empty; "
-                        "after restart the app will be reachable on the network without a password."
-                    )
-        except Exception:
-            pass
+        network_warning = _network_exposure_warning(current)
+        if network_warning:
+            warnings.append(network_warning)
         _repo_slug = current.get("GITHUB_REPO", "")
         _gh_token = current.get("GITHUB_TOKEN", "")
         if _gh_token and any(k in all_changed for k in ("GITHUB_REPO", "GITHUB_TOKEN")):
@@ -1472,10 +1476,10 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             # a running task keeps the config it started with, and the save says so
             # loudly instead of letting "Saved" read as "applied to the task you are
             # watching" (the reviewer-slot save at 21:56 read exactly that way).
+            # Only what the task owns waits for it: a skill reads its granted keys as saved (#1122).
             warnings.append(
-                "An agent task is running right now: it keeps the configuration it "
-                "started with (models, reviewers, subagents). The saved changes apply "
-                "from the next task."
+                "An agent task is running right now: it keeps the models, reviewers and "
+                "subagents it started with; those apply from the next task."
             )
         resp: Dict[str, Any] = {"status": "saved"}
         # A key with its own writer is skipped here, and the save says so instead of reading as applied.

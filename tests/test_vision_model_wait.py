@@ -54,7 +54,7 @@ def _install_child_fixture(mode, events_path):
             return self.detail()
 
         def detail(self):
-            pending = mode in {"pending", "cancel"} or mode == "slow" and self.polls < 8
+            pending = mode in {"pending", "cancel", "cancel_contended", "cancel_unreadable"} or mode == "slow" and self.polls < 8
             not_started = mode in {"quota", "auth", "mixed"}
             refused = not_started or mode == "field"
             problem = {"code": {"quota": "subscription_window_exhausted", "auth": "auth_required",
@@ -106,6 +106,19 @@ def _install_child_fixture(mode, events_path):
             event("custody", fields=sorted(value["custody"]), operation_id=value["custody"]["operation_id"])
 
     vision_process._private_json = record_receipt
+    if mode in {"cancel_contended", "cancel_unreadable"}:
+        real_read, refusals = Path.read_text, []
+
+        def contended_read(self, *args, **kwargs):
+            # Simulate a transient sharing refusal over intact published JSON.
+            # The retained Windows failure did not identify its actual exception;
+            # a refusal that never clears must still remain unreadable.
+            if self.name == "control.json" and self.exists() and (mode == "cancel_unreadable" or not refusals):
+                refusals.append(self)
+                raise PermissionError(13, "controlled sharing violation", str(self))
+            return real_read(self, *args, **kwargs)
+
+        Path.read_text = contended_read
     if mode in {"checkpoint_fail", "checkpoint_retry"}:
         original = vision_process._private_json
         refused_once = False
@@ -252,21 +265,31 @@ def test_real_child_reconstructs_provider_field_display_after_settlement(child_f
     assert [row["state"] for row in attempts] == ["settled"]
 
 
-def test_parent_cancel_reaches_same_live_operation(child_fixture):
+def _parent_cancel(child_fixture, mode, reason):
     state, events, _ = child_fixture
-    state["mode"] = "cancel"
+    state["mode"] = mode
 
     def cancel_after_started():
         return "cancelled" if any(row["kind"] == "poll" for row in _events(events)) else None
 
     with pytest.raises(ClaudexorModelError) as caught:
         _call(model_poll_control=cancel_after_started)
-    assert caught.value.control_reason == "cancelled"
+    assert caught.value.control_reason == reason
     assert caught.value.operation_id == "operation-exact"
     assert caught.value.physical_attempt_capture.state == "unresolved"
     rows = _events(events)
     assert len([row for row in rows if row["kind"] == "generation"]) == 1
     assert {row["operation_id"] for row in rows if row["kind"] == "cancel"} == {"operation-exact"}
+
+
+def test_parent_cancel_reaches_same_live_operation(child_fixture):
+    _parent_cancel(child_fixture, "cancel", "cancelled")
+
+
+@pytest.mark.parametrize("mode,reason", [("cancel_contended", "cancelled"),
+                                         ("cancel_unreadable", "child_control_unreadable")])
+def test_only_a_transient_control_read_refusal_still_reaches_the_cancel(child_fixture, mode, reason):
+    _parent_cancel(child_fixture, mode, reason)
 
 
 def test_dead_child_without_checkpoint_is_unknown_not_free(monkeypatch):

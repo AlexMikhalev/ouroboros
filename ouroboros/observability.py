@@ -331,16 +331,18 @@ def read_blob_ref(
     expected_kind: str = "json",
     max_bytes: int | None = None,
     raw_bytes: bool = False,
+    admit: Callable[[pathlib.Path], None] | None = None,
 ) -> Any:
     """Read and verify one content-addressed blob below this drive root (loose, else its
     evidence pack; retained child roots the ref names are tried the same way). Only a bounded
-    read (``max_bytes``) accepts a ref without a recorded size; ``raw_bytes`` returns the bytes."""
+    read (``max_bytes``) accepts a ref without a recorded size; ``raw_bytes`` returns the bytes.
+    ``admit`` sees every physical file before it is opened (``evidence_packs.blob_bytes``)."""
     from ouroboros.evidence_packs import blob_bytes, blob_ref_fields
 
     _sha256, kind, size = blob_ref_fields(ref)
     if size < 0 and max_bytes is None:
         raise ValueError("observability blob ref has no valid size")
-    raw = blob_bytes(drive_root, ref, expected_kind=expected_kind, max_bytes=max_bytes)
+    raw = blob_bytes(drive_root, ref, expected_kind=expected_kind, max_bytes=max_bytes, admit=admit)
     if raw_bytes:
         return raw
     return json.loads(raw.decode("utf-8")) if kind == "json" else raw.decode("utf-8", errors="replace")
@@ -496,6 +498,7 @@ _PUBLISHED_CHILD_REF_FIELDS = (
     "verification_ledger",
     "root_phase_checkpoint",
     "plan_review_state",
+    "plan_record",
     "artifacts",
     "artifact_bundle",
     "task_contract", "attachment_manifest", "attachment_manifest_ref",

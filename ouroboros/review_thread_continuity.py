@@ -90,11 +90,15 @@ def ensure_review_thread(
 def start_review_thread_turn(
     gateway: Any, thread_id: str, run_request: Dict[str, Any], *, idempotency_key: str,
 ) -> Dict[str, Any]:
-    """Strip run-only fields and append through the public thread pipeline."""
+    """Keep turn geometry; the thread owns its project and execution address."""
     request = {
         key: value for key, value in run_request.items()
         if key not in {"_use_thread", "_thread_id", "scope", "execution"}
     }
+    execution = run_request.get("execution") or {}
+    geometry = {key: execution[key] for key in ("workspaceKind", "scopePaths", "isolation") if key in execution}
+    if geometry:
+        request["execution"] = geometry
     return gateway.start_thread_turn(thread_id, request, idempotency_key=idempotency_key)
 
 

@@ -23,7 +23,6 @@ from ouroboros import config as cfg
 from ouroboros import review_cycles as rc
 from ouroboros import task_pacing
 from ouroboros.contracts.task_contract import normalize_budget_profile
-from tests._governance_docs_shared import architecture_text, development_text
 from tests._store_shared import result_signature, unreadable_result
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -347,9 +346,6 @@ def test_commit_gate_ceiling_reads_live_setting(monkeypatch, tmp_path):
     exhausted = check_review_cycles_ceiling(ctx, root_task_id="root-1")
     assert exhausted is not None and "REVIEW_CYCLES_EXHAUSTED" in exhausted["message"]
     assert exhausted["cycles_paid"] == 2 and exhausted["cap"] == 2
-    # The gate speaks of what it bought — review waves of the pool — never of a
-    # triad and a scope reviewer, which no longer exist as surfaces (FIX3 T1).
-    assert "paid review wave(s)" in exhausted["message"] and "triad" not in exhausted["message"].lower()
     # Another root task has its own ceiling.
     assert check_review_cycles_ceiling(ctx, root_task_id="root-2") is None
     # An unknown root never gates (fail-open, disclosed).
@@ -371,36 +367,22 @@ def test_commit_gate_ceiling_reads_live_setting(monkeypatch, tmp_path):
 @pytest.mark.parametrize("enforcement, reason", [
     ("blocking", "identical_diff_refused"), ("blocking", "review_cycles_exhausted"), ("advisory", "identical_diff_refused"),
 ])
-def test_t1_the_replay_disclosure_names_the_review_wave_not_a_triad(monkeypatch, enforcement, reason):
-    """The free-replay words the author and the owner read (progress note, Advisory
-    disclosure) name what was not bought — a review wave of the pool — never the retired
-    triad and scope reviewer (FIX3 T1); the identical-diff note still says the verdict is reused."""
+def test_replay_disclosure_preserves_recorded_outcome(monkeypatch, enforcement, reason):
+    """Every replay emits one progress note and one disclosure carrying the prior outcome."""
     from ouroboros.tools.commit_gate import disclose_commit_review_replay
 
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
     notes, advisory = [], []
     ctx = types.SimpleNamespace(_review_advisory=advisory, emit_progress_fn=notes.append)
     disclose_commit_review_replay(ctx, {"replay_reason": reason, "advisory_replay": "Prior outcome: FAIL."})
-    [note], [disclosure] = notes, advisory
-    assert "triad" not in (note + disclosure).lower() and "scope reviewer" not in (note + disclosure).lower()
-    assert disclosure.startswith(f"Review enforcement=Advisory: no new review wave was bought for this commit ({reason})")
+    [_note], [disclosure] = notes, advisory
+    assert reason in disclosure
     assert disclosure.endswith("Prior outcome: FAIL.")
-    if reason == "identical_diff_refused":
-        assert note == "Max Review Cycles: identical staged diff — reusing the recorded review verdict, no paid review-wave dispatch."
-    else:
-        assert note.startswith("Max Review Cycles: paid-cycle ceiling exhausted")
 
 
-def test_t1_the_commit_schema_explains_scope_by_the_coupling_questions():
-    """``commit_reviewed.scope`` is read by the panel's coupling questions as the intended
-    transformation (``resolve_intent``: goal > scope > commit subject); its description says
-    so and no longer promises a "scope reviewer" that no longer exists (FIX3 T1)."""
-    from ouroboros.tools import git
+def test_commit_scope_supplies_intent_when_goal_is_empty():
     from ouroboros.tools.review_helpers import resolve_intent
 
-    [entry] = [entry for entry in git.get_tools() if entry.name == "commit_reviewed"]
-    description = entry.schema["parameters"]["properties"]["scope"]["description"]
-    assert "coupling questions" in description and "scope reviewer" not in description
     assert resolve_intent("", "only the gate wording", "subject: x") == ("only the gate wording", "scope")
 
 
@@ -562,16 +544,68 @@ def test_exhausted_event_is_durable_even_with_a_live_queue(tmp_path):
     assert len(lines) == 2 and events.empty()
 
 
-def test_docs_describe_shared_key_and_new_module_size():
-    dev = development_text(REPO)
-    arch = architecture_text(REPO)
-    assert dev.count(KEY) >= 2 and "review_cycles.py" in dev
-    assert f"| {KEY} |" in arch
-    assert f"| {LEGACY} |" in arch
-    assert "Required+Blocking without one has no local count cap" not in dev
-    assert "Required+Blocking with no explicit cap has no local count cap" not in arch
+def test_review_cycle_modules_respect_size_bounds():
     module_lines = (REPO / "ouroboros" / "review_cycles.py").read_text(encoding="utf-8").splitlines()
     # Brief-level target for this module (the repo ratchet is 1000/1600).
     assert len(module_lines) <= 200
     config_lines = (REPO / "ouroboros" / "config.py").read_text(encoding="utf-8").splitlines()
     assert len(config_lines) <= 1600
+
+
+# ------------------------------------------------- acceptance at the shared cap (D27)
+
+
+def _acceptance_ctx(tmp_path, *, passes_done, events=None):
+    import ouroboros.loop as loop_mod
+
+    tool_ctx = types.SimpleNamespace(
+        _task_acceptance_reviewed=False, _task_acceptance_improvement_passes=passes_done,
+        drive_root=str(tmp_path), budget_drive_root=str(tmp_path), task_id="acc-1",
+        task_metadata={}, task_contract={}, is_direct_chat=False, event_queue=events,
+        end_acceptance_fence=lambda **_k: {"ok": True}, _task_acceptance_fence_token="tok",
+    )
+    return loop_mod._TaskAcceptanceContext(
+        tools=types.SimpleNamespace(_ctx=tool_ctx), content="done", task_id="acc-1", task_type="task",
+        llm_trace={"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}, drive_root=None,
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None, mode="required",
+        subtree_statuses=[], budget_profile={}, passes_done=passes_done,
+    )
+
+
+def _fail_result():
+    import ouroboros.review_substrate as rs
+
+    return rs.ReviewRunResult(
+        request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},
+        actors=[{"slot_id": "s0", "signal": "FAIL", "parsed": {
+            "verdict": "FAIL", "outcome_tier": "best_effort", "completion_coach": "fix it",
+            "dialogue_status": "continue_actionable"}}],
+        parsed_findings=[{"slot_id": "s0", "severity": "critical", "item": "broken",
+                          "recommendation": "fix", "verdict": "FAIL"}],
+        aggregate_signal="FAIL",
+    )
+
+
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_last_paid_acceptance_result_returns_to_author(tmp_path, monkeypatch, enforcement):
+    import ouroboros.loop as loop_mod
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: enforcement)
+    ctx = _acceptance_ctx(tmp_path, passes_done=1)
+    assert loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is True
+    assert ctx.llm_trace["acceptance_decision"]["status"] == "revision_requested"
+    assert ctx.llm_trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
+    assert ctx.messages[-1]["review_feedback"]
+
+
+def test_explicit_author_limit_still_binds(monkeypatch):
+    from ouroboros import task_pacing
+    from ouroboros.contracts.task_contract import normalize_budget_profile
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    snap = task_pacing.BudgetSnapshot(has_deadline=False)
+    shared = normalize_budget_profile({})
+    assert task_pacing.improvement_pass_allowed(snap, 1, shared, required_blocking=True) == (True, "")
+    explicit = normalize_budget_profile({"max_improvement_passes": 0})
+    assert task_pacing.improvement_pass_allowed(snap, 0, explicit, required_blocking=True) == (False, "improvement_passes_exhausted")

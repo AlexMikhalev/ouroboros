@@ -579,12 +579,16 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "artifact_relpath_invalid": (False, "gateway/tasks.py: invalid exact artifact selector; HTTP refusal, not a task terminal"),
     "invalid_action_nonce": (False, "task_cancel rejects malformed action identity; no task transition"),
     "stop_action_conflict": (False, "task_cancel refuses conflicting action replay; no task transition"),
+    "teardown_unconfirmed": (False, "gateway/tasks.py: an HTTP 202 Stop acknowledgement; the recorded intent is still being finished, never a task outcome"),
     "artifact_unavailable": (False, "gateway/task_archive.py: confined single-file read unavailable; HTTP refusal, not a task terminal"),
     "artifact_unverified": (False, "gateway/task_archive.py: single-file drift or capture verification failure; HTTP refusal, not a task terminal"),
     "upload_unavailable": (False, "gateway/files.py: a chat attachment is missing or not a regular file; HTTP 404, not a task terminal"),
     "upload_unreadable": (False, "gateway/files.py: a chat attachment's confined read failed; HTTP 503, not a task terminal"),
     "history_source_unavailable": (False, "gateway/history_paging.py: readable recent projection with explicit source gap; no task attempt was truncated"),
-    "late_answer_not_delivered": (False, "gateway/task_decision.py: a late quiz answer was recorded but its chat delivery failed (503, retry); no task attempt was truncated"),
+    "quiz_delivery_failed": (False, "gateway/task_decision.py: the answer was recorded and its delivery stays owed (503, retry); never a task terminal or trial truncation"),
+    "awaiting_recipient_read": (False, "question_answers.py: a recorded answer is in its live reader's mailbox, read pending; a delivery fact on the question, never a task terminal"),
+    "asker_not_reading": (False, "question_answers.py: the asker no longer reads, so the owed answer goes to a fresh head in its room (D8); a delivery fact, never a task terminal"),
+    "promotion_not_started": (False, "promotion_intent.py: boot reconciliation of a start_task intent proven never admitted; that separate work never ran (explicit retry), so nothing was truncated and it is never a trial root's code"),
     "migrating": (False, "gateway/_helpers.py: a write door (create, Cancel, Pause, Presence) answered 503 inside the boot import window of state/current.sqlite (retry); no task attempt was truncated"),
     "budget_pausing_no_extraction": (False, "review_verdict_extraction.py: Light verdict extraction refused while the task's exact budget pause is closing dispatch (#1196); the review row stays undispatched and the attempt is paused, not truncated"),
     "owner_pause": (False, "tools/skill_publish.py: publication tool returns its completed stages after owner Pause interrupts the formatter; the task is retained for Resume, not terminalized or scored"),
@@ -648,6 +652,12 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "task_exception": (False, "agent.py:777 the attempt ran and crashed; an honest failure"),
     "capability_profile_mismatch": (False, "control_delegation.py:81 rejected delegate call"),
     "option_index_required": (False, "gateway/task_decision.py quiz-answer HTTP 400 validation; an owner-UI refusal, never a trial rail"),
+    "action_invalid": (False, "gateway/task_decision.py rejects an unknown owner decision action (HTTP 400); no task transition"),
+    "close_payload_invalid": (False, "gateway/task_decision.py rejects answer fields or a non-quiz target for closure (HTTP 400); no task transition"),
+    "close_reason_invalid": (False, "gateway/task_decision.py refuses a closure reason that is not text or exceeds 2000 characters (HTTP 400); a blank one records the owner's standard sentence; the question remains unanswered, no task transition"),
+    "quiz_close_failed": (False, "gateway/task_decision.py closure ingress failed (HTTP 503); question delivery may remain owed, but no task attempt was truncated"),
+    "dismiss_payload_invalid": (False, "gateway/task_decision.py rejects answer fields or a non-quiz target for the owner's removal of an unknown delivery (HTTP 400); no task transition"),
+    "quiz_dismiss_failed": (False, "gateway/task_decision.py removal ingress failed (HTTP 503); the answer and its unknown delivery stay as recorded, no task attempt was truncated"),
     "delegation_rights_may_delegate": (False, "control_delegation.py explicit parent recursion-right refusal"),
     "delegation_rights_may_fan_out": (False, "control_delegation.py explicit parent fan-out refusal"),
     "delegation_rights_depth_exhausted": (False, "control_delegation.py exhausted typed depth budget refusal"),
@@ -750,6 +760,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     ),
     "runtime_missing": (False, "Betterleaks runtime availability; no task finalization"),
     "scanner_report_invalid": (False, "Publication scanner repair evidence; no task finalization"),
+    "scanner_input_invalid": (False, "skill_publish_scanner.py rejects invalid payload names, scope or timeout before scanning; recoverable publication refusal, no task finalization"),
     "task_admission_unavailable": (False, "Publication task was not admitted; no running task truncated"),
     # Issue #265: these are structured failures of one recoverable publish-tool
     # call. They return to the next LLM turn with a repair hint; none is the
@@ -769,6 +780,25 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
 }
 
 _REASON_CODE_LITERAL = re.compile(r"""reason_code(?:=|["']\s*:\s*)\s*["']([a-z0-9_]+)["']""")
+
+
+def _forwarded_reason_arguments(tree: ast.Module) -> dict[str, dict[str, int]]:
+    """Local wrappers may pass a named parameter straight into reason_code."""
+    forwarding = {}
+    for function in tree.body:
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        parameters = function.args.posonlyargs + function.args.args
+        forwarded = {
+            node.value.id for node in ast.walk(function)
+            if isinstance(node, ast.keyword) and node.arg == "reason_code"
+            and isinstance(node.value, ast.Name)
+        }
+        arguments = {parameter.arg: index for index, parameter in enumerate(parameters)
+                     if parameter.arg in forwarded}
+        if arguments:
+            forwarding[function.name] = arguments
+    return forwarding
 
 
 def _runtime_reason_code_literals() -> dict[str, str]:
@@ -793,11 +823,22 @@ def _runtime_reason_code_literals() -> dict[str, str]:
                 found.setdefault(match.group(1), f"{path.relative_to(root.parent)}:{lineno}")
         # Conditional/fallback reason values remain producers; their spelling
         # need not be adjacent to the keyword on one source line.
-        for node in ast.walk(ast.parse(source)):
+        tree = ast.parse(source)
+        forwarded = _forwarded_reason_arguments(tree)
+        for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "reason_code":
                 for code in values(node.value):
                     if code:
                         found.setdefault(code, f"{path.relative_to(root.parent)}:{node.lineno}")
+            # _answer_pending still emits an HTTP reason through _refused;
+            # extracting that helper must not make its live codes look retired.
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                for parameter, index in forwarded.get(node.func.id, {}).items():
+                    argument = (node.args[index] if index < len(node.args) else
+                                next((kw.value for kw in node.keywords if kw.arg == parameter), None))
+                    for code in values(argument):
+                        if code:
+                            found.setdefault(code, f"{path.relative_to(root.parent)}:{node.lineno}")
     for code in WIRE_REASON_CODES:
         found.setdefault(code, "ouroboros/request_wire_contract.py:WIRE_REASON_CODES")
     return found

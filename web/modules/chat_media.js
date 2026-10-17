@@ -259,6 +259,8 @@ export function createChatMedia({
             ${timeHtml}
         `;
         stampNodeTimestamp(bubble, rawTs);
+        // The row's address makes a delivered photo, file, link card or question a reply target (CONTRACTS K6).
+        if (msg.row_address) bubble.dataset.rowAddress = String(msg.row_address);
         if (msg.history_id) bubble.dataset.historyId = msg.history_id;
         if (msg.history_position) {
             bubble.dataset.historySource = msg.history_position.source;
@@ -311,7 +313,11 @@ export function createChatMedia({
         const base64 = cleanBase64(msg.file_base64);
         const raw = String(msg.download_url || '');
         let canonical = '';
-        try { canonical = taskArtifactDownloadUrl(msg.task_id, decodeURIComponent(raw.split('/').at(-1))); } catch {}
+        try {
+            const url = new URL(raw, 'https://artifact.invalid');
+            canonical = taskArtifactDownloadUrl(msg.task_id, decodeURIComponent(url.pathname.split('/').at(-1)),
+                url.searchParams.get('relpath') || '');
+        } catch {}
         const durable = raw && (raw === canonical || FILE_URL_RE.test(raw)) ? raw : '';
         return {
             base64,

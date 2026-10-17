@@ -10,6 +10,7 @@ import pytest
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_batch4_repair_compositions import _running
 from tests.test_owner_pause import _owner_park
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -122,13 +123,15 @@ def test_host_operation_bypasses_only_task_amendments_not_global_money(tmp_path,
                                     lambda: sent.append(True))
     assert not sent
     # An ID by itself cannot confer the host-only non-task authority.
-    fields = effective_billing_fields(tmp_path, task_id, {"billing_group_id": task_id})
-    assert fields["billing_group_id"] == "unavailable:" + task_id
+    with pytest.raises(ua.BillingAuthorityUnavailable) as unavailable:
+        effective_billing_fields(tmp_path, task_id, {"billing_group_id": task_id})
+    assert unavailable.value.kind == "unreadable" and unavailable.value.cause == "amendment_unreadable:ValueError"
     foreign = ua.UsageScope(drive_root=tmp_path, task_id=task_id, root_task_id=task_id,
                            non_task_operation=True, billing_group_id="bad:foreign")
-    with ua.usage_scope(foreign), pytest.raises(ua.BudgetExceeded):
+    with ua.usage_scope(foreign), pytest.raises(ua.BillingAuthorityUnavailable) as unavailable:
         ua.execute_physical_attempt(ua.AttemptRequest(model="offline", provider="offline", reservation_usd=0.1),
                                     lambda: sent.append(True))
+    assert unavailable.value.kind == "unreadable" and unavailable.value.cause == "amendment_unreadable:ValueError"
     assert not sent
 
 
@@ -231,8 +234,8 @@ def test_owner_pause_over_saved_budget_checkpoint_keeps_effect_gate_and_reopens_
     refresh_owner_pause_tree("root")
     assert queue.resume_budget_paused_task("root")["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == ["root"]
     loop_ctx, limit_ctx = _loop_ctx(tmp_path, "root")
@@ -279,8 +282,8 @@ def test_owner_pause_over_sleep_retains_sleep_source_and_explicit_resume(tmp_pat
     assert wake[0]["error"] == "sleep_wake_vetoed" and wake[0]["veto"] == "owner_pause"
     assert queue.resume_budget_paused_task("root")["ok"]
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                        in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == ["root"]
     ctx, limit = _loop_ctx(tmp_path, "root")
@@ -325,8 +328,8 @@ def test_exact_resume_never_opens_a_replacement_owner_fence(tmp_path, monkeypatc
     else:
         assert queue.resume_budget_paused_task("root")["ok"]
         sent = []
-        workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                            in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+        workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                            in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
         if stage == "assignment":
             replace_fence()
         workers.assign_tasks()

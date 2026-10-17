@@ -38,7 +38,7 @@ from tests.test_acceptance_delivery import (
     _roots,
     _tool_call,
 )
-from tests.test_plan_review_engine import _user_text
+from tests._review_substrate_shared import user_text as _user_text
 
 _OVERFLOW = {**_ACCEPTANCE_PACKET, "__immutable_core_overflow__": {"reason": "owner requirements exceed the budget"}}
 _SOURCE_PATH = re.compile(r'path="(source_handles/context_checkpoints/acceptance-packet-[0-9a-f]{64}\.json)"')

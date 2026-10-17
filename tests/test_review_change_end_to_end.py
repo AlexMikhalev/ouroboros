@@ -2,12 +2,13 @@
 
 ``review_change(root="system_repo", subject="index")`` and the commit gate's
 review-only cycle review the same staged index through the same seats, the same
-body-layer rules and the same prompt text. The ONLY difference the two doors
-may leave in a brief is the narrative line that names the wave: the gate hands
+body-layer rules and the same prompt text. The ONLY differences the two doors
+may leave in a brief are the narrative line that names the wave (the gate hands
 the reviewers the intended commit message, the operation its own wave label
-(``review_change: staged index of <root> ...``), both inside the
-``## Informational context — commit message`` block the goal section renders.
-This test pins that difference to exactly that block and nothing else.
+``review_change: staged index of <root> ...``, both inside the
+``## Informational context — commit message`` block the goal section renders)
+and the gate's own test execution exhibit, which a standalone operation has no
+fact for. This test pins the differences to exactly those blocks.
 """
 
 import hashlib
@@ -114,7 +115,13 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
     assert operation_record["verdict"]["aggregate"] == gate_record["verdict"]["aggregate"] == "PASS"
     assert (operation_record["surface"], gate_record["surface"]) == ("change", "commit_gate")
 
-    # Same brief per seat: the texts differ in the narrative wave line alone.
+    # Same brief per seat: the texts differ in the narrative wave line and in the
+    # execution exhibit of the tests the gate ran (the operation was handed none).
+    from ouroboros.preflight_receipts import execution_section
+
+    exhibit = execution_section(gate_record["preflight_execution"])
+    assert gate_record["preflight_execution"]["status"] == "passed" and exhibit
+    assert operation_record["preflight_execution"] == {"status": "unobserved"}
     by_seat = lambda briefs: {brief["slot_id"]: brief for brief in briefs}  # noqa: E731
     gate, operation = by_seat(gate_briefs), by_seat(operation_briefs)
     assert sorted(gate) == sorted(operation) == ["s1", "t1", "t2"]
@@ -123,6 +130,8 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
     for slot_id in ("t1", "t2", "s1"):
         assert gate[slot_id]["model"] == operation[slot_id]["model"]
         gate_text, operation_text = _brief_text(gate[slot_id]), _brief_text(operation[slot_id])
+        assert gate_text.count(exhibit) == 1 and exhibit not in operation_text, slot_id
+        gate_text = gate_text.replace("\n\n\n" + exhibit, "", 1)
         assert gate_text != operation_text, slot_id
         assert operation_text.count(label) == gate_text.count(COMMIT_MESSAGE) == 1, slot_id
         aligned = operation_text.replace(label, COMMIT_MESSAGE)

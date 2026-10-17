@@ -10,8 +10,27 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Iterable
+from types import MappingProxyType
 from hashlib import sha256
 from typing import Any, Dict, Mapping, Optional, Tuple
+
+
+TOOL_NAME_ALIASES = MappingProxyType({
+    "promote_chat_to_task": "start_task",
+    "ensure_project_scope": "move_to_project",
+    "steer_task": "tell_task",
+})
+
+
+def canonical_tool_name(name: str) -> str:
+    """Resolve a saved name without registering a retired callable alias."""
+    return TOOL_NAME_ALIASES.get(name, name)
+
+
+def expand_disabled_tool_names(names: Iterable[str]) -> list[str]:
+    """Retain saved restrictions and withhold their successors as well."""
+    return list(dict.fromkeys(name for old in names for name in (old, canonical_tool_name(old))))
 
 
 _BOOLEAN_RESOURCE_NAMES = frozenset({
@@ -72,7 +91,7 @@ def normalize_disabled_tools(value: Any) -> list[str]:
         name = str(item or "").strip()
         if name and name not in seen:
             seen.append(name)
-    return seen
+    return expand_disabled_tool_names(seen)
 
 
 def normalize_bool(value: Any) -> bool:
@@ -356,8 +375,9 @@ def effective_acceptance_claims(
     Ingress-contract claims win (adapter/gateway/parent-authored — already in the
     built contract); the CLOSED plan wave's frozen claims apply ONLY when ingress
     is empty. PURE: no I/O and no contract mutation — the running task contract is
-    never rebuilt mid-task; plan-frozen claims live in ``plan_review_state``
-    (``task_results.closed_plan_review_wave``) and are resolved at READ time.
+    never rebuilt mid-task; plan-selected claims live in the plan record (the latest
+    revision's ``done_when``) or, for an earlier-schema task, in a closed wave read by
+    ``plan_record.import_legacy_v2`` / the acceptance binder, and are resolved at READ time.
     Returns ``(claims, source)`` with source ``ingress_contract`` |
     ``plan_review`` | ``""`` (no claims anywhere)."""
     task = task if isinstance(task, Mapping) else {}

@@ -5,7 +5,7 @@ episode) reads the repository with its own tools, so the commit gate asks it
 BOTH questions in one brief: ``## Part 1 — The change`` (the same preamble,
 calibration, anti-pattern guard, checklist, governance tiers, intent, history
 and staged change every packet seat is given) and ``## Part 2 — Coupling
-questions`` (the whole-repository reviewer's role frame, the eight coupling
+questions`` (the whole-repository reviewer's role frame, the coupling
 questions, the required-source manifest the seat is OWED, the repository index
 it navigates with, and the coupling history of this subject), closed by
 ``## Answer format`` — contract B (``triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT``).
@@ -99,7 +99,9 @@ class BriefIntent:
     object instead of parallel arguments a caller can silently mis-order.
     ``owner_words`` is the host-attested section of the owner's words that
     caused the work (``owner_words_text``); ``coupling_history`` is this
-    subject's prior ``per_question.coupling`` rounds.
+    subject's prior ``per_question.coupling`` rounds; ``preflight_execution`` the
+    wave's frozen test execution exhibit text (``preflight_receipts``) and
+    ``diff_pulse`` the subject's growth since its contribution base.
     """
 
     goal: str = ""
@@ -108,6 +110,8 @@ class BriefIntent:
     review_history: Optional[list | dict] = None
     coupling_history: Optional[list] = None
     owner_words: str = ""
+    preflight_execution: str = ""
+    diff_pulse: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,13 +188,15 @@ def first_send_bound(brief: BriefInputs) -> int:
     return review_native_transcript_bound(brief.model, output_reserve=output_reserve, **binding)
 
 
-def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str) -> int:
+def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str,
+                      required_ref: Optional[Dict[str, Any]] = None) -> int:
     """The wire size of this seat's first send, measured the way it is priced.
 
     A native row is measured by the same builder the paid ledger reserves
-    against (``native_first_send_chars``: work order, message objects and the
-    inspection schemas that ride every call). This canonical serialization is
-    a layout measure, not physical token usage. A route whose schemas cannot be projected here is
+    against (``native_first_send_chars``: work order, message objects with the
+    declared manifest reference ``required_ref``, and the inspection schemas that
+    ride every call). This canonical serialization is a layout measure, not
+    physical token usage. A route whose schemas cannot be projected here is
     measured as the brief plus this build's send overhead rather than left
     unmeasured.
     """
@@ -204,7 +210,8 @@ def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: st
         return native_first_send_chars(
             str(repo_dir), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
             slot_id=brief.slot_id, session_task=brief_text,
-            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id)
+            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id,
+            required_sources_ref=required_ref)
     except (OSError, ValueError, RuntimeError):
         return len(brief_text) + _NATIVE_SEND_OVERHEAD_ESTIMATE_CHARS
 
@@ -527,7 +534,8 @@ def build_retrieving_brief(
 
         checklist_section = _load_checklist_section(layer)
     intent = brief.intent
-    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words)
+    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words,
+                                      intent.preflight_execution, intent.diff_pulse)
     scope_section = build_scope_section(intent.scope)
     rebuttal_section = build_rebuttal_section(intent.review_rebuttal)
     history_section = review_history_with_obligations(intent.review_history, drive_root=brief.drive_root,
@@ -603,7 +611,8 @@ def build_retrieving_brief(
         delivery.update(diff_delivery="retrieved_by_reviewer", diff_reason=unavailable)
     else:
         diff_slot = _diff_slot(brief, header, body, "")
-        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0])
+        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0],
+                                     required_ref if required_rows is not None else None)
         # Choose inline versus paged delivery using the initial layout hint;
         # a delegated session keeps its own conservative inline ceiling.
         from ouroboros.review_native_episode import native_landing_at
@@ -628,7 +637,8 @@ def build_retrieving_brief(
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)
     if delivery.get("diff_delivery") == "paged":
-        delivery["first_send_chars"] = _first_send_chars(repo_dir, brief, task_text)
+        delivery["first_send_chars"] = _first_send_chars(
+            repo_dir, brief, task_text, required_ref if required_rows is not None else None)
 
     manifest: Dict[str, Any] = {
         "delivery": AGENTIC_RETRIEVAL_DELIVERY,

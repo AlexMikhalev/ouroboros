@@ -1,6 +1,7 @@
 """#939: can a grant consumption land after the supervisor's idle-timeout
 decision captured ``job["meta"]`` and before the reaper's kill, so ``_enqueue_retry`` stamps a
-stale clock? And is the reaper's successor dispatchable at all after a consumed Resume?
+stale clock? And (#1729) does the retry after a consumed Resume continue without that spent grant,
+while an unconsumed grant returns the same id to its exact pause instead of a retry?
 
 Supported producers: API ingress, saved work, stop/boot, owner Pause through the agent handler,
 owner Resume grant, ``assign_tasks`` (with ``_tick_parked_work``), the real ``run_llm_loop`` and
@@ -58,7 +59,8 @@ def test_reaper_window_after_an_idle_decision_over_a_held_resume(host, monkeypat
     pause = _working_then_paused(host, monkeypatch, clock, budget, fresh)
     resumed = _granted_after_capacity(host, monkeypatch, clock, pause)
     process = _DeadProcess()
-    workers.WORKERS[0].proc = process
+    # A new handle's birth is unknown, never the prior affirmed process's.
+    workers.WORKERS[0].proc, workers.WORKERS[0].process_birth = process, ""
     jobs = stdqueue.Queue()
     monkeypatch.setattr(queue, "_reap_queue", jobs)
     monkeypatch.setattr(queue, "_ensure_reaper_started", lambda: None)
@@ -141,10 +143,17 @@ def test_reaper_window_after_an_idle_decision_over_a_held_resume(host, monkeypat
                 facts.setdefault("spent_after_dispatch", {})[task_id] = execution_elapsed_seconds(
                     workers.RUNNING[task_id], time.time())
     print('REAPER_FACTS', facts)
-    assert facts['successor_count'] == 1
-    assert not facts['successor_dispatched'] and not facts['dispatched_after_owner_resume']
-    assert facts['successor_hold_after_assign']['reason'] == 'malformed_resume_identity'
-    assert facts['owner_resume_successor']['error'] == 'pause_record_missing'
-    assert facts['owner_resume_original']['error'] == 'task_not_pending'
-    assert facts['stamped_handoff_sec'] == (pytest.approx(truth) if budget else None)
     assert facts["will_retry"] is True and facts["terminal_reason"] == "idle_timeout"
+    if order == "killed_before_consumption":
+        # The grant was never consumed: the SAME id returns to its exact pause (revoked under its
+        # own identity, as a worker death there does), nothing is retried, the owner may Resume again.
+        assert facts['successor_count'] == 0 and facts['pause_state_after_worker'] == budget_pause.STATE_PAUSED
+        [held] = [task for task in host.pending if task["id"] == "held"]
+        assert held["_budget_pause"]["checkpoint"]["pause_id"] == pause["pause_id"]
+        assert budget_pause.budget_pause_row(host.root, "held")["grant"]["revoked_at"]
+        return
+    # The consumed grant is spent authority: the successor continues the resumed work and dispatches.
+    assert facts['successor_count'] == 1 and facts['successor_carriers']['_budget_pause_resume'] is False
+    assert facts['successor_working_boundary'] == 'resumed'
+    assert facts['successor_dispatched'] == [facts['successor_id']] and facts['successor_hold_after_assign'] is None
+    assert facts['stamped_handoff_sec'] == (pytest.approx(truth) if budget else None)

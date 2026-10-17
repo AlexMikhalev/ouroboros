@@ -118,6 +118,12 @@ def test_successor_receipt_invalidates_for_different_same_length_content(tmp_pat
     read_whole(ctx, first)
     assert wait_result(ctx, held.run_id)["output_delivery"]["consumed"]
     gateway.output = "B" * 120000
+    # A new exact body observation invalidates cached output; reading an already
+    # retained complete result itself no longer waits for a remote refresh.
+    from ouroboros import delegate_collection, delegate_custody_current
+    root = custody.custody_root(ctx)
+    assert delegate_collection.observe_run(root, delegate_custody_current.run(root, held.run_id),
+                                           gateway.get_run(held.run_id))
     second = wait_result(ctx, held.run_id)["output_delivery"]
     assert not second["consumed"]
     assert second["artifact"]["bytes"] == first["bytes"]

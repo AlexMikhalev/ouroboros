@@ -8,6 +8,7 @@ that owes it. The owner-held sets (``custody_open``, closing custody receipts of
 sets, ``unknowns``, witnesses) are rows of the ``obligations`` table. ``members``
 reads both halves in one transaction; no set is a file any more (the importer
 reads the old set files once, the exporter writes them back for an older body).
+Every set owes work except the declared ``RECORD_SETS``, which are kept facts.
 """
 from __future__ import annotations
 
@@ -19,10 +20,81 @@ from ouroboros.store import StoreError
 
 BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs",
              "promotions", "custody_open", "pending_drives", "upgrade_notices", "unknowns",
-             "pause_notices", "pause_notice_receipts")
-RECEIPT_SETS = ("upgrade_notices", "pause_notice_receipts")  # chat receipts: no result derives them
+             "pause_notices", "pause_notice_receipts", "owner_questions")
+# Owed work: a task with a row here is not settled (the evidence packer's predicate). A stored set declared
+# in neither tuple owes too (an older or newer body's duty, an imported set file): an unknown duty never packs.
+DUTY_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs", "promotions", "custody_open",
+             "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses", "owner_questions",
+             "late_review_marks")
+# Kept facts, never owed: chat notice receipts, custody marks, definite start refusals.
+RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused")
 ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exactly when the store is
 _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "drive_root")
+
+
+def review_collection_pending(row: dict) -> bool:
+    """Conservative body-only selection for free acceptance collection, not a packer duty.
+    Live controllers remain candidates; actor death needs no body rewrite. Closed
+    legacy panels acquire no notice unless their own matching receipt already owes it."""
+    from ouroboros.review_projection import _actor_pending
+
+    operations = row.get("review_operations", {})
+    projection = row.get("review_projection", {})
+    if operations is None:
+        operations = {}
+    if projection is None:
+        projection = {}
+    if not isinstance(operations, dict) or not isinstance(projection, dict):
+        return True
+    pointed = set()
+    for entry in operations.values():
+        if not isinstance(entry, dict):
+            return True
+        key = entry.get("retry_key")
+        if key is not None and not isinstance(key, str):
+            return True
+        pointed.add(key)
+        if entry.get("control_only") or entry.get("surface") != "task_acceptance":
+            continue
+        state = entry.get("state")
+        if not isinstance(state, str) or state not in {"closed", "collected", "preparation_unknown", "preparation_refused"}:
+            return True
+    panels, receipts = projection.get("panels", []), projection.get("late_notice_receipts", {})
+    if panels is None:
+        panels = []
+    if receipts is None:
+        receipts = {}
+    if not isinstance(panels, list) or not isinstance(receipts, dict):
+        return True
+    for panel in panels:
+        if not isinstance(panel, dict):
+            return True
+        if panel.get("surface") != "task_acceptance" or panel.get("authority") != "host_root":
+            continue
+        actors = panel.get("actors") or []
+        if not isinstance(actors, list) or any(not isinstance(actor, dict) for actor in actors):
+            return True
+        try:
+            pending = any(_actor_pending(actor) for actor in actors)
+        except TypeError:  # a malformed actor state cannot certify settled work
+            return True
+        if pending:
+            return True  # only the retained source can identify its retry key
+        late = panel.get("late_settlement")
+        if late is None:
+            continue
+        if not isinstance(late, dict) or not isinstance(late.get("reviewed_subject", {}), dict):
+            return True
+        key = str((late.get("reviewed_subject") or {}).get("retry_key") or "")
+        if not key or key in pointed:
+            continue
+        receipt = receipts.get(f"acceptance-late:{key}")
+        if receipt is None or isinstance(receipt, dict) and receipt.get("panel_id") != panel.get("panel_id"):
+            continue
+        if not isinstance(receipt, dict) or receipt.get("custody") != "terminal_outbox" \
+                or receipt.get("settled_at") != late.get("settled_at"):
+            return True
+    return False
 
 
 def _check_name(name: str) -> str:
@@ -103,6 +175,11 @@ def result_memberships(row: dict) -> set[str]:
             names.add("promotions")
     if row.get("pause_notices"):
         names.add("pause_notices")
+    quizzes = row.get("owner_quiz")
+    if isinstance(quizzes, dict):
+        from ouroboros.owner_quiz import quiz_needs_retention
+        if any(quiz_needs_retention(block) for block in quizzes.values()):
+            names.add("owner_questions")
     return names
 
 

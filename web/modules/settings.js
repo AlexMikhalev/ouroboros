@@ -33,6 +33,7 @@ import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus
 import { extensionActionStatus } from './extension_status_text.js';
 import { bindLanguageSettings } from './settings_language.js';
 import { resetSecretReveals } from './settings_secrets.js';
+import { syncPolicyState } from './settings_policy.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -94,6 +95,26 @@ export function storedOrFallback(value, fallback) {
     return fallback && (value === undefined || value === null || value === '') ? fallback : value;
 }
 
+// What the core serves at its own address right now (`served_ui` on /api/state),
+// beside the saved choice that applies at the next restart; a refused choice
+// carries the core's own sentence naming it and why. A core older than the choice
+// reports nothing, and nothing is shown.
+export function servedUiStatus(servedUi) {
+    const label = { builtin: 'the built-in interface', directory: 'the interface directory', none: 'no main page' }[servedUi?.source];
+    if (!label) return null;
+    return servedUi.error
+        ? { text: `Serving now: ${label}. ${servedUi.error}`, tone: 'warn' }
+        : { text: `Serving now: ${label}.`, tone: 'muted' };
+}
+
+// The interface choice travels only when edited: an untouched field must not turn
+// an environment choice or the default into a saved one, and a cleared field saves
+// the blank that selects built-in over the environment.
+export function uiDirChange(edited, loaded) {
+    const value = String(edited ?? '').trim();
+    return value === String(loaded ?? '').trim() ? {} : { OUROBOROS_UI_DIR: value };
+}
+
 function applyInputValue(id, value) {
     const el = byId(id);
     el.value = value === undefined || value === null ? '' : value;
@@ -129,32 +150,6 @@ function setButtonBusy(button, busy) {
     button.disabled = busy;
     if (busy) button.setAttribute('aria-busy', 'true');
     else button.removeAttribute('aria-busy');
-}
-
-function policyValueLabel(value) {
-    const labels = {
-        light: 'Light', advanced: 'Advanced', pro: 'Pro', cyber_pro: 'Cyber Pro',
-        full: 'Full', off: 'Off', advisory: 'Advisory', blocking: 'Blocking',
-    };
-    return labels[String(value || '').trim().toLowerCase()] || String(value || 'Unknown');
-}
-
-function syncPolicyState(root, meta) {
-    const state = meta?.policy_state;
-    if (!state) return;
-    const render = (key, text) => {
-        const node = root?.querySelector(`[data-policy-state="${key}"]`);
-        if (node) node.textContent = text;
-    };
-    const access = state.access || {};
-    render('access', access.restart_required
-        ? `Saved: ${policyValueLabel(access.configured)} · Current process: ${policyValueLabel(access.current_process || access.effective)} · After restart: ${policyValueLabel(access.configured)} · Restart required`
-        : `Current process: ${policyValueLabel(access.current_process || access.effective)} · After restart: ${policyValueLabel(access.configured)}`);
-    const suffix = (item) => item.active_task_snapshot
-        ? `Saved: ${policyValueLabel(item.configured)} · Current process: ${policyValueLabel(item.current_process || item.effective)} · Next task: ${policyValueLabel(item.next_task || item.configured)} · Current task keeps its start snapshot`
-        : `Current process: ${policyValueLabel(item.current_process || item.effective)} · Next task: ${policyValueLabel(item.next_task || item.configured)}`;
-    render('supervisor', suffix(state.supervisor || {}));
-    render('review', suffix(state.review || {}));
 }
 
 function readInt(id, fallback) {
@@ -439,6 +434,25 @@ export function providerTestResultIsCurrent({
     return sentGeneration === currentGeneration && sentFingerprint === currentFingerprint;
 }
 
+// The save's effect, from the gateway's honest buckets (#285). A running task keeps
+// its start snapshot, while a skill reads the keys it is granted on its next read
+// (#1122): the next-task bucket states both once, whichever keys the save carried.
+const SKILL_KEYS_READ = 'skills pick up granted keys on their next read';
+
+export function settingsSaveEffectText(data = {}) {
+    if (data.no_changes) return 'No changes detected';
+    if (data.restart_required) return 'Settings saved. Some changes require a restart to take effect';
+    if (data.restart_state?.summary || data.restart_state?.local_model?.summary) return 'Settings saved';
+    if (data.immediate_changed && data.next_task_changed) {
+        return `Settings saved. Some changes took effect immediately, others apply on the next task; ${SKILL_KEYS_READ}`;
+    }
+    if (data.immediate_changed) return 'Settings saved. Changes took effect immediately';
+    if (data.next_task_changed) return `Settings saved. Changes take effect on the next task; ${SKILL_KEYS_READ}`;
+    // Reachable when the only changed keys are retired no-ops:
+    // the warning below carries the honest story.
+    return 'Settings saved';
+}
+
 // Decision 16=A (#285): the settings "Restart now" action reuses the existing
 // owner command contract — the same WS `/restart` the chat header sends, through
 // the ONE shared confirmation both Restart buttons use (owner quiz 285597). The
@@ -491,6 +505,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let draftRevision = 0;
     let loadSequence = 0;
     let restartReadSequence = 0;
+    let servedUiReadSequence = 0;
     let restartState = { restart_required: false };
     let settingsSaving = false;
     let saveOutcomeUnknown = false;
@@ -534,6 +549,18 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         const target = byId('settings-restart-status');
         target.hidden = !text;
         setInlineStatus(target, text, restartAvailable || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
+    }
+
+    async function refreshServedUi() {
+        const sequence = ++servedUiReadSequence;
+        let shown;
+        try {
+            shown = servedUiStatus((await apiClient.state())?.served_ui);
+        } catch { return; /* An unavailable read keeps the last known fact. */ }
+        const target = byId('s-ui-dir-applied');
+        if (sequence !== servedUiReadSequence || !target) return;
+        target.hidden = !shown;
+        setInlineStatus(target, shown?.text || '', shown?.tone || 'muted');
     }
 
     async function refreshRestartState() {
@@ -677,6 +704,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         page.querySelectorAll('[data-provider-test-status]').forEach((el) => setInlineStatus(el, '', 'muted'));
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, storedOrFallback(s[key], fallback)));
+        applyInputValue('s-ui-dir', s.OUROBOROS_UI_DIR);
         searchSelectionEdited = false;
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
         modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
@@ -743,7 +771,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         syncRuntimeModeBridgeState();
         syncPolicyState(page, s?._meta);
         syncPostTaskEvolutionUi();
-        refreshSafetySkipCounter();  // fire-and-forget; fills the 24h audited-skip note
+        refreshSafetySkipCounter();  // fire-and-forget; labels matches in the inspected event window
         void refreshSearchPreview();  // fire-and-forget; describes the applied search Source/Model
     }
 
@@ -824,6 +852,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         setSettingsCleanBaseline();
         armCleanBaselineOnStatusSettle(revision);
         _renderNetworkHint(data._meta);
+        void refreshServedUi();
         syncSettingsLoadState();
         // The skill-requested rows and the extension settings forms (which read
         // their stored values before rendering) are optional enrichment: it must
@@ -939,6 +968,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
         });
+        Object.assign(body, uiDirChange(fieldValue('s-ui-dir'), currentSettings?.OUROBOROS_UI_DIR));
         body.OUROBOROS_WEBSEARCH_MODEL = collectSearchSelection().model;
         VALUE_FIELDS
             // Owner-only keys travel through their audited owner endpoints, never
@@ -1097,8 +1127,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     }
 
     async function refreshSafetySkipCounter() {
-        // 24h count of durable safety_mode_skip audit events, so the owner sees how much
-        // the reduced coverage actually waved through.
+        // Count the last-24h matches inside the returned tail, not all of that day.
         const el = byId('s-safety-skip-counter');
         if (!el) return;
         try {
@@ -1109,11 +1138,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 const t = Date.parse(String(e?.ts || ''));
                 return Number.isFinite(t) && t >= cutoff;
             }).length;
-            // Honest window note: the count scans the recent events tail (2000), so a
-            // very busy day can undercount — say "recent", never overclaim exactness.
+            // The tail may cover less than a day, including when it has no matches.
             el.textContent = n > 0
-                ? `${n} safety check(s) waved through in the last 24h (audited; recent events window).`
-                : 'No safety checks waved through in the last 24h (recent events window).';
+                ? `${n} safety check(s) waved through among inspected recent events dated within 24h.`
+                : 'No waved-through safety checks found among inspected recent events dated within 24h.';
         } catch {
             el.textContent = '';
         }
@@ -1183,6 +1211,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (event.target.closest('[data-effort-value], .secret-clear, [data-row-secret-clear], [data-custom-secret-remove]')) {
             queueMicrotask(() => {
                 syncPostTaskEvolutionUi();
+                syncPolicyState(page, currentSettings?._meta);
                 onSettingsEdited();
             });
         }
@@ -1222,6 +1251,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const accountModelCatalog = watchAccountModelCatalog();
     const disposeRestartReconnect = ws?.on?.('open', () => {
         refreshRestartState();
+        void refreshServedUi();
         if (settingsLoaded) void refreshModelCatalog();
     });
 
@@ -1417,26 +1447,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             const ownerError = runtimeModeError || autoGrantError || contextModeError || safetyModeError;
             const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings({ awaitEnrichment: false }));
             syncAutoGrantBridgeState();
-            let statusMsg;
-            let statusType = 'ok';
-            if (data.no_changes) {
-                statusMsg = 'No changes detected';
-            } else if (data.restart_required) {
-                statusMsg = 'Settings saved. Some changes require a restart to take effect';
-                statusType = 'warn';
-            } else if (data.restart_state?.summary || data.restart_state?.local_model?.summary) {
-                statusMsg = 'Settings saved';
-            } else if (data.immediate_changed && data.next_task_changed) {
-                statusMsg = 'Settings saved. Some changes took effect immediately; others apply on the next task';
-            } else if (data.immediate_changed) {
-                statusMsg = 'Settings saved. Changes took effect immediately';
-            } else if (data.next_task_changed) {
-                statusMsg = 'Settings saved. Changes take effect on the next task';
-            } else {
-                // Reachable when the only changed keys are retired no-ops:
-                // the warning below carries the honest story.
-                statusMsg = 'Settings saved';
-            }
+            let statusMsg = settingsSaveEffectText(data);
+            let statusType = data.restart_required && !data.no_changes ? 'warn' : 'ok';
             if (subagentsChanged && data.agent_task_running) {
                 statusMsg += '. Available subagents take effect for new child tasks; '
                     + 'the current task keeps its existing routes';

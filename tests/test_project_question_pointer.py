@@ -70,7 +70,13 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
     assert main[0]["quiz_state"] == "answered" and main[0]["answered_index"] == 1
     assert main[0]["question"] == "Which storage?" and main[0]["options"] == ["Local", "Shared"]
-    assert main[0]["text"] == "You answered in Question Project"
+    # Owed to the live asker until its saved read; that read settles it.
+    assert main[0]["text"] == "Answer recorded · delivery pending in Question Project"
+    from ouroboros.owner_mailbox import acknowledge_transcript_entry, drain_owner_entries
+    [entry] = drain_owner_entries(tmp_path, "task-1")
+    assert entry["kind"] == "quiz_answer" and acknowledge_transcript_entry(tmp_path, "task-1", entry)
+    main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
+    assert main[0]["quiz_state"] == "answered" and main[0]["text"] == "You answered in Question Project"
     assert reconcile_terminal(tmp_path, "task-1") == []
     assert quiz_states(tmp_path, "task-1")[qid]["option_details"][1] == "Multiple writers over network"
 
@@ -121,7 +127,7 @@ def test_an_optional_question_projects_into_main_with_its_assumption_and_never_r
     assert live["system_type"] == "project_question_pointer" and live["chat_id"] == 1
     assert live["assumption"] == "WebP meanwhile" and live["recommended_index"] == 1
     assert live["options"] == ["PNG", "WebP"] and "wait_for_answer" not in live
-    assert live["content"] == "Unanswered · an answer is still accepted in Mixed Project"
+    assert live["content"] == "Unanswered in Mixed Project"
 
     # The same task now waits on a newer required question.
     assert _escalate(ctx, question="Publish?", wait_for_answer=True,
@@ -135,7 +141,7 @@ def test_an_optional_question_projects_into_main_with_its_assumption_and_never_r
     calm, waiting = main[optional["quiz_id"]], main[required["quiz_id"]]
     assert "owner_wait_state" not in calm and "wait_for_answer" not in calm
     assert calm["assumption"] == "WebP meanwhile" and calm["recommended_index"] == 1
-    assert calm["text"] == "Unanswered · an answer is still accepted in Mixed Project"
+    assert calm["text"] == "Unanswered in Mixed Project"
     assert waiting["owner_wait_state"] == "waiting" and waiting["recommended_index"] == 0
     assert waiting["text"] == "Waiting for your answer in Mixed Project"
     # The Project room's own card of the optional question reads the same facts.
@@ -185,7 +191,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     previous_reads = reads.count("t1")
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["owner_wait_state"] == "resumed"
-    assert rows[0]["required_question"]["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
+    assert rows[0]["required_question"]["text"] == "Unanswered · task continued in Waiting Project"
     assert reads.count("t1") == previous_reads + 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count("t1") == previous_reads + 1
@@ -197,7 +203,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     gs._FINALIZING_MEMO.clear()
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     pointer = rows[0]["required_question"]
-    assert pointer["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
+    assert pointer["text"] == "Unanswered · task continued in Waiting Project"
     assert pointer["owner_wait_resume_reason"] == "timeout"
 
 
@@ -222,7 +228,7 @@ def test_question_presentation_shared_fixture():
     cases = json.loads((Path(__file__).resolve().parents[1] /
                         'web/tests/fixtures/question_presentation_parity.json').read_text(encoding="utf-8"))
     keys = ("quiz_state", "owner_wait_state", "owner_wait_resume_reason", "wait_for_answer",
-            "wait_ended_at", "answered_index", "comment", "source_status")
+            "wait_ended_at", "answered_index", "comment", "source_status", "question_delivery")
     for case in cases:
         block = {"quiz_id": "q", **case["block"]} if case["block"] is not None else None
         wait = {"quiz_id": "q", **case["owner_wait"]} if case["owner_wait"] is not None else None
@@ -260,7 +266,7 @@ def test_project_room_quiz_row_carries_the_wait_facts(tmp_path):
     room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
     assert room[0]["quiz"]["owner_wait_state"] == "resumed" and room[0]["quiz"]["wait_for_answer"] is True
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
-    assert main[0]["text"] == "Unanswered · the task continued; an answer is still accepted in Resumed Project"
+    assert main[0]["text"] == "Unanswered · task continued in Resumed Project"
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q2", "wait_id": "w2", "state": "waiting"})
     room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
     assert room[0]["quiz"]["owner_wait_state"] == "resumed"
@@ -320,12 +326,14 @@ def test_project_question_pointer_display_fields_share_one_contract():
     # History: the producer itself emits every field the browser merges.
     block = {"quiz_id": "q", "state": "open", "question": "Which?", "options": ["a", "b"],
              "option_details": ["A detail", ""], "stake": "What rides on it", "assumption": "a",
-             "recommended_index": 0, "host_facts": "Asked by task t, origin unknown."}
+             "recommended_index": 0, "host_facts": "Asked by task t, origin unknown.",
+             "materials": [{"task_id": "t", "name": "brief.md", "label": "brief.md"}]}
     pointer = project_question_pointer({"task_id": "t", "quiz_id": "q"}, block,
                                        {"id": "p", "chat_id": 12, "name": "Project"}, None)
     assert browser_fields <= set(pointer), sorted(browser_fields - set(pointer))
     assert pointer["option_details"] == ["A detail", ""] and pointer["stake"] == "What rides on it"
     assert pointer["host_facts"] == "Asked by task t, origin unknown."
+    assert pointer["materials"] == block["materials"]
     # A block that recorded no host sentence yields a pointer without the key, never an empty one.
     bare = project_question_pointer({"task_id": "t", "quiz_id": "q"}, {**block, "host_facts": ""},
                                     {"id": "p", "chat_id": 12, "name": "Project"}, None)
@@ -419,7 +427,7 @@ def test_census_wait_facts_survive_optional_project_detail_and_resume(
         monkeypatch.setattr(projects_registry, "list_reserved_projects",
                             lambda *_: (_ for _ in ()).throw(OSError("registry unreadable")))
     waiting = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])[0]
-    assert waiting["owner_wait"] == {"owner_wait_state": "waiting", "quiz_state": "open"}
+    assert waiting["owner_wait"] == {"quiz_id": "q1", "owner_wait_state": "waiting", "quiz_state": "open"}
     assert bool(waiting.get("required_question_unavailable")) is (registry_unavailable or not project_bound)
 
     assert record_answered(tmp_path, "t1", quiz_id="q1", option_index=0, request_id="answer")["ok"]

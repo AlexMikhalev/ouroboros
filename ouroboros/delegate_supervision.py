@@ -835,6 +835,11 @@ def acknowledge_pending_wake(ctx: Any, delivered: Any = None) -> bool:
         _REPORTED_INTERACTIONS[run_id] = frozenset(
             set(_REPORTED_INTERACTIONS.get(run_id, frozenset())) | set(interaction_ids)
         )
+        # Unlike the latest-run checkpoint, this map survives alternating A/B
+        # waits and travels with the transcript through a cold continuation.
+        seen = dict(getattr(ctx, "_sleep_interaction_seen", None) or {})
+        seen[run_id] = sorted(set(seen.get(run_id) or ()) | (set(interaction_ids) & _interaction_ids(payload)))
+        ctx._sleep_interaction_seen = seen
     prior_mailbox_ids = (
         state.get("mailbox_acknowledged_ids") or []
         if str(state.get("mailbox_acknowledged_attempt_key") or "") == attempt
@@ -1102,14 +1107,18 @@ def supervised_wait(
     outage_since = ""
     outage_stamp = ""
     # The loop's own transport, only when it built the observing wait.
-    gateway = _loop_gateway() if owns_transport else None
-    live_input = _leaf_live_input(ctx, run_id, gateway)
+    from ouroboros.tools.delegate_terminal_evidence import retained_terminal_result
+    retained = retained_terminal_result(ctx, run_id) if owns_transport else None
+    gateway = _loop_gateway() if owns_transport and retained is None else None
+    live_input = _leaf_live_input(ctx, run_id, gateway) if retained is None else "unknown"
     try:
         while True:
             # A control already present does not wait behind another HTTP read.
             observed = not _control_wakes(ctx)
             if not observed:
                 raw = json.dumps({"status": "no_progress", "run_id": str(run_id)})
+            elif retained is not None:
+                raw, retained = json.dumps(retained), None
             else:
                 if owns_transport and gateway is None:
                     gateway = _loop_gateway()

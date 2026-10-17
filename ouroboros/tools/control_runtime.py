@@ -193,7 +193,7 @@ def self_change_tool_entries() -> list:
                 "restart, after the running generation's readers have stopped."),
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string"},
-                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart."},
+                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart; it needs a full green test run of that commit on record (commit it with full_tests=true)."},
             }, "required": ["reason"]},
         }, _request_restart),
     ]
@@ -393,7 +393,8 @@ def _main_notice_refusal(ctx: ToolContext, chat_id: object) -> str:
     return ""
 
 
-def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destination: str = "current") -> str:
+def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destination: str = "current",
+                       reply_to_relay: str | None = None) -> str:
     """Send a separate owner reply without completing the ongoing task.
 
     ``destination="main"`` addresses the owner's main chat from an owner-visible
@@ -432,6 +433,21 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         # via log_chat(record_type=...) exactly like media rows.
         system_type = "proactive_message"
 
+    relay = {}
+    reply_meta = {}
+    if reply_to_relay is not None:
+        from ouroboros.owner_relay import select_return
+        from ouroboros.chat_references import resolve_reply
+        from ouroboros.tool_access import canonical_data_root
+        relay, error = select_return(ctx, reply_to_relay)
+        error = error or owner_contact_refusal(ctx, chat_id)
+        if relay and relay["source"]["chat_id"] != chat_id:
+            error = error or _main_notice_refusal(ctx, chat_id)
+        if error:
+            return publish_no_effect(ctx, ToolResult(status="blocked", code="ACCESS_BLOCKED", text=error, meta={"reason_code": "RELAY_RETURN_UNRESOLVED"}))
+        chat_id, system_type = relay["source"]["chat_id"], "relay_reply"
+        reply_meta = {"reply_to": resolve_reply(canonical_data_root(ctx), relay["source"]["address"]),
+                      "reply_to_relay": relay["relay_id"]}
     from ouroboros.tools.owner_delivery import deliver_owner_event
     from ouroboros.utils import append_jsonl
     mode = deliver_owner_event(ctx, {
@@ -441,6 +457,7 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         "format": "markdown",
         "is_progress": False,
         "system_type": system_type,
+        "progress_meta": reply_meta,
         "ts": utc_now_iso(),
     })
     append_jsonl(ctx.drive_logs() / "events.jsonl", {
@@ -452,6 +469,10 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         "transport_mode": mode,
         "text_preview": text[:200],
     })
+    if relay:
+        ctx._open_relays.pop(relay["relay_id"], None)
+        from ouroboros.owner_relay import persist_held_state
+        persist_held_state(ctx)
     if target == "main":
         return "OK: notice sent to the main chat." if mode == "live" else "OK: notice queued for delivery to the main chat."
     if mode == "live":
@@ -636,9 +657,9 @@ def _consciousness_status_facts(ctx: ToolContext) -> str:
                                       "source": "owner settings, not the state file"}
     facts["notes"] = [
         "stored_next_wake_at is the last time the clock persisted and fires only while enabled; the running "
-        "clock keeps it no sooner than MIN after boot, and an event can pull it earlier.",
-        "Not in this read (held in the supervisor's memory): a pending early-wake reason, the last wake "
-        "outcome and error, failure backoff, the allowance window and a live wake task."]
+        "clock keeps it no sooner than MIN after boot, and no event moves it.",
+        "Not in this read (held in the supervisor's memory): the last wake outcome and error, failure "
+        "backoff, the allowance window and a live wake task."]
     return json.dumps(facts, ensure_ascii=False, indent=2)
 
 
@@ -830,6 +851,8 @@ def _finish_task(ctx: ToolContext, action: str, answer: str | None = None,
                 text="ERROR: COMPLETION_ARGUMENT: silent is available only on a consciousness wake's own turn, "
                      "not on the tasks it started or any other turn"))
         allow_empty = True
+        if answer is None and not answer_sha256:
+            answer = ""  # silence needs no words; complete bytes given anyway stay an internal result
     return stage_completion_request(ctx, {
         "action": action, "answer": answer, "answer_sha256": answer_sha256,
         "rationale": rationale, "acceptance_subject": acceptance_subject,
@@ -844,6 +867,14 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
     from ouroboros.task_results import resolve_task_lineage
 
     action, answer, selector = request.get("action"), request.get("answer"), request.get("answer_sha256")
+    # Strict tool schemas make a model fill the field it did not choose with "": an empty
+    # selector beside an answer (or an empty answer beside a selector) names nothing.
+    if isinstance(selector, str) and not selector.strip() and answer is not None:
+        selector = None
+        request = {**request, "answer_sha256": None}
+    elif isinstance(answer, str) and not answer.strip() and isinstance(selector, str) and selector.strip():
+        answer = None
+        request = {**request, "answer": None}
     error = ""
     if action not in {"finish", "stop"}:
         error = "action must be finish or stop"
@@ -853,7 +884,7 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
         error = "select exactly one of answer and answer_sha256"
     elif not reply_later and answer is not None and (not isinstance(answer, str) or (not allow_empty and not answer.strip())):
         error = "answer must be complete nonempty text"
-    elif selector is not None and (not isinstance(selector, str) or not selector):
+    elif selector is not None and (not isinstance(selector, str) or not selector.strip()):
         error = "answer_sha256 must name an offered answer"
     elif request.get("pending_review") not in {None, "wait", "finish"}:
         error = "pending_review must be wait or finish"

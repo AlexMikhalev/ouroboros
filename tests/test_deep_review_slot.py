@@ -56,7 +56,7 @@ from ouroboros.deep_self_review import (  # noqa: E402
 )
 from ouroboros.review_execution import ReviewAttemptResult, ReviewRouteKind, ReviewRouteUnavailable  # noqa: E402
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions  # noqa: E402
-from tests.test_plan_review_engine import _user_text  # noqa: E402
+from tests._review_substrate_shared import user_text as _user_text  # noqa: E402
 
 
 class _ScriptedLLM:

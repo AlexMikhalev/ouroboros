@@ -307,7 +307,7 @@ class HostServiceContext:
         if loaded is None:
             raise HostServiceAuthError(f"skill {skill_name!r} is not installed")
         if not loaded.review.gate_for(loaded.content_hash)["executable_review"]:
-            raise HostServiceAuthError(f"skill {skill_name!r} does not have a fresh executable review")
+            raise HostServiceAuthError(f"skill {skill_name!r} has no current executable review authority")
         if not load_enabled(self.data_dir, skill_name):
             raise HostServiceAuthError(f"skill {skill_name!r} is disabled")
         if str(token_payload.get("content_hash") or "") != str(loaded.content_hash or ""):
@@ -508,6 +508,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
     try:
         from ouroboros.task_status import SETTLED_STATUSES
 
+        if not isinstance(payload.get("reply_to", ""), str):
+            return _json_error("reply_to must be an address string", 400)
         text = str(payload.get("text") or "")
         image_caption = str(payload.get("image_caption") or "")
         client_message_id = str(payload.get("client_message_id") or "").strip()[:128]
@@ -541,7 +543,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 # Reuse the accepted byte-proven kinds; same_message still checks every incoming digest/name.
                 logged = text.strip() or image_caption.strip() or chat_uploads.attachment_placeholder(
                     inline_image, {"chat_attachments": inbound.get("attachments"), "chat_attachment_uploads": incoming})
-                if not chat_uploads.same_message(inbound, logged, incoming):
+                if (not chat_uploads.same_message(inbound, logged, incoming)
+                        or (inbound.get("reply_to") or {}).get("address", "") != payload.get("reply_to", "")):
                     return _json_error("client_message_id was already used for a different message", 409)
                 state = _operation_state(ctx, rows, inbound)
                 if state["status"] in SETTLED_STATUSES:
@@ -565,6 +568,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
             inline = str(payload.get("image_base64") or "") if image_mime else ""
             metadata = {**({"chat_attachment_uploads": uploads} if uploads else {}),
                         **({"chat_attachments": refs} if refs else {})}
+        if payload.get("reply_to"):  # no reference adds nothing to a plain inject's kwargs
+            metadata["reply_to"] = payload["reply_to"]
         bridge = ctx.bridge_getter()
         response_event: asyncio.Event = asyncio.Event()
         response_holder: dict[str, str] = {}
@@ -837,9 +842,12 @@ def _presence_exception(exc: Exception, status: int) -> JSONResponse:
                   "presence_conversation_key_required", "presence_admission_conversation_mismatch",
                   "presence_event_identity_conflict"}:
         disposition = "rejected"
+    if getattr(exc, "disposition", "") in {"retained", "retry"}:
+        disposition = exc.disposition  # the runner holds the durable attempt authority
     facts = {"field": getattr(exc, "field", "presence")}
     if getattr(exc, "turn_ref", ""):
         facts["turn_ref"] = exc.turn_ref
+        facts["delivery_reporting_version"] = getattr(exc, "delivery_reporting_version", 0)
     if getattr(exc, "work_ref", ""):
         facts["work_ref"] = exc.work_ref
     manifest = getattr(exc, "attachment_manifest", None)
@@ -1007,20 +1015,9 @@ def _presence_work_view(
     if str(presence.get("binding_id") or "") != binding_id:
         return 404, {"ok": False, "error": "presence work reference not found",
                      "code": "presence_work_not_found", "disposition": "rejected"}
-    from ouroboros.presence_continuation import work_view
+    from ouroboros.presence_recovery import retained_work_view
 
-    continued = work_view(stored, work_ref)  # a continuing Presence author's own poll (#1536)
-    if continued is not None:
-        return continued
-    status = str(stored.get("status") or "")
-    if status not in {"completed", "failed", "cancelled"}:
-        return 202, {"ok": True, "status": "pending", "work_ref": work_ref,
-                     "delivery_reporting_version": presence.get("delivery_reporting_version", 0)}
-    from ouroboros.presence_runner import presence_result_from_stored
-
-    result = presence_result_from_stored(stored, work_ref)
-    return 200, {"ok": True, "status": status, "outcome": result.outcome, "text": result.text, "work_ref": work_ref,
-                 "delivery_reporting_version": result.delivery_reporting_version}
+    return retained_work_view(stored, work_ref)
 
 
 async def _api_presence_work(request: Request) -> JSONResponse:
@@ -1461,10 +1458,10 @@ async def _api_chat_cancel(request: Request) -> JSONResponse:
     The cancellation owner does the work — durable intent first
     (``cancel_intents.request_cancel``), then custody through the cascade path
     the browser Stop uses — and the answer is its typed outcome: ``cancelled``,
-    ``already_terminal``, ``unresolved`` (custody did not settle; the work is
-    still live) or ``cancel_unsupported`` (nothing this request started is
-    addressable yet: still queued, or a message delivered into a pre-existing
-    task). Never a ``cancelled`` that did not happen.
+    ``already_terminal``, ``unresolved`` (custody did not confirm settlement,
+    proving neither live nor ended work) or ``cancel_unsupported`` (nothing this
+    request started is addressable yet: still queued, or a message delivered
+    into a pre-existing task). Never a ``cancelled`` that did not happen.
     """
     ctx: HostServiceContext = request.app.state.host_service_context
     try:

@@ -115,7 +115,7 @@ decision reads it. A wrapper carries its inner producer's failure forward, and a
 supervising wake is acknowledged on the published `supervision_wake_id`, never on the
 tool's name (ARCHITECTURE §6 "Delegated subagents").
 
-Enforcement: CHECKLISTS item 15(b) scores the prompt-edit discipline;
+Enforcement: CHECKLISTS item 14(a) scores the prompt-edit discipline;
 `tests/test_typed_tool_refusals.py` is the shrink-only source lint over returned
 literals in `ouroboros/tools/`, its per-file allowlist the disclosure of the
 identifier-less residual; the owner-judgment and recoverable-failure boundaries are
@@ -130,27 +130,24 @@ saying review-only. ARCHITECTURE, CHECKLISTS, BIBLE, DESIGN and `config.py` are 
 to, never restated; the ARCHITECTURE settings and endpoint tables are test-checked
 registries of those owners, not second authorities.
 
-A sentence belongs in a book when Ouroboros, reading the map before touching the code,
-needs it to find the right place, to keep an invariant other code relies on, or to keep
-a decision whose WHY would otherwise be lost. A `§1` module-tree row is one line
-(address, capability, the grep targets of a cross-module contract, a `(§N)` pointer);
-the owning subsection keeps the WHY at its node. How a module works inside (call order,
-locks, field lists, guard order, enumerated edge cases and typed refusals) belongs in
-the module, its docstring or its test. A change replaces the description of the node it
-touched; release history lives in git and the README history table. A limitation is
-stated once, where an owner or maintainer would otherwise act wrongly; other follow-ups
-are issues. Decision codes, chat-batch answers and reviewer-round labels belong to the
-commit or PR; an open limitation may cite its tracker once, as `(issue #NNN)`; probe
-dates and measured numbers live only in "External facts: unknown is not no". The
-introduction under a chapter's H1 is its compact Low/Nano view: correct it whenever the
-chapter changes.
+Prose belongs in a book when needed to locate a mechanism, preserve an invariant
+other code relies on, or recover its WHY. A `§1` module-tree row is one line: address, capability, cross-module grep targets
+and `(§N)` pointer; the owning subsection keeps the rationale. Internal call/guard
+order, locks, fields, edge cases and typed refusals belong in code, docstrings or tests.
+Replace the touched node's description; keep release history in git and README.
+State a limitation once where it prevents a wrong action; other follow-ups are issues.
+Decision codes, chat-batch answers and reviewer-round labels belong in commits or PRs.
+An open limitation may cite `(issue #NNN)` once; probe dates and measurements belong
+only in "External facts: unknown is not no". Keep the chapter's H1 introduction,
+its compact Low/Nano view, correct when the chapter changes.
 
 Track assets with a continuing purpose (product, contributors, verification, legal
 requirements, evidence for public claims). Plans, campaign backlog, review packets and
 run receipts belong in the external work area or durable task evidence, not the
 tracked tree; a test preserving their presence gives them no product role. Retire
-campaign tooling when its purpose ends. Review enforces this, without automatic
-deletion or filename matching.
+campaign tooling when its purpose ends. Name a new test module for the behaviour or
+owner it protects, not a round, batch, issue, PR or version. Review enforces this,
+without automatic deletion or filename matching.
 
 Both are reference books: an entrypoint plus one chapter file per subject under
 `docs/architecture/` or `docs/development/`. The entrypoint's ordered `## Chapters`
@@ -173,12 +170,11 @@ scanned.
 
 Size is pairwise: a change ends each composed book, entrypoint included, no
 larger than at its event base, so text it adds is paid by shortening the same
-book. A stored budget only moved up and per-change grants made every growth a
-cheap self-raise; comparing tip with base leaves no number to raise. The
-official-CI `size_ratchet` lane blocks growth on owner, member and collaborator
-pull requests and on pushes to `ouroboros`; outside contributors and forks receive
-warnings. The repository owner's `book-growth` label exempts its PR and the exact
-commit that lands it. Local surfaces never block: the edit
+book. With ordinary push/PR CI disabled (ARCHITECTURE §8), manual/tag runs
+lack a per-change base and skip the book comparison; they do not certify this rule.
+Local qualification supplies `OURO_SIZE_RATCHET_BASE_REF` explicitly; review
+checks the actual contribution. The owner's `book-growth` label can exempt it.
+Local surfaces never block: the edit
 tools, `plan_task`, the free `preflight_review(deterministic_only=True)` diagnostic
 and `codebase_health` report the running balance as a fact. Contribution is measured
 against the displayed merge-base of the cached official development ref; an unknown
@@ -270,7 +266,7 @@ verbs").
 ### The owner corpus archives inputs; the owner door's stamp is the only authority
 
 A task-authored objective copies only its retained owner corpus, never the draft. Other
-runs record their first user turn for acceptance, Safety and reflection, labelled by
+runs record their first user turn for acceptance and Safety, labelled by
 what the host knows: `initial_user` when owner routing stamped the run
 (`metadata.origin_message_ref` or `origin_suppressed`, inherited by value by a promoted
 root), `initial_text` otherwise. `dialogue_provenance.run_origin` mints that fact once
@@ -370,12 +366,12 @@ readiness signal, test probe or fallback.
 Provider facts that bind routing: the `-pro` suffix is an OpenRouter routing slug, not
 an OpenAI model id, so a direct OpenAI Chat slot uses the plain Sol id; direct OpenAI
 tool conversations stay on Chat Completions, and a model-name prefix is never admission
-authority; DeepSeek and Z.ai carry `reasoning_effort` through projections keyed on the
-provider id; direct Anthropic is the deliberate exception to a purely reconstructed
-provider transcript, and no effort-to-`budget_tokens` policy is synthesized
-(ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional feature may
-be unavailable elsewhere; the core loop degrades explicitly rather than crashing or
-rerouting.
+authority; each non-OpenRouter Chat route sends `reasoning_effort`, DeepSeek and Z.ai
+by provider-id projection; direct Anthropic is the deliberate exception to a purely
+reconstructed provider transcript, and no effort-to-`budget_tokens` policy is
+synthesized (ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional
+feature may be unavailable elsewhere; the core loop degrades explicitly rather than
+crashing or rerouting.
 
 Canonical assistant history and tool schemas are function-shaped across providers,
 never a second stored transcript for a provider dialect. Static, semantics-preserving

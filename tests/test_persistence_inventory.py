@@ -755,7 +755,22 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
 # reference journal documented in the existing evidence-pack row.
 # 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
-EXPECTED_SCAN_PATHS = 372
+# 373 -> 374: review_checking quarantines an invalid cached reader view under
+# state/review_checkouts/views/.discarded-*.* before removing it (PERSISTENCE views row).
+# 374 -> 372: the automatic reflection writer's two literal history paths left with it
+# (memory/knowledge/patterns_history.jsonl, retained as history; memory/knowledge_history.jsonl,
+# still written by knowledge.write_knowledge_note through its address, which the scan cannot see).
+# 372 -> 373: the generation's startup verification stamp (state/startup_verification.json).
+# 373 -> 378 (#1772, work scopes): the installation scope marker ``state/installation_scope.json``,
+# the per-task scope records ``state/task_scopes`` + ``state/task_scopes/*.json``, the unfinished
+# Panic sweep ``state/panic_sweep_pending.json`` (``ouroboros/process_scope.py``; two section-2
+# rows and one section-4 row) and the engine's own index ``claudexor/daemon/run-scopes.json``,
+# read at Panic and covered by the existing ``claudexor/**`` row.
+# 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
+# earlier records keep theirs, nothing writes one any more.
+# 377 -> 378 (test health): adoption reads the receipt directory ``state/preflight_receipts``
+# (``ouroboros/preflight_qualification.py``; the existing receipts row).
+EXPECTED_SCAN_PATHS = 378
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

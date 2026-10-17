@@ -455,7 +455,7 @@ def test_every_answer_counts_even_when_all_seats_have_incomplete_coverage(count)
 
 
 def test_incomplete_coverage_never_hides_substantive_critical_findings():
-    finding = {"item": "cross_module_bugs", "severity": "critical", "verdict": "FAIL",
+    finding = {"item": "implicit_contracts", "severity": "critical", "verdict": "FAIL",
                "reason": "The producer and consumer use different units."}
     verdict, outcome, entry = _reduce([
         _seat("scope_slot_1"), _seat("scope_slot_2"),
@@ -464,7 +464,7 @@ def test_incomplete_coverage_never_hides_substantive_critical_findings():
     assert outcome.blocked is True
     assert [{k: f[k] for k in finding} for f in outcome.critical_findings] == [finding]
     assert outcome.seats[2]["coverage"] == "incomplete"
-    assert entry["summary"].startswith("Critical: cross_module_bugs")
+    assert entry["summary"].startswith("Critical: implicit_contracts")
 
 
 def test_coverage_diagnostics_do_not_become_technical_failures():

@@ -101,6 +101,9 @@ def _consumer(tmp_path, monkeypatch, access, *, workspace=None, metadata=None):
         ctx.workspace_root, ctx.workspace_mode = workspace, "external"
     ctx.task_id = "child"
     ctx.task_metadata = {"root_task_id": "parent", "parent_task_id": "parent", **(metadata or {})}
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(data, "parent") is None:  # the child's root exists before it delegates
+        write_task_result(data, "parent", "running", root_task_id="parent")
     handler = next(tool.handler for tool in delegate.get_tools() if tool.name == "delegate_start")
     custody._CUSTODY.clear()
     return ctx, engine, lambda **kw: json.loads(handler(ctx, prompt="Check the component", subagent_id="checker", **kw))

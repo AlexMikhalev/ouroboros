@@ -13,7 +13,6 @@ from typing import Optional
 
 from ouroboros.settings_defaults import (
     FINALIZATION_GRACE_DEFAULT_SEC,
-    PACING_INTERVAL_DEFAULT_SEC,
     SETTINGS_DEFAULTS,
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
 )
@@ -82,6 +81,9 @@ WORKER_READY_CEILING_SEC = 300.0
 # turn and a turn that hit its bound skips the idle sleep, so a backlog still drains at full speed.
 SUPERVISOR_EVENT_BATCH_MAX_EVENTS = 100
 SUPERVISOR_EVENT_BATCH_MAX_SEC = 2.0
+# Existing body bookkeeping cadence; unchanged technical debt waits for the next
+# pass while current observation and explicit requests remain independent.
+BODY_MAINTENANCE_INTERVAL_SEC = 20.0
 # After a compatibility budget-projection write returned False or raised (unknown or stale ledger
 # marker, corrupt ledger), the loop keeps the projection dirty and retries no more often than this,
 # so a frozen-marker install cannot render the ledger every turn forever.
@@ -312,18 +314,6 @@ def get_routing_manifest_result_rows() -> int:
 
 def get_vision_caption_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_VISION_CAPTION_TIMEOUT_SEC", low=1, cast=int)
-
-
-def get_pacing_interval_sec(settings: Optional[dict] = None) -> int:
-    """Intrinsic self-pacing checkpoint cadence in seconds (0 disables)."""
-    raw = runtime_setting("OUROBOROS_PACING_INTERVAL_SEC")
-    if raw is None and isinstance(settings, dict):
-        raw = settings.get("OUROBOROS_PACING_INTERVAL_SEC")
-    try:
-        parsed = int(raw)
-    except (TypeError, ValueError):
-        parsed = int(PACING_INTERVAL_DEFAULT_SEC)
-    return max(0, parsed)
 
 
 def get_supervisor_liveness_deadline_sec(settings: Optional[dict] = None) -> int:

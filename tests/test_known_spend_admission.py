@@ -165,8 +165,9 @@ def test_unavailable_group_authority_is_refused_never_a_healthy_empty_store(data
     """Unknown price is not a zero, and missing group authority is not an empty group."""
     scope = ua.UsageScope(drive_root=data_root, task_id="t", root_task_id="t", global_limit_usd=1000.0,
                           billing_group_id="unavailable:t", billing_group_limit_usd=0.0)
-    with ua.usage_scope(scope), pytest.raises(ua.BudgetExceeded, match="billing group authority unavailable"):
+    with ua.usage_scope(scope), pytest.raises(ua.BillingAuthorityUnavailable, match="billing group authority unavailable") as refused:
         ua.reserve_attempt(_request(0.01))
+    assert not isinstance(refused.value, ua.BudgetExceeded), "a stand-in is no money fact"
 
 
 def test_remaining_known_usd_is_one_number_at_every_producer(data_root, monkeypatch):

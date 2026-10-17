@@ -1429,6 +1429,8 @@ def test_a_non_final_projection_names_its_cause(data_root):
     dashboard it feeds — that could explain it. The count that DECIDES finality is the
     same number that discloses it, so the two cannot disagree.
     """
+    from ouroboros.task_results import write_task_result
+    write_task_result(data_root, "root", "running", root_task_id="root")  # the child's real root
     ua.record_subscription_session(
         "s-est", drive_root=data_root, route="r", task_id="t", root_task_id="root",
         spend_usd=0.0, spend_estimated=True)
@@ -1448,6 +1450,7 @@ def test_a_non_final_projection_names_its_cause(data_root):
     assert second["non_final_rows"] == 2 and second["cost_final"] is False
 
     # A fully settled ledger says so with the same field.
+    write_task_result(data_root / "free", "root", "running", root_task_id="root")
     ua.record_subscription_session(
         "s-free", drive_root=data_root / "free", route="r", task_id="t",
         root_task_id="root", spend_usd=0.0)

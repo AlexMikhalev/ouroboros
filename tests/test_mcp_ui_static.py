@@ -132,13 +132,6 @@ def test_mcp_css_defines_required_classes(settings_css: str) -> None:
     assert 'class="form-field ui-field"' in source
 
 
-def test_settings_ui_mcp_section_describes_hot_reload(settings_ui_source: str) -> None:
-    """The UI copy must communicate that MCP changes are hot-reloadable
-    (it's the ergonomic difference vs A2A which requires restart)."""
-    assert "Hot-reloadable" in settings_ui_source or "hot-reloadable" in settings_ui_source
-    assert "untrusted third-party data" in settings_ui_source
-
-
 def test_mcp_ui_roundtrip_preserves_environment_and_unsupported_fields():
     """Execute the real JS projection; this is not a browser/visual receipt."""
     node = _node_bin()

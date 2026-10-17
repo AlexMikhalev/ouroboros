@@ -85,6 +85,44 @@ def test_a_run_failure_has_cause_identity_and_one_live_frame(tmp_path, monkeypat
     assert run.actors[0]["error_event_logged"] is True
 
 
+def test_preflight_control_timeout_survives_the_existing_review_error_record(tmp_path, monkeypatch):
+    import httpx
+
+    from ouroboros import claudexor_daemon
+    from ouroboros.gateways import claudexor as cx
+    from ouroboros.observability import read_call_payload
+    from ouroboros.review_substrate import ReviewCoordinator
+    from tests._review_session_route_shared import _agent_request, _agent_slot
+
+    calls = []
+
+    def fail(request):
+        calls.append((request.method, request.url.path))
+        raise httpx.ReadTimeout("private provider details", request=request)
+
+    gateway = cx.ClaudexorGateway(cx.DaemonEndpoint("127.0.0.1", 1, "fixture"))
+    gateway.close()
+    gateway._client = httpx.Client(base_url="http://127.0.0.1:1", transport=httpx.MockTransport(fail))
+    clock = iter((10.0, 70.125))
+    monkeypatch.setattr(cx, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway", lambda: gateway)
+    monkeypatch.setattr(utils, "_log_sink", None)
+    request = _agent_request(task_id="child", session_root=str(tmp_path))
+    slot = _agent_slot(session_target="codex=gpt-6-astra", session_access="full")
+    actor = ReviewCoordinator(llm=object(), drive_root=tmp_path)._run_slot(request, slot)
+    expected = "Claudexor control GET /v2/agent-capabilities failed after 60.125s: ReadTimeout"
+    assert calls == [("GET", "/v2/agent-capabilities")], "no reviewer POST follows failed preparation"
+    assert actor.error == expected and actor.failure_code == "daemon_unreachable"
+    assert actor.operation_state == "not_dispatched" and actor.http_status is None
+    assert actor.reported_cause == "" and actor.usage["delegated_start_unrequested"] is True
+    manifest, payload, _ = read_call_payload(tmp_path, task_id="child", call_id=actor.operation_id + "_error")
+    assert manifest["producer_complete"] is True
+    assert payload["error"] == payload["producer_outcome"]["error"] == expected
+    assert payload["producer_outcome"]["operation_state"] == "not_dispatched"
+    projected = _run(tmp_path, monkeypatch, actor, ctx=_ctx(tmp_path))
+    assert projected.actors[0]["error"] == _rows(tmp_path)[0]["error"] == expected
+
+
 def test_a_child_drive_failure_lands_in_the_canonical_owner_root(tmp_path, monkeypatch):
     """A delegated child's task drive is not the log the owner reads: the canonical root is."""
     canonical = tmp_path / "data"

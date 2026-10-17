@@ -1021,6 +1021,13 @@ class _RawBlobWriter:
             raise self._failure(trailing[:200])
 
 
+class RawStagingIncomplete(subprocess.CalledProcessError):
+    """``update-index --index-info`` exited 0, but the index lacks records as sent."""
+
+    def __str__(self) -> str:
+        return self.stderr.decode("utf-8", "replace")
+
+
 def stage_raw_payload_inventory(
     worktree: Path, rel_paths: Any, env: Dict[str, str],
     baseline_modes: Optional[Dict[str, str]] = None,
@@ -1037,6 +1044,9 @@ def stage_raw_payload_inventory(
     with ``baseline_modes`` (capture) regular files pin to the baseline mode for
     existing paths / 100644 for new ones so an executable-bit flip can never
     ride a patch; without it (provisioning/reviewer capture) on-disk modes ride.
+    ``--index-info`` exits 0 even when it skips a path Git refuses (``..``, a
+    ``.git`` component, a Windows device name), so each record is sent in its
+    ``ls-files --stage`` shape and ONE such read must list it back verbatim.
     Returns the paths whose on-disk executable bit diverges from the staged mode.
     """
     root = Path(worktree)
@@ -1058,12 +1068,16 @@ def stage_raw_payload_inventory(
                     if executable != (mode == "100755"):
                         divergent.append(rel)
             sha = writer.write(blob)
-            lines.append(f"{mode} {sha}\t{rel}".encode("utf-8", errors="surrogateescape"))
+            lines.append(f"{mode} {sha} 0\t{rel}".encode("utf-8", errors="surrogateescape"))
         writer.finish()
-    subprocess.run(
-        ["git", "update-index", "-z", "--index-info"],
-        cwd=str(root), capture_output=True, env=env,
-        input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+    update = subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=str(root), capture_output=True,
+                            env=env, input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+    listed = set(_git_env(root, "ls-files", "--stage", "-z", env=env).stdout.split(b"\0"))
+    unstaged = [line.partition(b"\t")[2] for line in lines if line not in listed]
+    if unstaged:  # names at most five; Git's own stderr is carried as evidence, never parsed
+        detail = b"update-index exited 0, but the index lacks %d of %d records as sent (%s); git: %s" % (
+            len(unstaged), len(lines), b", ".join(unstaged[:5]), update.stderr.strip()[:300])
+        raise RawStagingIncomplete(update.returncode, update.args, update.stdout, detail)
     return divergent
 
 
@@ -1126,20 +1140,27 @@ def _reproduce_confined_link(target_root: Path, src_link: Path, dest_link: Path)
     return True
 
 
-def _copy_payload_inventory(target: Path, dest: Path) -> int:
+def _copy_payload_inventory(target: Path, dest: Path, *, manifest_entry: str = "",
+                            manifest_scripts: Optional[List[Dict[str, Any]]] = None,
+                            preserve_links: bool = True) -> int:
     """Copy the exact skill-loader-visible inventory of ``target`` into ``dest``.
 
     The loader inventory is the SSOT walk (cache/control-dir exclusions, symlink
     escape exclusion, credential-shape refusal) — no second filesystem walk is
-    invented. A file reached through a symlinked ancestor directory reproduces
-    the ancestor LINK once instead of materializing a second copy under it.
+    invented; a declared manifest entry or script joins it even under an excluded
+    folder, exactly as it joins the content hash. A file reached through a
+    symlinked ancestor directory reproduces the ancestor LINK once instead of
+    materializing a second copy under it. Read-only review views set
+    ``preserve_links=False`` to retain each inventory path's bytes even when a
+    link points into an excluded dependency folder; they copy no extra files.
     """
     from ouroboros.skill_loader import _iter_payload_files
 
     resolved_target = target.resolve()
     dest.mkdir(parents=True, exist_ok=False)
     copied = 0
-    for path in _iter_payload_files(resolved_target):
+    for path in _iter_payload_files(resolved_target, manifest_entry=manifest_entry,
+                                    manifest_scripts=manifest_scripts):
         rel = path.relative_to(resolved_target)
         # A symlinked ANCESTOR directory is reproduced as the link itself; the
         # linked content is copied at its real (confined) location by its own
@@ -1148,7 +1169,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
         via_link = False
         for part in rel.parts[:-1]:
             ancestor = ancestor / part
-            if ancestor.is_symlink():
+            if preserve_links and ancestor.is_symlink():
                 link_rel = ancestor.relative_to(resolved_target)
                 if _reproduce_confined_link(resolved_target, ancestor, dest / link_rel):
                     copied += 1
@@ -1158,7 +1179,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
             continue
         out = dest / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink():
+        if preserve_links and path.is_symlink():
             if _reproduce_confined_link(resolved_target, path, out):
                 copied += 1
             continue

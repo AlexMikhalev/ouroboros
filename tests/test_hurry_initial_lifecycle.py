@@ -20,6 +20,7 @@ from ouroboros.utils import atomic_write_json
 from supervisor import queue, state, task_reaper, worker_health, workers
 from tests._usage_store_testing import ledger_rows
 from tests._store_shared import read_result, result_exists, result_signature
+from tests.worker_pool_support import affirm_ready
 
 
 @pytest.fixture
@@ -66,9 +67,9 @@ def pool(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "_ensure_reaper_started", lambda: None)
     monkeypatch.setattr(task_reaper, "_deferred_reap_jobs", [])
     monkeypatch.setattr(workers, "respawn_worker", respawns.append)
-    proc = SimpleNamespace(pid=None, alive=True, exitcode=None)
+    proc = SimpleNamespace(pid=2147483100, alive=True, exitcode=None)  # no OS process has it
     proc.is_alive = lambda: proc.alive
-    slot = workers.Worker(0, proc, stdqueue.Queue())
+    slot = affirm_ready(workers.Worker(0, proc, stdqueue.Queue()))
     monkeypatch.setattr(workers, "WORKERS", {0: slot})
     state.save_state({})  # an initialized install: only explicit init creates state (#1307)
     state.update_state(lambda row: row.update(owner_chat_id=1))
@@ -254,6 +255,10 @@ def test_create_only_observes_late_row_under_the_store_write_lock(tmp_path, stat
     """A create-only seed that meets another writer's open transaction waits for it and
     then observes the row that writer published: the late row lands once, unchanged."""
     from ouroboros.task_store import patch_document
+    from ouroboros.store_import import ensure_current_store
+
+    # The barrier measures an already held write transaction, not cold publication/probing.
+    ensure_current_store(tmp_path, with_children=False)
 
     entered, release = threading.Event(), threading.Event()
     late = {"task_id": "race", "status": status, "_schema_version": 1, "updated_at": "original",
@@ -267,16 +272,19 @@ def test_create_only_observes_late_row_under_the_store_write_lock(tmp_path, stat
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         holder = executor.submit(patch_document, tmp_path, "race", publish)
-        assert entered.wait(5)
-        creator = executor.submit(results.write_task_result, tmp_path, "race", "scheduled",
-                                  create_only=True, strict_existing_dict=True,
-                                  metadata={"late_grant": False}, result="must not land")
+        creator = None
         try:
+            assert entered.wait(5)
+            creator = executor.submit(results.write_task_result, tmp_path, "race", "scheduled",
+                                      create_only=True, strict_existing_dict=True,
+                                      metadata={"late_grant": False}, result="must not land")
             time.sleep(0.3)
             assert not creator.done()  # it is waiting on the holder's write transaction
         finally:
             release.set()
-        assert holder.result() == late and creator.result() == late
+            held = holder.result()  # surface a failed holder even when it never signalled entry
+            created = creator.result() if creator is not None else None
+        assert held == late and created == late
     assert result_signature(tmp_path, "race")[0] == 1 and read_result(tmp_path, "race") == late
 
 

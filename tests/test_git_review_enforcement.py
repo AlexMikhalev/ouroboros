@@ -239,37 +239,39 @@ class TestReviewEnforcementModes:
         assert saved.count("Note: 1 of 4 review models") == 1  # three seated answers + the failed row
 
     @pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
-    def test_w2_an_empty_pool_is_a_typed_pool_empty_not_performed_never_a_key_problem(
+    def test_w2_an_empty_pool_reviews_on_the_main_model_alone_never_a_key_problem(
         self, review_ctx, monkeypatch, enforcement
     ):
-        """The owner saved a catalog with no row marked Reviewer (the settings panel
-        promised: reviews will not run and report "not performed"). The gate states
-        exactly that, typed ``pool_empty``, dispatches nothing, and never blames
-        OPENROUTER_API_KEY (the old path sent ``models=[]`` to the executor and
-        reported its "models list is required" as an infrastructure failure)."""
-        from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_SENTENCE
+        """The owner saved a catalog with no row marked Reviewer. The gate reviews on ONE
+        seat, the Main model alone (owner decision B): it is dispatched, it answers both parts,
+        and the review records a single reviewer with no diversity — never the retired typed
+        ``pool_empty`` NOT_PERFORMED exit, and never a provider-key complaint about an empty
+        model list (the executor still refuses one itself)."""
         from tests.review_pool_rosters import FACTORY_MODELS, pool_roster, pool_seat, set_review_pool
 
         review, ctx = review_ctx
         self._mock_staged(monkeypatch, review, changed_files="x.py")
         monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+        monkeypatch.setenv("OUROBOROS_MODEL", "openai/main-model")
         set_review_pool(monkeypatch, pool_roster(pool_seat("helper", FACTORY_MODELS[0], marked=False)))
         dispatched = []
 
-        def executor(*args, **kwargs):  # the executor's own answer to an empty model list
+        def executor(*args, **kwargs):
             dispatched.append(kwargs.get("models"))
-            return json.dumps({"error": "models list is required"})
+            if not kwargs.get("models"):
+                return json.dumps({"error": "models list is required"})
+            return json.dumps({"results": [{
+                "model": "openai/main-model", "slot_id": "main", "verdict": "PASS",
+                "text": json.dumps({"change": [], "change_clean": True, "coupling": _clean_coupling_matrix()}),
+                "tokens_in": 0, "tokens_out": 0, "cost_estimate": 0.0}]})
 
         monkeypatch.setattr(review, "_handle_multi_model_review", executor)
         result = review._run_unified_review(ctx, "test commit", repo_dir=ctx.repo_dir)
-        assert dispatched == [], "nothing is dispatched for an empty pool"
-        assert ctx._last_review_block_reason == "pool_empty"
-        said = result if enforcement == "blocking" else " ".join(w for w in ctx._review_advisory if isinstance(w, str))
-        if enforcement == "blocking":
-            assert result is not None and "REVIEW_BLOCKED: review NOT_PERFORMED" in result
-        else:
-            assert result is None
-        assert REVIEW_POOL_EMPTY_SENTENCE in said and "pool_empty" in said
+        assert dispatched == [["openai/main-model"]], "the Main seat is the one reviewer"
+        assert result is None, result
+        assert getattr(ctx, "_last_review_block_reason", "") != "pool_empty"
+        assert "single_reviewer_no_diversity" in ctx._review_degraded_reasons
+        said = " ".join(w for w in getattr(ctx, "_review_advisory", []) if isinstance(w, str))
         assert "OPENROUTER_API_KEY" not in said and "models list is required" not in said
 
     def test_w2_the_not_performed_sentence_names_the_reason_that_decided(self, review_ctx, monkeypatch):

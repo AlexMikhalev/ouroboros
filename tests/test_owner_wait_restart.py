@@ -11,9 +11,12 @@ import datetime as dt
 import json
 import os
 import queue as stdqueue
+from itertools import count
 import threading
 import time
 from types import SimpleNamespace
+
+from tests.worker_pool_support import affirm_ready
 
 import pytest
 
@@ -28,9 +31,10 @@ from tests._store_shared import result_signature, unreadable_result
 class InertProcess:
     """A handle whose termination never reaches an operating-system PID."""
 
-    pid = None
+    _pids = count(2147483000)
 
     def __init__(self):
+        self.pid = next(self._pids)
         self.alive = True
 
     def is_alive(self):
@@ -43,9 +47,18 @@ class InertProcess:
         pass
 
 
+def kill_inert(pid, **kwargs):
+    """The pool's tree kill for an inert handle: terminate the slot its fake PID names."""
+    for slot in workers.WORKERS.values():
+        if slot.proc.pid == pid:
+            slot.proc.terminate()
+
+
 @pytest.fixture
 def restart_case(tmp_path, monkeypatch):
-    from supervisor import task_lifecycle, update_merge
+    from supervisor import task_lifecycle, update_merge, worker_pool_lifecycle
+
+    monkeypatch.setattr(worker_pool_lifecycle, "kill_worker_tree", kill_inert)
 
     pending, running = [], {}
     # The inert pool must not inherit a prior test's manager-backed event bus.
@@ -91,10 +104,15 @@ def restart_case(tmp_path, monkeypatch):
                         "started_at": started, "last_heartbeat_at": time.time(), "owner_wait": wait}
     process = InertProcess()
     monkeypatch.setattr(workers, "WORKERS", {
-        0: workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False),
+        0: affirm_ready(workers.Worker(0, process, SimpleNamespace(), busy_task_id=task_id, active_capacity=False)),
     })
-    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started,
-                           task=task, ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx")
+    # Each case owns its event frames. The process-lifetime bus is a SyncManager child that an
+    # earlier test's real stop path can leave dead in this worker; a terminal frame that cannot
+    # publish keeps its task in custody by design, which then reads as a stop that did not happen.
+    events = stdqueue.Queue()
+    monkeypatch.setattr(workers, "get_event_q", lambda: events)
+    return SimpleNamespace(root=tmp_path, task_id=task_id, attempt=attempt, started=started, task=task,
+                           ctx=ctx, wait=wait, process=process, transaction_id="native-restart-tx", events=events)
 
 
 def first_cleanup(case):
@@ -265,7 +283,7 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     case = restart_case
     case.task["root_task_id"] = case.task_id
     _working_run(case.root, workers, "saved-child", parent=case.task_id)
-    workers.WORKERS[1] = workers.Worker(1, InertProcess(), SimpleNamespace(), busy_task_id="saved-child")
+    workers.WORKERS[1] = affirm_ready(workers.Worker(1, InertProcess(), SimpleNamespace(), busy_task_id="saved-child"))
     if control == "stop_child":
         request_cancel(case.root, "saved-child", reason="owner stop", source="owner", requested_by="owner")
     if control == "bad_child_source":
@@ -286,6 +304,9 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
         assert load_task_result(case.root, "saved-child")["status"] == "cancelled"
     else:
         assert load_task_result(case.root, "saved-child")["status"] == "running"
+    terminal = [frame["status"] for frame in list(case.events.queue)
+                if frame.get("type") == "task_done" and frame.get("task_id") == "saved-child"]
+    assert terminal == (["cancelled"] if control == "stop_child" else [])
     # The lifespan's second cleanup sees the parent already queued and the child
     # still carried in RUNNING for recovery from its last working checkpoint.
     assert workers.kill_workers(
@@ -309,7 +330,7 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
     if control in {"unacknowledged", "panic"}:
         assert all(budget_hold_fact(row)["reason"] == HOLD_SAVED_WORK for row in rows.values())
         commands = stdqueue.Queue()
-        workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+        workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
         monkeypatch.setattr(workers, "load_state", lambda: {})
         workers.assign_tasks()
         assert commands.empty() and not workers.RUNNING
@@ -321,12 +342,15 @@ def test_preserved_question_parent_keeps_its_saved_running_child(restart_case, m
         from supervisor import state
 
         commands = stdqueue.Queue()
-        workers.WORKERS.update({wid: workers.Worker(wid, InertProcess(), commands) for wid in (0, 1)})
+        workers.WORKERS.update({wid: affirm_ready(workers.Worker(wid, InertProcess(), commands)) for wid in (0, 1)})
         monkeypatch.setattr(workers, "load_state", lambda: {})
         monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 100.0)
         workers.assign_tasks()
         assert {commands.get_nowait()["id"] for _ in rows} == set(rows)
-        assert commands.empty() and set(workers.RUNNING) == set(rows)
+        assert set(workers.RUNNING) == set(rows)
+        # Remaining input belongs only to the spare's quiescence protocol.
+        assert all(commands.get_nowait()["type"] == "worker_quiescence"
+                   for _ in range(commands.qsize()))
 
 
 @pytest.mark.parametrize("refusal", ["unacknowledged", "spent_wait", "panic", "owner_restart", "bad_source"])
@@ -351,10 +375,20 @@ def test_old_snapshot_never_revives_unproven_or_spent_wait(restart_case, monkeyp
         path = task_artifact_dir_path(case.root, case.task_id) / case.wait["source_ref"]["path"]
         path.write_bytes(b"broken source")
     restored = restore_stale_snapshot(case)
-    if refusal in {"spent_wait", "bad_source"}:
+    if refusal == "spent_wait":
         assert restored == 0 and not workers.PENDING
         return
     [row] = workers.PENDING
+    if refusal == "bad_source":
+        assert restored == 1 and budget_hold_fact(row)["dispatchable"] is False
+        assert row["_owner_wait_resume"]["source_ref"] == case.wait["source_ref"]
+        assert path.read_bytes() == b"broken source", "holding must not rewrite the original"
+        commands = stdqueue.Queue()
+        workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
+        monkeypatch.setattr(workers, "load_state", lambda: {})
+        workers.assign_tasks()
+        assert commands.empty() and not workers.RUNNING
+        return
     if refusal == "owner_restart":  # the owner's acknowledged Restart returns the wait it named
         assert row["_owner_wait_resume"]["source_ref"] == case.wait["source_ref"]
         assert budget_hold_fact(row) is None
@@ -365,7 +399,7 @@ def test_old_snapshot_never_revives_unproven_or_spent_wait(restart_case, monkeyp
     assert row["_working_recovery"]["source_ref"] == case.wait["source_ref"]
     assert row["_attempt"] == case.attempt + 1
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     monkeypatch.setattr(workers, "load_state", lambda: {})
     workers.assign_tasks()
     assert commands.empty() and not workers.RUNNING, "nothing runs before the owner's Resume"
@@ -440,7 +474,7 @@ def test_child_budget_fence_allows_only_restored_owner_continuation(restart_case
     assert queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
 
     commands = stdqueue.Queue()
-    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    workers.WORKERS[0] = affirm_ready(workers.Worker(0, InertProcess(), commands))
     monkeypatch.setattr(workers, "load_state", lambda: {})
     monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda task: True)
     monkeypatch.setattr(state, "budget_remaining", lambda *args, **kwargs: remaining)

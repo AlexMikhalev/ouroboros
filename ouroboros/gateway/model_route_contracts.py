@@ -15,7 +15,8 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
     from typing_extensions import Literal, NotRequired, TypedDict  # type: ignore[assignment]
 
 __all__ = ["WebSearchLeg", "WebSearchRoute", "ResponseLimit", "ResponseLimitRoute",
-           "ResponseLimitPreview", "ResponseLimitAckResponse"]
+           "ResponseLimitPreview", "ResponseLimitAckResponse", "CapabilityAckRequest",
+           "ContextWindowAck", "ContextWindowAckResponse"]
 
 
 class WebSearchLeg(TypedDict):
@@ -74,3 +75,40 @@ class ResponseLimitAckResponse(TypedDict):
 
     ok: Literal[True]
     ack: ResponseLimit
+
+
+class CapabilityAckRequest(TypedDict):
+    """``POST /api/owner/capability-ack``: the owner vouches for one exact route. With
+    ``max_output_tokens`` present it records that route's maximum response (0 removes it);
+    otherwise ``window_tokens`` (a positive integer) records its context window. ``route_fp``,
+    when sent, must equal the fingerprint the preview showed, or the request is refused (400).
+    It writes acknowledgement evidence, never settings; repeating it overwrites the same record."""
+
+    provider: str
+    model: str
+    base_url: NotRequired[str]
+    options: NotRequired[Dict[str, Any]]  # a subscription's exact account binding
+    headers: NotRequired[Dict[str, Any]]  # context window only
+    route_fp: NotRequired[str]
+    max_output_tokens: NotRequired[int]
+    window_tokens: NotRequired[int]
+    note: NotRequired[str]  # context window only
+
+
+class ContextWindowAck(TypedDict):
+    """``capability_evidence.record_owner_ack``: an owner-asserted context window for one route."""
+
+    route_fp: str
+    window_tokens: int
+    owner: str
+    ts: str
+    note: str
+    route: Dict[str, Any]  # {provider, base_url, model, headers: [[k, v]], options: [[k, v]]}
+    binding_evidence: NotRequired[Dict[str, Any]]  # a subscription route's current account binding
+
+
+class ContextWindowAckResponse(TypedDict):
+    """``POST /api/owner/capability-ack`` with ``window_tokens``."""
+
+    ok: Literal[True]
+    ack: ContextWindowAck

@@ -9,6 +9,7 @@ import json
 from typing import Any, Dict, Optional
 
 from ouroboros.deadline_utils import bounded_seconds
+from ouroboros.delegate_start_instructions import HOST_FACTS_INSTRUCTION
 from ouroboros.triad_review import default_output_contract, review_output_shape
 
 
@@ -18,10 +19,11 @@ def render_review_session_prompt(request: Any, slot: Any, task: str) -> str:
     contract = contract or default_output_contract(review_output_shape(request.surface))
     access = str(getattr(slot, "session_access", "") or "readonly")
     return "\n".join((
-        "You are an independent Ouroboros reviewer slot running as a read-only agent session."
-        if access == "readonly" else
-        f"You are an independent Ouroboros reviewer slot running as an agent session with {access} "
-        "technical access in a private checking copy.",
+        ("You are an independent Ouroboros reviewer slot running as a read-only agent session."
+         if access == "readonly" else
+         f"You are an independent Ouroboros reviewer slot running as an agent session with {access} "
+         "technical access in a private checking copy.")
+        + HOST_FACTS_INSTRUCTION,  # an agent session has a shell HOME; the raw API reviewer prompt does not
         f"Surface: {request.surface}", f"Role hint: {slot.role_hint or 'general reviewer'}", "", task, "",
         "OUTPUT CONTRACT (your host parses this structurally):",
         contract + "\nThis contract governs the unwrapped substantive deliverable; emit any host-required transport metadata outside it exactly as separately instructed.",

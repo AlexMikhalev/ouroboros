@@ -34,7 +34,7 @@ def test_behavior_runs_from_review_and_power_to_the_host_tail() -> None:
 def test_advanced_opens_with_the_limits_and_ends_with_the_danger_zone() -> None:
     assert _titles("advanced") == [
         "Runtime Limits", "MCP Servers", "Source Control", "Local Model Runtime", "Extension Settings",
-        "Extra CA Certificates", "Cleanup", "Danger Zone",
+        "Extra CA Certificates", "Main Interface", "Cleanup", "Danger Zone",
     ]
 
 

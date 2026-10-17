@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests._budget_pause_exact_helpers import _install_queue
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -365,8 +366,8 @@ def test_queued_retry_root_resume_leaves_its_queued_members_to_explicit_selectio
     workers.PENDING.append(child)
     sent = []
     for wid in (0, 1):
-        workers.WORKERS[wid] = SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
-                                               in_q=SimpleNamespace(put=lambda t: sent.append(dict(t))))
+        workers.WORKERS[wid] = affirm_ready(SimpleNamespace(wid=wid, busy_task_id=None, reaping=False,
+                                               in_q=SimpleNamespace(put=lambda t: sent.append(dict(t)) if t.get("type") != "worker_quiescence" else None)))
     assert request_owner_pause("root", request_id="P")["state"] == "paused"
     assert q.resume_budget_paused_task("root")["ok"]
     assert budget_hold_fact(child)["reason"] == HOLD_ROOT_FENCE_LIFTED

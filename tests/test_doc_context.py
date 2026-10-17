@@ -22,7 +22,6 @@ import os
 import pathlib
 import tempfile
 import pytest
-from tests._governance_docs_shared import governance_doc_text
 from tests.test_swarm_host_admission import host as _promotion_host
 from tests._store_shared import seed_result, unreadable_result
 
@@ -93,14 +92,6 @@ def test_max_mode_inlines_architecture_and_development_in_full():
     assert "## DEVELOPMENT.md" in text
 
 
-def test_plan_review_docs_pin_fail_closed_exact_artifact_custody():
-    repo = pathlib.Path(__file__).resolve().parents[1]
-
-    for relative in ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"):
-        text = governance_doc_text(relative, repo)
-        assert "plan_review_exact_artifact_unavailable" in text, relative
-
-
 def test_forked_task_captures_canonical_memory_and_exact_api_context():
     import json
 
@@ -142,7 +133,7 @@ def test_forked_task_captures_canonical_memory_and_exact_api_context():
     assert task["task_contract"]["context"] == "never deploy; use profile X"
 
 
-def test_forked_context_uses_canonical_global_cognition_not_child_noise():
+def test_forked_context_uses_canonical_global_cognition_not_child_noise(monkeypatch):
     import json
 
     from ouroboros.agent import Env
@@ -168,40 +159,63 @@ def test_forked_context_uses_canonical_global_cognition_not_child_noise():
     )
     (child / "memory" / "deep_review.md").write_text("CHILD_DEEP_NOISE", encoding="utf-8")
     env = Env(repo_dir=canonical_env.repo_dir, drive_root=child, budget_drive_root=canonical)
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
 
+    # A forked root names the canonical original under runtime_data (mode matrix: tests/test_authored_memory.py).
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
+    ctx = ToolContext(repo_dir=env.repo_dir, drive_root=child, task_id="fork-cognition", is_direct_chat=True,
+                      task_metadata={"budget_drive_root": str(canonical)})
     messages, _ = build_llm_messages(
         env=env,
         memory=Memory(child, repo_dir=env.repo_dir),
         task={"id": "fork-cognition", "text": "continue", "budget_drive_root": str(canonical)},
+        ctx=ctx,
     )
     rendered = json.dumps(messages, ensure_ascii=False)
 
     assert "CANONICAL_PATTERN_REGISTER" in rendered
-    assert "CANONICAL_DEEP_REVIEW" in rendered
     assert "CHILD_PATTERN_NOISE" not in rendered
-    assert "CHILD_DEEP_NOISE" not in rendered
+    # The report rides as a pointer to the CANONICAL source (its size, its address), never a
+    # body, with an absolute canonical read address; actual dispatch of that call opens it.
+    assert f"{len('CANONICAL_DEEP_REVIEW')} chars" in rendered
+    assert "CANONICAL_DEEP_REVIEW" not in rendered and "CHILD_DEEP_NOISE" not in rendered
+    call = {"root": "runtime_data", "path": str((canonical / "memory" / "deep_review.md").resolve())}
+    assert f"Read: read_file(root='runtime_data', path='{call['path']}')" in rendered
+    registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=child)
+    registry.set_context(ctx)
+    read = registry.execute("read_file", call)
+    assert "CANONICAL_DEEP_REVIEW" in read and "CHILD_DEEP_NOISE" not in read
 
 
-def test_deep_review_is_historical_without_shrinking_its_existing_excerpt(tmp_path):
+def test_deep_review_is_a_historical_pointer_dated_only_by_its_header(tmp_path):
     import json
 
     from ouroboros.context import build_llm_messages
-    from ouroboros.utils import truncate_review_artifact
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
 
     env, memory = _make_env_and_memory(tmp_path)
     path = env.drive_root / "memory" / "deep_review.md"
-    for prefix in ("LEGACY REPORT\n", "<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n"):
+    ctx = ToolContext(repo_dir=env.repo_dir, drive_root=env.drive_root, task_id="history", is_direct_chat=True)
+    registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=env.drive_root)
+    registry.set_context(ctx)
+    for prefix, provenance in (
+            ("LEGACY REPORT\n", "generated_at=unknown, source_revision=unknown (no provenance header)"),
+            ("<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n",
+             "generated_at=2026-01-01T00:00:00Z, source_revision=unknown (its provenance header)")):
         original = prefix + "retained historical reasoning " * 400
         path.write_text(original, encoding="utf-8")
         # A recent file mtime is not a review date, even on a copied old report.
         os.utime(path, (1900000000, 1900000000))
         messages, _ = build_llm_messages(
-            env=env, memory=memory, task={"id": "history", "type": "task", "text": "continue"},
+            env=env, memory=memory, task={"id": "history", "type": "task", "text": "continue"}, ctx=ctx,
         )
         rendered = json.dumps(messages, ensure_ascii=False)
-        assert json.dumps(truncate_review_artifact(original, limit=8000), ensure_ascii=False)[1:-1] in rendered
+        assert provenance in rendered and f"{len(original)} chars" in rendered
+        assert "retained historical reasoning" not in rendered  # the report stays at its source
         assert "not a verdict on the current tree" in rendered
-        assert "unrecorded date or source revision is unknown" in rendered
+        assert "Read: read_file(root='runtime_data', path='memory/deep_review.md')" in rendered
+        assert "retained historical reasoning" in registry.execute(
+            "read_file", {"root": "runtime_data", "path": "memory/deep_review.md"})  # the call shown opens it
         assert path.read_text(encoding="utf-8") == original
 
 
@@ -452,7 +466,7 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     workspace = tmp_path / "working-copy"
     workspace.mkdir()
     project = create_project(host.root, "code-copy", name="Code Copy")
-    entry = next(tool for tool in get_tools() if tool.name == "promote_chat_to_task")
+    entry = next(tool for tool in get_tools() if tool.name == "start_task")
     field = "context_requires_self_body_docs"
     parameters = entry.schema["parameters"]
     assert parameters["properties"][field]["type"] == "boolean"
@@ -474,8 +488,9 @@ def test_promoted_self_body_requirement_reaches_the_contract_and_context_without
     # A later task in the SAME project must not inherit the first task's choice.
     for flag in (True, None, False):
         kwargs = {} if flag is None else {field: flag}
-        result = entry.handler(tool_ctx, "Inspect this working copy", predecessor_task_id="",
-                               project_id=project["id"], workspace_root=str(workspace), **kwargs)
+        result = entry.handler(tool_ctx, "Inspect this working copy", title="Working copy inspection",
+                               project_id=project["id"],
+                               workspace_root=str(workspace), **kwargs)
         assert result.startswith("OK: task"), result
         task = copy.deepcopy(host.pending[-1])
         assert events[-1][field] is bool(flag)

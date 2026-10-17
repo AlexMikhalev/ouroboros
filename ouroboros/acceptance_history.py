@@ -169,7 +169,7 @@ def retain_acceptance_history(drive_root: Any, task: dict, text: str, trace: dic
     from ouroboros.utils import utc_now_iso
 
     seed = trace.get("acceptance_history_seed")
-    if not isinstance(seed, dict):
+    if not isinstance(seed, dict) or (usage or {}).get("wake_silent") is True:  # a silent wake emitted no delivery
         return {}
     if emitted_delivery_authorship(delivery, usage) == DELIVERY_AUTHOR_HOST:
         return {}
@@ -319,6 +319,8 @@ def historical_review_controls(root: Any, row: dict, debt: dict, *, caller_task_
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
     from ouroboros.owner_mailbox import drain_owner_entries, KIND_HURRY, KIND_FINALIZE_NOW
     from ouroboros.task_results import load_task_result
+    from ouroboros.store import StoreBusy
+    from ouroboros.model_wait import control_probe_active
 
     blocked = []
     root = Path(root)
@@ -394,6 +396,10 @@ def historical_review_controls(root: Any, row: dict, debt: dict, *, caller_task_
         accounting = load_task_result(root, debt["accounting_root_task_id"], strict=True)
         if check_paid and (accounting is None or not _zero_physical({}, accounting, pending_panel=pending_panel)):
             blocked.append("paid_or_unknown_panel")
+    except StoreBusy as exc:
+        if exc.reason == "contention" and control_probe_active():
+            raise  # The wait owner retains an unknown probe; it is not a Stop.
+        blocked.append("control_authority_unavailable")
     except Exception:
         blocked.append("control_authority_unavailable")
     return list(dict.fromkeys(blocked))
