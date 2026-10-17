@@ -1065,8 +1065,8 @@ Project with nothing else keeps its latest represented root. A row names its wor
 (the card's coined name or title, else the owner's message) in two lines that
 keyboard focus or open details show whole, with the state under the name in the
 card's or census's own words: an outcome stays beside `Finalizing…`, an access
-wait is not an answer wait, unknown stays unknown, a pause keeps its cause and
-each paused remainder its own row. The name goes to the work's message wherever
+wait is not an answer wait, unknown stays unknown and a pause keeps its cause.
+The name goes to the work's message wherever
 it lies, finished work included: its card or the owner's message when loaded, else
 the room reads the page of its history around the work's first message there and
 lands on it, the list staying open while it looks. Before that a row claims nothing

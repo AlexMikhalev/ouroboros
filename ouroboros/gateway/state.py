@@ -367,8 +367,8 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     if synthesis:
         display["root_phase_checkpoint"] = {"post_task_synthesis": synthesis}
     if _answer_stored(synthesis):
-        # An answered root whose late phase remains (D10) names its work where no
-        # card does: Activity shows it beside the saved remainder's controls.
+        # An answered root whose late work remains names it where no card does:
+        # Activity shows it beside that work's controls.
         from ouroboros.projects_registry import task_presentation_name
         from ouroboros.terminal_time import terminal_time_fact
 
@@ -377,7 +377,7 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
                                 "answered_at": terminal_time_fact(data).get("occurred_at") or ""}
     facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis, "card": card_facts(data),
              "display": display,
-             # An answered root's census row (D10) carries only its own routing identity.
+             # An answered root's census row carries only its own routing identity.
              "row": {key: data[key] for key in ("chat_id", "project_id", "_is_direct_chat", "queued_at")
                      if key in data},
              "owner_wait": {key: wait[key] for key in ("quiz_id", "state", "resume_reason", "reason")
@@ -680,21 +680,20 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
         from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
         visible = {row["activity_id"]: row for row in activities}
         for root_id, latch in fence_rows.items():
-            # D10: an answered root under the owner's Pause whose late phase is the
-            # tree's remaining work — its answer stays Done; the remainder pauses.
+            # An answered root under the owner's Pause whose late work is the tree's
+            # remaining work: its answer stays Done while the Pause ends its upkeep
+            # and a review's unsent preparation waits for Resume.
             if latch.get("cause") != "owner_pause" or root_id in visible:
                 continue
             facts = _task_activity_facts(drive_root, root_id)
             if root_id in active_roots and not (
-                    facts.get("late_phase") == "paused" or facts.get("finalizing")
-                    or post_task_synthesis_in_flight(drive_root, root_id)
+                    facts.get("finalizing") or post_task_synthesis_in_flight(drive_root, root_id)
                     or task_has_live_review_operation(drive_root, root_id)
                     or paused_acceptance_preparations(drive_root, root_id, str(latch.get("fence_id") or ""))):
                 continue  # the logical fence alone is no second actor; genuine late work stays
             # The fence's own census is the truth of "Paused": reviewers already
             # launched finish separately and never keep the tree Pausing.
-            if facts.get("late_phase") == "paused" or _owner_fence_state(
-                    drive_root, {"root_task_id": root_id}, root_id) == "paused":
+            if _owner_fence_state(drive_root, {"root_task_id": root_id}, root_id) == "paused":
                 phase = "budget_paused"
             elif (facts.get("finalizing") or post_task_synthesis_in_flight(drive_root, root_id)
                   or task_has_live_review_operation(drive_root, root_id, sent_only=True)):
@@ -714,7 +713,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 work_facts.setdefault(owner.task_id, _raw_work_facts(owner.task))
             waits = owner.snapshot()["model_waits"]
             if owner.task_id in visible:
-                # A Pause settling over the late phase stays "pausing", never back to finalizing.
+                # A Pause ending the late phase stays "pausing", never back to finalizing.
                 pausing = visible[owner.task_id]["phase"] in {"budget_pausing", "budget_paused"}
                 visible[owner.task_id].update(model_waits=waits, task_attempt=owner.attempt,
                                               **({} if pausing else {"phase": "finalizing"}))
@@ -821,9 +820,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
 def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[[Any, dict], bool]) -> list:
     """Census roots a recent history page addresses as current work of its room.
 
-    An answered root whose late phase alone remains (D10: the answer stays, the owner
-    paused only its post-task work) is not current conversation: its card stays beside
-    its delivered answer and Activity offers the saved remainder, so it is never
+    An answered root whose late work alone remains (the answer stays; its upkeep or a
+    deferred review is still open) is not current conversation: its card stays beside
+    its delivered answer and Activity offers that work's controls, so it is never
     re-addressed at the end of a page that no longer holds its own rows. Only this room's
     owners pay for their facts: the census of every room's work stays with ``/api/state``."""
     in_room = [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings, owners_only=True)

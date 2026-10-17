@@ -32,15 +32,22 @@ def test_census_uses_physical_actor_and_keeps_actual_late_work(
         host, monkeypatch, clock, reaper, door, separate_late_work):  # noqa: F811
     task, _child, _plan = paused_retry(host, monkeypatch, clock, reaper, door)
     if separate_late_work:
-        # Addressed late-phase producer fact, not an extra current queue actor.
+        # Addressed late-phase producer fact (its upkeep still open under the Pause),
+        # not an extra current queue actor.
         patch_document(host.root, "held", lambda row: {**row, "status": "completed",
-            "root_phase_checkpoint": {"post_task_synthesis": "paused"}})
+            "root_phase_checkpoint": {"post_task_synthesis": "running"}})
     available = {"complete": True}
     rows = _chat_activities_snapshot_safe(host.root, direct_turns=[], availability=available)
     expected = [task["id"], *(["held"] if separate_late_work else [])]
     print("Physical census", {"door": door, "late_work": separate_late_work, "rows": rows})
     assert available["complete"] and [r["activity_id"] for r in rows] == expected
     assert all(r["phase"] == "budget_paused" for r in rows)
+    if separate_late_work:
+        # That upkeep still writes: the tree's Resume waits for it, then admits the same actor.
+        refused = queue.resume_budget_paused_task(task["id"])
+        assert not refused["ok"] and "late_phase_running" in json.dumps(refused), refused
+        patch_document(host.root, "held", lambda row: {
+            **row, "root_phase_checkpoint": {"post_task_synthesis": "degraded"}})
     assert queue.resume_budget_paused_task(task["id"])["ok"]
 
 

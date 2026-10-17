@@ -1,5 +1,7 @@
-"""External review discriminator: one owner Resume owes both paused late paths.
+"""External review discriminator: one owner Pause over both late paths, then one Resume.
 
+The Pause ends the post-answer upkeep at once (nothing is saved) and defers the
+dead unsent acceptance preparation; one Resume restores only that preparation.
 All paid transport is synthetic. Source is imported read-only; data lives in the
 safe_test disposable root. The retained preparation controller is joined.
 """
@@ -17,13 +19,14 @@ pytestmark = pytest.mark.serial
 
 
 @pytest.mark.parametrize("unknown_preparation", [False, True])
-def test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp_path, monkeypatch, unknown_preparation):
+def test_pause_ends_the_upkeep_and_one_resume_restores_the_dead_acceptance_preparation(
+        late, tmp_path, monkeypatch, unknown_preparation):
     from ouroboros import agent_task_pipeline as pipeline, review_operation
     from ouroboros.owner_pause import read_fence
     from ouroboros.task_results import load_task_result, write_task_result
     from ouroboros.usage_accounting import UsageScope, usage_scope, AttemptRequest, execute_physical_attempt
     from supervisor.owner_pause_control import request_owner_pause
-    from tests.test_late_phase_pause_resume import _spawned, _join
+    from tests.test_late_phase_pause_cut import _spawned, _join
 
     f = delivered(tmp_path, monkeypatch)
     q, _, workers = _install_queue(f.root, monkeypatch)
@@ -57,7 +60,9 @@ def test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp
             _, initial_threads = _spawned(lambda: pipeline._run_post_task_processing_async(env, task, {}, {}, f.root / 'logs', blocking=False))
         _join(initial_threads)
         before = load_task_result(f.root, f.tid)
-        assert before['root_phase_checkpoint']['post_task_synthesis'] == 'paused'
+        upkeep = before['root_phase_checkpoint']
+        assert upkeep['post_task_synthesis'] == 'degraded' and 'post_task_pause' not in upkeep
+        assert upkeep['post_task_stop_reason'] == 'owner_pause:skipped=scratchpad_consolidation,promotion'
         old = before['review_operations'][preparation['owner_id']]
         assert old['state'] == 'preparing' and old['preparation_pause']['fence_id'] == read_fence(f.root, f.tid)['fence_id']
     finally:
@@ -75,21 +80,21 @@ def test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp
     # already reopened before its snapshot update; it owns admission authority.
     persist = q.persist_queue_snapshot
     monkeypatch.setattr(q, 'persist_queue_snapshot', lambda *, reason='', **kw:
-                        False if reason == 'owner_pause_late_resumed' else persist(reason=reason, **kw))
+                        False if reason == 'owner_pause_late_released' else persist(reason=reason, **kw))
     fence_before = read_fence(f.root, f.tid)
     resumed, threads = _spawned(lambda: q.resume_budget_paused_task(f.tid))
     _join(threads)
     if unknown_preparation:
         assert not resumed['ok'], resumed
         assert read_fence(f.root, f.tid) == fence_before
-        assert load_task_result(f.root, f.tid)['root_phase_checkpoint']['post_task_synthesis'] == 'paused'
+        assert load_task_result(f.root, f.tid)['root_phase_checkpoint'] == upkeep
         assert entered == ['scratchpad_consolidation'] and not late.calls
         return
     assert resumed['ok'], resumed
     from tests.test_review_operation_lifetime import until
     until(lambda: not review_operation._LIVE)  # the retained panel can outlive its preparation worker
     after = load_task_result(f.root, f.tid)
-    assert after['root_phase_checkpoint']['post_task_synthesis'] == 'completed', after['root_phase_checkpoint']
+    assert after['root_phase_checkpoint'] == upkeep, after['root_phase_checkpoint']  # nothing of it resumed
     assert after['status'] == before['status'] and after['result'] == before['result']
     observed = after['review_operations'][preparation['owner_id']]
     recovery_after_resume = review_operation.recover_orphaned_acceptance_operations(f.root)
@@ -103,7 +108,7 @@ def test_one_resume_restores_post_task_and_dead_acceptance_preparation(late, tmp
     assert len(late.calls) == 3
     assert set(after['review_operations']) == {preparation['owner_id']}
     assert after['acceptance_debt'] == before['acceptance_debt']
-    assert entered == ['scratchpad_consolidation', 'scratchpad_consolidation']
+    assert entered == ['scratchpad_consolidation']
     assert all(scope.task_id == f.tid and scope.root_task_id == f.tid and scope.root_limit_usd == 4.0
                for scope, _ in late.calls)
     assert not q.resume_budget_paused_task(f.tid)['ok']

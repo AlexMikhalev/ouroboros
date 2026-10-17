@@ -719,25 +719,21 @@ def _finish_captured_chat_turn(
     return CANCEL_ALREADY_SETTLED if outcome == DIRECT_TURN_STOP_GONE else CANCEL_CANCELLED
 
 
-def stop_paused_late_phase_custody(q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None) -> bool:
-    """The owner's Stop of an answered root's paused late phase (D10).
+def stop_paused_late_review_custody(q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None) -> bool:
+    """The owner's Stop of an answered root's late review its Pause deferred.
 
-    Saved post-task work degrades with ``owner_stopped`` and its skipped stages;
-    an unsent review records ``preparation_refused/owner_stopped``. The delivered
-    answer/status stay, and unused grants revoke. Live work keeps its own owner.
+    An unsent review records ``preparation_refused/owner_stopped``; the delivered
+    answer/status stay. Live work keeps its own owner.
     """
-    from ouroboros.post_task_synthesis import stop_paused_late_phase
     from ouroboros.review_operation import stop_paused_acceptance_preparations
     from supervisor.owner_pause_control import late_phase_settled
     from supervisor.task_lifecycle import _settle_intent
 
     try:
-        stopped_post = stop_paused_late_phase(q.DRIVE_ROOT, task_id)
-        stopped_review = stop_paused_acceptance_preparations(q.DRIVE_ROOT, task_id)
-        if not stopped_post and not stopped_review:
+        if not stop_paused_acceptance_preparations(q.DRIVE_ROOT, task_id):
             return False
     except Exception:
-        log.warning("Stop of the saved late phase of %s was not recorded", task_id, exc_info=True)
+        log.warning("Stop of the deferred late review of %s was not recorded", task_id, exc_info=True)
         return False
     _settle_intent(q, task_id, outcome="cancelled", detail="late_phase_owner_stopped", intent=intent)
     late_phase_settled(q.DRIVE_ROOT, task_id)

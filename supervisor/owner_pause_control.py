@@ -8,8 +8,9 @@
    Pause is the tree's, never one member's. A timeout retry's current attempt
    pauses its LOGICAL root's tree (#1730, ``owner_pause.root_actor``): every
    launch gate reads that root's fence and latch. An answered root whose late work
-   is still open (D10: post-task synthesis or a retained review operation)
-   is the ``late`` lane: its delivered answer stays, the remainder pauses.
+   is still open (post-task upkeep or a retained review operation) is the
+   ``late`` lane: its delivered answer stays, the Pause ends the upkeep at once
+   and defers a review's unsent preparation until Resume.
 2. The durable fence on the root's task result (atomic replace). Nothing is
    acknowledged before it lands; a failed write changes nothing else.
 3. Under the queue lock again, the root's existing admission latch
@@ -31,9 +32,9 @@ once none does — reviewers that already launched finish separately, recorded a
 ``finishing_reviews`` and announced to the owner once each way (``refresh_owner_pause_tree``, called at every owner-reason
 park, after a member's terminal and from the assignment tick's observe-only
 re-check ``settle_requested_owner_pauses``). Only an explicit owner Resume of the root
-reopens it — except an answered root whose late work ended with nothing saved
-(D10): no member, no open phase, no live review; that Pause has nothing left
-and is released. Budget-pause policy is untouched; the only stop this module's
+reopens it — except an answered root whose late work ended: no member, no
+open phase, no live review and no deferred preparation; that Pause has nothing
+left and is released. Budget-pause policy is untouched; the only stop this module's
 settle tick names is the member park's own (``stop_task_owned``), re-read
 from its recorded outcome, never re-issued blindly.
 """
@@ -65,7 +66,11 @@ def _locate_root_locked(q: Any, task_id: str) -> Tuple[Optional[Dict[str, Any]],
 
 
 def _late_work(q: Any, task_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
-    """``(result_row, live_review)`` of an answered root still owning late work, else ``(None, False)``."""
+    """``(result_row, live_review)`` of an answered root still owning late work, else ``(None, False)``.
+
+    Its open or in-flight upkeep is reachable so the Pause can end it at once; a live
+    review operation is reachable so its unsent preparation can wait for Resume.
+    """
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight, post_task_synthesis_is_open
     from ouroboros.review_operation import task_has_live_review_operation
     from ouroboros.task_results import load_task_result
@@ -353,8 +358,8 @@ def refresh_owner_pause_tree(root_task_id: str) -> str:
     from ouroboros.review_operation import task_has_live_review_operation
 
     try:
-        # The answered root's unsaved late phase still runs (D10): its saved pause
-        # is not yet written. Its review, like every member's, finishes separately.
+        # The answered root's late phase still runs: the Pause ends it at its next
+        # paid boundary. Its review, like every member's, finishes separately.
         if post_task_synthesis_in_flight(root_drive, root_task_id):
             return str(fence.get("state") or "")
         for item in parked:
@@ -439,7 +444,7 @@ def _announce_finishing_reviews(root_drive: Any, root_task_id: str, before: Any,
 
 
 def late_phase_settled(drive_root: Any, root_task_id: str) -> None:
-    """A late phase off the pooled lane just parked, ended or was stopped (D10).
+    """A late phase off the pooled lane just ended, was cut by a Pause or was stopped.
 
     Settle the root's Pause (``paused``, or released when nothing remains) and
     re-check held Continues. Pooled workers reach the same checks through
@@ -479,8 +484,9 @@ def complete_owner_pause_latch(root_task_id: str, fence: Dict[str, Any]) -> Opti
 
 
 def retain_late_phase_latch(drive_root: Any, root_task_id: str) -> None:
-    """Startup: a saved late phase keeps its owner Pause latch (and so its census row
-    and Resume) even when the restored snapshot was too old to carry it. Never a grant."""
+    """Startup: an answered root's deferred late review keeps its owner Pause latch (and so
+    its census row and Resume) even when the restored snapshot was too old to carry it.
+    Never a grant."""
     from ouroboros.owner_pause import fence_closed, read_fence
     from supervisor import queue as q
 
