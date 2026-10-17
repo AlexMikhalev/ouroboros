@@ -167,14 +167,17 @@ defensive projection of a predecessor's authority, never a raw head/tail slice, 
 summary or a canonical-result mutation (ARCHITECTURE §1 "CLI / Headless Boundary"); the
 optional exact read is `get_task_result(include_authority=True)`.
 
-The root startup injection is a bounded envelope, not a body copy, from the one producer
-`contracts.task_contract.bounded_continuation_envelope`: each field is whole-or-pointer
-under its serialized budget (previews carry `full_chars` and a `source_ref`;
-`previous_task_id` keeps the chain walkable), durable `task_results` bodies stay the SSOT,
-and no hop cap exists: depth belongs to the mind, the floor only keeps bodies off the wire.
-Children and external work orders receive the pure, idempotent brief
-`main_context_authority.project_helper_predecessor_authority`; a brief never stands in
-for the omitted evidence. Enforcement: `tests/test_continuation_context_authority.py`.
+Every consumer of a predecessor — the successor's start, children and external work
+orders — receives the same pure, idempotent brief
+`main_context_authority.project_helper_predecessor_authority` of the one bounded envelope
+producer `contracts.task_contract.bounded_continuation_envelope` (answer and core fields
+whole-or-pointer under the serialized budget; previews carry `full_chars` and a
+`source_ref`; `previous_task_id` keeps the chain walkable through readers). Durable
+`task_results` bodies stay the SSOT; a brief never stands in for the omitted evidence, it
+names every omitted field with its size. No hop cap and no chain walk exist: each successor
+reads its own predecessor through `get_task_result(include_authority=True)`; the
+predecessor mind's own notes follow the assignment as one foldable row. Enforcement:
+`tests/test_continuation_context_authority.py`, `tests/test_helper_predecessor_history.py`.
 
 ### Invariant: notifications ring for live events only
 

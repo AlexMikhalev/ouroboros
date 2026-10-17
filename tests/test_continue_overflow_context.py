@@ -1,4 +1,4 @@
-"""A real Continue envelope survives Main's provider-refusal address recovery.
+"""A real Continue brief survives Main's provider-refusal address recovery.
 
 Admission, startup, first-request construction, file delivery and the recovery
 loop are real. Only the model transport is a fixture; no provider is called.
@@ -71,7 +71,7 @@ def _run_refusal(registry, messages, task, monkeypatch):
 
 @pytest.mark.parametrize("flag", [True, False, None])
 @pytest.mark.parametrize("mode", ["max", "low"])
-def test_continue_envelope_survives_overflow_relocation(tmp_path, monkeypatch, flag, mode):
+def test_continue_brief_survives_overflow_relocation(tmp_path, monkeypatch, flag, mode):
     from ouroboros.agent_startup_checks import validate_task_authority_sources
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.context import build_llm_messages

@@ -110,11 +110,12 @@ def test_two_local_folds_keep_earlier_note_index_and_sources_through_cold_captur
     assert actor_notes(_capture(harness.make_ctx())) == notes
     assert _state(harness) == original_state
     env, task = successor(ctx)
+    from ouroboros.main_context_authority import predecessor_notes_message
+
     runtime = _task_authority_projection(env, task)
-    historical = runtime["predecessor_authority"]["historical_review_context"]
-    assert FIRST in historical["authored_account"]["text"] and SECOND in historical["authored_account"]["text"]
-    assert historical["authored_account"]["authorship"] == "predecessor_actor"
-    assert not historical["source_gaps"]
+    assert "historical_review_context" not in json.dumps(runtime), "no history walk in the frozen prefix"
+    note = predecessor_notes_message(task, drive_root=ctx.drive_root)["content"]
+    assert FIRST in note and SECOND in note and note.index(FIRST) < note.index(SECOND)
     assert view.SELECTED_VIEW_FIELD not in load_task_result(ctx.drive_root, task["id"])
 
 

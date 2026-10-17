@@ -140,7 +140,6 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     from ouroboros.context import _task_authority_projection
     from ouroboros.owner_mailbox import KIND_OWNER_TEXT, write_owner_message
     from ouroboros.tools.control_runtime import _send_user_message
-    from ouroboros.tools.core_file_tools import _read_file
     from ouroboros.tools.owner_delivery import publish_pending_owner_dialogue
     from supervisor.message_bus import log_chat
 
@@ -183,7 +182,7 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     env = Env(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     successor, assembled, request, _ = send_next(env, task)
     text = message_text(request["messages"])
-    for retained in (FIRST, SECOND, "Earlier chart alternatives.", CURRENT, ANSWER):
+    for retained in (FIRST, SECOND, CURRENT, ANSWER):
         assert retained in text and retained in message_text(assembled)
     # Newline escaping varies by provider content wrapper; the room keeps the exact words.
     assert all(line in text for line in SPOKEN.splitlines())
@@ -191,16 +190,23 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     assert _state(harness) == before_state and substrate.calls == []
     assert review_history_view.SELECTED_VIEW_FIELD not in load_task_result(ctx.drive_root, task["id"])
     assert SPOKEN not in str(successor._owner_directives) and ANSWER in str(successor._owner_directives)
-    historical = _task_authority_projection(env, task)["predecessor_authority"]["historical_review_context"]
-    assert historical["authored_account"]["authorship"] == "predecessor_actor" and not historical["source_gaps"]
-    recovered = []
-    for source in historical["source_reads"]:
-        arguments = source["read"]["arguments"]
-        assert json.dumps(arguments["path"], ensure_ascii=False) in text
-        recovered.append(_read_file(successor, **{**arguments, "max_chars": 200_000}))
-    assert any(RATIONALE in source for source in recovered)
-    assert all(read_actor_source_bytes(ctx.drive_root, ctx.task_id, item["source_ref"])
-               for item in selected["covered"])
+    # The two local notes ride as ONE host prose row right after the assignment, never in the
+    # frozen prefix, naming the exact retained source; the ancestor history is not walked.
+    from ouroboros.main_context_authority import PREDECESSOR_NOTES_NAME
+    from ouroboros.tools.control import _get_task_result
+
+    runtime = _task_authority_projection(env, task)
+    assert "historical_review_context" not in json.dumps(runtime) and FIRST not in json.dumps(runtime)
+    (note,) = [row for row in assembled if row.get(HOST_CONTEXT_KIND_KEY) == PREDECESSOR_NOTES_NAME]
+    assert assembled.index(note) == 2 and FIRST in note["content"] and SECOND in note["content"]
+    pointer = receipt["selected_review_history_view"]
+    assert pointer["source_ref"]["path"] in note["content"]
+    assert f"get_task_result(task_id={ctx.task_id!r}, include_authority=True)" in note["content"]
+    payload = json.loads(_get_task_result(successor, ctx.task_id, include_authority=True))
+    assert payload["authority"][review_history_view.SELECTED_VIEW_FIELD] == pointer
+    covered = [read_actor_source_bytes(ctx.drive_root, ctx.task_id, item["source_ref"]).decode("utf-8")
+               for item in selected["covered"]]
+    assert covered and any(RATIONALE in source for source in covered), "the exact decision source stays readable"
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, facts["source_ref"]).decode("utf-8") == SPOKEN
 
 

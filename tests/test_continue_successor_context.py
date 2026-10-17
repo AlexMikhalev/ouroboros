@@ -3,13 +3,14 @@
 Driven through the real consumers: ``admit_continuation`` on an installed queue,
 the successor's startup authority materialization
 (``validate_task_authority_sources``) and ``build_llm_messages`` in Max. The
-predecessor's whole authority envelope is in that first request, so the work
-order points to the complete record instead of ordering it read a second time;
+predecessor's compact brief (conditions, owner words, answer whole-or-pointer,
+omitted fields with sizes) is in that first request beside the exact reader of
+the complete record, so the work order points to it instead of ordering it read;
 the request names no actor (a nonce proves the action, not who pressed it); the
 predecessor's stored self-body handbook choice survives admission, its restored
 contract-only copy, replay and a second Continue after pre-start shutdown; the system-checkout
 SHA is labelled with its own surface capture time, never as the task's start; a named
-predecessor that reads back empty at start refuses it instead of an empty envelope.
+predecessor that reads back empty at start refuses it instead of an empty brief.
 """
 
 from __future__ import annotations
@@ -149,7 +150,13 @@ def test_successor_first_request_carries_the_predecessor_once_with_its_flag_and_
         system_text = "\n".join(block["text"] for block in system)
         rendered = json.dumps(messages, ensure_ascii=False)
         assert '"predecessor_authority"' in system_text and "PREDECESSOR-CONTRACT-SENTINEL" in rendered
-        assert task["predecessor_authority"]["mutation_evidence"] == before["mutation_evidence"]
+        brief = task["predecessor_authority"]
+        # The brief carries the conditions and the exact reader; the mutation handoff reads
+        # only that pointer, so the evidence body is an omitted field with its size.
+        assert brief["task_contract"]["context"] == "PREDECESSOR-CONTRACT-SENTINEL"
+        assert brief["source"]["arguments"] == {"task_id": "pred-1", "include_authority": True}
+        assert "mutation_evidence" not in brief and brief["omitted_fields"]["mutation_evidence"] > 0
+        assert json.dumps(before["mutation_evidence"]) not in rendered
         users = json.dumps([m for m in messages if m.get("role") == "user"], ensure_ascii=False)
         assert json.dumps(text, ensure_ascii=False)[1:-1] in users, "the work order is the first user turn"
     assert handbooks == [int(flag is True)] * 2, "only an explicit true restores the handbook in an external folder"
