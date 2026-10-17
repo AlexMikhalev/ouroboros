@@ -178,3 +178,13 @@ def test_the_card_frames_are_indexed_and_the_event_has_a_handler():
     assert endpoint_index.WS_SHAPES["card"] == ("", "CardOutbound")
     assert EVENT_HANDLERS["send_card"] is _handle_send_card and "send_card" in EVENT_DISPOSITIONS
     assert event_bus.CHAT_CARD in event_bus.VALID_TOPICS
+
+
+def test_the_model_reads_a_card_row_as_its_fallback_with_the_card_id():
+    from ouroboros.dialogue_provenance import render_row_text, row_class
+
+    row = {"type": "card", "direction": "out", "text": "A 9:00 or B 12:00",
+           "card": {"card_id": "card_0123456789abcdef", "kind": "components", "title": "Flights", "revision": 1}}
+    assert render_row_text(row) == "[card card_0123456789abcdef] A 9:00 or B 12:00"
+    assert render_row_text({**row, "type": "links"}) == "A 9:00 or B 12:00"
+    assert row_class(row)["lane"] == 1  # Ouroboros's own words to the owner, not a host fact
