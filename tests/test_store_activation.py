@@ -456,6 +456,27 @@ def test_a_tree_that_already_lost_the_store_exports_at_the_restart_exit_without_
     assert receipt["intent"]["target_sha"] == old and receipt["intent"]["door"] == "vcs_rollback"
 
 
+def test_a_tree_without_the_dialogue_store_gets_its_rows_back_at_the_restart_exit(tmp_path, monkeypatch):
+    """A manual checkout of a body that reads the facts store but not the dialogue store (every
+    release before it): the restart exit exports the rows only the store holds into the chain
+    files that body reads; the facts store stays where it is and nothing resets a second time."""
+    from ouroboros import dialogue_store
+
+    root = fixture_root(tmp_path)
+    ensure_current_store(root)
+    dialogue_store.append(root, "chat", {"direction": "out", "chat_id": 1, "text": "a reply only the store holds"})
+    monkeypatch.setattr(store_switch, "switch_needs",
+                        lambda *_: {"facts": False, "money": False, "handles": False, "dialogue": True})
+    monkeypatch.setattr(store_switch, "rev_parse", lambda *_: "older-head")
+    monkeypatch.setattr(store_switch, "switching_owner", lambda door: pytest.fail("nothing may reset a second time"))
+    outcome = store_switch.switch_at_restart(root, root, _census())
+    assert outcome["status"] == "switched", outcome
+    assert "a reply only the store holds" in (root / "logs" / "chat.jsonl").read_text(encoding="utf-8")
+    assert store.probe(root)[0] == "present" and store_switch.read_switch_intent(root) is None
+    monkeypatch.setattr(store_switch, "switch_needs", lambda *_: dict.fromkeys(("facts", "money", "handles", "dialogue"), False))
+    assert store_switch.switch_at_restart(root, root, _census()) == {"status": "no_intent"}, "a tree that reads both"
+
+
 @pytest.mark.parametrize("cleanup, blocker", [
     (None, "worker_exits_unconfirmed"),
     (_census(worker_exits=None), "worker_exits_unconfirmed"),

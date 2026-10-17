@@ -632,13 +632,14 @@ def switch_at_restart(root: Any, repo_dir: Any, cleanup: Any) -> Dict[str, Any]:
     owner = None
     if read_switch_intent(root) is None:
         head = rev_parse(repo_dir, "HEAD")
-        if not head or not switch_needs(repo_dir, head)["facts"]:
+        needs = switch_needs(repo_dir, head) if head else {}
+        if not (needs.get("facts") or needs.get("dialogue")):  # the deferring needs of ``switch_or_reset``
             return {"status": "no_intent"}
-        # T2: the checked-out tree already lacks the store (the agent's vcs_revert, a manual
-        # checkout) and no door recorded the switch: the export runs before this exit with HEAD
-        # as the target; nothing resets a second time.
+        # T2: the checked-out tree already lacks the store or the dialogue store (the agent's
+        # vcs_revert, a manual checkout) and no door recorded the switch: the export runs before
+        # this exit with HEAD as the target; nothing resets a second time.
         record_switch_intent(root, target_sha=head, target_ref="HEAD", door="vcs_rollback",
-                                          reason="the checked-out tree already lacks the store")
+                                          reason="the checked-out tree cannot read the current stores")
         owner = lambda intent: (True, "the checkout already is the target")  # noqa: E731
     wait_ready(root)  # a boot-smoke rollback can arrive while this process still imports: the export reads a published store
     facts = cleanup if isinstance(cleanup, dict) else {}
