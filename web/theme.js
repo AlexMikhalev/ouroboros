@@ -26,8 +26,17 @@
     const query = typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-color-scheme: light)')
         : null;
-    // Dark is the fallback when the client reports no OS preference.
-    const resolve = (value) => (value === 'system' ? (query?.matches ? 'light' : 'dark') : value);
+    /* A host can stand in for the OS as the "System" source (the Telegram mini app follows
+       Telegram's own colour scheme, which can differ from the OS: host_telegram.js). The
+       source answers 'light', 'dark' or '' (defer to the OS query). Dark is the fallback when
+       no one reports a preference. */
+    let systemSource = null;
+    const systemScheme = () => {
+        const answer = systemSource ? systemSource() : '';
+        if (answer === 'light' || answer === 'dark') return answer;
+        return query?.matches ? 'light' : 'dark';
+    };
+    const resolve = (value) => (value === 'system' ? systemScheme() : value);
     let resolved = resolve(choice);
 
     const statusText = () => {
@@ -225,5 +234,13 @@
         get theme() { return resolved; },
         set: choose,
         mount: syncControls,
+        /* The host's System source: install (settles at once), returns its release. */
+        setSystemSource(source) {
+            systemSource = typeof source === 'function' ? source : null;
+            settle();
+            return () => { if (systemSource === source) { systemSource = null; settle(); } };
+        },
+        /* The installed source changed its answer (Telegram's themeChanged). */
+        refreshSystem: () => { if (choice === 'system') settle(); },
     };
 })();

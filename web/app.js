@@ -31,6 +31,7 @@ import { initStorage } from './modules/storage.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
+import { createTelegramHost } from './modules/host_telegram.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -966,11 +967,15 @@ initUpdateStatus(ctx);
 initOnboardingOverlay();
 
 const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
+// Inside Telegram the host's chrome follows the shell (host_telegram.js); a no-op elsewhere.
+const telegramHost = createTelegramHost({ layers });
+telegramHost.bind();
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     disposeEvolution();
     disposeStorage?.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
+    telegramHost.dispose();
 });
 loadVersion();
 syncNavigationState();

@@ -233,6 +233,16 @@
     /* The smallest comfortable touch target for a coarse pointer (a phone). */
     --touch-target-min: 36px;
     --vvh: 100dvh;
+    /* The shell's insets (DESIGN "Shell"): the system's safe area, reported by the browser as env() and inside
+       Telegram as --tg-safe-area-inset-* (the SDK writes them inline; host_telegram.js mirrors its object; the same
+       inset, so the larger wins, never the sum), plus Telegram's own controls over the content
+       (--tg-content-safe-area-inset-*). Outside Telegram the Telegram tokens rest at 0. */
+    --tg-safe-area-inset-top: 0px;
+    --tg-safe-area-inset-bottom: 0px;
+    --tg-content-safe-area-inset-top: 0px;
+    --tg-content-safe-area-inset-bottom: 0px;
+    --inset-top: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top)) + var(--tg-content-safe-area-inset-top));
+    --inset-bottom: calc(max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom)) + var(--tg-content-safe-area-inset-bottom));
     /* Quote panel glass (DESIGN "Replies"): the shell colour at one alpha, so a quote reads lighter than the bubble it sits in. */
     --quote-glass: rgba(var(--shell-rgb), 0.7);
 }
