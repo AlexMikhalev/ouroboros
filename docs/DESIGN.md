@@ -395,8 +395,8 @@ file first, then the sections later controls add, each under its label; drag and
 still attach, and a pointer that opens it from the field leaves the focus in the field.
 The dictation mic has a slot between the field and Send that takes no room until an
 engine is chosen. Contributed chips have a slot at the end of the capsule row that takes
-only the room the capsules leave (never a second line, clipped first) and steps aside
-with them.
+only the room the capsules leave (never a second line: the chips that do not fit fold
+into one "+N" whose list holds them) and steps aside with them.
 
 ### `.muted`
 
@@ -1436,7 +1436,17 @@ doors in the row menu, in words. An action that is on now names its state
 A skill adds controls only where the host opens a place (the composer's "+"
 menu and capsule row, a saved reply's actions), and the host draws them: the
 skill's label verbatim, one glyph from the host set, the host's capsule or
-icon control, never the skill's markup. A skill's trusted page module works
+icon control, never the skill's markup. In "+", after Attach file, each skill
+has a section under its name with its items in the owner's order; the host's
+own items close the menu under Ouroboros's name: Add dictation… while no
+engine is chosen, and Make a button with Ouroboros…, which starts a request in
+the draft for the owner to finish and send. A chip is one of the row's
+capsules: the skill's name, then the value its source answers in the meta ink
+(24 characters; the rest and its description on the chip's title), with a dot
+when the value has a status tone. It is read on its own refresh (15 seconds at
+least) only while a room shows it on a visible page; a source that fails says
+"—" with the reason and is asked again later, less often. "+N", the narrowest
+capsule, lists what folds. A skill's trusted page module works
 only through its small context (its provider, a notice, words into the draft)
 and never draws into the composer or the feed. A module that fails is off for
 this page with one notice naming it; the rest of the page keeps working. A

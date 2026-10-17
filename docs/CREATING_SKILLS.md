@@ -262,6 +262,19 @@ launcher-written native seeds can receive the hash-bound page grant automaticall
 
 ### What placed controls do
 
+A `composer.plus` item appears in the composer's "+" menu, after Attach file,
+in a section under the skill's name, in the owner's arrangement and otherwise
+by `order`. A `composer.chips` chip is one of the capsule row's capsules: its
+`label`, then the `text` its source answers (the first 24 characters; longer
+text and the answer's `title` become the chip's description), with a dot for a
+`tone` of `ok`, `warn` or `bad` (`muted`, or none, shows no dot). The host
+reads the source every `refresh_s` (15 seconds at least) and only while a room
+shows the chip on a visible page; after a failed read it shows "—" with the
+reason and asks again later, doubling the wait up to sixteen refreshes. Chips
+that do not fit beside the host's capsules fold into one "+N" chip whose list
+holds them, so keep the label and the text short. A press does the chip's
+`action`.
+
 A `message.action` appears on Ouroboros's saved replies, never on the owner's
 own rows or on work cards: an icon control between the reply's Reply and Copy
 (its accessible name is `label`, its tooltip `title`) and an item in the row's
