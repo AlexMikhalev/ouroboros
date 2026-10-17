@@ -1591,6 +1591,19 @@ also observe `refreshing` (v6.71.0): a background poll refetch that already has
 data keeps the content and shows a thin indicator instead of a loading swap —
 your declared `loading` label is reused unless you declare a `refreshing` one.
 
+### Your widget inside Ouroboros's messages
+
+Ouroboros can show an installed skill's widget inline in its own chat message
+with `show_card(widget={skill, tab_id, input?})`. Only a live tab qualifies (the
+tool refuses a disabled, unreviewed or unloaded skill and names the live tabs),
+and the card refers to the widget instead of copying it: the chat draws the tab
+`GET /api/widgets` lists for that skill, so a later disable or upgrade applies
+there too. Nothing extra is declared for this; keep the widget usable at a
+compact height, since a message gives it less room than the Widgets page.
+Ouroboros's own component cards (`show_card(components=...)`) reuse this
+catalog without routes: their `action`/`form` controls bind
+`submit: {id, once?}`, and a press returns to Ouroboros as owner input.
+
 ### Async job error contract
 
 Long-running widget actions follow the declarative async job contract: start
