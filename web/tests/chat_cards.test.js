@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { createChatCards, createFrameBudget, readCardBody } from '../modules/chat_cards.js';
 import { createChatMedia } from '../modules/chat_media.js';
+import { messageRow } from '../modules/message_actions.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
 import { installCardDom } from './helpers/card_dom.js';
 
@@ -248,6 +249,7 @@ test('the live card frame and its history row are one row; replay draws it befor
         assert.equal(root.children.length, 1);
         assert.deepEqual(unread, ['card'], 'a new card is a message the owner has not read');
         assert.equal(root.children[0].dataset.rowAddress, 'chat:1:abc');
+        assert.equal(messageRow(root.children[0]).text, 'Basic 9 · Pro 19', 'a message action reads the card\'s words');
         const row = { ...identity('card_r1', 'components'), type: undefined, msg_type: 'card', system_type: 'card', text: 'Basic 9 · Pro 19',
             history_id: 'chat:7', history_position: { source: 'chat', offset: 700 } };
         assert.equal(delivery.appendDelivery(row), true, 'a card row is a delivery');

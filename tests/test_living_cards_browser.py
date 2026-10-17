@@ -62,8 +62,8 @@ FACTS = """() => {
 
 
 def _seed(data_dir) -> dict:
+    from ouroboros import dialogue_store
     from ouroboros.card_store import store_app_bytes, write_card
-    from supervisor.message_bus import append_jsonl
 
     widget_skill = _write_phase3_widget_smoke_extension(data_dir)
     components = write_card(data_dir, chat_id=1, task_id="", title="Pick a plan", fallback_text="Basic 9 · Pro 19",
@@ -73,16 +73,16 @@ def _seed(data_dir) -> dict:
                         kind="widget", body={"widget": {"skill": widget_skill, "tab_id": "main"}})
     app = write_card(data_dir, chat_id=1, task_id="", title="Loan", fallback_text="A loan calculator",
                      kind="app", body={"app": store_app_bytes(data_dir, APP_HTML.encode("utf-8"))})
-    chat = data_dir / "logs" / "chat.jsonl"
+    append = lambda row: dialogue_store.append(data_dir, "chat", row)  # noqa: E731
     row = lambda minute, **fields: {"ts": f"2026-10-17T10:{minute:02d}:00+00:00", "direction": "out", "chat_id": 1,
                                     "user_id": 0, "task_id": "", **fields}
     for minute, record in ((0, components), (1, widget)):
-        append_jsonl(chat, row(minute, text=record["fallback_text"], type="card", card={
+        append(row(minute, text=record["fallback_text"], type="card", card={
             "card_id": record["card_id"], "kind": record["kind"], "title": record["title"], "revision": 1}))
     # Enough conversation between them that the app is far from view when the top of the chat is read.
     for minute in range(2, 26):
-        append_jsonl(chat, row(minute, text=f"Note {minute}: a line of an ordinary answer.\n\nAnd its second paragraph."))
-    append_jsonl(chat, row(26, text=app["fallback_text"], type="card", card={
+        append(row(minute, text=f"Note {minute}: a line of an ordinary answer.\n\nAnd its second paragraph."))
+    append(row(26, text=app["fallback_text"], type="card", card={
         "card_id": app["card_id"], "kind": "app", "title": app["title"], "revision": 1}))
     return {"components": components["card_id"], "widget": widget["card_id"], "app": app["card_id"], "skill": widget_skill}
 

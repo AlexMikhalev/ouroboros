@@ -342,6 +342,8 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         const bubble = frameNode(msg, node);
         bubble.classList.add('chat-card-bubble');
         bubble.dataset.cardId = id;
+        // A card has no `.message`: its plain words are what Reply quotes and a message action reads.
+        bubble.dataset.rowWords = fallback;
         const prior = records.get(id);
         if (prior) release(prior.bubble);
         const record = {
