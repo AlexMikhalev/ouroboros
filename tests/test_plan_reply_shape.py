@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from ouroboros.review_execution import (
-    ACCEPTANCE_SESSION_OUTPUT_SCHEMA, REVIEW_SESSION_OUTPUT_SCHEMA, TWO_PART_SESSION_OUTPUT_SCHEMA,
+    REVIEW_SESSION_OUTPUT_SCHEMA, TWO_PART_SESSION_OUTPUT_SCHEMA,
     AgentSessionReviewExecutor, ReviewAssignment, ReviewRouteKind, review_session_output_schema,
 )
 from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
@@ -113,11 +113,10 @@ def test_the_plan_surface_asks_for_the_reply_contract_on_every_retrieving_route(
 
 
 def test_the_other_surfaces_keep_their_shapes_and_the_array_shape_still_extracts():
-    assert review_output_shape("multi_model_review") == "two_part" and review_output_shape("task_acceptance") == "object"
+    assert review_output_shape("multi_model_review") == "two_part"
     assert review_output_shape("deep_self_review") == "report" and review_output_shape("skill_review") == "array"
     assert review_output_shape("advisory_review") == "array"
     assert review_session_output_schema("multi_model_review") is TWO_PART_SESSION_OUTPUT_SCHEMA
-    assert review_session_output_schema("task_acceptance") is ACCEPTANCE_SESSION_OUTPUT_SCHEMA
     assert review_session_output_schema("deep_self_review") is None
     assert review_session_output_schema("advisory_review") is REVIEW_SESSION_OUTPUT_SCHEMA
     # The very same text under the findings-array shape is what the bug did: one light call, "[]" replaces the words.
