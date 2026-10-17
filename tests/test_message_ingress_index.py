@@ -125,6 +125,30 @@ def test_a_historical_id_from_an_ended_process_only_rejoins_during_and_after_the
     assert message_ingress.dispatch_facts(old, tmp_path) is None, "an imported row owes nothing"
 
 
+def test_a_redelivery_after_a_cutover_that_failed_past_its_rotation_rejoins(tmp_path, monkeypatch):
+    """The first cutover rotated the live file, then failed before its plan (the boot opens the
+    dialogue anyway): a redelivered frame naming a row of that file finishes the cutover before its
+    id is looked up, so the rotated segment is searched as pending history and the frame rejoins."""
+    from tests._dialogue import seed
+
+    accepted = {"ts": "2026-10-16T21:00:00+00:00", "direction": "in", "chat_id": 1, "user_id": 1, "source": "web",
+                "client_message_id": "recent-id", "text": "недавнее сообщение"}
+    seed(tmp_path, live={"chat": [accepted]})
+    with monkeypatch.context() as patch:
+        patch.setattr(dialogue_import, "_plan",
+                      lambda *_a: (_ for _ in ()).throw(dialogue_store.StoreBusy("held after the final rotation")))
+        with pytest.raises(dialogue_store.StoreBusy):
+            dialogue_import.cutover(tmp_path)
+    assert dialogue_store.meta(tmp_path, "cutover") is None and (tmp_path / "logs" / "chat.jsonl").stat().st_size == 0
+    bridge, _echoes = _web_bridge(tmp_path, monkeypatch)
+    _send_web(bridge, "недавнее сообщение", [], cmid="recent-id")
+    assert bridge._inbox.qsize() == 0, "an accepted message rejoins; it is never dispatched again"
+    dialogue_import.run_dialogue_import(tmp_path)
+    assert [row["client_message_id"] for row in _rows(tmp_path) if row.get("client_message_id")] == ["recent-id"]
+    _send_web(bridge, "новое сообщение", [], cmid="fresh-id")
+    assert bridge._inbox.qsize() == 1, "a fresh id is still accepted and dispatched"
+
+
 def test_an_unreadable_store_refuses_instead_of_answering_absent(tmp_path, monkeypatch):
     bridge, _echoes = _web_bridge(tmp_path, monkeypatch)
     _send_web(bridge, "первое", [], cmid="first")

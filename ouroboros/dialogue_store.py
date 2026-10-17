@@ -362,6 +362,20 @@ def _set_meta(conn: sqlite3.Connection, key: str, value: Any) -> None:
 _PLANNED: set = set()  # stores (by path) whose cutover fact this process has seen: it is never removed
 
 
+def _plan_first(root: pathlib.Path, wait_sec: float = WAIT_SEC) -> None:
+    """Finish a cutover that failed after ``create`` published the store: before a row takes a
+    coordinate (the plan places the chain files first) and before an accepted id is looked up (the
+    live file it rotated holds recent ids, found only once the plan names it pending)."""
+    if str(path(root)) in _PLANNED or not present(root):
+        return
+    with transaction(root, write=False, wait_sec=wait_sec) as conn:
+        planned = _planned(conn, root)
+    if not planned:
+        from ouroboros.dialogue_import import cutover
+
+        cutover(root)
+
+
 def _planned(conn: sqlite3.Connection, root: Any) -> bool:
     """Whether the store holds its cutover fact: the chain files were planned and the live tail
     stored. ``create`` publishes the store before that, so a cutover that failed after it leaves a
@@ -481,13 +495,7 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
     root = pathlib.Path(root)
     length = len(body.encode("utf-8")) + 1
     counted = stream_row(stream, columns)
-    if str(path(root)) not in _PLANNED and present(root):
-        with transaction(root, write=False, wait_sec=wait_sec) as conn:
-            planned = _planned(conn, root)
-        if not planned:  # no row takes a coordinate before the plan places the chain files
-            from ouroboros.dialogue_import import cutover
-
-            cutover(root)
+    _plan_first(root, wait_sec)
     with transaction(root, write=True, wait_sec=wait_sec) as conn:
         if named:
             existing = _existing_named(conn, columns["chat_id"], columns["client_message_id"])
@@ -755,6 +763,7 @@ def accepted_row(root: Any, chat_id: Optional[int], client_message_id: str) -> O
     not yet imported (``dialogue_import.scan_pending``): unknown is never answered "absent"."""
     if not client_message_id:
         return None
+    _plan_first(pathlib.Path(root))
     with transaction(root, write=False) as conn:
         record = _existing_named(conn, chat_id, client_message_id)
         importing = record is None and conn.execute(
