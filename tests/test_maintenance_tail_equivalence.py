@@ -76,6 +76,10 @@ def test_maintenance_completion_contract(tmp_path, monkeypatch, kind, case):
 
     monkeypatch.setattr(module, "spawn_maintenance_job", spawn)
     if kind == "packer":
+        # Exercise the real discovery boundary: this completion test needs pending work.
+        archive = tmp_path / packer.packs.USAGE_ARCHIVE_REL
+        archive.mkdir(parents=True)
+        (archive / "segment_ep1_0001.jsonl").write_text("{}\n", encoding="utf-8")
         monkeypatch.setattr(packer.packs, "record_storage_pack", record)
     else:
         monkeypatch.setattr(job, "_record", record)

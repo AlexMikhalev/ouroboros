@@ -264,10 +264,17 @@ class OwnerRuntimeModeRequest(TypedDict):
 
 
 class OwnerContextModeRequest(TypedDict):
-    """``POST /api/owner/context-mode``. Lowering it while work is queued or running answers 409
-    (nothing saved) unless the runtime mode is cyber_pro."""
+    """Save the room's context for future actors; existing actors retain theirs."""
 
     mode: Literal["nano", "low", "max"]
+    project_id: NotRequired[str]
+
+
+class OwnerEffortRangeRequest(TypedDict):
+    min: str
+    recommended: str
+    max: str
+    project_id: NotRequired[str]
 
 
 class OwnerSafetyModeRequest(TypedDict):
@@ -534,7 +541,7 @@ __all__ = [
     "SettingsReadResponse", "SettingsWriteRefusal",
     "AuthLoginRequest", "AuthLoginResponse",
     "ContractBody", "ContractHttpEntry", "ContractWsEntry", "ContractWs", "GatewayContractResponse",
-    "OwnerRuntimeModeRequest", "OwnerContextModeRequest", "OwnerSafetyModeRequest", "OwnerEnabledRequest",
+    "OwnerRuntimeModeRequest", "OwnerContextModeRequest", "OwnerEffortRangeRequest", "OwnerSafetyModeRequest", "OwnerEnabledRequest",
     "SettingsSecretRequest", "SettingsSecretResponse", "ChatUploadDeleteRequest", "ChatUploadDeleteResponse",
     "ProjectListResponse", "ProjectCreateResponse", "ProjectUpdateRequest", "ProjectUpdateResponse",
     "ProjectFromTaskRequest", "ProjectTaskBinding", "ProjectFromTaskResponse",

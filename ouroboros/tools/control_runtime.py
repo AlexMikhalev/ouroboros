@@ -393,7 +393,8 @@ def _main_notice_refusal(ctx: ToolContext, chat_id: object) -> str:
     return ""
 
 
-def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destination: str = "current") -> str:
+def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destination: str = "current",
+                       reply_to_relay: str | None = None) -> str:
     """Send a separate owner reply without completing the ongoing task.
 
     ``destination="main"`` addresses the owner's main chat from an owner-visible
@@ -432,6 +433,21 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         # via log_chat(record_type=...) exactly like media rows.
         system_type = "proactive_message"
 
+    relay = {}
+    reply_meta = {}
+    if reply_to_relay is not None:
+        from ouroboros.owner_relay import select_return
+        from ouroboros.chat_references import resolve_reply
+        from ouroboros.tool_access import canonical_data_root
+        relay, error = select_return(ctx, reply_to_relay)
+        error = error or owner_contact_refusal(ctx, chat_id)
+        if relay and relay["source"]["chat_id"] != chat_id:
+            error = error or _main_notice_refusal(ctx, chat_id)
+        if error:
+            return publish_no_effect(ctx, ToolResult(status="blocked", code="ACCESS_BLOCKED", text=error, meta={"reason_code": "RELAY_RETURN_UNRESOLVED"}))
+        chat_id, system_type = relay["source"]["chat_id"], "relay_reply"
+        reply_meta = {"reply_to": resolve_reply(canonical_data_root(ctx), relay["source"]["address"]),
+                      "reply_to_relay": relay["relay_id"]}
     from ouroboros.tools.owner_delivery import deliver_owner_event
     from ouroboros.utils import append_jsonl
     mode = deliver_owner_event(ctx, {
@@ -441,6 +457,7 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         "format": "markdown",
         "is_progress": False,
         "system_type": system_type,
+        "progress_meta": reply_meta,
         "ts": utc_now_iso(),
     })
     append_jsonl(ctx.drive_logs() / "events.jsonl", {
@@ -452,6 +469,10 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "", destinatio
         "transport_mode": mode,
         "text_preview": text[:200],
     })
+    if relay:
+        ctx._open_relays.pop(relay["relay_id"], None)
+        from ouroboros.owner_relay import persist_held_state
+        persist_held_state(ctx)
     if target == "main":
         return "OK: notice sent to the main chat." if mode == "live" else "OK: notice queued for delivery to the main chat."
     if mode == "live":
@@ -811,13 +832,32 @@ def _effort_switch(ctx: ToolContext, requested: str) -> tuple[str, str]:
 
 def _finish_task(ctx: ToolContext, action: str, answer: str | None = None,
                  answer_sha256: str | None = None, rationale: str = "",
-                 acceptance_subject: dict | None = None, pending_review: str | None = None) -> str:
-    """Stage a local author act; the loop owns answer selection and finalization."""
+                 acceptance_subject: dict | None = None, pending_review: str | None = None,
+                 silent: bool = False) -> str:
+    """Stage an author act; only a wake's own direct turn can choose silence."""
+    allow_empty = False
+    if silent:
+        if action != "finish":
+            return publish_no_effect(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="ERROR: COMPLETION_ARGUMENT: silent requires action=finish"))
+        from ouroboros.consciousness_authority import CONSCIOUSNESS_CATEGORY, is_consciousness_origin
+        metadata = getattr(ctx, "task_metadata", None)
+        if not bool(getattr(ctx, "is_direct_chat", False)):
+            return publish_no_effect(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="ERROR: COMPLETION_ARGUMENT: silent is available only on a consciousness wake's own turn"))
+        if not (is_consciousness_origin(metadata)
+                and str((metadata or {}).get("usage_category") or "") == CONSCIOUSNESS_CATEGORY):
+            return publish_no_effect(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="ERROR: COMPLETION_ARGUMENT: silent is available only on a consciousness wake's own turn, "
+                     "not on the tasks it started or any other turn"))
+        allow_empty = True
+        if answer is None and not answer_sha256:
+            answer = ""  # silence needs no words; complete bytes given anyway stay an internal result
     return stage_completion_request(ctx, {
         "action": action, "answer": answer, "answer_sha256": answer_sha256,
         "rationale": rationale, "acceptance_subject": acceptance_subject,
-        "pending_review": pending_review,
-    })
+        "pending_review": pending_review, "wake_silent": bool(silent) or None,
+    }, allow_empty=allow_empty)
 
 
 def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "finish_task",

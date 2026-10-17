@@ -262,16 +262,18 @@ def test_a_saved_owner_pause_waits_for_resume_without_roster_or_snapshot(tmp_pat
 
 
 @pytest.mark.serial
-def test_saved_working_state_is_held_for_resume_without_roster_or_snapshot(tmp_path, monkeypatch):
+@pytest.mark.parametrize("attempt", [0, 1])
+def test_saved_working_state_is_held_for_resume_without_roster_or_snapshot(tmp_path, monkeypatch, attempt):
     from ouroboros import working_checkpoint as wc
     from ouroboros.task_status import execution_owner_record
     from supervisor.events_budget import HOLD_SAVED_WORK, budget_hold_fact
     from tests._budget_pause_exact_helpers import _loop_ctx
 
     queue, workers = _install(tmp_path, monkeypatch)
-    write_task_result(tmp_path, TID, STATUS_RUNNING, chat_id=1, task_attempt=1, _is_direct_chat=True,
-                      execution_owner=execution_owner_record(tmp_path, {"id": TID, "_attempt": 1}, "direct"))
-    _ctx, limit = _loop_ctx(tmp_path, TID, direct=True, attempt=1)
+    # The real direct-chat writer uses zero on its first (non-pooled) attempt.
+    write_task_result(tmp_path, TID, STATUS_RUNNING, chat_id=1, task_attempt=attempt, _is_direct_chat=True,
+                      execution_owner=execution_owner_record(tmp_path, {"id": TID, "_attempt": attempt}, "direct"))
+    _ctx, limit = _loop_ctx(tmp_path, TID, direct=True, attempt=attempt)
     wc.save_round(limit, "pre_effect")
 
     fenced = _crash_without_projections(tmp_path, monkeypatch, queue)
@@ -282,8 +284,16 @@ def test_saved_working_state_is_held_for_resume_without_roster_or_snapshot(tmp_p
     assert hold and hold["reason"] == HOLD_SAVED_WORK and hold["stop_cause"] == "app_stop"
     assert task["_working_recovery"]["from_attempt"] == 1 and task["_attempt"] == 2
     assert load_task_result(tmp_path, TID)["status"] != STATUS_CANCELLED
+    assert not task.get("_project_admission_restore_hold")
     assert queue.resume_budget_paused_task(TID)["ok"]
     assert budget_hold_fact(task) is None and task["_working_recovery"]["source_ref"]
+    from supervisor.task_admission import _working_resume_granted, record_project_dispatch_possible
+
+    assert record_project_dispatch_possible(task) is True
+    stored = load_task_result(tmp_path, TID)
+    assert stored["admitted_dispatch_attempt"] == 2 and stored["task_attempt"] == attempt
+    assert record_project_dispatch_possible(task) is False
+    assert _working_resume_granted(task, tmp_path) is False
 
 
 @pytest.mark.serial
@@ -419,6 +429,29 @@ def test_a_failed_discovery_read_adds_nothing(qenv, monkeypatch):
 
     assert qenv.q.PRIOR_DIRECT_ROOTS["task_ids"] == ["listed-turn"], "the roster's own handover stands"
     assert load_task_result(qenv.drive, TID)["status"] == STATUS_RUNNING
+
+
+@pytest.mark.parametrize("case", ["direct", "pooled", "owner_missing", "owner_attempt", "boolean", "marked", "later"])
+def test_zero_attempt_is_only_the_unmarked_direct_first_launch(case):
+    from supervisor.task_admission import _working_attempt_unstarted
+
+    task = {"id": TID, "_attempt": 2}
+    stored = {"task_id": TID, "status": STATUS_RUNNING, "task_attempt": 0,
+              "execution_owner": {"kind": "direct", "task_attempt": 0}}
+    source = {"task_attempt": 1, "retained_work_dispatch_protocol": 1}
+    if case == "pooled":
+        stored["execution_owner"]["kind"] = "pooled"
+    elif case == "owner_missing":
+        stored.pop("execution_owner")
+    elif case == "owner_attempt":
+        stored["execution_owner"]["task_attempt"] = 1
+    elif case == "boolean":
+        stored["task_attempt"] = False
+    elif case == "marked":
+        stored["admitted_dispatch_attempt"] = 2
+    elif case == "later":
+        task["_attempt"] = 3
+    assert _working_attempt_unstarted(task, stored, source) is (case == "direct")
 
 
 def test_only_a_direct_owner_names_its_process_generation():
