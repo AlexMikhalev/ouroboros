@@ -5,7 +5,8 @@ or that a crash left, is retired on the 600 s custody pass once no review can st
 one (``checkout.json``) when its task is terminal and not live, no active review custody names its
 round, no live review operation runs for the task and no retained seat checks from it; an unmarked
 older one under the same conditions only past the GC retention wait and only when a recorded round
-names its task.
+names its task. C9: a dead controller's pointer of a non-acceptance surface is removed by the orphan
+collector, never settled through acceptance; a live controller keeps it.
 """
 from __future__ import annotations
 
@@ -13,14 +14,15 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import review_checking_prune as rp
+from ouroboros import obligations, review_checking_prune as rp, review_operation
 from ouroboros.startup_migrations import prepare_startup_state
-from ouroboros.task_results import write_task_result
+from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.review_subject import CHECKOUT_MARKER, ReviewSubjectSpec, checkout_token, isolated_checkout
 
 TASK = "t-reviewer"
@@ -43,6 +45,12 @@ def _repo(path):
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", "proposal")
     return path
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
 
 
 def _alive_controller() -> dict:
@@ -143,3 +151,21 @@ def test_an_unreadable_review_state_removes_no_checkout(subject):
     (subject.data / "state" / "advisory_review.json").write_text("{torn", encoding="utf-8")
     report = _prune(subject)
     assert entry.is_dir() and report["checkouts_removed"] == 0 and report["errors"], report
+
+
+def test_a_dead_controllers_pointer_of_another_surface_is_removed_never_settled(tmp_path, monkeypatch):
+    prepare_startup_state(tmp_path)
+    monkeypatch.setattr("ouroboros.acceptance_settlement.settle_acceptance_operation",
+                        lambda *a, **k: pytest.fail("a liveness pointer went through acceptance settlement"))
+    dead = {"pid": _dead_pid(), "birth": "gone", "session": "gone"}
+    pointers = {owner: {"state": "dispatched", "surface": surface, "retry_key": f"{surface}:{owner}",
+                        "controller": controller}
+                for owner, surface, controller in (("op-dead", "multi_model_review", dead),
+                                                   ("op-live", "plan_review", _alive_controller()))}
+    write_task_result(tmp_path, TASK, "completed", result="done", review_operations=pointers)
+    assert obligations.review_collection_pending(load_task_result(tmp_path, TASK)), "an open liveness pointer is found"
+
+    report = review_operation.recover_orphaned_acceptance_operations(tmp_path)
+    assert report["retired"] == [{"task_id": TASK, "owner_id": "op-dead"}], report
+    assert set(load_task_result(tmp_path, TASK)["review_operations"]) == {"op-live"}, "a live controller keeps its pointer"
+    assert review_operation.recover_orphaned_acceptance_operations(tmp_path)["retired"] == []

@@ -36,7 +36,9 @@ _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "dr
 def review_collection_pending(row: dict) -> bool:
     """Conservative body-only selection for free acceptance collection, not a packer duty.
     Live controllers remain candidates; actor death needs no body rewrite. Closed
-    legacy panels acquire no notice unless their own matching receipt already owes it."""
+    legacy panels acquire no notice unless their own matching receipt already owes it.
+    Another surface's open pointer is a candidate too: the collector removes it once its
+    controller is proven dead (``review_operation.recover_orphaned_acceptance_operations``)."""
     from ouroboros.review_projection import _actor_pending
 
     operations = row.get("review_operations", {})
@@ -55,7 +57,11 @@ def review_collection_pending(row: dict) -> bool:
         if key is not None and not isinstance(key, str):
             return True
         pointed.add(key)
-        if entry.get("control_only") or entry.get("surface") != "task_acceptance":
+        if entry.get("control_only"):
+            continue
+        if entry.get("surface") != "task_acceptance":
+            if entry.get("state") in {"preparing", "retained", "dispatched"}:
+                return True
             continue
         state = entry.get("state")
         if not isinstance(state, str) or state not in {"closed", "collected", "preparation_unknown", "preparation_refused"}:
