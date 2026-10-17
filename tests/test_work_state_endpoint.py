@@ -1,4 +1,4 @@
-"""/api/state end to end: the real census builder feeds the work projection (17.10 shape and an owner Pause)."""
+"""/api/state end to end: the real census builder feeds the work projection (a held Continue, an empty install)."""
 from __future__ import annotations
 
 from ouroboros.task_results import write_task_result
