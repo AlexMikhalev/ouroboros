@@ -57,7 +57,7 @@ class TestHostNoteVoice:
                             progress_meta={"narration": True, "card_row": "timeline"})
         from ouroboros.chat_references import resolve_progress_row
         meta = dict(sent[-1]["progress_meta"])
-        stored = [json.loads(line) for line in (tmp_path / "logs/progress.jsonl").read_text().splitlines()][-1]
+        stored = dialogue_test.log_rows(tmp_path / "logs" / "progress.jsonl")[-1]
         assert resolve_progress_row(tmp_path, meta.pop("row_address")) == stored
         assert meta == {"narration": True, "card_row": "timeline"}
 
@@ -70,7 +70,7 @@ class TestHostNoteVoice:
                             progress_meta={"card_row": "timeline"})
         from ouroboros.chat_references import resolve_progress_row
         meta = dict(captured[-1][1]["progress_meta"])
-        stored = [json.loads(line) for line in (tmp_path / "logs/progress.jsonl").read_text().splitlines()][-1]
+        stored = dialogue_test.log_rows(tmp_path / "logs" / "progress.jsonl")[-1]
         assert resolve_progress_row(tmp_path, meta.pop("row_address")) == stored
         assert meta == {"card_row": "timeline", "narration": False}
 

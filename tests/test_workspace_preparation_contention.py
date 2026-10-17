@@ -92,13 +92,15 @@ def test_owned_job_waits_off_q_then_uses_its_one_copy(env, monkeypatch, seam):
     event = env.request("owned-busy")
     copies = spy_provisions(monkeypatch)
     reached, proceed, busy_seen = threading.Event(), threading.Event(), threading.Event()
-    real_connect = store.connect
+    real_connection = store.connection
 
-    def connect(*args, **kwargs):
+    @contextlib.contextmanager
+    def connection(*args, **kwargs):  # every lease, a thread's kept connection included, names its wait
         if queue._queue_lock._is_owned():
             assert kwargs.get("wait_sec", 0) == 0
             busy_seen.set()
-        return real_connect(*args, **kwargs)
+        with real_connection(*args, **kwargs) as conn:
+            yield conn
 
     if seam in {"preflight", "depth"}:
         name = {"preflight": "subagent_schedule_preflight", "depth": "parse_schedule_task_depth",
@@ -134,7 +136,7 @@ def test_owned_job_waits_off_q_then_uses_its_one_copy(env, monkeypatch, seam):
         monkeypatch.setattr(prep, "_transition", gated)
     assert env.dispatch_returns(event) and reached.wait(_WAIT_SEC)
     with database_reader(env.data, exclusive=True):
-        monkeypatch.setattr(store, "connect", connect)
+        monkeypatch.setattr(store, "connection", connection)
         proceed.set()
         # READY's ordinary off-loop write may wait in SQLite; Q must still be free.
         if seam in {"preflight", "depth", "final"}:
