@@ -192,18 +192,20 @@ export function updateAllCandidates(skills, sources = null) {
 /**
  * Where a skill can be published (B10): back to where it came from (a hub entry
  * that points at its author's repository goes there), a git source the owner
- * added, or the public hub's shared catalog.
+ * added, or the public hub — its shared catalog, or, for a skill that came from
+ * the hub, a new entry beside the original.
  */
 export function publishDestinations(skill, sources = []) {
     const out = [];
     const origin = skill.install?.source;
     const originRow = sources.find((source) => source.id === origin?.id);
+    const originKind = originRow?.kind || origin?.kind;
     const authorRepo = String(skill.install?.release?.repo || '');
-    if (origin?.id && ['hub', 'git'].includes(originRow?.kind || origin.kind)) {
+    if (origin?.id && ['hub', 'git'].includes(originKind)) {
         out.push(authorRepo
-            ? { value: 'origin', label: `Back to ${repoLabel(authorRepo)} — its author’s repository`,
+            ? { value: `origin:${origin.id}`, label: `Back to ${repoLabel(authorRepo)} — its author’s repository`,
                 detail: 'Suggest your changes to its author as a new version. The author decides.' }
-            : { value: 'origin', label: `Back to ${origin.name || originRow?.name} — where it came from`,
+            : { value: `origin:${origin.id}`, label: `Back to ${origin.name || originRow?.name} — where it came from`,
                 detail: 'Suggest your changes as a new version. The maintainers decide.' });
     }
     for (const source of sources.filter((row) => row.kind === 'git')) {
@@ -211,22 +213,23 @@ export function publishDestinations(skill, sources = []) {
         out.push({ value: `source:${source.id}`, label: `${source.name} — your own source`,
             detail: origin ? 'Publish your version now, under the same name, for your own installs.' : `Publish now. Every Ouroboros that reads ${source.name} gets it at once.` });
     }
-    // The hub's two rows are one repository: a skill from either half goes back there as its origin.
+    // The hub's two rows are one repository: a skill from it goes back as its origin, or beside it as a new skill.
     const community = sources.find((row) => row.kind === 'hub' && row.part === 'community');
-    if (community && (originRow?.kind || origin?.kind) !== 'hub') {
+    if (community && originKind === 'hub') {
+        out.push({ value: `new:${community.id}`, label: `${community.name} — as a new skill`,
+            detail: 'Ask to list it next to the original under another name.' });
+    } else if (community) {
         out.push({ value: `source:${community.id}`, label: `${community.name} — share with everyone`,
             detail: 'Ask to list it in the shared catalog. New skills and new authors are read by the maintainer first.' });
     }
     return out;
 }
 
-/**
- * The publish `destination` the host takes: a source id, or null for the skill's
- * origin (the host resolves it, a pointer entry to its author's repository).
- */
+/** A chosen destination as the publish preflight and task carry it: `{source_id, mode}`. */
 export function destinationFromChoice(value) {
     const [mode, sourceId] = String(value || '').split(':');
-    return mode === 'source' && sourceId ? sourceId : null;
+    if (!sourceId) return null;
+    return { source_id: sourceId, mode: mode === 'origin' ? 'origin' : mode === 'new' ? 'new_entry' : 'entry' };
 }
 
 export function buildHealPrompt(skill) {

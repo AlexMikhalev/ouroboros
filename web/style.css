@@ -5502,7 +5502,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 }
 .ui-chip.skills-chip { padding: 3px 10px; font-size: var(--type-meta); line-height: var(--line-meta); font-weight: 500; }
 .skills-dots { display: inline-flex; margin-right: var(--space-1); }
-.ui-status.skills-status { display: inline-flex; align-items: center; min-width: 0; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+.ui-status.skills-status { display: inline-flex; align-items: center; min-width: 0; font-size: var(--type-meta); line-height: var(--line-meta); }
 .skills-status[data-work]::before { display: none !important; }
 .skills-status-text { min-width: 0; overflow-wrap: anywhere; }
 .skills-skip-btn { display: inline-flex; align-items: center; gap: var(--space-1); }
@@ -5570,6 +5570,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 /* Details: sentence-case labels at the meta size; values in meta ink, the label in the reading ink. */
 .skills-card-actions { display: flex; gap: var(--space-2); align-items: flex-start; flex-wrap: wrap; }
 .skills-installed-card .skills-details { margin: 0; border: none; padding: 0; }
+.skills-installed-card .skills-details > summary { display: flex; width: fit-content; margin-left: auto; color: var(--text-primary); font-size: var(--type-meta); }
 .skills-details-body { display: grid; gap: var(--space-1); padding-top: var(--space-2); }
 .skills-detail-row {
     display: flex;

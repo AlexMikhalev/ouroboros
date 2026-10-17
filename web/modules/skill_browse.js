@@ -501,7 +501,9 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         if (event.key !== 'Enter' || event.isComposing) return;
         event.preventDefault();
         clearTimeout(typingTimer);
-        state.query = searchInput.value.trim();
+        const query = searchInput.value.trim();
+        if (query !== state.query) state.sort = query ? 'best' : 'popular';
+        state.query = query;
         state.search = null;
         render();
         searchRegistry();

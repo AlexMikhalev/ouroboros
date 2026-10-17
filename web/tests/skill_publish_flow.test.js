@@ -295,7 +295,7 @@ test('named API functions use the encoded selected route and ordinary task route
 });
 
 test('the destination the owner chose reaches the preflight and the task, and is absent when none was chosen', async () => {
-    const destination = 'my-skills-repo';  // a source id, as submit_skill_to_hub takes it
+    const destination = { source_id: 'ouroboros-community', mode: 'new_entry' };  // SkillPublishDestinationChoice
     const calls = { preflight: [], create: [] };
     const result = await runSkillPublishFlow('demo', {
         destination,
@@ -306,7 +306,8 @@ test('the destination the owner chose reaches the preflight and the task, and is
     assert.equal(result.started, true);
     assert.deepEqual(calls.preflight, [['demo', destination]]);
     assert.deepEqual(calls.create[0].metadata.skill_publish_target, { skill: 'demo', repository: 'razzant/OuroborosHub', destination });
-    assert.match(calls.create[0].context, /The owner chose the destination source "my-skills-repo": pass destination="my-skills-repo" to submit_skill_to_hub\./);
+    // The publish tool reads the owner's choice from the task's target; the prose names only skill and repository.
+    assert.doesNotMatch(calls.create[0].context, /destination/);
 
     const plain = { preflight: [] };
     await runSkillPublishFlow('demo', {

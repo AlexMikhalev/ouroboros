@@ -174,7 +174,8 @@ export function openCompareDialog({ mine = {}, other = {} }) {
             { value: 'keep', label: 'Keep yours', detail: `${line(mine)}\n${mine.description || ''}`, confirmLabel: 'Keep mine', tone: 'primary' },
             { value: 'replace', label: 'Use this one instead', detail: `${line(other)}\n${other.description || ''}`, confirmLabel: 'Use this one', tone: 'danger' },
         ],
-        note: `Keeping yours changes nothing. Using the other one uninstalls yours${other.reviewed ? '; it is reviewed before it runs' : ''}.`,
+        // The host replaces in one install and keeps the replaced copy as its backup.
+        note: `Keeping yours changes nothing. Using the other one replaces yours and keeps a backup of it${other.reviewed ? '; the new one is reviewed before it runs' : ''}.`,
     });
 }
 

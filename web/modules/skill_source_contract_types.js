@@ -169,6 +169,19 @@
  */
 
 /**
+ * Where the owner publishes a skill: a source id (`hub` = the hub) and mode origin | entry | new_entry.
+ * @typedef {Object} SkillPublishDestinationChoice
+ * @property {string} source_id
+ * @property {string} mode
+ */
+
+/**
+ * `POST /api/skills/{skill}/publish-preflight`: an optional destination (default: the skill's origin, else the hub).
+ * @typedef {Object} SkillPublishPreflightRequest
+ * @property {SkillPublishDestinationChoice=} destination
+ */
+
+/**
  * `POST /api/skills/{skill}/uninstall`.
  * @typedef {Object} SkillUninstallResponse
  * @property {boolean} ok

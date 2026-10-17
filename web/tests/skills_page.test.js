@@ -72,18 +72,22 @@ test('publish destinations: back to the origin, the owner’s git source, the co
     assert.deepEqual(madeHere.map((choice) => choice.value), ['source:mine', 'source:ouroboros-community']);
     assert.match(madeHere[0].label, /^My skills repo — your own source$/);
     assert.match(madeHere[1].detail, /New skills and new authors are read by the maintainer first\./);
-    // The hub's two rows are one repository: a skill from it goes back as its origin, never twice.
+    // The hub's two rows are one repository: a skill from it goes back as its origin, or beside it as a new skill.
     const fromCommunity = publishDestinations(byName('anime_studio'), withGit);
-    assert.deepEqual(fromCommunity.map((choice) => choice.value), ['origin', 'source:mine']);
+    assert.deepEqual(fromCommunity.map((choice) => choice.value), ['origin:ouroboros-community', 'source:mine', 'new:ouroboros-community']);
     assert.equal(fromCommunity[0].label, 'Back to Ouroboros Community — where it came from');
+    assert.equal(fromCommunity[2].label, 'Ouroboros Community — as a new skill');
+    const fromOfficial = publishDestinations(byName('weather'), SOURCES);
+    assert.deepEqual(fromOfficial.map((choice) => choice.value), ['origin:ouroboros', 'new:ouroboros-community'],
+        'from either half of the hub: never «share with everyone» into the same repository');
     const pointer = byName('anime_studio');
     pointer.install.release.repo = 'https://github.com/CrossRead/anime';
     assert.equal(publishDestinations(pointer, withGit)[0].label, 'Back to CrossRead/anime — its author’s repository',
         'a hub entry that points at its author’s repository goes back there');
-    // The destination the host takes: a source id, or nothing for the skill's origin.
-    assert.equal(destinationFromChoice('origin'), null);
-    assert.equal(destinationFromChoice('source:mine'), 'mine');
-    assert.equal(destinationFromChoice('source:ouroboros-community'), 'ouroboros-community');
+    // The destination the host takes ({source_id, mode}: origin | entry | new_entry).
+    assert.deepEqual(destinationFromChoice('origin:ouroboros-community'), { source_id: 'ouroboros-community', mode: 'origin' });
+    assert.deepEqual(destinationFromChoice('new:ouroboros-community'), { source_id: 'ouroboros-community', mode: 'new_entry' });
+    assert.deepEqual(destinationFromChoice('source:mine'), { source_id: 'mine', mode: 'entry' });
     assert.equal(destinationFromChoice(''), null);
     assert.deepEqual(publishDestinations(byName('telegram'), SOURCES).map((choice) => choice.value), ['source:ouroboros-community']);
     assert.deepEqual(publishDestinations(byName('telegram'), SOURCES.filter((row) => row.kind !== 'hub')), [],

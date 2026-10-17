@@ -128,12 +128,12 @@ export function cancelHarnessMaintenance(operationId) {
 
 /**
  * Run the read-only publication preflight for one selected skill and the
- * destination the owner chose (a source id or `hub`, as `submit_skill_to_hub`
- * takes it; omitted = the skill's origin, else the hub).
+ * destination the owner chose (omitted = the skill's origin, else the hub); the
+ * answer's `repository` is the one the publish task binds.
  * Domain states, including repairable findings, remain successful JSON
  * responses; only transport/admission refusals reject through fetchJson.
  * @param {string} skill
- * @param {string|null} [destination]
+ * @param {import('./skill_source_contract_types.js').SkillPublishDestinationChoice|null} [destination]
  * @returns {Promise<import('./api_types.js').SkillPublishPreflightResponse>}
  */
 export function skillPublishPreflight(skill, destination = null) {

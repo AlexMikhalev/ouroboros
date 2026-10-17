@@ -289,7 +289,7 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
     } else if (update) {
         const v = escapeHtml(versionText(update.version) || 'A new version');
         trays.push(modified || install?.base_known === false
-            ? trayHtml({ sentence: `${escapeHtml(sourceName)} has ${v}. ${modified ? 'This skill was changed here' : 'Its original files aren’t known'}, so updating asks what to keep.`,
+            ? trayHtml({ sentence: `${escapeHtml(sourceName)} has ${v}. ${!modified ? 'Its original files aren’t known' : modified.by === 'owner' ? 'You changed this skill here' : 'This skill was changed here'}, so updating asks what to keep.`,
                 actions: smallButton('Update…', name, 'update') })
             : trayHtml({ sentence: update.version && update.version === install?.release?.version
                 ? `${escapeHtml(sourceName)} changed the files of ${v} (same version label).`

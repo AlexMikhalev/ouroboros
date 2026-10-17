@@ -72,7 +72,11 @@ test('updates: one click for an unmodified skill, «Update…» asks what to kee
     assert.match(plain, /v0\.3\.2 is available\./);
     assert.match(plain, /data-skill-action="update"[^>]*>Update</);
     const modified = renderInstalledSkillCard(row('anime_studio'));
-    assert.match(traysOf(modified), /Ouroboros Community has v3\.2\.0\. This skill was changed here, so updating asks what to keep\./);
+    assert.match(traysOf(modified), /Ouroboros Community has v3\.2\.0\. You changed this skill here, so updating asks what to keep\./,
+        'the host recorded the owner’s edit of these bytes');
+    const unrecordedUpdate = row('anime_studio');
+    unrecordedUpdate.review_gate = { executable_review: false, reason: 'review_pending' };
+    assert.match(traysOf(renderInstalledSkillCard(unrecordedUpdate)), /This skill was changed here, so updating asks what to keep\./);
     assert.match(traysOf(modified), />Update…</);
     assert.match(modified, /Modified · edited by you/, 'the host recorded the owner’s edit of these bytes');
     assert.equal(installedWhoHtml(row('anime_studio')).split(' · ').slice(-1)[0], 'edited by you here (now v3.3.0)');
