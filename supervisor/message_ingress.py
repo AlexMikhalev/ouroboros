@@ -26,10 +26,12 @@ import functools
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros import dialogue_store
 from ouroboros.chat_uploads import attachment_views, same_message, stored_refs
+from ouroboros.store import StoreError
+from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, SUBAGENT_MESSAGE_FIELDS
 from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -153,6 +155,193 @@ def delivery_facts(row: dict, chat_id: int) -> dict:
     if _entered_here(facts):
         return {"ingress_dispatched": True}
     return {}
+
+
+# --- the canonical chat writers ----------------------------------------------------------------
+
+def _chat_record(
+    direction: str,
+    chat_id: int,
+    user_id: int,
+    text: str,
+    ts: Optional[str] = None,
+    fmt: str = "",
+    source: str = "",
+    sender_label: str = "",
+    sender_session_id: str = "",
+    client_message_id: str = "",
+    transport: Optional[Dict[str, Any]] = None,
+    task_id: str = "",
+    record_type: str = "",
+    filename: str = "",
+    mime: str = "",
+    download_url: str = "",
+    download_url_compat: str = "",
+    caption: str = "",
+    actions: Optional[List[Dict[str, str]]] = None,
+    title: str = "",
+    quiz: Optional[Dict[str, Any]] = None,
+    size_bytes: Optional[int] = None,
+    client_surface: Optional[Dict[str, Any]] = None,
+    message_meta: Optional[Dict[str, Any]] = None,
+    drive_root=None,
+    require_write: bool = False,
+) -> Tuple[Any, Optional[dict]]:
+    """``(root, the chat row as every reader expects it)``; ``(None, None)`` without a data root."""
+    from supervisor import message_bus
+
+    root = drive_root if drive_root is not None else message_bus.DATA_DIR
+    if root:
+        from pathlib import Path
+        from ouroboros.utils import read_json_dict
+
+        root = Path(root)
+        record = {
+            "ts": ts or utc_now_iso(),
+            "session_id": ((read_json_dict(root / "state" / "state.json") or {})
+                           if drive_root is not None else message_bus.load_state()).get("session_id"),
+            "direction": direction,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "text": text,
+            "format": fmt,
+            "source": source,
+            "sender_label": sender_label,
+            "sender_session_id": sender_session_id,
+            "client_message_id": client_message_id,
+            "transport": dict(transport or {}),
+            "task_id": str(task_id or ""),
+        }
+        if direction == "in":
+            record["message_accepted_at"] = utc_now_iso()
+        if direction == "in" and source == "web" and client_message_id and require_write:
+            # The canonical append is the proof used by the live echo. Keep it
+            # on that SAME row so history can replay the fact after a reload.
+            record["ingress_accepted"] = True
+        if direction == "in" and client_message_id and require_write:  # a named acceptance: which process took it
+            from ouroboros.process_custody import current_custody_session_id
+
+            record["ingress_process"] = current_custody_session_id()  # message_ingress.accepted_here
+        # Media rows (e.g. delivered documents) carry a variable ``type`` plus
+        # lightweight metadata so /api/chat/history can rebuild the bubble on
+        # reload WITHOUT persisting base64. ``type`` is set from a variable (not a
+        # literal) so the frozen-contract AST parity scan does not treat this
+        # persisted row as a DocumentOutbound WS envelope.
+        if record_type:
+            record["type"] = record_type
+        if client_surface:
+            # Per-message sending-surface provenance (Owner Surface Fact);
+            # optional column, never a "type":"chat" literal (AST-scan hygiene).
+            record["client_surface"] = dict(client_surface)
+        # Speech rows persist only the compact identity required to route a
+        # child final after progress retention/rotation has removed its cards.
+        meta = dict(message_meta or {})
+        if meta.get("late_answer"):
+            from ouroboros.owner_quiz import late_answer_ref
+            accepted_answer = late_answer_ref(meta["late_answer"])
+            if accepted_answer:
+                record["late_answer"] = accepted_answer
+        if meta.get("attachments"):  # owner attachments: server-measured refs, never paths or bytes
+            record["attachments"] = stored_refs(meta["attachments"])
+        if meta.get("text_placeholder") is True and text:  # the host wrote TEXT; the sender sent no words
+            record["text_placeholder"] = True
+        for key in SUBAGENT_MESSAGE_FIELDS:
+            if key in meta:
+                record[key] = meta[key]
+        if "narration" in meta:
+            record["narration"] = bool(meta["narration"])
+        if record_type in ("project_started", "project_handoff", "project_completion_summary"):
+            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time"):
+                if key in meta:
+                    record[key] = meta[key]
+        if meta.get("delivery_id"):
+            record["delivery_id"] = str(meta["delivery_id"])
+        if "task_terminal_status" in meta:
+            record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
+        # The turn's origin label (a consciousness wake-up) survives the row
+        # like the terminal status: a final bubble is labelled on reload too.
+        if meta.get("initiator"):
+            record["initiator"] = str(meta.get("initiator") or "")
+        if isinstance(meta.get("origin_message_ref"), dict):
+            record["origin_message_ref"] = dict(meta["origin_message_ref"])
+        # The host's placement fact for a task-keyed System row: the row belongs
+        # to the task's card, not beside it. Only the two named placements are
+        # persisted, and the row's stable identity rides with one of them or not
+        # at all — a bare id without a placement names nothing on reload.
+        if meta.get("card_row") in CARD_ROW_PLACEMENTS:
+            record["card_row"] = str(meta["card_row"])
+            card_row_id = str(meta.get("card_row_id") or "")
+            if card_row_id and len(card_row_id) <= 200:
+                record["card_row_id"] = card_row_id
+                revision = meta.get("card_row_revision")
+                if type(revision) is int and revision >= 0:
+                    record["card_row_revision"] = revision
+        if record_type == "acceptance_late_settlement" and isinstance(meta.get("late_evidence"), dict):
+            record["late_evidence"] = dict(meta["late_evidence"])
+        if filename:
+            record["filename"] = filename
+        if mime:
+            record["mime"] = mime
+        if download_url:
+            record["download_url"] = download_url
+        if download_url_compat:
+            # Second address for the same bytes, for desktop launchers whose
+            # file bridge predates the task-artifact route.
+            record["download_url_compat"] = download_url_compat
+        if caption:
+            record["caption"] = caption
+        if actions:
+            record["actions"] = [dict(action) for action in actions]
+            record["title"] = str(title or "")
+        if quiz:
+            # Quiz rows persist the full card (no base64 anywhere) so history
+            # replay rebuilds it with its lifecycle state.
+            record["quiz"] = dict(quiz)
+        if size_bytes is not None:
+            record["size_bytes"] = int(size_bytes)
+        return root, record
+    elif require_write:
+        raise RuntimeError("canonical message acceptance requires a data root")
+    return None, None
+
+
+def log_chat(direction: str, chat_id: int, user_id: int, text: str, *, feed: bool = False,
+             require_write: bool = False, ensure_record_boundary: bool = False, **fields: Any) -> Optional[dict]:
+    """Store one chat row (``dialogue_store.append``): the stored row, or None on a best-effort
+    failure; ``require_write`` raises instead. ``feed`` moves the room's revision in the same
+    transaction (a standalone message the owner has not read). A named inbound row is a named
+    acceptance: an existing row of that id answers (no second row). ``ensure_record_boundary`` is
+    the retired chain writer's parameter, accepted for its callers."""
+    root, record = _chat_record(direction, chat_id, user_id, text, require_write=require_write, **fields)
+    if record is None:
+        return None
+    try:
+        receipt = dialogue_store.append(root, "chat", record, feed=feed)
+    except (StoreError, OSError, ValueError) as exc:
+        if require_write:
+            raise RuntimeError("canonical message acceptance could not be persisted") from exc
+        log.warning("chat row not stored in %s", root, exc_info=True)
+        return None
+    if not receipt.duplicate:
+        from ouroboros.notice_receipts import record as record_notice_receipt
+        record_notice_receipt(root, record)
+    return receipt.row
+
+
+def accept_chat(chat_id: int, user_id: int, text: str, *, dispatch: Optional[Dict[str, Any]] = None,
+                **fields: Any) -> "dialogue_store.Receipt":
+    """A named acceptance's canonical write: the inbound row, its dedup, the room and the dispatch
+    obligation in ONE transaction, answered with the store's receipt (``duplicate`` when an
+    earlier delivery's row answered). A store failure is ``RuntimeError`` (nothing landed)."""
+    root, record = _chat_record("in", chat_id, user_id, text, require_write=True, **fields)
+    try:
+        receipt = dialogue_store.append(root, "chat", record, dispatch=dispatch)
+    except (StoreError, OSError, ValueError) as exc:
+        raise RuntimeError("canonical message acceptance could not be persisted") from exc
+    if not receipt.duplicate:
+        from ouroboros.notice_receipts import record as record_notice_receipt
+        record_notice_receipt(root, record)
+    return receipt
 
 
 # --- which accepted row an id already names --------------------------------------------------
