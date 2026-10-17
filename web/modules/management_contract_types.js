@@ -45,7 +45,7 @@
  * @property {Object=} presence_runtime
  * @property {Object=} provenance
  * @property {boolean=} identity_collision
- * @property {?Object=} install  // source, official, release, basis, base_known, modified, update_available, withdrawn, left_source, turn_on_when_ready, installed_by, installed_at, reason?, task_id?
+ * @property {?Object=} install  // source, official, release, basis, base_known, modified, update_available, withdrawn, left_source, turn_on_when_ready, installed_by, installed_at, reason?, task_id?, check?: {by, notes, at}, pending_update?: {version, digest}, update_rejected?: {version, digest, reason: review_blockers|review_unfinished|preflight_failed, at}
  * @property {string[]=} category
  */
 

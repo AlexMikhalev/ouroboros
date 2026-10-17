@@ -1016,6 +1016,7 @@ def _on_started(
     refresh_content_hash: Callable[[], str] | None = None,
     bound_content_hash: Dict[str, str] | None = None,
     owned_job: Dict[str, str] | None = None,
+    owner_attestation: bool = False,
 ) -> Callable[[LifecycleJob], None]:
     def _callback(job: LifecycleJob) -> None:
         now = utc_now_iso()
@@ -1023,7 +1024,7 @@ def _on_started(
         group_id = str(provenance_data.get("group_id") or f"manual:{skill_name}")
         previous = _read_review_job(review_job_state_path(drive_root, skill_name))
         if (
-            str(previous.get("status") or "") == "running"
+            not owner_attestation and str(previous.get("status") or "") == "running"
             and str(previous.get("job_id") or "")
             and str(previous.get("job_id") or "") != job.id
         ):
@@ -1069,6 +1070,11 @@ def _on_started(
         _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         if owned_job is not None:
             owned_job["job_id"] = job.id  # the one record this caller may later time out
+            if owner_attestation:
+                from ouroboros.skill_install_record import read_install_record
+
+                pending = (read_install_record(drive_root, skill_name) or {}).get("pending_update") or {}
+                owned_job["update_digest"] = str(pending.get("digest") or "")
         append_jsonl(
             _events_path(drive_root),
             {
@@ -1318,6 +1324,7 @@ def run_skill_review_lifecycle_blocking(
     review_impl: ReviewImpl = _default_review_skill,
     repo_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    owner_attestation: bool = False,
 ) -> Dict[str, Any]:
     binding = _resolved_binding
     if binding is None and repo_path is None:
@@ -1371,7 +1378,7 @@ def run_skill_review_lifecycle_blocking(
         drive_root, skill_name, repo_path, binding,
     )
     mark_stale_review_job_interrupted(drive_root, skill_name, current_content_hash=content_hash)
-    dedupe_key = _review_dedupe_key(skill_name, content_hash)
+    dedupe_key = _review_dedupe_key(skill_name, content_hash) + (":owner_attestation" if owner_attestation else "")
     started_monotonic: Dict[str, float] = {}
     bound_content_hash: Dict[str, str] = {}
     owned_job: Dict[str, str] = {}
@@ -1465,6 +1472,7 @@ def run_skill_review_lifecycle_blocking(
                     ),
                     bound_content_hash=bound_content_hash,
                     owned_job=owned_job,
+                    owner_attestation=owner_attestation,
                 ),
                 on_finished=_on_finished(
                     drive_root,
@@ -1483,6 +1491,15 @@ def run_skill_review_lifecycle_blocking(
             job_id=owned_job.get("job_id", ""),
         )
         raise
+    finally:
+        from ouroboros.skill_install_record import update_backup_path
+
+        if owned_job and update_backup_path(drive_root, skill_name).exists():
+            from ouroboros.skill_source_install import run_in_lane, settle_pending_update
+
+            run_in_lane(drive_root, "update_settle", skill_name, lambda: settle_pending_update(
+                drive_root, skill_name, expected_digest=owned_job.get("update_digest")
+                or bound_content_hash.get("value") or content_hash))
 
     try:
         from ouroboros.skill_loader import discover_skills

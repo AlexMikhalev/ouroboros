@@ -413,6 +413,7 @@ def install_skill(
     progress_callback: Optional[Callable[[str], None]] = None,
     target_name_override: str = "",
     install_record: Optional[Dict[str, Any]] = None,
+    retain_update: bool = False,
 ) -> InstallResult:
     """Install one skill; ``overwrite=True`` is required for replacement.
 
@@ -490,15 +491,13 @@ def install_skill(
         log.exception("adapter raised during install")
         return fail(f"Adapter raised: {type(exc).__name__}: {exc}", summary=summary, archive=archive, staged=staged)
 
+    package = {"summary": summary, "archive": archive, "staged": staged, "adapter": adapter_result}
     if not adapter_result.ok:
         staged.cleanup()
         return fail(
             "Adapter rejected the package: " + "; ".join(adapter_result.blockers),
             sanitized_name=adapter_result.sanitized_name,
-            summary=summary,
-            archive=archive,
-            staged=staged,
-            adapter=adapter_result,
+            **package,
         )
 
     _progress("Landing into data plane…")
@@ -536,14 +535,7 @@ def install_skill(
     )
     if identity_error:
         staged.cleanup()
-        return fail(
-            identity_error,
-            sanitized_name=adapter_result.sanitized_name,
-            summary=summary,
-            archive=archive,
-            staged=staged,
-            adapter=adapter_result,
-        )
+        return fail(identity_error, sanitized_name=adapter_result.sanitized_name, **package)
     auto_specs = list((adapter_result.provenance.get("install_specs") or {}).get("auto") or [])
     repair_partial_existing = False
     if target_dir.exists() and not overwrite and auto_specs:
@@ -566,10 +558,7 @@ def install_skill(
                 ok=True,
                 sanitized_name=adapter_result.sanitized_name,
                 target_dir=target_dir,
-                summary=summary,
-                archive=archive,
-                staged=staged,
-                adapter=adapter_result,
+                **package,
                 review_status="",
                 deps_status="installed",
                 deps_fingerprint=deps_state,
@@ -580,25 +569,34 @@ def install_skill(
             adapter_result.sanitized_name,
             target_dir,
         )
+    from ouroboros.skill_install_record import retain_update_snapshot, restore_update_snapshot, write_install_record
+
+    landed_record = _registry_install_record(drive_root, adapter_result.sanitized_name, staged.staging_dir,
+                                             slug=cleaned_slug, version=target_version, record=install_record)
     rollback_snapshot = snapshot_payload_state(
         drive_root,
         adapter_result.sanitized_name,
         target_dir,
         include_state_provenance=True,
     )
+    if retain_update:
+        retain_update_snapshot(rollback_snapshot, landed_record)
+    def restore() -> None:
+        if landed_record.get("pending_update"):
+            restore_update_snapshot(drive_root, adapter_result.sanitized_name, "review_unfinished")
+        else:
+            restore_payload_state(rollback_snapshot, restore_state_provenance=True)
+
     try:
         _land_staged_into_data_plane(staged, target_dir, overwrite=overwrite or repair_partial_existing)
     except Exception as exc:
-        restore_payload_state(rollback_snapshot, restore_state_provenance=True)
+        restore()
         staged.cleanup()
         log.exception("Failed to land staged skill into data plane")
         return fail(
             f"Could not land skill into data plane: {exc}",
             sanitized_name=adapter_result.sanitized_name,
-            summary=summary,
-            archive=archive,
-            staged=staged,
-            adapter=adapter_result,
+            **package,
         )
     # Do not repoint staged.staging_dir to target_dir: cleanup() rmtrees it.
     # Persist provenance before review so reviewers can cross-check origin.
@@ -616,13 +614,12 @@ def install_skill(
     except Exception:
         log.warning("Failed to persist provenance for %s", adapter_result.sanitized_name, exc_info=True)
     try:
-        _write_registry_install_record(drive_root, adapter_result.sanitized_name, target_dir,
-                                       slug=cleaned_slug, version=target_version, record=install_record)
+        write_install_record(drive_root, adapter_result.sanitized_name, landed_record)
     except Exception as exc:
-        restore_payload_state(rollback_snapshot, restore_state_provenance=True)
+        restore()
         staged.cleanup()
-        return fail(f"Could not record the install of the landed skill: {exc}", sanitized_name=adapter_result.sanitized_name,
-                    summary=summary, archive=archive, staged=staged, adapter=adapter_result)
+        return fail(f"Could not record the install of the landed skill: {exc}",
+                    sanitized_name=adapter_result.sanitized_name, **package)
 
     # Seed grants.json for core settings so the owner-grant bridge has one file.
     try:
@@ -678,21 +675,21 @@ def install_skill(
                 log.exception("isolated dependency install failed for %s", adapter_result.sanitized_name)
                 deps_status = "failed"
                 deps_error = f"{type(exc).__name__}: {exc}"
-                restore_payload_state(rollback_snapshot, restore_state_provenance=True)
-        if deps_status != "failed":
+                restore()
+    if deps_status != "failed" and not landed_record.get("pending_update"):
+        if retain_update:
+            from ouroboros.skill_source_install import _keep_previous
+
+            _keep_previous(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
+        else:
             discard_payload_snapshot(rollback_snapshot)
-    else:
-        discard_payload_snapshot(rollback_snapshot)
     _progress("Done")
 
     return InstallResult(
         ok=deps_status != "failed",
         sanitized_name=adapter_result.sanitized_name,
         target_dir=target_dir,
-        summary=summary,
-        archive=archive,
-        staged=staged,
-        adapter=adapter_result,
+        **package,
         review_status=review_status,
         review_findings=review_findings,
         review_error=review_error,
@@ -704,10 +701,9 @@ def install_skill(
     )
 
 
-def _write_registry_install_record(drive_root: pathlib.Path, name: str, target_dir: pathlib.Path, *,
-                                   slug: str, version: str, record: Optional[Dict[str, Any]]) -> None:
-    """The install record of a registry install: the landed (adapted) payload is the release."""
-    from ouroboros.skill_install_record import write_install_record
+def _registry_install_record(drive_root: pathlib.Path, name: str, target_dir: pathlib.Path, *,
+                             slug: str, version: str, record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The install record of a registry install: the adapted payload is the release."""
     from ouroboros.skill_source_catalog import tree_release_digest
 
     fields = dict(record or {})
@@ -721,7 +717,7 @@ def _write_registry_install_record(drive_root: pathlib.Path, name: str, target_d
     digest = tree_release_digest(target_dir)
     fields.update(entry=slug, release={"version": version, "digest": digest}, base_digest=digest)
     fields.pop("installed_at", None)
-    write_install_record(drive_root, name, fields)
+    return fields
 
 
 def uninstall_skill(
@@ -787,8 +783,9 @@ def uninstall_skill(
     except Exception:
         log.debug("failed to clear deps state for %s", cleaned, exc_info=True)
     delete_provenance(drive_root, cleaned)
-    from ouroboros.skill_install_record import clear_install_record
+    from ouroboros.skill_install_record import clear_install_record, discard_update_snapshot
 
+    discard_update_snapshot(drive_root, cleaned)
     clear_install_record(drive_root, cleaned)
     # CPL4-C11: mark payload-gone so the startup sweep clears the rest of the
     # owner state (grants preserved as owner authority).
@@ -806,6 +803,7 @@ def update_skill(
     version: Optional[str] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
     auto_review: bool = True,
+    acceptance_options: Optional[Dict[str, Any]] = None,
 ) -> InstallResult:
     """Reinstall by resolving the original slug from persisted provenance.
 
@@ -844,15 +842,9 @@ def update_skill(
     slug = str(record.get("slug") or "").strip()
     if not slug:
         return InstallResult(False, sanitized_name, error="provenance is missing slug")
-    # Preserve live extension state across unload/swap when possible.
-    was_live = False
-    try:
-        from ouroboros.extension_loader import is_extension_live, unload_extension
-        was_live = bool(is_extension_live(sanitized_name, drive_root))
-        _progress("Unloading existing extension…")
-        unload_extension(sanitized_name)
-    except Exception:  # pragma: no cover — defensive
-        log.debug("pre-update unload failed for %s", sanitized_name, exc_info=True)
+    from ouroboros.skill_source_install import settle_before_replacement
+
+    settle_before_replacement(drive_root, sanitized_name)
     from ouroboros.skill_install_record import read_install_record
 
     previous = read_install_record(drive_root, sanitized_name) or {}
@@ -863,6 +855,21 @@ def update_skill(
 
         row = next((r for r in load_sources() if r["id"] == carried["source"].get("id")), None)
         carried["basis"] = row["trust"] if row else str(previous.get("basis") or "review")
+    from ouroboros.skill_install_record import install_basis_fields
+
+    try:
+        carried.update(install_basis_fields(str(carried.get("basis") or "review"), **(acceptance_options or {})))
+    except ValueError as exc:
+        return InstallResult(False, sanitized_name, error=str(exc), error_status=400)
+    # Preserve live extension state across unload/swap when possible.
+    was_live = False
+    try:
+        from ouroboros.extension_loader import is_extension_live, unload_extension
+        was_live = bool(is_extension_live(sanitized_name, drive_root))
+        _progress("Unloading existing extension…")
+        unload_extension(sanitized_name)
+    except Exception:  # pragma: no cover — defensive
+        log.debug("pre-update unload failed for %s", sanitized_name, exc_info=True)
     result = install_skill(
         drive_root,
         repo_dir,
@@ -873,7 +880,12 @@ def update_skill(
         progress_callback=progress_callback,
         target_name_override=sanitized_name,
         install_record=carried if carried.get("source") else None,
+        retain_update=True,
     )
+    if auto_review:
+        from ouroboros.skill_source_install import settle_pending_update
+
+        settle_pending_update(drive_root, sanitized_name)
     if was_live and (
         not getattr(result, "ok", False)
         or skill_review_gate(getattr(result, "review_status", ""))["executable_review"]

@@ -2,8 +2,9 @@
 
 The starter list is ``OUROBOROS_STARTER_SKILLS`` (catalog ids; an enterprise build ships its own). Its
 default is every built-in skill and every Official hub skill the maintainer marked recommended.
-Onboarding shows all built-in and Official skills grouped by category with the recommended ones ticked;
-completing it installs the ticked ids once, in the background, each with turn-on-when-ready. An install
+Onboarding also offers configured ids from any source in their categories. An explicit [] selects none;
+only absent/blank means defaults. Completing it installs once in the background; the build's
+OUROBOROS_STARTER_SKILLS_TURN_ON (default true) decides first enablement. An install
 that never shows onboarding (headless, Colab, a preset) runs the same installer at its first start with
 the default list. ``state/skill_starter.json`` records the outcome so the installer never runs twice:
 built-ins work offline, and a hub skill that could not be fetched yet is retried at a later start. An
@@ -247,8 +248,10 @@ def at_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_r
     Never raises."""
     try:
         from ouroboros.skill_install_record import convert_legacy_records
+        from ouroboros.skill_source_install import settle_pending_updates_at_startup
 
         convert_legacy_records(drive_root)
+        settle_pending_updates_at_startup(drive_root)
         marker = read_marker(drive_root)
         state = str(marker.get("state") or "")
         onboarded = bool(str(settings.get("OUROBOROS_ONBOARDING_COMPLETED_AT") or "").strip())

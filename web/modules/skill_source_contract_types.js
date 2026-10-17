@@ -154,6 +154,7 @@
  * @property {string} mode  // replace | keep | merge
  * @property {string=} digest
  * @property {string=} local_digest
+ * @property {boolean=} skip_review  // owner's Update without review; replace only
  */
 
 /**
