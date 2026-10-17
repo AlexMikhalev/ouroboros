@@ -148,30 +148,47 @@ def test_the_skill_reads_and_acts_on_its_own_window_through_the_host(host, owned
     def act(select, do, **extra):
         return call("element_act", hwnd=hwnd, select=select, do=do, **extra)
 
-    assert act({"automation_id": "amountBox"}, "set_value", text="1500")["ok"] is True
-    assert call("element_find", hwnd=hwnd, select={"automation_id": "amountBox", "value_contains": "1500"})["matched"] == 1
-    assert act({"automation_id": "applyButton"}, "invoke")["ok"] is True
+    # Every step runs even after a failure, and each failure keeps the skill's
+    # own answer, so one desktop run explains all of what went wrong.
+    problems = []
+
+    def check(label, condition, payload):
+        if not condition:
+            problems.append(f"{label}: {json.dumps(payload, ensure_ascii=False)[:1500]}")
+
+    def done(label, select, do, **extra):
+        result = act(select, do, **extra)
+        check(label, result.get("ok") is True, result)
+        return result
+
+    done("set_value", {"automation_id": "amountBox"}, "set_value", text="1500")
+    found = call("element_find", hwnd=hwnd, select={"automation_id": "amountBox", "value_contains": "1500"})
+    check("value read back", found.get("matched") == 1, found)
+    done("invoke", {"automation_id": "applyButton"}, "invoke")
     applied = call("element_find", hwnd=hwnd, select={"name_contains": "applied:1500"}, timeout_ms=5000)
-    assert applied["ok"] is True and applied["matched"] == 1
-    assert act({"automation_id": "agreeBox"}, "toggle")["element_after"]
+    check("invoke effect", applied.get("ok") is True and applied.get("matched") == 1, applied)
+    toggle = act({"automation_id": "agreeBox"}, "toggle")
+    check("toggle", bool(toggle.get("element_after")), toggle)
     toggled = call("window_read", hwnd=hwnd, shape="flat", text_contains="agree")
-    assert any(node.get("state", {}).get("checked") == "on" for node in toggled["items"])
-    assert act({"automation_id": "kindBox"}, "expand")["ok"] is True
-    assert act({"automation_id": "kindBox"}, "collapse")["ok"] is True
-    assert act({"role": "list_item", "name": "two"}, "select")["ok"] is True
-    assert act({"role": "list_item", "name": "three"}, "scroll_into_view")["ok"] is True
-    assert act({"automation_id": "amountBox"}, "focus")["mutating"] is False
+    check("toggle effect", any(node.get("state", {}).get("checked") == "on" for node in toggled["items"]), toggled)
+    done("expand", {"automation_id": "kindBox"}, "expand")
+    done("collapse", {"automation_id": "kindBox"}, "collapse")
+    done("select", {"role": "list_item", "name": "two"}, "select")
+    done("scroll_into_view", {"role": "list_item", "name": "three"}, "scroll_into_view")
+    focus = act({"automation_id": "amountBox"}, "focus")
+    check("focus is not mutating", focus.get("mutating") is False, focus)
 
     twins = act({"role": "button", "name": "Twin"}, "focus")
-    assert twins["ok"] is False and twins["reason"] == "ambiguous" and twins["matched"] == 2
-    assert act({"role": "button", "name": "Twin", "nth": 1}, "focus")["ok"] is True
+    check("ambiguity", twins.get("ok") is False and twins.get("reason") == "ambiguous" and twins.get("matched") == 2, twins)
+    done("nth", {"role": "button", "name": "Twin", "nth": 1}, "focus")
     missing = act({"name": "no such element"}, "focus")
-    assert missing["reason"] == "not_found" and missing["searched_whole_window"] is True
+    check("not found", missing.get("reason") == "not_found" and missing.get("searched_whole_window") is True, missing)
     unsupported = act({"automation_id": "statusLabel"}, "invoke")
-    assert unsupported["ok"] is False and "does not support InvokePattern" in unsupported["error"]
+    check("unsupported", unsupported.get("ok") is False and "does not support InvokePattern" in str(unsupported.get("error")), unsupported)
 
     classic = call("window_read", hwnd=hwnd, backend="win32", max_nodes=50)
-    assert classic["backend"] == "win32" and classic["nodes_read"] > 1
+    check("win32 fallback", classic.get("backend") == "win32" and classic.get("nodes_read", 0) > 1, classic)
+    assert not problems, "\n".join(problems)
 
 
 def test_a_busy_window_answers_bounded_instead_of_hanging(host, owned_window):
