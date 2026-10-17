@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from ouroboros import dialogue_store as ds
 from ouroboros.gateway.history import _assemble_history_response
 from ouroboros.owner_quiz import quiz_states, record_asked, record_answered, reconcile_terminal
 from ouroboros.owner_wait import set_owner_wait
@@ -51,8 +52,9 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
     details = ["Single-machine files", "Multiple writers over network"]
     assert pointer["option_details"] == details and pointer["stake"] == "Where every later write lands."
     assert not {"comment", "answered_index"} & pointer.keys()
-    stored = (tmp_path / "logs/chat.jsonl").read_text().splitlines()
-    assert len(stored) == 1 and json.loads(stored[0])["chat_id"] == project["chat_id"]
+    from tests._dialogue import chat_rows
+    stored = chat_rows(tmp_path)
+    assert len(stored) == 1 and stored[0]["chat_id"] == project["chat_id"]
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
     assert len(main) == 1 and main[0]["quiz_id"] == qid
     assert main[0]["option_details"] == details and main[0]["stake"] == "Where every later write lands."
@@ -76,7 +78,6 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
 
 
 def test_pointer_quota_and_dedup(tmp_path):
-    from ouroboros.utils import append_jsonl
 
     project = create_project(tmp_path, "many-questions", name="Many Questions")
     for i in range(8):
@@ -85,9 +86,9 @@ def test_pointer_quota_and_dedup(tmp_path):
         row = {"type": "quiz", "direction": "out", "chat_id": project["chat_id"], "task_id": "t1",
                "ts": f"2026-09-09T00:00:0{i}Z", "text": "?", "quiz": {"quiz_id": qid,
                "options": ["a", "b"], "wait_for_answer": True}}
-        append_jsonl(tmp_path / "logs/chat.jsonl", row)
-        append_jsonl(tmp_path / "logs/chat.jsonl", row)
-    append_jsonl(tmp_path / "logs/chat.jsonl", {**row, "quiz": {**row["quiz"], "quiz_id": "optional", "wait_for_answer": False}})
+        ds.append(tmp_path, "chat", row)
+        ds.append(tmp_path, "chat", row)
+    ds.append(tmp_path, "chat", {**row, "quiz": {**row["quiz"], "quiz_id": "optional", "wait_for_answer": False}})
     messages = json.loads(_assemble_history_response(tmp_path, 1, 3, 0))["messages"]
     assert len(messages) == 3
     assert len({(row["task_id"], row["quiz_id"]) for row in messages}) == 3
@@ -243,14 +244,12 @@ def test_question_presentation_shared_fixture():
 def test_project_room_quiz_row_carries_the_wait_facts(tmp_path):
     """A wait the owner resumed by ordinary input leaves no frame behind: the replayed card
     reads the task's wait record like the Main pointer does."""
-    from ouroboros.utils import append_jsonl
-
     project = create_project(tmp_path, "resumed-project", name="Resumed Project")
     write_task_result(tmp_path, "t1", STATUS_RUNNING, project_id=project["id"], chat_id=project["chat_id"])
     record_asked(tmp_path, "t1", quiz_id="q1", question="Which?", options=["a", "b"], wait_for_answer=True)
-    append_jsonl(tmp_path / "logs/chat.jsonl", {"type": "quiz", "direction": "out", "chat_id": project["chat_id"],
-                 "task_id": "t1", "ts": "2026-09-16T00:00:00Z", "text": "Which?",
-                 "quiz": {"quiz_id": "q1", "options": ["a", "b"], "wait_for_answer": True}})
+    ds.append(tmp_path, "chat", {"type": "quiz", "direction": "out", "chat_id": project["chat_id"],
+              "task_id": "t1", "ts": "2026-09-16T00:00:00Z", "text": "Which?",
+              "quiz": {"quiz_id": "q1", "options": ["a", "b"], "wait_for_answer": True}})
     room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
     assert "owner_wait_state" not in room[0]["quiz"]
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})

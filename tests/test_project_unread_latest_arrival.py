@@ -103,19 +103,17 @@ def texts(payload: dict) -> list[str]:
     return [row["text"] for row in payload["messages"] if not row.get("is_progress") and row.get("text")]
 
 
-def test_a_late_answer_is_the_newest_arrival_however_early_it_sorts(room):
-    """The recent page holds the room's newest arrivals (the store's chain order); the window is
-    then ordered by event time, so a late answer sorts to its top and is named out of order."""
+def test_a_late_answer_below_the_window_is_named_not_moved(room):
     for minute in (10, 11, 12):
         room.deliver(f"reply {minute}", minute)
     room.deliver("late final", 1)
     assert room.revision() == 4, "the late answer is a new conversation message"
 
     recent = room.read(n_human="3")
-    assert texts(recent) == ["late final", "reply 11", "reply 12"], "the three newest arrivals, in event time"
+    assert texts(recent) == ["reply 10", "reply 11", "reply 12"], "the event-time window is unchanged"
     assert recent["window"]["latest_message"] == {"history_id": room.row_id("late final"), "out_of_order": True}
     older = room.read(cursor=recent["next_cursor"])
-    assert texts(older) == ["reply 10"], "the older page continues in arrival order"
+    assert "late final" in texts(older), "the first older page shows the named message"
     assert "latest_message" not in older["window"], "only a recent read names the newest arrival"
 
 
@@ -275,12 +273,18 @@ def test_one_malformed_registry_row_leaves_only_the_room_it_may_hold_unknown(roo
     assert json.loads(other.body)["window"]["latest_message"] is None, "the malformed row's room is unknown"
 
 
+@pytest.fixture
+def narrow_recent(monkeypatch):
+    """A recent read that stops as soon as its quota is met (a large chat's window)."""
+    monkeypatch.setattr(history_paging, "_RECENT_WINDOW_ROWS", 1)
+
+
 def child_words(room, count: int, minute: int = 20) -> None:
     for index in range(count):
         room.deliver(f"child note {index}", minute + index, task_id="kid-1")
 
 
-def test_a_message_before_a_recent_quota_of_card_rows_is_named_from_one_bounded_read(room):
+def test_a_message_before_a_recent_quota_of_card_rows_is_named_from_one_bounded_read(room, narrow_recent):
     """A child's words and the owner's own messages fill the quota; the answer before them is still the newest."""
     room.deliver("root answer", 5)
     child_words(room, 6)
@@ -292,7 +296,7 @@ def test_a_message_before_a_recent_quota_of_card_rows_is_named_from_one_bounded_
         "named, and read only on screen: this read cannot place it relative to the bottom"
 
 
-def test_a_room_whose_chat_holds_no_standalone_message_names_nothing(room):
+def test_a_room_whose_chat_holds_no_standalone_message_names_nothing(room, narrow_recent):
     child_words(room, 6)
     message_bus.log_chat("in", room.chat_id, 7, "owner asks", ts=ts(40))
     recent = room.read(n_human="2")
@@ -300,14 +304,14 @@ def test_a_room_whose_chat_holds_no_standalone_message_names_nothing(room):
     assert "latest_message" not in recent["window"], "proven: no standalone message exists to read"
 
 
-def test_a_bound_reached_before_the_newest_message_leaves_its_arrival_unknown(room, monkeypatch):
+def test_a_bound_reached_before_the_newest_message_leaves_its_arrival_unknown(room, narrow_recent, monkeypatch):
     room.deliver("root answer", 5)
     child_words(room, 8)
     monkeypatch.setattr(history_paging, "_READ_CEILING_ROWS", 1)
     assert room.read(n_human="2")["window"]["latest_message"] is None
 
 
-def test_an_unreadable_row_between_the_newest_message_and_the_recent_read_leaves_it_unknown(room):
+def test_an_unreadable_row_between_the_newest_message_and_the_recent_read_leaves_it_unknown(room, narrow_recent):
     room.deliver("root answer", 5)
     room.torn()
     child_words(room, 6)
@@ -399,7 +403,7 @@ def test_a_photo_a_child_delivers_is_shown_alone_and_is_the_newest_arrival(room)
         "the root answer on screen is not the photo that arrived after it"
 
 
-def test_a_question_a_child_asked_before_the_recent_selection_is_named_by_the_bounded_search(room):
+def test_a_question_a_child_asked_before_the_recent_selection_is_named_by_the_bounded_search(room, narrow_recent):
     from ouroboros.owner_quiz import record_asked
 
     durable_child(room)
@@ -416,7 +420,7 @@ def test_a_question_a_child_asked_before_the_recent_selection_is_named_by_the_bo
     assert recent["window"]["latest_message"] == {"history_id": room.row_id("Ship it?"), "out_of_order": True}
 
 
-def test_a_legacy_child_final_before_the_recent_selection_does_not_stand_in_for_the_root_answer(room):
+def test_a_legacy_child_final_before_the_recent_selection_does_not_stand_in_for_the_root_answer(room, narrow_recent):
     room.deliver("root answer", 5)
     legacy_child_final(room, "legacy child final", 6)
     child_words(room, 6)
@@ -435,7 +439,7 @@ def follow(room, cursor):
     return pages
 
 
-def test_older_pages_carry_a_bounded_search_on_to_the_newest_message(room, monkeypatch):
+def test_older_pages_carry_a_bounded_search_on_to_the_newest_message(room, narrow_recent, monkeypatch):
     """The recent read's bound came first. Its older pages continue the search: the one holding the
     newest standalone message names it, relative to the chain's frozen boundary; none other does."""
     room.deliver("first answer", 1)
@@ -463,7 +467,7 @@ def test_older_pages_carry_a_bounded_search_on_to_the_newest_message(room, monke
     assert "first answer" in texts(pages[-1])
 
 
-def test_an_unreadable_row_interrupts_the_continued_search(room, monkeypatch):
+def test_an_unreadable_row_interrupts_the_continued_search(room, narrow_recent, monkeypatch):
     room.deliver("root answer", 5)
     room.torn()
     child_words(room, 8)
@@ -478,7 +482,7 @@ def test_an_unreadable_row_interrupts_the_continued_search(room, monkeypatch):
 
 @pytest.mark.parametrize("torn", [False, True], ids=["clean", "unreadable"])
 def test_a_continued_search_reaching_the_clean_start_of_the_chat_proves_no_message_is_there(
-        room, monkeypatch, torn):
+        room, narrow_recent, monkeypatch, torn):
     """A room holding only a child's words and the owner's own messages (a revision once counted a
     child's words): the older page that reaches the start of the chat with none says so, positively,
     so the bottom decides. Past an unreadable row nothing is proven."""
@@ -496,7 +500,7 @@ def test_a_continued_search_reaching_the_clean_start_of_the_chat_proves_no_messa
         "a restored page says it again"
 
 
-def test_a_search_that_found_the_newest_message_is_not_continued(room, monkeypatch):
+def test_a_search_that_found_the_newest_message_is_not_continued(room, narrow_recent, monkeypatch):
     room.deliver("first answer", 1)
     room.deliver("root answer", 5)
     child_words(room, 6)
@@ -507,7 +511,7 @@ def test_a_search_that_found_the_newest_message_is_not_continued(room, monkeypat
     assert not any("latest_message" in page["window"] for page in follow(room, recent["next_cursor"]))
 
 
-def test_the_arrival_search_keeps_its_own_bound_below_the_page_ceiling(room, monkeypatch):
+def test_the_arrival_search_keeps_its_own_bound_below_the_page_ceiling(room, narrow_recent, monkeypatch):
     """Naming the newest arrival is paid on every recent read: it stops at its own small
     bound and passes the fact on, while the pages themselves read to their quota."""
     room.deliver("root answer", 5)

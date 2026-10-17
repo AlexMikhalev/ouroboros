@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import dialogue_import as di, dialogue_store as ds
-from ouroboros.gateway import logs
+from ouroboros.gateway import history_paging, logs
 from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.gateway.task_events import _TaskEventCursorFollower, iter_task_events
 from ouroboros.projects_registry import bind_task_to_project, create_project
@@ -128,17 +128,20 @@ def test_a_project_page_does_equal_sql_work_with_one_or_thirty_other_rooms(tmp_p
     assert counts[0] == counts[1] and counts[0]["steps"] > 0, counts
 
 
-def test_the_import_frontier_is_disclosed_and_never_read_past(tmp_path):
-    """Before the archive job ran, the recent page stops at the frontier and says so; the older page
-    that would cross it answers 503 migrating with its cursor; after the import the same cursor reads
-    the archived rows and the recent page is complete."""
+def test_the_import_frontier_is_disclosed_and_never_read_past(tmp_path, monkeypatch):
+    """Before the archive job ran, a recent page that reaches the frontier says so (one whose quota
+    and window end above it does not); the older page that would cross it answers 503 migrating
+    with its cursor; after the import the same cursor reads the archived rows and the recent page
+    is complete."""
     def row(minute, text):
         return {"ts": ts(minute), "chat_id": 1, "direction": "in", "text": text, "client_message_id": text}
 
     seed(tmp_path, archives={"chat_20260901T000000.jsonl": [row(0, "archived 0"), row(1, "archived 1")]},
          live={"chat": [row(2, "live 2"), row(3, "live 3")]})
     di.cutover(tmp_path)
-    status, bounded = history(tmp_path, n_human="1")
+    with monkeypatch.context() as narrow:
+        narrow.setattr(history_paging, "_RECENT_WINDOW_ROWS", 1)
+        status, bounded = history(tmp_path, n_human="1")
     assert status == 200 and [m["text"] for m in bounded["messages"]] == ["live 3"]
     assert "chat_importing" not in bounded["window"]["truncated_by"], "the page did not reach the frontier"
     assert bounded["has_more"] is True

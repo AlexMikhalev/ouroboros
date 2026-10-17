@@ -510,7 +510,8 @@ def test_retained_descendant_question_converges_after_ancestor_conversion(tmp_pa
     tid = chain[-1]
     record_asked(tmp_path, tid, quiz_id="retained", question="Choose the output", options=["PDF", "HTML"], chat_id=1)
     record_publication(tmp_path, tid, "retained", 1)
-    append_jsonl(tmp_path / "logs/chat.jsonl", {"type": "quiz", "direction": "out", "chat_id": 1,
+    from ouroboros import dialogue_store as ds
+    ds.append(tmp_path, "chat", {"type": "quiz", "direction": "out", "chat_id": 1,
         "task_id": tid, "ts": "2026-10-15T00:00:00Z", "text": "Choose the output",
         "quiz": {"quiz_id": "retained", "options": ["PDF", "HTML"]}})
     bind_task_to_project(tmp_path, converted, project["id"], origin={"absent": "system"})

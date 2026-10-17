@@ -29,7 +29,7 @@ from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noq
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
     replay_evidence_rows, room_lens, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp,
-    IMPORTING, PROJECTION_FAILED, _PROBE_ROWS,
+    IMPORTING, PROJECTION_FAILED, _PROBE_ROWS, _RECENT_WINDOW_ROWS,
 )
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
@@ -251,16 +251,16 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
 
 
 def _recent_entries(root: pathlib.Path, stream: str, want: int, counts) -> list:
-    """The stream's newest rows until ``want`` counted ones, oldest first (the private helpers'
-    legacy call shape, without a room lens: the whole stream newest first through the store)."""
+    """The stream's newest rows until ``want`` counted ones and at least the recent window, oldest
+    first (the private helpers' legacy call shape, without a room lens or stored identities: the
+    whole stream newest first through the store, as the rotated-file read answered)."""
     entries, before, counted = [], None, 0
-    while counted < want:
+    while counted < want or len(entries) < _RECENT_WINDOW_ROWS:
         rows = ds.newest(root, stream, limit=_PROBE_ROWS, before=before)
         for row in reversed(rows):
-            entries.append({**row.row, "history_id": row.history_id,
-                            "history_position": {"source": stream, "offset": row.seq}, "_history_end": row.end})
+            entries.append(dict(row.row))
             counted += bool(counts(entries[-1]))
-            if counted >= want:
+            if counted >= want and len(entries) >= _RECENT_WINDOW_ROWS:
                 break
         if len(rows) < _PROBE_ROWS:
             break

@@ -60,10 +60,13 @@ def test_a_frozen_segment_that_changed_before_its_import_is_a_disclosed_gap_neve
     loaded = list(pages(tmp_path / 'changed', n_human='1'))
     texts = [message['text'] for page in loaded for message in page['messages']]
     assert texts == ['human-2', 'human-0'], 'the changed segment holds no rows the store can vouch for'
-    # The segment that changed and every segment whose chain place it shifted are gaps; the rows the
-    # store already held keep their coordinates and are still delivered.
-    assert all(page['coverage']['spans']['chat']['gaps'] == ['segment_unimportable'] for page in loaded)
-    assert all('chat_segment_unimportable' in page['window']['truncated_by'] for page in loaded)
+    # The segment that changed and every segment whose chain place it shifted are gaps on the pages
+    # spanning their coordinates; the rows the store already held keep theirs and are still delivered.
+    shifted_from = (tmp_path / 'changed' / 'archive' / 'chat_20260901T000000.jsonl').stat().st_size
+    spanning = [page for page in loaded if page['coverage']['spans']['chat']['to'] > shifted_from]
+    assert spanning and all(page['coverage']['spans']['chat']['gaps'] == ['segment_unimportable'] for page in spanning)
+    assert all('chat_segment_unimportable' in page['window']['truncated_by'] for page in spanning)
+    assert all(page['coverage']['spans']['chat']['gaps'] == [] for page in loaded if page not in spanning)
     assert loaded[-1]['coverage']['spans']['chat']['from'] == 0 and loaded[-1]['has_more'] is False
     frozen = list(pages(tmp_path / 'frozen', n_human='1'))
     assert [message['text'] for page in frozen for message in page['messages']] == ['human-2', 'human-1', 'human-0']

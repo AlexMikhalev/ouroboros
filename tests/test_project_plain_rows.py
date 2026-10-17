@@ -248,8 +248,11 @@ def test_history_normalizes_old_project_rows_on_read_without_rewriting_log(tmp_p
     assert assistant["text"] == "## Assistant heading stays markdown"
     assert assistant["markdown"] is True
 
-    # The durable log was read, never rewritten.
-    assert chat_path.read_bytes() == before
+    # The durable rows were read, never rewritten: the cutover moved the chain file's exact bytes into
+    # the frozen archive, and the store holds every line as written.
+    from tests._dialogue import lines
+    assert b"".join(path.read_bytes() for path in sorted((tmp_path / "archive").glob("chat_*.jsonl"))) == before
+    assert lines(tmp_path) == [json.dumps(row, ensure_ascii=False) for row in rows]
 
 
 def test_strip_markdown_is_the_single_shared_stripper():

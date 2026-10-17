@@ -182,4 +182,5 @@ def test_legacy_work_name_uses_cached_structured_result_and_preserves_recorded_n
     assert [row["task_name"] for row in history] == [expected, expected, "Name recorded at creation"]
     assert all(row["text"] == "Recorded event" for row in history)
     assert calls == ["root"]
-    assert path.read_bytes() == before
+    # Read, never rewritten: the cutover moved the chain file's exact bytes into the frozen archive.
+    assert b"".join(p.read_bytes() for p in sorted((tmp_path / "archive").glob("chat_*.jsonl"))) == before

@@ -1,8 +1,10 @@
 """A room's own pages over the dialogue store (``state/dialog.sqlite``).
 
 A page is counted in the room's rows, never in bytes of a shared chain: the
-newest page holds the room's newest rows however far back they lie, and each
-older page the next older ones (owner decisions 2026-10-05, DESIGN "History
+newest page holds the room's newest rows however far back they lie (read over a
+generous recent window, ``_RECENT_WINDOW_ROWS``, so lineage, overlays and late
+answers older than the quota's reach are still weighed by the quota logic), and
+each older page the next older ones (owner decisions 2026-10-05, DESIGN "History
 edges"). The chat and progress streams keep separate quotas (``human``,
 ``progress``), each counted by its own predicate. A room's rows are addressed
 (``RoomLens``): one indexed probe per fact of the room -- its chat, the lineage
@@ -37,6 +39,11 @@ from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_messag
 _SOURCES = ("chat", "progress")
 # One indexed probe page per room fact: a page's cost is the room's facts times this, never its history.
 _PROBE_ROWS = 200
+# The recent page reads at least this many of the room's newest rows per stream before its quota
+# ends it (the JSONL reader's 512 KB live window): the quota is applied over a generous window, so a
+# swarm's finished children, a late answer or a review overlay older than the quota's reach are still
+# weighed by ``history._apply_window_quotas`` (lineage anchoring, deferral to the first older page).
+_RECENT_WINDOW_ROWS = 1000
 # Bound on the candidate rows one request decodes per stream; the cursor resumes where a read
 # stopped, so it bounds latency, never what a room can reach.
 _READ_CEILING_ROWS = 10_000
@@ -172,23 +179,29 @@ class RoomLens(NamedTuple):
 
 
 def _descendants(data_dir: pathlib.Path, tasks: list) -> list:
-    """The task ids the store's lineage places under ``tasks`` (children by parent, the whole tree by
-    root), in one indexed read per 500 roots; an unavailable store names none (their rows then
-    stay where they were written, as the room rule itself would leave them)."""
+    """The task ids the store's lineage places under ``tasks``: the whole tree of a bound root by
+    ``root_task_id``, and the children of a bound mid-tree task generation by generation by
+    ``parent_task_id`` (one indexed read per generation, 500 ids per statement). An unavailable store
+    names none (their rows then stay where they were written, as the room rule itself would leave them)."""
     from ouroboros.task_store import task_facts
 
-    found: list = []
-    for start in range(0, len(tasks), 500):
-        chunk = tasks[start:start + 500]
-        marks = ",".join("?" * len(chunk))
-        try:
-            facts = task_facts(data_dir, where=f"root_task_id IN ({marks}) OR parent_task_id IN ({marks})",
-                               params=(*chunk, *chunk))
-        except StoreError:
-            log.debug("task lineage unavailable for the room lens", exc_info=True)
-            continue
-        found.extend(task for task in facts if task not in tasks)
-    return sorted(set(found))
+    known, found, frontier = set(tasks), set(), sorted(tasks)
+    while frontier:
+        generation: set = set()
+        for start in range(0, len(frontier), 500):
+            chunk = frontier[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            try:
+                facts = task_facts(data_dir, where=f"root_task_id IN ({marks}) OR parent_task_id IN ({marks})",
+                                   params=(*chunk, *chunk))
+            except StoreError:
+                log.debug("task lineage unavailable for the room lens", exc_info=True)
+                return sorted(found)
+            generation.update(task for task in facts if task not in known)
+        known |= generation
+        found |= generation
+        frontier = sorted(generation)
+    return sorted(found)
 
 
 def room_lens(data_dir: pathlib.Path, thread_id: int, project_chat_ids: set, source_refs: list,
@@ -302,9 +315,9 @@ class HistorySource:
         return names
 
     def recent(self, want, counts):
-        """The room's newest rows: newest first until ``want`` counted rows, the import frontier or
-        the read ceiling."""
-        return self._page(self.upper, want, counts, _READ_CEILING_ROWS)
+        """The room's newest rows: newest first until ``want`` counted rows and at least the recent
+        window (``_RECENT_WINDOW_ROWS``), the import frontier or the read ceiling."""
+        return self._page(self.upper, want, counts, _READ_CEILING_ROWS, window=_RECENT_WINDOW_ROWS)
 
     def older(self, before, want, counts, ceiling=None):
         """Consume one backward page of ``want`` counted rows below ``before``; the read ceiling
@@ -316,7 +329,7 @@ class HistorySource:
             return [], self.floor, set()
         return self._page(before, want, counts, _READ_CEILING_ROWS if ceiling is None else ceiling)
 
-    def _page(self, before, want, counts, ceiling):
+    def _page(self, before, want, counts, ceiling, window=0):
         top, selected, counted, read = before, [], 0, 0
         while True:
             rows = self._candidates(self.floor, before)
@@ -325,7 +338,7 @@ class HistorySource:
                 before = entry["history_position"]["offset"]
                 counted += bool(counts(entry))
                 read += 1
-                if counted >= want or read >= ceiling:
+                if (counted >= want and read >= window) or read >= ceiling:
                     return list(reversed(selected)), before, self.gaps(before, top)
             if len(rows) < _PROBE_ROWS:  # the room's rows above the frontier are exhausted
                 return list(reversed(selected)), self.floor, self.gaps(self.floor, top)

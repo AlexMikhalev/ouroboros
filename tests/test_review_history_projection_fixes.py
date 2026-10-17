@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+from ouroboros import dialogue_store as ds
 from ouroboros.gateway.history import (
     _collect_progress_rows,
     _fold_task_bound_skill_reviews,
 )
-from ouroboros.utils import append_jsonl
 
 
 def test_duplicate_lifecycle_pointer_replays_without_a_fake_task(tmp_path):
-    progress = tmp_path / "progress.jsonl"
+    progress = tmp_path / "logs" / "progress.jsonl"
     pointer = {
         "job_id": "skill-job-1", "kind": "review", "target": "alpha",
         "status": "running", "chat_id": 17,
@@ -19,7 +19,7 @@ def test_duplicate_lifecycle_pointer_replays_without_a_fake_task(tmp_path):
         "origin_root_task_id": "root", "presentation_owner_task_id": "root",
         "source": "tool",
     }
-    append_jsonl(progress, {
+    ds.append(tmp_path, "progress", {
         "ts": "2026-08-25T00:00:00Z", "type": "send_message",
         "task_id": "", "is_progress": True, "chat_id": 25,
         "content": "already running", "lifecycle_pointer": pointer,
@@ -34,8 +34,8 @@ def test_duplicate_lifecycle_pointer_replays_without_a_fake_task(tmp_path):
 
 
 def test_plan_reference_replays_from_progress_without_visible_text(tmp_path):
-    progress = tmp_path / "progress.jsonl"
-    append_jsonl(progress, {
+    progress = tmp_path / "logs" / "progress.jsonl"
+    ds.append(tmp_path, "progress", {
         "ts": "2026-08-25T00:00:00Z", "type": "review_reference",
         "surface": "plan_review", "task_id": "task-1",
         "presentation_owner_task_id": "task-1", "review_fingerprint": "a" * 64,
