@@ -389,7 +389,7 @@ def facts(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def stream_row(stream: str, columns: Dict[str, Any]) -> bool:
     """Whether the row takes a chat stream position (``pos``): a chat row outside A2A traffic, as
-    ``chat_chain._stream_rows`` and ``Memory.read_jsonl_tail_after_offset`` counted."""
+    ``chat_chain._stream_rows`` and the consolidation cursor counted."""
     return stream == "chat" and (columns["chat_id"] is None or columns["chat_id"] >= 0)
 
 

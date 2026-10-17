@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
-from ouroboros.utils import append_jsonl, iter_jsonl_objects, read_json_dict, read_text, short, utc_now_iso, write_text
+from ouroboros.utils import append_jsonl, read_json_dict, read_text, short, utc_now_iso, write_text
 from ouroboros.platform_layer import (
     file_lock_exclusive as _lock_ex,
     file_lock_shared as _lock_sh,
@@ -599,26 +599,6 @@ class Memory:
         coverage["durable_gap_ids"] = durable_gap_ids
         return entries, coverage
 
-    def _read_jsonl_entries(
-        self,
-        log_name: str,
-        exclude_a2a: bool = False,
-    ) -> List[Dict[str, Any]]:
-        if log_name in {"chat.jsonl", "progress.jsonl"}:
-            from ouroboros import dialogue_store as ds
-
-            stream = log_name[:-6]
-            ds.require_imported(self.drive_root, stream)
-            return [entry.row for entry in ds.iter_rows(self.drive_root, stream)
-                    if not (exclude_a2a and is_a2a_chat_id(entry.row.get("chat_id")))]
-        path = self.logs_path(log_name)
-        try:
-            return [e for e in iter_jsonl_objects(path)
-                    if not (exclude_a2a and is_a2a_chat_id(e.get("chat_id")))]
-        except Exception:
-            log.warning("Failed to read JSONL entries from %s", log_name, exc_info=True)
-            return []
-
     def read_task_recent(
         self, log_name: str, task_id: str, want: int, *, iter_objects=None, list_archives=None, stat=None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -702,62 +682,6 @@ class Memory:
                              "archives_bounded": bool(coverage.get("archives_bounded")) and len(calls) < int(want)})
         coverage["quota_met"] = int(coverage.get("matched") or 0) >= int(want)
         return shown, coverage
-
-    def read_jsonl_tail_after_offset(
-        self,
-        log_name: str,
-        offset: int,
-        max_entries: int = 100,
-    ) -> List[Dict[str, Any]]:
-        if log_name == "chat.jsonl":
-            from ouroboros import chat_chain, dialogue_store as ds, dialogue_positions as dp
-
-            upper = ds.stream_end(self.drive_root, "chat")
-            lower = chat_chain.position_boundary(self.drive_root, offset) if offset > 0 else 0
-            newest = ds.newest(self.drive_root, "chat", limit=1)
-            if newest:
-                last_pos = dp.ordinal_at(self.drive_root, "chat", newest[-1].seq)
-                if last_pos.pos is not None and offset > last_pos.pos + 1:
-                    lower = 0  # preserve the legacy out-of-range cursor's plain tail
-            ds.require_imported(self.drive_root, "chat", lower=lower, upper=upper)
-            kept, before = [], upper
-            while len(kept) < max_entries and before > lower:
-                page = ds.newest(self.drive_root, "chat", limit=max_entries, before=before)
-                if not page:
-                    break
-                kept.extend(entry.row for entry in reversed(page) if entry.seq >= lower
-                            and not is_a2a_chat_id(entry.row.get("chat_id")))
-                before = page[0].seq
-            return list(reversed(kept[:max_entries]))
-        # Full project awareness (v6.32.0): the one identity's dialogue stream is
-        # its WHOLE conversation — main + project threads alike — because Ouroboros
-        # is one awareness across direct chat, project rooms, and background
-        # consciousness (BIBLE P1). Only A2A virtual-transport ids are excluded
-        # (machine-to-machine traffic, not the human dialogue). A project task's
-        # OWN focused recent-chat view is built separately in build_recent_sections.
-        entries = self._read_jsonl_entries(log_name, exclude_a2a=True)
-        if offset <= 0:
-            return entries[-max_entries:] if max_entries < len(entries) else entries
-        if offset > len(entries):
-            log.warning(
-                "Dialogue consolidation offset %s exceeds %s filtered entry count %s; using plain tail",
-                offset,
-                log_name,
-                len(entries),
-            )
-            return entries[-max_entries:] if max_entries < len(entries) else entries
-        suffix = entries[offset:]
-        return suffix[-max_entries:] if max_entries < len(suffix) else suffix
-
-    def jsonl_generation_signature(self, log_name: str) -> Dict[str, Any]:
-        if log_name in {"chat.jsonl", "progress.jsonl"}:
-            from ouroboros import dialogue_store as ds
-
-            size = ds.stream_end(self.drive_root, log_name[:-6])
-            return {"first_line_sha256": f"dialogue:{log_name[:-6]}", "size": size} if size else {}
-        from ouroboros.utils import jsonl_generation_signature
-
-        return jsonl_generation_signature(self.logs_path(log_name))
 
     @staticmethod
     def _format_chat_line(
