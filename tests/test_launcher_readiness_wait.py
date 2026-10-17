@@ -98,8 +98,10 @@ def test_the_lifecycle_loop_marks_an_exit_before_readiness_but_not_a_restart_or_
 def test_the_health_probe_waits_while_the_child_lives_and_ends_on_its_exit(launcher, monkeypatch):
     import io
 
+    from ouroboros import launcher_readiness
+
     clock = _Clock(step=10.0)
-    monkeypatch.setattr(launcher, "time", clock)
+    monkeypatch.setattr(launcher_readiness, "time", clock)  # the probe's own clock module
     probes = []
 
     class _Response(io.BytesIO):

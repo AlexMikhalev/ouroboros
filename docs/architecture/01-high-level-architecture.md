@@ -286,6 +286,7 @@ ouroboros/ — agent core and shared runtime (§6)
   launcher_bootstrap.py, runtime_venv.py — Bundle-to-repo bootstrap, launch options, managed sync, native-host artifact synchronization and `--runtime-venv` for launcher.py (§2)
   launcher_onboarding.py — First-run onboarding as the desktop launcher presents it: the gateway /onboarding page (§2)
   launcher_server_reaper.py — POSIX same-install stray-server termination by the PID-lock-owning launcher (Runtime topology below)
+  launcher_readiness.py — The launcher's `/api/health` probe: logs the boot phase it reports, no clock for its own child (Runtime topology below)
   launcher_windows_runtime.py — Windows-only pythonnet/pywebview runtime preparation
   launcher_background.py — Desktop background mode: close vs quit, the one consent question, second-launch activation (§9); `DesktopApi`, the alert half the bridge's `MainApi` inherits (§3)
   launcher_appearance.py — A desktop window's native Windows caption takes the light or dark tint of its page's painted palette (§3)

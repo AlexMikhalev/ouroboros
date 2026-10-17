@@ -64,6 +64,7 @@ from ouroboros.launcher_background import (Background, DesktopApi, activate_runn
 from ouroboros.launcher_server_reaper import (
     reap_same_install_strays as _reap_same_install_strays_impl,
 )
+from ouroboros.launcher_readiness import wait_for_server as _wait_for_server
 from ouroboros.launcher_windows_runtime import (  # noqa: F401  (re-exported: same objects, prior launcher surface)
     _prepare_windows_webview_runtime,
     _show_windows_message,
@@ -638,44 +639,6 @@ def _await_generation_endpoint(proc, *, port_file_cleared: bool, abort_event=Non
             return published
         time.sleep(0.25)
     return None
-
-
-def _wait_for_server(port: int, timeout: Optional[float] = None, abort_event=None, proc=None) -> bool:
-    """Wait for the agent HTTP server to answer ``/api/health`` (200 as soon as its socket serves;
-    the body's ``boot`` phase is logged, the UI shows the rest).
-
-    The wait ends with the first answer, ``proc``'s exit or ``abort_event`` (headless mode: a
-    shutdown signal only sets the event, so the wait itself owns the early exit). ``timeout`` is a
-    bound for probing a server this launcher does not own (the already-running notice); the
-    launcher's own child is waited for as long as it lives. The per-probe HTTP timeout stays: it is
-    a transport bound, not a verdict."""
-    url = f"http://127.0.0.1:{port}/api/health"
-    deadline = None if timeout is None else time.time() + timeout
-    while deadline is None or time.time() < deadline:
-        if abort_event is not None and abort_event.is_set():
-            return False
-        if proc is not None and proc.poll() is not None:
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=2) as response:
-                if response.status == 200:
-                    _log_boot_phase(response)
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
-
-
-def _log_boot_phase(response) -> None:
-    """One line about the phases the serving generation reports (older cores report none)."""
-    try:
-        boot = json.loads(response.read().decode("utf-8")).get("boot")
-    except Exception:
-        return
-    if isinstance(boot, dict):
-        log.info("Agent server is serving: boot phase %s, dialogue_ready=%s, tasks_ready=%s",
-                 boot.get("phase"), boot.get("dialogue_ready"), boot.get("tasks_ready"))
 
 
 def _kill_orphaned_children(reason: str = "window_close") -> None:
