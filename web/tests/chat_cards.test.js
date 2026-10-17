@@ -198,6 +198,17 @@ test('card_state: recorded presses update the drawn card in place; a newer revis
         assert.equal(reads(), 2);
         assert.equal(bubble.querySelector('[data-widget-action]').textContent, 'Choose Max');
         assert.equal(cards.applyCardState({ card: { card_id: 'card_unknown', revision: 9 } }), false, 'a card this room does not show');
+        // A change missed while the socket was down is read when it opens again; the same body stays drawn.
+        const action = bubble.querySelector('[data-widget-action]');
+        cards.reconnect();
+        await flush();
+        assert.equal(reads(), 3);
+        assert.equal(bubble.querySelector('[data-widget-action]'), action, 'the same body is not drawn again');
+        revision = 3;
+        cards.reconnect();
+        await flush();
+        assert.equal(reads(), 4);
+        assert.notEqual(bubble.querySelector('[data-widget-action]'), action, 'a newer body is drawn');
         cards.destroy();
     } finally {
         server.restore();

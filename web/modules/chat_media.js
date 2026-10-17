@@ -1052,6 +1052,7 @@ export function createChatMedia({
         // A shown card changed (a new body or a recorded press): the existing row only, no unread bump.
         onWs('card_state', (msg) => deliverContentMutation(() => cards.applyCardState(msg)));
         onWs('extension_lifecycle', cards.lifecycle);
+        onWs('open', cards.reconnect);
         onWs('message', cards.relay);
         if (applyQuizStateFrame && messagesRoot) {
             // Lifecycle updates address an EXISTING card by quiz_id — no

@@ -297,15 +297,17 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         }
     }
 
-    function load(record, revision) {
+    // `quiet`: a re-read that fails keeps the body already drawn (a reconnect's check is not the card failing).
+    function load(record, revision, { quiet = false } = {}) {
         readCardBody(record.id, revision).then((body) => {
             if (destroyed || records.get(record.id) !== record) return;
-            const sameBody = record.data && record.data.revision === body.revision;
+            const sameBody = record.data && record.data.revision === body.revision && record.data.kind === body.kind;
             record.data = body;
-            if (sameBody && body.kind === 'components') write(() => record.mounted?.update(body));
+            // The same body drawn already: only its presses and pin can have changed; a running frame keeps running.
+            if (sameBody) write(() => { paintActions(record); if (body.kind === 'components') record.mounted?.update(body); });
             else drawBody(record);
         }, (error) => {
-            if (destroyed || records.get(record.id) !== record) return;
+            if (destroyed || records.get(record.id) !== record || (quiet && record.data)) return;
             if (error?.status === 404) showFallback(record, 'This card is no longer available.');
             else showFallback(record, `The card could not be loaded: ${error?.message || error}`, 'danger', true);
         });
@@ -317,6 +319,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         if (target.hasAttribute('data-card-retry')) {
             bodies.delete(record.id);
             widgetTabs = null;
+            record.data = null;
             disposeBody(record);
             showFallback(record, 'Loading the card…');
             load(record, record.revision);
@@ -404,6 +407,14 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         }), () => {});
     }
 
+    /** The socket opened again: a change missed meanwhile is read now (a card drawn already stays as it is). */
+    function reconnect() {
+        for (const record of records.values()) {
+            bodies.delete(record.id);
+            load(record, record.revision, { quiet: true });
+        }
+    }
+
     /** The rows inside a released subtree give back everything they hold. */
     function release(root) {
         for (const record of [...records.values()]) {
@@ -417,6 +428,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         buildCard,
         applyCardState,
         lifecycle,
+        reconnect,
         /** Every socket message, for module widgets that listen to their skill's events. */
         relay(msg) { messageHandlers.forEach((handler) => handler(msg)); },
         release,
