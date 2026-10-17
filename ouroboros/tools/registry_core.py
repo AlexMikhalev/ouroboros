@@ -311,7 +311,7 @@ class ToolRegistry:
     _FROZEN_TOOL_MODULES = [
         "browser", "compact_context", "control",
         "core", "delegate", "edit_ops", "evolution_stats", "followup", "git", "git_pr", "git_rollback", "github",
-        "health", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "preflight_review",
+        "health", "imagegen", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "preflight_review",
         "project_journal", "presence",
         "recent_tasks",
         "query_code", "query_data", "review", "review_change", "search", "services", "shell", "skill_exec", "skill_publish",
@@ -555,6 +555,20 @@ class ToolRegistry:
                   or entry.name in _GENERIC_VCS_TARGET_TOOLS
                   or entry.name in {"read_file", "list_files", "search_code", "query_code", "query_data"}):
                 schema = self._schema_with_matrix_roots(entry)
+            if entry.name == "review_change":
+                schema = copy.deepcopy(schema)
+                props = schema["parameters"]["properties"]
+                props["subject"]["enum"] = ["index", "worktree", "base..head"]
+                props["subject"]["description"] = "The assigned repository's staged index, worktree or base..head change."
+                props["surface"]["enum"] = ["change", "preflight"]
+                props["surface"]["description"] = "change = the panel review; preflight = one named reviewer's early look."
+                props["workspace_root"]["description"] = "An optional repository inside your assigned write root."
+                schema["description"] = (
+                    "Ask independent reviewers about a change in your assigned write root. "
+                    "This never approves, commits or integrates your work; the parent retains integration and recheck. "
+                    "Use subject=index, worktree or base..head; surface=change uses the review pool, "
+                    "preflight uses one named reviewer. The same unchanged call collects an existing paid operation."
+                )
         return {"type": "function", "function": schema}
 
     def _schema_with_matrix_roots(self, entry: ToolEntry) -> Dict[str, Any]:
@@ -904,7 +918,7 @@ class ToolRegistry:
         rows: List[Dict[str, Any]] = [
             {"name": name} for name in self.available_tools()
             if name not in registry_guards._WEB_TOOLS or _resource_allowed(self._ctx, "web")
-            if name != "vcs_pull_ff" or _resource_allowed(self._ctx, "network")
+            if name not in {"vcs_pull_ff", "generate_image", "list_image_models", "recover_image"} or _resource_allowed(self._ctx, "network")
         ]
         for surface in ("ext_", "mcp_"):
             if namespace and not namespace.startswith(surface) or not _resource_allowed(self._ctx, "network"):
@@ -1024,6 +1038,8 @@ class ToolRegistry:
         """Run one builtin handler under the scoped attestation."""
         from ouroboros.process_interpreters import interpreter_attestation
         from ouroboros.owner_pause import OwnerPauseRefused, run_tool_handler
+        from ouroboros.model_wait import ModelWaitInterrupted
+        from ouroboros.usage_accounting import UsageAccountingError
 
         observed_skill = None
         missing = object()
@@ -1074,16 +1090,18 @@ class ToolRegistry:
                     ):
                         return None, published
                     return None, result
-                except OwnerPauseRefused:
+                except (OwnerPauseRefused, ModelWaitInterrupted, UsageAccountingError):
                     raise
                 except TypeError as e:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
                 except Exception as e:
                     from ouroboros.body_candidate import CandidateRefused
+                    from ouroboros.store import StoreError
 
+                    if isinstance(e, StoreError) and handoff and handoff.get("not_started") is True:
+                        raise  # the invocation owner retains its actual entry phase
                     if isinstance(e, CandidateRefused):  # e.g. a process inside the candidate without its isolation
-                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}",
-                                          meta={"operation_outcome": "completed_no_effect"}), None
+                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}"), None
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
             if observed_skill is not None:
@@ -1110,6 +1128,7 @@ class ToolRegistry:
 
     def _execute_legacy_text(self, name: str, args: Dict[str, Any]) -> str | ToolResult:
         from ouroboros.owner_pause import OwnerPauseRefused, tool_handoff
+        from ouroboros.store import StoreError
 
         try:
             with tool_handoff(self._ctx, str(name or "")) as handoff:
@@ -1124,12 +1143,15 @@ class ToolRegistry:
         except OwnerPauseRefused as exc:
             from ouroboros.tools.tool_result import launch_refusal_result
 
-            return launch_refusal_result(str(exc))
+            return launch_refusal_result(exc)
+        except StoreError as exc:
+            from ouroboros.tools.tool_result import launch_refusal_result
+            if getattr(exc, "invocation_not_started", None) is True:
+                return launch_refusal_result(exc)
+            raise  # preserve the outer executor's post-entry error handling
 
     def _execute_admitted_text(self, name: str, args: Dict[str, Any],
                                handoff: Optional[Dict[str, Any]] = None) -> str | ToolResult:
-        if handoff is not None:
-            handoff["not_started"] = True
         name = str(name or "").strip()
         args, presence_arg_error = _presence_bound_args(self._ctx, name, args)
         if presence_arg_error:
@@ -1347,7 +1369,7 @@ class ToolRegistry:
             if block_result is not None:
                 return block_result
 
-        # LLM safety supervisor.
+        # LLM safety supervisor; only this first-party path carries a declaration.
         from ouroboros.safety import check_safety
         is_safe, safety_msg = check_safety(
             name,
@@ -1356,6 +1378,7 @@ class ToolRegistry:
             ctx=self._ctx,
             python_resolution=interpreter_resolution,
             resolved_binding=resolved_binding,
+            declared_policy=entry.safety_policy,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)

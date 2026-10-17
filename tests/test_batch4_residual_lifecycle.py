@@ -109,7 +109,7 @@ def test_launch_authority_wait_rejoins_typed_controls(tmp_path, monkeypatch, rea
     controls = iter([None, reason])
     @contextmanager
     def unavailable(*_a, **_k):
-        raise owner_pause.OwnerPauseRefused('owner_launch_authority_unavailable')
+        raise owner_pause.LaunchBusy('contention')
         yield
     monkeypatch.setattr(owner_pause, 'launch_admission', unavailable)
     ctx = SimpleNamespace(status_drive_root=tmp_path, drive_root=tmp_path, task_id='root',
@@ -121,7 +121,7 @@ def test_launch_authority_wait_rejoins_typed_controls(tmp_path, monkeypatch, rea
         cancel_intents.request_cancel(tmp_path, 'root')
     with model_wait.task_model_wait_scope(task={'id': 'root'}, drive_root=tmp_path,
                                          event_queue=None, worker_slot_held=hard) as owner:
-        monkeypatch.setattr(owner, 'control_reason', lambda: next(controls))
+        monkeypatch.setattr(owner, 'control_reason', lambda **_kw: next(controls))
         if reason == 'deadline':
             monkeypatch.setattr(limits._loop(), '_finalize_forced_services', lambda *_a: None)
             monkeypatch.setattr(limits._loop(), '_forced_fallback_result',

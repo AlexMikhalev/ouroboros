@@ -151,17 +151,20 @@ def test_page_handle_replays_its_exact_archive_range(tmp_path):
     assert replayed["next_cursor"] == second["next_cursor"]
 
 
-def test_accepted_quiz_answer_is_hidden_replay_evidence_across_pages(tmp_path):
+@pytest.mark.parametrize("kind", ["quiz_answer", "quiz_closed"])
+def test_quiz_disposition_is_hidden_replay_evidence_across_pages(tmp_path, kind):
     quiz = {"quiz_id": "old", "question": "Choose?", "state": "open",
             "options": [{"label": "First"}, {"label": "Second", "recommended": True}]}
-    winning = {**quiz, "state": "answered", "comment": "  My own answer\nnext line  "}
+    winning = ({**quiz, "state": "answered", "comment": "  My own answer\nnext line  "} if kind == "quiz_answer"
+               else {**quiz, "state": "closed", "closed_reason": "Superseded", "closed_actor": "owner",
+                     "closed_request_id": "close-1"})
     write(tmp_path / "logs" / "chat.jsonl", [
         row(0, direction="out", type="quiz", task_id="quiz-task", quiz=quiz),
         *[row(index) for index in range(1, 170)],
-        row(171, direction="system", type="quiz_answer", task_id="quiz-task", quiz=winning),
+        row(171, direction="system", type=kind, task_id="quiz-task", quiz=winning),
     ])
     loaded = list(pages(tmp_path))
-    [evidence] = [message for message in loaded[0]["messages"] if message.get("system_type") == "quiz_answer"]
+    [evidence] = [message for message in loaded[0]["messages"] if message.get("system_type") == kind]
     assert evidence["text"] == "" and evidence["quiz"] == winning
     assert "answered_index" not in evidence["quiz"]
     [ask] = [message for page in loaded[1:] for message in page["messages"] if message.get("msg_type") == "quiz"]

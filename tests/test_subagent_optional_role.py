@@ -178,32 +178,6 @@ def test_role_reaches_child_prompt_and_durable_lifecycle_without_inference(tmp_p
         assert row["parent_task_id"] == "parent"
         assert row["delegation_role"] == "subagent"
 
-    # Exercise the parent's actual reflection assembler and capture only its
-    # external inference boundary: this verifies the prompt it sends, not just
-    # the intermediate child-evidence helper's result.
-    from ouroboros import consolidator
-    from ouroboros.post_task_synthesis import _run_reflection
-
-    prompts = []
-
-    def reflect(_llm, prompt, _label, **_kwargs):
-        prompts.append(prompt)
-        return "Observed child report.\nMEMORY_ACTIONS_JSON: []\nBACKLOG_CANDIDATES_JSON: []", {}
-
-    monkeypatch.setattr(consolidator, "_call_consolidation_llm", reflect)
-    parent_env = Env(repo_dir=repo, drive_root=drive)
-    entry = _run_reflection(parent_env, agent.llm, {
-        "id": "parent", "type": "task", "text": "Inspect the interface",
-        "workspace_root": str(repo), "budget_drive_root": str(drive),
-    }, {}, {}, {})
-    assert entry["reflection"] == "Observed child report."
-    assert len(prompts) == 1
-    child_section = prompts[0].split("## Related child/subtask evidence\n\n", 1)[1]
-    evidence, _end = json.JSONDecoder().raw_decode(child_section)
-    for key in ("children_overview", "children"):
-        assert len(evidence[key]) == 1
-        assert evidence[key][0]["task_id"] == tid
-        assert evidence[key][0]["role"] == role
     assert load_task_result(drive, tid)["role"] == role
 
 

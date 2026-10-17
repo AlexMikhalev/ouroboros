@@ -115,6 +115,7 @@ def test_append_journal_milestone_bounds_over_limit_with_pointer(tmp_path, monke
     txt = rows[0]["text"]
     assert len(txt) <= _MAX_TEXT_CHARS         # honors the durable per-row contract
     assert "task_results" in txt               # VISIBLE pointer to the full text
+    assert "digest" not in txt                 # recency event carries no full text
 
 
 def test_world_profile_is_loaded_with_stable_memory(tmp_path):

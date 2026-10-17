@@ -11,7 +11,7 @@
 import { tr } from './i18n.js';
 
 export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
-    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
+    startup_notice: ['♻️ Restored pending queue: ', '♻️ Settling '],
     command_reply: ['⚠️ Command ignored: ', '✅ Owner chat registered.', '♻️ Restarting.', '⚠️ Restart cancelled: ',
         '🧬 Evolution campaign: ', '🧬 Evolution stayed OFF: ', '🧬 Evolution did not turn on: ',
         '🧠 Background consciousness ', '🧠 Background consciousness:'],
@@ -43,22 +43,24 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     // Progress rows: a task card's timeline line (`log_events.summarizeChatLiveEvent`).
     task_scheduled: ['🗓️ Scheduled subagent ', '🗓️ Scheduled task '],
     task_error: ['⚠️ Error: '],
-    cancellation_notice: ['❌ cancel '],
     finalization_notice: ['⏳ Task ', '▶️ Task '],
     skill_review: ['✅ Skill review round ', '⚠️ Skill review round ', '❌ Skill review round ', '⏳ Skill review round '],
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
         '🌐 Provider connection ', '🌐 The primary provider temporarily refused ',
-        '🌐 Could not establish a provider connection ', '🌐 Primary provider answered after ',
-        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
+        '🌐 The request did not reach the provider ', '🌐 Primary provider answered after ',
+        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan: ', '✅ PR #', '⚠️ PR #'],
 }));
 
 // Producers this install no longer runs: rows they already wrote keep losing only the mark at
 // display (host_notice_text.test.js pins that none of them is written again).
 export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
+    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
     attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
         '⚠️ Some declared attachments could not be staged; '],
+    cancellation_notice: ['❌ cancel '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
+    host_progress: ['🌐 Could not establish a provider connection ', '📐 Plan review:', '📐 Plan review so far:'],
 }));
 
 const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),

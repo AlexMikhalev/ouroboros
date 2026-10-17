@@ -147,14 +147,20 @@ def observe_worker_event_lag(liveness: list, evt: Any) -> None:
 
 
 def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: Callable[..., Any]) -> bool:
-    """One BOUNDED events pass of the supervisor loop: FIFO, at most
+    """One BOUNDED events pass of the supervisor loop: at most
     ``SUPERVISOR_EVENT_BATCH_MAX_EVENTS`` events; the ``SUPERVISOR_EVENT_BATCH_MAX_SEC``
     budget is checked between handlers (a handler already running finishes, so one
-    slow handler can overrun it), then the loop runs bridge intake. A ``restart_request`` goes to
+    slow handler can overrun it), then the loop runs bridge intake. The bus is one
+    object with two lanes (``supervisor/event_observation.py``): every ``get`` serves
+    the oldest control event while any exists, else the oldest telemetry frame, FIFO
+    inside each lane — the priority lives in the queue, so this ONE consumer takes
+    whatever comes out, never sorts, defers or re-puts. A ``restart_request`` goes to
     ``on_restart``; every other event is lag-observed and dispatched. The remainder
     stays queued for the next turn, so a producer that keeps the queue non-empty
-    can never starve owner-message intake. Returns True when the pass stopped at
-    its bound (a backlog may remain: the caller skips its idle sleep)."""
+    can never starve owner-message intake. A dequeued event carrying a
+    ``delivery_id`` is released from the bus's outstanding-delivery membership after
+    its handler returned or raised, whichever path it took. Returns True when the
+    pass stopped at its bound (a backlog may remain: the caller skips its idle sleep)."""
     from supervisor.events import dispatch_event
 
     deadline = time.monotonic() + SUPERVISOR_EVENT_BATCH_MAX_SEC
@@ -165,12 +171,37 @@ def drain_worker_events(event_q: Any, ctx: Any, liveness: list, *, on_restart: C
         except queue.Empty:
             return False
         drained += 1
-        if evt.get("type") == "restart_request":
-            on_restart(evt, ctx)
-            continue
-        observe_worker_event_lag(liveness, evt)
-        dispatch_event(evt, ctx)
+        try:
+            if evt.get("type") == "restart_request":
+                on_restart(evt, ctx)
+                continue
+            observe_worker_event_lag(liveness, evt)
+            dispatch_event(evt, ctx)
+        finally:
+            _release_delivery(event_q, evt)
     return True
+
+
+_RELEASE_FAILURES_SEEN: set = set()
+
+
+def _release_delivery(event_q: Any, evt: Any) -> None:
+    """The consumer's receipt for one dequeued send: fail-soft, logged once per failure class.
+
+    A bus without the membership (a plain queue in a test, an older proxy) or a
+    broken manager connection must not turn a handled event into a loop error;
+    the replay duty reads an unobservable membership as unknown anyway."""
+    delivery_id = str(evt.get("delivery_id") or "") if isinstance(evt, dict) else ""
+    if not delivery_id:
+        return
+    try:
+        event_q.release_delivery(delivery_id)
+    except Exception as exc:
+        failure_class = type(exc).__name__
+        if failure_class not in _RELEASE_FAILURES_SEEN:
+            _RELEASE_FAILURES_SEEN.add(failure_class)
+            log.warning("Delivery membership release failed (%s); replay reads it as unknown",
+                        failure_class, exc_info=True)
 
 
 def flush_budget_projection(ctx: Any) -> None:

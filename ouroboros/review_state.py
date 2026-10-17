@@ -123,7 +123,7 @@ def _commit_attempt_from_dict(d: Dict[str, Any]) -> CommitAttemptRecord:
 
 _ATTEMPT_AUTHORITY_STRING_FIELDS = frozenset({
     "ts", "status", "phase", "started_ts", "updated_ts", "finished_ts",
-    "task_id", "repo_key", "tool_name", "review_retry_key",
+    "task_id", "repo_key", "tool_name", "review_retry_key", "review_budget_repo_key",
     "review_contract_fingerprint", "block_reason", "review_owner_session_id",
 })
 _ATTEMPT_AUTHORITY_BOOL_FIELDS = frozenset({
@@ -287,8 +287,8 @@ def compute_obligation_semantic_redirects(
 
     Must run OUTSIDE the review-state lock (it calls a light model). Side-effect-free and
     fail-open: any failure (model down, no candidates, parse error) yields no redirect — the
-    finding becomes a new obligation — and it NEVER blocks review. Canonical-anchor findings
-    are skipped: they already dedup structurally via the obligation fingerprint."""
+    finding becomes a new obligation — and it NEVER blocks review. Checklist-item findings are
+    skipped: they fold only as an exact restatement or by a reused open ``obligation_id``."""
     try:
         if not findings:
             return {}
@@ -316,7 +316,7 @@ def compute_obligation_semantic_redirects(
                 continue
             item = str(f.get("item", "unknown"))
             reason = str(f.get("reason", ""))
-            # Only FREE-TEXT findings: a canonical-anchor item already dedups structurally.
+            # Only FREE-TEXT findings; a checklist item folds by fingerprint or reused id.
             if _normalize_obligation_item_key(item):
                 continue
             fingerprint = _make_obligation_fingerprint(item, reason)

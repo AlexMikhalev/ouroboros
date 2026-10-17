@@ -2,11 +2,10 @@
 
 This chapter says what the handbook is for and names the domain manifest, the one owner
 a contributor must know before moving code. The handbook is how the body is changed:
-imperative rules, each naming its enforcing test, gate or CI lane or saying
-review-only, each pointing to `docs/ARCHITECTURE.md` for mechanism instead of restating
-it. What belongs in which book is the "Documentation contract"; which document owns
-what is BIBLE P7 "Named canonical locations". This book keeps no inventory and no
-history.
+imperative rules, each naming its enforcing test, gate or CI lane or saying review-only.
+Their form and what belongs in which book are the "Documentation contract"; which
+document owns what is BIBLE P7 "Named canonical locations". This book keeps no
+inventory and no history.
 
 `ouroboros/domains.toml` is the SSOT of the module-to-domain assignment (1:1, complete
 over the tracked runtime population) and pins the cross-domain dependency baseline;

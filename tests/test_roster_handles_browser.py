@@ -178,7 +178,7 @@ def test_an_empty_pool_is_refused_until_the_owner_saves_without_reviewers(role_u
     assert empty.is_hidden()
     page.locator("[data-subagent-row]").first.locator('[data-subagent-field="review_eligible"]').uncheck()
     assert page.locator("[data-review-pool-count]").inner_text() == "Reviewers: 0"
-    assert "reviews will not run and will report “not performed”" in empty.inner_text()
+    assert "so the main model reviews alone: one model, no second opinion" in empty.inner_text()
     posts = len(ui["posts"])
     page.locator("#btn-save-settings").click()
     assert "No row is marked Reviewer" in page.locator("#settings-status").text_content()

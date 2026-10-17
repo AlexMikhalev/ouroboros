@@ -136,10 +136,10 @@ def test_http_observation_records_transport_without_inventing_owner_identity(tmp
     write_task_result(tmp_path, "task", "running")
     _queue(tmp_path, "task")
     monkeypatch.setattr(task_queue, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(task_queue, "task_has_live_ownership", lambda task_id: True)
-    monkeypatch.setattr(task_queue, "task_subtree_is_live", lambda task_id: True)
-    monkeypatch.setattr(task_queue, "cancel_task_custody", lambda task_id: task_queue.CANCEL_CANCELLED)
-    monkeypatch.setattr(tasks, "_run_cascade_cancel", lambda task_id: True)
+    # A running row is recorded with no liveness probe; the teardown owners are
+    # stubbed so the recorded intent stays readable after the 200.
+    monkeypatch.setattr(task_queue, "cancel_task_custody", lambda task_id, **_kw: task_queue.CANCEL_CANCELLED)
+    monkeypatch.setattr(task_queue, "cancel_task_by_id", lambda task_id, **_kw: True)
     monkeypatch.setattr("ouroboros.delegate_evidence.task_execution_evidence", lambda *_a: pytest.fail("HTTP must not scan delegated descendants"))
     app = Starlette(routes=[Route("/api/tasks/{task_id}/cancel", tasks.api_task_cancel, methods=["POST"])])
     app.state.drive_root = tmp_path

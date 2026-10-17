@@ -50,7 +50,7 @@ def test_pending_stop_reaches_evidence_and_checkpoint_then_success_is_fresh(tmp_
         while not ctx.event_queue.empty():
             events.append(ctx.event_queue.get_nowait()["data"])
     else:
-        events = [json.loads(line) for line in (ctx.drive_logs / "events.jsonl").read_text().splitlines()]
+        events = [json.loads(line) for line in (ctx.drive_logs / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [event["checkpoint_kind"] for event in events] == [event["kind"] for event in evidence]
 
 
@@ -93,11 +93,23 @@ def _ordinary_completion(tmp_path, monkeypatch, rows, answer):
     monkeypatch.setattr(loop, "_compute_subagent_handoff", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_enforce_child_absorption_gate", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a, **_k: False)
+    # Auto reviews the author's typed nomination, never the declared expected_output (#1731).
+    from tests.test_loop_acceptance_gate import _nominate_acceptance
+
+    _nominate_acceptance(trace, task_id="parent1", subject="The service is stopped.")
 
     held = loop._no_tool_final_answer("The service is stopped.", ctx, trace, registry,
                                       queue.Queue(), set(), lambda _text: None)
     assert held is None and not packets and registry._ctx._delivery_control_required is True
     shown = [dict(message) for message in ctx.messages]
+    _select_completion(registry, ctx, trace, answer=answer)
+    # Even a clean PASS reaches the author before its decision (G1 #1737/D12); the
+    # informed re-selection then delivers on the same paid panel.
+    assert loop._no_tool_final_answer(answer, ctx, trace, registry, queue.Queue(), set(),
+                                      lambda _text: None, explicit_candidate=True) is None
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
+
+    expose_acceptance_feedback(trace, ctx.messages, "parent1")  # the next Main request carried it
     _select_completion(registry, ctx, trace, answer=answer)
     text, _usage, _trace = loop._no_tool_final_answer(answer, ctx, trace, registry, queue.Queue(), set(),
                                                       lambda _text: None, explicit_candidate=True)

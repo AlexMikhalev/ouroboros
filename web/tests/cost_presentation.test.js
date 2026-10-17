@@ -8,7 +8,7 @@ import {
     taskCostMeta,
     taskCostProjection,
 } from '../modules/chat.js';
-import { costPresentationMeta, renderLiveCardMeta } from '../modules/chat_activity.js';
+import { costPresentationDetail, costPresentationMeta, renderLiveCardMeta } from '../modules/chat_activity.js';
 import { costBucketPresentation, costDashboardPresentation } from '../modules/costs.js';
 import { summarizeLogEvent } from '../modules/log_events.js';
 import {
@@ -424,12 +424,16 @@ test('#498 the scoped carrier answers the whole money question from one bucket',
     assert.deepEqual(costPresentationMeta(carrier({
         tracked_amount: null, has_unpriced: true, tracked_final: false, accounting_open: true,
     })), ['Cost unknown']);
-    // Mixed: the tracked number is a subtotal, and the reason is stated in WORDS
-    // beside it rather than hidden in a tooltip.
-    assert.deepEqual(costPresentationMeta(carrier({ has_unpriced: true })),
-        ['Tracked: $1.20', 'some steps have no price']);
-    assert.deepEqual(costPresentationMeta(carrier({ tracked_amount: 0, has_unpriced: true })),
-        ['Tracked: $0.00', 'some steps have no price']);
+    // Mixed: the tracked number is a subtotal and says so by its own word; the reason is
+    // stated in words in the card's details (owner 2026-10-12, option B), never in a tooltip.
+    const why = 'Cost: some steps have no price, so Tracked counts only the priced steps.';
+    assert.deepEqual(costPresentationMeta(carrier({ has_unpriced: true })), ['Tracked: $1.20']);
+    assert.equal(costPresentationDetail(carrier({ has_unpriced: true })), why);
+    assert.deepEqual(costPresentationMeta(carrier({ tracked_amount: 0, has_unpriced: true })), ['Tracked: $0.00']);
+    assert.equal(costPresentationDetail(carrier({ tracked_amount: 0, has_unpriced: true })), why);
+    // Nothing to explain where the amount stands alone or is unknown.
+    for (const over of [{}, { tracked_final: false, accounting_open: true }, { tracked_amount: null, has_unpriced: true }])
+        assert.equal(costPresentationDetail(carrier(over)), '');
     // No accountable row at all is not a free result and not a money line.
     assert.deepEqual(costPresentationMeta(carrier({ has_rows: false, tracked_amount: null })), []);
     // No carrier at all defers to the legacy derivation.
@@ -491,10 +495,11 @@ test('#498 mixed exact subtotal is not sticky final while prices are unknown', (
     const exactSubtotal = taskCostProjection(frame(0, true), '2026-09-23T00:00:00Z');
     const lateEstimatedPrice = taskCostProjection(frame(1.2, false, true), '2026-09-23T00:01:00Z');
     assert.equal(exactSubtotal.final, false);
-    assert.deepEqual(mergeStickyCostMeta(exactSubtotal, lateEstimatedPrice).meta,
-        ['Tracked: up to $1.20', 'some steps have no price']);
-    assert.deepEqual(mergeStickyCostMeta(lateEstimatedPrice, exactSubtotal).meta,
-        ['Tracked: up to $1.20', 'some steps have no price']);
+    assert.deepEqual(mergeStickyCostMeta(exactSubtotal, lateEstimatedPrice).meta, ['Tracked: up to $1.20']);
+    assert.deepEqual(mergeStickyCostMeta(lateEstimatedPrice, exactSubtotal).meta, ['Tracked: up to $1.20']);
+    // The reason rides with the amount it explains through the sticky choice.
+    assert.equal(mergeStickyCostMeta(exactSubtotal, lateEstimatedPrice).detail,
+        'Cost: some steps have no price, so Tracked counts only the priced steps.');
     const ownZero = taskCostProjection({ cost_presentation: {
         scope: 'own', tracked_amount: 0, tracked_final: true,
         accounting_open: false, has_unpriced: false, has_rows: true,
@@ -517,7 +522,7 @@ test('#498 exact live subtotal cannot freeze a still-running root heartbeat', ()
         scope: 'root_tree', tracked_amount: 0.3, tracked_final: false,
         accounting_open: true, has_unpriced: true, has_rows: true } }, '2026-09-23T00:01:00Z');
     assert.equal(exact.final, false);
-    assert.deepEqual(mergeStickyCostMeta(exact, next).meta, ['Tracked: up to $0.30', 'some steps have no price']);
+    assert.deepEqual(mergeStickyCostMeta(exact, next).meta, ['Tracked: up to $0.30']);
     // A null carrier beside a readable ledger is an UNKNOWN amount (owner
     // vocabulary), never the unreadable-ledger phrase.
     assert.deepEqual(taskCostMeta({ accounted_upper_bound_usd: 0, cost_final: true,

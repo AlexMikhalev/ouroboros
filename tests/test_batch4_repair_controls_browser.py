@@ -12,6 +12,7 @@ from threading import Thread
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_owner_continue import _interrupted
 
@@ -95,8 +96,7 @@ def test_failed_admission_reload_retry_and_tree_pause_consumers(tmp_path, monkey
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(WEB)))
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    evidence = tmp_path / 'screenshots'
-    evidence.mkdir()
+    evidence = producer_evidence_dir(tmp_path / 'screenshots', "batch4-repair-controls")
     persist = q.persist_queue_snapshot
     try:
         with sync_playwright() as pw:
@@ -271,7 +271,7 @@ def test_hard_bound_continue_reason_on_real_collapsed_chat_cards(tmp_path, monke
                     before_posts = len(requests)
                     for kind, phrase in [('budget', 'budget'), ('expired', 'deadline')]:
                         card = cards[kind]
-                        reason = card.locator(':scope > .chat-live-actions > [data-continue-refusal]')
+                        reason = card.locator(':scope > .chat-live-foot > .chat-live-foot-end > .chat-live-actions > [data-continue-refusal]')
                         expect(reason).to_be_visible()
                         expect(reason).to_contain_text('Continue unavailable.')
                         expect(reason).to_contain_text(phrase)
@@ -281,7 +281,7 @@ def test_hard_bound_continue_reason_on_real_collapsed_chat_cards(tmp_path, monke
                         expect(card.locator('[data-continue-task]')).to_have_count(0)
                         expect(card.locator('[data-live-phase]')).to_have_text('Failed')
                         assert card.evaluate('el => el.scrollWidth <= el.clientWidth + 1')
-                    expect(cards['expired'].locator('[data-live-activity]')).to_contain_text('provider')
+                    expect(cards['expired'].locator('[data-live-activity]')).to_contain_text('could not get a usable model answer')
                     page.evaluate('window.savedRefusal=document.querySelector("[data-continue-refusal]")')
                     page.evaluate('window.replay()')
                     assert page.evaluate('window.savedRefusal===document.querySelector("[data-continue-refusal]")')

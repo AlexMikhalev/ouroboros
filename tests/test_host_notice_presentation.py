@@ -342,7 +342,7 @@ def test_without_a_provider_sentence_the_host_classifies_and_points_at_logs(tmp_
     assert msg is None and "_last_llm_provider_message" not in usage
     assert usage["_last_llm_error_kind"] == "auth_error"
     hint = provider_failure_hint(usage)
-    assert hint == (" The provider gave no readable message; the host classified the failure as "
+    assert hint == (" No readable provider message is available; the host classified the failure as "
                     "an authentication or authorization refusal. The task's Logs keep the host's record of this failure.")
     assert "AuthenticationError" not in hint and "stale sentence" not in hint
 
@@ -420,11 +420,11 @@ def test_the_hint_quotes_the_providers_sentence_and_never_a_repr():
     typed = {"_last_llm_error": f"  {REPR}  ", "_last_llm_error_kind": "auth_error"}
     spoken = provider_failure_hint({**typed, "_last_llm_provider_message": "  Your API key was  revoked.  "})
     assert spoken == ' The provider said: "Your API key was revoked."'
-    assert provider_failure_hint(typed) == (" The provider gave no readable message; the host classified the failure as "
+    assert provider_failure_hint(typed) == (" No readable provider message is available; the host classified the failure as "
                                             "an authentication or authorization refusal. The task's Logs keep the "
                                             "host's record of this failure.")
     legacy = provider_failure_hint({"_last_llm_error": "AuthenticationError('401 invalid_api_key')"})
-    assert legacy == (" The provider gave no readable message; the host classified the failure as a provider failure. "
+    assert legacy == (" No readable provider message is available; the host classified the failure as a provider failure. "
                       "The task's Logs keep the host's record of this failure.")
     for text in (spoken, provider_failure_hint(typed), legacy):
         assert "PermissionDenied" not in text and "AuthenticationError" not in text and "{" not in text
@@ -519,7 +519,7 @@ def test_a_claudexor_refusal_never_reads_as_the_providers_sentence(tmp_path, mon
     assert hint.endswith("The task's Logs keep the host's record of this failure.")
     if unknown:
         assert "_last_llm_provider_fields" not in usage
-        assert hint.startswith(" The provider gave no readable message; the host classified the failure as ")
+        assert hint.startswith(" No readable provider message is available; the host classified the failure as ")
     else:
         assert usage["_last_llm_provider_fields"] == {"code": "string_above_max_length", "parameter": "instructions"}
         assert hint == (' The provider reported error code "string_above_max_length" and parameter "instructions" '

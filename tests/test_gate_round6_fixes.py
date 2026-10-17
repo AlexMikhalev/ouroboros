@@ -126,7 +126,7 @@ def test_gr6_1_cancel_kills_a_settled_tasks_live_worker_and_keeps_the_result(
 
     task_id = "burn1"
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     emitted: list = []
     monkeypatch.setattr(
         qenv.q, "_emit_cancel_task_done", lambda *a, **kw: emitted.append(kw),
@@ -204,8 +204,12 @@ def test_gr6_1_every_ingress_passes_the_live_ownership_fact():
 
     gw = (REPO_ROOT / "ouroboros" / "gateway" / "tasks.py").read_text(encoding="utf-8")
     assert "task_has_live_ownership as _live_ownership" in gw
-    assert "allow_settled=live_own" in gw
-    assert "allow_settled_target=bool(cascade_scope or allow_settled)" in gw
+    assert "allow_settled_target=bool(cascade or live_own)" in gw  # graceful ingress
+    # HTTP Stop: a target the intent request found settled is re-requested with
+    # the live-ownership fact (cascade: also its live subtree).
+    assert "return task_has_live_ownership(task_id) or (cascade and task_subtree_is_live(task_id))" in gw
+    assert ('if intent.get("already_settled") and still_owned():\n'
+            '        intent = record(allow_settled_target=True)') in gw
 
     qt = (REPO_ROOT / "supervisor" / "queue_transitions.py").read_text(encoding="utf-8")
     assert qt.count("allow_settled_target=task_has_live_ownership(task_id)") == 2, (
@@ -245,7 +249,7 @@ def test_gr6_1_project_delete_over_settled_live_root_mints_and_converges(
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "pd-root"
@@ -326,7 +330,7 @@ def test_gr6_1_quiescence_defers_for_a_settled_root_winding_down(
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "pd-wind"
@@ -368,7 +372,7 @@ def test_gr6_2_mid_tree_cascade_digest_lists_grandchildren(tmp_path, monkeypatch
     from supervisor import workers
 
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     write_task_result(tmp_path, "orig-root", STATUS_RUNNING, chat_id=9, result="alive")
     write_task_result(tmp_path, "mid6", STATUS_CANCELLED, chat_id=9, result="mid down",
                       parent_task_id="orig-root", root_task_id="orig-root")

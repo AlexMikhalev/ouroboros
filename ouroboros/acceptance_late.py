@@ -6,7 +6,7 @@ owners. This adapter never resumes an author or rebuilds historical evidence.
 Authority: a late review needs an owner chat, quiz or mailbox ``owner_source``
 newer than the frozen answer; the target may sit in any Project. ``amend_cap``
 only records an absolute original-root cap (no panel, no claim); ``review`` runs
-the full triad over the frozen terminal root even with review mode off.
+the full triad over the frozen terminal root unless result review is Off.
 Bindings: Stop, Panic, review prohibitions, Pauses/budget fences, calendar
 deadlines, original-root and live global caps with in-flight holds. Hurry and
 finalize-now block only unstarted automatic work, not a later explicit request;
@@ -45,6 +45,8 @@ def historical_operation_controls(root: Any, purpose: dict, *, admission: bool =
     from ouroboros.acceptance_history import historical_review_controls, read_acceptance_history
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
     from ouroboros.task_results import load_task_result
+    from ouroboros.store import StoreBusy
+    from ouroboros.model_wait import control_probe_active
 
     try:
         row = load_task_result(root, purpose['task_id'], strict=True) or {}
@@ -62,20 +64,40 @@ def historical_operation_controls(root: Any, purpose: dict, *, admission: bool =
         if deadline and (parse_deadline_ts(deadline) is None or parse_deadline_ts(deadline) <= utc_now()):
             blocked.append('caller_deadline')
         return blocked
+    except StoreBusy:
+        if control_probe_active():
+            raise
+        return ['historical_control_authority_unavailable']
     except Exception:
         return ['historical_control_authority_unavailable']
 
 
-def owner_paused_only(root: Any, purpose: dict, blocked: list) -> bool:
-    """Only the accounting root's closed owner Pause blocks this work: unsent, it waits for Resume (D10)."""
-    from ouroboros.owner_pause import fence_closed, read_fence
+def owner_paused_controls(root: Any, purpose: dict, **controls: Any) -> tuple[list[str], bool]:
+    """The controls, and whether only the accounting root's closed owner Pause blocks this work:
+    unsent, it waits for Resume (D10).
 
+    A Resume opens that fence while its restored or waiting preparer reads them, so the
+    fence is read on both sides: a block read while it was closed waits for the next read.
+    """
+    from ouroboros.owner_pause import fence_closed, read_fence
+    from ouroboros.store import StoreBusy
+    from ouroboros.model_wait import control_probe_active
+
+    def closed() -> bool:
+        try:
+            return fence_closed(read_fence(root, purpose['accounting_root_task_id']))
+        except StoreBusy:
+            if control_probe_active():
+                raise
+            return False
+        except Exception:
+            return False
+
+    before = closed()
+    blocked = historical_operation_controls(root, purpose, **controls)
     if not blocked or any(item != 'root_budget_fence' and not str(item).startswith('pause:') for item in blocked):
-        return False
-    try:
-        return fence_closed(read_fence(root, purpose['accounting_root_task_id']))
-    except Exception:
-        return False
+        return blocked, False
+    return blocked, before or closed()
 
 
 def _receipt(root: Path, debt: dict) -> dict | None:
@@ -180,6 +202,9 @@ def run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                    for p in (row.get('review_operations') or {}).values())
     if existing or any(claim.get('paid_identity') == paid for claim in claims.values()):
         return _collect_existing(ctx, row, retry_key, collect=not automatic)
+    from ouroboros.config import get_task_review_mode
+    if get_task_review_mode() == 'off':
+        return refused('review_mode_off')
     receipt = _receipt(root, debt)
     if not receipt:
         return refused('exact_delivery_unconfirmed')
@@ -193,12 +218,6 @@ def run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                    schema_version=1, automatic=automatic, caller_task_id='' if automatic else str(ctx.task_id),
                    caller_deadline_at='' if automatic else _owner_deadline_at(ctx),
                    owner_source_ref=None if automatic else prepared['owner_source_ref'])
-    # Fast owner exclusions avoid creating automatic preparation duty for mode
-    # off. Full frozen/current controls and money are checked by the owner worker.
-    if automatic:
-        from ouroboros.config import get_task_review_mode
-        if get_task_review_mode() == 'off':
-            return refused('review_mode_off')
     try:
         return prepare_historical_operation(root=root, purpose=purpose, event_queue=getattr(ctx, 'event_queue', None),
             background=automatic, work=lambda operation: _run_historical_acceptance(
@@ -366,8 +385,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                        for owner, p in (row.get('review_operations') or {}).items() if owner != operation.owner_id)):
             return _collect_existing(usage_ctx, row, retry_key)
         purpose = operation.historical_purpose
-        blocked = historical_operation_controls(root, purpose, admission=True)
-        if blocked and not owner_paused_only(root, purpose, blocked):
+        blocked, paused = owner_paused_controls(root, purpose, admission=True)
+        if blocked and not paused:
             return refused(blocked[0])
         if not _receipt(root, debt):
             return refused('exact_delivery_unconfirmed')
@@ -377,8 +396,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
             # terminal writer releases custody — and, automatic and still unsent,
             # through an owner Pause of that root until its Resume — without a scheduler.
             live = _historical_writer_live(root, task_id, operation.owner_id)
-            blocked = [] if live else historical_operation_controls(root, purpose, admission=True)
-            if not live and not owner_paused_only(root, purpose, blocked):
+            blocked, paused = ([], False) if live else owner_paused_controls(root, purpose, admission=True)
+            if not live and not paused:
                 break
             if live and not automatic:
                 return refused('historical_writer_still_live')
@@ -388,6 +407,9 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
             time.sleep(_HOLD_POLL_SEC)  # existing owner-hold observation cadence
         if blocked:
             return refused(blocked[0])
+        from ouroboros.config import get_task_review_mode
+        if get_task_review_mode() == 'off':
+            return refused('review_mode_off')  # Resume can finish preparation, never override Off.
         lineage = resolve_task_lineage(task_id, metadata=row.get('metadata'), **{
             key: row.get(key) for key in ('root_task_id', 'parent_task_id', 'delegation_role', 'original_task_id', 'timeout_retry_from')})
         if not lineage['is_root_task'] or lineage['root_task_id'] != accounting_id:
@@ -441,8 +463,8 @@ def _run_historical_acceptance(ctx: Any, *, task_id: str, debt_id: str,
                     prompt_chars=[_messages_char_count(_request_messages(request, slot)) for slot in paid_slots],
                     categories='task_acceptance_review', slot_ids=[slot.slot_id for slot in paid_slots],
                     processing_preferences=[slot.processing_preference for slot in paid_slots])
-                if not wave.get('fits'):
-                    return refused('review_wave_budget_insufficient')
+                if wave.get('fits') is False:
+                    return refused(wave.get('reason') or 'review_wave_budget_insufficient')
             refusal = task_acceptance_preclaim_refusal(admission)
             if refusal is not None:
                 return refused(refusal.degraded_reasons[0])

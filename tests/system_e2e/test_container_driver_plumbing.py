@@ -87,9 +87,11 @@ def test_the_marker_wheel_installs_offline_and_imports(tmp_path):
     wheel = tmp_path / F_WHEEL
     wheel.write_bytes(_marker_wheel("probe-mark"))
     target = tmp_path / "site"
+    # A --target install touches only tmp_path; the test boundary's PIP_REQUIRE_VIRTUALENV guards the host.
     install = subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "--no-cache-dir",
                               "--disable-pip-version-check", "--target", str(target), str(wheel)],
-                             capture_output=True, text=True, timeout=300)
+                             capture_output=True, text=True, timeout=300,
+                             env={**os.environ, "PIP_REQUIRE_VIRTUALENV": "false"})
     if install.returncode != 0 and "No module named pip" in install.stderr:
         pytest.skip("pip is not available to this interpreter")
     assert install.returncode == 0, install.stderr[-1500:]

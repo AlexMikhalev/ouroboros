@@ -53,7 +53,7 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
             return ref
         return real_write(root, body, **kwargs)
 
-    def emit(root, kind, payload):
+    def emit(root, kind, payload, **kwargs):
         if kind == custody.START_REQUESTED:
             assert order == ["blob"]
             assert "request" not in payload
@@ -61,7 +61,7 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
             if failure == "event":
                 return False
             order.append("event")
-        return real_emit(root, kind, payload)
+        return real_emit(root, kind, payload, **kwargs)
 
     if surface == "review":
         stub_type = request.getfixturevalue("fake_route")
@@ -108,17 +108,23 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
         assert order == ["blob", "event", "dispatch"]
 
 
-def test_raw_review_envelope_and_thread_projection_round_trip(tmp_path):
+@pytest.mark.parametrize("access,geometry", [
+    ("readonly", None), ("full", None),
+    ("full", {"workspaceKind": "directory", "scopePaths": [], "isolation": "live"}),
+])
+def test_raw_review_envelope_and_thread_projection_round_trip(tmp_path, access, geometry):
     from ouroboros.review_thread_continuity import start_review_thread_turn
+    from ouroboros.review_session_custody import recorded_review_shape
 
     body = {"prompt": "Привет\n" + "x" * 80_000,
             "instructions": "Authorization: Bearer EXAMPLE-NOT-A-REAL-CREDENTIAL",
-            "authPreference": "subscription", "mode": "ask", "access": "readonly",
+            "authPreference": "subscription", "mode": "ask" if access == "readonly" else "agent", "access": access,
             "scope": {"kind": "project", "root": str(tmp_path)},
             "harnesses": ["codex"], "primaryHarness": "codex", "maxSeconds": 300,
             "credentialProfileId": None, "_use_thread": True, "_thread_id": "thread-1",
-            "execution": {"delegated": False, "isolation": "in_place"},
             "outputSchema": {"type": "object", "properties": {"passed": {"type": "boolean"}}}}
+    if geometry is not None:
+        body["execution"] = {"delegated": True, "workspaceRoot": str(tmp_path / "copy"), **geometry}
     original = copy.deepcopy(body)
     assert custody.record_start_requested(tmp_path, invocation_id="review", task_id="task", request=body)
     row = _start_rows(tmp_path)[0]
@@ -126,6 +132,7 @@ def test_raw_review_envelope_and_thread_projection_round_trip(tmp_path):
     restored = custody.invocation_record(tmp_path, "review")["request"]
     assert restored == body == original
     assert _digest(restored) == _digest(body)
+    assert recorded_review_shape(restored) is not None
     projections = []
 
     class Gateway:
@@ -136,7 +143,13 @@ def test_raw_review_envelope_and_thread_projection_round_trip(tmp_path):
     for envelope in (body, restored):
         start_review_thread_turn(Gateway(), envelope["_thread_id"], envelope, idempotency_key="review")
     assert projections[0] == projections[1]
-    assert not {"_thread_id", "_use_thread", "scope", "execution"} & projections[0][1].keys()
+    projected = projections[0][1]
+    assert not {"_thread_id", "_use_thread", "scope"} & projected.keys()
+    if geometry is None:
+        assert "execution" not in projected, "legacy requests acquire no new geometry during replay"
+    else:
+        assert projected["execution"] == geometry
+    assert body == original
 
 
 def test_legacy_inline_wins_even_beside_an_unreadable_ref(tmp_path, monkeypatch):

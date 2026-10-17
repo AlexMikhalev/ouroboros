@@ -57,6 +57,7 @@ from ouroboros.runtime_venv import PREPARATION_DEPS_TIMEOUT_SEC, RuntimeVenvRefu
 from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
+    setup_recovery_menu,
 )
 from ouroboros.launcher_background import (Background, DesktopApi, activate_running_instance, background_env,
                                            request_tray_cleanup, stop_tray_before_exit)
@@ -771,6 +772,16 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             # supervisor thread cannot end the main-thread Cocoa webview loop on
             # macOS (it leaves a black frozen window), so exit with parity to the
             # window-close path: kill orphans, release the pid lock, os._exit(0).
+            try:  # the server's census may not have finished before its hard exit: finish it by identity, bounded
+                from ouroboros.process_scope import complete_pending_panic_sweep
+
+                completion = threading.Thread(
+                    target=complete_pending_panic_sweep, args=(DATA_DIR,),
+                    kwargs={"exclude": {os.getpid(), os.getppid(), 1}, "installation": True}, name="panic-scope-completion", daemon=True)
+                completion.start()
+                completion.join(timeout=3.0)  # later starts retry saved identities only; the exit never waits longer
+            except Exception:
+                log.warning("Pending Panic scope sweep failed; later starts retry saved identities only", exc_info=True)
             _kill_orphaned_children(reason="panic_stop")
             stop_tray_before_exit(release_pid_lock, wait=0)
             os._exit(0)
@@ -1349,7 +1360,7 @@ def main(argv=()):
         # supervisor — the supported state that lets the wizard reach /api/*.
         onboarding = _present_first_run_onboarding(
             onboarding_settings, actual_port, headless=_headless,
-            open_external_url=_open_external_url,
+            open_external_url=_open_external_url, read_port=lambda: _generation_port,
         )
         if not onboarding["saved"]:
             log.info(
@@ -1564,7 +1575,8 @@ def main(argv=()):
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
     _webview_window = background.attach(window)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
-    webview.start(func=background.run, debug=False, private_mode=False)
+    webview.start(func=background.run, debug=False, private_mode=False,
+                  menu=setup_recovery_menu(window, lambda: _generation_port))
 
 
 if __name__ == "__main__":

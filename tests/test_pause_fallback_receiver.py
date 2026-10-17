@@ -68,4 +68,5 @@ def test_pause_returns_from_actual_loop_fallback_before_sender_finishes(tmp_path
     finally:
         release.set()
         thread.join(5)
+        budget_pause.end_dispatch_fence("t-wait")
     assert not thread.is_alive()

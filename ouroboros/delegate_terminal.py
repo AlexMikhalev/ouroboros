@@ -34,8 +34,13 @@ def terminal_reconcile_task(
     (``delegate_custody_reconcile._owner_terminal_is_deliberate``); otherwise it
     is left live and disclosed as open, for the sweep to re-judge.
     ``deliberate_terminal`` carries that verdict from a caller that has not
-    written its terminal result yet, which is every kill boundary."""
+    written its terminal result yet, which is every kill boundary. A terminal
+    boundary is a release surface: ``gateway_factory`` defaults to the attach-only
+    transport and no pending invocation is replayed (exit does not admit)."""
 
+    from ouroboros.delegate_custody_reconcile import attach_only_gateway
+
+    gateway_factory = gateway_factory or attach_only_gateway
     mine = str(task_id or "")
     result: Dict[str, Any] = {
         "task_id": mine, "trigger": str(trigger or "terminal_boundary"),
@@ -217,11 +222,13 @@ def _answer_locators(drive_root: Any, row: Any) -> Dict[str, Any]:
     return facts
 
 
-def terminal_custody_notice(result: Mapping[str, Any]) -> str:
+def terminal_custody_notice(result: Mapping[str, Any], *, owner_row: bool = False) -> str:
     """Render current stored custody beside unchanged model-authored history.
 
     No live join, lifecycle mutation or inference from a missing run: only the
     audit's separate execution/invocation/patch and confirmed terminal facts.
+    ``owner_row`` is the owner's task-card row, which lists only the categories
+    holding something; the model, CLI and child-result-hash text keeps them all.
     """
     audit = result.get("delegate_terminal_reconciliation")
     if not isinstance(audit, Mapping) or not audit:
@@ -250,6 +257,8 @@ def terminal_custody_notice(result: Mapping[str, Any]) -> str:
                      + (f" (+{omitted} more in task details)" if omitted > 0 else "") + ".")
     for label, raw in groups:
         values = [str(value) for value in raw] if isinstance(raw, list) else []
+        if owner_row and not values:
+            continue
         shown = ", ".join(values[:10]) or "none recorded by the current audit"
         omitted = len(values) - 10
         lines.append(label + ": " + shown

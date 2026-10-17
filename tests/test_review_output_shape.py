@@ -48,12 +48,15 @@ _OBJECT_VERDICT = {
 
 def test_shape_table_is_form_only_and_defaults_to_array():
     assert REVIEW_OUTPUT_SHAPES == {
-        "task_acceptance": "object", "deep_self_review": "report", "multi_model_review": "two_part"}
+        "task_acceptance": "object", "deep_self_review": "report", "multi_model_review": "two_part",
+        "plan_review": "plan_reply"}
     assert review_output_shape("task_acceptance") == "object"
     assert review_output_shape("deep_self_review") == "report"
     # the commit gate's one brief, two parts: a retrieving seat answers contract B
     assert review_output_shape("multi_model_review") == "two_part"
-    for surface in ("skill_review", "plan_review", "advisory_review", ""):
+    # the planning organ's reply object is no verdict: passed through whole, never extracted
+    assert review_output_shape("plan_review") == "plan_reply"
+    for surface in ("skill_review", "advisory_review", ""):
         assert review_output_shape(surface) == "array"
 
 
@@ -83,6 +86,9 @@ def test_default_output_contract_follows_the_shape():
     assert default_output_contract("object") is REVIEW_JSON_OBJECT_CONTRACT
     assert default_output_contract("report") is REVIEW_REPORT_CONTRACT
     assert default_output_contract("two_part") is REVIEW_TWO_PART_OBJECT_CONTRACT
+    from ouroboros.tools.plan_packet import PLAN_REPLY_CONTRACT
+
+    assert default_output_contract("plan_reply") is PLAN_REPLY_CONTRACT
     assert default_output_contract("") is REVIEW_JSON_ARRAY_CONTRACT
     assert "JSON object" in REVIEW_JSON_OBJECT_CONTRACT and "Never a bare\narray" in REVIEW_JSON_OBJECT_CONTRACT
     assert "no JSON wrapper" in REVIEW_REPORT_CONTRACT
@@ -91,7 +97,8 @@ def test_default_output_contract_follows_the_shape():
     from ouroboros.review_substrate import ReviewRequest, ReviewSlot
 
     for surface, expected in (("task_acceptance", REVIEW_JSON_OBJECT_CONTRACT), ("deep_self_review", REVIEW_REPORT_CONTRACT),
-                              ("multi_model_review", REVIEW_TWO_PART_OBJECT_CONTRACT), ("skill_review", REVIEW_JSON_ARRAY_CONTRACT)):
+                              ("multi_model_review", REVIEW_TWO_PART_OBJECT_CONTRACT), ("skill_review", REVIEW_JSON_ARRAY_CONTRACT),
+                              ("plan_review", PLAN_REPLY_CONTRACT)):
         request = ReviewRequest(surface=surface, goal="g", task_id="t", session_root="/tmp", session_task="task", policy={})
         native = _review_route_executor(ReviewAssignment(
             request=request, slot=ReviewSlot(slot_id="n", model="m", effort="low", subagent_id="api-critic"), call_id="c"))

@@ -18,6 +18,7 @@ from tests.candidate_checkout import (
     candidate_checkout, require_candidate_interpreter, verify_checkout,
 )
 from ouroboros.test_environment import isolated_environment
+from ouroboros.test_evidence import diagnostic_directory
 from tests.fixtures_mock_llm import MockLLMServer
 from tests.ui_chat_viewport_smoke import (
     _CAPTURE_TEST_SOCKET, _OBSERVE_STATE_READS, _emit_ws_frame, _wait_socket_open_quiescent,
@@ -36,6 +37,11 @@ def _fixture_interpreter() -> str:
 def _fixture_python() -> str:
     """Launch target; Settings may wrap it."""
     return _fixture_interpreter()
+
+
+def _browser_missing(exc) -> bool:
+    """Playwright's report of an engine that was never installed; each test decides skip or fail."""
+    return "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower()
 
 
 def _open_review_checkpoint(card, *, open_card=True):
@@ -130,7 +136,7 @@ def _run_core_ui_assertions(url: str) -> None:
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -195,7 +201,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -242,7 +248,7 @@ def _run_docker_ui_assertions(url: str) -> None:
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -903,7 +909,7 @@ def test_ui_smoke_phase3_declarative_widgets_and_settings(direct_server_with_dat
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -948,9 +954,9 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         }) + "\n",
         encoding="utf-8",
     )
-    task_results = data_dir / "task_results"
-    task_results.mkdir(parents=True, exist_ok=True)
-    (task_results / "named-act.json").write_text(json.dumps({
+    from tests._store_shared import seed_result  # the server reads its store, not later files
+
+    seed_result(data_dir, "named-act", {
         "_schema_version": 1,
         "task_id": "named-act",
         "status": "completed",
@@ -958,14 +964,14 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         "cost_usd": 0.42,
         "cost_accounting_status": "available",
         "cost_final": True,
-    }) + "\n", encoding="utf-8")
+    })
     try:
         with sync_playwright() as pw:
             browser_type = getattr(pw, browser_engine)
             try:
                 browser = browser_type.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
                 raise
             try:
@@ -1110,16 +1116,13 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     row = running.evaluate(
                         """card => {
                             const btn = card.querySelector(':scope > [data-live-summary-button]');
-                            const meta = btn.querySelector('[data-live-meta]').getBoundingClientRect();
-                            const review = btn.querySelector('[data-live-review-summary]').getBoundingClientRect();
-                            return {height: btn.getBoundingClientRect().height, metaTop: meta.top,
-                                reviewTop: review.top, reviewRight: review.right,
-                                buttonRight: btn.getBoundingClientRect().right};
+                            const r = (s) => card.querySelector(`:scope > [data-live-foot] ${s}`).getBoundingClientRect();
+                            return {height: btn.getBoundingClientRect().height, metaBottom: r('[data-live-meta]').bottom,
+                                reviewTop: r('[data-live-review-summary]').top};
                         }"""
                     )
-                    # The quiet count shares the metadata row, docked right, without a new row.
-                    assert abs(row["reviewTop"] - row["metaTop"]) <= 2, row
-                    assert row["buttonRight"] - row["reviewRight"] <= 20, row
+                    # The quiet count leads the action row under the meta; the summary keeps its height.
+                    assert row["reviewTop"] >= row["metaBottom"] - 2, row
                     assert abs(row["height"] - before_reviews) <= 1, row
                     assert all(not bands[task_id]["clipped"] for task_id in bands), bands
                     assert all("Reviews" not in bands[task_id]["reviews"] for task_id in bands), bands
@@ -1134,14 +1137,14 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                         arg=unique_tail,
                     )
                     page.screenshot(
-                        path=str(data_dir.parent / f"compact-activity-{browser_engine}-{width}.png"),
+                        path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"compact-activity-{browser_engine}-{width}.png"),
                         full_page=True,
                     )
                     context.close()
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
         raise
 
@@ -1411,7 +1414,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 context.close()
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1448,7 +1451,7 @@ def test_ui_smoke_direct_mode_creates_task_with_mock_provider(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1784,10 +1787,10 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert replay_child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 page.wait_for_timeout(900)  # cover the routine background history sync
                 assert replay_child.locator('.chat-live-line-repeat:not([hidden])').count() == 0
-                page.screenshot(path=str(data_dir.parent / "review-truth-child-reconnect.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "review-truth-child-reconnect.png"), full_page=True)
                 replay_progress.locator(".chat-live-line-toggle").click()
                 replay_child.scroll_into_view_if_needed()
-                page.screenshot(path=str(data_dir.parent / "lifecycle-current-status.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "lifecycle-current-status.png"), full_page=True)
                 assert page.locator(".chat-bubble.progress").count() == 0
                 assert page.locator(".chat-bubble", has_text="Final child answer should stay inside the child card.").count() == 0
 
@@ -1814,7 +1817,7 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1862,7 +1865,7 @@ def test_ui_smoke_desktop_composer_chips_above_input_send_inside(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -1916,7 +1919,7 @@ def test_ui_smoke_mobile_composer_toolbar_does_not_overlap_input(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2038,7 +2041,7 @@ def _mobile_keyboard_drawer_assertions(page, url: str, screenshot_path: pathlib.
     assert scroll["scrollHeight"] > scroll["clientHeight"], scroll
     assert scroll["scrollTop"] > 0, scroll
     assert scroll["overflowY"] in {"auto", "scroll"}, scroll
-    page.screenshot(path=str(screenshot_path), full_page=True)
+    page.screenshot(path=str(diagnostic_directory(screenshot_path.parent, "ui-smoke") / screenshot_path.name), full_page=True)
 
     # Exercise the real backdrop click in the visible strip to the right of the
     # 320px drawer, then require all state/ARIA projections to close together.
@@ -2073,7 +2076,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_chromium(direct_
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2093,7 +2096,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_webkit(direct_se
             try:
                 browser = pw.webkit.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.skip(f"Playwright WebKit browser is not installed: {exc}")
                 raise
             context = browser.new_context(**iphone)
@@ -2110,7 +2113,7 @@ def test_ui_smoke_mobile_keyboard_state_cannot_hide_open_drawer_webkit(direct_se
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2194,7 +2197,7 @@ def test_ui_smoke_direct_mode_chat_scrolls_on_desktop(direct_server):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2250,7 +2253,7 @@ def test_ui_smoke_finished_cards_keep_height_when_transcript_overflows(direct_se
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2324,6 +2327,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         "is_progress": True,
     }]
     long_url = "https://example.com/" + "nested-segment-without-breaks-" * 18 + "final"
+    long_role = "accessibility-and-localization-reviewer"
     parent_id = "layout-root"
     for depth in range(1, 11):
         child_id = f"layout-child-{depth:02d}"
@@ -2338,7 +2342,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             "subagent_task_id": child_id,
             "parent_task_id": parent_id,
             "root_task_id": "layout-root",
-            "subagent_role": "pty-tests",
+            "subagent_role": long_role if depth == 1 else "pty-tests",
             "model": "google/gemini-3.6-flash",
             "status": "completed",
             "result": f"Depth {depth} complete. Full evidence: {long_url}",
@@ -2383,6 +2387,8 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 clientWidth: card.clientWidth,
                 scrollWidth: card.scrollWidth,
                 titleWidth: titleRect.width,
+                titleClient: title.clientWidth,
+                titleScroll: title.scrollWidth,
                 titleHeight: titleRect.height,
                 titleLines: lineHeight > 0 ? titleRect.height / lineHeight : 99,
                 titleTop: titleRect.top,
@@ -2425,30 +2431,32 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         # Narrow regime: the side controls share the chip row, the title takes its own
         # full-width row below both.
         # Main and side controls start on one flex row. A terminal projection may
-        # make the main box zero-height; their shared top still distinguishes it
+        # leave the main box empty; their shared top still distinguishes it
         # from a real wrap, whose row gap would move the side down.
         assert abs(facts["rootSideTop"] - facts["rootMainTop"]) <= 1, facts
         assert facts["rootTitleTop"] >= max(facts["rootMainBottom"], facts["rootSideBottom"]) - 1, facts
         assert all(card["scrollWidth"] <= card["clientWidth"] + 1 for card in facts["cardFacts"]), facts
-        assert min(card["titleWidth"] for card in facts["cardFacts"]) >= 160, facts
+        assert min(card["titleWidth"] for card in facts["cardFacts"] if not card["collapsedChild"]) >= 160, facts
         assert 0.9 <= min(card["titleLines"] for card in facts["cardFacts"]), facts
         assert max(card["titleLines"] for card in facts["cardFacts"]) <= 2.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]
                    if not card["collapsedChild"]) <= 3.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]
                    if card["collapsedChild"]) <= 1.2, facts
-        # #623: a collapsed child keeps its identity row — the title beside the
-        # chip, the summary at most two bands (the side wraps under only when a
-        # 160px title cannot share the row), never a third band for the title.
+        # #623: a collapsed child keeps its identity row: its title beside the chip
+        # and side controls, whole if short, ellipsized if long (child-01).
+        assert page.get_by_role("button", name=long_role).count() == 1
         for card in facts["cardFacts"]:
             if card["collapsedChild"]:
+                assert 0 < card["titleClient"] and (
+                    card["titleScroll"] > card["titleClient"] + 1) == (card["id"] == "layout-child-01"), card
                 assert abs(card["titleTop"] - card["mainTop"]) <= 4, card
                 assert card["summaryBottom"] - card["mainTop"] <= 2.2 * card["titleHeight"] + 8, card
         assert all(card["activityTitle"] is None for card in facts["cardFacts"]), facts
         deepest = page.locator('.chat-live-card[data-task-id="layout-child-10"]')
         assert deepest.locator(':scope > .chat-live-summary-button [data-live-title]').inner_text() == "pty-tests"
         assert "Agent model: gemini-3.6-flash" in deepest.locator(
-            ':scope > .chat-live-summary-button [data-live-meta]').inner_text()
+            ':scope > .chat-live-foot [data-live-meta]').inner_text()
         deepest.locator(":scope > [data-live-summary-button]").click()
         line_toggle = deepest.locator(":scope > [data-live-timeline] .chat-live-line-toggle").last
         line_toggle.wait_for(state="visible", timeout=5_000)
@@ -2523,7 +2531,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert abs(facts["width"] - 32) <= 1 and abs(facts["height"] - 32) <= 1, facts
         assert facts["centerDelta"] <= 1 and abs(facts["gap"] - 8) <= 1, facts
         assert facts["toolbarOverlap"] == 0 and facts["previewOverlap"] == 0, facts
-        assert facts["boxShadow"] == "none", facts
+        assert facts["boxShadow"] != "none", facts
         return facts
 
     try:
@@ -2532,7 +2540,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             try:
                 browser = browser_type.launch(headless=True)
             except PlaywrightError as exc:
-                if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+                if _browser_missing(exc):
                     pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
                 raise
             try:
@@ -2546,7 +2554,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert_mobile_geometry(mobile)
                 assert_jump_geometry(mobile, "#page-chat")
                 mobile.screenshot(
-                    path=str(data_dir.parent / f"live-card-depth-10-{browser_engine}.png"),
+                    path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"live-card-depth-10-{browser_engine}.png"),
                     full_page=True,
                 )
                 mobile.reload(wait_until="domcontentloaded", timeout=30_000)
@@ -2597,14 +2605,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 for card in wide_facts[:2]:
                     assert abs(card["mainTop"] - card["sideTop"]) <= 1, wide_facts
                 # #623: the depth-2 collapsed child is in the 560px container regime
-                # (wrap allowed) yet keeps ONE identity row: chip, title, side controls.
+                # yet keeps ONE identity row: chip, title, side controls.
                 deep = wide_facts[2]
-                assert deep["wrap"] == "wrap", wide_facts
                 assert abs(deep["titleTop"] - deep["mainTop"]) <= 4, wide_facts
                 assert abs(deep["mainTop"] - deep["sideTop"]) <= 1, wide_facts
 
                 # The 620-700px column (laptop with the project panel open): the root
-                # card takes up to 620px there and keeps its single-row header.
+                # card takes up to 620px there.
                 wide.set_viewport_size({"width": 1004, "height": 750})
                 wide.wait_for_timeout(250)
                 owner_facts = wide.evaluate(
@@ -2618,7 +2625,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 )
                 assert 700 <= owner_facts["column"] <= 740, owner_facts
                 # 80% of a 700-740px column is below the 620px floor, so the floor wins.
-                assert abs(owner_facts["width"] - 620) <= 1 and owner_facts["wrap"] == "nowrap", owner_facts
+                assert abs(owner_facts["width"] - 620) <= 1, owner_facts
                 # The width is monotonic across the 620px chatcol breakpoint: against
                 # its containing block's content width the card is
                 # min(content, max(80% of content, 620px)) at every column width.
@@ -2721,13 +2728,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                     wide, "#panel-pchat-layout-project", require_overflow=False
                 )
                 wide.screenshot(
-                    path=str(data_dir.parent / f"live-card-project-panel-{browser_engine}.png"),
+                    path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / f"live-card-project-panel-{browser_engine}.png"),
                     full_page=True,
                 )
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.fail(f"required Playwright {browser_engine} browser is not installed: {exc}")
         raise
 
@@ -2865,7 +2872,7 @@ def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -2890,15 +2897,11 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
     settings_path = data_dir / "settings.json"
-    evidence_dir = pathlib.Path(
-        os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(data_dir.parent))
-    )
+    evidence_dir = pathlib.Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(data_dir.parent)))
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     def saved_depth():
-        return json.loads(settings_path.read_text(encoding="utf-8")).get(
-            "OUROBOROS_MAX_SUBAGENT_DEPTH", "<absent>"
-        )
+        return json.loads(settings_path.read_text(encoding="utf-8")).get("OUROBOROS_MAX_SUBAGENT_DEPTH", "<absent>")
 
     try:
         with sync_playwright() as pw:
@@ -2908,20 +2911,16 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
                 def open_settings_advanced():
                     """Reload the whole app the way an owner would, then reopen the field."""
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                    page.wait_for_selector('[data-nav-page="settings"]', timeout=30_000)
                     page.click('[data-nav-page="settings"]')
                     page.wait_for_selector("#s-subagent-depth", state="attached", timeout=30_000)
-                    # D-10: subagent depth bounds the AGENTS, so it moved out of
-                    # Advanced -> Runtime Limits into Agents -> Delegation.
+                    # D-10: depth bounds the agents, so it lives in Agents -> Delegation.
                     page.click('[data-settings-tab="agents"]')
                     depth = page.locator("#s-subagent-depth")
                     depth.wait_for(state="visible", timeout=30_000)
                     # Saving is blocked until the settings load succeeds; waiting on the real
                     # enablement avoids racing the first fetch.
-                    page.wait_for_function(
-                        "() => document.querySelector('#btn-save-settings')?.disabled === false",
-                        timeout=30_000,
-                    )
+                    page.wait_for_function("() => document.querySelector('#btn-save-settings')?.disabled === false",
+                                           timeout=30_000)
                     depth.scroll_into_view_if_needed()
                     return depth
 
@@ -2930,64 +2929,65 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
                     page.dispatch_event("#s-subagent-depth", "input")
                     page.dispatch_event("#s-subagent-depth", "change")
 
-                def save_and_wait():
-                    page.click("#btn-save-settings")
-                    page.wait_for_function(
-                        "() => (document.querySelector('#settings-status')?.textContent || '')"
-                        ".includes('Settings saved')",
-                        timeout=30_000,
-                    )
+                def shot(name):
+                    page.screenshot(path=str(evidence_dir / f"v679-depth-{name}.png"))
+
+                def save_and_wait(phrase="Settings saved"):
+                    with page.expect_response(lambda r: r.url.endswith("/api/settings")
+                                              and r.request.method == "POST", timeout=30_000) as answer:
+                        page.click("#btn-save-settings")
+                    assert bool(answer.value.json().get("no_changes")) is (phrase == "No changes detected")
+                    # This click showed "Saving…" before posting, so the status is its own.
+                    page.wait_for_function("p => document.querySelector('#settings-status')?.textContent"
+                                           ".startsWith(p)", arg=phrase, timeout=30_000)
+                    return answer.value.request.post_data_json["OUROBOROS_MAX_SUBAGENT_DEPTH"]
 
                 depth = open_settings_advanced()
                 # The control must admit 0 at all: a min of 1 would make it unreachable.
-                assert depth.get_attribute("min") == "0"
-                assert depth.get_attribute("max") == "10"
+                assert (depth.get_attribute("min"), depth.get_attribute("max")) == ("0", "10")
                 assert depth.is_enabled()
                 assert depth.input_value() == "3"  # unset -> visible fallback
-                page.screenshot(path=str(evidence_dir / "v679-depth-01-initial-unset.png"))
+                shot("01-initial-unset")
 
                 # 0 is a valid value for the control, not a validation error.
                 type_depth("0")
-                assert page.evaluate(
-                    "() => document.querySelector('#s-subagent-depth').validity.valid"
-                ) is True
-                assert page.evaluate(
-                    "() => document.querySelector('#s-subagent-depth').validationMessage"
-                ) == ""
-                page.screenshot(path=str(evidence_dir / "v679-depth-02-typed-zero.png"))
+                assert depth.evaluate("e => [e.validity.valid, e.validationMessage]") == [True, ""]
+                shot("02-typed-zero")
 
-                save_and_wait()
+                assert save_and_wait() == 0
                 assert page.locator("#s-subagent-depth").input_value() == "0"
                 assert saved_depth() == 0
-                page.screenshot(path=str(evidence_dir / "v679-depth-03-saved-zero.png"))
+                shot("03-saved-zero")
 
                 # The round trip is the point: a reload must not rewrite 0 back to 3.
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "0"
                 assert saved_depth() == 0
-                page.screenshot(path=str(evidence_dir / "v679-depth-04-reload-zero.png"))
+                shot("04-reload-zero")
 
                 # Neighbouring state: an ordinary positive value still round-trips.
                 type_depth("3")
-                save_and_wait()
+                assert save_and_wait() == 3
                 assert saved_depth() == 3
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "3"
-                page.screenshot(path=str(evidence_dir / "v679-depth-05-reload-three.png"))
+                shot("05-reload-three")
 
                 # Neighbouring state: empty is not a value — it falls back to 3 rather than
-                # persisting an unparsable setting.
+                # persisting an unparsable setting. That is the saved 3, so Save is a no-op.
                 type_depth("")
-                page.screenshot(path=str(evidence_dir / "v679-depth-06-empty-typed.png"))
-                save_and_wait()
+                shot("06-empty-typed")
+                before = settings_path.read_bytes()
+                assert save_and_wait("No changes detected") == 3
+                assert json.loads(settings_path.read_bytes()) == json.loads(before)
                 assert saved_depth() == 3
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "3"
-                page.screenshot(path=str(evidence_dir / "v679-depth-07-reload-after-empty.png"))
+                shot("07-reload-after-empty")
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 @pytest.mark.ui_browser
@@ -3090,7 +3090,7 @@ def test_ui_owner_context_mode_and_reviewer_row_save(direct_server_with_data):
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3133,7 +3133,7 @@ def test_ui_smoke_superseded_input_dialog_resolves_object_result(direct_server_w
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3280,7 +3280,7 @@ def test_ui_smoke_login_recovery_reconcile_detach_and_retry_are_explicit(direct_
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3356,7 +3356,7 @@ def test_ui_smoke_dismiss_overlapping_start_cannot_drop_a_live_job(direct_server
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3467,7 +3467,7 @@ def test_ui_smoke_stale_get_cannot_overwrite_login_terminal_faces(
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3535,7 +3535,7 @@ def test_ui_smoke_window_pagehide_detaches_login_without_lifecycle_http(direct_s
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3617,7 +3617,7 @@ def test_ui_smoke_dismiss_overlapping_settle_never_freezes_the_card(direct_serve
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 
@@ -3712,12 +3712,12 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 page.keyboard.press("Escape")
                 menu.wait_for(state="detached", timeout=10_000)
                 assert cancel_btn.is_enabled()
-                page.screenshot(path=str(data_dir.parent / "cancel-run.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "ui-smoke") / "cancel-run.png"), full_page=True)
             finally:
                 browser.close()
                 _release_mock_model()
     except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+        if _browser_missing(exc):
             pytest.skip(str(exc))
         raise
 

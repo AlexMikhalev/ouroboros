@@ -249,14 +249,19 @@ def test_unknown_subscription_reviewer_keeps_existing_input_budget(tmp_path, mon
     assert caps == {MODEL: REVIEW_PROMPT_TOKEN_BUDGET}
 
 
-def test_unknown_subscription_native_episode_keeps_owner_ceiling(tmp_path, monkeypatch, catalog):
+def test_unknown_subscription_native_layout_ignores_retired_character_cap(tmp_path, monkeypatch, catalog):
     from ouroboros import config
     from ouroboros.review_native_episode import review_native_transcript_bound
+    from ouroboros.reviewer_window import resolve_reviewer_window
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "765432")
     catalog["value"]["models"] = []
-    assert review_native_transcript_bound(MODEL, output_reserve=65_536, use_local=False) == 765432
+    monkeypatch.delenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", raising=False)
+    hint = review_native_transcript_bound(MODEL, output_reserve=65_536, use_local=False)
+    for stored in ("900000", "765432", "1000"):
+        monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", stored)
+        assert review_native_transcript_bound(MODEL, output_reserve=65_536, use_local=False) == hint
+    assert resolve_reviewer_window(MODEL, use_local=False).window_tokens == 0
 
 
 def test_unknown_subscription_scope_stays_unknown_without_authority(tmp_path, monkeypatch, catalog):

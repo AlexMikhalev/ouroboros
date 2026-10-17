@@ -39,6 +39,7 @@ from ouroboros.configured_subagents import (
     serialize_configured_subagents,
 )
 from ouroboros.provider_models import (
+    image_input_from_modalities,
     model_has_credentials_in_settings,
 )
 from ouroboros.route_spec import ROUTE_KIND_AGENT_SESSION, ROUTE_KIND_API_MODEL, RouteSpec
@@ -229,13 +230,15 @@ def _policy_seat(surface: str, position: int, harness: str) -> PresetSeat:
 
 
 def _compile_policy_seats(connected: Sequence[str]) -> Dict[str, Tuple[PresetSeat, ...]]:
-    """Apply linear priority rules; no powerset row grows when a harness is added."""
+    """Apply linear priority rules; no powerset row grows when a harness is added.
+
+    One triad seat per connected reviewer harness: a sole harness reviews once (owner
+    Q5=A), never as three copies of one model that pay three runs for no second opinion.
+    """
     present = set(connected)
     scope = _first_connected(_SCOPE_ORDER, present)
 
     triad_harnesses = [harness for harness in _TRIAD_ORDER if harness in present]
-    if len(triad_harnesses) == 1:
-        triad_harnesses *= 3
 
     return {
         SURFACE_TRIAD: tuple(
@@ -345,13 +348,13 @@ def _mark_review_rows(
     a seat whose session route already exists as an unmarked roster row with
     the seat's effort marks that row (``review_eligible``); otherwise a
     ``review-<harness>`` row is minted for it, marked, with
-    ``minted_from: factory_default``. Each triad seat takes one row, so a
-    one-harness panel's three identical seats become one marked existing row
-    plus two minted twins (three independent runs, as the lane ran them). A
-    scope seat whose effective identity a marked row already has MERGES into it
-    (every pool row judges both parts of the brief), else takes a row like a
-    triad seat. If the catalog ceiling leaves no room, the seat is omitted and
-    said so in diagnostics — honest disclosure, never a silent drop.
+    ``minted_from: factory_default``. Each triad seat takes one row (the
+    compiler names each harness once; identical seats would each mint their
+    own twin, ``review-<harness>-2`` and on). A scope seat whose effective
+    identity a marked row already has MERGES into it (every pool row judges
+    both parts of the brief), else takes a row like a triad seat. If the
+    catalog ceiling leaves no room, the seat is omitted and said so in
+    diagnostics — honest disclosure, never a silent drop.
 
     Idempotent: a row already marked with a seat's identity COUNTS as that seat
     (each marked row satisfies one triad seat), so feeding the wizard's own
@@ -485,12 +488,14 @@ def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
     The panel follows the Main the document runs (owner 4A), whatever other access sits beside
     it: a reachable OpenRouter Main → OpenRouter's three ``OPENROUTER_REVIEW_DEFAULTS``; a
-    reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel, each seat in
-    its ROLE's whole binding (a Light seat runs Light's, never Main's by a shared model name; a
-    blank or another provider's Light leaves the provider's shipped Light standing in, plain); any other
-    reachable Main (compatible, local, managed) → as many twin rows of it, in its whole binding
-    (``role_route_binding``: ``(local)`` label, account pin, processing), as the shipped panel
-    has seats (three runs, quorum 2 of 3). With no configured access at all the shipped
+    reachable direct Main → its provider's ``DIRECT_PROVIDER_REVIEW_ROLES`` panel (one Main row;
+    MiniMax's Main, Light, Light), each seat in its ROLE's whole binding (a Light seat runs Light's,
+    never Main's by a shared model name; a blank or another provider's Light leaves the provider's
+    shipped Light standing in, plain); any other reachable Main (compatible, local, managed) → ONE
+    row of it, in its whole binding
+    (``role_route_binding``: ``(local)`` label, account pin, processing): copies of one model would
+    multiply every review's cost without a second opinion, so its one answer decides (quorum 1 of
+    1, recorded as ``single_reviewer_no_diversity``). With no configured access at all the shipped
     OpenRouter Main keeps its panel (the defaults before any provider is chosen). A Main the
     configured access cannot run — several direct keys and none chosen, or an explicit route
     without access — mints nothing rather than a panel derived from another default; the read
@@ -513,8 +518,7 @@ def factory_review_rows(doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
     main = bindings["main"]["route"]["target_id"] if bindings["main"] else main
     router_main = provider_for_model(main) == "openrouter"
     if bindings["main"] and not router_main:
-        seats = (compute_direct_review_seats(provider_for_model(main), main, light)
-                 or [("main", main)] * len(router_panel))
+        seats = compute_direct_review_seats(provider_for_model(main), main, light) or [("main", main)]
     else:  # a router Main reviews on the diverse router panel, never as twins of itself
         reachable = router_main and (bindings["main"] or not has_startup_ready_provider(settings))
         seats = [("", model) for model in router_panel] if reachable else []
@@ -694,7 +698,9 @@ def compile_model_settings(model_catalog: Sequence[Mapping[str, Any]],
     """Suggest a complete zero-key setup from exact raw-route catalog evidence.
 
     Existing usable/custom choices win. The model's backend default supplies
-    the proposal, not an invented model family or a CLI alias table.
+    the proposal, not an invented model family or a CLI alias table. Vision is
+    a row whose input modalities state image input, else blank: Auto, which
+    still tries an unknown route when an image needs one (``vision_routing``).
     """
     from ouroboros.model_slots import MODEL_ROLE_SETTINGS
     from ouroboros.settings_defaults import RETIRED_SETTING_KEYS, SETTINGS_DEFAULTS
@@ -706,8 +712,8 @@ def compile_model_settings(model_catalog: Sequence[Mapping[str, Any]],
     default = next((row for row in model_catalog if row.get("is_default") and row.get("value")), None)
     if default is None:
         return {}
-    vision = next((row for row in model_catalog if "image" in (row.get("input_modalities") or [])
-                   and row.get("value")), default)
+    vision = next((str(row["value"]) for row in model_catalog if row.get("value")
+                   and image_input_from_modalities(row.get("input_modalities")) is True), "")
     proposed = {}
     for role, key in MODEL_ROLE_SETTINGS.items():
         if role == "websearch":
@@ -717,7 +723,7 @@ def compile_model_settings(model_catalog: Sequence[Mapping[str, Any]],
         current = str(settings.get(key) or "")
         if current and current != str(SETTINGS_DEFAULTS.get(key) or ""):
             continue
-        proposed[key] = "" if role == "fallback" else str((vision if role == "vision" else default)["value"])
+        proposed[key] = {"fallback": "", "vision": vision}.get(role, str(default["value"]))
     return proposed
 
 

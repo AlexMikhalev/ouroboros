@@ -324,6 +324,7 @@ def _run_start_index(args: Sequence[str], command_idx: int) -> int | None:
         "--attach",
         "--patch-out",
         "--timeout",
+        "--execution-timeout",
         "--actor-id",
         "--delegation-role",
     }

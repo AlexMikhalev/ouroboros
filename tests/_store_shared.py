@@ -52,7 +52,7 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
     row readable again ("after access recovers") without undoing its other patches."""
     from ouroboros import store
 
-    real_load, real_row = store.Txn.load, store.Txn.row
+    real_body, real_row = store.Txn.body_text, store.Txn.row
     switch = {"on": True}
     wanted_root = None if root is None else pathlib.Path(root).resolve()
 
@@ -61,18 +61,30 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
             return False
         return wanted_root is None or (self.root is not None and self.root.resolve() == wanted_root)
 
-    def load(self, tid):
+    def body_text(self, tid):
         if broken(self, tid):
             raise store.StoreError(f"simulated unreadable row: {tid}")
-        return real_load(self, tid)
+        return real_body(self, tid)
 
     def row(self, tid, *columns):
         if broken(self, tid):
             raise store.StoreError(f"simulated unreadable row: {tid}")
         return real_row(self, tid, *columns)
 
-    monkeypatch.setattr(store.Txn, "load", load)
+    from ouroboros import task_store
+
+    real_views = task_store.display_documents
+
+    def display_documents(root, task_ids, versions=None):  # a batch holding the row fails like a single read of it
+        ids = [str(tid) for tid in task_ids]
+        if switch["on"] and str(task_id) in ids and (
+                wanted_root is None or pathlib.Path(root).resolve() == wanted_root):
+            raise store.StoreError(f"simulated unreadable row: {task_id}")
+        return real_views(root, ids, versions)
+
+    monkeypatch.setattr(store.Txn, "body_text", body_text)
     monkeypatch.setattr(store.Txn, "row", row)
+    monkeypatch.setattr(task_store, "display_documents", display_documents)
     return switch
 
 

@@ -104,6 +104,18 @@ class ElementStub {
         const parent = this.parentNode;
         if (parent) parent.insertBefore(node, parent.children[parent.children.indexOf(this) + 1] || null);
     }
+    insertAdjacentElement(position, node) {
+        switch (position.toLowerCase()) {
+        case 'beforebegin': return this.parentNode?.insertBefore(node, this) || null;
+        case 'afterbegin': return this.insertBefore(node, this.children[0] || null);
+        case 'beforeend': return this.appendChild(node);
+        case 'afterend':
+            if (!this.parentNode) return null;
+            this.after(node);
+            return node;
+        default: throw new Error(`Unsupported insertion position: ${position}`);
+        }
+    }
     insertBefore(node, before) {
         if (node?.isDocumentFragment) {
             for (const child of [...node.children]) this.insertBefore(child, before);
@@ -335,6 +347,34 @@ const MIRROR_ROW = {
     completion_answer: '**Done: PR #7 merged.**\n\nSecond paragraph.',
 };
 
+test('a nonclean final keeps one factual limitation, Project reference, and one logical delivery across retries', () => {
+    const { prior, mount } = installDom();
+    let instance;
+    try {
+        const made = makeInstance(mount);
+        instance = made.instance;
+        const row = { ...MIRROR_ROW, task_id: 'partial-task', delivery_id: 'completion:partial-task',
+            completion_reason: 'Partial result · Windows validation was not completed.' };
+        made.handlers.get('chat')(row);
+        made.handlers.get('chat')({ ...row, ts: '2026-09-01T00:00:00Z' });
+        const messages = document.byId.get('chat-messages');
+        const finals = messages.children.filter(node => node.dataset.deliveryId === row.delivery_id);
+        assert.equal(finals.length, 1, 'physical retry timestamps do not create another outcome');
+        const final = finals[0];
+        assert.equal(final.dataset.ts, String(Date.parse(row.ts)), 'the outcome keeps its original time');
+        const limitation = final.querySelector('.project-answer-limitation');
+        assert.equal(limitation.textContent, row.completion_reason);
+        assert.equal(limitation.title, row.completion_reason);
+        const actions = final.querySelector('.system-message-actions');
+        assert.equal(actions.children.length, 1);
+        assert.equal(actions.children[0].dataset.intent, 'open-project');
+        assert.match(final.innerHTML, /Done: PR #7 merged/);
+        made.handlers.get('chat')({ ...PLAIN_ROW, task_id: 'stopped-task', completion_reason: 'Stopped.' });
+        assert.equal(findBubble('system').querySelector('.project-answer-limitation'), null,
+            'the System fallback already carries its outcome and adds no duplicate limitation');
+    } finally { instance?.destroy(); restoreDom(prior); }
+});
+
 test('a completion row carrying the answer renders as an ordinary Ouroboros message with the Project chip', async () => {
     const { prior, mount } = installDom();
     let instance;
@@ -354,8 +394,8 @@ test('a completion row carrying the answer renders as an ordinary Ouroboros mess
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
         assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
-        // One control, and the SAME one the System row carries: the voice of a row never
-        // chooses how the UI points at its Project.
+        // The SAME reference the System row carries: the voice of a row never chooses how the
+        // UI points at its Project. The mirror has no second route into the result.
         assert.equal(actions.children.length, 1);
         const chip = actions.children[0];
         assert.deepEqual(referenceShape(chip), LAUNCH_REFERENCE);
@@ -431,9 +471,11 @@ test('the fold is CSS over the complete answer: clamp always, fade only when fol
     const rules = block.slice(0, block.indexOf('design-system:migrated-end'));
     assert.match(rules, /\.chat-bubble\.project-answer > \.message \{ max-height: var\(--project-answer-fold\); overflow: hidden; \}/);
     assert.match(rules, /\.chat-bubble\.project-answer\.is-folded > \.message \{[^}]*mask-image/);
+    // The Project is the route to the complete answer; the mirror never expands in place.
+    assert.doesNotMatch(rules, /\.project-answer\.is-expanded/);
     assert.doesNotMatch(rules, /user-select|font-size: \d|#[0-9a-fA-F]{3,6}\b/);
     // chat.js stays a caller: the decoration lives in its own module.
-    assert.match(chatSource, /decorateProjectRow\(bubble, \{ role, projectId, projectName,/);
+    assert.match(chatSource, /decorateProjectRow\(bubble, \{ \.\.\.meta, \.\.\.opts, role,/);
 });
 
 test('plain system row renders identically live and after history reload', async () => {

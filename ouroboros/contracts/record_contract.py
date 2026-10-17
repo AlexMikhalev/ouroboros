@@ -8,8 +8,7 @@ records: the anchor rows, the keys every one of them carries, which may be
 null, which carry user or model content, how rows correlate, where they live
 and for how long, how they rotate, which are written twice, how older rows
 differ, and where money must be read instead. It describes what the writers
-already write and changes none of them; the observer owns interpretation and
-delivery.
+write; the observer owns interpretation and delivery.
 
 Compatibility: a guaranteed field is a key every row of its type written by the
 current writers carries (null or "" are values, not absence). The guaranteed
@@ -27,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-RECORD_CONTRACT_VERSION = 1
+RECORD_CONTRACT_VERSION = 2
 
 
 def _fields(names: str) -> frozenset[str]:
@@ -96,14 +95,17 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
         "task_received", "events", "drive_logs",
         "A worker accepted a task. `task` is the sanitized task: `task.id` joins it, and the rest (text up to "
         "4000 chars, contract, metadata) is content.",
-        _fields("ts type task"), optional=_fields("activity_emitted_at"), content=_fields("task"),
+        _fields("ts type task"),
+        optional=_fields("activity_emitted_at task_id root_task_id parent_task_id delegation_role"),
+        content=_fields("task"),
         natural_key=("type", "ts"),
     ),
     AnchorRow(
         "task_done", "events", "canonical",
         "The supervisor accepted a task's terminal; the task's store row (get_task_result / query_data) stays the lifecycle authority.",
         _fields("ts type task_id task_type chat_id status reason_code"), nullable=_fields("reason_code"),
-        optional=_fields(_COST_META + " outcome_axes _is_direct_chat root_phase_checkpoint artifact_status "
+        optional=_fields(_COST_META + " logged_at root_task_id parent_task_id delegation_role "
+                                      "outcome_axes _is_direct_chat root_phase_checkpoint artifact_status "
                                       "total_rounds prompt_tokens completion_tokens review_status review_projection "
                                       "model_execution artifact_bundle cancel_origin typed_routing_action"),
         content=_fields("outcome_axes review_status review_projection artifact_bundle cancel_origin"),
@@ -144,11 +146,11 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
         "(COVERAGE_GAPS) with the same round_id. first_request_at and first_answer_at are the execution's "
         "first request and first answer, repeated on later rounds. A Claudexor operation id rides inside "
         "`claudexor`.",
-        _fields("ts type task_id execution_id round_id llm_call_id round model provider prompt_tokens "
+        _fields("ts type record_contract_version task_id execution_id round_id llm_call_id round model provider prompt_tokens "
                 "completion_tokens cached_tokens cache_write_tokens duration_ms ledger_attempt_ids "
                 "physical_attempt_id"),
-        nullable=_fields("cached_tokens duration_ms physical_attempt_id"),
-        optional=_fields("reasoning_effort source model_category prompt_cache_ttl cache_hit_rate cache_cold_restart "
+        nullable=_fields("prompt_tokens completion_tokens cached_tokens cache_write_tokens duration_ms physical_attempt_id"),
+        optional=_fields("root_task_id parent_task_id delegation_role reasoning_effort source model_category prompt_cache_ttl cache_hit_rate cache_cold_restart "
                          "gap_since_prev_round_sec cost_usd request_ref response_ref effort effort_resolution "
                          "request_wire claudexor first_request_at first_answer_at " + _CONTEXT_FIT),
         content=_fields("claudexor"), natural_key=("llm_call_id",),
@@ -158,14 +160,15 @@ ANCHOR_ROWS: tuple[AnchorRow, ...] = (
         "A compatibility projection of a model call's usage as the supervisor received it: main-loop, review "
         "and tool-model calls (COVERAGE_GAPS names calls that write none); accounting_authority names the "
         "ledger. Never a money source (ACCOUNTING_RULE).",
-        _fields("ts type task_id root_task_id parent_task_id delegation_role category model provider "
+        _fields("ts type record_contract_version task_id root_task_id parent_task_id delegation_role category model provider "
                 "prompt_tokens completion_tokens cached_tokens cache_write_tokens accounting_authority "
                 "ledger_attempt_ids"),
+        nullable=_fields("prompt_tokens completion_tokens cached_tokens cache_write_tokens"),
         optional=_fields(
             "task_group_id requested_model_lane effective_model_lane api_key_type model_category source "
             "cost_estimated cost cost_known prompt_cache_ttl projection_update_status llm_call_id execution_id "
             "round_id round chat_id effort request_wire effort_resolution claudexor reasoning_pin "
-            "reasoning_effort_clamped web_search_sources review_skill review_wave_id review_slot_id"),
+            "reasoning_effort_clamped web_search_sources review_skill review_wave_id review_slot_id session_id"),
         content=_fields("web_search_sources claudexor"), natural_key=("ledger_attempt_ids",),
     ),
     AnchorRow(
@@ -257,8 +260,10 @@ CORRELATION_IDS: Mapping[str, str] = {
 ENVELOPE_RULE = (
     "One JSON object per line; a line can exceed 300 KB, and a reader skips a line that does not parse. `ts` "
     "is the producer's ISO-8601 UTC stamp with an offset; rows relayed through the supervisor keep it, so "
-    "file order is not time order: sort by ts. `type` names every row of events, tools, supervisor and "
-    "progress; chat.jsonl rows carry `direction` (in, out, system) and `type` only when typed. There is no "
+    "file order is not time order: sort by ts. task_done.logged_at is the supervisor's actual append "
+    "observation; it does not replace ts and clock skew can make it earlier than ts. `type` names every row "
+    "of events, tools, supervisor and progress; chat.jsonl rows carry `direction` (in, out, system) and "
+    "`type` only when typed. There is no "
     "event id: join and replay by the natural key."
 )
 
@@ -279,7 +284,14 @@ REPLICA_RULE = (
 )
 
 LEGACY_RULE = (
-    "Rows carry no version stamp: a field missing from an older row is unknown, never a default. Known "
+    "New llm_round and llm_usage rows carry record_contract_version=2. Other rows and historical "
+    "llm_round/llm_usage rows may be unstamped. A field missing from an older row is unknown, never a default. "
+    "An unstamped or version-1 zero token counter is ambiguous: it may be a measurement or an old "
+    "unknown-to-zero projection. Never relabel or rewrite it as measured zero. Version 2 distinguishes "
+    "null (unknown) from 0 (reported zero) independently for prompt_tokens, completion_tokens, "
+    "cached_tokens and cache_write_tokens. Sum only known counts and disclose unknown/legacy-zero "
+    "row counts per counter; an incomplete sum is a lower bound, not a total. Migration: "
+    "docs/architecture/11-frozen-contracts-v1.md §11.4. Known "
     "transitions: tools rows without invocation_id predate 2026-09-27 and stand alone (a timeout was then a "
     "tool_call row without is_error); direct-root tools rows lacked lineage before 2026-09-21; cost_usd and "
     "cost_usd_with_children on task rows before 7.0.0 mean accounted_upper_bound_usd[_with_children]; "
@@ -312,7 +324,8 @@ COVERAGE_GAPS = (
     "views only.",
     "A terminal whose supervisor handler failed has no task_done: supervisor.jsonl worker_event_handler_error "
     "records it, and the task's store row (get_task_result / query_data) stays the authority.",
-    "tools rows carry no chat_id; task_done carries no root_task_id (join the store rows or task_cost_finalized).",
+    "tools rows carry no chat_id. Optional lineage appears only when the producer knows it; readers must "
+    "not infer missing root_task_id from task_id on historical task rows.",
     "Neighbours of llm_api_error (local_context_overflow, remote_context_overflow, "
     "llm_non_retryable_same_request, provider_incomplete_response, llm_empty_response, provider_body_error, "
     "llm_retry_deadline_exhausted, llm_not_dispatched), worker_event_handler_error and worker_crash_task_dump "

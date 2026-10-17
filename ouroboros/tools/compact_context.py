@@ -234,21 +234,19 @@ def get_tools() -> List[ToolEntry]:
             schema={
                 "name": "compact_context",
                 "description": (
-                    "Request complete-input context reclaim. "
-                    "Use restore_unit_refs alone to add labelled sources without a helper or actor note. "
-                    "Supply working_note for an authored view; without either, request helper summarization of old "
-                    "completed tool units. An authored view addresses complete tool units, earlier records, your own "
-                    "completed replies and host prose rows (inspect lists them with kind and eligibility); the owner's "
+                    "Reclaim complete-input context with an authored working_note (inspect optional). Main also supports "
+                    "restore_unit_refs alone or helper summaries without a note. Native review runs no helper "
+                    "and does not apply schema_names, review_notes or review_transfers. Its inspect response "
+                    "reports window evidence, serialized characters and previous-request input, not current free tokens. "
+                    "Authored views address complete tool units, earlier records, your completed replies and host prose "
+                    "(inspect lists kind/eligibility); the owner's "
                     "words and your typed owner-directed dialogue, the assignment and the system view stay whole. "
-                    "Select exact keep_unit_ids or explicitly keep_last_n recent tool units raw; "
-                    "an authored note without either keeps all units. Earlier notes remain in place unless your exact "
-                    "keep selection replaces them; choose several for an explicit merged account. Rewriting can lose prefix-cache "
+                    "Earlier notes stay in place unless selected for replacement; select several to merge them. "
+                    "The note occupies the first replaced unit. Rewriting can lose prefix-cache "
                     "reuse from the earliest change: fold for space/clarity in useful batches, with a note shorter than its sources. "
                     "A selected older assistant tool call and all of its "
                     "contiguous matching results stay atomic; Ouroboros checkpoints their exact "
-                    "actor-visible bytes before replacing them with summaries whose metadata points "
-                    "to the checkpoint/CAS evidence. Active context becomes summarized; raw evidence "
-                    "remains retrievable through the recorded provenance (restore_unit_refs; an emergency "
+                    "actor-visible bytes before replacement, with checkpoint/CAS provenance. Raw evidence remains retrievable (restore_unit_refs; an emergency "
                     "record lists its checkpoint once and its member units separately)."
                 ),
                 "parameters": {
@@ -256,12 +254,12 @@ def get_tools() -> List[ToolEntry]:
                     "properties": {
                         "inspect": {"type": "boolean", "description": "Return and pin the last observed view revision, complete unit IDs, source references and current schema names without changing context."},
                         "expected_view_revision": {"type": "string", "description": "Optional view_revision from inspect, checked exactly. Omitted binds the actual model-send view that produced this call; inspect is not required to replace all completed units."},
-                        "working_note": {"type": "string", "description": "Your account of the selected material, corrections and unresolved work, placed at its first replaced unit. Earlier notes remain unless selected too. Omission without restoration keeps legacy helper compaction."},
+                        "working_note": {"type": "string", "description": "For a future reader without selected sources in view: preserve the source-supported situation and purpose behind conclusions, who decided what, its status within those sources, scope, changes, corrections and unresolved work. Distinguish inference and gaps; invent no detail. Later grants/cancellations supersede only their scope, not unaffected branches. Proposals are not approvals; do not retain obsolete restrictions after a later scoped approval. Be concise, no fixed template. Required in native review except inspect; Main may use a helper without it."},
                         "keep_unit_ids": {"type": "array", "items": {"type": "string"}, "description": "Exact inspected complete units to retain raw; takes precedence over keep_last_n, empty keeps none eligible. If both selectors are omitted, an authored note keeps all. Owner words, the assignment, the system view and the newer tail are preserved whatever the selection."},
                         "restore_unit_refs": {"type": "array", "items": {"type": "object", "properties": {
                             "checkpoint_ref": {"type": "object"}, "unit_id": {"type": "string"}, "raw_sha256": {"type": "string"}},
                             "required": ["checkpoint_ref", "unit_id", "raw_sha256"]},
-                            "description": "Read exact checkpoint-local units back as labelled sources, never live tool protocol replay. A nonempty list may be used alone: no helper, no actor note, current units and schemas unchanged. Supply working_note to combine it with other view selectors."},
+                            "description": "Read exact checkpoint-local units back as labelled sources, never live tool protocol replay. In Main a nonempty list may be used alone; native review also requires working_note (empty is valid). Supply a note to combine restoration with other view selectors."},
                         "schema_names": {"type": "array", "items": {"type": "string"}, "description": "Nano only: desired canonical schemas. This selects residency, never execution permissions. Low/Max retain their full permitted envelope."},
                         "review_notes": {"type": "array", "items": {"type": "object", "properties": {
                             "bound_decision": {"anyOf": [{"type": "object"}, {"type": "string"}]},
@@ -276,7 +274,7 @@ def get_tools() -> List[ToolEntry]:
                             "description": "With working_note only: explicitly declare that an attachment's decisions and reasons have been transferred into the named current plan spec decisions. Inspect supplies exact source/spec identities. No semantic completeness is inferred; absent or stale transfer keeps the attachment full."},
                         "keep_last_n": {
                             "type": "integer",
-                            "description": "Number of recent completed atomic tool units to keep raw (range 2-20). With working_note, used only when explicitly supplied and keep_unit_ids is omitted. Without working_note, defaults to 6 for helper summarization.",
+                            "description": "Number of recent completed atomic tool units to keep raw (range 2-20). With working_note, used only when explicitly supplied and keep_unit_ids is omitted. Without a note, Main defaults to 6 for helper summarization; native review requires a note.",
                         },
                     },
                     "required": [],

@@ -20,6 +20,7 @@ import pytest
 
 from ouroboros.review_execution import REVIEW_SESSION_ROUTE_ENV
 from ouroboros.reviewer_window import ReviewerWindow
+from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS
 from ouroboros.triad_review import parse_seat_answers
 
 from tests._review_session_route_shared import _owned_gateway_uses_each_test_transport as __owned_gateway_uses_each_test_transport
@@ -39,8 +40,6 @@ from tests._usage_store_testing import ledger_rows
 # ---------------------------------------------------------------------------
 
 def _coupling_matrix_rows():
-    from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS
-
     return [
         {"item": item, "verdict": "PASS", "severity": "advisory",
          "reason": "checked the relevant code path and its consumers thoroughly"}
@@ -167,7 +166,7 @@ def test_delegated_seat_goes_out_as_the_brief_and_never_builds_the_pack(tmp_path
 
     record = parsed.actor_records[0]
     assert record.status == "responded", (record.raw_text, _result["results"][0])
-    assert len(record.parsed_items) == 8
+    assert len(record.parsed_items) == len(SCOPE_REQUIRED_ITEMS)
     assert record.answers["change"]["verdict"] == "PASS" and record.answers["coupling"]["verdict"] == "PASS"
     start = fake_route.instances[0].start_requests[0]
     assert brief in start["prompt"]       # the brief (under the seat header), not a pack
@@ -446,6 +445,7 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
     import ouroboros.tools.review as review_tool
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.skill_review_passes import run_skill_review_passes
+    from tests.test_skill_review_frozen_delivery import _skill
 
     required = ("manifest_schema", "secrets_hygiene")
     fake_route.detail = _terminal_detail(json.dumps({"findings": [
@@ -476,10 +476,11 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
         "slot_ids": ["skill-slot-a", "skill-slot-b"],
     }
 
+    skill, content_hash = _skill(tmp_path, name="happy_farm")  # a real frozen payload
     _prompt, _evidence, result_text, error = run_skill_review_passes(
-        ctx, ctx.drive_root, SimpleNamespace(name="happy_farm"),
+        ctx, ctx.drive_root, skill,
         evidence={
-            "manifest_dump": "{}", "content_hash": "hash", "history": [],
+            "manifest_dump": "{}", "content_hash": content_hash, "history": [],
             "review_rebuttal": "", "required_items": required,
         },
         file_packs=["frozen payload bytes"], models=models, row_plan=row_plan,
@@ -503,7 +504,7 @@ def test_skill_review_all_session_composition_uses_strict_schema_and_no_api_fall
     assert all(request["scope"]["root"] == str(root) for request in starts)
     assert all(request["outputSchema"]["properties"]["findings"]["minItems"] == 1
                for request in starts)
-    assert all("exact frozen skill evidence" in request["prompt"] for request in starts)
+    assert all("exact frozen copy" in request["prompt"] for request in starts)
     assert all("DYNAMIC SKILL" in request["prompt"] and "STABLE ONLY" not in request["prompt"]
                for request in starts)
     assert all("docs/ARCHITECTURE.md" in request["prompt"] and
@@ -527,6 +528,7 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     # The session row + its credential pin are configured through the review
     # pool's catalog row (the phase-5 route envs are retired and ignored).
     from tests.review_pool_rosters import pool_roster, pool_seat
+    from tests.test_skill_review_frozen_delivery import _skill
 
     monkeypatch.delenv(REVIEW_SESSION_ROUTE_ENV, raising=False)
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(pool_seat(
@@ -542,10 +544,11 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     monkeypatch.setattr(review_tool, "LLMClient", lambda: no_api)
     ctx = _wave_ctx(tmp_path)
 
+    skill, content_hash = _skill(tmp_path, name="happy_farm")  # a real frozen payload
     _prompt, _evidence, _result, error = run_skill_review_passes(
-        ctx, ctx.drive_root, SimpleNamespace(name="happy_farm"),
+        ctx, ctx.drive_root, skill,
         evidence={
-            "manifest_dump": "{}", "content_hash": "hash", "history": [],
+            "manifest_dump": "{}", "content_hash": content_hash, "history": [],
             "review_rebuttal": "", "required_items": ("manifest_schema",),
         },
         file_packs=["frozen"], models=delivery["models"], row_plan=delivery,
@@ -749,7 +752,7 @@ def test_a_staged_diff_that_fits_the_first_send_is_inlined(tmp_path):
 
 @pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
-def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_path, delegated, newline):
+def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_path, monkeypatch, delegated, newline):
     """A diff too large for the first send is not refused and not truncated: it
     is stored ONCE, byte-exactly, at an address the seat's own reader reaches —
     the task artifact store for a native episode, the review's git-ignored
@@ -759,6 +762,10 @@ def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_pat
     from ouroboros.tools.review_binary_context import capture_staged_diff
     from ouroboros.tools.scope_required_sources import required_sources_ref, source_text_identity
     from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools import review_brief_coupling
+
+    # Pin an initial layout hint; the retired execution cap no longer sizes it.
+    monkeypatch.setattr(review_brief_coupling, "first_send_bound", lambda _brief: 900_000)
 
     repo = _staged_subject(tmp_path, payload_chars=900_000, newline=newline)
     drive = tmp_path / "data"

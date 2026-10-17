@@ -17,7 +17,7 @@ huge inventory delays only its own task.
 
 Registry updates are whole-file read-modify-write, O(rows). Eligible untracked
 text is hashed into the target's object database; once the pin or branch is
-deleted those blobs are unreachable loose objects until ``git gc``.
+deleted those blobs are unreachable objects until ``git gc``.
 """
 
 from __future__ import annotations
@@ -249,11 +249,31 @@ def _force_rmtree(path: Path) -> None:
     On Windows git pack/object files under ``.git`` are read-only, and
     ``shutil.rmtree(ignore_errors=True)`` silently FAILS to delete them, leaving
     the directory behind. The onerror hook clears the read-only bit and retries
-    so genesis-project / worktree teardown actually removes the tree."""
+    so genesis-project / worktree teardown actually removes the tree. It only adds
+    owner bits, only inside the tree and never through a link (a target may live
+    outside it): a removal its folder refuses makes that folder writable, and a
+    folder that could not be listed is made listable and removed in turn."""
+    root = os.path.abspath(path)
+
+    def _linked(info):  # a link, or a Windows junction (reparse point)
+        return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+    def _grant(target, bits):
+        info = os.lstat(target)  # one look: the mode written is this entry's own
+        if os.path.commonpath([root, target]) == root and not _linked(info):
+            os.chmod(target, stat.S_IMODE(info.st_mode) | bits)
+
     def _on_error(func, p, _exc):
+        p = os.path.abspath(p)  # a relative tree reports relative paths
         try:
-            os.chmod(p, stat.S_IWRITE)
-            func(p)
+            if func in (os.unlink, os.remove, os.rmdir):
+                if os.path.dirname(p) != os.path.dirname(root):
+                    _grant(os.path.dirname(p), stat.S_IRWXU)
+                _grant(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IWRITE | stat.S_IREAD)
+                func(p)
+            elif not _linked(os.lstat(p)) and os.path.isdir(p):
+                _grant(p, stat.S_IRWXU)
+                shutil.rmtree(p, onerror=_on_error)
         except Exception:
             pass
 
@@ -555,6 +575,60 @@ def _git_env(repo_dir: Path, *args: str, env: Dict[str, str],
     )
 
 
+class _InPlaceFill:
+    """A ``stream_artifact_file`` sink that rewrites an open file from its first differing byte."""
+
+    def __init__(self, handle: Any):
+        self.handle, self.size, self.differs = handle, 0, False
+
+    def write(self, chunk: bytes) -> None:
+        if not self.differs:
+            if self.handle.read(len(chunk)) == chunk:
+                self.size += len(chunk)
+                return
+            self.differs = True
+            self.handle.seek(self.size)
+        self.handle.write(chunk)
+        self.size += len(chunk)
+
+
+def _fill_private_copy(source: Path, checkout: Path, copy_root: Path) -> None:
+    """Give one file Git checked out into a not-yet-returned copy the source's exact bytes.
+
+    Nothing reads or runs in the copy before provisioning returns, and the
+    whole-tree diff after population binds every byte to the baseline, so the
+    per-file temporary file and rename of ``copy_artifact_file`` (the measured
+    cost) buys nothing here. The same stable source read rewrites the file in
+    place from its first differing byte, an equal file is not written, and
+    ``copystat`` applies the source's mode, times and flags as before. An entry
+    checkout did not write (outside an inherited sparse-checkout cone) is created
+    by ``copy_artifact_file`` as before while the copy still has its ``.git``, so
+    a removal that has reached ``.git`` re-creates nothing; entries a removal
+    still walking the tree already deleted can be re-created until it gets
+    there, and the failed start's discard removes them. A path checkout left as
+    something other than a regular file is refused, never written through. No retention flow
+    provisions copies, so skipping that helper's publication fence loses nothing.
+    """
+    from ouroboros.artifacts import copy_artifact_file, stream_artifact_file
+
+    try:
+        info = os.lstat(checkout)
+    except FileNotFoundError:
+        if not os.path.lexists(copy_root / ".git"):
+            raise
+        copy_artifact_file(source, checkout)
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(f"snapshot checkout is not a regular file: {checkout}")
+    if info.st_mode & 0o600 != 0o600:  # an owner-unwritable umask; copystat restores the mode
+        os.chmod(checkout, stat.S_IMODE(info.st_mode) | 0o600)
+    with open(checkout, "r+b") as handle:
+        sink = _InPlaceFill(handle)
+        stream_artifact_file(source, sink)
+        handle.truncate(sink.size)
+    shutil.copystat(source, checkout)
+
+
 def provision_execution_snapshot(
     *, target_root: Any, task_id: Any, snapshot_id: str,
     worktree_root: Optional[Any] = None, data_dir: Optional[Any] = None, independent: bool = False,
@@ -781,8 +855,6 @@ def _provision_git_copy(
         # Populate outside the lock: the same reset git's own `worktree add` runs
         # (no submodule recursion) — minus the target's post-checkout hook.
         _git(wt_path, "reset", "--hard", "--quiet", "--no-recurse-submodules")
-        from ouroboros.artifacts import copy_artifact_file
-
         # Git owns the baseline representation, but the child must see the
         # source's actual working bytes, not checkout's CRLF/smudge rewrite.
         # Read the existing tree inventory so deletions, links and gitlinks
@@ -795,7 +867,7 @@ def _provision_git_copy(
                 original = target / relative
                 if original.is_symlink():
                     raise OSError(f"snapshot input changed from a regular file: {relative}")
-                copy_artifact_file(original, wt_path / relative)
+                _fill_private_copy(original, wt_path / relative, wt_path)
                 copied.append(raw_path)
         # The checkout recorded each entry's stat for the bytes IT wrote; a
         # CRLF/smudge rewrite (core.autocrlf=true is Git for Windows' default)
@@ -943,6 +1015,91 @@ def payload_git_metadata_refusal(exec_root: Path) -> str:
     return ""
 
 
+class _RawBlobWriter:
+    """ONE ``git fast-import`` storing the raw blobs of one staging call.
+
+    A Git process per blob would cost a process start per file. Each blob is
+    framed by its exact length (``data <n>``), so payload bytes are never parsed
+    as commands, and fast-import opens no path and applies no attribute, filter
+    or eol conversion. Each id is read back (``get-mark``) before the next blob
+    is sent and stderr goes to a file, so no unread pipe can fill and stall the
+    writer. The ids name stored objects only after the explicit ``done``
+    (``--done``) and exit 0 (``finish``); any other end kills the process.
+    By default fast-import holds a blob, its predecessor and a delta of them in
+    memory; ``core.bigFileThreshold`` streams every blob over 1 MiB (the
+    ``--big-file-threshold`` option reaches only the first blob in Git 2.53),
+    and the written pack is kept rather than exploded into loose objects by a
+    second process; large payloads need not stay in Git's delta search.
+    """
+
+    def __init__(self, root: Path, env: Dict[str, str]):
+        self._root, self._env, self._errors = root, env, None
+        self._proc: Optional[subprocess.Popen] = None
+
+    def __enter__(self) -> "_RawBlobWriter":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                self._proc.kill()  # it never acknowledged ``done``: nothing it wrote is staged
+            self._proc.wait()
+            for pipe in (self._proc.stdin, self._proc.stdout):
+                with contextlib.suppress(OSError):
+                    pipe.close()
+        if self._errors is not None:
+            self._errors.close()
+
+    def _failure(self, detail: bytes) -> subprocess.CalledProcessError:
+        if self._proc.poll() is None:
+            self._proc.kill()
+        self._errors.seek(0)
+        return subprocess.CalledProcessError(
+            self._proc.wait(), self._proc.args, detail, self._errors.read() or detail)
+
+    def write(self, blob: bytes) -> str:
+        """Store one blob; its object id."""
+        if self._proc is None:
+            import tempfile
+
+            self._errors = tempfile.TemporaryFile()
+            self._proc = subprocess.Popen(
+                ["git", "-c", "core.bigFileThreshold=1m", "-c", "fastimport.unpackLimit=0",
+                 "fast-import", "--quiet", "--done"], cwd=str(self._root), env=self._env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._errors)
+        try:
+            self._proc.stdin.write(b"blob\nmark :1\ndata %d\n" % len(blob))
+            self._proc.stdin.write(blob)
+            self._proc.stdin.write(b"\nget-mark :1\n")
+            self._proc.stdin.flush()
+        except OSError as exc:  # the process is gone: its status and stderr say why
+            raise self._failure(str(exc).encode()) from exc
+        answer = self._proc.stdout.readline().strip()
+        if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", answer):
+            raise self._failure(b"no object id from fast-import: " + answer[:80])
+        return answer.decode("ascii")
+
+    def finish(self) -> None:
+        """End the stream; raises unless every written blob is now a stored object."""
+        if self._proc is None:
+            return
+        try:
+            self._proc.stdin.write(b"done\n")
+            self._proc.stdin.close()
+        except OSError as exc:
+            raise self._failure(str(exc).encode()) from exc
+        trailing = self._proc.stdout.read()
+        if self._proc.wait() != 0 or trailing:
+            raise self._failure(trailing[:200])
+
+
+class RawStagingIncomplete(subprocess.CalledProcessError):
+    """``update-index --index-info`` exited 0, but the index lacks records as sent."""
+
+    def __str__(self) -> str:
+        return self.stderr.decode("utf-8", "replace")
+
+
 def stage_raw_payload_inventory(
     worktree: Path, rel_paths: Any, env: Dict[str, str],
     baseline_modes: Optional[Dict[str, str]] = None,
@@ -951,40 +1108,48 @@ def stage_raw_payload_inventory(
 
     ``git add``/worktree ``update-index`` run clean/eol filters from a child- or
     payload-authored ``.gitattributes`` (CRLF staged as LF — reproduced by
-    review), so every regular file is hashed with ``hash-object --no-filters``
-    over raw bytes and staged via ``--index-info``; ``.gitattributes`` is just
-    content, a symlink stages as 120000 over its raw link-target bytes. Modes:
+    review), so each file's raw bytes are read here, one file at a time, stored
+    by ONE ``git fast-import`` for the whole inventory (``_RawBlobWriter``) and
+    staged via ``--index-info``, both in the caller's ``env`` (its index, object
+    database and config); ``.gitattributes`` is just content, a symlink stages
+    as 120000 over its raw link-target bytes. Modes:
     with ``baseline_modes`` (capture) regular files pin to the baseline mode for
     existing paths / 100644 for new ones so an executable-bit flip can never
-    ride a patch; without it (provisioning) the real on-disk mode is recorded.
+    ride a patch; without it (provisioning/reviewer capture) on-disk modes ride.
+    ``--index-info`` exits 0 even when it skips a path Git refuses (``..``, a
+    ``.git`` component, a Windows device name), so each record is sent in its
+    ``ls-files --stage`` shape and ONE such read must list it back verbatim.
     Returns the paths whose on-disk executable bit diverges from the staged mode.
     """
     root = Path(worktree)
     lines: List[bytes] = []
     divergent: List[str] = []
-    for rel in sorted(str(p) for p in rel_paths):
-        path = root / rel
-        if path.is_symlink():
-            blob, mode = os.readlink(os.fsencode(str(path))), "120000"
-        else:
-            blob = path.read_bytes()
-            executable = bool(path.stat().st_mode & 0o111)
-            if baseline_modes is None:
-                mode = "100755" if executable else "100644"
+    with _RawBlobWriter(root, env) as writer:
+        for rel in sorted(str(p) for p in rel_paths):
+            path = root / rel
+            if path.is_symlink():
+                blob, mode = os.readlink(os.fsencode(str(path))), "120000"
             else:
-                base = baseline_modes.get(rel, "")
-                mode = base if base in ("100644", "100755") else "100644"
-                if executable != (mode == "100755"):
-                    divergent.append(rel)
-        hashed = subprocess.run(
-            ["git", "hash-object", "--no-filters", "-w", "--stdin"],
-            cwd=str(root), capture_output=True, env=env, input=blob, check=True)
-        sha = hashed.stdout.decode("ascii", errors="replace").strip()
-        lines.append(f"{mode} {sha}\t{rel}".encode("utf-8", errors="surrogateescape"))
-    subprocess.run(
-        ["git", "update-index", "-z", "--index-info"],
-        cwd=str(root), capture_output=True, env=env,
-        input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+                blob = path.read_bytes()
+                executable = bool(path.stat().st_mode & 0o111)
+                if baseline_modes is None:
+                    mode = "100755" if executable else "100644"
+                else:
+                    base = baseline_modes.get(rel, "")
+                    mode = base if base in ("100644", "100755") else "100644"
+                    if executable != (mode == "100755"):
+                        divergent.append(rel)
+            sha = writer.write(blob)
+            lines.append(f"{mode} {sha} 0\t{rel}".encode("utf-8", errors="surrogateescape"))
+        writer.finish()
+    update = subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=str(root), capture_output=True,
+                            env=env, input=b"\0".join(lines) + b"\0" if lines else b"", check=True)
+    listed = set(_git_env(root, "ls-files", "--stage", "-z", env=env).stdout.split(b"\0"))
+    unstaged = [line.partition(b"\t")[2] for line in lines if line not in listed]
+    if unstaged:  # names at most five; Git's own stderr is carried as evidence, never parsed
+        detail = b"update-index exited 0, but the index lacks %d of %d records as sent (%s); git: %s" % (
+            len(unstaged), len(lines), b", ".join(unstaged[:5]), update.stderr.strip()[:300])
+        raise RawStagingIncomplete(update.returncode, update.args, update.stdout, detail)
     return divergent
 
 
@@ -1047,20 +1212,27 @@ def _reproduce_confined_link(target_root: Path, src_link: Path, dest_link: Path)
     return True
 
 
-def _copy_payload_inventory(target: Path, dest: Path) -> int:
+def _copy_payload_inventory(target: Path, dest: Path, *, manifest_entry: str = "",
+                            manifest_scripts: Optional[List[Dict[str, Any]]] = None,
+                            preserve_links: bool = True) -> int:
     """Copy the exact skill-loader-visible inventory of ``target`` into ``dest``.
 
     The loader inventory is the SSOT walk (cache/control-dir exclusions, symlink
     escape exclusion, credential-shape refusal) — no second filesystem walk is
-    invented. A file reached through a symlinked ancestor directory reproduces
-    the ancestor LINK once instead of materializing a second copy under it.
+    invented; a declared manifest entry or script joins it even under an excluded
+    folder, exactly as it joins the content hash. A file reached through a
+    symlinked ancestor directory reproduces the ancestor LINK once instead of
+    materializing a second copy under it. Read-only review views set
+    ``preserve_links=False`` to retain each inventory path's bytes even when a
+    link points into an excluded dependency folder; they copy no extra files.
     """
     from ouroboros.skill_loader import _iter_payload_files
 
     resolved_target = target.resolve()
     dest.mkdir(parents=True, exist_ok=False)
     copied = 0
-    for path in _iter_payload_files(resolved_target):
+    for path in _iter_payload_files(resolved_target, manifest_entry=manifest_entry,
+                                    manifest_scripts=manifest_scripts):
         rel = path.relative_to(resolved_target)
         # A symlinked ANCESTOR directory is reproduced as the link itself; the
         # linked content is copied at its real (confined) location by its own
@@ -1069,7 +1241,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
         via_link = False
         for part in rel.parts[:-1]:
             ancestor = ancestor / part
-            if ancestor.is_symlink():
+            if preserve_links and ancestor.is_symlink():
                 link_rel = ancestor.relative_to(resolved_target)
                 if _reproduce_confined_link(resolved_target, ancestor, dest / link_rel):
                     copied += 1
@@ -1079,7 +1251,7 @@ def _copy_payload_inventory(target: Path, dest: Path) -> int:
             continue
         out = dest / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink():
+        if preserve_links and path.is_symlink():
             if _reproduce_confined_link(resolved_target, path, out):
                 copied += 1
             continue

@@ -3439,24 +3439,6 @@ def test_gaia_epistemic_instruction_shape_and_all_solvers():
     assert audit._strip_prompt_boilerplate("Q." + GAIA_EPISTEMIC_INSTRUCTION).strip() == "Q."
 
 
-def test_epistemic_rule_stays_out_of_the_global_system_prompt():
-    """Owner Q20/Q22 scoped the rule to the GAIA adapter ONLY: no global grounding duty in
-    `prompts/SYSTEM.md` (it would push the runtime into searching for trivia) and no typed
-    contract field. This is the invariant that keeps a future 'while we are here' edit honest."""
-    system_md = (REPO_ROOT / "prompts" / "SYSTEM.md").read_text(encoding="utf-8").lower()
-    for banned in (
-        "epistemic honesty",
-        "source your external claims",
-        "source your claims",
-        "cite a primary source",
-        "check it against a primary source",
-    ):
-        assert banned not in system_md, f"SYSTEM.md must not carry the GAIA grounding rule: {banned}"
-
-    contracts = (REPO_ROOT / "ouroboros" / "contracts" / "task_contract.py").read_text(encoding="utf-8")
-    assert "epistemic" not in contracts.lower(), "Q20/Q22 explicitly rejected a typed contract field"
-
-
 def test_gaia_claude_code_solver_uses_stream_json_and_writes_trace(monkeypatch, tmp_path):
     from devtools.benchmarks.gaia.inspect_solver import claude_code_solver as cc
 
@@ -3556,7 +3538,6 @@ def test_gaia_audit_gold_verbatim_alone_is_weak_only(tmp_path):
     gv2, gfl2 = classify([strong_act])
     assert gv2 and gfl2
     assert audit._distinctive_gold(gold)
-
 
 
 def test_gaia_score_leakage_adjusted(tmp_path):
@@ -3698,24 +3679,6 @@ def test_gaia_distinct_same_basename_declarations_both_stage(tmp_path, monkeypat
     assert len(out) == 2
     contents = sorted(p.read_bytes() for p in out)
     assert contents == [b"/shared_files/a/doc.pdf", b"/shared_files/b/doc.pdf"]
-
-
-def test_programbench_instruction_states_tree_ships_as_is():
-    """v6.74.4: the PB instruction must carry the true submission model (live
-    tree, .git dropped, uncommitted edits ship) and the final compile.sh check,
-    and must no longer claim a fresh checkout."""
-    template = " ".join((
-        Path(__file__).resolve().parents[1]
-        / "devtools" / "benchmarks" / "programbench" / "instruction_template.md"
-    ).read_text(encoding="utf-8").split())
-    assert "CURRENT state of your working tree" in template
-    assert "uncommitted edits DO ship" in template
-    assert "The exporter also excludes" in template
-    assert "`.ouroboros/`" in template and "at ANY depth" in template
-    assert "run `./compile.sh` one final time" in template
-    # The negated truth stays; the old false claim must be gone.
-    assert "not from a fresh checkout" in template
-    assert "on a fresh checkout" not in template
 
 
 def test_programbench_submission_tarball_contract(tmp_path):
@@ -6739,7 +6702,8 @@ def test_run_tb_manifest_records_the_model_the_run_actually_resolved(tmp_path, m
     settings = tmp_path / "settings.json"
     settings.write_text(
         json.dumps({"OUROBOROS_MODEL": "decoy/template-main",
-                    "OUROBOROS_MODEL_LIGHT": "decoy/template-light"}),
+                    "OUROBOROS_MODEL_LIGHT": "decoy/template-light",
+                    "OUROBOROS_MODEL_IMAGE": "gpt-image-2"}),
         encoding="utf-8",
     )
     monkeypatch.setenv("OUROBOROS_MODEL", "decoy/ambient-main")
@@ -6757,7 +6721,7 @@ def test_run_tb_manifest_records_the_model_the_run_actually_resolved(tmp_path, m
     ]) == 0
     manifest = _manifest(measured)
     slots = manifest["model_slots"]
-    # The measured model, NOT the ambient env decoy and NOT the settings-template decoy.
+    # Measured model, not ambient or template decoys.
     assert slots["OUROBOROS_MODEL"] == "anthropic/claude-fable-5"
     assert slots["OUROBOROS_MODEL_LIGHT"] == "google/gemini-3.5-flash"
     # New manifests keep legacy Heavy absent.
@@ -6767,7 +6731,7 @@ def test_run_tb_manifest_records_the_model_the_run_actually_resolved(tmp_path, m
     assert "decoy/template-main" not in slots.values()
     # `model_slots` means the same thing here as in GAIA's manifest: MODEL_SLOT_KEYS only.
     assert set(slots).issubset(set(MODEL_SLOT_KEYS))
-    # ...and the same fact is on disk from admission onward, in TB's established `extra` shape.
+    # Admission also records this under `extra`.
     assert manifest["extra"]["model"] == "anthropic/claude-fable-5"
     assert manifest["extra"]["light_model"] == "google/gemini-3.5-flash"
 

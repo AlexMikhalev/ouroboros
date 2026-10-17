@@ -34,6 +34,7 @@ from ouroboros import usage_accounting as ua
 from ouroboros import usage_store
 from ouroboros.runtime_limits import USAGE_DISPLAY_LOCK_TIMEOUT_SEC
 from ouroboros.usage_ledger import UsageLockUnavailable
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial  # 64 real threads + supervisor.state module globals
 
@@ -315,8 +316,8 @@ def _assignment_with_an_evolution_row(data_root, monkeypatch, *, settle_at):
     assert state.budget_remaining({}, strict=True, allow_stale=True) == pytest.approx(5.0)  # warms the memo
     ua.settle_attempt(reservation, {"prompt_tokens": 5, "completion_tokens": 2}, cost_usd=settle_at, cost_final=True)
     sent: list = []
-    pool[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                              in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    pool[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                              in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     pending.append({"id": "evo-1", "type": "evolution", "chat_id": 0, "priority": 1})
     reasons: list = []
     real_persist = queue.persist_queue_snapshot
@@ -340,6 +341,24 @@ def test_an_evolution_row_the_exact_budget_cannot_afford_is_still_dropped(data_r
     workers, pending, reasons = _assignment_with_an_evolution_row(data_root, monkeypatch, settle_at=3.50)
     workers.assign_tasks()
     assert pending == [] and "evolution_dropped_budget" in reasons  # exact budget: $1.50
+
+
+@pytest.mark.parametrize("free_worker", [True, False])
+def test_an_evolution_row_parked_at_exactly_zero_stays_parked(data_root, monkeypatch, free_worker):
+    """At zero the pause block parks a never-dispatched row; neither assignment nor the
+    no-free-worker forecast then drops it as over-budget, on this tick or the next."""
+    from ouroboros.task_results import load_task_result
+
+    workers, pending, reasons = _assignment_with_an_evolution_row(data_root, monkeypatch, settle_at=5.0)
+    pending[0]["admitted_dispatch"] = "none"  # never dispatched: the pause block parks it replay-safe
+    if not free_worker:
+        workers.WORKERS[0].busy_task_id = "other"
+    for _tick in range(2):
+        workers.assign_tasks()
+        assert [task["id"] for task in pending] == ["evo-1"] and pending[0]["_budget_pause"]["replay_safe"]
+    assert reasons == ["budget_paused_before_dispatch"]
+    row = load_task_result(data_root, "evo-1")
+    assert (row["status"], row["reason_code"]) == ("scheduled", "budget_exhausted")
 
 
 def test_a_pre_check_waits_through_a_commit_instead_of_refusing(data_root, supervisor_state, monkeypatch):

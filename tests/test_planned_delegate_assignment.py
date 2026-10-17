@@ -16,10 +16,12 @@ from ouroboros.task_results import load_task_result
 from ouroboros.utils import atomic_write_json
 from supervisor import queue, workers
 from tests.test_available_subagents_runtime import _session_row, _settings, _snapshot
-from tests.test_owner_wait_restart import InertProcess, windows_successor
+from tests.test_owner_wait_restart import InertProcess, kill_inert, windows_successor
 from tests.test_project_hold_recovery import accepted, worker
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests.test_windows_restart_proof import Gateway
+from tests.test_pending_deadline_continuations import expiry  # noqa: F401
+from tests.worker_pool_support import affirm_ready
 
 pytestmark = pytest.mark.serial
 
@@ -28,11 +30,22 @@ pytestmark = pytest.mark.serial
 def prepared(host, tmp_path, monkeypatch, request):  # noqa: F811
     import ouroboros.claudexor_daemon as daemon
 
-    scoped = request.param
+    scoped, timed = request.param if isinstance(request.param, tuple) else (request.param, False)
+    if timed:
+        from datetime import datetime, timezone
+        import time
+
+        enqueue = queue.enqueue_task
+        deadline = datetime.fromtimestamp(time.time() + 600, timezone.utc).isoformat()
+        timed_enqueue = lambda row, **kwargs: enqueue({**row, "deadline_at": deadline}, **kwargs)
+        monkeypatch.setattr(queue, "enqueue_task", timed_enqueue)
+        monkeypatch.setattr(host.ctx, "enqueue_task", timed_enqueue)
     task = (accepted(host, tmp_path, tid="child1") if scoped else queue.enqueue_task({
         "id": "child1", "type": "task", "chat_id": 1, "text": "Continue the saved work", "depth": 0,
         "workspace_root": str(tmp_path), "drive_root": str(host.root),
     }))
+    if timed:
+        assert task["deadline_at"] == deadline
     task["configured_subagent"] = _snapshot(_settings(_session_row()), "session-builder")
     sent = worker(host, monkeypatch)
     workers.assign_tasks()
@@ -44,6 +57,9 @@ def prepared(host, tmp_path, monkeypatch, request):  # noqa: F811
     assert task["admitted_dispatch"] == "possible"
     assert load_task_result(host.root, "child1")["admitted_dispatch"] == "possible"
     process = InertProcess()
+    from supervisor import worker_pool_lifecycle
+    for module in (workers, worker_pool_lifecycle):  # an inert handle's fake PID reaches no OS process
+        monkeypatch.setattr(module, "kill_worker_tree", kill_inert)
     monkeypatch.setattr(workers, "WORKERS", {
         0: workers.Worker(0, process, SimpleNamespace(), busy_task_id="child1", active_capacity=False),
     })
@@ -191,6 +207,150 @@ def test_assignment_rechecks_exact_pre_adoption_and_independent_fences(prepared,
 
 # --- one planned restart transaction carrying every returning kind --------------------------
 
+
+@pytest.mark.parametrize("prepared", [(False, True), (True, True)], indirect=True,
+                         ids=["unscoped", "project"])
+@pytest.mark.parametrize("entry", ["tick", "assignment"])
+def test_held_planned_handoff_expires_without_dispatch(prepared, expiry, monkeypatch, entry):  # noqa: F811
+    """The deadline is part of admission authority, not edited after the handoff was prepared."""
+    case = prepared
+    assert recovery.pre_adopt_planned_handoffs(case.host.root, case.host.pending) == {"child1"}
+    restore(case)
+    task = case.host.pending[0]
+    assert task["admitted_dispatch"] == "possible" and recovery.planned_handoff_resume_allowed(case.host.root, task)
+    now = queue._task_deadline_ts(task) + 1
+    monkeypatch.setattr("time.time", lambda: now)
+    sent = worker(case.host, monkeypatch)
+    # Keep the real terminal event/outbox path visible after installing the worker double.
+    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=expiry.frames.append))
+    queue.enforce_task_timeouts() if entry == "tick" else workers.assign_tasks()
+    workers.assign_tasks()
+    expiry.reap()
+    assert not sent and not queue.PENDING and not queue.RUNNING and not case.host.attempts
+    assert load_task_result(case.host.root, "child1")["reason_code"] == "deadline"
+    assert [e["status"] for e in expiry.frames if e.get("type") == "task_done"] == ["failed"]
+
+
+@pytest.mark.parametrize("prepared", [(True, True)], indirect=True, ids=["project"])
+@pytest.mark.parametrize("fault", ["transaction", "handoff", "pause", "governing"])
+def test_held_planned_expiry_keeps_unproven_authority(prepared, expiry, monkeypatch, fault):  # noqa: F811
+    case = prepared
+    assert recovery.pre_adopt_planned_handoffs(case.host.root, case.host.pending) == {"child1"}
+    restore(case)
+    task = case.host.pending[0]
+    now = queue._task_deadline_ts(task) + 1
+    monkeypatch.setattr("time.time", lambda: now)
+    if fault == "transaction":
+        recovery._restart_transaction_path(case.host.root, case.handoff["restart_transaction_id"]).write_text("{torn")
+    elif fault == "handoff":
+        recovery._path(case.host.root, "child1").write_text("{torn")
+    elif fault == "pause":
+        task["_owner_hold"] = {"reason": "owner"}
+    else:
+        task["_working_recovery"] = {"source_task_id": "child1", "from_attempt": 0, "cause": "restart"}
+        assert recovery.planned_handoff_resume_allowed(case.host.root, task)
+    sent = worker(case.host, monkeypatch)
+    queue.enforce_task_timeouts()
+    workers.assign_tasks()
+    expiry.reap()
+    assert not sent and not case.host.attempts and queue.PENDING == [task]
+    assert load_task_result(case.host.root, "child1").get("reason_code") != "deadline"
+
+
+def _expire_held(case, expiry, monkeypatch, entry="tick"):  # noqa: F811
+    """Elapse the admitted deadline, run one entry, assignment and the reaper; return puts and task_done frames."""
+    now = queue._task_deadline_ts(case.host.pending[0]) + 1
+    monkeypatch.setattr("time.time", lambda: now)
+    sent = worker(case.host, monkeypatch)
+    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=expiry.frames.append))
+    queue.enforce_task_timeouts() if entry == "tick" else workers.assign_tasks()
+    workers.assign_tasks()
+    expiry.reap()
+    assert load_task_result(case.host.root, "child1").get("reason_code") != "deadline"
+    return sent, [(e.get("status"), e.get("reason_code")) for e in expiry.frames if e.get("type") == "task_done"]
+
+
+@pytest.mark.parametrize("prepared", [(False, True), (True, True)], indirect=True, ids=["unscoped", "project"])
+@pytest.mark.parametrize("entry", ["tick", "assignment"])
+@pytest.mark.parametrize("producer", ["launch_claimed", "worker_started"])
+def test_held_planned_expiry_needs_its_attempt_unclaimed(prepared, expiry, monkeypatch, entry,  # noqa: F811
+                                                         producer):
+    """The planned grant expires only its never-handed attempt: the launcher's pre-put stamp or
+    the worker's own start record of that attempt keeps the existing custody."""
+    from ouroboros.agent import OuroborosAgent
+    from supervisor.task_admission import record_project_dispatch_possible
+
+    case = prepared
+    assert recovery.pre_adopt_planned_handoffs(case.host.root, case.host.pending) == {"child1"}
+    restore(case)
+    task = case.host.pending[0]
+    if producer == "launch_claimed":
+        assert record_project_dispatch_possible(task)
+    else:
+        OuroborosAgent._persist_running_record(SimpleNamespace(env=SimpleNamespace(drive_root=case.host.root)), task)
+    assert recovery.planned_handoff_resume_allowed(case.host.root, task)
+    sent, done = _expire_held(case, expiry, monkeypatch, entry)
+    assert not sent and not done and not case.host.attempts and queue.PENDING == [task]
+    assert task["_project_admission_restore_hold"]
+
+
+@pytest.mark.parametrize("prepared", [(False, True), (True, True)], indirect=True, ids=["unscoped", "project"])
+@pytest.mark.parametrize("entry", ["tick", "assignment"])
+@pytest.mark.parametrize("carrier", ["working", "pause", "owner_wait"])
+def test_expired_planned_grant_never_stands_in_for_a_carrier(prepared, expiry, monkeypatch, entry,  # noqa: F811
+                                                              carrier):
+    """Expiry judges the carrier the loop resumes, as dispatch does; an invalid one has no planned fallback."""
+    case = prepared
+    restore(case)
+    assert recovery.pre_adopt_planned_handoffs(case.host.root, case.host.pending) == {"child1"}
+    task = case.host.pending[0]
+    task.update({
+        "working": {"_working_recovery": {"source_task_id": "child1", "from_attempt": 0, "cause": "restart"}},
+        "pause": {"_budget_pause_resume": {"pause_id": "p-old", "grant_id": "g-old"}},
+        "owner_wait": {"_owner_wait_resume": {"wait_id": "w-old", "restart_transaction_id": "another"}},
+    }[carrier])
+    assert recovery.planned_handoff_resume_allowed(case.host.root, task)
+    sent, done = _expire_held(case, expiry, monkeypatch, entry)
+    assert not sent and not case.host.attempts and not queue.RUNNING
+    if carrier != "owner_wait":
+        assert not done and queue.PENDING == [task] and task["_project_admission_restore_hold"]
+    else:  # a refused cold wait follows its own shutdown custody, never the deadline
+        assert done in ([], [("cancelled", "cancelled")])
+
+
+@pytest.mark.parametrize("prepared", [(False, True), (True, True)], indirect=True, ids=["unscoped", "project"])
+@pytest.mark.parametrize("change", ["panic", "owner_restart", "stop", "vetoed"])
+@pytest.mark.parametrize("during", [False, True], ids=["before-tick", "during-custody"])
+def test_held_planned_expiry_rereads_controls_and_handoff(prepared, expiry, monkeypatch, change, during):  # noqa: F811
+    """Panic, a no-resume restart, Stop or a vetoed handoff wins before marking or while custody runs off Q."""
+    from ouroboros.cancel_intents import request_cancel
+    from ouroboros.server_control import _write_panic_flag
+
+    case = prepared
+    root = case.host.root
+    assert recovery.pre_adopt_planned_handoffs(root, case.host.pending) == {"child1"}
+    restore(case)
+    task = case.host.pending[0]
+
+    def alter(*_a, **_k):
+        if change == "panic":
+            _write_panic_flag(root)
+        elif change == "owner_restart":
+            (root / "state" / "owner_restart_no_resume.flag").write_text("stop", encoding="utf-8")
+        elif change == "stop":
+            request_cancel(root, "child1", source="test", reason="Stop the held planned task")
+        else:
+            recovery.veto_handoff(root, "child1", "test_veto")
+
+    if during:
+        monkeypatch.setattr(workers, "_audit_delegate_terminal_custody", alter)
+    else:
+        alter()
+    sent, done = _expire_held(case, expiry, monkeypatch)
+    assert not sent and not done and not case.host.attempts and queue.PENDING == [task]
+    assert bool(task.get("_terminalization_retry")) is (during or change == "stop")
+
+
 @pytest.fixture
 def composed(host, tmp_path, monkeypatch):  # noqa: F811
     """As server._perform_supervisor_restart: owner wait, planned delegate session, S1 saved work and queue.
@@ -270,8 +430,8 @@ def _free_workers(host, monkeypatch, count=4):  # noqa: F811
     sent = []
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
-    monkeypatch.setattr(workers, "WORKERS", {wid: SimpleNamespace(
-        wid=wid, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=sent.append)) for wid in range(count)})
+    monkeypatch.setattr(workers, "WORKERS", {wid: affirm_ready(SimpleNamespace(
+        wid=wid, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=lambda row: sent.append(row) if row.get("type") != "worker_quiescence" else None))) for wid in range(count)})
     return sent
 
 

@@ -167,9 +167,9 @@ def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_s
     assert "owner-test-key" not in json.dumps(change)
 
 
-@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 409)])
+@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 200)])
 @pytest.mark.parametrize("context_mode", ["low", "nano"])
-def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
+def test_context_owner_endpoint_updates_future_actors_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
     from ouroboros import config as cfg
     from ouroboros.gateway import settings as settings_mod
     from supervisor.active_activity import get_direct_activity_registry
@@ -571,6 +571,25 @@ def test_review_pool_endpoint_reports_the_pool_in_catalog_order(monkeypatch):
     assert body["excluded"] == [{"subagent_id": "paused", "reason": "row_disabled"}]
     assert body["row_costs"]["helper"] == {"usd_per_review": None, "basis": "unknown"}
     assert body["config_error"] == "" and body["migration"] is None
+
+
+def test_review_pool_endpoint_lists_catalog_rows_only_when_the_main_model_reviews_alone(monkeypatch):
+    """An empty pool reviews on the Main seat, which is no catalog row: ``GET /api/review-pool``
+    keeps its frozen shape and lists none (no invented row, no credentials fact about it, no
+    error), while the same catalog with one mark lists exactly that row."""
+    settings_mod = _pool_world(monkeypatch)
+    for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    helper = {"subagent_id": "helper", "recommended_use": "Helps.",
+              "route": {"kind": "api_model", "target_id": "openai/gpt-5.6-luna"}}
+
+    empty = settings_mod.review_pool_payload({"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [helper]})})
+    assert (empty["pool"], empty["excluded"], empty["pool_without_credentials"], empty["config_error"]) == ([], [], [], "")
+    assert empty["catalog"] == {"present": True, "enabled": True, "rows": 1, "eligible": 0}
+
+    marked = settings_mod.review_pool_payload(
+        {"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [{**helper, "review_eligible": True}]})})
+    assert [row["subagent_id"] for row in marked["pool"]] == ["helper"] and marked["pool_without_credentials"] == ["helper"]
 
 
 def test_review_pool_endpoint_types_a_bad_catalog_and_names_the_migration_snapshot(monkeypatch):

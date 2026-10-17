@@ -73,7 +73,7 @@ def test_change_findings_are_the_fail_rows_only():
 
 @pytest.mark.parametrize("raw, error", [
     (_b(coupling=_matrix()[:-1]), "missing required items"),
-    (_b(coupling=_matrix(reason="ok")), "PASS reason is too terse"),
+    (_b(coupling=_matrix(reason="")), "missing reason"),
     (_b(coupling=[{**_matrix()[0], "severity": "blocker"}, *_matrix()[1:]]), "missing or invalid severity 'blocker'"),
     (_b(coupling=[]), "missing required items"),
 ])
@@ -87,20 +87,59 @@ def test_a_defective_coupling_block_is_recorded_against_part_two_only(raw, error
     assert error in answers["coupling"]["error"], answers["coupling"]
 
 
+@pytest.mark.parametrize("reason", ["N/A — the change touches no prompt or doc", "see Part 1 development_compliance",
+                                    "callers"])
+def test_a_one_line_pass_pointer_is_a_complete_answer(reason):
+    """A PASS is one line: a pointer to what was checked, ``see Part 1 <item>`` or
+    ``N/A — <reason>``; there is no length or wording filter. The twin above: only a
+    PASS without any reason leaves the part unanswered."""
+    coupling = parse_two_part_answer(_b(coupling=_matrix(reason=reason)), BOTH)["coupling"]
+    assert coupling["status"] == "responded" and coupling["verdict"] == "PASS" and coupling["coverage"] == "full"
+    assert {item["reason"] for item in coupling["items"]} == {reason}
+
+
 def test_a_defective_matrix_keeps_its_fail_rows_as_discarded_diagnostics():
-    """A critical FAIL inside a matrix the gate cannot count (a terse PASS elsewhere)
+    """A critical FAIL inside a matrix the gate cannot count (a PASS without a reason elsewhere)
     is not counted (``findings`` empty, ``critical`` 0, the part ``unanswered``) and
     not lost: it rides beside the error as ``discarded`` with this seat's model."""
     rows = _matrix(fail="implicit_contracts")
-    rows[0] = {**rows[0], "reason": "ok"}
+    rows[0] = {**rows[0], "reason": ""}
     answers = parse_two_part_answer(_b(coupling=rows), BOTH, model_label="m", slot_id="s1")
     coupling = answers["coupling"]
     assert coupling["status"] == "unanswered" and coupling["findings"] == [] and coupling["critical"] == 0
-    assert "too terse" in coupling["error"]
+    assert "missing reason" in coupling["error"]
     assert [(d["item"], d["severity"], d["verdict"], d["model"], d["slot_id"]) for d in coupling["discarded"]] == [
         ("implicit_contracts", "critical", "FAIL", "m", "s1")]
     assert "discarded" not in parse_two_part_answer(_b(coupling=_matrix(fail="implicit_contracts")), BOTH)["coupling"]
-    assert parse_two_part_answer(_b(coupling=_matrix(reason="ok")), BOTH)["coupling"]["discarded"] == []
+    assert parse_two_part_answer(_b(coupling=_matrix(reason="")), BOTH)["coupling"]["discarded"] == []
+
+
+def test_a_retired_question_id_answers_for_its_survivor_without_voiding_the_block():
+    """An open obligation recorded before two questions merged keeps its old item id,
+    and a seat told to mark "the SAME item" answers it beside the current rows. That
+    row counts for its survivor and never duplicates or contradicts the survivor's own
+    row; an id that never was a question, a duplicate PASS or PASS+FAIL of a current
+    id still leave the part unanswered."""
+    def coupling(rows):
+        return parse_two_part_answer(_b(coupling=rows), BOTH)["coupling"]
+
+    old_pass = {"item": "prompt_doc_sync", "verdict": "PASS", "severity": "advisory", "reason": "obl-0003 is fixed"}
+    beside = coupling([*_matrix(), old_pass])
+    assert beside["status"] == "responded" and beside["coverage"] == "full" and beside["verdict"] == "PASS"
+    assert coupling([*_matrix(fail="cross_surface_consistency"), old_pass])["critical"] == 1
+    old_fail = {"item": "cross_module_bugs", "verdict": "FAIL", "severity": "critical",
+                "reason": "the caller still reads the old key", "obligation_id": "obl-0002"}
+    instead = coupling([*(row for row in _matrix() if row["item"] != "implicit_contracts"), old_fail])
+    assert instead["status"] == "responded" and instead["coverage"] == "full" and instead["critical"] == 1
+    assert [(f["item"], f["obligation_id"]) for f in instead["findings"]] == [("implicit_contracts", "obl-0002")]
+    assert coupling([*_matrix(), old_fail])["critical"] == 1
+
+    never = {**old_pass, "item": "scope_creep"}
+    assert "unexpected items: scope_creep" in coupling([*_matrix(), never])["error"]
+    assert "duplicate PASS" in coupling([*_matrix(), _matrix()[0]])["error"]
+    current_fail = next(row for row in _matrix(fail="implicit_contracts") if row["verdict"] == "FAIL")
+    contradiction = coupling([*_matrix(), current_fail])
+    assert contradiction["status"] == "unanswered" and "both PASS and FAIL" in contradiction["error"]
 
 
 def test_a_bare_array_from_a_both_part_seat_leaves_part_two_out():
@@ -309,35 +348,88 @@ def test_the_managed_update_estimate_is_called_explicitly_with_no_import_trap():
     assert "except ImportError" not in source.split("managed_update_wave_estimate")[0].rsplit("def ", 1)[-1]
 
 
-def test_the_managed_update_estimate_prices_the_whole_wave_and_never_refuses(monkeypatch):
-    from types import SimpleNamespace
+# Catalog rows the real pool builder turns into ReviewSlots (#1881: a stand-in with an
+# ``is_session`` the slot does not have hid that a ReviewSlot states its transport as ``route``).
+_PRICED, _UNPRICED = "openai/gpt-5.6-terra", "openai/gpt-5.6-sol"
+_API, _API_UNPRICED = {"kind": "api_model", "target_id": _PRICED}, {"kind": "api_model", "target_id": _UNPRICED}
+_SESSION = {"kind": "agent_session", "target_id": "codex=gpt-5.6-sol"}
+# One worst-case seat on the tariff below: 920K input tokens under the OpenAI-family 1.10
+# envelope at $1/M, plus the 65,536-token review reserve at $4/M.
+_SEAT_USD = round(1_012_000 * 1.0 / 1e6 + 65_536 * 4.0 / 1e6, 6)
 
-    import ouroboros.reviewer_slot_config as slot_cfg
+
+def _review_catalog(*routes) -> str:
+    return json.dumps({"enabled": True, "items": [
+        {"subagent_id": f"critic-{index}", "recommended_use": "Reviews diffs.", "review_eligible": True,
+         "route": route} for index, route in enumerate(routes)]})
+
+
+@pytest.fixture
+def offline_tariffs(monkeypatch):
+    """The live tariff read is the only stub — pool builder, admission and reservation
+    math stay real; ``_UNPRICED`` has no tariff (unknown, never zero). Yields the reads."""
+    import ouroboros.pricing as pricing
+
+    fetched = []
+    for name in ("_cached_pricing", "_pricing_fetched_at", "_pricing_retry_after"):
+        monkeypatch.setattr(pricing, name, {})
+    monkeypatch.setattr(pricing, "_fetch_live_rows", lambda provider, model="": fetched.append((provider, model))
+                        or ({_PRICED: (1.0, 0.1, None, 4.0)} if (provider, model) == ("openrouter", "") else {}))
+    monkeypatch.delenv("OUROBOROS_REVIEW_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("OUROBOROS_MODEL", _PRICED)  # the Main seat of a pool with no marked row
+    return fetched
+
+
+@pytest.mark.parametrize("routes, priced, usd, unpriced, sessions", [
+    ((_API, _API), [_PRICED, _PRICED], 2 * _SEAT_USD, 0, 0),
+    ((_SESSION, _SESSION), [], None, 0, 2),
+    ((_API, _API_UNPRICED, _SESSION), [_PRICED, _UNPRICED], _SEAT_USD, 1, 1),
+    ((), [_PRICED], _SEAT_USD, 0, 0),  # no marked row: the Main model reviews alone
+])
+def test_the_managed_update_estimate_prices_real_api_slots_and_counts_sessions(
+        monkeypatch, offline_tariffs, routes, priced, usd, unpriced, sessions):
     import ouroboros.usage_admission as admission_mod
     from ouroboros.tools.review_admission import managed_update_wave_estimate
 
-    rows = [SimpleNamespace(model="api/a", is_session=False), SimpleNamespace(model="api/b", is_session=False),
-            SimpleNamespace(model="harness=c", is_session=True)]
-    monkeypatch.setattr(slot_cfg, "review_pool_slots", lambda **_kw: rows)
-    seen = {}
-
-    def _estimate(_root=None, **kwargs):
-        seen.update(kwargs)
-        return {"estimated_wave_usd": 3.5, "unpriced_slots": 0}
-
-    monkeypatch.setattr(admission_mod, "review_wave_admission", _estimate)
+    if routes:
+        monkeypatch.setenv("OUROBOROS_SUBAGENTS", _review_catalog(*routes))
+    else:
+        monkeypatch.delenv("OUROBOROS_SUBAGENTS", raising=False)
+    real, seen = admission_mod.review_wave_admission, []
+    monkeypatch.setattr(admission_mod, "review_wave_admission",
+                        lambda *args, **kwargs: seen.append(list(kwargs["models"])) or real(*args, **kwargs))
     event = managed_update_wave_estimate(10.0)
-    assert seen["models"] == ["api/a", "api/b"], "the session row is counted, not priced"
-    assert event == {"type": "managed_update_wave_estimate", "estimated_wave_usd": 3.5,
-                     "exceeds_known_remaining": False, "unpriced_slots": 0, "session_slots": 1,
+    assert seen == ([priced] if priced else []), "api rows are priced; session rows are counted, not priced"
+    assert event == {"type": "managed_update_wave_estimate", "estimated_wave_usd": usd,
+                     "exceeds_known_remaining": False, "unpriced_slots": unpriced, "session_slots": sessions,
                      "remaining_usd": 10.0}
-    event = managed_update_wave_estimate(2.0)
-    assert event["exceeds_known_remaining"] is True and "fits" not in event, "a disclosure, never a verdict"
+    assert offline_tariffs == ([("openrouter", "")] if priced else [])
+    if usd:
+        event = managed_update_wave_estimate(usd / 2)
+        assert event["exceeds_known_remaining"] is True and "fits" not in event, "a disclosure, never a verdict"
 
-    def _broken(_root=None, **_kwargs):
+
+def test_an_empty_composed_wave_prices_nothing(offline_tariffs):
+    from ouroboros.reviewer_slot_config import composed_review_pool
+    from ouroboros.tools.review_admission import managed_update_wave_estimate
+
+    with composed_review_pool(()):
+        event = managed_update_wave_estimate(1.0)
+    assert event == {"type": "managed_update_wave_estimate", "estimated_wave_usd": None,
+                     "exceeds_known_remaining": False, "unpriced_slots": 0, "session_slots": 0,
+                     "remaining_usd": 1.0}
+    assert offline_tariffs == []
+
+
+def test_a_managed_update_estimator_error_is_recorded_never_a_zero(monkeypatch, offline_tariffs):
+    import ouroboros.usage_admission as admission_mod
+    from ouroboros.tools.review_admission import managed_update_wave_estimate
+
+    monkeypatch.setenv("OUROBOROS_SUBAGENTS", _review_catalog(_API, _SESSION))
+
+    def _broken(*_args, **_kwargs):
         raise RuntimeError("pricing unavailable")
 
     monkeypatch.setattr(admission_mod, "review_wave_admission", _broken)
-    event = managed_update_wave_estimate(1.0)
-    assert event["type"] == "managed_update_wave_estimate_failed", "an estimator error is recorded, never a zero"
-    assert "pricing unavailable" in event["error"] and event["remaining_usd"] == 1.0
+    assert managed_update_wave_estimate(1.0) == {"type": "managed_update_wave_estimate_failed",
+                                                 "remaining_usd": 1.0, "error": "RuntimeError: pricing unavailable"}

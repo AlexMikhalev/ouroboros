@@ -13,8 +13,9 @@ separate facts on the calling task's result record (``merge_receipts``):
   no record backs it), beside what the host can observe (each named review
   task's record: completed or not, the digest of its stored result, its model)
   and whether the PR carries a well-formed CONTRIBUTING checklist — declaration
-  and observation are never merged into one "reviewed" claim, a delta review
-  never covers a whole PR, and only a committed ``base..head`` record can;
+  and observation are never merged into one "reviewed" claim (a named task's
+  completion shows neither its kind nor its subject), a delta review never
+  covers a whole PR, and only a committed ``base..head`` record can;
 - outcome: GitHub's readback — merged (commit, tree, parents), queued/auto-merge
   (NOT merged), refused, or unknown — and whether this call's own effect or
   another actor's merge produced it.
@@ -261,7 +262,8 @@ def review_coverage(declared: Optional[Dict[str, Any]], observed: List[Dict[str,
     """Whether the reviewed subject — the host record, else the declaration — is the head being merged.
 
     Every gap is named, never filled: only a committed ``base..head`` record can
-    cover a commit, so an index/worktree record at the same HEAD is a gap.
+    cover a commit, so an index/worktree record at the same HEAD is a gap, and a
+    declaration stays one even beside completed named tasks.
     """
     gaps = [f"review_task_{row['status'] or 'unknown'}:{index}"
             for index, row in enumerate(observed) if row.get("status") != "completed"]
@@ -283,7 +285,7 @@ def review_coverage(declared: Optional[Dict[str, Any]], observed: List[Dict[str,
         status = "covers_head"
     else:
         status = "changes_after_review"
-    if not observed and not record:
+    if not record:
         gaps.append("no_host_observed_review_record")
     if status == "covers_head" and gaps:
         status = "unknown"
@@ -371,8 +373,9 @@ def card_row_text(receipt: Dict[str, Any]) -> str:
     outcome, coverage = receipt.get("outcome") or {}, receipt.get("coverage") or {}
     review = receipt.get("review") or {}
     record = review.get("record") or {}
+    # Green needs observed approval: a settled PASS record covering the merged head.
     loud = "⚠️ " if (coverage.get("status") != "covers_head" or coverage.get("gaps")
-                     or outcome.get("status") != "merged" or (record and not record_approves(record))) else "✅ "
+                     or outcome.get("status") != "merged" or not record_approves(record)) else "✅ "
     if record:
         source = f"; review source: record, verdict {(record.get('verdict') or {}).get('aggregate') or 'unknown'}" + (
             "" if record.get("state") == "settled" else f" ({record.get('state') or 'unknown'})")

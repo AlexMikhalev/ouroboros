@@ -13,6 +13,8 @@ import ntpath
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("provider_catalog_offline")
+
 # The row identity the retired lane minted for its singleton; the executions
 # below are keyed by the row they ran on, so any fixed id serves the tests.
 _DEEP_SLOT_ID = "deep_review_slot_1"
@@ -54,6 +56,7 @@ from ouroboros.deep_self_review import (  # noqa: E402
 )
 from ouroboros.review_execution import ReviewAttemptResult, ReviewRouteKind, ReviewRouteUnavailable  # noqa: E402
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions  # noqa: E402
+from tests._review_substrate_shared import user_text as _user_text  # noqa: E402
 
 
 class _ScriptedLLM:
@@ -139,7 +142,9 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
         "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, memory=3/7, "
         "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
         "coverage=BIBLE.md:delivered_inline, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
-        "end_reason=final_answer, transcript=")
+        "end_reason=final_answer, coverage_basis=source_ranges, serialized_chars_diagnostic=")
+    assert "previous_prompt_tokens=10" in header
+    assert "output_allowance_tokens=" in header and "transcript=" not in header and "landing=" not in header
     assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
     assert "BIBLE.md delivered inline in full; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
     assert usage["deep_review_memory"]["inlined"] == 3 and usage["deep_review_memory"]["dispositions"]["memory/WORLD.md"] == "missing"
@@ -150,7 +155,7 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     # inline in full, nav maps, and the REPORT contract (never the
     # JSON array the executors fall back to).
     first = llm.calls[0]["messages"]
-    task = next(m["content"] for m in first if m["role"] == "user")
+    task = _user_text(next(m["content"] for m in first if m["role"] == "user"))
     assert "deep self-review of the Ouroboros project" in task
     assert "delivered IN FULL below" in task and f"{len(_BIBLE):,} chars" in task
     assert task.count(_BIBLE) == 1
@@ -249,24 +254,22 @@ def test_native_row_needs_no_second_read_of_inline_bible(review_repo, review_dri
     assert cov([rec("BIBLE.md", 13, 12, 12), rec("BIBLE.md", 1, 3, 12)])["state"] == "partial"
 
 
-def test_native_row_exhaustion_delivers_the_draft_marked_incomplete(review_repo, review_drive, monkeypatch):
-    """R13/Ф1: the report shape delivers the collected draft when the
-    transcript bound lands first; the header says INCOMPLETE and why."""
+def test_native_row_continues_past_retired_cap_to_final_report(review_repo, review_drive, monkeypatch):
+    """Serialized growth never replaces the reviewer's final report with its draft."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     (review_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
     draft = "# Deep self-review (draft)\n\nCRITICAL: loop.py finalization race.\n"
-    script = [{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]}] + [
-        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, f"c{i}")]} for i in range(2, 40)
-    ]
+    script = [{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]},
+              {"content": _REPORT}]
     llm = _ScriptedLLM(script)
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
-    assert text.endswith("\n\n" + draft)
-    assert "incomplete=transcript_bound" in text and "INCOMPLETE (transcript_bound)_" in text
-    assert usage["native_incomplete"] == "transcript_bound" and usage["native_end_reason"] == "transcript_bound"
-    assert any(d["reason"] == "native_transcript_bound_before_final_answer" for d in usage["capability_delta"])
-    assert "execution_status" not in usage  # a partial product is a product, not a failure
-    assert llm.script  # the bound landed before the script ran out
+    assert text.endswith("\n\n" + _REPORT)
+    assert "incomplete=none" in text and "INCOMPLETE" not in text
+    assert usage["native_transcript_chars"] > 50_000
+    assert usage["native_end_reason"] == "final_answer" and not usage.get("native_incomplete")
+    assert "execution_status" not in usage and len(llm.calls) == 2
+    assert "x" * 60_000 in next(m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool")
 
 
 class _FakeSessionExecutor:
@@ -529,6 +532,47 @@ def test_agent_keeps_the_previous_report_when_the_review_fails(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("bound", ["absent", None, 0])
+def test_native_header_has_context_facts_without_an_invented_cap(bound):
+    usage = {"native_transcript_chars": 917_662, "native_context": {
+        "serialized_chars": 917_662, "view_revision": "current-view",
+        "window": {"window_tokens": 1_000_000, "status": "confirmed", "stale": True,
+                   "observed_at": "2026-10-01T00:00:00Z", "model": "review/current",
+                   "asserted_window_tokens": None, "model_route": {"route_fp": "current-route"}},
+        "previous_request": {"prompt_tokens": 300_923, "round": 23, "view_revision": "previous-view",
+                             "model": "review/previous", "provider": "openrouter", "ledger_attempt_ids": ["physical-23"],
+                             "requested_model": "review/requested", "requested_profile": "profile-23", "route": {}},
+        "output_allowance_tokens": 65_536,
+    }}
+    if bound != "absent":
+        usage["native_transcript_bound"] = bound
+    header = deep_self_review._provenance_header(
+        "native_tool_rounds", "review/current", usage, {"inlined": 0, "total": 7, "dispositions": {}},
+        {}, "Context facts", incomplete="none")
+    assert "serialized_chars_diagnostic=917662" in header
+    assert "context_view_revision=current-view" in header
+    assert "window_tokens=1000000" in header and "window_stale=True" in header
+    assert "window_observed_at=2026-10-01T00:00:00Z" in header
+    assert "previous_prompt_tokens=300923" in header and "previous_request_view_revision=previous-view" in header
+    assert "previous_request_model=review/previous" in header and "previous_request_ledger_attempt_ids=['physical-23']" in header
+    assert "output_allowance_tokens=65536" in header
+    assert "transcript=" not in header and "landing=" not in header and "free_tokens=" not in header
+
+
+def test_native_header_preserves_unknown_and_historical_facts():
+    memory = {"inlined": 0, "total": 7, "dispositions": {}}
+    usage = {"native_context": {"serialized_chars": None, "window": {"window_tokens": 0, "status": "unknown"},
+                                "previous_request": None, "output_allowance_tokens": None}}
+    header = deep_self_review._provenance_header("native_tool_rounds", "m", usage, memory, {}, "Facts", incomplete="none")
+    assert "serialized_chars_diagnostic=unknown" in header and "window_tokens=unknown" in header
+    assert "previous_prompt_tokens=unknown" in header and "output_allowance_tokens=unknown" in header
+    legacy = {"native_transcript_chars": 49_999, "native_transcript_bound": 50_000,
+              "native_landing_notified": True, "native_landing_sent": False, "native_end_reason": "transcript_bound"}
+    header = deep_self_review._provenance_header("native_tool_rounds", "m", legacy, memory, {}, "Legacy", incomplete="transcript_bound")
+    assert "transcript=49999/50000" in header and "landing=True/False" in header
+    assert "incomplete=transcript_bound" in header and "previous_prompt_tokens=" not in header
+
+
 def test_header_sanitizes_hostile_values_and_builds_session_facts_by_construction(review_repo, review_drive, monkeypatch):
     """Item 13: a resolved model carrying `-->` and a newline cannot close the
     comment or break the line; a session's fact set has no rounds/receipts and
@@ -645,16 +689,13 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     assert usage["native_tool_receipts"][0]["opened_root"] == "runtime_data"  # the opened root never credits a data-plane read
     assert "coverage=inspection.md:missing" in text
 
-    # The episode's own result bound cut the body: only complete delivered lines count.
-    # The bound must leave room for a CUT-but-inline result beside the task the
-    # governance tiers deliver, or the result rides a stored source instead.
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "120000")
-    (review_repo / "inspection.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(1500)), encoding="utf-8")
+    # The bounded read page still cuts long results, independently of episode size.
+    (review_repo / "inspection.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(4000)), encoding="utf-8")
     llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md"}, "c1")]}, {"content": _REPORT}])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipt = usage["native_tool_receipts"][0]
-    assert receipt["total_lines"] == 1500 and receipt["start_line"] == 1
-    assert receipt["end_line"] < 1500 and receipt["eof"] is False
+    assert receipt["total_lines"] == 4000 and receipt["start_line"] == 1
+    assert receipt["end_line"] < 4000 and receipt["eof"] is False
     tool_msg = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"][0]["content"]
     # Source labels begin at zero; receipt line addresses begin at one.
     body = tool_msg.split("\n⚠️ RESULT TRUNCATED", 1)[0]  # the notice opens with its OWN newline: judge the delivered body only
@@ -747,31 +788,20 @@ def test_coverage_deltas_never_mutate_the_executors_usage(review_repo, review_dr
     """Item 14: `dict(attempt.usage)` is shallow — the appended coverage delta
     must land on THIS record's copy, never on the list the executor owns."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     import ouroboros.review_native_episode as native_episode
+    from ouroboros.tools.scope_required_sources import source_text_identity
 
-    attempts = []
-    original = native_episode.NativeToolRoundReviewExecutor.execute
-
-    def spy(self):
-        result = original(self)
-        attempts.append(result)
-        return result
-
-    monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "execute", spy)
-    # An exhausted report episode: the EXECUTOR itself owns a non-empty delta
-    # list (`native_transcript_bound_before_final_answer`); the record then
-    # keeps its own delta list, separate from the executor's.
-    (review_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
-    draft = "# Draft\n\nCRITICAL: something.\n"
-    llm = _ScriptedLLM([{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]}] + [
-        {"tool_calls": [_tool_call("read_file", {"path": "ouroboros/loop.py"}, f"c{i}")]} for i in range(2, 40)
-    ])
-    _text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
-    executor_list = attempts[0].usage["capability_delta"]
+    executor_list = [{"reason": "native_transcript_bound_before_final_answer"}]
+    # A retained legacy actor result stays unchanged when current coverage adds a delta.
+    attempt = ReviewAttemptResult(message={"content": _REPORT}, raw_text=_REPORT,
+                                  usage={"capability_delta": executor_list})
+    monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "execute", lambda self: attempt)
+    required = [{"root": "active_workspace", "path": "inspection.md", **source_text_identity(b"inspect me")}]
+    _text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None,
+                                       slot=_native_row(), required_sources=required)
     assert [d["reason"] for d in executor_list] == ["native_transcript_bound_before_final_answer"]
     assert [d["reason"] for d in usage["capability_delta"]] == [
-        "native_transcript_bound_before_final_answer"]
+        "native_transcript_bound_before_final_answer", "deep_review_mandatory_read_missing"]
     assert usage["capability_delta"] is not executor_list and len(executor_list) == 1
 
 

@@ -115,7 +115,7 @@ decision reads it. A wrapper carries its inner producer's failure forward, and a
 supervising wake is acknowledged on the published `supervision_wake_id`, never on the
 tool's name (ARCHITECTURE §6 "Delegated subagents").
 
-Enforcement: CHECKLISTS item 15(b) scores the prompt-edit discipline;
+Enforcement: CHECKLISTS item 14(a) scores the prompt-edit discipline;
 `tests/test_typed_tool_refusals.py` is the shrink-only source lint over returned
 literals in `ouroboros/tools/`, its per-file allowlist the disclosure of the
 identifier-less residual; the owner-judgment and recoverable-failure boundaries are
@@ -130,27 +130,24 @@ saying review-only. ARCHITECTURE, CHECKLISTS, BIBLE, DESIGN and `config.py` are 
 to, never restated; the ARCHITECTURE settings and endpoint tables are test-checked
 registries of those owners, not second authorities.
 
-A sentence belongs in a book when Ouroboros, reading the map before touching the code,
-needs it to find the right place, to keep an invariant other code relies on, or to keep
-a decision whose WHY would otherwise be lost. A `§1` module-tree row is one line
-(address, capability, the grep targets of a cross-module contract, a `(§N)` pointer);
-the owning subsection keeps the WHY at its node. How a module works inside (call order,
-locks, field lists, guard order, enumerated edge cases and typed refusals) belongs in
-the module, its docstring or its test. A change replaces the description of the node it
-touched; release history lives in git and the README history table. A limitation is
-stated once, where an owner or maintainer would otherwise act wrongly; other follow-ups
-are issues. Decision codes, chat-batch answers and reviewer-round labels belong to the
-commit or PR; an open limitation may cite its tracker once, as `(issue #NNN)`; probe
-dates and measured numbers live only in "External facts: unknown is not no". The
-introduction under a chapter's H1 is its compact Low/Nano view: correct it whenever the
-chapter changes.
+Prose belongs in a book when needed to locate a mechanism, preserve an invariant
+other code relies on, or recover its WHY. A `§1` module-tree row is one line: address, capability, cross-module grep targets
+and `(§N)` pointer; the owning subsection keeps the rationale. Internal call/guard
+order, locks, fields, edge cases and typed refusals belong in code, docstrings or tests.
+Replace the touched node's description; keep release history in git and README.
+State a limitation once where it prevents a wrong action; other follow-ups are issues.
+Decision codes, chat-batch answers and reviewer-round labels belong in commits or PRs.
+An open limitation may cite `(issue #NNN)` once; probe dates and measurements belong
+only in "External facts: unknown is not no". Keep the chapter's H1 introduction,
+its compact Low/Nano view, correct when the chapter changes.
 
 Track assets with a continuing purpose (product, contributors, verification, legal
 requirements, evidence for public claims). Plans, campaign backlog, review packets and
 run receipts belong in the external work area or durable task evidence, not the
 tracked tree; a test preserving their presence gives them no product role. Retire
-campaign tooling when its purpose ends. Review enforces this, without automatic
-deletion or filename matching.
+campaign tooling when its purpose ends. Name a new test module for the behaviour or
+owner it protects, not a round, batch, issue, PR or version. Review enforces this,
+without automatic deletion or filename matching.
 
 Both are reference books: an entrypoint plus one chapter file per subject under
 `docs/architecture/` or `docs/development/`. The entrypoint's ordered `## Chapters`
@@ -173,12 +170,11 @@ scanned.
 
 Size is pairwise: a change ends each composed book, entrypoint included, no
 larger than at its event base, so text it adds is paid by shortening the same
-book. A stored budget only moved up and per-change grants made every growth a
-cheap self-raise; comparing tip with base leaves no number to raise. The
-official-CI `size_ratchet` lane blocks growth on owner, member and collaborator
-pull requests and on pushes to `ouroboros`; outside contributors and forks receive
-warnings. The repository owner's `book-growth` label exempts its PR and the exact
-commit that lands it. Local surfaces never block: the edit
+book. With ordinary push/PR CI disabled (ARCHITECTURE §8), manual/tag runs
+lack a per-change base and skip the book comparison; they do not certify this rule.
+Local qualification supplies `OURO_SIZE_RATCHET_BASE_REF` explicitly; review
+checks the actual contribution. The owner's `book-growth` label can exempt it.
+Local surfaces never block: the edit
 tools, `plan_task`, the free `preflight_review(deterministic_only=True)` diagnostic
 and `codebase_health` report the running balance as a fact. Contribution is measured
 against the displayed merge-base of the cached official development ref; an unknown
@@ -270,7 +266,7 @@ verbs").
 ### The owner corpus archives inputs; the owner door's stamp is the only authority
 
 A task-authored objective copies only its retained owner corpus, never the draft. Other
-runs record their first user turn for acceptance, Safety and reflection, labelled by
+runs record their first user turn for acceptance and Safety, labelled by
 what the host knows: `initial_user` when owner routing stamped the run
 (`metadata.origin_message_ref` or `origin_suppressed`, inherited by value by a promoted
 root), `initial_text` otherwise. `dialogue_provenance.run_origin` mints that fact once
@@ -294,34 +290,33 @@ is where a deliberate exception states its reason.
 
 ### External facts: unknown is not no
 
-A fact about a model or provider that Ouroboros does not own (what it accepts, holds,
-costs, how it is spelled, whether it is still served) changes without a release.
+External model/provider facts (inputs, capacity, prices, ids, availability) can change
+without an Ouroboros release.
 
-1. Evidence of the exact route, not lists: the route's own metadata, a dated probe
-   recorded beside a provider-keyed wire projection with a recovery path, or the
+1. Exact-route evidence, not lists: the route's own metadata, a dated probe
+   beside a provider-keyed wire projection with a recovery path, or the
    owner's setting. A model name, prefix or family is never that evidence, nor is
    another route's catalog.
 2. Unknown is not no. Without evidence the owner's input, the tool and the explicit
    request go through unchanged and the route answers; no shipped literal may drop
    input, refuse a tool, rewrite a saved choice or narrow a request.
-3. A refusal is an observation about one request. It repairs that attempt and is
-   disclosed as what happened; a durable "no" needs evidence that states the absence
-   for that scope.
+3. Disclose a refusal as one request's outcome and repair that attempt; a durable "no"
+   needs scoped evidence of absence.
 4. A limit of our own transport is a fact about Ouroboros, declared at the lane and
    named as such in what the model reads.
 5. A retained wire fact (the table) keeps source and date, exact scope and what happens
-   when it goes stale either way; requested, sent and provider-reported values stay
+   when stale either way; requested, sent and provider-reported values stay
    distinct.
 
-Guards: `tests/test_image_capability_contract.py` (an unseen model id keeps its image on
-every image-capable transport), `tests/test_model_name_invariance.py` (with empty
-evidence the physical payload does not depend on the model name; its declared
-exceptions are rows below), `tests/test_tristate_truthiness_guard.py` (a yes/no/unknown
-answer is never tested for truth). The table is maintenance provenance, grants no
-runtime authority, and probe detail lives in the docstring at each location.
+Guards: `tests/test_image_capability_contract.py` keeps unseen models' images on all
+image-capable transports; `tests/test_model_name_invariance.py` keeps unevidenced
+payloads name-independent (exceptions below); `tests/test_tristate_truthiness_guard.py`
+forbids truth-testing yes/no/unknown. This provenance grants no runtime authority;
+probes live in cited docstrings or linked contracts.
 
 | Location | Fact | Evidence & re-probe | If stale |
 |---|---|---|---|
+| `ouroboros/tools/imagegen.py`; `ouroboros/gateways/image_api.py` | Image wire facts | [Dated sources](../IMAGE_GENERATION.md#direct-api-contracts); re-check each exact route | Stale positives refuse requests; negatives hide capability |
 | `ouroboros/llm_attempt.py::supports_message_cache_control` | Families whose message cache controls OpenRouter accepts or translates (`anthropic/`, `google/gemini-`, `openai/`) | `openai/` rests on the OpenRouter caching guide cited in the docstring, not a live probe; re-probe before widening, never by name resemblance | False positive invalidates a request; false negative loses the prompt cache |
 | `ouroboros/llm_attempt.py::openai_family_model` | OpenAI's public API looks a cache up only at message ends unless a breakpoint is explicit | Probe in the docstring; re-probe `cached_tokens` across two conversations before widening; never match on a substring such as `gpt` | Stale positive moves the cache boundary for a prefix-caching family; stale negative pays cold prefixes |
 | `ouroboros/llm_openai_compatible.py` OpenRouter `extra_body.provider.require_parameters` for `anthropic/` | Anthropic models on OpenRouter route only to endpoints accepting every sent parameter | Undated; OpenRouter per-endpoint `supported_parameters` (`/api/v1/models/{author}/{slug}/endpoints`); a declared exception of `tests/test_model_name_invariance.py` | Stale positive narrows failover; stale negative routes to an endpoint that drops or refuses a parameter |
@@ -371,12 +366,12 @@ readiness signal, test probe or fallback.
 Provider facts that bind routing: the `-pro` suffix is an OpenRouter routing slug, not
 an OpenAI model id, so a direct OpenAI Chat slot uses the plain Sol id; direct OpenAI
 tool conversations stay on Chat Completions, and a model-name prefix is never admission
-authority; DeepSeek and Z.ai carry `reasoning_effort` through projections keyed on the
-provider id; direct Anthropic is the deliberate exception to a purely reconstructed
-provider transcript, and no effort-to-`budget_tokens` policy is synthesized
-(ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional feature may
-be unavailable elsewhere; the core loop degrades explicitly rather than crashing or
-rerouting.
+authority; each non-OpenRouter Chat route sends `reasoning_effort`, DeepSeek and Z.ai
+by provider-id projection; direct Anthropic is the deliberate exception to a purely
+reconstructed provider transcript, and no effort-to-`budget_tokens` policy is
+synthesized (ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional
+feature may be unavailable elsewhere; the core loop degrades explicitly rather than
+crashing or rerouting.
 
 Canonical assistant history and tool schemas are function-shaped across providers,
 never a second stored transcript for a provider dialect. Static, semantics-preserving

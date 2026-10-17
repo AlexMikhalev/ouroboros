@@ -301,7 +301,7 @@ def test_supervisor_startup_restores_queue_before_worker_reset():
     source = inspect.getsource(server._run_supervisor)
     restore = source.index("restored_pending = restore_pending_from_snapshot(")
     reset = source.index("kill_workers(preserve_pending=True)")
-    spawn = source.index("spawn_workers(max_workers)")
+    spawn = source.index("spawn_workers()")  # one ready worker; demand grows the rest
     assert restore < reset < spawn
 
 
@@ -788,15 +788,15 @@ def _run(rec, server):
 
 
 @pytest.mark.parametrize("restored, fenced, expected", [
-    (0, ["a"], "♻️ Cancelling 1 task that was still running when the server stopped."),
+    (0, ["a"], "♻️ Settling 1 task that was still running when the server stopped."),
     (2, ["a", "b"],
-     "♻️ Restored pending queue from snapshot: 2 tasks. "
-     "Cancelling 2 tasks that were still running when the server stopped."),
+     "♻️ Restored pending queue: 2 tasks. "
+     "Settling 2 tasks that were still running when the server stopped."),
 ])
-def test_boot_notice_states_the_restart_cancellations_as_an_intent(
+def test_boot_notice_states_recovery_as_an_intent(
         monkeypatch, tmp_path, restored, fenced, expected):
     """A window closed on live work: the boot line names how many tasks the
-    restart interrupted and says they are BEING cancelled. It cannot claim they
+    restart interrupted and says they are BEING settled. It cannot claim they
     ENDED: restore only minted the durable intent, and cancellation custody
     writes each terminal result a watchdog window later."""
     import server

@@ -507,6 +507,7 @@ def test_settlement_follows_the_ledger_and_the_registration_debt_survives(tmp_pa
     first = json.loads(delegate._delegate_wait(ctx, "run-1", wait_sec=1))
     assert first["settlement"]["settled"] is True, "settles on the ledger row"
     assert first["settlement"]["project_retired"] is False, "the debt is disclosed"
+    entry = dc.replay(tmp_path)["run-1"]  # the durable collector fact, not a pre-collection object
     assert entry.settled is True and entry.project_owned is True
     assert "delegate_run_settled" in _event_types(tmp_path)
     assert [c.run_id for c in dc.owned_project_registrations(tmp_path)] == ["run-1"]

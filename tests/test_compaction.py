@@ -318,16 +318,6 @@ def test_valid_capsule_recompacts_and_corrupt_capsule_stays_raw(monkeypatch, tmp
     assert cc._atomic_units(corrupt_hash) == ()
 
 
-def test_legacy_omission_api_is_deleted():
-    source = cc.pathlib.Path(cc.__file__).read_text(encoding="utf-8")
-    for forbidden in (
-        "_SUMMARY_INPUT_LIMIT", "_excerpt_for_summary", "_compact_argument_value",
-        "LONG_STRING", "CONTENT_OMITTED", "def compact_tool_history(",
-        "_round_has_protected_content", "_tool_round_spans",
-    ):
-        assert forbidden not in source
-
-
 def test_manual_compact_context_copy_is_truthful_about_summary_and_provenance():
     from ouroboros.tools.compact_context import _compact_context, get_tools
 

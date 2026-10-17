@@ -51,21 +51,23 @@ def _next_step(projection: Dict[str, Any]) -> str:
         return ("Cyber Pro: whether and how to commit is your judgment; findings, missing evidence and pending "
                 "operations stay recorded, and this is not a PASS." + carried)
     return ("When the edits are complete, run commit_reviewed(commit_message='...'): the deterministic checks, "
-            "the tests and the review panel decide; preflight_reviewer='<enabled row>' optionally buys one "
-            "early look first." + carried)
+            "the tests and the review panel run (Blocking gates; Advisory returns the outcome before any commit); "
+            "preflight_reviewer='<enabled row>' optionally buys one early look first." + carried)
 
 
 def _handle_review_status(
     ctx: ToolContext, repo_key: str = "", tool_name: str = "", task_id: str = "",
     attempt: Optional[int] = None, include_raw: bool = False,
 ) -> str:
+    from ouroboros.review_ledger import ledger_root
     from ouroboros.review_state import compute_snapshot_hash
     from ouroboros.review_status_projection import build_review_projection, build_review_status_payload
 
+    # ledger_root is review_state_root's canonical root without its move: reading migrates nothing.
     projection = build_review_projection(
         ctx.drive_root, repo_dir=getattr(ctx, "repo_dir", ""), repo_key=repo_key, tool_name=tool_name,
         task_id=task_id, attempt=attempt, snapshot_hash_fn=compute_snapshot_hash,
-        reader_task_id=str(getattr(ctx, "task_id", "") or ""))
+        reader_task_id=str(getattr(ctx, "task_id", "") or ""), canonical_root=ledger_root(ctx))
     payload = build_review_status_payload(projection, next_step=_next_step(projection), include_raw=include_raw)
     return json.dumps(payload, ensure_ascii=False, indent=2)
 

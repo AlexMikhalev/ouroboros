@@ -532,21 +532,34 @@ def _start_service(
             )
             return json.dumps(payload, ensure_ascii=False, indent=2)
         except OwnerPauseRefused as exc:
-            return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+            return _publish_tool_result(ctx, launch_refusal_result(exc))
         except body_candidate.CandidateRefused:
             raise
         except Exception as exc:
             text = redact_known_values(f"⚠️ SERVICE_START_ERROR: executor backend failed: {type(exc).__name__}: {exc}", secret_values)
             if getattr(exc, "process_not_started", False) is True:
                 return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR",
-                    text=text, meta={"operation_outcome": "completed_no_effect"}))
+                    text=text, meta={"process_not_started": True,
+                                     **({"previous_service_retired": True} if existing is not None else {})}))
             return text
     task_id = str(getattr(ctx, "task_id", "") or "manual")
     log_dir = pathlib.Path(ctx.drive_root) / "services" / task_id
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{service_name}.log"
 
+    from ouroboros.owner_pause import _member_coordinates
+    from ouroboros.process_scope import record_task_group, scoped_child_env, task_launch_target
+    from ouroboros.tool_custody import invocation_binding
+
+    # A task-scoped service belongs to the task (task marker, group recorded); a keep /
+    # session service is handed to the installation and sheds every task marker.
+    scope_root, _, scope_task = _member_coordinates(ctx)
+    scope_target = None if keep_alive else task_launch_target(
+        invocation_binding(), drive_root=scope_root, task_id=scope_task)
+
     def publish_process(proc):
+        if scope_target is not None:
+            record_task_group(*scope_target, proc.pid)
         record = ServiceRecord(
             name=service_name,
             service_id=key,
@@ -600,12 +613,13 @@ def _start_service(
             # The attested emergency bundled-node PATH prepend (post-gates
             # node resolver) applies on top of the allowlisted service env;
             # a healthy resolution leaves the env byte-identical.
-            env=overlay_env(apply_env_path_prepend(service_base_env, active_node_resolution(ctx)), env),
+            env=scoped_child_env(
+                overlay_env(apply_env_path_prepend(service_base_env, active_node_resolution(ctx)), env), scope_target),
         )
         log_fh.close()
     except OwnerPauseRefused as exc:
         log_fh.close()
-        return _publish_tool_result(ctx, launch_refusal_result(str(exc), completed_no_effect=True))
+        return _publish_tool_result(ctx, launch_refusal_result(exc))
     except Exception as exc:
         log_fh.close()
         return redact_known_values(f"⚠️ SERVICE_START_ERROR: {type(exc).__name__}: {exc}", secret_values)
@@ -746,9 +760,15 @@ def _service_logs(ctx: ToolContext, name: str = "service", tail: int = 8000) -> 
             return "⚠️ TOOL_ARG_ERROR (service_logs): tail must be an integer."
         payload = executor_service_logs(ctx, service_name, tail_chars)
         if payload is None:
-            return f"⚠️ SERVICE_NOT_FOUND: {name}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="unavailable", code="LEGACY_UNAVAILABLE",
+                text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
         return json.dumps(payload, ensure_ascii=False, indent=2)
-    return f"⚠️ SERVICE_NOT_FOUND: {name}"
+    # Status discovery and idempotent stop use this same marker as a warning.
+    # A logs request has no requested payload to return; type only this branch.
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=f"⚠️ SERVICE_NOT_FOUND: {name}"))
 
 
 def _stop_service(ctx: ToolContext, name: str = "service") -> str:

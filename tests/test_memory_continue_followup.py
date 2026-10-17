@@ -1,7 +1,9 @@
 """Owner Continue reaches the next full Main request without losing memory sources.
 
 The installed queue, HTTP ingress, context builder, Main loop, Chronicle and
-source readers are real. Only model/catalog boundaries are local fixtures.
+source readers are real. Only model/catalog boundaries are local fixtures; the
+plan review history a predecessor carries is an earlier-schema record the retired
+plan-review engine left, recorded from its real flow (tests/fixtures/legacy_plan_dispute).
 These tests qualify transport and retention, not a model's semantic recall.
 """
 from __future__ import annotations
@@ -25,12 +27,11 @@ from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_common_story import _journal, _rooms, _snapshot, _story, _write
 from tests.test_common_story_composition import _read_all
 from tests.test_owner_continue import _interrupted
-from tests.test_plan_dispute_history import RATIONALE, RAW_REASON
-from tests.test_plan_review_engine import _call, _finding, _state
+from tests.test_plan_dispute_history import RATIONALE, RAW_REASON, _state
 from tests.test_review_local_accounts import (
-    FIRST, SECOND, actor_notes, apply_local, review_units,
+    FIRST, OPEN_REQUIREMENT, SECOND, actor_notes, apply_local, open_blocking, review_units,
 )
-from tests.test_review_view_integration import _capture, _three, harness as _harness
+from tests.test_review_view_integration import _capture, harness as _harness
 
 harness = _harness
 pytestmark = pytest.mark.serial  # Continue installs the supervisor's module globals.
@@ -39,7 +40,7 @@ pytestmark = pytest.mark.serial  # Continue installs the supervisor's module glo
 OWNER = "Finish the authorized chart export without deploying a service."
 SPOKEN = "I will retain the chart protocol.\nMay I add a plain-text export?"
 ANSWER = "Add the export, keep the chart units, and do not deploy a service."
-CURRENT = "The accessible export is still unfinished."
+CURRENT = OPEN_REQUIREMENT  # the recorded fourth round's open blocking finding
 
 
 def message_text(messages):
@@ -143,10 +144,9 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     from ouroboros.tools.owner_delivery import publish_pending_owner_dialogue
     from supervisor.message_bus import log_chat
 
-    ctx, substrate, raw_review = _three(harness, monkeypatch)
-    substrate.answers = {"s1": json.dumps([_finding("unfinished", "blocking", breaks="claim_1",
-        summary=CURRENT, rec="Complete the accessible export before claiming delivery.")])}
-    _call(ctx, plan="Prepare the current accessible export.")
+    # Three closed rounds and a fourth with the open blocking CURRENT, as recorded.
+    ctx, raw_review = open_blocking(harness)
+    substrate = harness.install({})
     before_state = deepcopy(_state(harness))
     before = _capture(ctx)
     ctx.messages, ctx.current_chat_id = before, 1
@@ -188,7 +188,7 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     # Newline escaping varies by provider content wrapper; the room keeps the exact words.
     assert all(line in text for line in SPOKEN.splitlines())
     assert raw_review not in text and RAW_REASON not in text and RATIONALE not in text
-    assert _state(harness) == before_state and len(substrate.calls) == 4
+    assert _state(harness) == before_state and substrate.calls == []
     assert review_history_view.SELECTED_VIEW_FIELD not in load_task_result(ctx.drive_root, task["id"])
     assert SPOKEN not in str(successor._owner_directives) and ANSWER in str(successor._owner_directives)
     historical = _task_authority_projection(env, task)["predecessor_authority"]["historical_review_context"]
@@ -196,7 +196,7 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     recovered = []
     for source in historical["source_reads"]:
         arguments = source["read"]["arguments"]
-        assert arguments["path"] in text
+        assert json.dumps(arguments["path"], ensure_ascii=False) in text
         recovered.append(_read_file(successor, **{**arguments, "max_chars": 200_000}))
     assert any(RATIONALE in source for source in recovered)
     assert all(read_actor_source_bytes(ctx.drive_root, ctx.task_id, item["source_ref"])

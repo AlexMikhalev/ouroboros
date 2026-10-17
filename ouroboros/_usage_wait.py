@@ -26,6 +26,137 @@ _CLEANUP = contextvars.ContextVar("usage_cleanup", default=False)
 ACQUISITION_SLICE_SEC = 0.25
 
 
+class _PresendWait:
+    """One caller's local admission episode. Nothing here repeats a provider or tool body."""
+
+    def __init__(self, check=True):
+        from ouroboros.model_wait import current_model_wait, dispatch_deadline_remaining_sec
+        from ouroboros.config import get_task_idle_timeout_sec
+
+        self.check = check
+        self.owner = current_model_wait()
+        self.owned = self.owner is not None or dispatch_deadline_remaining_sec() is not None
+        self.interactive_bound = (float(get_task_idle_timeout_sec()) if self.owner is not None
+                                  and self.owner.task.get("_is_direct_chat") else None)
+        self.started = time.monotonic()
+        self.publication_waited = 0.0
+        self.publication_started = None
+        self.episode_id = uuid.uuid4().hex
+        self.entered = False
+
+    def delay(self, error):
+        from ouroboros.store import StoreBusy, admission_acquisition
+        from ouroboros.owner_pause import LaunchBusy
+        from ouroboros.queue_observation import (
+            DispatchPublicationPending, DISPATCH_PUBLICATION_WAIT_SEC, DISPATCH_PUBLICATION_POLL_SEC,
+        )
+        from ouroboros.usage_ledger import ControlAuthorityUnavailable
+
+        pending = isinstance(error, DispatchPublicationPending)
+        contention = (isinstance(error, (StoreBusy, LaunchBusy)) and error.reason == "contention"
+                      or isinstance(error, UsageLockUnavailable) and error.reason == "contention"
+                      and getattr(error, "rollback_confirmed", False))
+        if not (pending or contention) or getattr(error, "rollback_confirmed", None) is False or _CLEANUP.get():
+            raise error
+        if pending and self.publication_started is None:
+            self.publication_started = time.monotonic()
+        # Controls must be checked even while the storage they usually inspect is busy.
+        # A positive local control wins; a transient probe gap retains this same wait.
+        try:
+            with admission_acquisition():
+                if self.check or self.publication_started is not None:
+                    _check()
+                elif self.owner is not None:
+                    reason = self.owner.control_reason()
+                    if reason:
+                        from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+                        raise PhysicalDispatchInterrupted(reason)
+        except StoreBusy as busy:
+            if busy.reason != "contention":
+                raise
+        elapsed = time.monotonic() - self.started
+        if self.interactive_bound is not None and elapsed >= self.interactive_bound:
+            from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+            raise PhysicalDispatchInterrupted("accounting_wait_expired")
+        remaining = DISPATCH_PUBLICATION_WAIT_SEC - self.publication_waited
+        if pending and remaining <= 0:
+            raise ControlAuthorityUnavailable(str(error), cause="dispatch_publication_unconfirmed") from error
+        if not self.owned and elapsed >= USAGE_LOCK_TIMEOUT_SEC:
+            raise error
+        if not self.entered:
+            self.entered = True
+            _hold(self.owner, "entered", self.started, self.episode_id)
+        return min(DISPATCH_PUBLICATION_POLL_SEC, remaining) if pending else ACQUISITION_SLICE_SEC
+
+    @contextlib.contextmanager
+    def wait(self, error):
+        """Charge only a publication probe and its wait, across reacquisitions.
+
+        A contended store neither proves continuous publication absence nor resets
+        the already spent publication budget. Other elapsed bounds remain separate.
+        """
+        from ouroboros.queue_observation import DispatchPublicationPending
+
+        pending = isinstance(error, DispatchPublicationPending)
+        if pending:
+            self.publication_waited += error.probe_elapsed_sec
+        delay = self.delay(error)
+        started = time.monotonic()
+        try:
+            yield delay
+        finally:
+            if pending:
+                self.publication_waited += max(delay, time.monotonic() - started)
+
+    def close(self):
+        if self.entered:
+            _hold(self.owner, "ended", self.started, self.episode_id)
+
+
+def retry_presend(function, *, check=True):
+    """Retry only a supplied unsent preparation/transaction AFTER it unwound its locks.
+
+    The caller must keep invocation identity outside the callback and must stop using
+    this helper once it has submitted an executor. In particular, never wrap send(),
+    mark_dispatched's physical claim, or an arbitrary tool handler.
+    """
+    from ouroboros.store import admission_acquisition
+    from ouroboros import queue_observation
+
+    episode = _PresendWait(check)
+    try:
+        while True:
+            try:
+                with admission_acquisition():
+                    if check or episode.publication_started is not None:
+                        _check()
+                    return function()
+            except Exception as exc:
+                with episode.wait(exc) as delay:  # transaction/launch lock have exited
+                    queue_observation._sleep(delay)
+    finally:
+        episode.close()
+
+
+async def retry_presend_async(function, *, check=True):
+    """A nonblocking local submission on THIS loop; only its outside wait yields."""
+    from ouroboros.store import admission_acquisition
+
+    episode = _PresendWait(check)
+    try:
+        while True:
+            try:
+                with admission_acquisition():
+                    if check or episode.publication_started is not None:
+                        _check()
+                    return function()
+            except Exception as exc:
+                with episode.wait(exc) as delay:
+                    await asyncio.sleep(delay)
+    finally:
+        episode.close()
+
+
 def _check() -> None:
     cancel = _CANCEL.get()
     if cancel is not None and cancel.is_set():
@@ -219,7 +350,8 @@ async def postresponse_off_loop(function, *args, retain_on_cancel):
 # owner Pause fence at this interval: responsiveness, not a lifetime or bound.
 ABANDON_POLL_SEC = 0.5
 _ABANDONABLE = contextvars.ContextVar("model_receiver_abandonable", default=False)
-_ABANDONED_SENDS: set[asyncio.Task] = set()
+# Abandoned senders (async tasks, sync futures) and their closes, until each settles.
+_ABANDONED_SENDS: set = set()
 
 
 @contextlib.contextmanager
@@ -294,7 +426,7 @@ def model_send(reservation, send, *, settle_late=None):
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-send")
     abandoned = False
     try:
-        future = submit_model(reservation, executor.submit, owned if abandonable else send)
+        future = retry_presend(lambda: submit_model(reservation, executor.submit, owned if abandonable else send))
         if not abandonable:
             return future.result()
         while True:
@@ -309,6 +441,9 @@ def model_send(reservation, send, *, settle_late=None):
                     continue  # completion/cancellation won: retrieve its outcome
                 handover["state"] = "abandoned"
             abandoned = True
+            # The process still owns this sender's paid settlement (idle retirement waits).
+            _ABANDONED_SENDS.add(future)
+            future.add_done_callback(_ABANDONED_SENDS.discard)
             raise _abandoned(reservation, future)
     finally:
         executor.shutdown(wait=not abandoned)
@@ -406,7 +541,8 @@ async def model_send_async(reservation, complete, *, retain_on_cancel, retain_on
         return outcome.get("response")  # Preserve exception identity in outcome.
 
     try:
-        future = submit_model(reservation, lambda run, fn: run(asyncio.create_task, fn()), invoke)
+        future = await retry_presend_async(
+            lambda: submit_model(reservation, lambda run, fn: run(asyncio.create_task, fn()), invoke))
     except BaseException as exc:
         exc.model_sender_not_started = True
         raise

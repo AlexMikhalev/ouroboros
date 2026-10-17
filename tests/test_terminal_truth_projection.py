@@ -911,7 +911,7 @@ def test_failed_checkpoint_write_emits_no_finalized_event(tmp_path, monkeypatch)
     assert appended == []
 
 
-def test_startup_recovery_surfaces_failed_running_checkpoint_persistence(tmp_path, monkeypatch):
+def test_startup_recovery_surfaces_failed_running_checkpoint_persistence(tmp_path, monkeypatch, caplog):
     import ouroboros.agent_task_pipeline as pipeline
     import ouroboros.post_task_checkpoint as checkpoint
 
@@ -926,10 +926,15 @@ def test_startup_recovery_surfaces_failed_running_checkpoint_persistence(tmp_pat
         },
     )
 
-    monkeypatch.setattr(checkpoint, "write_task_result", Mock(side_effect=TimeoutError))
+    error = TimeoutError("checkpoint write remained unavailable")
+    writer = Mock(side_effect=error)
+    monkeypatch.setattr(checkpoint, "write_task_result", writer)
 
-    with pytest.raises(RuntimeError, match="did not persist a terminal checkpoint"):
-        pipeline.recover_pending_root_post_task_synthesis(tmp_path, tmp_path / "repo")
+    assert pipeline.recover_pending_root_post_task_synthesis(tmp_path, tmp_path / "repo") == 0
+    failed = [record for record in caplog.records if "Post-task recovery remains owed" in record.getMessage()]
+    assert len(failed) == 1 and task_id in failed[0].getMessage()
+    assert failed[0].exc_info and failed[0].exc_info[1] is error
+    writer.assert_called_once()
 
     stored = load_task_result(tmp_path, task_id)
     assert stored["root_phase_checkpoint"]["post_task_synthesis"] == "running"

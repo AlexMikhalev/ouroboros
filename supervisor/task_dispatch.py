@@ -54,7 +54,9 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
     subagent_envelope = fields.get("subagent_envelope") if isinstance(fields.get("subagent_envelope"), dict) else {}
     configured_subagent = fields.get("configured_subagent") if isinstance(fields.get("configured_subagent"), dict) else {}
     parent_cognitive_route = fields.get("parent_cognitive_route") if isinstance(fields.get("parent_cognitive_route"), dict) else {}
-    directory_options = {key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields}
+    # The inherited execution allowance (#939) rides with the other admission-time options.
+    directory_options = {key: fields[key] for key in ("directory_strategy", "scope_paths", "execution_timeout_sec")
+                         if key in fields}
     source_bindings = {key: copy.deepcopy(fields[key]) for key in ("parent_workspace", "workspace_copy")
                        if isinstance(fields.get(key), dict)}
     # A child inherits its tree origin: a consciousness label, category and level, and the owner's words.

@@ -70,6 +70,11 @@ _APPLICATION_ID = {TIER_ENFORCED: 0x4F555345, TIER_NAME: 0x4F55534E}
 _OPEN_STATES = ("reserved", "dispatched", "unresolved")
 _OPEN_PREDICATE = ("(state IN ('reserved','dispatched','unresolved') "
                    "OR (state='settled' AND settle_reason='abandoned'))")
+# ``Txn.task_attempt_page``: newest first by the immutable, unique ``seq_first`` (``seq`` moves on every write).
+_TASK_PAGE_SQL = ("SELECT attempt_id, state, settle_reason, model, provider, ts_reserved, ts_dispatched, "
+                  "ts_final, ts_last FROM attempts INDEXED BY attempts_task "
+                  "WHERE task_id=? AND category=? AND seq_first<? ORDER BY seq_first DESC LIMIT ?")
+_TASK_CURSOR_SQL = "SELECT seq_first FROM attempts WHERE attempt_id=? AND task_id=? AND category=?"
 
 _SCHEMA = f"""
 CREATE TABLE attempts (
@@ -351,6 +356,24 @@ class Txn:
             return self.attempts(_OPEN_PREDICATE)
         return self.attempts(f"{_OPEN_PREDICATE} AND root_task_id=?", (str(root_task_id),))
 
+    def task_attempt_page(self, task_id: str, category: str, *, after: str = "",
+                          limit: int) -> Optional[List[Dict[str, Any]]]:
+        """Lifecycle facts of one task's attempts in one category, newest first, ``limit`` rows older than ``after``.
+
+        ``after`` must name an attempt of this task and category (else ``None``): its first
+        record is the cursor, so older rows stay reachable while newer ones join a fresh list.
+        The task index addresses only this task (``INDEXED BY`` refuses a plan that scans the
+        ledger); ordering still sorts the task's matching rows before the bounded page returns.
+        No money, usage or payload fields."""
+        before = 2 ** 63 - 1
+        if after:
+            cursor = self.conn.execute(_TASK_CURSOR_SQL, (str(after), str(task_id), str(category))).fetchone()
+            if cursor is None:
+                return None
+            before = cursor["seq_first"]
+        return [dict(record) for record in self.conn.execute(_TASK_PAGE_SQL, (
+            str(task_id), str(category), before, int(limit)))]
+
     def bucket(self, scope: str, key: str = "") -> Bucket:
         address = (scope, str(key))
         if address not in self._buckets:
@@ -569,8 +592,10 @@ class Txn:
             raise UsageAccountingError(f"conflicting settled-row identity: {attempt_id}")
         return self.attempt(attempt_id)
 
-    def commit(self) -> None:
+    def commit(self, *, wait_sec: Optional[float] = None) -> None:
         if not self.committed:
+            if wait_sec is not None:
+                self.conn.execute(f"PRAGMA busy_timeout = {max(0, int(wait_sec * 1000))}")
             _commit(self.conn)
             self.committed = True
 
@@ -596,7 +621,9 @@ def _commit(conn: sqlite3.Connection) -> None:
         _core.commit(conn)
     except sqlite3.OperationalError as exc:
         if _busy(exc):
-            raise UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention") from exc
+            error = UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention")
+            error.rollback_confirmed = getattr(exc, "rollback_confirmed", False)
+            raise error from exc
         raise UsageAccountingError(f"usage store commit failed: {exc}") from exc
 
 
@@ -688,7 +715,10 @@ def _typed(exc: sqlite3.Error) -> UsageAccountingError:
     (the waits' business), a damaged file is ``UsageLedgerCorrupt`` (unknown,
     never zero), anything else an ``UsageAccountingError``."""
     if isinstance(exc, sqlite3.OperationalError) and _busy(exc):
-        return UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        error = UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        if hasattr(exc, "rollback_confirmed"):
+            error.rollback_confirmed = exc.rollback_confirmed
+        return error
     if isinstance(exc, sqlite3.DatabaseError) and not isinstance(
             exc, (sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.ProgrammingError)):
         return UsageLedgerCorrupt(f"usage store unreadable: {exc}")

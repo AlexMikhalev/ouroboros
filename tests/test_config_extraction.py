@@ -41,6 +41,9 @@ _ADDED_OWNERS = {
     # The owner's effort range: its keys, the owner-facing tiers, the tolerant read, the Cyber
     # Pro predicate, the clamp, the one effort decision and its recorded fact.
     "EFFORT_RANGE_KEYS": settings_scales,
+    "EFFORT_FORMAT_KEY": settings_scales,
+    "normalize_effort_document": settings_scales,
+    "normalize_legacy_effort_settings": settings_scales,
     "OWNER_EFFORT_TIERS": settings_scales,
     "EFFORT_SOURCES": settings_scales,
     "_tier": settings_scales,
@@ -52,6 +55,10 @@ _ADDED_OWNERS = {
     "effort_fact_phrase": settings_scales,
     # The retired role effort keys the range replaced (the RC auditor's note class).
     "EFFORT_RANGE_RETIRED_SETTING_KEYS": settings_defaults,
+    # Replaceable interface: a saved value (blank included) wins over the environment, an absent key
+    # stays the environment's, and a merged write does not author it (config read and persist seams).
+    "SAVED_CHOICE_SETTINGS": settings_defaults,
+    "unauthored_saved_choices": settings_defaults,
     "get_finalization_grace_sec": runtime_limits,
     "PROMOTE_CONFIRM_WAIT_SEC": runtime_limits,
     "get_promote_confirm_wait_sec": runtime_limits,
@@ -111,6 +118,10 @@ _ADDED_OWNERS = {
     "get_max_rounds": runtime_limits,
     "OPERATION_WINDOW_FALLBACK_SEC": runtime_limits,
     "operation_window_sec": runtime_limits,
+    # #939: the numeric duration resolver is a leaf; config supplies its settings seam.
+    "_CURRENT_TASK_CEILING": runtime_limits,
+    "explicit_execution_timeout_sec": runtime_limits,
+    "resolve_task_execution_timeout_sec": runtime_limits,
 }
 
 _MOVED_OWNERS = {
@@ -143,7 +154,6 @@ _MOVED_OWNERS = {
     "OPENROUTER_REVIEW_DEFAULTS": settings_defaults,
     "FINALIZATION_GRACE_DEFAULT_SEC": settings_defaults,
     "OWNER_STOP_OUTER_CAP_SEC": settings_defaults,
-    "PACING_INTERVAL_DEFAULT_SEC": settings_defaults,
     "RETIRED_SETTING_KEYS": settings_defaults,
     # ABI 7.0 (ABI-7b): the comma-list classification INSIDE the retirement
     # SSOT, born in this leaf (not an extraction) for the RC auditor to snap.
@@ -193,13 +203,13 @@ _MOVED_OWNERS = {
     "get_vision_model": model_slots,
     "migrate_legacy_slot_keys": model_slots,
     "parse_fallback_chain": model_slots,
-    "_DIRECT_PROVIDER_REVIEW_RUNS": review_model_routes,
     "_exclusive_direct_remote_provider_env": review_model_routes,
     "adaptive_quorum": review_model_routes,
     "get_review_enforcement": review_model_routes,
     "resolved_review_model_target": review_model_routes,
     "DELEGATE_WAIT_CEILING_SEC": runtime_limits,
     "DELEGATE_WAIT_WINDOW_MAX_SEC": runtime_limits,
+    "BODY_MAINTENANCE_INTERVAL_SEC": runtime_limits,
     "MAX_ACTIVE_SUBAGENTS_HARD_CAP": runtime_limits,
     # Upstream reshaped the hard-cap assignment into a tuple that also binds the
     # nesting ceiling (`MAX_ACTIVE_..., MAX_SUBAGENT_DEPTH_... = 500, 10`), so the
@@ -220,7 +230,6 @@ _MOVED_OWNERS = {
     "get_max_active_subagents_per_root": runtime_limits,
     "get_max_subagent_depth": runtime_limits,
     "get_max_workers": runtime_limits,
-    "get_pacing_interval_sec": runtime_limits,
     "get_per_call_timeout_ceiling_sec": runtime_limits,
     "get_plan_task_deadline_min_sec": runtime_limits,
     "get_post_task_evolution_budget_usd": runtime_limits,
@@ -305,6 +314,20 @@ def test_provider_models_reads_the_shared_leaves_instead_of_importing_config():
             is settings_defaults.OPENROUTER_REVIEW_DEFAULTS)
 
 
+def test_execution_bound_resolution_keeps_leaf_and_facade_defaults_separate(monkeypatch):
+    task = {"execution_timeout_sec": 900}
+    monkeypatch.setattr(runtime_limits, "get_task_abs_ceiling_sec", lambda: 300)
+    monkeypatch.setattr(config, "get_task_abs_ceiling_sec", lambda: 600)
+    assert runtime_limits.resolve_task_execution_timeout_sec(task) == 300
+    assert config.resolve_task_execution_timeout_sec(task) == 600
+    for resolver in (runtime_limits.resolve_task_execution_timeout_sec, config.resolve_task_execution_timeout_sec):
+        assert resolver(task, global_ceiling=None) == 900
+        assert resolver(task, global_ceiling=120) == 120
+        assert resolver({}, global_ceiling=None) is None
+    monkeypatch.setattr(config, "get_task_abs_ceiling_sec", lambda: None)
+    assert config.resolve_task_execution_timeout_sec(task) == 900
+
+
 def test_config_facade_reexports_every_moved_identity():
     """``config`` keeps the exact objects, so every existing importer and every
     ``monkeypatch.setattr(config, ...)`` consumer sees no identity change."""
@@ -350,5 +373,7 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     # 521 -> 538: PR-3 (review pool) — the five review-lane keys leave SETTINGS_DEFAULTS
     # for RETIRED_SETTING_KEYS and gain the REVIEW_POOL_MIGRATED_SETTING_KEYS class
     # (+ its shared «migrated» line) the read seam, the RC auditor and the boot notice read.
-    assert counts["ouroboros.settings_defaults"] <= 538
+    # 538 -> 560: the main-interface key (OUROBOROS_UI_DIR) with its export exclusion and the
+    # saved-choice precedence the config read and persist seams share.
+    assert counts["ouroboros.settings_defaults"] <= 560
     assert (PACKAGE / "config.py").is_file()

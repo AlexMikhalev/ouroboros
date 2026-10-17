@@ -342,9 +342,10 @@ def unsettled_start_ids(
 
     A review run is the review substrate's obligation, not the actor's
     delegation slot, so it never blocks the actor's own start; nor does the
-    undisposed candidate patch of the run a start is ``continuing``. Evidence-only
-    captures owe no apply debt. A readonly continuation leaves a candidate patch
-    waiting for its own disposition; it is not a fresh replacement.
+    undisposed candidate patch of the run a start is ``continuing``, nor that run
+    once its terminal is observed (its accounting finishes in the background, #1969).
+    Evidence-only captures owe no apply debt. A readonly continuation leaves a
+    candidate patch waiting for its own disposition; it is not a fresh replacement.
     """
 
     mine = str(task_id or "")
@@ -359,6 +360,7 @@ def unsettled_start_ids(
         "open_run_ids": [
             row.run_id for row in runs.values()
             if row.task_id == mine and not row.settled and not row.review_owned
+            and not (row.run_id == continuing and row.terminal_state in custody.TERMINAL_STATES)
         ],
         "pending_invocation_ids": [
             str(row.get("invocation_id") or "")
@@ -380,9 +382,11 @@ def reconcile_unrecoverable_task(drive_root: Any, task_id: str) -> None:
 
     try:
         from ouroboros import delegate_terminal
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
-        result = delegate_terminal.terminal_reconcile_task(
+        result = delegate_terminal.terminal_reconcile_task(  # a release: attach only, no replay
             drive_root, str(task_id or ""), trigger="unrecoverable_successor",
+            gateway_factory=attach_only_gateway,
         )
         delegate_terminal.record_terminal_reconciliation(
             drive_root, str(task_id or ""), result,
@@ -447,6 +451,14 @@ def _holder_value(holder: Any, name: str, *, pending: bool) -> str:
         str(holder.get(name) or "")
         if pending else str(getattr(holder, name, "") or "")
     )
+
+
+def _attach_only():
+    """The fail-soft settlement after a vetoed or unwritable handoff is a release:
+    it attaches to a serving daemon and never starts one or replays a pending start."""
+    from ouroboros.delegate_custody_reconcile import attach_only_gateway
+
+    return attach_only_gateway
 
 
 def _run_probe_error(run_id: str) -> str:
@@ -952,7 +964,7 @@ def pre_adopt_planned_handoffs(
             _write(drive_root, row)
         except Exception:
             try:
-                custody.reconcile_task_runs(drive_root, task_id)
+                custody.reconcile_task_runs(drive_root, task_id, gateway_factory=_attach_only())
             except Exception:
                 pass
             continue
@@ -1008,7 +1020,7 @@ def veto_handoff(drive_root: Any, task_id: str, reason: str) -> dict[str, Any]:
     row.update({"status": "vetoed", "veto_reason": str(reason or "recovery_mismatch")})
     _write(drive_root, row)
     try:
-        custody.reconcile_task_runs(drive_root, task_id)
+        custody.reconcile_task_runs(drive_root, task_id, gateway_factory=_attach_only())
     except Exception:
         pass
     return row
@@ -1176,7 +1188,7 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
         _restore_wait_checkpoint(drive, {**row, "run_id": run_id})
     except Exception:
         try:
-            custody.reconcile_task_runs(drive, task_id)
+            custody.reconcile_task_runs(drive, task_id, gateway_factory=_attach_only())
         except Exception:
             pass
         return {"status": "recovery_required", "reason": "checkpoint_restore_failed"}
@@ -1185,7 +1197,7 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
         _write(drive, row)
     except Exception:
         try:
-            custody.reconcile_task_runs(drive, task_id)
+            custody.reconcile_task_runs(drive, task_id, gateway_factory=_attach_only())
         except Exception:
             pass
         return {"status": "recovery_required", "reason": "adoption_record_unwritable"}

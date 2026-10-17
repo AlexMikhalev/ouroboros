@@ -7,8 +7,8 @@ authority question the journal-era binding tests asked
 journals compacted once or twice, carriage stripped, unknown or foreign,
 amendments, Continue), each with the data root as it was just before the
 question (journal, task results, queue snapshot), the budget environment, the
-arguments and the shipped answer. Here each question is asked again of a fresh
-root holding the same files: the store's one-time import reads that journal
+arguments and the shipped answer. Here each question is asked again of a private
+copy of its imported starting state: the store's one-time import reads that journal
 (aggregates with their weight, ``BindingIndex`` carriage included) and must
 answer the same. Provenance: ``record_binding_checkpoints.py`` beside the
 fixture.
@@ -98,9 +98,40 @@ def test_the_fixture_covers_every_question_kind():
     assert any("original_root_binding" in journal for journal in journals), "carriage is replayed"
 
 
+@pytest.fixture(scope="session")
+def imported_binding_seeds():
+    # Immutable file bytes only. No connection, mutable root or query result is
+    # shared; even read-looking questions may pin a previously absent binding.
+    return {}
+
+
+def _materialize_imported_seed(root, checkpoint, seeds):
+    from ouroboros import usage_store
+
+    # The fixture has 184 file states and 185 (files, environment) states.
+    # Keep the environment in the key: defaults can affect an import.
+    key = (tuple(sorted(checkpoint["files"].items())), tuple(sorted(checkpoint["env"].items())))
+    if key not in seeds:
+        _materialize(root, checkpoint)
+        usage_store.migrate_from_journal(root)
+        usage_store.forget(root)
+        snapshot = tuple((path.relative_to(root), path.read_bytes())
+                         for path in sorted(root.rglob("*")) if path.is_file())
+        # These golden states contain no root paths. Fail explicitly if a future
+        # fixture/import changes that, rather than copying an address into another case.
+        addresses = (str(root).encode("utf-8"), json.dumps(str(root))[1:-1].encode("utf-8"))
+        assert not any(address in body for _path, body in snapshot for address in addresses)
+        seeds[key] = snapshot
+    else:
+        for name, body in seeds[key]:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+
+
 @pytest.mark.parametrize("checkpoint", _CHECKPOINTS,
                          ids=[f"{index:03d}-{checkpoint['function']}" for index, checkpoint in enumerate(_CHECKPOINTS)])
-def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monkeypatch):
+def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monkeypatch, imported_binding_seeds):
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_admission as admission
     from ouroboros import usage_store
@@ -108,7 +139,6 @@ def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monk
 
     root = tmp_path / "data"
     (root / "state").mkdir(parents=True)
-    _materialize(root, checkpoint)
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     for key, value in checkpoint["env"].items():
@@ -116,6 +146,7 @@ def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monk
             monkeypatch.delenv(key, raising=False)
         else:
             monkeypatch.setenv(key, value)
+    _materialize_imported_seed(root, checkpoint, imported_binding_seeds)
     args, kwargs = _decode(checkpoint["args"], root), _decode(checkpoint["kwargs"], root)
     name = checkpoint["function"]
     try:

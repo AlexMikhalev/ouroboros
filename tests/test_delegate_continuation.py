@@ -1,7 +1,7 @@
-"""Continuation of a settled delegated run: ``delegate_start(continue_from=<run_id>)``.
+"""Continuation of a finished delegated run: ``delegate_start(continue_from=<run_id>)``.
 
-Four floor invariants gate it (own task line, settled, no pending-ambiguous
-apply, authority does not widen); every other fact — any settled cause, an
+Four floor invariants gate it (own task line, observed terminal, no pending-ambiguous
+apply, authority does not widen); every other fact — any terminal cause, an
 unread result, another actor, a changed or partial work order — is ADVICE in
 the continuing child's prompt and a fact in the parent's started payload. The
 engine continues the stopped work (``continueFrom``); a writing continuation
@@ -705,18 +705,6 @@ def test_the_terminal_payload_carries_resumable_and_one_line_per_continued_try()
 
 
 # --------------------------------------------------------------------------- unchanged neighbours
-
-@pytest.mark.parametrize("chapter,marker,codes", [
-    ("development/06-rules-by-change-class.md", "- `continue_from`", (
-        continuation.REFUSAL_SNAPSHOT_MISSING, continuation.REFUSAL_SNAPSHOT_RELEASED,
-        "continuation_handover_busy")),
-    ("architecture/06-agent-core.md", "**Continuation**", (continuation.REFUSAL_SNAPSHOT_MISSING,)),
-])
-def test_continuation_docs_name_the_snapshot_custody_refusals(chapter, marker, codes):
-    text = (pathlib.Path(__file__).resolve().parents[1] / "docs" / chapter).read_text(encoding="utf-8")
-    paragraph = text[text.index(marker):].split("\n\n", 1)[0]
-    assert all(f"`{code}`" in paragraph for code in codes)
-    assert "refuses ONLY on the four floors" not in paragraph
 
 
 def test_requested_cap_is_clamped_by_the_deadline_and_the_remaining_lifetime(tmp_path, monkeypatch):

@@ -36,7 +36,8 @@ def direct_restart(tmp_path, monkeypatch):
                            pid=912345, current=os.getpid(), birth="spawn-birth", command="python server.py",
                            env={}, child_env={}, calls=[], killed=[], failure="", on_spawn=None,
                            parent_birth="parent-birth", parent_exit=42, handle_error=None)
-    proc = SimpleNamespace(pid=case.pid, wait=lambda timeout=None: -9)
+    proc = SimpleNamespace(pid=case.pid, wait=lambda timeout=None: -9,
+                           poll=lambda: -9 if case.killed else None)
 
     def popen(argv, **kwargs):
         case.calls.append("spawn")

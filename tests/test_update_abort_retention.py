@@ -74,8 +74,16 @@ def _system(tmp_path, monkeypatch):
         proc = process(wid, commands)
         launches.append(commands)
         append_jsonl(root / "logs" / "events.jsonl", {
-            "type": "worker_ready", "worker_id": wid, "pid": proc.pid, "git_sha": "test-sha"})
+            "type": "worker_ready", "worker_id": wid, "pid": proc.pid,
+            "process_birth": f"birth-{proc.pid}", "git_sha": "test-sha"})
         return proc
+
+    # The parent measures the same birth its fake child reports (process ledger).
+    from ouroboros import process_custody
+    for name in ("process_start_time", "process_start_time_legacy"):
+        measured = getattr(process_custody, name)
+        monkeypatch.setattr(process_custody, name, lambda pid, measured=measured:
+                            f"birth-{pid}" if pid in processes else measured(pid))
 
     for module in (workers, worker_pool_lifecycle):
         monkeypatch.setattr(module, "kill_worker_tree", lambda pid, **_kw: processes[pid].terminate())
@@ -569,10 +577,26 @@ def test_abort_handoff_reaches_the_real_loop_without_replaying_unknown_effects(t
         raise ModelReached()
 
     monkeypatch.setattr(loop, "_dispatch_round_model", provider_reply)
+    # Regression pin for issue #1772: the loop's exit release runs with a pending
+    # invocation on the task. It must attach only and replay nothing — the old
+    # ensure default downloaded, spawned and admitted a real engine under the
+    # worker-shared config.DATA_DIR, outliving the whole battery.
+    from ouroboros import claudexor_daemon, delegate_custody_reconcile
+
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway",
+                        lambda **_k: pytest.fail("the loop exit admitted work through ensure_owned_gateway"))
+    replayed = []
+    monkeypatch.setattr(delegate_custody_reconcile, "_recover_pending_invocation",
+                        lambda *a, **k: replayed.append(a) or pytest.fail("the loop exit replayed a pending invocation"))
     kwargs = _loop_kwargs(tmp_path, registry, [])
     kwargs["task_id"] = "saved"
     with pytest.raises(ModelReached):
         loop.run_llm_loop(**kwargs)
+    assert not replayed
+    assert not claudexor_daemon.owned_daemon_provisioned(), "no engine home appeared at the shared root"
+    assert not (tmp_path / "claudexor").exists()
+    assert observe_task_runs(tmp_path, "saved", request_stop=False)["runs"] == before["runs"], \
+        "the unknown POST stays pending for the admitted sweep"
     assert not effects
     assert registry._ctx._accumulated_usage["cost"] == 3.0
     assert any(row.get("content") == "Saved object 42" for row in seen)

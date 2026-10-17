@@ -21,12 +21,11 @@ Methods over 150 lines or eight parameters are decomposition signals, not gates
 (CHECKLISTS item 11(c); BIBLE P7). Runtime function totals are descriptive, with no
 aggregate ceiling, because a repository-wide count penalizes useful decomposition.
 
-Enforcement: the official repository's CI runs the `size_ratchet` pytest lane as a
-blocking step (`OURO_SIZE_RATCHET_BASE_REF` names the event base; ARCHITECTURE §8 "CI
-topology"). Local surfaces never block on size: default lanes exclude the marker, and
-`check_worktree_readiness` and `codebase_health` report `validate_size_ratchet`
-findings as "official CI will enforce" warnings, so a locally evolved fork is never
-trapped by inherited debt.
+Enforcement: manual/tag CI runs `size_ratchet` (ARCHITECTURE §8). Without an event
+base its transition check compares only HEAD's parent, not all intervening commits;
+local qualification must name the contribution base. Local default lanes exclude
+this marker; readiness/health warn and the diff pulse reports growth (BIBLE P3;
+ARCHITECTURE §6 "Commit preflight").
 
 ### Paying down a size cap
 
@@ -38,12 +37,13 @@ that would stay correct with the parent far below the cap: its own reason to cha
 explicit contract, a real caller. A cap-driven bucket, a one-caller passthrough, or
 bytes bought by deleting contract-bearing comments, docstrings, messages or tests is a
 defect to report, not paydown (BIBLE P7 «first simplify what exists»). Enforcement:
-CHECKLISTS item 31 `size_cap_paydown`, advisory when applicable.
+CHECKLISTS item 27 `size_cap_paydown`, advisory when applicable.
 
 ### Pragmatic SOLID
 
-SOLID is a direction for making changes legible to future agents, not a demand for
-classes or framework surface:
+SOLID serves the body's health, not minimalism for its own sake: fewer moving parts and
+one owner per fact leave fewer places for bugs and a body Ouroboros can still
+understand. It is a direction, not a demand for classes or framework surface:
 
 - **SRP — Single Responsibility Principle:** one coherent reason and one authority for
   a unit to change.
@@ -57,10 +57,8 @@ classes or framework surface:
   contracts, not provider-specific or concrete details.
 
 No class hierarchy, DI container, numeric score, AST analyzer or new review pass
-follows. A SOLID or minimalism finding names the exact symbol or authority, the
-concrete duplication or coupling, and a smaller alternative that still satisfies the
-contract. Diff size, line count, and file count alone are not findings. Enforcement:
-review-only; CHECKLISTS item 11(d).
+follows. Diff size, line count and file count alone are not findings; CHECKLISTS item
+11(d) says what a finding names (review-only).
 
 ### Shared behavior and data-flow changes
 
@@ -71,7 +69,7 @@ semantics across live and recovery paths at comparable freshness, and make legit
 differences explicit. Verify with falsifiable checks at real consumer boundaries, not
 helper outputs or matching field names, choosing the paths from the change and its
 dependencies rather than a fixed inventory. Enforcement: review-only, through the
-scope-review `cross_module_bugs` and `implicit_contracts` items.
+coupling `implicit_contracts` item.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
@@ -133,7 +131,7 @@ invalid output contracts and delivery failures may affect review authority; wind
 sizing and reading diagnostics alone may not (BIBLE P3). Neither case blanks, rewrites
 or relabels the artifact.
 
-Enforcement: CHECKLISTS item 21 `source_completeness` (critical when applicable).
+Enforcement: CHECKLISTS item 20 `source_completeness` (critical when applicable).
 
 #### Review presentation adapters
 
@@ -163,13 +161,11 @@ here, and enroll it in `hot_store_growth_notes` in the same change.
 
 ### Invariant: Continuation authority and bounded role projections
 
-Continuation is an explicit relation, not an inferred chat-memory feature: the router
-contract requires `predecessor_task_id` (`""` = fresh; omission or `null` is a typed
-refusal before any lookup, enqueue or provider spend), and Main receives only a
-defensive projection of the predecessor authority, never a raw head/tail slice, an
-invented summary or a mutation of the canonical result (ARCHITECTURE §1 "CLI /
-Headless Boundary"); the optional exact read, never a forced reread, is
-`get_task_result(include_authority=True)`.
+Continuation is an explicit relation, not inferred chat memory: only the Continue CAS
+(`continued_by`) links a successor, and new work names no predecessor. Main gets only a
+defensive projection of a predecessor's authority, never a raw head/tail slice, an invented
+summary or a canonical-result mutation (ARCHITECTURE §1 "CLI / Headless Boundary"); the
+optional exact read is `get_task_result(include_authority=True)`.
 
 The root startup injection is a bounded envelope, not a body copy, from the one producer
 `contracts.task_contract.bounded_continuation_envelope`: each field is whole-or-pointer
@@ -182,30 +178,26 @@ for the omitted evidence. Enforcement: `tests/test_continuation_context_authorit
 
 ### Invariant: notifications ring for live events only
 
-Owner-facing notification policy is `docs/DESIGN.md` §9, one canonical section, never
-re-derived here. The engineering rules:
+`docs/DESIGN.md` §9 owns notification policy. `notifications.js::attach()` subscribes
+once to the shared socket in `app.js`; `chat.js` holds no notification code, since a
+closed Project disposes its handlers. Only live frames reach the notifier; that
+boundary, not a persisted ledger, makes replay safe. History and reconnect readers
+never call it; no notification state survives reload.
 
-The subscription is client-level and never moves into a chat instance: an instance dies
-with its room (closing a Project panel disposes its `ws.on` handlers), so a notifier
-inside one is silent in exactly the case notifications exist for, the owner gone and
-the room closed. `notifications.js::attach()` takes one subscription on the shared
-socket in `app.js`; `chat.js` holds no notification code.
+The room gate refuses hidden, A2A and unknown chats. Each task ending has one key;
+a direct ending is an ordinary reply. Frame lineage excludes child banners.
+Activation resolves exact Project identity through `GET /api/projects?chat_id=…`,
+independent of the capped sidebar. Missing, inactive or unreadable destinations show
+unavailable without navigating. Established Main notices, including Telegram, open Main.
+A later click supersedes an unfinished lookup; hydration stays silent.
 
-Only live frames reach it; history and reconnect backfill run through the instances'
-own readers, which never call it. That boundary, not a persisted ledger, makes replay
-safe, so no notification state survives a reload. The room gate is the client's
-owner-visible chat set (hidden partition, A2A ids and unknown chats refused); one
-ending is one key per task (a direct turn's ending is an ordinary reply, not a
-finished task); lineage comes from the delegation facts frames carry, so a child never
-reaches the owner's banner.
-
-Classification and gating are pure over one frame and stored preferences, testable
-without a DOM or socket. Preferences are client-local: no `s-` field, excluded from the
-settings-dirty tracker, never sent to `/api/settings`. Delivery degrades instead of
-disappearing and never asks for OS permission itself; importance adds no host field,
-text heuristic or second model call (mechanism: the `web/modules/notifications.js`
-header). Enforcement: `tests/test_notifications_static.py` asserts these causes, not
-just effects.
+Classification and gating are pure over a frame and stored preferences, testable
+without DOM or socket. Preferences stay client-local, outside `s-`, settings-dirty
+tracking and `/api/settings`. Delivery degrades rather than disappearing and never
+requests OS permission. Importance adds no host field, text heuristic or model call
+(mechanism: `web/modules/notifications.js` header). Enforcement:
+`tests/test_notifications_static.py`, `tests/test_notification_destination.py`,
+`web/tests/notifications.test.js`.
 
 ### Invariant: UI resources carry a disposer
 

@@ -4,9 +4,10 @@ GR7-1  ingress gaps of the GR6-1 live-ownership predicate: (a) the worker-side
        queue-snapshot twin fails OPEN toward liveness — a missing, unreadable,
        or STALE snapshot cannot prove a dead worker, so the agent cancel tool
        mints the intent instead of answering "Nothing to cancel" over a
-       burning worker; (b) the HTTP cascade endpoint's 404 pre-check consults
-       the same live-ownership predicate — a settled-but-LIVE root proceeds to
-       mint + custody, a settled-AND-dead tree keeps the 404 envelope;
+       burning worker; (b) the HTTP cascade Stop asks the same live-ownership
+       predicate once its intent request found the root settled — a
+       settled-but-LIVE root mints + runs custody, a settled-AND-dead tree
+       keeps the 404 envelope;
 GR7-2  verbatim preservation order in the settled-capture kill lane: the
        settled short-circuit runs ABOVE every mutating step (child copy-back,
        artifact finalize, memory export) — the stored terminal row survives
@@ -174,7 +175,7 @@ def test_gr7_1a_cancel_tool_mints_the_intent_on_missing_and_stale_snapshots(
 
 
 # --------------------------------------------------------------------------
-# GR7-1b — the HTTP cascade 404 pre-check consults live ownership
+# GR7-1b — a settled HTTP cascade target consults live ownership
 # --------------------------------------------------------------------------
 
 
@@ -190,28 +191,40 @@ def _client(tmp_path):
 
 def test_gr7_1b_cascade_proceeds_for_a_settled_but_live_root(qenv, monkeypatch):
     """A settled root still holding its RUNNING row (worker burning post-task
-    cognition) used to 404 BEFORE the intent mint. It must mint + run custody."""
-    import ouroboros.gateway.tasks as tasks_mod
+    cognition) used to 404 BEFORE the intent mint. It must mint + run custody:
+    the worker dies, the stored answer survives."""
+    from supervisor import workers
 
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: _CaptureQueue(), raising=False)
+    monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
+    state = _install_live_worker(qenv, monkeypatch, "root7")
     write_task_result(qenv.drive, "root7", STATUS_COMPLETED, chat_id=3,
                       result="settled while the worker burns")
     qenv.q.RUNNING["root7"] = {"task": {"id": "root7", "chat_id": 3,
-                                        "root_task_id": "root7"}}
+                                        "root_task_id": "root7"}, "worker_id": 0}
     seen: dict = {}
+    real_custody = qenv.q.cancel_task_custody
 
-    def _capture_teardown(task_id):
+    def _custody_sees_the_intent(task_id, **kwargs):
         seen.update(ci.active_intent(qenv.drive, task_id) or {})
-        return True
+        return real_custody(task_id, **kwargs)
 
-    monkeypatch.setattr(tasks_mod, "_run_cascade_cancel", _capture_teardown)
+    monkeypatch.setattr(qenv.q, "cancel_task_custody", _custody_sees_the_intent)
     with _client(qenv.drive) as client:
         response = client.post("/api/tasks/root7/cancel", json={"cascade": True})
 
     assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "task_id": "root7", "cascade": True}
     assert seen.get("scope") == "cascade", (
         "GR7-1b: the settled-but-live root proceeds to mint + custody"
     )
     assert seen.get("source") == "http_cascade"
+    assert not state["alive"], "the still-spending worker is killed"
+    stored = load_task_result(qenv.drive, "root7")
+    # The kill is about the process, never the result (the cascade's one
+    # summary receipt rides the root row beside it).
+    assert (stored["status"], stored["result"]) == (STATUS_COMPLETED, "settled while the worker burns")
+    assert ci.active_intent(qenv.drive, "root7") is None
 
 
 def test_gr7_1b_settled_and_dead_root_keeps_the_404_envelope(qenv):
@@ -239,7 +252,7 @@ def test_gr7_2_shared_drive_settled_row_survives_byte_identical(qenv, monkeypatc
 
     task_id = "shared7"
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     state = _install_live_worker(qenv, monkeypatch, task_id)
     qenv.q.RUNNING[task_id] = {
@@ -274,7 +287,7 @@ def test_gr7_2_split_drive_child_answer_never_replaces_the_settled_canonical(
 
     task_id = "split7"
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
     state = _install_live_worker(qenv, monkeypatch, task_id)
     child_drive = qenv.drive / "child-drive"
@@ -346,7 +359,7 @@ def test_gr7_3_settled_lingering_root_gets_exactly_one_summary(qenv, monkeypatch
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "w7-root"
@@ -394,7 +407,7 @@ def test_gr7_3_stuck_nonsettled_task_still_gets_recancelled(qenv, monkeypatch):
 
     done = _patch_project_registry(monkeypatch)
     queue = _CaptureQueue()
-    monkeypatch.setattr(workers, "get_event_q", lambda: queue, raising=False)
+    monkeypatch.setattr(workers, "get_event_q", lambda *, create=True: queue, raising=False)
     monkeypatch.setattr(qenv.q, "_emit_cancel_task_done", lambda *a, **kw: None)
 
     root_id = "w7b-root"

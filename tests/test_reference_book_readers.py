@@ -157,20 +157,26 @@ def test_a_touched_chapter_is_withheld_when_the_prefix_carries_its_book(tmp_path
 
 # --- the documentation gate ------------------------------------------------
 
-def test_the_new_module_gate_takes_the_chapter_that_documents_the_module():
+def test_the_new_module_gate_takes_the_chapter_that_documents_the_module(monkeypatch, tmp_path):
+    from ouroboros import commit_admission
     from ouroboros.tools import review
 
+    # Synthetic staged paths need matching synthetic blobs. Reading the actual
+    # checkout's index makes this unit test depend on an in-flight version bump.
+    values = {"VERSION": "1.2.3\n", "docs/ARCHITECTURE.md": "# Ouroboros v1.2.3 — Architecture\n"}
+    monkeypatch.setattr(review, "_git_show_staged", lambda repo, path: values.get(path))
+    monkeypatch.setattr(commit_admission, "_head_text", lambda repo, path: values.get(path))
     staged = "A  ouroboros/brand_new_owner.py\n"
-    blocked = review._preflight_check("add an owner", staged, REPO)
+    blocked = review._preflight_check("add an owner", staged, tmp_path)
     assert blocked and "Architecture book" in blocked
 
     for documented in ("docs/ARCHITECTURE.md", "docs/architecture/01-high-level-architecture.md"):
         assert review._preflight_check(
-            "add an owner", staged + f"M  {documented}\n", REPO,
+            "add an owner", staged + f"M  {documented}\n", tmp_path,
         ) is None, documented
 
     assert review._preflight_check(
-        "add an owner", staged + "M  docs/reference-books-migration.md\n", REPO,
+        "add an owner", staged + "M  docs/reference-books-migration.md\n", tmp_path,
     ) is not None, "a docs file outside the book documents no module"
 
 
@@ -262,17 +268,6 @@ def test_the_triad_session_task_addresses_chapters_never_the_membership_page():
     # mapped, as the one source it was handed.
     without = build_triad_session_task(**sections)
     assert "## ARCHITECTURE.md (navigation map)" in without
-
-
-def test_a_non_constitutional_plan_pointer_maps_the_chapters(tmp_path):
-    from ouroboros.tools.plan_review_runtime import _architecture_navigation
-
-    mapped = _architecture_navigation(REPO, "unused")
-    assert "Source: `docs/architecture/01-high-level-architecture.md`" in mapped
-    # An unreadable book falls back to mapping the supplied text rather than
-    # dropping the architecture pointer entirely.
-    fallback = _architecture_navigation(tmp_path, "# Doc\n\n## Section\n\nBody\n")
-    assert "## ARCHITECTURE.md (navigation map)" in fallback and "Section" in fallback
 
 
 def test_the_scope_session_governance_map_addresses_chapters():

@@ -101,6 +101,9 @@ def _consumer(tmp_path, monkeypatch, access, *, workspace=None, metadata=None):
         ctx.workspace_root, ctx.workspace_mode = workspace, "external"
     ctx.task_id = "child"
     ctx.task_metadata = {"root_task_id": "parent", "parent_task_id": "parent", **(metadata or {})}
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(data, "parent") is None:  # the child's root exists before it delegates
+        write_task_result(data, "parent", "running", root_task_id="parent")
     handler = next(tool.handler for tool in delegate.get_tools() if tool.name == "delegate_start")
     custody._CUSTODY.clear()
     return ctx, engine, lambda **kw: json.loads(handler(ctx, prompt="Check the component", subagent_id="checker", **kw))
@@ -263,19 +266,19 @@ def test_an_unchanged_copy_is_empty_and_only_a_genuine_source_edit_is_drift(tmp_
 
 
 def test_a_source_edit_during_provisioning_still_refuses_the_investigation(tmp_path, monkeypatch):
-    from ouroboros import artifacts
+    from ouroboros import subagent_worktrees
     from ouroboros.subagent_worktrees import _load_registry
 
     project, folder = _project(tmp_path)
     _source_local(project, "autocrlf")
-    copy = artifacts.copy_artifact_file
+    copy = subagent_worktrees._fill_private_copy
 
-    def owner_edits_while_copied(source, destination, **kwargs):
+    def owner_edits_while_copied(source, destination, copy_root):
         if Path(source).name == "mod.py":
             Path(source).write_bytes(b"VALUE = 9\r\n")
-        return copy(source, destination, **kwargs)
+        return copy(source, destination, copy_root)
 
-    monkeypatch.setattr(artifacts, "copy_artifact_file", owner_edits_while_copied)
+    monkeypatch.setattr(subagent_worktrees, "_fill_private_copy", owner_edits_while_copied)
     ctx, engine, start = _consumer(tmp_path, monkeypatch, "full", workspace=folder)
     refused = start()
     assert refused["reason"] == "execution_snapshot_failed" and refused["definitely_unrun"] is True, refused

@@ -90,11 +90,11 @@ def test_early_cancel_is_revisited_by_the_existing_maintenance_pass(env, monkeyp
     env.live.add("child")
 
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
     assert _final(env, reservation)["state"] == "dispatched"
     env.live.clear()
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
 
     assert not lock.locked()
     assert is_abandoned_settlement(_final(env, reservation))
@@ -111,7 +111,7 @@ def test_early_cancel_is_revisited_by_the_existing_maintenance_pass(env, monkeyp
     assert root["result"] == "Preserved root answer" and root["status"] == "cancelled"
     before = ledger_rows(env.root), _events(env)
     lock.acquire()
-    maintenance._run_cancel_delivery_ref_sweep(env.root)
+    maintenance._run_terminal_duty(env.root, "abandoned_usage_reconciliation", lock)
     assert (ledger_rows(env.root), _events(env)) == before
 
 
@@ -189,7 +189,10 @@ def _remote_receipt(env, reservation, operation_id):
                            "response_ref": {"sha256": "sha256:" + hashlib.sha256(raw.encode()).hexdigest(), "sizeBytes": len(raw.encode())}})
 
 
-def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(env, monkeypatch):
+def test_late_remote_receipt_after_ended_custody_is_not_searched_but_settles_once(env, monkeypatch):
+    """Once the engine said the call is over, maintenance stops looking for its price; the
+    attempt keeps its ONE late receipt for an explicit writer, which refreshes own and root
+    cost without another charge."""
     from ouroboros import claudexor_daemon
 
     _terminal(env)
@@ -209,12 +212,19 @@ def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(
 
     monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", Gateway)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert is_abandoned_settlement(_final(env, reservation))
+    ended = _final(env, reservation)
+    assert is_abandoned_settlement(ended) and ended["recovery"]["outcome"] == "terminal"
     assert calls == ["operation", "closed"]
     _remote_receipt(env, reservation, "operation")
     maintenance._reconcile_abandoned_usage(env.root)
+    assert calls == ["operation", "closed"] and _final(env, reservation) == ended
+    assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.25 and not usage.usage_projection(
+        env.root)["confirmed_usd"]
 
-    assert calls == ["operation", "closed"], "the retained exact receipt requires no daemon"
+    usage.settle_attempt(reservation, {}, cost_usd=0.4, cost_final=True)
+    assert _final(env, reservation)["settle_reason"] == "late_receipt"
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert calls == ["operation", "closed"]
     projection = usage.usage_projection(env.root)
     assert projection["accounted_usd"] == projection["confirmed_usd"] == 0.4
     assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 0.4
@@ -224,6 +234,54 @@ def test_late_remote_receipt_refreshes_own_and_root_cost_without_another_charge(
     before = ledger_rows(env.root), _events(env)
     maintenance._reconcile_abandoned_usage(env.root)
     assert (ledger_rows(env.root), _events(env)) == before
+
+
+def test_terminal_received_chat_receipt_without_result_bytes_reads_them_once(env, monkeypatch):
+    """A terminal ``response_received`` chat receipt that kept only operation detail reads the
+    exact ready result once, retains it, ACKs it (a chat row has no artifact consumer) and
+    settles the original attempt; the next pass needs no daemon."""
+    from ouroboros import claudexor_daemon
+    from ouroboros.observability import read_call_payload
+
+    _terminal(env)
+    reservation = _attempt(env, provider="claudexor")
+    _remote_request(env, reservation, "operation")
+    raw = json.dumps({"outcome": "completed", "usage": {}, "cost": {"knowledge": "exact", "cashUsd": 0.4}}).encode()
+    ref = {"resourceId": "result", "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "sizeBytes": len(raw)}
+    persist_call(env.root, task_id="child", call_id=f"{reservation.attempt_id}_model_response",
+                 call_type="llm_claudexor_response", payload={"operation": {"id": "operation"}}, keep_raw=True,
+                 manifest={"invocation_id": reservation.attempt_id, "operation_id": "operation",
+                           "operation_state": "succeeded", "dispatch_state": "response_received"})
+    calls = []
+
+    class Gateway:
+        def get_model_operation(self, operation_id, **_kw):
+            calls.append(("read", operation_id))
+            return {"id": operation_id, "state": "succeeded", "dispatch": {"state": "response_received"},
+                    "response": {"state": "ready", "ref": ref}}
+
+        def get_model_result(self, operation_id, *, expected_ref, raw_bytes, **_kw):
+            assert expected_ref == ref and raw_bytes is True
+            calls.append(("result", operation_id))
+            return raw
+
+        def acknowledge_model_result(self, operation_id, digest):
+            calls.append(("ack", operation_id, digest))
+
+        def close(self):
+            calls.append(("closed",))
+
+    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", Gateway)
+    maintenance._reconcile_abandoned_usage(env.root)
+    row = _final(env, reservation)
+    assert row["state"] == "settled" and row["cost_usd"] == 0.4 and not is_abandoned_settlement(row)
+    assert calls == [("read", "operation"), ("result", "operation"), ("ack", "operation", ref["sha256"]), ("closed",)]
+    _manifest, payload, _ref = read_call_payload(env.root, task_id="child",
+                                                 call_id=f"{reservation.attempt_id}_model_response")
+    assert payload["result_json_utf8"].encode() == raw
+    monkeypatch.setattr(claudexor_daemon, "read_owned_gateway", lambda: pytest.fail("the result is retained"))
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert len(calls) == 4 and _final(env, reservation)["state"] == "settled"
 
 
 def test_daemon_failure_stops_remote_reads_for_one_pass_but_native_work_continues(env, monkeypatch):

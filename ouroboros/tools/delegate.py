@@ -56,6 +56,7 @@ from ouroboros.delegate_source_coverage import (
 )
 from ouroboros.delegate_supervision import delegate_wait_entry as _delegate_wait_entry
 from ouroboros.delegate_start_instructions import (
+    HOST_FACTS_INSTRUCTION as _HOST_FACTS_INSTRUCTION,
     HOST_INSTRUCTIONS as _HOST_INSTRUCTIONS,
     UNPROVEN_BOUNDARY_INSTRUCTION as _UNPROVEN_BOUNDARY_INSTRUCTION,
     access_instruction,
@@ -182,9 +183,8 @@ def _host_instructions(authority: "DelegatedRunShape", assignment: str = "",
     (``payload_skill`` non-empty) gets the truthful variant: editing the selected
     skill's user-authored files IS the assignment (gate fix 3).
     """
-    text = _HOST_INSTRUCTIONS
-    if payload_skill:
-        text = payload_host_instructions(text, payload_skill)
+    text = payload_host_instructions(_HOST_INSTRUCTIONS, payload_skill) if payload_skill else _HOST_INSTRUCTIONS
+    text += _HOST_FACTS_INSTRUCTION  # the engine's host facts, once, for every delegated session
     if authority.delegated:
         text += (
             " No filesystem sandbox is requested; scoped HOME selects native state "
@@ -348,7 +348,7 @@ def _start_argument_refusal(ctx: ToolContext, text: str, selector_root: str, ret
     already behind the nanny (``definitely_unrun`` = the producer's own no-run
     verdict, P2), and the continuation selector shapes one call cannot combine: a
     retry replays an old key byte-identically while a continuation is a NEW
-    intention over a settled run, and a skill-payload selector run keeps its own
+    intention over a finished run, and a skill-payload selector run keeps its own
     target semantics."""
     if not text.strip() and not str(continue_from or "").strip() and not str(retry_of or "").strip():
         return "", _fail("delegate_start", "empty_prompt", "prompt is required")
@@ -370,7 +370,7 @@ def _start_argument_refusal(ctx: ToolContext, text: str, selector_root: str, ret
     token = str(continue_from or "").strip()
     if token and str(retry_of or "").strip():
         return token, _fail("delegate_start", "continuation_selector_conflict",
-                            "continue_from starts a NEW run bound to a settled predecessor; retry_of replays a "
+                            "continue_from starts a NEW run bound to a finished predecessor; retry_of replays a "
                             "pending invocation. Supply one of them.", definitely_unrun=True)
     if token and str(selector_root or "").strip():
         return token, _fail("delegate_start", "continuation_resource_conflict",
@@ -470,7 +470,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         )
 
     access = authority.access
-    requested = recovering  # Recovery may already own a physical run.
+    start_attempted = recovering  # Recovery may already own a physical run.
     try:
         gateway = ensure_owned_gateway()
     except ClaudexorUnavailable as exc:
@@ -616,7 +616,12 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     reason=reason, invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id),
                 ),
             )
-        handle = run_operation(ctx, gateway.start_run, request_body, idempotency_key=invocation_id)
+        def submit():
+            nonlocal start_attempted
+            start_attempted = True  # The durable request is not physical submission.
+            return gateway.start_run(request_body, idempotency_key=invocation_id)
+
+        handle = run_operation(ctx, submit)
         run_id = str(handle.get("runId") or handle.get("jobId") or "")
         if not run_id:
             return _fail("delegate_start", "queued_without_run_id",
@@ -624,39 +629,34 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                          pending_invocation_id=invocation_id, retry_hint=_RETRY_HINT,
                          **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                              definite_refusal=False, reason="queued_without_run_id", invocation_id=invocation_id))
-    except (ClaudexorUnavailable, OwnerPauseRefused) as exc:
-        code = getattr(exc, "code", str(exc))
-        # A registration we created BEFORE the start must not outlive a failed start.
-        # It used to be left behind with nothing anywhere naming its id.
-        status = int(getattr(exc, "status_code", 0) or 0)
-        definite = (isinstance(exc, OwnerPauseRefused) and not recovering) or 400 <= status < 500 or not requested
-        # An UNKNOWN outcome hands back the retry token: only the caller can say
-        # whether the next call is a retry of this intention or a new intention, and
-        # without the token every next call is a new one. A definite refusal retires
-        # the id, so no token rides a refusal.
-        pending = ({} if definite or not invocation_id else
-                   {"pending_invocation_id": invocation_id,
-                    "retry_hint": _RETRY_HINT})
-        return _fail("delegate_start", code, str(exc), executor="blocked",
-                     **({"definitely_unrun": True} if not requested else {}),
-                     reset_at=getattr(exc, "reset_at", ""), **pending,
-                     **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
-                         definite_refusal=definite, reason=code,
-                         invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id)))
     except BaseException as exc:
-        # EVERY pre-custody exit leaves a durable disposition, including the ones no
-        # typed handler claims (a bug here, a timeout, a signal). NEVER retired: an
-        # untyped exit says nothing about whether the POST reached the daemon, so a run
-        # may be live against it. Named with a typed reason so the sweep's
-        # pending-invocation recovery finds it, then re-raised — disclosure, not a swallow.
-        _retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
-                                      definite_refusal=False,
-                                      reason=f"pre_custody_exit_{type(exc).__name__}",
-                                      invocation_id=invocation_id)
-        raise
+        typed = isinstance(exc, (ClaudexorUnavailable, OwnerPauseRefused))
+        code = getattr(exc, "code", str(exc)) if typed else f"pre_custody_exit_{type(exc).__name__}"
+        status = int(getattr(exc, "status_code", 0) or 0) if typed else 0
+        # A request row is not a POST; an entered callable stays unknown unless
+        # its typed refusal proves otherwise. Recovery retains its original fate.
+        definite = not start_attempted or 400 <= status < 500 or (
+            isinstance(exc, OwnerPauseRefused) and not recovering)
+        try:
+            cleanup = _retire_orphaned_registration(
+                ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
+                definite_refusal=definite, reason=code,
+                invocation_id=invocation_id, snapshot_id=("" if recovering else snapshot_id))
+        except Exception:
+            log.warning("Start cleanup failed for %s", invocation_id, exc_info=True)
+            cleanup = {"project_id": owned_project_id, "project_retired": False,
+                       "project_retention_reason": "cleanup_unconfirmed"}
+        if not typed:
+            raise
+        # Only the caller identifies a retry: unknown returns the original token;
+        # definite refusal retires it, so the next intention gets a new identity.
+        pending = ({} if definite or not invocation_id else
+                   {"pending_invocation_id": invocation_id, "retry_hint": _RETRY_HINT})
+        return _fail("delegate_start", code, str(exc), executor="blocked",
+                     **({"definitely_unrun": True} if not start_attempted else {}),
+                     reset_at=getattr(exc, "reset_at", ""), **pending, **cleanup)
     finally:
         gateway.close()
-
     # A start whose custody row did not land does not wear the plain name: the run
     # is live and only THIS process knows it exists (the uncustodied-run leak).
     durable = record_started_custody(
@@ -814,7 +814,7 @@ def _retire_orphaned_registration(ctx: ToolContext, gateway: Any, project_id: st
                                   snapshot_id: str = "", history_facts: Optional[dict] = None) -> Dict[str, Any]:
     """Retire a registration this start created but never bound to a run.
 
-    Only when the daemon gave a DEFINITE negative answer (a 4xx refusal): a transport
+    Only a proven unsent start or a definite negative daemon answer permits retirement. A transport
     error, a 5xx, or a 2xx handle with no run id all mean the POST's fate is unknown, and
     a run may well be live against this very registration. An unverified outcome is never
     grounds for destroying state — the durable row names the id either way, which is what
@@ -893,7 +893,7 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
     the engine's schema bound narrowed it (each named); an omitted ask derives
     from the tighter of deadline and lifetime, else the operation window.
     """
-    from ouroboros.config import get_task_abs_ceiling_sec, operation_window_sec
+    from ouroboros.config import operation_window_sec, resolve_task_execution_timeout_sec
     from ouroboros.deadline_utils import deadline_remaining_sec, has_deadline
     from ouroboros.delegate_registration_policy import (
         CAP_BASIS_DEADLINE_DERIVED, CAP_BASIS_LIFETIME_DERIVED, CAP_BASIS_OPERATION_WINDOW,
@@ -912,15 +912,18 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
             return MaxSecondsBound(0, "", "task_deadline_too_close",
                                    "Less than one second of this task's deadline remains: no delegated run "
                                    "can be started under it. Finalize with what you have.")
-    # Seconds of the task's FINITE lifetime still unspent (``None`` = unlimited).
+    # Seconds of the task's FINITE execution bound still unspent (``None`` = unlimited):
+    # the narrower of its API/CLI ``execution_timeout_sec`` and the global ceiling (#939).
     # Cumulative EXECUTION time decides, never a reset clock: the live model-wait
-    # owner's window (elapsed minus the quota union minus the budget-paused
+    # owner's window (offset plus elapsed minus the quota union minus the budget-paused
     # carrier) when this task's is bound, else the same arithmetic over the
     # original ``task_started_at`` and the paused carrier the resume handed over
     # (quota waits unknown here count as execution — the narrower direction).
     # No recorded start uses the operation-bounded ceiling; a failed clock read
     # is a typed unknown-lifetime refusal, never a fresh finite window.
-    lifetime_left: Optional[float] = get_task_abs_ceiling_sec()
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    lifetime_left: Optional[float] = resolve_task_execution_timeout_sec(metadata)
     if lifetime_left is not None:
         try:
             from ouroboros.model_wait import current_model_wait, execution_elapsed_seconds
@@ -938,7 +941,8 @@ def bounded_max_seconds(ctx: ToolContext, requested: Optional[int]) -> MaxSecond
                 if paused is None:
                     paused = (getattr(ctx, "budget_pause_resume", None) or {}).get("paused_duration_sec")
                 executed = execution_elapsed_seconds(
-                    {"started_at": float(started), "budget_paused_sec": float(paused or 0.0),
+                    {"_execution_consumed_sec": metadata.get("_execution_consumed_sec"),
+                     "started_at": float(started), "budget_paused_sec": float(paused or 0.0),
                      "model_wait_quota_clock": {}}, time.time())
                 lifetime_left = max(0.0, float(lifetime_left) - executed)
             else:
@@ -1067,6 +1071,10 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
     if not_mine or entry is None:
         return (not_mine or _fail("delegate_wait", "run_ownership_unknown",
                                   "custody unresolved", run_id=rid)).text
+    from ouroboros.tools.delegate_terminal_evidence import retained_terminal_result
+    retained = retained_terminal_result(ctx, rid)
+    if retained is not None:
+        return json.dumps(retained, ensure_ascii=False, indent=2)
     ceiling = get_delegate_wait_max_sec()
     try:
         window = int(wait_sec) if wait_sec is not None else get_delegate_wait_sec()
@@ -1150,36 +1158,9 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                               drain_sec=read_window() if state in _TERMINAL_STATES else None)
                 baseline = last_seq          # so the NEXT advance is counted once
             if state in _TERMINAL_STATES:
-                settlement = custody.settle_run(custody.custody_root(ctx), gateway, entry, detail)
-                payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
-                payload["settlement"] = settlement
-                # C1: a mutating run's changes live in its private snapshot until the
-                # nanny explicitly integrates them. Captured HERE, durably, on every
-                # terminal observation (idempotent), cancelled runs included — a
-                # cancelled run's partial work is salvage material, not garbage.
-                capture = _capture_terminal_patch(ctx, entry, **(
-                    {"gateway": gateway} if entry.resource_ref.get("workspace_kind") == "directory" else {}))
-                if capture is not None:
-                    payload["workspace_capture"] = capture
-                # D7 made load-bearing: settlement is where "paid for and never read"
-                # becomes permanent, so the parent is told in WORDS here — not left to
-                # infer it from `output_delivery.consumed`. Re-settling an already
-                # settled run reports the CURRENT durable fact, so the line disappears
-                # once the read has happened rather than echoing a stale omission.
-                if custody.record_settled_unread(custody.custody_root(ctx), entry):
-                    payload["result_not_collected"] = (
-                        "THIS RESULT IS NOT COLLECTED YET: the run is settled and its "
-                        "full output is staged, but nothing has read it to EOF. Read the "
-                        "artifact with the read_file arguments in "
-                        "output_delivery.read_next until it is covered end to end — a result you "
-                        "have not read is not a result you may report."
-                    )
-                # The containment disclosure is read off what the PARENT was told, so the
-                # durable line and the relayed payload cannot disagree. It runs on the
-                # PREVIEW path too: a payload big enough to spill is exactly the one whose
-                # containment block a reader is least likely to reach.
-                _record_containment(ctx, entry, payload)
-                return json.dumps(payload, ensure_ascii=False, indent=2)
+                from ouroboros.tools.delegate_terminal_evidence import collect_and_deliver_terminal
+                return json.dumps(collect_and_deliver_terminal(ctx, rid, detail, authority, entry, gateway),
+                                  ensure_ascii=False, indent=2)
             pending = _cx_pending(detail)
             if pending and _interactions_are_news(rid, pending):
                 # A NEW question returns IMMEDIATELY: the old wait kept only the
@@ -1233,6 +1214,10 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                 return _expired()   # unanswered AT expiry: expire on what is already held
             detail = fresh
     except ClaudexorUnavailable as exc:
+        from ouroboros.tools.delegate_terminal_evidence import retained_terminal_after_gap
+        retained = retained_terminal_after_gap(ctx, rid, str(exc.code))
+        if retained is not None:
+            return json.dumps(retained, ensure_ascii=False, indent=2)
         if observation_only and exc.observation_timeout:
             # The gateway's per-class reason, not the generic transport code: a
             # read bound that expired against a live daemon is a quiet hole and
@@ -1357,7 +1342,7 @@ def get_tools() -> List[ToolEntry]:
                 "subagent_id. A configured session's exact leaf is already started before your first round: "
                 "supervise the startup receipt's run, never duplicate it. Replacement with prompt='' requires "
                 "verified cancellation/terminal settlement or a typed refusal proving no run exists. "
-                "Recover an unknown start with retry_of, without a new selector; continue settled work "
+                "Recover an unknown start with retry_of, without a new selector; continue finished work "
                 "with continue_from (see arguments). This call requests no extra Claudexor review panel; "
                 "new ordinary runs on engine 3.9.8+ default to none. The receipt names engine_version; "
                 "older engines or a recovered historical run may retain earlier review behavior. Engine review, execution, "
@@ -1379,8 +1364,8 @@ def get_tools() -> List[ToolEntry]:
                     "Lower native access to readonly or workspace_write; omit to inherit the captured profile "
                     "(new mutating sessions default full). Explicit readonly authority wins. Omit on retry_of."},
                 "effort": {"type": "string", "enum": ["auto", *EFFORT_SCALE], "default": "auto", "description":
-                    "The run's reasoning effort inside my human's effort range: auto/omitted = the recommended "
-                    "level; outside the range it runs at the nearest bound. A row my human pinned or a level in "
+                    "The run's reasoning effort: auto/omitted = this room's primary clamped into its helper "
+                    "bounds; outside those bounds it runs at the nearest bound. A row my human pinned or a level in "
                     "its model name keeps that level outside Cyber Pro; the receipt says so. Omit on retry_of."},
                 "root": {"type": "string", "enum": ["active_workspace", "skill_payload"],
                     "default": "active_workspace", "description":
@@ -1405,16 +1390,16 @@ def get_tools() -> List[ToolEntry]:
                     "(often 3-5+ minutes). An advancing delegate_wait cursor means progress; the run enforces "
                     "its own cap. Do not cancel progressing work just to hurry it."},
                 "continue_from": {"type": "string", "description":
-                    "Continue a settled run after cap, subscription limit, crash/restart, cancel or input_required. "
+                    "Continue a finished run after cap, subscription limit, crash/restart, cancel or input_required. "
                     "Prefer this when work is worth keeping. It must belong to your task line: yours, your confirmed "
                     "retry predecessor's, or the predecessor's task tree in an owner-created Continue root. "
                     "The engine reuses the session where possible, else briefs a new one with retained evidence; "
                     "some work may need repeating. A writer keeps its undisposed private snapshot as one cumulative "
                     "patch, superseding the old capture. prompt carries only new work/answers/corrections and may "
                     "be empty. For resumable pool_exhausted or a limit with resetsAt, use "
-                    "await_messages(wake_at=resetsAt) before continuing. Must be settled, not already continued "
-                    "(otherwise use the head), with no ambiguous apply and no wider access. Select subagent_id "
-                    "as for a start; configured sessions omit it. Never combine with retry_of."},
+                    "await_messages(wake_at=resetsAt) before continuing. Needs an observed terminal (not settled "
+                    "money), not already continued (otherwise use the head), no ambiguous apply, no wider access. "
+                    "Select subagent_id as for a start; configured sessions omit it. Never combine with retry_of."},
                 "continue_carrier": {"type": "string", "enum": ["auto", "packet"], "description":
                     "With continue_from: auto (default) reuses the session where possible; packet starts a new "
                     "session with retained evidence when the old session has gone astray."},
@@ -1437,10 +1422,11 @@ def get_tools() -> List[ToolEntry]:
                 "same quiet renewal (typed reason daemon_unreachable, told to the owner once per "
                 "outage); while such a read hangs, a finalize_now/hurry control is noticed only "
                 "when it returns, up to ~60 s later rather than on the 3 s beat. "
-                "Terminal settlement, a new interaction, "
+                "An observed terminal, a new interaction, "
                 "fault, addressed owner/task message, a direct-child attention/terminal event, "
                 "cancel/deadline control, recovery judgment, or an explicit one-shot checkpoint "
-                "wakes exactly once. Every wake carries `sleep` (measured over this whole call), "
+                "wakes exactly once. Usable terminal output returns before pending host capture/accounting; "
+                "rereading it is immediate, not a wait for that preparation. Every wake carries `sleep` (measured over this whole call), "
                 "`leaf_live_input` (the route's declared live-input capability, 'unknown' when "
                 "unread) and, once the prompt-cache horizon has passed since your last model "
                 "response, one cache_horizon_note. A run that asks its "

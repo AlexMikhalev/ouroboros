@@ -1,12 +1,16 @@
 """Regressions for the dispositioned S5 pack and reader findings."""
 from __future__ import annotations
 
+import builtins
+import errno
 import gzip
 import hashlib
 import json
+import lzma
 import os
 import pathlib
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -180,16 +184,23 @@ def test_outbox_and_owner_changes_wake_skipped_tasks(root, blocker):
     assert packer.run_pass(root)["packed"] == 1 and not _loose(refs[0])
 
 
-def test_shared_blob_cleanup_retries_after_last_live_reference_settles(root):
+def test_kept_shared_blob_rests_until_the_last_live_sharer_settles(root):
     raw = b'{"shared":true}'
     refs, _ = _task(root, "settled", blobs=1, payloads=[raw])
     _task(root, "live", status="running", blobs=1, payloads=[raw])
-    for _ in range(3):
-        assert packer.run_pass(root)["kept"] >= 1
+    first = packer.run_pass(root)
+    assert (first["kept"], first["packed"], first["swept"]) == (1, 1, 2) and _loose(refs[0])
+    second = packer.run_pass(root)  # once more: the directory revision after its own unlinks (as before)
+    assert (second["examined"], second["kept"], second["swept"]) == (1, 1, 1)
+    for _ in range(2):  # then no treadmill: the settled task is not re-examined, re-verified or re-kept
+        assert packer.changed_tasks(root) == []
+        rest = packer.run_pass(root)
+        assert (rest["candidates"], rest["examined"], rest["kept"], rest["verified_bytes"]) == (0, 0, 0, 0)
         assert _loose(refs[0])
-    _result(root, "live")
+    _result(root, "live")  # the sharer's own stamp moves: ITS pass packs and unlinks the shared blob
+    assert packer.changed_tasks(root) == ["live"]
     assert packer.run_pass(root)["faults"] == 0
-    assert not _loose(refs[0])
+    assert not _loose(refs[0]) and packs.blob_bytes(root, refs[0]) == raw
     packer.run_pass(root)
     assert packer.changed_tasks(root) == []
 
@@ -212,7 +223,7 @@ def test_old_index_schema_rebuilds_without_rewriting_sidecars(root):
     packer.run_pass(root)
     directory = packs.packs_dir(root)
     sidecar = (directory / "indexed.members.json").read_bytes()
-    with sqlite3.connect(directory / packs.INDEX_NAME) as conn:
+    with closing(sqlite3.connect(directory / packs.INDEX_NAME)) as conn, conn:
         conn.execute("DROP TABLE members")
         conn.execute("CREATE TABLE members (sha256 TEXT, task_id TEXT, generation INTEGER, offset INTEGER, "
                      "size INTEGER, kind TEXT, PRIMARY KEY (sha256, task_id, generation))")
@@ -415,13 +426,14 @@ def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monke
     unit._process = child
     unit.tick(root, REPO)
 
-    def walk(_):
+    def walk(_, _stop):
         entered.set()
         assert release.wait(5)
         return ["candidate"]
 
-    monkeypatch.setattr(packer, "changed_tasks", walk)
-    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: pytest.fail("spawned after Stop"))
+    monkeypatch.setattr(packer, "packing_pending", walk)
+    spawns = []
+    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: spawns.append(a) or _FakeChild(b""))
     tick = threading.Thread(target=unit.tick, args=(root, REPO))
     stop = threading.Thread(target=lambda: (unit.stop(), stopped.set()))
     tick.start()
@@ -437,6 +449,7 @@ def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monke
         if unit._thread is not None:
             unit._thread.join(3)
     assert not tick.is_alive() and not stop.is_alive()
+    assert spawns == [], "spawned after Stop"
 
 
 def test_restore_and_preflight_cover_all_descendants_but_not_symlink_drives(root):
@@ -515,6 +528,37 @@ def test_unpacker_is_published_before_unlink_and_write_failure_keeps_loose(root,
     monkeypatch.setattr(os, "unlink", unlink)
     assert packer.run_pass(root)["faults"] == 0
     assert not any(path.exists() for path in loose)
+
+
+def test_archive_fsync_uses_a_writable_handle(root, monkeypatch):
+    source = root / "archive/usage_ledger/segment_ep1.jsonl"
+    source.parent.mkdir(parents=True)
+    raw = b'{"attempt_id":"example"}\r\n'
+    source.write_bytes(raw)
+    opened, synced = {}, []
+    original_fsync = os.fsync
+
+    def tracked_open(*args, **kwargs):
+        handle = builtins.open(*args, **kwargs)
+        opened[handle.fileno()] = handle
+        return handle
+
+    def windows_fsync(fd):
+        handle = opened.get(fd)
+        if handle is not None and not handle.closed:
+            # Windows FlushFileBuffers requires GENERIC_WRITE; POSIX accepts rb.
+            if not handle.writable():
+                raise OSError(errno.EBADF, "fsync requires a writable handle")
+            synced.append(pathlib.Path(handle.name))
+        return original_fsync(fd)
+
+    monkeypatch.setattr(packs, "open", tracked_open, raising=False)
+    monkeypatch.setattr(os, "fsync", windows_fsync)
+    assert packs.archive_usage_segments(root)["archived"] == 1
+    assert synced and not source.exists()
+    assert lzma.decompress(source.with_suffix(".jsonl.xz").read_bytes()) == raw
+    meta = json.loads(source.with_suffix(".jsonl.xz.json").read_text(encoding="utf-8"))
+    assert (meta["size"], meta["sha256"]) == (len(raw), hashlib.sha256(raw).hexdigest())
 
 
 def test_exporting_phase_keeps_loose_evidence_until_published_again(root):

@@ -98,9 +98,9 @@ does not rewrite the scorer or normalize Ouroboros's core `final_answer`.
 - **Agent-visible deadline (honesty: visible == real budget − reserve).** GAIA
   imposes no per-task wall-clock limit — the sample timeout is an OPERATOR budget.
   The solver passes `--timeout = GAIA_SAMPLE_TIMEOUT_SEC − reserve` (reserve = 10%,
-  capped at 240s) so Ouroboros's existing deadline-awareness (50/25/10% milestones
-  + a save-at-10% nudge, `loop.py`) activates and the agent converges to a saved
-  answer instead of being killed mid-thought. The visible deadline is STRICTLY
+  capped at 240s). Ouroboros exposes factual 50/25/10% crossings and the deadline
+  in its round facts; `loop_round_limits` requests local finalization near the
+  bound. These mechanisms do not guarantee a saved answer. The visible deadline is STRICTLY
   tighter than the outer hard-kill backstop (`subprocess.run(timeout=…)`), so the
   agent is never told a deadline it is killed before reaching. The deadline conveys
   only time, no answer content. Disclosed here because GAIA is scaffold-sensitive.
@@ -118,6 +118,12 @@ does not rewrite the scorer or normalize Ouroboros's core `final_answer`.
 - **Historical raw material.** `dragunov_traces/gaia_repro/` remains outside the
   repo as forensic input; useful settings and wrapper ideas are copied/adapted
   here rather than imported as live code.
+
+The Ouroboros adapter declares `final_answer_line`. Runtime retention selects its
+exact answer payload before result-review eligibility, and the packet uses that
+same source. Inspect consumes only the structured `final_answer` bytes; empty or
+missing selection stays empty instead of falling back to narrative `result`.
+Synthetic contract checks do not establish live scores or historical parity.
 
 ## Answer-leakage audit protocol (publishable web-on runs)
 

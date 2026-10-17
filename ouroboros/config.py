@@ -1,11 +1,6 @@
-"""
-Ouroboros — Shared configuration (single source of truth).
-
-Paths, the settings-file lifecycle (locked load/normalize/save plus environment
-projection) and mode-aware write authority. The vocabularies it reads through —
-shipped defaults, closed scales, model slots, reviewer routes, numeric limits —
-live in sibling leaves and are re-exported here, so ``ouroboros.config`` remains
-the one import surface for settings knowledge.
+"""Shared configuration: paths, locked settings lifecycle and mode-aware writes.
+Defaults, scales, model slots, routes and limits live in sibling leaves and are
+re-exported here: one import surface for settings knowledge.
 """
 
 from __future__ import annotations
@@ -34,19 +29,18 @@ from ouroboros.settings_defaults import (
     OPENROUTER_DEFAULTS,  # noqa: F401
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
-    PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS, REVIEW_POOL_MIGRATED_SETTING_KEYS, REVIEW_POOL_MIGRATION_CLASS_LINE,  # noqa: F401
     retired_setting_keys_notice,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
-    SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
+    SAVED_CHOICE_SETTINGS, SETTINGS_KEYS_NOT_EXPORTED_TO_ENV, unauthored_saved_choices,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
     _DISK_AUTHORED_SETTINGS,  # noqa: F401
     settings_env_keys,  # noqa: F401
 )
 from ouroboros.settings_scales import (
-    EFFORT_SCALE, OPTIONAL_BOUND_LEGACY, UNLIMITED,  # noqa: F401
+    EFFORT_SCALE, EFFORT_RANGE_KEYS, EFFORT_FORMAT_KEY, normalize_effort_document, OPTIONAL_BOUND_LEGACY, UNLIMITED,  # noqa: F401
     PROMPT_CACHE_TTL_SCALE, defaults_for_settings_document, optional_bound_value,  # noqa: F401
     REVIEW_POOL_DEFAULT_EFFORT,  # noqa: F401
     VALID_RUNTIME_MODES,  # noqa: F401
@@ -80,7 +74,6 @@ from ouroboros.model_slots import (
     parse_fallback_chain,  # noqa: F401
 )
 from ouroboros.review_model_routes import (
-    _DIRECT_PROVIDER_REVIEW_RUNS,  # noqa: F401
     _exclusive_direct_remote_provider_env,  # noqa: F401
     adaptive_quorum,  # noqa: F401
     get_review_enforcement,  # noqa: F401
@@ -94,16 +87,12 @@ from ouroboros.runtime_limits import (
     EXTENSION_STREAM_CHUNK_BYTES,  # noqa: F401
     EXTENSION_CHILD_CLEANUP_GRACE_SEC, LAUNCHER_STOP_GRACE_SEC, SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,  # noqa: F401
     NESTED_SETTLEMENT_MARGIN_SEC,  # noqa: F401
-    NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
+    NETWORK_WAIT_NOTE_INTERVAL_SEC, NETWORK_WAIT_BACKOFF_START_SEC, NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
     TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
-    WS_RELAY_BURST,  # noqa: F401
-    WS_RELAY_REFILL_PER_SEC,  # noqa: F401
-    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC,  # noqa: F401
-    CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
-    CLAUDEXOR_STOP_EXIT_WAIT_SEC,  # noqa: F401
+    WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC,  # noqa: F401
+    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
+    CLAUDEXOR_STOP_EXIT_WAIT_SEC, BODY_MAINTENANCE_INTERVAL_SEC,  # noqa: F401
     DELEGATE_WAIT_CEILING_SEC,  # noqa: F401
     DELEGATE_WAIT_WINDOW_MAX_SEC, OPERATION_WINDOW_FALLBACK_SEC,  # noqa: F401
     MAX_ACTIVE_SUBAGENTS_HARD_CAP, MAX_SUBAGENT_DEPTH_HARD_CAP,  # noqa: F401
@@ -112,15 +101,13 @@ from ouroboros.runtime_limits import (
     _clamped_number_setting,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
-    get_bg_wakeup_max_sec,  # noqa: F401
-    get_bg_wakeup_min_sec,  # noqa: F401
+    get_bg_wakeup_max_sec, get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
     get_consciousness_autonomy,  # noqa: F401
     get_consciousness_daily_usd,  # noqa: F401
     get_consciousness_max_tasks,  # noqa: F401
-    get_delegate_wait_max_sec,  # noqa: F401
-    get_delegate_wait_sec,  # noqa: F401
+    get_delegate_wait_max_sec, get_delegate_wait_sec,  # noqa: F401
     get_finalization_grace_sec,  # noqa: F401
     get_direct_turn_stop_wait_sec,  # noqa: F401
     get_llm_transport_read_timeout_sec,  # noqa: F401
@@ -128,7 +115,6 @@ from ouroboros.runtime_limits import (
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
     get_onboarding_snapshot_timeout_sec,  # noqa: F401
-    get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
@@ -137,16 +123,28 @@ from ouroboros.runtime_limits import (
     get_safety_call_timeout_sec,  # noqa: F401
     get_settings_document_lock_timeout_sec,  # noqa: F401
     get_safety_max_tokens,  # noqa: F401
-    get_search_code_wall_sec,  # noqa: F401
-    get_supervisor_liveness_deadline_sec,  # noqa: F401
+    get_search_code_wall_sec, get_supervisor_liveness_deadline_sec,  # noqa: F401
     get_task_abs_ceiling_sec, get_max_rounds, operation_window_sec,  # noqa: F401
-    get_task_idle_timeout_sec,  # noqa: F401
-    get_vision_caption_timeout_sec,  # noqa: F401
-    get_update_letter_timeout_sec,  # noqa: F401
-    get_ui_translation_timeout_sec,  # noqa: F401
-    get_websearch_timeout_sec,  # noqa: F401
+    explicit_execution_timeout_sec, _CURRENT_TASK_CEILING,  # noqa: F401
+    resolve_task_execution_timeout_sec as _resolve_task_execution_timeout_sec,
+    get_task_idle_timeout_sec, get_vision_caption_timeout_sec,  # noqa: F401
+    get_update_letter_timeout_sec, get_ui_translation_timeout_sec, get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
+
+# Physical safety budgets, not test-value judgments or kernel-enforced quotas.
+TEST_WORKER_PEAK_RSS_BYTES = 1024**3  # Provisional 1 GiB; loaded P0 observed 690 MiB/worker.
+TEST_MEMORY_RESERVE_FRACTION = 0.10  # Keep physical headroom for the OS and other work.
+TEST_PROCESS_SAMPLE_SEC = 1.0  # Poll latency; allocations between samples can outrun the stop.
+TEST_PROCESS_TOKEN_SCAN_SEC = 5.0  # Detached members are found by token this often; the scan reads every environment.
+
+
+def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:
+    """The leaf's bound arithmetic with this facade's (patchable) configured ceiling."""
+    if global_ceiling is _CURRENT_TASK_CEILING:
+        global_ceiling = get_task_abs_ceiling_sec()
+    return _resolve_task_execution_timeout_sec(task, global_ceiling=global_ceiling)
+
 
 # Paths. resolve_*() is the per-call form of the constants below, which freeze the env at first
 # import: a writer that must follow isolation applied AFTER its import (an isolated test, a child
@@ -482,14 +480,14 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """Normalize settings writes under existing ratchets. Only the actual writer
-    names authored_keys; a defaults merge preserves absent disk-owned intent,
-    forwarded environment choices and install-time provenance. The review-pool receipts THIS
-    write owes land before it replaces the pre-image (``review_pool_receipts.persist_write_receipts``)."""
+    """Normalize settings writes under existing ratchets. Only the actual writer names authored_keys; a defaults
+    merge preserves absent disk-owned intent, forwarded environment choices (an absent ``SAVED_CHOICE_SETTINGS``
+    key stays absent) and install-time provenance."""
     from ouroboros.review_pool_receipts import persist_write_receipts
-    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)
+    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)  # the review-pool receipts THIS write owes, before the pre-image goes
     authored = set(authored_keys or ())
-    prepared = {k: v for k, v in settings.items() if not (
+    unauthored = unauthored_saved_choices(settings, _settings_integrity.read_settings_json_verified(SETTINGS_PATH), authored)
+    prepared = {k: v for k, v in settings.items() if k not in unauthored and not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
         and not (
             k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW"
@@ -504,6 +502,8 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
     for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         if key in prepared:
             prepared[key] = normalize_model_role_options(key, prepared[key])[1]
+    from ouroboros.composer_cognition import preserve_project_cognition
+    preserve_project_cognition(prepared, SETTINGS_PATH)
     return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
 
 
@@ -702,9 +702,7 @@ def verify_settings_integrity() -> str | None:
 
 log = logging.getLogger(__name__)
 
-# Dropped-retired-key sets this process has already reported (the notice in
-# ``normalize_settings_raw``). Keyed by the exact set so a document carrying a
-# second ghost still gets its own line.
+# Retired-key combinations reported by normalize_settings_raw each get one notice.
 _RETIREMENT_NOTICE_SEEN: set[tuple[str, ...]] = set()
 
 
@@ -838,13 +836,13 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
-    env_authored, echo = set(), _settings_integrity.projected_proposals(os.environ)
+    env_authored, echo = set(), _settings_integrity.projected_proposals(environ := _settings_integrity.read_environ())
     for key in SETTINGS_DEFAULTS:
-        raw_env = os.environ.get(key)
+        raw_env = environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
-        if raw_env == echo.get(key) or (key in MODEL_SLOT_KEYS and key in loaded):
-            continue  # this tree's own projection of a proposal is no choice; a saved slot (blank too) is the owner's
+        if raw_env == echo.get(key) or (key in loaded and (key in MODEL_SLOT_KEYS or key in SAVED_CHOICE_SETTINGS)):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot or choice (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -854,7 +852,9 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
             continue
         settings[key] = _coerce_setting_value(key, raw_env)
         env_authored.add(key)
-    # Unauthored model slots follow the configured access; a never-configured install (§1.5) mints its factory catalog here.
+    settings.update(normalize_effort_document({EFFORT_FORMAT_KEY: loaded.get(EFFORT_FORMAT_KEY),
+        **{key: settings[key] for key in EFFORT_RANGE_KEYS if key in loaded or key in env_authored}}))
+    # Unauthored slots and the never-configured catalog follow the configured access.
     propose_unauthored_model_slots(settings, authored_model_slots(loaded) | env_authored)
     apply_at_read_seam(settings, merged=True)
     return settings
@@ -866,14 +866,14 @@ def save_settings(
     allow_elevation: bool = False,
     onboarding_safety_default: bool = False,
 ) -> None:
-    """Persist settings and enforce owner-only mode ratchets.
+    """Persist a view; only an owner writer's authored_keys authors a first saved-choice key.
 
-    Elevation above the boot baseline is refused after initialization (``allow_elevation`` is then
-    inert to agent-reachable subprocesses; production entry points must call
-    ``initialize_runtime_mode_baseline`` before agent code). Context-mode lowering likewise
-    requires the explicit owner path outside Cyber Pro; the retired auto-Low key is an inert false tombstone.
-    ``onboarding_safety_default`` is a NARROW boolean authorizing exactly one transition —
-    a FRESH install (no settings file yet) authoring ``OUROBOROS_SAFETY_MODE="light"``."""
+    Existing SAVED_CHOICE_SETTINGS survive; changed values alone are not authorship.
+    Elevation after initialization is refused (``allow_elevation`` then inert); production calls
+    ``initialize_runtime_mode_baseline`` before agent code. Outside Cyber Pro, context lowering
+    needs the owner path; the retired auto-Low flag stays false.
+    ``onboarding_safety_default`` allows only a fresh install (no settings file) to choose
+    ``OUROBOROS_SAFETY_MODE="light"``."""
     _guard_live_settings_write()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd = _acquire_settings_lock()

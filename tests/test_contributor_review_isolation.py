@@ -36,6 +36,7 @@ from ouroboros.review_run_isolation import (
     ATTACH_HOME_ENV, ISOLATION_RECORD, REVIEW_RUN_CAP_ENV, isolate_review_data,
 )
 from ouroboros.settings_integrity import SETTINGS_INTEGRITY_ENV
+from ouroboros.test_evidence import diagnostic_directory
 
 # Real loopback ports and real child processes: the serial pass.
 pytestmark = pytest.mark.serial
@@ -341,7 +342,8 @@ def test_full_entrypoint_keeps_a_legacy_host_untouched(tmp_path, engine):
     assert set(_tree_state(control)) - set(_tree_state(host))  # new host-side files
 
     before = _tree_state(host)
-    out = tmp_path / "isolated"
+    # Keep the wrapper's persistent diagnostic drive outside the test's disposable scratch.
+    out = diagnostic_directory(tmp_path / "isolated", "contributor-entrypoint")
     # The invoking shell carries a stale projection of another panel: the panel
     # and its efforts still come from the pinned host settings.
     run = _review(repo, host, out, "--run-cap-usd=4", "--attach-host-engine", inherited=_INHERITED_PANEL)
@@ -939,7 +941,7 @@ def test_a_pinned_document_without_a_panel_gets_its_hosts_default_panel(tmp_path
                                               "OUROBOROS_MODEL": "anthropic::claude-opus-5"})
 
     host_panel = resolve(_HOST_TASK_PANEL, **pin)
-    assert host_panel["pool"] == ["anthropic::claude-opus-5"] * 3  # the host's exclusive direct provider
+    assert host_panel["pool"] == ["anthropic::claude-opus-5"]  # the host's exclusive direct provider, Main once
     assert resolve(_WRAPPER_PANEL, str(tmp_path / "drive-clean")) == (host_panel, [])
     # A shell exported for another configuration: an older Main. The pool is the saved
     # catalog, so the stale export moves nothing, pinned or not.
@@ -963,7 +965,7 @@ def test_a_pinned_default_panel_keeps_the_credentials_its_calls_use(tmp_path):
     resolve, pin = _panel_resolver(tmp_path, {"OUROBOROS_MODEL": "anthropic::claude-opus-5"},
                                    pool_document={"OUROBOROS_MODEL": "anthropic::claude-opus-5", **credential})
     host_panel = resolve(_HOST_TASK_PANEL, **pin, **credential)
-    assert host_panel["pool"] == ["anthropic::claude-opus-5"] * 3
+    assert host_panel["pool"] == ["anthropic::claude-opus-5"]
     keys_file = tmp_path / "keys.txt"
     keys_file.write_text(f"anthropic: {_HOST_PROVIDER_VALUE}\n", encoding="utf-8")
     for name, supplied in (("environment", credential), ("keys-file", {"OUROBOROS_KEYS_FILE": str(keys_file)}),
@@ -977,7 +979,7 @@ def test_a_frozen_default_row_dispatches_on_the_lane_it_was_resolved_on(tmp_path
     resolve, pin = _panel_resolver(tmp_path, {
         "USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local-model.gguf", "OUROBOROS_MODEL": "owner-local"})
     local_panel = resolve(_HOST_TASK_PANEL, **pin)
-    assert local_panel["pool"] == ["owner-local (local)"] * 3  # the local-only factory pool: three runs of Main
+    assert local_panel["pool"] == ["owner-local (local)"]  # the local-only factory pool: Main once (owner Q5=A)
     for name, inherited in (("clean", {}), ("stale-lane-flag", {"USE_LOCAL_MAIN": "0"}),
                             ("remote-credential", {"OPENAI_API_KEY": "isolation-fixture-second-provider-value"})):
         host = resolve(_HOST_TASK_PANEL, **pin, **inherited)

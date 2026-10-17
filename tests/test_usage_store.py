@@ -4,10 +4,12 @@ tiers and the bulk-reader allowlist."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import pathlib
 import random
+import sqlite3
 import subprocess
 import sys
 from decimal import Decimal
@@ -64,23 +66,27 @@ def _min_known(values):
 
 def _assert_summaries_equal_oracle(root):
     with usage_store.read(root) as txn:
-        rows = txn.attempts()
-        stored = {(record["scope"], record["key"]) for record in txn.conn.execute(
-            "SELECT scope, key FROM summaries WHERE rows > 0")}
-        expected: dict = {}
-        for row in rows:
-            for address in _addresses(row):
-                expected.setdefault(address, []).append(row)
-        assert stored == set(expected), sorted(stored ^ set(expected))[:10]
-        for (scope, key), addressed in expected.items():
-            bucket = txn.bucket(scope, key)
-            assert bucket.render_breakdown() == oracle._breakdown_bucket(addressed), (scope, key)
-            assert bucket.render_summary() == oracle._summary(addressed), (scope, key)
-            if scope == "root":
-                assert bucket.min_cap() == _min_known(row.get("root_limit_usd") for row in addressed), key
-            if scope == "group":
-                assert bucket.min_cap() == _min_known(
-                    row.get("billing_group_limit_usd", row.get("root_limit_usd")) for row in addressed), key
+        _assert_txn_summaries_equal_oracle(txn)
+
+
+def _assert_txn_summaries_equal_oracle(txn):
+    rows = txn.attempts()
+    stored = {(record["scope"], record["key"]) for record in txn.conn.execute(
+        "SELECT scope, key FROM summaries WHERE rows > 0")}
+    expected: dict = {}
+    for row in rows:
+        for address in _addresses(row):
+            expected.setdefault(address, []).append(row)
+    assert stored == set(expected), sorted(stored ^ set(expected))[:10]
+    for (scope, key), addressed in expected.items():
+        bucket = txn.bucket(scope, key)
+        assert bucket.render_breakdown() == oracle._breakdown_bucket(addressed), (scope, key)
+        assert bucket.render_summary() == oracle._summary(addressed), (scope, key)
+        if scope == "root":
+            assert bucket.min_cap() == _min_known(row.get("root_limit_usd") for row in addressed), key
+        if scope == "group":
+            assert bucket.min_cap() == _min_known(
+                row.get("billing_group_limit_usd", row.get("root_limit_usd")) for row in addressed), key
 
 
 def _money(rng):
@@ -179,17 +185,44 @@ def _random_history(rng, attempts):
         yield step
 
 
-@pytest.mark.parametrize("seed", range(12))
-def test_every_summary_equals_the_frozen_fold_over_its_addressed_attempts(root, seed):
+def _summary_history(seed):
     rng = random.Random(seed)
     # Imported aggregates first: weight multiplies counts, never cash or tokens.
-    write_compacted_journal(root, [
+    groups = [
         {"attempt_id": f"fold-{index}", "task_id": rng.choice(["t1", "t2"]), "root_task_id": rng.choice(["r1", "r2"]),
          "model": "m1", "provider": "openai", "category": "task", "source": "old", "pricing_known": True,
          "folded_attempt_count": rng.randrange(1, 40), "cost_usd": str(_money(rng)), "cost_final": True,
          "reservation_upper_bound_usd": "1.5", "prompt_tokens": rng.randrange(0, 900),
-         **({"root_limit_usd": "9"} if index % 2 else {})} for index in range(3)])
-    for step in _random_history(rng, 70):
+         **({"root_limit_usd": "9"} if index % 2 else {})} for index in range(3)]
+    return groups, tuple(_random_history(rng, 70))
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_every_summary_equals_the_frozen_fold_over_its_addressed_attempts(root, seed):
+    groups, history = _summary_history(seed)
+    write_compacted_journal(root, groups)
+    # Import the actual compacted journal, then keep every transition and SQL
+    # round trip without fsyncing a disk transaction for each generated step.
+    with contextlib.closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.row_factory = sqlite3.Row
+        with usage_store.read(root) as imported:
+            imported.conn.backup(conn)
+        for step in history:
+            conn.execute("BEGIN IMMEDIATE")
+            txn = usage_store.Txn(conn, root, write=True)
+            txn.write(step, txn.attempt(step["attempt_id"]))
+            txn.commit()
+        # A fresh transaction reads persisted SQL values, not the writer's buckets.
+        _assert_txn_summaries_equal_oracle(usage_store.Txn(conn, root, write=False))
+
+
+@pytest.mark.parametrize("seed", [0, 5, 11])
+def test_generated_summary_histories_survive_durable_commits_and_reopen(root, seed):
+    # All transition endings and one-shot kinds occur in these histories;
+    # the complete 12-seed fold above retains the larger arithmetic population.
+    groups, history = _summary_history(seed)
+    write_compacted_journal(root, groups)
+    for step in history:
         with usage_store.hold(root) as txn:
             txn.write(step, txn.attempt(step["attempt_id"]))
     _assert_summaries_equal_oracle(root)
@@ -273,6 +306,8 @@ def test_a_recovery_that_raced_a_settlement_leaves_it_authoritative(root):
 
 
 def test_one_shots_compare_identity_not_payload(root):
+    from ouroboros.task_results import write_task_result
+    write_task_result(root, "r", "running", root_task_id="r")  # the session's real root
     first = ua.record_subscription_session("session", drive_root=root, route="r", model="first",
                                            task_id="t", root_task_id="r", spend_usd=1.0)
     before = ledger_rows(root)
@@ -814,6 +849,65 @@ def test_ordinary_readers_do_not_grow_with_unrelated_history(tmp_path, monkeypat
         # Index seeks are one instruction at any depth: the count is the addressed
         # scope's, not the history's (a 100x larger store, a few % more steps).
         assert large <= small * 1.25 + 4, (name, small, large)
+
+
+def test_task_attempt_page_seeks_the_task_index_not_the_ledger(tmp_path, monkeypatch):
+    """recover_image()'s page: the task index under many decoys, newest first, history-free steps."""
+    measured = {}
+    for size in (100, 4_000):
+        root = tmp_path / f"page-{size}"
+        (root / "state").mkdir(parents=True)
+        monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+        monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
+        rows, mine = [], []
+        for index in range(size + 70):
+            if index < size:  # other tasks' images and text calls
+                task, category = f"other-{index % 400}", "image_generation" if index % 2 else "task"
+            else:  # this task's 45 images interleaved with its own text calls
+                task, category = "image-task", "image_generation" if index % 3 and len(mine) < 45 else "task"
+            base = dict(kind="attempt", attempt_id=f"{'z' if index % 3 else 'a'}-{index:05d}", task_id=task,
+                        root_task_id="image-root", model="m", provider="openai", category=category,
+                        source="history", reservation_upper_bound_usd="0.01", pricing_known=True,
+                        ts="2026-01-01T00:00:00+00:00")
+            rows += [{**base, "state": "reserved"}, {**base, "state": "dispatched"}]
+            if index % 2:
+                rows.append({**base, "state": "settled", "cost_usd": "0.001", "cost_final": True})
+            if (task, category) == ("image-task", "image_generation"):
+                mine.append(base["attempt_id"])
+        write_journal(root, rows)
+        usage_store.migrate_from_journal(root)
+        with usage_store.read(root) as txn:
+            plans = [[row["detail"] for row in txn.conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+                     for sql, params in ((usage_store._TASK_PAGE_SQL, ("image-task", "image_generation", 2 ** 62, 21)),
+                                         (usage_store._TASK_CURSOR_SQL, (mine[0], "image-task", "image_generation")))]
+            pages, after = [], ""
+            while not pages or len(pages[-1]) == 21:
+                pages.append(txn.task_attempt_page("image-task", "image_generation", after=after, limit=21))
+                after = pages[-1][19]["attempt_id"] if len(pages[-1]) == 21 else ""
+            # A cursor must be this task's attempt in this category: others name nothing.
+            assert txn.task_attempt_page("other-1", "image_generation", after=mine[0], limit=21) is None
+            assert txn.task_attempt_page("image-task", "image_generation", after="a-00000", limit=21) is None
+        # The task index addresses the task; sorting by first record touches only its matching rows.
+        page_plan, cursor_plan = plans
+        assert any("USING INDEX attempts_task (task_id=?)" in step for step in page_plan), page_plan
+        assert not any(step.startswith("SCAN") for step in page_plan + cursor_plan), plans
+        assert "USE TEMP B-TREE FOR ORDER BY" in page_plan and len(mine) == 45, page_plan
+        assert any("(attempt_id=?)" in step for step in cursor_plan), cursor_plan
+        listed = [row["attempt_id"] for page in pages for row in page[:20]]
+        assert listed == mine[::-1] and [len(page) for page in pages] == [21, 21, 5]
+        assert set(pages[0][0]) == {"attempt_id", "state", "settle_reason", "model", "provider", "ts_reserved",
+                                    "ts_dispatched", "ts_final", "ts_last"}
+        with monkeypatch.context() as patch:
+            steps = _Steps(patch)
+
+            def first_page():
+                with usage_store.read(root) as txn:
+                    txn.task_attempt_page("image-task", "image_generation", limit=21)
+            first_page()  # warm the process (imports, first open)
+            measured[size] = steps.measure(first_page)
+        usage_store.forget(root)
+    (tmp_path / "page_steps.json").write_text(json.dumps(measured), encoding="utf-8")  # evidence
+    assert measured[4_000] <= measured[100] * 1.25 + 4, measured
 
 
 def test_a_fresh_process_answers_without_importing(root):

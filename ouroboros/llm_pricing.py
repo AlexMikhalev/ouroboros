@@ -22,9 +22,14 @@ log = logging.getLogger("ouroboros.llm")
 
 
 def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
-    """Accumulate usage from one LLM call into a running total."""
+    """Accumulate usage from one LLM call into a running total.
+
+    The numeric fold below is the billing shape; events read the separate cumulative
+    ``reported_tokens`` fact, unknown per counter once any summed call was (#1578)."""
+    from ouroboros.event_usage import REPORTED_TOKENS_KEY, cumulative_reported_tokens
     from ouroboros.request_wire_recovery import merge_request_wire_usage
 
+    total[REPORTED_TOKENS_KEY] = cumulative_reported_tokens(total, usage)  # reads the pre-fold seed
     for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "cache_write_tokens"):
         total[k] = int(total.get(k) or 0) + int(usage.get(k) or 0)
     if usage.get("cost") is not None:

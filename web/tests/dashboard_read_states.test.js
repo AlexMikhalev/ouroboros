@@ -710,6 +710,30 @@ test('Logs files a wake-up group under Consciousness with its label, from the or
     assert.equal(card('turn-2').querySelector('[data-task-kind]').textContent, 'task turn-2');
 });
 
+test('Logs keeps the executor chip quiet and prints its detail sentence as text (#360 A)', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    for (const name of ['events', 'tools', 'progress', 'supervisor']) routes.set(logUrl(name), response({ entries: [] }));
+    initLogs({ mount, ws, state: { activePage: 'dashboard', dashboardActiveSubtab: 'logs' } });
+    const evidence = { delegated_runs_started: 2, delegated_runs_settled: 2, delegated_runs_succeeded: 1,
+        delegated_runs_failed: 1, subscription_cost_usd: null, harness_models: [] };
+    ws.emit('log', { data: { type: 'send_message', is_progress: true, task_id: 'child-x', ts: '2026-09-16T12:00:00Z',
+        content: 'done', executor_route: 'codex', execution_evidence: evidence } });
+    // An ungrouped row keeps the same pair: a quiet chip and its sentence beside it.
+    ws.emit('log', { data: { type: 'executor_note', executor_route: 'claude', ts: '2026-09-16T12:00:01Z' } });
+    await settle();
+    const entries = mount.querySelector('#log-entries');
+    const card = entries.children.find((node) => node.dataset.taskGroup === 'child-x');
+    const chip = card.querySelector('[data-task-executor]');
+    assert.equal(chip.hidden, false);
+    assert.match(chip.textContent, /Codex · 1 of 2 runs failed$/);
+    const detail = card.querySelector('[data-task-executor-detail]');
+    assert.equal(detail.hidden, false, 'the detail is visible text, not a hover-only title');
+    assert.equal(detail.textContent, chip.title);
+    assert.match(detail.textContent, /2 runs settled \(1 ok, 1 failed\)/);
+    const standalone = entries.children.find((node) => !node.dataset.taskGroup);
+    assert.match(standalone.querySelector('.log-executor-chip').textContent, /Claude Code$/);
+    assert.match(standalone.querySelector('.log-executor-detail').textContent, /^Dispatched to Claude Code/);
+});
 
 test('Activity names the typed no-change refusals and never calls a suppression "deleted"', async (t) => {
     const { mount, routes, ws, toasts } = setup(t);
@@ -818,6 +842,164 @@ test('Activity names saved sleep without claiming a budget pause and preserves o
     await activity.refresh();
     assert.match(section(mount, 'queue').textContent, /paused/);
     assert.doesNotMatch(section(mount, 'queue').textContent, /sleeping|budget/);
+});
+
+// Census rows as gateway/state.py publishes them: the row's own stored status, axes and checkpoint.
+const censusAxes = (status, execution) => ({ schema_version: 1, lifecycle: { status },
+    execution: { status: execution, reason_code: execution === 'ok' ? 'final_message' : 'provider_unavailable' },
+    artifacts: { status: 'not_applicable' }, objective: { status: 'not_evaluated', source: 'none' },
+    review: { status: 'skipped', trigger: 'not_evaluated' } });
+const outcomeRow = (activity_id, status, execution, phase, synthesis, extra = {}) => ({ activity_id, kind: 'managed_task',
+    phase, status, outcome_axes: censusAxes(status, execution), root_phase_checkpoint: { post_task_synthesis: synthesis }, ...extra });
+const chip = (row) => {
+    const status = row.querySelector('[data-activity-phase]');
+    const second = status?.nextElementSibling;
+    return status && { text: status.textContent, phase: status.dataset.phase, label: status.getAttribute('aria-label'),
+        secondary: second.hidden ? '' : second.textContent };
+};
+const rowOf = (mount, id) => section(mount, 'queue').querySelector(`[data-id="${id}"]`).parentElement.parentElement;
+
+test('Activity shows a row\'s own known outcome first and its unfinished finalization beside it', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const now = Date.now;
+    Date.now = () => 100000;
+    t.after(() => { Date.now = now; });
+    const running = (id, extra = {}) => ({ id, type: 'task', runtime_sec: 9, task: { id, root_task_id: id, title: `Work ${id}`, ...extra } });
+    routes.set(queueUrl, response({ queue: {
+        running: ['failed-root', 'done-root', 'warn-root', 'cancelled-root', 'live-root'].map((id) => running(id)).concat(
+            running('child-1', { root_task_id: 'failed-root', parent_task_id: 'failed-root', title: 'Child of the failed root' })),
+        pending: [{ id: 'queued-root', type: 'task', task: { id: 'queued-root', root_task_id: 'queued-root', title: 'Queued work' } }],
+    } }));
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
+        active_chat_activities: [
+            outcomeRow('failed-root', 'failed', 'infra_failed', 'finalizing', 'running'),
+            outcomeRow('done-root', 'completed', 'ok', 'finalizing', 'pending_once'),
+            outcomeRow('warn-root', 'completed', 'degraded', 'working', 'completed'),
+            outcomeRow('cancelled-root', 'cancelled', 'cancelled', 'working', ''),
+            { activity_id: 'live-root', kind: 'managed_task', phase: 'working', status: 'running', outcome_axes: censusAxes('running', 'ok') },
+            { activity_id: 'queued-root', kind: 'managed_task', phase: 'queued' },
+            outcomeRow('answered-direct', 'completed', 'ok', 'finalizing', 'running', { kind: 'direct_chat', started_at: 90 }),
+            outcomeRow('late-root', 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' }),
+            { activity_id: 'thinking-direct', kind: 'direct_chat', phase: 'thinking', started_at: 95 },
+        ] }));
+    await initActivity({ mount, ws }).refresh();
+    const queue = section(mount, 'queue');
+    assert.equal(queue.querySelectorAll('.activity-row').length, 10, 'every occupied row stays listed');
+    assert.deepEqual(chip(rowOf(mount, 'failed-root')), { text: 'Failed', phase: 'error',
+        label: 'Task status: Failed, Finalizing…', secondary: 'Finalizing…' });
+    assert.doesNotMatch(rowOf(mount, 'failed-root').textContent, /running/, 'the outcome replaces the occupancy word');
+    assert.match(rowOf(mount, 'failed-root').textContent, /· task · 9s/);
+    assert.deepEqual(chip(rowOf(mount, 'done-root')).text + chip(rowOf(mount, 'done-root')).secondary, 'DoneFinalizing…');
+    assert.deepEqual(chip(rowOf(mount, 'warn-root')), { text: 'Done with warnings', phase: 'warn',
+        label: 'Task status: Done with warnings', secondary: '' });
+    assert.equal(chip(rowOf(mount, 'cancelled-root')).text, 'Cancelled');
+    // No known outcome: the queue's own words, exactly as before.
+    for (const [id, word] of [['live-root', /running · task · 9s/], ['queued-root', /Queued work[\s\S]*pending · task/]]) {
+        assert.equal(chip(rowOf(mount, id)), null, id);
+        assert.match(rowOf(mount, id).textContent, word);
+    }
+    // A child never borrows its root's result, even while that root's census row is Failed.
+    assert.equal(chip(rowOf(mount, 'child-1')), null);
+    assert.match(rowOf(mount, 'child-1').textContent, /Child of the failed root[\s\S]*running/);
+    assert.doesNotMatch(rowOf(mount, 'child-1').textContent, /Failed/);
+    // Census-only rows: a known answer with late work, a late Pause beside its Done, a plain turn.
+    assert.deepEqual(chip(rowOf(mount, 'answered-direct')).text + '|' + chip(rowOf(mount, 'answered-direct')).secondary,
+        'Done|Finalizing…');
+    assert.match(rowOf(mount, 'answered-direct').textContent, /Direct turn[\s\S]*· 10s/);
+    assert.deepEqual(chip(rowOf(mount, 'late-root')), { text: 'Done', phase: 'done',
+        label: 'Task status: Done, Paused · owner pause', secondary: 'Paused · owner pause' });
+    assert.equal(chip(rowOf(mount, 'thinking-direct')), null);
+    assert.match(rowOf(mount, 'thinking-direct').textContent, /thinking · 5s/);
+    // Controls follow occupancy and the existing pause facts, never the outcome.
+    const controls = Object.fromEntries(queue.querySelectorAll('[data-act="task-control"]').map((button) =>
+        [button.dataset.id, [button.dataset.root, button.dataset.budgetPaused]]));
+    assert.deepEqual(controls, {
+        'failed-root': ['1', undefined], 'done-root': ['1', undefined], 'warn-root': ['1', undefined],
+        'cancelled-root': ['1', undefined], 'live-root': ['1', undefined], 'child-1': [undefined, undefined],
+        'queued-root': ['1', undefined], 'answered-direct': ['1', undefined], 'late-root': ['1', '1'],
+        'thinking-direct': ['1', undefined],
+    });
+    assert.ok(queue.querySelectorAll('[data-activity-phase]').every((node) => node.closest('[data-i18n-skip]')),
+        'chip words come from the translation seam, so the overlay leaves them alone');
+});
+
+test('Activity keeps pause words for members and paints a host hold beside a known outcome as text', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const member = (id) => ({ id, task: { id, root_task_id: 'paused-root', parent_task_id: id === 'paused-root' ? '' : 'paused-root',
+        type: 'task', title: id, _budget_pause: { reason: 'owner' } } });
+    routes.set(queueUrl, response({ queue: { running: [], pending: [member('paused-root'), member('member-1')],
+        budget_root_fences: [{ root_task_id: 'paused-root', status: 'paused', cause: 'owner_pause' }] } }));
+    const hold = { label: '<img src=x onerror="globalThis.pwned=1">', detail: 'binding unavailable' };
+    const activities = [outcomeRow('paused-root', 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' }),
+        outcomeRow('held-root', 'failed', 'infra_failed', 'finalizing', 'running', { project_admission_hold: hold })];
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities: activities,
+        active_chat_activities_complete: false }));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    // The root's own row knows its answer; its member keeps the tree's pause word and Resume.
+    assert.equal(chip(rowOf(mount, 'paused-root')).text, 'Done');
+    assert.equal(chip(rowOf(mount, 'member-1')), null);
+    assert.match(rowOf(mount, 'member-1').textContent, /paused/);
+    for (const id of ['paused-root', 'member-1']) {
+        assert.equal(section(mount, 'queue').querySelector(`[data-id="${id}"]`).dataset.budgetPaused, '1', id);
+    }
+    // A partial census still describes its own rows; the host's hold text never becomes markup.
+    assert.deepEqual(chip(rowOf(mount, 'held-root')).secondary, hold.label);
+    assert.equal(section(mount, 'queue').querySelectorAll('img').length, 0);
+    assert.doesNotMatch(section(mount, 'queue').textContent, /Nothing running/);
+    // Without a census the queue rows keep their words; nothing is erased or called idle.
+    routes.set(backgroundUrl, response({}, 503));
+    await activity.refresh();
+    assert.equal(section(mount, 'queue').querySelectorAll('[data-activity-phase]').length, 0);
+    assert.match(rowOf(mount, 'paused-root').textContent, /paused/);
+    assert.equal(section(mount, 'queue').querySelectorAll('.activity-row').length, 2);
+});
+
+test('Activity keeps a queue row\'s own wait beside its known outcome and shows no model-call telemetry', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const hold = { label: 'Waiting for Project verification', detail: 'binding unavailable' };
+    const root = (id, title, extra = {}) => ({ id, type: 'task', task: { id, root_task_id: id, title, ...extra } });
+    routes.set(queueUrl, response({ queue: {
+        running: [
+            { ...root('sleep-root', 'Sleeping answered work'), owner_wait: { state: 'waiting', reason: 'sleep', sleep: { mode: 'warm' } } },
+            root('live-model', 'Finalizing with a model'),
+            root('held-queue', 'Held work', { project_admission_hold: hold }),
+        ],
+        pending: [
+            root('restart-root', 'Saved before Quit', { _budget_pause_hold: { reason: 'saved_work_hold' } }),
+            root('pending-root', 'Requeued'),
+        ],
+    } }));
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
+        active_chat_activities: [
+            outcomeRow('sleep-root', 'completed', 'ok', 'finalizing', 'running'),
+            outcomeRow('live-model', 'completed', 'ok', 'working', 'running',
+                { model_activity: { phase: 'awaiting_response', task_attempt: 1 } }),
+            outcomeRow('held-queue', 'failed', 'infra_failed', 'finalizing', 'running', { project_admission_hold: hold }),
+            outcomeRow('restart-root', 'completed', 'ok', 'budget_paused', 'completed', { pause_cause: 'restart' }),
+            outcomeRow('pending-root', 'failed', 'infra_failed', 'queued', 'completed'),
+        ] }));
+    await initActivity({ mount, ws }).refresh();
+    const pair = (id) => [chip(rowOf(mount, id)).text, chip(rowOf(mount, id)).secondary];
+    // A queue wait outranks the census's merely active phase; the outcome still leads.
+    assert.deepEqual(pair('sleep-root'), ['Done', 'sleeping']);
+    assert.deepEqual(pair('restart-root'), ['Done', 'held after Restart']);
+    assert.deepEqual(pair('pending-root'), ['Failed', 'pending']);
+    assert.equal(chip(rowOf(mount, 'sleep-root')).label, 'Task status: Done, sleeping');
+    // Activity carries no model-call telemetry: finalization stays a generic fact.
+    assert.deepEqual(pair('live-model'), ['Done', 'Finalizing…']);
+    assert.doesNotMatch(section(mount, 'queue').textContent, /request|response/i);
+    // The queue line names its own hold once; the chip does not repeat it.
+    assert.deepEqual(pair('held-queue'), ['Failed', 'Finalizing…']);
+    assert.equal(rowOf(mount, 'held-queue').textContent.split(hold.label).length, 2);
+    // Resume stays exactly where the queue facts put it.
+    const paused = Object.fromEntries(section(mount, 'queue').querySelectorAll('[data-act="task-control"]')
+        .map((button) => [button.dataset.id, button.dataset.budgetPaused]));
+    assert.deepEqual(paused, { 'sleep-root': undefined, 'live-model': undefined, 'held-queue': undefined,
+        'restart-root': '1', 'pending-root': undefined });
 });
 
 // ---------------------------------------------------------------------------
@@ -1044,4 +1226,25 @@ test('Storage destroy aborts its read and ignores late answers, tab events and c
     await settle();
     assert.deepEqual(calls, [storageUrl]);
     assert.equal(timers.polls(), 0);
+});
+
+test('Activity says why a held Continue waits, keeps its Resume, and never calls it a budget pause (#1721)', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    routes.set(queueUrl, response({ queue: { running: [], pending: [{ id: 'pred-1-s1', task: {
+        id: 'pred-1-s1', root_task_id: 'pred-1-s1', title: 'Continue Friday report',
+        _budget_pause_hold: { reason: 'continuation_writer_unsettled', selected: false, dispatchable: false,
+            detail: "the interrupted task's own work is not proven settled; this Continue waits",
+            predecessor_task_id: 'pred-1', blockers: [{ kind: 'delegated_run', task_id: 'pred-1', run_id: 'run-leaf',
+                invocation_id: '', state: 'running', stop_outcome: '', source: 'delegated_subagent' }] } } }] } }));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    const row = section(mount, 'queue').querySelector('.activity-row');
+    assert.match(row.querySelector('.activity-sub').textContent,
+        /^held: earlier work not proven settled · delegated run run-leaf is running$/);
+    assert.ok(row.classList.contains('activity-held'), 'its cause wraps instead of ending in an ellipsis');
+    assert.doesNotMatch(row.textContent, /paused \(budget\)/);
+    const control = row.querySelector('[data-act="task-control"]');
+    assert.equal(control.getAttribute('data-budget-paused'), '1', 'the existing Resume rechecks it');
+    activity.destroy();
 });

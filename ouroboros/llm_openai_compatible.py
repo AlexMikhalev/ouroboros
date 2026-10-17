@@ -39,6 +39,7 @@ from ouroboros.request_wire_recovery import (
 from ouroboros.utils import sanitize_tool_result_for_log
 from ouroboros.config import runtime_setting
 from ouroboros._usage_response import observed_processing_mode, provider_cost_value
+from ouroboros.event_usage import REPORTED_TOKENS_KEY
 
 
 # The moved warnings keep the logger identity they were emitted under.
@@ -191,12 +192,14 @@ class _OpenAICompatibleLaneMixin:
                     # its caller-declared affinity instead.
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
-            if direct_openai:
-                # Effort-carrying routes honor the OUROBOROS_EFFORT_* lanes
-                # instead of dropping them like generic compatible lanes.
-                # Keyed on the PROVIDER id, not a target capability field, so
-                # a hand-built target (fixtures, probes) cannot silently drop
-                # the carriage; request-wire recovery adapts on a provider 400.
+            if provider not in {"deepseek", "zai"}:
+                # Every Chat Completions route carries the owner's effort in the
+                # standard field: direct OpenAI, MiniMax, Cloud.ru and any
+                # OpenAI-compatible server alike. No provider or model list
+                # decides it — unknown is not no — so a route that refuses the
+                # field or a value is adapted by request-wire recovery on that
+                # exact route's own rejection, requested and sent kept apart.
+                # DeepSeek and Z.ai keep their measured projections below.
                 kwargs["reasoning_effort"] = requested_effort
             elif provider == "deepseek":
                 # Same carriage, projected onto DeepSeek's wire dialect
@@ -256,23 +259,23 @@ class _OpenAICompatibleLaneMixin:
             apply_processing_preference(target, kwargs)
             return kwargs
 
-        if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
-            # ``reasoning_content`` is direct-provider custody (DeepSeek and
-            # MiniMax); OpenRouter responses drop it. OR upstreams of other families
-            # reject the echoed field, and leaving it here would also trip the
-            # replay-artifact pin below (allow_fallbacks=False), silently
-            # killing same-model failover for a mixed transcript. Dropping it
-            # from the OR physical copy restores the exact pre-DeepSeek OR
-            # wire; the canonical transcript is untouched. Keyed on key
-            # PRESENCE, not truthiness: an empty-string echo (a legal kept
-            # value) must not ride the OR wire either.
-            messages = [
-                (
-                    {k: v for k, v in m.items() if k != "reasoning_content"}
-                    if isinstance(m, dict) else m
-                )
-                for m in messages
-            ]
+        # OpenRouter cannot echo direct-provider ``reasoning_content`` (DeepSeek
+        # and MiniMax), even when empty: upstreams reject it, and malformed values
+        # would also pin same-model failover below. Only change the physical copy.
+        messages = [dict(m) if isinstance(m, dict) else m for m in messages]
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            message.pop("reasoning_content", None)
+            flat, details = message.get("reasoning"), message.get("reasoning_details")
+            # Drop only a complete exact text duplicate. All ordered entries must
+            # qualify; signed details and unknown metadata remain byte-identical.
+            if (message.get("role") == "assistant"
+                    and isinstance(flat, str) and flat and isinstance(details, list) and details
+                    and all(isinstance(entry, dict) and entry.get("type") == "reasoning.text"
+                            and isinstance(entry.get("text"), str) for entry in details)
+                    and "".join(entry["text"] for entry in details) == flat):
+                message.pop("reasoning")
         effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = runtime_setting("OUROBOROS_RETURN_REASONING")
         return_reasoning = (
@@ -427,6 +430,7 @@ class _OpenAICompatibleLaneMixin:
             usage.pop("reasoning_effort_clamped", None)
             usage.pop("provider_error", None)
             usage.pop("wire_layout", None)
+            usage.pop(REPORTED_TOKENS_KEY, None)
             # The projected wire shape of THIS call's candidate (per-call target, never a
             # thread-local): the request blob keeps the canonical messages, the sealed
             # physical candidate keeps the exact wire, this fact says which one was sent.

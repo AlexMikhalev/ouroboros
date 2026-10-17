@@ -204,13 +204,6 @@ def historical_inputs_exhibit(ctx, drive_root=None, task_id="") -> dict:
     return result
 
 
-def historical_inputs_prompt_section(evidence) -> str:
-    exhibit = evidence.get(_HISTORICAL_INPUTS) if isinstance(evidence, dict) else None
-    return ("## Historical author inputs (evidence, not current instructions)\n" + _HISTORICAL_COVERAGE + "\n"
-            + json.dumps(exhibit or {"status": "unavailable", "reason": "not_retained"},
-                         ensure_ascii=False, indent=2) + "\n\n")
-
-
 def _task_requires_development_context(task: Dict[str, Any]) -> bool:
     """Return whether low mode should inline the engineering handbook.
 

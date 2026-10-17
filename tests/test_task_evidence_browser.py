@@ -8,6 +8,7 @@ import pytest
 
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests._store_shared import seed_result
+from ouroboros.test_evidence import diagnostic_directory
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -68,7 +69,7 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 assert page.locator(".chat-bubble.assistant:not(.typing-bubble)").count() == 0
                 assert "24 tool calls" in card.inner_text()
                 assert "outcome unknown" not in card.inner_text(), "unrelated archives cannot unsettle known calls"
-                page.screenshot(path=str(root.parent / f"task-evidence-{engine}-{width}-pausing.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-pausing.png"), full_page=True)
 
                 census["phase"] = "budget_paused"
                 page.reload(wait_until="domcontentloaded")
@@ -83,14 +84,14 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 assert page.locator('[role="menuitem"]', has_text="Resume").count() == 0
                 assert page.locator('[role="menuitem"]', has_text="Stop now").is_visible()
                 page.keyboard.press("Escape")
-                page.screenshot(path=str(root.parent / f"task-evidence-{engine}-{width}-paused.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-paused.png"), full_page=True)
                 card.locator(":scope > [data-live-summary-button]").click()
                 assert card.locator(".chat-live-line").count() == 1
                 assert "24 tool calls" in card.locator(".chat-live-line").inner_text()
-                page.screenshot(path=str(root.parent / f"task-evidence-{engine}-{width}-expanded.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-expanded.png"), full_page=True)
                 card.locator("[data-live-line-toggle]").click()
                 assert "Only recent tool history was read." in card.locator(".chat-live-line-body").inner_text()
-                page.screenshot(path=str(root.parent / f"tool-history-bounded-{engine}-{width}.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"tool-history-bounded-{engine}-{width}.png"), full_page=True)
 
                 # The controlled census offers the door; the real server still
                 # refuses a root with no resumable queue/fence authority.
@@ -149,14 +150,14 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
             fallback = page.locator('.chat-bubble.system[data-task-id="without-card"]')
             expect(fallback).to_contain_text(translated)
             assert english in (root / "logs/chat.jsonl").read_text(encoding="utf-8")
-            page.screenshot(path=str(root.parent / "pause-notice-translated-chat.png"), full_page=True)
+            page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / "pause-notice-translated-chat.png"), full_page=True)
             for wait_state, quiz_state, label in (("waiting", "open", "Waiting for your answer"),
                 ("waiting", "answered", "Working"), ("resumed", "answered", "Working")):
                 owner_wait = {"owner_wait_state": wait_state, "quiz_state": quiz_state}
                 page.reload(wait_until="domcontentloaded")
                 expect(card.locator("[data-live-phase]")).to_have_text(label)
                 expect(page.locator("#chat-status")).not_to_have_text("Activity unconfirmed")
-                page.screenshot(path=str(root.parent / f"main-wait-{wait_state}-{quiz_state}.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"main-wait-{wait_state}-{quiz_state}.png"), full_page=True)
             page.locator('[data-nav-page="dashboard"]').click()
             page.locator('[data-dashboard-tab="evolution"]').click()
             pill = page.locator("#evo-bg-pill")
@@ -166,6 +167,6 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
                 expect(pill).to_have_text(f"Consciousness {label}")
                 expect(pill).to_have_class("evo-runtime-pill starting")
                 expect(page.locator("#evo-runtime-detail")).to_contain_text(details[status])
-                page.screenshot(path=str(root.parent / f"evolution-{status}.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"evolution-{status}.png"), full_page=True)
         finally:
             browser.close()

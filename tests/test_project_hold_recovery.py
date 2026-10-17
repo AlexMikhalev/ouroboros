@@ -5,6 +5,8 @@ import copy
 import json
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from ouroboros import projects_registry as registry
@@ -12,6 +14,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, state, workers
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests._store_shared import delete_result, unreadable_result
+from tests.test_pending_deadline_continuations import expiry  # noqa: F401
 
 pytestmark = pytest.mark.serial
 
@@ -58,10 +61,14 @@ def resume_after_app_stop(host, *task_ids):  # noqa: F811
 
 def worker(host, monkeypatch):  # noqa: F811
     sent = []
+    # These consumers finish each task on slot 0 before assigning the next one.
+    # Keep demand reconciliation inside this one-slot fake pool.
+    monkeypatch.setattr(workers, "MAX_WORKERS", 1)
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))
+                             if row.get("type") != "worker_quiescence" else None)))
     return sent
 
 
@@ -327,9 +334,12 @@ def test_room_rebind_and_back_cannot_redirect_original_preparation(host, tmp_pat
         assert not sent and load_task_result(host.root, prepared["id"])["status"] == "failed"
 
 
-@pytest.mark.parametrize("dispatch", [None, "none", "possible"])
+@pytest.mark.parametrize("dispatch", [None, "none", "possible", "stored_possible", "missing_receipt",
+                                      "unreadable_receipt", "started", "owner_pause", "panic"])
 @pytest.mark.parametrize("readable", [False, True])
-def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch, dispatch, readable):  # noqa: F811
+def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch, expiry, dispatch, readable):  # noqa: F811
+    from supervisor.events_budget import HOLD_SAVED_WORK, budget_hold_fact
+
     accepted(host, tmp_path)
     path, original = restore_unreadable(host)
     if readable:
@@ -338,23 +348,44 @@ def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch,
     held["deadline_at"] = "2000-01-01T00:00:00Z"
     if dispatch is None:
         held.pop("admitted_dispatch", None)
-    else:
+    elif dispatch in {"none", "possible"}:
         held["admitted_dispatch"] = dispatch
+    elif dispatch == "stored_possible":
+        write_task_result(host.root, "held", "scheduled", admitted_dispatch="possible")
+    elif dispatch == "missing_receipt":
+        delete_result(host.root, "held")
+    elif dispatch == "unreadable_receipt":
+        unreadable_result(monkeypatch, "held")
+    elif dispatch == "started":
+        write_task_result(host.root, "held", "scheduled", started_at="2026-01-01T00:00:00Z")
+    elif dispatch == "owner_pause":
+        from supervisor.owner_pause_control import request_owner_pause
+
+        assert request_owner_pause("held", request_id="held-pause")["ok"]
+    elif dispatch == "panic":
+        (host.root / "state" / "panic_stop.flag").write_text("panic")
     sent = worker(host, monkeypatch)
-    workers.assign_tasks()
-    assert held["_terminalization_retry"]["trigger"] == "deadline"
-    assert held["_terminalization_retry"]["reconcile_delegate_custody"] is True
+    # Retention grants no execution; a positive never-started receipt still expires.
+    assert budget_hold_fact(held)["reason"] == HOLD_SAVED_WORK
+    for _ in range(2):
+        queue.enforce_task_timeouts()
+        workers.assign_tasks()
+        expiry.reap()
     assert not sent and not host.attempts
-    workers.assign_tasks()
-    assert not host.pending and not sent
-    stored = load_task_result(host.root, "held")
-    assert stored["status"] == "failed" and stored.get("admission_outcome") != "never_admitted"
-    assert "deadline" in stored["result"].lower()
+    if dispatch == "none":
+        assert not host.pending
+        assert load_task_result(host.root, "held")["reason_code"] == "deadline"
+    else:
+        assert host.pending == [held]
+        assert held.get("_terminalization_retry") is None
+        if dispatch not in {"missing_receipt", "unreadable_receipt"}:
+            stored = load_task_result(host.root, "held")
+            assert stored["status"] == "scheduled" and stored.get("admission_outcome") != "never_admitted"
 
 
 def test_unchanged_hold_does_not_rewrite_snapshot_but_changed_reason_does(host, tmp_path, monkeypatch):  # noqa: F811
     accepted(host, tmp_path)
-    restore_unreadable(host)
+    path, original = restore_unreadable(host)
     sent = worker(host, monkeypatch)
     workers.assign_tasks()  # First failure projects its current cause.
     writes = []
@@ -367,6 +398,9 @@ def test_unchanged_hold_does_not_rewrite_snapshot_but_changed_reason_does(host, 
     workers.assign_tasks()
     assert not writes and not sent
     host.pending[0]["_project_admission"] = None
+    workers.assign_tasks()
+    assert not writes  # Unreadable placement authority still owns the refusal.
+    path.write_bytes(original)
     workers.assign_tasks()
     assert len(writes) == 1
     assert "original" in host.pending[0]["_project_admission_restore_hold"]["detail"].lower()

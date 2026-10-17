@@ -15,7 +15,7 @@ the settings guidance below (the resolver's terminal contract already explains
 rollback + retry).
 
 One brief, two parts (PR-3 B): there is no scope role. Every seat answers the
-change (Part 1); a seat that retrieves also answers the eight coupling
+change (Part 1); a seat that retrieves also answers the coupling
 questions (Part 2) in the same brief — ``build_two_part_brief`` is the pure
 builder over a frozen subject, ``assemble_packet_prompt`` the packet seat's
 Part-1 prompt, ``retrieving_brief_for_seat`` the retrieving seat's brief
@@ -526,7 +526,8 @@ def emit_brief_preparation_failure(ctx: Any, *, slot_id: str, model: str, parts:
 def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes: list, *,
                              target_repo, governance_root, subject, frozen, diff_text: str, layer: str,
                              checklist_section: str, commit_message: str, goal: str, scope: str,
-                             review_rebuttal: str, owner_words: str, task_evidence: dict) -> tuple:
+                             review_rebuttal: str, owner_words: str, task_evidence: dict,
+                             preflight_execution: Optional[dict] = None, diff_pulse: str = "") -> tuple:
     """Every retrieving seat receives ITS OWN two-part brief (Part 1 the change,
     Part 2 the coupling questions; a coupling-only seat answers Part 2 alone),
     sized to the seat's own first-send bound. Returns ``(row_plan,
@@ -536,7 +537,11 @@ def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes:
     ``(slot_id, exc)`` — the seat whose brief could not be built, already
     recorded as seat-local preparation evidence; the gate turns it into the
     whole wave's typed assembly block (one wave, so one seat's missing context
-    dispatches nothing). Model-control exceptions propagate before logging."""
+    dispatches nothing). Model-control exceptions propagate before logging.
+    ``preflight_execution`` is the wave's frozen exhibit and ``diff_pulse`` the
+    subject's growth since its contribution base, inside every brief before its size
+    and sha are taken."""
+    from ouroboros.preflight_receipts import execution_section
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import row_plan_retrieves
     from ouroboros.tools.review_brief_coupling import BriefIntent
@@ -550,7 +555,8 @@ def prepare_retrieving_seats(ctx: Any, row_plan: dict, models: list, row_routes:
     intent = BriefIntent(goal=goal, scope=scope, review_rebuttal=review_rebuttal,
                          review_history=getattr(ctx, "_review_dispute_history", None) or list(ctx._review_history or []),
                          coupling_history=list(getattr(ctx, "_coupling_review_history_rounds", None) or []),
-                         owner_words=owner_words)
+                         owner_words=owner_words, preflight_execution=execution_section(preflight_execution),
+                         diff_pulse=diff_pulse)
     for i in range(len(models)):
         if not row_plan_retrieves(row_plan, i):
             continue
@@ -595,7 +601,8 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
                          review_rebuttal: str = "", review_history: Sequence[dict] = (),
                          coupling_history: Sequence[dict] = (), owner_words: str = "",
                          task_evidence_section: str = "", drive_root: Any = None, task_id: str = "",
-                         source_root: str = "", coupling_only: bool = False) -> dict:
+                         source_root: str = "", coupling_only: bool = False,
+                         preflight_execution: Optional[dict] = None) -> dict:
     """The brief ONE seat would receive for a frozen subject — pure over the
     subject, callable outside the gate (step R).
 
@@ -610,13 +617,15 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     the constitutional head for a packet seat, the two-part brief for a
     retrieving seat), ``user`` the one user turn every seat opens with, ``sha``
     = ``{"brief", "change_prompt_sha", "coupling_brief_sha"}``.
+    ``preflight_execution`` is the frozen test execution exhibit a gate wave renders; the
+    diff pulse is read from the subject's reading root exactly as the wave reads it.
     """
     from ouroboros.review_ledger import seat_parts
     from ouroboros.tools import review as _rv
     from ouroboros.tools.review_brief_coupling import BriefIntent
     from ouroboros.tools.review_helpers import (
         build_goal_section, build_rebuttal_section, build_scope_section, goal_with_author_questions,
-        review_history_with_obligations,
+        review_history_with_obligations, review_subject_pulse,
     )
     from ouroboros.tools.review_multi_model import TRIAD_USER_TURN, triad_api_messages
     from ouroboros.review_records import ReviewSlot
@@ -634,8 +643,11 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     checklist_section = _rv._load_checklist_section(layer)
     # The author's questions and the prior rounds are rendered by the owners the
     # gate and review_change use (D5-004): the text here IS the text a seat is sent.
-    goal_text = goal_with_author_questions(goal, author_questions)
-    goal_section = build_goal_section(goal_text, scope, commit_message, owner_words)
+    from ouroboros.preflight_receipts import execution_section
+
+    goal_text, execution = goal_with_author_questions(goal, author_questions), execution_section(preflight_execution)
+    pulse = review_subject_pulse(review_root, layer, frozen_subject.managed)
+    goal_section = build_goal_section(goal_text, scope, commit_message, owner_words, execution, pulse)
     scope_section = build_scope_section(scope)
     rebuttal_section = build_rebuttal_section(review_rebuttal)
     review_history = review_dispute_history(review_history, drive_root=drive_root, repo_root=frozen_subject.spec.root,
@@ -651,7 +663,8 @@ def build_two_part_brief(frozen_subject: Any, seat: Any, *, layer: Optional[str]
     path_subject = frozen_subject.managed if frozen_subject.managed is not None else (
         frozen_subject if not frozen_subject.is_system_index else None)
     intent = BriefIntent(goal=goal_text, scope=scope, review_rebuttal=review_rebuttal, review_history=review_history,
-                         coupling_history=list(coupling_history or []), owner_words=owner_words)
+                         coupling_history=list(coupling_history or []), owner_words=owner_words,
+                         preflight_execution=execution, diff_pulse=pulse)
     if "coupling" in parts:
         text, manifest = retrieving_brief_for_seat(
             review_root=review_root, governance_root=governance_root, path_subject=path_subject,
@@ -734,7 +747,7 @@ def commit_gate_paid_seats(prepared, exited) -> list:
     models = list(prepared.get("models") or row_plan.get("models") or [])
     routes = list(prepared.get("routes") or row_plan.get("routes") or [])
     slot_ids = list(row_plan.get("slot_ids") or [])
-    tasks = list(row_plan.get("session_tasks") or [])
+    tasks, policies = list(row_plan.get("session_tasks") or []), list(row_plan.get("session_policies") or [])
     profiles, local = list(row_plan.get("session_profiles") or []), list(row_plan.get("use_local") or [])
     seats, packet_chars = [], None
     for index, model in enumerate(models):
@@ -746,9 +759,12 @@ def commit_gate_paid_seats(prepared, exited) -> list:
             task = str(tasks[index] if index < len(tasks) else "") or str(prepared.get("session_task") or "")
             if prepared.get("task_evidence"):
                 task += "\n\n" + commit_review_evidence_section(prepared["task_evidence"], delivery="native")
+            policy = (policies[index] if index < len(policies) else None) or {}
             chars = native_first_send_chars(
                 str(prepared.get("target_repo") or ""), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
-                slot_id=slot_id, session_task=task, output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT)
+                slot_id=slot_id, session_task=task, output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT,
+                required_sources_ref=(policy.get("native_required_sources_ref") or {}
+                                      if "native_required_sources" in policy else None))
         else:
             if packet_chars is None:
                 messages, _ = triad_api_messages(
@@ -835,17 +851,20 @@ def managed_update_wave_estimate(remaining_usd: float) -> dict:
     subscriptions and are counted, not priced. An estimator error is recorded
     inside the event, never a zero; this function is called explicitly, so a
     broken import propagates to the caller."""
+    from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import review_pool_slots
     from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
     from ouroboros.tools.review_multi_model import _review_output_budget
     from ouroboros.usage_admission import review_wave_admission
 
     rows = review_pool_slots()
-    models = [row.model for row in rows if not row.is_session and row.model]
+    # A ReviewSlot's transport is its own ``route`` — the test ``commit_gate_paid_seats`` applies.
+    delegated = [str(getattr(row.route, "value", row.route) or "") == ReviewRouteKind.AGENT_SESSION.value
+                 for row in rows]
+    models = [row.model for row, session in zip(rows, delegated) if not session and row.model]
     event: dict = {"type": "managed_update_wave_estimate", "estimated_wave_usd": None,
                    "exceeds_known_remaining": False, "unpriced_slots": 0,
-                   "session_slots": sum(1 for row in rows if row.is_session),
-                   "remaining_usd": float(remaining_usd)}
+                   "session_slots": sum(delegated), "remaining_usd": float(remaining_usd)}
     if not models:
         return event
     try:

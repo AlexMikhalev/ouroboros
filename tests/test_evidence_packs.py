@@ -5,6 +5,7 @@ checkpoint handles stored through ``store_actor_source_bytes``.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import json
@@ -161,7 +162,7 @@ def test_readers_resolve_loose_then_pack_and_blob_shared_with_active_task_stays_
     from ouroboros.tools.core_file_tools import _list_dir, _read_source_text
     store_dir = task_artifact_dir_path(root, "task-a", create=False) / CHECKPOINTS
     listed = _list_dir(task_artifact_dir_path(root, "task-a", create=False), CHECKPOINTS)
-    assert listed == [f"{CHECKPOINTS}/{pathlib.PurePosixPath(handle_a['path']).name}"]
+    assert listed == [str(pathlib.Path(CHECKPOINTS) / pathlib.PurePosixPath(handle_a['path']).name)]
     extent = {}
     assert _read_source_text(store_dir / pathlib.PurePosixPath(handle_a["path"]).name, extent).startswith("# focus")
     assert extent["source_revision"] == handle_a["sha256"] and _handle_path(root, "task-a", handle_a).exists()
@@ -204,6 +205,27 @@ def test_retained_child_root_packs_serve_predecessor_lookups(root):
     assert target is not None and target.read_bytes().startswith(b"# focus")
 
 
+def test_admission_sees_every_physical_blob_source_and_its_refusal_is_never_a_miss(root):
+    child = root / "task_drives" / "task-a"
+    child.mkdir(parents=True)
+    refs, _ = _task(child, "task-a", blobs=1)
+    _result(root, "task-a", child_drive_root=str(child))
+    _run(child)
+    seen = []
+    assert obs.read_blob_ref(root, refs[0], admit=seen.append)["message"]["content"].startswith("answer")
+    loose = pathlib.Path("observability", "blobs", f"{refs[0]['sha256']}.json.gz")
+    assert seen == [root / loose, child / loose, child / "observability" / "packs" / "task-a.xz"]
+    for refused in seen:  # raised outside the OSError handlers: never absence, corruption or a later candidate
+
+        def admit(path, refused=refused):
+            if path == refused:
+                raise PermissionError(f"refused {path}")
+
+        with pytest.raises(PermissionError, match="refused"):
+            obs.read_blob_ref(root, refs[0], admit=admit)
+    assert obs.read_blob_ref(root, refs[0])["message"]["content"].startswith("answer")  # no callback: unchanged
+
+
 # ---- damage, index cache, kill matrix --------------------------------------------
 
 def test_damaged_pack_is_explicit_evidence_corrupt_and_neighbours_unaffected(root):
@@ -233,17 +255,17 @@ def test_index_is_a_cache_rebuilt_from_sidecars(root):
     index.unlink()
     assert obs.read_blob_ref(root, refs[1])["message"]["content"].startswith("answer")
     assert index.exists()
-    with sqlite3.connect(index) as conn:
+    with contextlib.closing(sqlite3.connect(index)) as conn:
         assert conn.execute("PRAGMA application_id").fetchone()[0] in packs._APPLICATION_ID.values()
         assert conn.execute("SELECT count(*) FROM members").fetchone()[0] == 3
         assert conn.execute("SELECT count(*) FROM handles").fetchone()[0] == 1
     index.write_bytes(b"not a database at all")
     packs._VALIDATED.clear()
     assert read_actor_source_bytes(root, "task-a", handle).startswith(b"# focus")
-    with sqlite3.connect(index) as conn:
+    with contextlib.closing(sqlite3.connect(index)) as conn:
         assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
     # a stale index schema is rebuilt without changing the sidecar format
-    with sqlite3.connect(index) as conn:
+    with contextlib.closing(sqlite3.connect(index)) as conn, conn:
         conn.execute("UPDATE meta SET value='0' WHERE key='schema_version'")
     packs._VALIDATED.clear()
     with packs.open_index(root) as conn:
@@ -307,8 +329,8 @@ def test_kill_at_each_packer_step_leaves_readable_state_and_rerun_completes(root
     assert read_actor_source_bytes(root, "task-a", handle).startswith(b"# focus")
     stray = [p.name for p in (root / "observability" / "packs").iterdir() if p.name.startswith(".")]
     assert not stray or step != "indexed"
-    report = _run(root)
-    assert (report["packed"], report["faults"]) == (1, 0)
+    report = _run(root)  # ``packed`` counts a new generation; a published one is only re-verified
+    assert (report["examined"], report["packed"], report["faults"]) == (1, int(step == "pack_published"), 0)
     names = sorted(p.name for p in (root / "observability" / "packs").iterdir() if p.name.startswith("task-a"))
     assert names == (["task-a.2.members.json", "task-a.2.xz", "task-a.xz"] if step == "pack_published"
                      else ["task-a.members.json", "task-a.xz"])  # an orphan's generation is never overwritten
@@ -506,8 +528,8 @@ def test_packer_tick_arms_first_spawns_one_supervised_child_then_rests(root, mon
     from ouroboros import process_custody
 
     seen = []
-    report = json.dumps({"status": "completed", "packed": 1, "candidates": 1, "raw": 10, "compressed": 2,
-                         "unlinked": 1, "kept": 0, "busy": 0, "faults": 0, "archived": 0}).encode()
+    report = json.dumps({"status": "completed", **dict.fromkeys(packer._COUNTERS, 0), "packed": 1, "candidates": 1,
+                         "raw": 10, "compressed": 2, "unlinked": 1}).encode()
     gate = threading.Event()
 
     def fake_spawn(cmd, **kwargs):
@@ -542,7 +564,9 @@ def test_packer_tick_rests_without_candidates_and_the_sweep_remembers_evaluated_
 
     monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: pytest.fail("spawned without candidates"))
     unit = packer.EvidencePacker()
-    assert unit.tick(root, REPO) is False and unit.tick(root, REPO) is False
+    assert unit.tick(root, REPO) is False and unit.tick(root, REPO) is True
+    unit._thread.join(10)
+    assert not unit._thread.is_alive()
     _task(root, "live", blobs=1, status="running")
     assert packer.changed_tasks(root) == ["live"]
     _run(root)  # evaluated, not settled: recorded so the next tick does not re-read it

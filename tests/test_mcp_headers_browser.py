@@ -41,12 +41,14 @@ def _open_mcp(page, url):
 
 
 def _save(page):
+    """Save a draft that changes something; an honest no-op is asserted where it happens."""
     expected_ids = page.locator('[data-mcp-field="id"]').evaluate_all('els => els.map(e => e.value)')
     with page.expect_response(lambda response: response.url.endswith('/api/settings')
                               and response.request.method == 'POST', timeout=20_000) as saved:
         page.click("#btn-save-settings")
     response = saved.value
-    assert response.ok and response.json().get('status') == 'saved'
+    answer = response.json()
+    assert response.ok and answer.get('status') == 'saved' and not answer.get('no_changes'), answer
     posted_ids = [s.get('id') for s in response.request.post_data_json['MCP_SERVERS']]
     assert posted_ids == expected_ids, ('save omitted visible draft rows', expected_ids, posted_ids)
     page.wait_for_function(
@@ -577,16 +579,22 @@ def test_mcp_header_editor_ui(direct_server_with_data, loopback, engine):  # noq
             expect(legacy.locator("[data-mcp-message]")).to_contain_text("Draft connection OK", timeout=20_000)
             assert tests[-1]["server_id"] == "legacy_docs" and tests[-1]["server"]["id"] == "Legacy Docs"
             assert page.locator('[id^="mcp-0-header-"][id$="-error"]:visible').count() == 0
+            saved_before = (data_dir / "settings.json").read_text(encoding="utf-8")
             with page.expect_response(lambda response: response.url.endswith('/api/settings')
                                       and response.request.method == 'POST', timeout=20_000) as renamed_save:
                 page.click("#btn-save-settings")
-            assert renamed_save.value.ok
+            # Both spellings are one canonical ID, so this Save is an honest no-op that changes nothing on disk.
+            answer = renamed_save.value.json()
+            assert renamed_save.value.ok and answer["status"] == "saved" and answer.get("no_changes") is True, answer
+            assert renamed_save.value.request.post_data_json["MCP_SERVERS"][0]["id"] == "Legacy Docs"
             page.wait_for_function(
-                "() => (document.getElementById('settings-status')?.textContent || '').startsWith('Settings saved')",
+                "() => (document.getElementById('settings-status')?.textContent || '').startsWith('No changes detected')",
                 timeout=20_000)
+            assert json.loads((data_dir / "settings.json").read_text(encoding="utf-8")) == json.loads(saved_before)
             disk = _disk(data_dir)
             assert disk["legacy_docs"]["auth_token"] == BEARER and disk["legacy_docs"]["headers"] == {"X-Tenant": TENANT}
             expect(legacy.locator('[data-mcp-field="id"]')).to_have_value("legacy_docs")
+            assert _rows(legacy) == [("Authorization", BEARER[:8] + "..."), ("X-Tenant", "***set***")]
 
             # Saved A and B: remove B, rename masked A to B. Nothing substitutes B's value.
             pair.locator('[data-mcp-header-row="1"] [data-mcp-header-remove]').click()
