@@ -23,7 +23,7 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
         initial = client.get("/api/ui/preferences")
         assert initial.status_code == 200
         assert initial.json() == {
-            "voice": {"stt": "", "tts": ""},
+            "voice": {"stt": "", "tts": "", "tts_voice": ""},
             "contributions": {"hidden": [], "order": []},
             "widget_order": [],
             "widget_start_mode": {},

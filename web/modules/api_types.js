@@ -1456,7 +1456,7 @@
  */
 /**
  * @typedef {Object} UiPreferencesResponse
- * @property {{stt:string,tts:string}} voice
+ * @property {{stt:string,tts:string,tts_voice:string}} voice
  * @property {{hidden:string[],order:string[]}} contributions
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
