@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, MutableSet, Opti
 
 from ouroboros.context_budget import (
     HOST_CONTEXT_KIND_KEY,
+    HOST_TEXT_SHA_KEY,
     CONTEXT_OVERFLOW_CODES as _TYPED_CONTEXT_OVERFLOW_CODES,
     context_overflow_message as _context_overflow_message,
     ContextReclaimReceipt,
@@ -363,7 +364,7 @@ def _atomic_units(
 # Keys a plain dialogue row may carry and still be a complete prose unit. Any other
 # key marks a host-typed row (acceptance observation, review feedback, native
 # continuation, custody) that stays raw: typed meaning never gets flattened to prose.
-_PLAIN_ROW_KEYS = frozenset({"role", "content", "name", "cache_control", HOST_CONTEXT_KIND_KEY})
+_PLAIN_ROW_KEYS = frozenset({"role", "content", "name", "cache_control", HOST_CONTEXT_KIND_KEY, HOST_TEXT_SHA_KEY})
 _ASSISTANT_PROSE_KEYS = _PLAIN_ROW_KEYS | {"reasoning_content", "reasoning_details", "refusal", "annotations"}
 UnitScope = Literal["tool", "dialogue"]
 UnitKind = Literal["capsule", "tool", "assistant", "user"]
