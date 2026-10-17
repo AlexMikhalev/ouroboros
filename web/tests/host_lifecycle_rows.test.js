@@ -15,7 +15,7 @@ import {
 test('#931 every typed checkpoint kind names itself; only a kindless one is periodic', () => {
     // One family per producer module, so a kind that loses its label shows up here.
     for (const [kind, label] of [
-        ['context_fit_low_retry', 'Context rebuilt in Low mode'],
+        ['context_fit_low_retry', 'Books shown as chapter navigation after a size refusal'],
         ['context_fit_route_rebound', 'Context fit rebound the route'],
         ['context_fit_physical_mode', 'Context starts in a smaller mode (window too small)'],
         ['context_reclaim_manual', 'Context reclaimed on request'],
@@ -69,7 +69,7 @@ test('#931 typed checkpoints are task facts in the expanded card, never narratio
     });
     assert.equal(lowRetry.visible, true);
     assert.equal(lowRetry.phase, 'warn');
-    assert.equal(lowRetry.headline, 'Context rebuilt in Low mode — retrying the same model once');
+    assert.equal(lowRetry.headline, 'Books shown as chapter navigation after a size refusal — retrying the same model once');
     // Distinct kinds on the same round are distinct rows, so one never hides another.
     const keyOf = (kind) => summarizeChatLiveEvent({
         type: 'task_checkpoint', task_id: 't1', checkpoint_kind: kind, round: 4,

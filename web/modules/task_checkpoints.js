@@ -1,7 +1,7 @@
 // Producer census: loop_model_call/round_limits/nudges/budget, task_pacing,
 // transcript_prefix, loop_forced_finalization, owner_pause and agent budget-pause events.
 export const CHECKPOINT_LABELS = {
-    context_fit_low_retry: 'Context rebuilt in Low mode',
+    context_fit_low_retry: 'Books shown as chapter navigation after a size refusal',
     context_fit_route_rebound: 'Context fit rebound the route',
     context_fit_physical_mode: 'Context starts in a smaller mode (window too small)',
     context_view: 'Context inspected',

@@ -673,8 +673,11 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
                + f"round {anchor_round} accepted {int(anchor):,}, {int(estimate) - int(anchor):+,} since")
         parts.append(f"input ~{int(estimate):,} before this line ({how}) + reply {int(reserve or 0):,}")
         # Free room is the window's, stated only on a measured input; the economy target is its own fact.
+        bound = int(accepted or 0) - int(estimate) - int(reserve or 0)  # the window holds what it accepted
         parts.append(f"free ~{int(capacity) - int(estimate) - int(reserve or 0):,}"
-                     if capacity is not None and anchor is not None and not refused else "free unknown")
+                     if capacity is not None and anchor is not None and not refused else
+                     f"free at least ~{bound:,} (below an input this model accepted)"
+                     if anchor is not None and bound > 0 else "free unknown")
         if target is not None:
             floor = int(usage.get("_context_response_reserve_tokens") or reserve or 0)
             excess = int(estimate) + floor - int(target)
