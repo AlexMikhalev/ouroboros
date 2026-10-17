@@ -4,6 +4,12 @@ Whole-document writers derive these columns in their owning transaction. NULL
 means an older writer has not derived them; a passive reader only reads that
 row's body. Historical classification belongs to ``run_hot_facts``, never boot.
 The request snapshot is short lived and released before any consumer runs.
+
+The schema gate adds the columns without decoding bodies. ``run_hot_facts`` classifies
+underived rows under a sequence/source CAS, so a racing writer's row is left to that
+writer and a damaged input waits for its own change. Stop's membership probe is the
+indexed root set plus parent ancestry, queue-only bridges included. The census copies
+its queue and owner registries before its one short transaction per addressed store.
 """
 from __future__ import annotations
 
