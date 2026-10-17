@@ -9,6 +9,7 @@ as often as one with 3.
 from __future__ import annotations
 
 import collections
+import json
 import os
 import pathlib
 import sqlite3
@@ -79,3 +80,28 @@ def test_a_first_read_after_start_reads_its_tasks_lineage_in_batches(tmp_path, m
             assert request(root, chat_id=str(chat))[0] == 200
     assert cold[30]["connect"] <= cold[3]["connect"] + 1, cold
     assert warm[30]["connect"] <= warm[3]["connect"] and warm[30]["statement"] <= warm[3]["statement"], warm
+
+
+def test_a_delta_reads_its_new_tasks_lineage_in_batches(tmp_path, monkeypatch):
+    """New tasks a delta brings are as cold as a first read's: their rows replay through the same batches."""
+    from ouroboros import projects_registry
+
+    costs = {}
+    for tasks in (3, 30):
+        root = tmp_path / str(tasks)
+        chat = _answered_room(root, 1)
+        status, page = request(root, chat_id=str(chat))
+        assert status == 200 and page["after_cursor"]
+        with (root / "logs" / "chat.jsonl").open("a", encoding="utf-8") as handle:
+            for index in range(tasks):
+                task_id = f"new-{index}"
+                seed_result(root, task_id, {"task_id": task_id, "status": "running", "chat_id": chat})
+                handle.write(json.dumps(row(index, chat_id=chat, direction="out", text=f"news {index}",
+                                            task_id=task_id)) + "\n")
+        monkeypatch.setattr(projects_registry, "_TASK_LINEAGE", {})
+        monkeypatch.setattr(projects_registry, "_ROOM_ANSWERS", {})
+        with monkeypatch.context() as patch:
+            costs[tasks] = _counted(patch)
+            status, delta = request(root, chat_id=str(chat), cursor=page["after_cursor"])
+        assert status == 200 and len([r for r in delta["messages"] if r.get("history_id")]) == tasks
+    assert costs[30]["connect"] <= costs[3]["connect"] + 1, costs
