@@ -61,6 +61,10 @@ def conversation(root):
                                     "ts": "2026-10-01T00:00:10Z", "result": "Finished"})
     # The readers read the store: the cutover takes the live files, the archive job the rest.
     assert dialogue_import.run_dialogue_import(root)["state"] == "done"
+    # The task store's import receipt in logs/supervisor.jsonl carries a duration, so its length
+    # varies with timing; the v2 cursor names that file's position. A known state keeps the oracle
+    # independent of the clock and of what ran before it in a shared process.
+    (root / "logs" / "supervisor.jsonl").write_bytes(b"")
     return room
 
 
