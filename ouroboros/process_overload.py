@@ -1,10 +1,11 @@
 """Sample an owned test tree and stop it when the machine runs short of physical memory.
 
 RSS is summed (shared pages may be counted more than once), so tree size alone
-never stops a run: the machine's free memory, and on macOS its kernel pressure
-level, is the signal. This is supervision, not an OS memory/PID/file-descriptor
-quota. Rapid growth between samples can outrun it, and a host too loaded to run
-its probes skips the stop loudly.
+never stops a run: the machine's free memory, and on macOS its kernel's critical
+pressure verdict, is the signal. This is supervision, not an OS memory/PID/
+file-descriptor quota. Rapid growth between samples can outrun it, a host too
+loaded to run its probes skips the stop loudly, and an unreadable macOS pressure
+level reads as normal.
 """
 from __future__ import annotations
 

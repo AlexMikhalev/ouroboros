@@ -38,11 +38,12 @@ def test_native_memory_reports_reclaimable_bytes_without_double_counting(monkeyp
     assert budget.physical_memory() == budget.MemorySnapshot(65536, 24576)
 
 
-@pytest.mark.parametrize("level, pressure", [("1\n", False), ("2\n", True), ("4\n", True), (None, False)])
+@pytest.mark.parametrize("level, pressure", [("1\n", False), ("2\n", False), ("4\n", True), (None, False)])
 def test_macos_kernel_pressure_counts_although_inactive_pages_look_free(monkeypatch, level, pressure):
     """XNU keeps refilling the inactive queue with anonymous pages it then compresses, so free +
-    inactive + speculative barely moves under pressure: the kernel's warn or critical level is read
-    too. An unreadable level leaves the free-memory reading alone."""
+    inactive + speculative barely moves under pressure: the kernel's critical level is read too.
+    Warn is routine on a busy small Mac running a healthy battery. An unreadable level leaves the
+    free-memory reading alone."""
     vm = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 2.\nPages inactive: 3.\nPages speculative: 1.\n"
 
     def native(argv):
