@@ -236,6 +236,7 @@ export function createChatInstance({
                             <button class="chat-header-menu-item" type="button" data-chat-command="bg" title="Toggle background consciousness">Consciousness</button>
                             <button class="chat-header-menu-item" type="button" data-chat-command="evolve" title="Toggle evolution mode">Evolve</button>
                             <button class="chat-header-menu-item" type="button" data-chat-command="review" title="Run review now">Review</button>
+                            <button class="chat-header-menu-item" type="button" data-plugins="off" title="Reload without skills' page code">Restart without plugins</button>
                         </div>
                     </details>
                 </div>
