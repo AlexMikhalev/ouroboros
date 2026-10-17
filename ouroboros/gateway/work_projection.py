@@ -213,18 +213,20 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         entry["name"] = entry["name"] or name
     works: List[Dict[str, Any]] = []
     for work_id, entry in groups.items():
-        members, live_roots = [], []
+        members, live_roots, owners_by_root = [], [], {}
         for row, facts, root_id in entry["rows"]:
             member = ws.classify_member(row, _member_raw(row, facts, obs, root_id))
             members.append(member)
+            owners_by_root.setdefault(root_id, []).append(member)
             if row["activity_id"] == root_id and not (row.get("parent_task_id") or facts.get("parent_task_id")):
                 live_roots.append((row, facts, member))
         delegated = entry["delegated"] if not any(member["activity"] == "working" for member in members) else 0
+        current_row = current_state = None
         if live_roots:
             row, facts, member = max(live_roots, key=lambda item: float(item[0].get("started_at") or 0.0))
             episode = {"task_id": row["activity_id"], "state": member}
             outcome = ws._outcome(row) if row.get("phase") == "finalizing" else ""
-            room_row = row
+            room_row, current_row, current_state = row, row, member
         else:
             episode_id = sorted(entry["roots"])[-1] if entry["roots"] else work_id
             stored = obs.result(episode_id) or {}
@@ -237,8 +239,14 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         name = entry["name"] or _first_name(facts)
         work = ws.roll_up_work(work_id, members, episode=episode, name=name, room=room_row.get("chat_id"),
                                focus=(facts or {}).get("focus"), delegated=delegated, outcome=outcome)
+        current_id = str(episode["task_id"])
+        # Every other episode root that still owns a live member (or retained run) is the earlier attempt.
+        earlier = sorted(root for root in entry["roots"] if root != current_id and (
+            any(member["activity"] != "unknown" for member in owners_by_root.get(root, ())) or root in held))
+        controls = ws.controls_for(current_state, current_row, earlier_live=earlier,
+                                   live_roots=([] if current_state is not None else [current_id]) + earlier)
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",
-                    project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=[])
+                    project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=controls)
         cmid = str(room_row.get("client_message_id") or "")
         if cmid:
             work["client_message_id"] = cmid

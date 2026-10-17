@@ -241,6 +241,45 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
     return state
 
 
+# Pauses the owner's Resume door releases: an owner/mind/host Pause over the tree, an explicit-Resume hold,
+# a budget checkpoint, or a member waiting for selection. A writer hold releases itself; an unrestorable or
+# unread hold has no Resume the door would accept (it answers cancel_or_new_run).
+_RESUMABLE_CODES = {"paused_by_owner", "paused_by_mind", "paused_by_host", "saved_on_stop", "after_restart",
+                    "after_panic", "spending_limit", "technical_pause", "awaiting_selection"}
+_RUNNING_PHASES = {"working", "thinking", "preparing", "finalizing"}
+
+
+def controls_for(current: Optional[Mapping[str, Any]], current_row: Optional[Mapping[str, Any]], *,
+                 earlier_live: Iterable[str] = (), live_roots: Iterable[str] = ()) -> List[Dict[str, Any]]:
+    """The actions the work's doors accept for its present state, each on its exact target.
+
+    ``current``/``current_row`` are the live current episode's classified state and census row (None when the
+    episode ended); ``earlier_live`` the earlier episode roots that still own live members; ``live_roots`` every
+    episode root to stop, current first. The doors stay the authority: a refusal they still return is shown."""
+    earlier = [str(task_id) for task_id in earlier_live if task_id]
+    roots = [str(task_id) for task_id in live_roots if task_id]
+    controls: List[Dict[str, Any]] = []
+    if current is not None and current_row is not None:
+        target = str(current.get("task_id") or "")
+        phase = str(current_row.get("phase") or "")
+        managed = str(current_row.get("kind") or "") == "managed_task"
+        codes = {entry.get("code") for entry in current.get("reasons") or ()}
+        if current["activity"] == "working" and current.get("transition") == "none" and managed \
+                and phase in _RUNNING_PHASES:
+            controls += [{"action": "wrap_up", "target": target}, {"action": "hurry", "target": target}]
+        if managed and current["activity"] in {"working", "queued", "waiting"} and current.get("transition") == "none" \
+                and "earlier_work_unconfirmed" not in codes and phase not in {"budget_paused", "budget_pausing"}:
+            controls.append({"action": "pause", "target": target})
+        if current["activity"] == "paused" and phase == "budget_paused" and codes & _RESUMABLE_CODES:
+            controls.append({"action": "resume", "target": target})
+    for task_id in [*([str(current.get("task_id"))] if current is not None else []), *roots]:
+        if task_id and task_id not in {entry["target"] for entry in controls if entry["action"] == "stop"}:
+            controls.append({"action": "stop", "target": task_id, "scope": "cascade"})
+    for task_id in earlier:
+        controls.append({"action": "stop_earlier", "target": task_id, "scope": "cascade"})
+    return controls
+
+
 def _rank(activity: str) -> int:
     return ACTIVITY_ORDER.index(activity) if activity in ACTIVITY_ORDER else len(ACTIVITY_ORDER)
 

@@ -220,7 +220,9 @@ def test_the_17_october_room_is_one_working_work(stored, tmp_path):
     work = snap["works"][0]
     assert work["work_id"] == "p" and work["name"] == "Ouroboros 7.7.0 — finish the saved release"
     assert work["activity"] == "working" and work["because"][0]["count"] == 3
-    assert work["controls"] == [] and work["room"] == 42
+    assert work["room"] == 42
+    assert [(entry["action"], entry["target"]) for entry in work["controls"]] == [
+        ("stop", "c"), ("stop", "p"), ("stop_earlier", "p")]
     room = snap["rooms"]["42"]
     assert room["activity"] == "working" and room["amber"] is False
 
@@ -267,3 +269,46 @@ def test_retained_delegated_runs_of_an_ended_root_are_live_work(stored, monkeypa
     work = snap["works"][0]
     assert work["activity"] == "working" and work["because"][0]["code"] == "delegated_running"
     assert work["members"]["delegated"] == 2
+
+
+# ---- controls -----------------------------------------------------------------------------------------
+
+def _actions(controls):
+    return [(entry["action"], entry["target"]) for entry in controls]
+
+
+def test_held_continue_offers_stop_and_stop_earlier_never_resume_or_pause():
+    held_row = row("c", "budget_paused", pause_cause="unknown", can_resume=False)
+    current = ws.classify_member(held_row, {"hold": {"reason": "continuation_writer_unsettled"}})
+    controls = ws.controls_for(current, held_row, earlier_live=["p"], live_roots=["p"])
+    assert _actions(controls) == [("stop", "c"), ("stop", "p"), ("stop_earlier", "p")]
+    assert not {"resume", "pause"} & {entry["action"] for entry in controls}
+
+
+def test_working_managed_root_offers_wrap_up_hurry_pause_stop_and_a_direct_turn_only_stop():
+    working = row("t")
+    controls = ws.controls_for(ws.classify_member(working), working)
+    assert [entry["action"] for entry in controls] == ["wrap_up", "hurry", "pause", "stop"]
+    direct = row("d", kind="direct_chat")
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(direct), direct)] == ["stop"]
+    finishing = row("f", "finalizing")
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(finishing), finishing)] == ["stop"]
+
+
+@pytest.mark.parametrize("cause, raw, resumable", [
+    ("owner", {"fence": {"requested_by": "owner"}}, True),
+    ("owner", {"fence": {"requested_by": "owner", "actor": "mind"}}, True),
+    ("restart", {"hold": {"reason": "saved_work_hold"}}, True),
+    ("budget", {}, True),
+    ("unknown", {"hold": {"reason": "restore_refused:x"}}, False),
+    ("mystery", {}, False),
+])
+def test_resume_is_offered_only_where_the_resume_door_releases_the_pause(cause, raw, resumable):
+    parked = row("t", "budget_paused", pause_cause=cause, can_resume=True)
+    actions = {entry["action"] for entry in ws.controls_for(ws.classify_member(parked, raw), parked)}
+    assert ("resume" in actions) is resumable and "stop" in actions and "pause" not in actions
+
+
+def test_an_ended_episode_with_running_helpers_offers_only_stop_on_its_tree():
+    controls = ws.controls_for(None, None, earlier_live=[], live_roots=["p"])
+    assert _actions(controls) == [("stop", "p")]
