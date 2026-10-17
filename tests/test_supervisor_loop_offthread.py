@@ -537,15 +537,17 @@ def test_startup_custody_still_runs_inline_and_starts_no_maintenance_thread(tmp_
 def test_drive_custody_rides_the_reconcile_pass_bounded_and_never_startup(tmp_path, monkeypatch):
     """Child and direct drives are settled by the off-loop reconcile pass through the one
     settlement owner, with the supervisor's probe and ownership interlock, at most
-    DRIVE_SETTLEMENTS_PER_PASS attempts per layout and pass from a memory-only cursor;
-    the startup sweep copies and hashes no child store (readiness waits on nothing)."""
-    from ouroboros import headless, server_maintenance as sm
+    DRIVE_SETTLEMENTS_PER_PASS attempts per layout and pass from a durable cursor (the
+    ``drive_settlement`` job row: a restart continues the lap); the startup sweep copies and
+    hashes no child store (readiness waits on nothing); the moved drives wait in the custody
+    trash for the maintenance child, which deletes them off the serving process."""
+    from ouroboros import headless, maintenance, maintenance_jobs, server_maintenance as sm
+    from ouroboros.task_custody import custody_trash_entries
     from ouroboros.task_results import load_task_result, write_task_result
     from ouroboros.startup_migrations import prepare_startup_state
     prepare_startup_state(tmp_path)
 
     monkeypatch.setattr(sm, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(sm, "_DRIVE_PRUNE_CURSOR", {"headless": "", "direct": ""})
     monkeypatch.setenv("OUROBOROS_GC_RETENTION_DAYS", "1")
     monkeypatch.setattr("ouroboros.retention.age_cutoff", lambda *a, **k: 4_000_000_000)
     monkeypatch.setattr(headless, "DRIVE_SETTLEMENTS_PER_PASS", 2)
@@ -569,11 +571,16 @@ def test_drive_custody_rides_the_reconcile_pass_bounded_and_never_startup(tmp_pa
     assert sorted(p.name for p in base.iterdir()) == ["d1", "d2", "d3"], "startup settles no drive"
 
     sm._run_drive_custody_pass()
-    assert sorted(p.name for p in base.iterdir()) == ["d3"] and sm._DRIVE_PRUNE_CURSOR["headless"] == "d2"
+    assert sorted(p.name for p in base.iterdir()) == ["d3"]
+    assert maintenance_jobs.job(tmp_path, "drive_settlement")["cursor"]["headless"] == "d2"
     assert len(interlocks) == 2
+    assert len(custody_trash_entries(tmp_path)) == 2, "the server moved the drives; it deleted nothing"
     sm._run_drive_custody_pass()
-    assert list(base.iterdir()) == [] and sm._DRIVE_PRUNE_CURSOR["headless"] == "d3"
+    assert list(base.iterdir()) == [] and maintenance_jobs.job(tmp_path, "drive_settlement")["cursor"]["headless"] == "d3"
     assert all(load_task_result(tmp_path, name)["status"] == "cancelled" for name in ("d1", "d2", "d3"))
+    assert "custody_trash" in maintenance.due(tmp_path)
+    assert maintenance.run_job(tmp_path, "custody_trash") == {"state": "done", "items": 3}
+    assert custody_trash_entries(tmp_path) == [] and "custody_trash" not in maintenance.due(tmp_path)
 
     closed = threading.Event()
     closed.set()

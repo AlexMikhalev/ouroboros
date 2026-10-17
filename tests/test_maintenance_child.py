@@ -246,3 +246,41 @@ def test_legacy_reconcile_runs_only_when_scheduled_and_tolerates_a_body_without_
     monkeypatch.delattr(store_import, "run_legacy_reconcile")
     maintenance_jobs.record(data, "legacy_reconcile", state="pending")
     assert maintenance.run_job(data, "legacy_reconcile") == {"state": "pending", "items": 0}
+
+
+def test_a_retained_drive_rests_until_its_inputs_change(data, monkeypatch):
+    """Drive settlement stays in the server (the queue lock and the liveness probe are its), but
+    a drive retained for a reason a later pass would meet again is not decoded, copied or hashed
+    on every pass: its verdict and the cursor are the ``drive_settlement`` row. A row change
+    re-attempts it, and the settlement then succeeds."""
+    from ouroboros import headless, server_maintenance as sm, task_custody
+    from ouroboros.startup_migrations import prepare_startup_state
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    prepare_startup_state(data)
+    monkeypatch.setattr(sm, "DATA_DIR", data)
+    monkeypatch.setattr("ouroboros.retention.age_cutoff", lambda *a, **k: 4_000_000_000)
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+    drive = headless.prepare_task_drive(data, "held", "empty")
+    write_task_result(data, "held", "completed", result="answer", child_drive_root=str(drive),
+                      root_phase_checkpoint={"post_task_synthesis": "running"})
+    sm._run_drive_custody_pass()
+    row = maintenance_jobs.job(data, "drive_settlement")
+    assert row["retained"]["held"]["reason"] == "post_work_open" and drive.is_dir()
+
+    settle, attempts = task_custody.settle_child_drive, []
+    monkeypatch.setattr(task_custody, "settle_child_drive",
+                        lambda *a, **k: attempts.append(a[1]) or settle(*a, **k))
+    before, decodes = _revision(data), _decodes(monkeypatch)
+    sm._run_drive_custody_pass()
+    assert attempts == [] and decodes == [] and _revision(data) == before, "a resting verdict was re-attempted"
+    monkeypatch.undo()  # the probes go, the body reads count again: the post-work closes
+
+    prepare_startup_state(data)
+    monkeypatch.setattr(sm, "DATA_DIR", data)
+    monkeypatch.setattr("ouroboros.retention.age_cutoff", lambda *a, **k: 4_000_000_000)
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+    write_task_result(data, "held", "completed", root_phase_checkpoint={"post_task_synthesis": "completed"})
+    sm._run_drive_custody_pass()
+    assert not drive.exists() and "held" not in maintenance_jobs.job(data, "drive_settlement")["retained"]
+    assert load_task_result(data, "held")["status"] == "completed"

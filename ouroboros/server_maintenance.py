@@ -4,6 +4,7 @@ off-loop; delegated-snapshot GC fails closed on an unreadable log."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pathlib
@@ -990,9 +991,6 @@ def _prune_delegated_snapshots() -> None:
         log.debug("Delegated execution snapshot prune failed", exc_info=True)
 
 
-# Memory only: where the last drive-custody pass stopped in each drive layout, so a bounded
-# pass continues instead of re-attempting the same first drives (no ledger, no timer).
-_DRIVE_PRUNE_CURSOR = {"headless": "", "direct": ""}
 
 
 def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: Any = None) -> None:
@@ -1047,10 +1045,14 @@ def _run_drive_custody_pass(stop_event: Any = None) -> None:
     then settle terminal child and direct drives past retention (a cancelled subagent's at
     once) through ``task_custody.settle_child_drive`` with the supervisor's probe and
     ownership interlock, at most ``DRIVE_SETTLEMENTS_PER_PASS`` attempts per layout and
-    pass, continuing from the previous pass's cursor; crashed-settlement leftovers are
-    swept first. Off the loop thread: each settlement may copy and hash a child store.
-    A drive kept because its custody is not proven is material evidence in the event. The
-    pending child-ref promotions it waits on are the maintenance child's job."""
+    pass, continuing from the previous pass's cursor; crashed-settlement staging is swept
+    first. Off the loop thread: each settlement may copy and hash a child store. It stays in
+    the server: the queue lock and the liveness probe are this process's. The cursor and the
+    verdicts of retained drives are the ``drive_settlement`` job row (written only when they
+    move), so a restart neither restarts the lap nor re-hashes an unchanged retained drive. A
+    drive kept because its custody is not proven is material evidence in the event. The moved
+    drives' deletion and the pending child-ref promotions are the maintenance child's jobs."""
+    from ouroboros import maintenance_jobs
     from ouroboros.headless import DRIVE_SETTLEMENTS_PER_PASS, prune_headless_task_drives, prune_task_drives
     from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
     from ouroboros.task_custody import sweep_custody_leftovers
@@ -1064,13 +1066,19 @@ def _run_drive_custody_pass(stop_event: Any = None) -> None:
     # Canonical mailboxes the loop thread's seam left because unread rows carry inputs to
     # verify or copy: carried and unlinked here, off the loop thread.
     mailboxes = sweep_settled_owner_mailboxes(root, stop=stop)
+    row = maintenance_jobs.job(root, "drive_settlement") or {}
+    cursors = {key: str(value or "") for key, value in (row.get("cursor") or {}).items()}
+    rested = {key: value for key, value in (row.get("retained") or {}).items() if isinstance(value, dict)}
+    before = json.dumps([cursors, rested], sort_keys=True)
     reports = {}
     for key, prune in (("headless", prune_headless_task_drives), ("direct", prune_task_drives)):
         if stop():
             return
         reports[key] = prune(root, live=task_settlement_liveness, guard=lambda: task_settlement_interlock(stop=stop),
-                             stop=stop, budget=DRIVE_SETTLEMENTS_PER_PASS, after=_DRIVE_PRUNE_CURSOR[key])
-        _DRIVE_PRUNE_CURSOR[key] = str(reports[key].get("cursor") or "")
+                             stop=stop, budget=DRIVE_SETTLEMENTS_PER_PASS, after=cursors.get(key, ""), rested=rested)
+        cursors[key] = str(reports[key].get("cursor") or "")
+    if json.dumps([cursors, rested], sort_keys=True) != before:
+        maintenance_jobs.record(root, "drive_settlement", cursor=cursors, retained=rested)
     _prune_event("headless_task_drive_prune", ("pruned", "errors", "custody_pending", "removed"),
                  report=reports["headless"], task_drives=reports["direct"], mailboxes=mailboxes)
 

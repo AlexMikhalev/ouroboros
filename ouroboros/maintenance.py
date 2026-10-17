@@ -238,6 +238,26 @@ def _legacy_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str
     return {"state": str(row.get("state") or "unknown"), "items": int(row.get("done") or 0)}
 
 
+def _trash_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
+    """Drives a settlement moved aside (``state/custody_trash``) wait for their deletion; an entry
+    the last run could not remove waits for its identity to change."""
+    from ouroboros.task_custody import custody_trash_entries
+
+    stuck = row.get("stuck") or {}
+    return any(stuck.get(name) != identity for name, identity in custody_trash_entries(root))
+
+
+def _trash_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
+    """Delete the moved drives (each was custodied under the queue lock before its move; nothing
+    serves or references it), so a child drive's tree is removed off the serving process."""
+    from ouroboros.task_custody import remove_custody_trash
+
+    report = remove_custody_trash(root, stop=should_stop)
+    state = "failed" if report["stuck"] else "done"
+    maintenance_jobs.record(root, "custody_trash", state=state, stuck=report["stuck"], removed=report["removed"])
+    return {"state": state, "items": report["removed"]}
+
+
 def _release() -> str:
     from ouroboros import __version__
 
@@ -327,6 +347,7 @@ JOBS: Dict[str, tuple] = {
     "legacy_reconcile": (_legacy_due, _legacy_run),
     "activity_backfill": (_activity_due, _activity_run),
     "child_ref_promotion": (_promotion_due, _promotion_run),
+    "custody_trash": (_trash_due, _trash_run),
     "temp_sweep": (_temp_due, _temp_run),
     "sqlite_analyze": (_analyze_due, _analyze_run),
     "evidence_packing": (_packing_due, _packing_run),  # last: its quiet fact follows every other write
