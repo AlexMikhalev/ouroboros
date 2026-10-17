@@ -373,7 +373,9 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
             "owner_corpus": owner_corpus_rows(sources),
             "continuation": {
                 "predecessor_task_id": predecessor, "cause": verdict["cause"],
-                "owner_sources": {"original": sources.get("original"), "later": sources.get("later") or []},
+                "owner_sources": {"original": sources.get("original"), "later": sources.get("later") or [],
+                                  "held_owner_messages": sources.get("held_owner_messages") or {},
+                                  "open_relays": sources.get("open_relays") or {}},
                 "peer_context": sources.get("peer_context") or [],
                 "billing_group_id": binding.get("billing_group_id"),
                 "billing_group_limit_usd": binding.get("billing_group_limit_usd"),
@@ -533,7 +535,8 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
             return {"ok": False, "error": "continuation_claim_unwritable", "detail": str(exc)[:200]}
         binding = dict(claim["binding"])
     blockers = action_writers(q, predecessor, purpose=CONTINUE_PURPOSE)
-    admission = {"binding": binding, "binding_sha256": binding_sha(binding), "admitted_at": utc_now_iso(),
+    admission = {**{key: claim[key] for key in ("actor", "actor_task_id", "reason") if key in claim},
+                 "binding": binding, "binding_sha256": binding_sha(binding), "admitted_at": utc_now_iso(),
                  "held": bool(blockers)}
     task = _successor_task(q, predecessor, result, binding, verdict, sources, admission)
     if blockers:

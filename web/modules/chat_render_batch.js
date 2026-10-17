@@ -296,7 +296,8 @@ export function syncLiveCardToggle(record) {
     const text = expanded ? 'Hide details' : 'Show details';
     const ariaExpanded = expanded ? 'true' : 'false';
     if (record.toggleEl.textContent !== text) record.toggleEl.textContent = text;
-    if (record.summaryButtonEl?.getAttribute('aria-expanded') !== ariaExpanded) {
+    // A Main portal's summary is content, not a disclosure (work_portal.js): it states no expanded state.
+    if (record.root.dataset.portal !== '1' && record.summaryButtonEl?.getAttribute('aria-expanded') !== ariaExpanded) {
         record.summaryButtonEl?.setAttribute('aria-expanded', ariaExpanded);
     }
 }

@@ -194,6 +194,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
     copy with recorded attachments renders as its row does (views, source, mark).
     """
     from ouroboros.project_dialogue import project_origin_rows
+    from ouroboros.chat_references import origin_projection
 
     origin_rows = project_origin_rows(data_dir, thread_id)
     if not origin_rows:
@@ -223,7 +224,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "client_message_id": cmid,
             "task_id": "",
             "origin_projected": True,
-            "origin_id": row["origin_id"],
+            "origin_id": row["origin_id"], **origin_projection(data_dir, ref),
             **({"attachments": attachment_views(row["attachments"], data_dir)} if row.get("attachments") else {}),
             **({"text_placeholder": True} if row.get("text_placeholder") is True else {}),
         })
@@ -300,7 +301,9 @@ def _chat_quota_predicate(row_matches_thread):
 
 
 def _history_identity(entry):
-    return {key: entry[key] for key in ("history_id", "history_position") if key in entry}
+    from ouroboros.chat_references import projection_fields
+    return {**({"row_address": entry["row_address"]} if entry.get("row_address") else projection_fields(entry)),
+            **{key: entry[key] for key in ("history_id", "history_position", "reply_to", "relay", "reply_to_relay") if key in entry}}
 
 
 def _read_progress_history_entries(live, adir, want, counts_toward_quota, *, include_gaps=False):
@@ -826,10 +829,9 @@ def _collect_chat_rows(
                 # before the producer stripped markdown; a no-op on new rows.
                 # The durable chat.jsonl is never rewritten.
                 rec["text"] = strip_markdown(rec["text"])
-                if isinstance(entry.get("terminal_time"), dict):
-                    rec["terminal_time"] = dict(entry["terminal_time"])
-                if isinstance(entry.get("completion_notice"), dict):
-                    rec["completion_notice"] = dict(entry["completion_notice"])
+                for key in ("terminal_time", "completion_notice", "outcome_axes"):
+                    if isinstance(entry.get(key), dict):
+                        rec[key] = dict(entry[key])
                 for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer",
                             "completion_reason", "delivery_id", "handoff_id"):
                     if key in entry:
@@ -1519,7 +1521,6 @@ def _assemble_history_response(
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
-    # Wake-ups have their own task/result and need no replay special case.
     # Retired "bg-consciousness" progress has no task_result: replay treats it
     # like any missing-result row; the client's durable task-detail read shows
     # "Outcome unavailable". Never stamp it terminal here: no result is not Done.

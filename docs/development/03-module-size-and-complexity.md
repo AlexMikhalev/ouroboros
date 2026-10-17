@@ -161,13 +161,11 @@ here, and enroll it in `hot_store_growth_notes` in the same change.
 
 ### Invariant: Continuation authority and bounded role projections
 
-Continuation is an explicit relation, not an inferred chat-memory feature: the router
-contract requires `predecessor_task_id` (`""` = fresh; omission or `null` is a typed
-refusal before any lookup, enqueue or provider spend), and Main receives only a
-defensive projection of the predecessor authority, never a raw head/tail slice, an
-invented summary or a mutation of the canonical result (ARCHITECTURE §1 "CLI /
-Headless Boundary"); the optional exact read, never a forced reread, is
-`get_task_result(include_authority=True)`.
+Continuation is an explicit relation, not inferred chat memory: only the Continue CAS
+(`continued_by`) links a successor, and new work names no predecessor. Main gets only a
+defensive projection of a predecessor's authority, never a raw head/tail slice, an invented
+summary or a canonical-result mutation (ARCHITECTURE §1 "CLI / Headless Boundary"); the
+optional exact read is `get_task_result(include_authority=True)`.
 
 The root startup injection is a bounded envelope, not a body copy, from the one producer
 `contracts.task_contract.bounded_continuation_envelope`: each field is whole-or-pointer
