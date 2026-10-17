@@ -58,12 +58,23 @@ def test_an_account_rotation_keeps_the_anchor_and_another_model_has_none():
     assert main_input_anchor(usage, other, rewrite_epoch=0) == (None, None)
 
 
+def test_each_model_keeps_its_own_anchor_so_a_return_after_a_fallback_stays_measured():
+    """Both directions: a fallback's acceptance is its own anchor and never erases the primary's."""
+    primary, usage = _plan(), {}
+    fallback = _plan(model="claudexor::codex/gpt-6.1-sol")
+    record_input_anchor(_settled(usage, prompt=874_829, estimate=795_458), primary, round_idx=10)
+    record_input_anchor(_settled(usage, prompt=120_000, estimate=100_000), fallback, round_idx=11)
+    assert main_input_anchor(usage, primary, rewrite_epoch=0)[0].input_tokens == 874_829
+    assert main_input_anchor(usage, fallback, rewrite_epoch=0)[0].input_tokens == 120_000
+    assert len(usage[INPUT_ANCHOR_KEY]) == 2
+
+
 def test_a_substituted_answer_or_unknown_cache_semantics_leave_the_anchor_unchanged():
     plan, usage = _plan(), {}
     record_input_anchor(_settled(usage, prompt=400_000, estimate=380_000), plan, round_idx=2)
     record_input_anchor(_settled(usage, prompt=900_000, estimate=380_000,
                                  substituted=[{"requested": "a", "observed": "b"}]), plan, round_idx=3)
-    assert usage[INPUT_ANCHOR_KEY]["input_tokens"] == 400_000  # another model's tokenizer teaches nothing
+    assert main_input_anchor(usage, plan, rewrite_epoch=0)[0].input_tokens == 400_000  # a substitute teaches nothing
     unknown = _plan(model="gigachat/max", provider="gigachat")
     record_input_anchor(_settled(usage, prompt=50_000, estimate=40_000, provider="gigachat", cached=30_000),
                         unknown, round_idx=4)
@@ -78,6 +89,17 @@ def test_a_count_that_cannot_be_this_requests_input_teaches_nothing():
     assert main_input_anchor(usage, plan, rewrite_epoch=0) == (None, None)
     record_input_anchor(_settled(usage, prompt=31_000, estimate=20_000), plan, round_idx=2)  # a dense tokenizer
     assert main_input_anchor(usage, plan, rewrite_epoch=0)[0].input_tokens == 31_000
+
+
+def test_a_gateway_that_counts_the_cache_read_twice_teaches_nothing():
+    """Both directions: 2 x cached (+-1) is the gateway's double count, an honest cached row is a total."""
+    plan, usage = _plan(model="openrouter::google/gemini-3.6-flash", provider="openrouter"), {}
+    record_input_anchor(_settled(usage, prompt=2 * 300_000 - 1, estimate=310_000, provider="openrouter",
+                                 cached=300_000), plan, round_idx=4)
+    assert main_input_anchor(usage, plan, rewrite_epoch=0) == (None, None)  # no anchor, no inflated floor
+    record_input_anchor(_settled(usage, prompt=320_000, estimate=310_000, provider="openrouter", cached=300_000),
+                        plan, round_idx=5)
+    assert main_input_anchor(usage, plan, rewrite_epoch=0)[0].input_tokens == 320_000
 
 
 def test_a_rewrite_since_the_anchor_is_named():

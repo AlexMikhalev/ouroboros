@@ -77,6 +77,14 @@ _CTX_LIMIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
 )
 
 
+def gateway_double_counted_cache(prompt_tokens: int, cached_tokens: int) -> bool:
+    """A cache-inclusive total landing on 2 x cached (+-1): a gateway adding the cache read on top.
+
+    Neither a density witness nor a conversation's size anchor (``context_anchor``) learns from it
+    (``observe_token_density`` names the paid run that showed it)."""
+    return bool(cached_tokens) and abs(int(prompt_tokens) - 2 * int(cached_tokens)) <= 1
+
+
 def _parse_ctx_limit_number(text: str) -> int:
     """Extract the model's context-token limit from an overflow error message, or 0."""
     for pat in _CTX_LIMIT_PATTERNS:
@@ -1417,7 +1425,7 @@ def observe_token_density(request: Any, usage: Optional[Dict[str, Any]], *, driv
         # uncached == cached +-1 is a coincidence whose loss costs nothing
         # (writes are throttled and five pairs retained); uncached ABOVE cached
         # is ordinary and stays measurable.
-        if cached and abs(real - 2 * cached) <= 1:
+        if gateway_double_counted_cache(real, cached):
             return
         # The witness MUST calibrate the basis the fit estimator measures on
         # (MAIN_DENSITY_BASIS: bounded image proxy, system counted) — the
