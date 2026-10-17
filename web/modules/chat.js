@@ -2995,7 +2995,7 @@ export function createChatInstance({
         if (historySyncPromise) await historySyncPromise;
         await historyPager.whenIdle();
         if (destroyed || !current()) return;
-        if (historyPager.getState().canNewer || historyWindow?.horizonGap) {
+        if (historyPager.getState().away || historyWindow?.horizonGap) {
             if ((await historyPager.latest()).status !== 'applied') return;
         }
         if (destroyed || !current()) return;
@@ -3782,7 +3782,7 @@ export function createChatInstance({
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        hostReady: () => hostReady });
+        historyPager, showLatest, hostReady: () => hostReady });
 
     return {
         page,
