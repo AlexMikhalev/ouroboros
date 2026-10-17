@@ -753,9 +753,10 @@ def _build_deliverable_manifest(
 
 
 def _file_artifact(kind: str, path: pathlib.Path, **facts: Any) -> Dict[str, Any]:
-    """One row shape for an artifact written straight into the task artifact dir."""
-    return {"kind": kind, "name": path.name, "path": str(path),
-            "size": path.stat().st_size if path.exists() else 0, **facts}
+    """One row shape for an artifact written straight into the task artifact dir, measured by the one
+    owner as published: retaining the same bytes changes no identity (#1969); producer facts stay."""
+    from ouroboros.artifacts import stream_artifact_file
+    return {"kind": kind, "name": path.name, "path": str(path), **stream_artifact_file(path), **facts}
 
 
 def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any],
@@ -816,8 +817,14 @@ def _finalize_task_artifacts_locked(parent_drive_root: pathlib.Path, task: Dict[
                 manifest,
                 trailing_newline=True,
             )
-            artifacts.append(_file_artifact("workspace_patch_manifest", manifest_path,
-                                            workspace_root=str(workspace_root)))
+            try:
+                row = _file_artifact("workspace_patch_manifest", manifest_path, workspace_root=str(workspace_root))
+            except OSError as unmeasured:  # a read-back fault never replaces the capture failure it records
+                note = f"failure manifest unmeasured: {type(unmeasured).__name__}: {unmeasured}"
+                artifact_error = f"{artifact_error}; {note}"
+                row = {"kind": "workspace_patch_manifest", "name": manifest_path.name, "path": str(manifest_path),
+                       "workspace_root": str(workspace_root), "measured": False, "errors": [note]}
+            artifacts.append(row)
 
     child_drive = _child_drive_from_task(task)
     if child_drive is not None:
