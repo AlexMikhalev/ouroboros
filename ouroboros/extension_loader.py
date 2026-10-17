@@ -208,6 +208,7 @@ def _publish_out_of_process_registration(
         runtime_skill_dir=skill.skill_dir,
         dependency_site_dirs_enabled=dependency_site_dirs_enabled,
         plugin_api_generation=plugin_api_generation or negotiation.generation,
+        loaded_skill=skill,
     ))
     try:
         _stage_out_of_process_surfaces(api, skill, catalog)
@@ -738,6 +739,7 @@ def load_extension(
                 runtime_skill_dir=(staged_import_root / "skill") if staged_import_root is not None else None,
                 dependency_site_dirs_enabled=bool(auto_specs),
                 plugin_api_generation=negotiation.generation,
+                loaded_skill=skill,
             ))
             if current_execution_mode() is ExecutionMode.IN_PROCESS:
                 api._disclose_model_capable_dispatch("register", "register")
@@ -982,7 +984,7 @@ def list_companion_names() -> List[str]:
     the out-of-process catalog so the host can spawn the declared companions.
     """
     with _lock:
-        names: List[str] = []
+        names = []
         for bundle in _extensions.values():
             for raw in bundle.companion_names:
                 name = str(raw or "")

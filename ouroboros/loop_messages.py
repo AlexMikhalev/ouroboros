@@ -164,6 +164,7 @@ def _append_or_merge_user_content(
     proves the tail absent; an unknown or sent tail stays intact.
     """
     from ouroboros.transcript_prefix import unsent_in_previous_send
+    from ouroboros.review_history_view import REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY
 
     if isinstance(content, list):
         incoming_images = sum(
@@ -172,8 +173,10 @@ def _append_or_merge_user_content(
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
-    if not (messages and unsent_in_previous_send(slot, messages[-1])):
-        # Unknown or sent content stays intact, including slot-less producers.
+    if not (messages and unsent_in_previous_send(slot, messages[-1]) and not any(
+        key in messages[-1] for key in (HOST_CONTEXT_KIND_KEY, REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY)
+    )):
+        # Unknown/sent rows and typed host/review data keep their framing intact.
         messages.append({"role": "user", "content": content})
         return
     if messages and messages[-1].get("role") == "user":

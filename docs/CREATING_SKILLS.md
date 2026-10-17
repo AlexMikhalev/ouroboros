@@ -171,6 +171,30 @@ the `list_skills` index and the "Installed Skills" context section, whole in
 manifest — so write it for the model, not for the human reviewer. Unknown keys or
 non-string values are refused at parse time.
 
+### Passive context snapshots (extensions only)
+
+A reviewed extension may declare `context_snapshot: {path: context-snapshot.json}`
+and the `context_snapshot` permission/grant. Its existing deterministic task or
+companion writes that relative path under its own skill state, atomically:
+`{"schema_version":1,"observed_at":"…Z","valid_until":"…Z","text":"…"}`.
+Dates must be finite timezone-aware ISO instants, observed ≤ valid and not in the
+future. The complete UTF-8 JSON file is bounded at 32768 bytes; malformed, missing,
+escaping or oversized files yield an explicit unknown, never clipped prose.
+
+Write compact deterministic facts, not instructions or relative-age counters.
+Keep changing poll timestamps out of `text`: the envelope dates date the visible
+claim. Main, project roots and consciousness receive a labelled UNTRUSTED tail
+note after compaction; children and Presence do not. No callback, model, network,
+refresh or scheduler is run by prompt preparation. Current enablement, review,
+grants, dependencies and publication must remain eligible. Revocation/expiry emits
+one withdrawal; it does not resend old facts. A changed material value appends a
+full note; timestamp-only renewal waits until the visible lease expires, then
+references that exact full text's source/text hashes with new dates. No delta
+chain or hidden memo is authority: reclaim keeps the required visible base, and
+an absent base after compaction/cold Resume causes a complete current note. This preserves the
+existing prefix, not a promise of provider cache hits. Source bytes are retained
+through observability; earlier notes remain historical, not current authority.
+
 Manifest refusals teach: every `SkillManifestError` carries the problem plus,
 where the parser knows the repair, a `fix_hint` rendered into the message
 (`... — fix: ...`), so a refused registration tells you how to fix the
@@ -582,6 +606,7 @@ calls and runtime behaviours:
 
 | Permission | What it grants |
 |------------|----------------|
+| `context_snapshot` | Opt-in standing model context from the declared local snapshot, subject to the existing content-hash-bound grant (see Passive context snapshots). No injection or model-start authority. |
 | `net` | The skill may make outbound network calls. |
 | `fs` | The skill may write outside its state dir (review item still enforces confinement). |
 | `subprocess` | The skill may spawn child processes (review items + cwd-confinement still enforce). |

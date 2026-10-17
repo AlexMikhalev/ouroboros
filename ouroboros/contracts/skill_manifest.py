@@ -46,6 +46,7 @@ VALID_SKILL_PERMISSIONS = frozenset(
         # sentence shown in the owner's chat as a System row signed with the
         # skill's name; never a model turn. Narrower than inject_chat, granted separately.
         "notify_owner",
+        "context_snapshot",
     }
 )
 _EVENT_TOPIC_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
@@ -120,6 +121,8 @@ class SkillManifest:
     # keys from MODEL_EXPERIENCE_KEYS (at least one non-empty). Absent (None)
     # keeps the pre-section behavior everywhere.
     model_experience: Optional[Dict[str, str]] = None
+    # Reviewed local-file declaration; never an executable prompt callback.
+    context_snapshot: Optional[Dict[str, str]] = None
     # Human-readable body after SKILL.md frontmatter.
     body: str = ""
     # Unknown fields preserved for forward compatibility.
@@ -175,6 +178,8 @@ class SkillManifest:
             warnings.append("timeout_sec must be positive")
         if self.scheduled_tasks and "supervised_task" not in self.permissions:
             warnings.append("scheduled_tasks require the supervised_task permission")
+        if self.context_snapshot and "context_snapshot" not in self.permissions:
+            warnings.append("context_snapshot requires its hash-bound owner permission")
         if self.plugin_api is not None:
             # Semantic validation is owned by the negotiation contract; a
             # function-level import keeps the contracts package acyclic.
@@ -454,6 +459,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         "ui_tab",
         "plugin_api",
         "model_experience",
+        "context_snapshot",
         "schema_version",
     }
     extras: Dict[str, Any] = {
@@ -525,6 +531,18 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
             )
 
     model_experience = _parse_model_experience(data.get("model_experience"))
+    context_snapshot = data.get("context_snapshot")
+    if context_snapshot is not None:
+        if (str(data.get("type") or "instruction").lower() != "extension"
+                or not isinstance(context_snapshot, dict) or set(context_snapshot) != {"path"}
+                or "context_snapshot" not in _string_list(data.get("permissions"))):
+            raise SkillManifestError("context_snapshot requires an extension and exactly one relative 'path'")
+        path = context_snapshot["path"]
+        if (not isinstance(path, str) or not path or "\\" in path
+                or pathlib.PurePosixPath(path).is_absolute() or ".." in pathlib.PurePosixPath(path).parts
+                or ":" in path or path.endswith("/")):
+            raise SkillManifestError("context_snapshot.path must name a file beneath the skill state directory")
+        context_snapshot = {"path": path}
 
     companion_processes = _parse_companion_processes(data.get("companion_processes", []))
 
@@ -588,6 +606,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         ui_tab=ui_tab,
         plugin_api=plugin_api,
         model_experience=model_experience,
+        context_snapshot=context_snapshot,
         body=body,
         raw_extra=extras,
         schema_version=schema_version_int,
