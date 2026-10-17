@@ -2,7 +2,8 @@
 // without hover — a right-click, Shift+F10 or the ContextMenu key on the focused row, a long press (no movement)
 // on touch. Its items are the row's own doors, never second ones: Reply, Copy, Open project (when the row has
 // one) and, on a work card, Resume / Pause / Stop… exactly when the card itself offers them (Pause is the item of
-// the card's Stop… menu, offered by the same rule). Esc and an outside press close it; keyboard focus enters the
+// the card's Stop… menu, offered by the same rule); a bubble then lists the registered message actions its control
+// row shows (message_actions.js), in words. Esc and an outside press close it; keyboard focus enters the
 // menu and returns to the row. A right-click on a link, a field or selected words keeps the browser's own menu,
 // so selected text stays copyable.
 import { tr } from './i18n.js';
@@ -10,6 +11,7 @@ import { bindMenu } from './ui_interactions.js';
 import { ACTION_PAUSE, pauseTaskAction, taskControlActions } from './task_control_menu.js';
 import { copyTextWithToast } from './ui_helpers.js';
 import { fullText } from './text_fit.js';
+import { getMessageActions, messageRow, presentAction, runMessageAction } from './message_actions.js';
 
 const LONG_PRESS_MS = 450;
 const MOVE_TOLERANCE_PX = 10;
@@ -20,9 +22,10 @@ const shown = (node) => Boolean(node?.isConnected && !node.hidden && !node.disab
 
 /**
  * `feed` is the chat's transcript, `replies` its reply controller (chat_reply.js), `cardOf(taskId)` its root card
- * record, `activityOf(record)` the census row that card's controls read. Returns `{ open, destroy }`.
+ * record, `activityOf(record)` the census row that card's controls read, `actions` the message-action registry (the
+ * page's own when omitted). Returns `{ open, destroy }`.
  */
-export function createChatRowMenu({ feed, replies, cardOf, activityOf }) {
+export function createChatRowMenu({ feed, replies, cardOf, activityOf, actions = getMessageActions() }) {
     const doc = feed.ownerDocument;
     let current = null;  // { menu, binding, row }
     let press = null;  // a touch that may become (or became) a long press
@@ -45,6 +48,10 @@ export function createChatRowMenu({ feed, replies, cardOf, activityOf }) {
         if (ref) items.push(['reply', tr('chat.reply.reply', 'Reply'), () => replies.start(ref)]);
         const copy = row.querySelector(':scope > .chat-message-copy, :scope > .chat-message-actions > .chat-message-copy');
         if (copy) items.push(['copy', tr('code.copy', 'Copy'), () => copy.click(), true]);
+        const view = messageRow(row);
+        for (const action of view ? actions.actionsFor(view) : []) {
+            items.push([action.key, presentAction(action, view).label, () => runMessageAction(action, view, { anchor: row }), true]);
+        }
         return items;
     }
 

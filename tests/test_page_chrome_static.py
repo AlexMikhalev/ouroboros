@@ -221,22 +221,25 @@ def test_server_navigation_and_chat_static_contracts():
     assert "evo-runtime-detail" in evo_source
     assert "data?.evolution_state?.detail" in chat_source
     assert "data?.bg_consciousness_state?.detail" in chat_source
-    assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', chat_source)
+    # The composer's markup and send path live in composer.js, mounted by chat.js.
+    composer_source = _read("web/modules/composer.js")
+    assert "${composerMarkup()}" in chat_source
+    assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', composer_source)
     # The composer's staged files live in chat_attachments.js (DESIGN "Chat attachments");
-    # chat.js uploads through it on Send and names the uploads for the model.
+    # composer.js uploads through it on Send and names the uploads for the model.
     attachments_source = _read("web/modules/chat_attachments.js")
-    assert "createComposerAttachments({" in chat_source
-    assert "composerText(text, uploadedAttachments.map(" in chat_source
+    assert "createComposerAttachments({" in composer_source
+    assert "composerText(text, uploadedAttachments.map(" in composer_source
     assert "attachmentTail(names);" in attachments_source  # every message but the exact /restart command
     assert "list.slice(0, ATTACHMENT_PREVIEW_COUNT)" in attachments_source
     assert "for (const item of [...pending])" in attachments_source
     assert "attachBtn.classList.toggle('uploading', flag)" in attachments_source
     assert "input.readOnly = flag;" in attachments_source
-    assert "cleanupUploadedAttachments" in chat_source
-    assert "await cleanupUploadedAttachments(e.uploaded || []);" in chat_source
-    assert "await cleanupUploadedAttachments(uploadedAttachments);" in chat_source
-    assert "ws.send({" in chat_source and "{ queue: false }" in chat_source
-    assert "result?.status !== 'sent'" in chat_source
+    assert "cleanupUploadedAttachments" in composer_source
+    assert "await cleanupUploadedAttachments(e.uploaded || []);" in composer_source
+    assert "await cleanupUploadedAttachments(uploadedAttachments);" in composer_source
+    assert "ws.send(frame, hasAttachments ? { queue: false } : undefined)" in composer_source
+    assert "result?.status !== 'sent'" in composer_source
     assert "data-attachment-remove" in attachments_source
     media_source = _read("web/modules/chat_media.js")
     assert "export async function cleanupUploadedAttachments" in media_source

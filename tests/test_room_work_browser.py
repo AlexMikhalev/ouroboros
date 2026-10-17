@@ -993,11 +993,12 @@ def test_keyboard_focus_escape_and_independent_controls(room_ui):
     bubble.locator(".chat-message-copy").click()
     assert page.evaluate("() => window.__copied") == ["The copyable answer stays independent of the list."]
     assert facts(page)["surfaceHidden"]
-    # Files: the composer's attach opens its chooser with the list open.
+    # Files: the composer's "+" → Attach file opens its chooser with the list open.
     control.click()
     wait_facts(page, "main", lambda f: not f["surfaceHidden"], "open for Files")
     with page.expect_file_chooser(timeout=5_000):
-        page.locator("#chat-attach").click()
+        page.locator("#chat-plus").click()
+        page.locator(".chat-plus-menu [data-plus-item='attach']").click()
     assert facts(page)["surfaceHidden"]
     assert transport.posts == []
 
