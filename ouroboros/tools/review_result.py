@@ -314,15 +314,9 @@ def prepare_result_review(ctx: Any, subject: Any, *, goal: str = "", scope: str 
 # --- The delivery step: binding, and the Required floor ------------------------------------------
 
 def _is_root(ctx: Any) -> bool:
-    from ouroboros.task_results import resolve_task_lineage
+    from ouroboros.task_results import resolve_ctx_lineage
 
-    meta = getattr(ctx, "task_metadata", {})
-    lineage = resolve_task_lineage(
-        getattr(ctx, "task_id", ""), metadata=meta if isinstance(meta, dict) else {},
-        root_task_id=getattr(ctx, "root_task_id", None), parent_task_id=getattr(ctx, "parent_task_id", None),
-        delegation_role=getattr(ctx, "delegation_role", None), original_task_id=getattr(ctx, "original_task_id", None),
-        timeout_retry_from=getattr(ctx, "timeout_retry_from", None))
-    return bool(lineage.get("is_root_task"))
+    return bool(resolve_ctx_lineage(ctx).get("is_root_task"))
 
 
 def required_material(ctx: Any, llm_trace: Dict[str, Any], content: str) -> bool:
@@ -363,23 +357,48 @@ def settled_result_record(ctx: Any, subject_sha: str, rows: Optional[List[Dict[s
     return None
 
 
-def _bind_review_run(llm_trace: Dict[str, Any], record: Dict[str, Any], subject_sha: str) -> None:
-    """The result review bound to the delivered answer, in the task's review runs the outcome axes read: a
-    run of an earlier answer is superseded, never deleted."""
-    runs = llm_trace.setdefault("review_runs", [])
-    for run in runs:
-        if run.get("surface") == RESULT_KIND and run.get("binding_hash") != subject_sha and not run.get("superseded_by_revision"):
+def _supersede_other_result_runs(llm_trace: Dict[str, Any], subject_sha: str) -> None:
+    """A result run of an earlier answer never speaks for this one: superseded, never deleted."""
+    for run in llm_trace.get("review_runs") or []:
+        if (isinstance(run, dict) and run.get("surface") == RESULT_KIND and run.get("binding_hash") != subject_sha
+                and not run.get("superseded_by_revision")):
             run["superseded_by_revision"] = subject_sha
+
+
+def _bind_review_run(llm_trace: Dict[str, Any], record: Dict[str, Any], subject_sha: str,
+                     enforcement: str) -> Dict[str, Any]:
+    """The result review bound to the delivered answer, in the task's review runs the outcome axes read."""
+    runs = llm_trace.setdefault("review_runs", [])
     record_id = str(record.get("record_id") or "")
-    if any(run.get("panel_id") == record_id for run in runs):
-        return
+    bound = next((run for run in runs if isinstance(run, dict) and run.get("panel_id") == record_id), None)
+    if bound is not None:
+        return bound
     verdict = dict(record.get("verdict") or {})
     aggregate = str(verdict.get("aggregate") or "")
     signal = aggregate if aggregate in {"PASS", "FAIL"} else "DEGRADED"
-    runs.append({"surface": RESULT_KIND, "authority": "host_root", "panel_id": record_id, "record_id": record_id,
-                 "binding_hash": subject_sha, "aggregate_signal": signal, "aggregate": aggregate,
-                 "degraded": signal == "DEGRADED", "reason": str(verdict.get("reason") or ""),
-                 "critical_count": len(verdict.get("critical_findings") or [])})
+    bound = {"surface": RESULT_KIND, "authority": "host_root", "panel_id": record_id, "record_id": record_id,
+             "binding_hash": subject_sha, "aggregate_signal": signal, "aggregate": aggregate,
+             "degraded": signal == "DEGRADED", "reason": str(verdict.get("reason") or ""),
+             "critical_count": len(verdict.get("critical_findings") or []), "enforcement": enforcement,
+             "dispatch_refusal": str((record.get("dispatch_refusal") or {}).get("kind") or "")}
+    runs.append(bound)
+    return bound
+
+
+def _blocking_enforcement() -> bool:
+    """Blocking review enforcement as it applies to a result: Cyber Pro never vetoes."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.review_model_routes import get_review_enforcement
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    return review_enforcement_blocks(get_review_enforcement()) and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
+
+
+def pending_review_choice_offered(ctx: Any) -> bool:
+    """While a result review of this answer is still running, a nonblocking install lets the mind
+    choose ``pending_review=finish``: deliver now, the reviewers settle later."""
+    return bool(getattr(ctx, "_result_review_pending", "")) and not _blocking_enforcement()
 
 
 def _findings_text(record: Dict[str, Any], *, blocking: bool) -> str:
@@ -427,6 +446,7 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
                                  answer=str(content or ""))
     except ReviewChangeArgumentError:
         return False
+    _supersede_other_result_runs(llm_trace, subject.diff_sha)
     record = settled_result_record(ctx, subject.diff_sha, rows)
     if record is None and required:
         from ouroboros import review_pause
@@ -439,9 +459,16 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
             log.warning("Required result review of %s not dispatched: %s", getattr(ctx, "task_id", ""), exc)
             return False
         if outcome.get("state") == "pending":
+            ctx._result_review_pending = str(outcome.get("record_id") or "pending")
+            if (pending_review_choice_offered(ctx)
+                    and str(getattr(ctx, "_acceptance_pending_review_choice", "") or "") == "finish"):
+                return False  # the mind chose to finish; the reviewers settle later and leave a mark
             hold("[Result review] The review of your result is still running (an addressed message or a seat "
-                 "still answering). Read what reached you; your next delivery collects the same review at $0.")
+                 "still answering). Read what reached you; your next delivery collects the same review at $0."
+                 + (" You may instead finish with pending_review=finish; the reviewers then settle later."
+                    if pending_review_choice_offered(ctx) else ""))
             return True
+        ctx._result_review_pending = ""
         record = settled_result_record(ctx, subject.diff_sha)
         if record is None and outcome.get("record_id"):
             # A $0 refusal (the result reviews' paid-cycle allowance is spent) is bound as it is: no review
@@ -451,17 +478,12 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
             record = ledger.load_record(ledger.ledger_root(ctx), str(outcome["record_id"]))
     if record is None:
         return False
-    _bind_review_run(llm_trace, record, subject.diff_sha)
+    enforcement = "blocking" if _blocking_enforcement() else "advisory"
+    run = _bind_review_run(llm_trace, record, subject.diff_sha, enforcement)
     if str((record.get("verdict") or {}).get("aggregate") or "") == "PASS":
         return False
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
-    from ouroboros.config import get_runtime_mode
-    from ouroboros.review_model_routes import get_review_enforcement
-    from ouroboros.tools.review_helpers import review_enforcement_blocks
-
     refused = str((record.get("verdict") or {}).get("aggregate") or "") == "NOT_DISPATCHED"
-    blocking = (required and not refused and review_enforcement_blocks(get_review_enforcement())
-                and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
+    blocking = required and not refused and enforcement == "blocking"
     shown = getattr(ctx, "_result_review_shown", None)
     if not isinstance(shown, set):
         shown = set()
@@ -470,4 +492,6 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         shown.add(str(record.get("record_id") or ""))
         hold(_findings_text(record, blocking=blocking))
         return True
+    if enforcement == "advisory":
+        run["informed_finish"] = True  # the mind read the findings and delivered: its own decision
     return False

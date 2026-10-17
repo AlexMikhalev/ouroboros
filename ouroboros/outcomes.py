@@ -617,6 +617,11 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
     }
     if all(run.get("surface") == "result" for run in runs):
         axis["source"] = "result_review"  # review_change(subject="result") bound to the delivered answer
+        if status != "pass" and any(run.get("informed_finish") for run in runs):
+            axis["author_finish"] = True  # the mind read the findings and delivered under advisory enforcement
+        if any(run.get("enforcement") == "blocking" and run.get("dispatch_refusal") == REASON_REVIEW_CYCLES_EXHAUSTED
+               for run in runs):
+            axis["blocked_reason"] = REASON_REVIEW_CYCLES_EXHAUSTED  # no review of this result could be bought
     tier = _aggregate_outcome_tier(_extract_outcome_tiers(runs))
     if tier and status != AWAITING_PROJECTION:  # a minority answer is not the panel's tier
         axis["outcome_tier"] = tier
@@ -636,6 +641,13 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
 def _objective_axis(review: Dict[str, Any]) -> Dict[str, Any]:
     status = str(review.get("status") or "skipped")
     tier = str(review.get("outcome_tier") or "")
+    if review.get("source") == "result_review" and review.get("author_finish"):
+        # The author's own informed finish, not a grade: the host derives no tier from it.
+        return {"status": OBJECTIVE_PASS, "source": "author_acceptance", "review_status": status, "reason": "author_finish"}
+    if review.get("source") == "result_review" and review.get("blocked_reason"):
+        # Blocking enforcement with no review of this result left to buy: never approved, never green.
+        return {"status": OBJECTIVE_FAIL, "source": "result_review", "review_status": status,
+                "outcome_tier": OUTCOME_TIER_BLOCKED, "reason": str(review["blocked_reason"])}
     decision = review.get("acceptance_decision") if isinstance(review.get("acceptance_decision"), dict) else {}
     _decision_reason = str(decision.get("reason") or "")
     from ouroboros.review_records import validate_author_disposition

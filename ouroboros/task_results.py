@@ -621,6 +621,20 @@ def resolve_task_lineage(
     }
 
 
+def resolve_ctx_lineage(ctx: Any, task_id: str = "") -> Dict[str, Any]:
+    """``resolve_task_lineage`` over a live tool context's own lineage facts."""
+    meta = getattr(ctx, "task_metadata", {})
+    return resolve_task_lineage(
+        task_id or getattr(ctx, "task_id", ""),
+        metadata=meta if isinstance(meta, dict) else {},
+        root_task_id=getattr(ctx, "root_task_id", None),
+        parent_task_id=getattr(ctx, "parent_task_id", None),
+        delegation_role=getattr(ctx, "delegation_role", None),
+        original_task_id=getattr(ctx, "original_task_id", None),
+        timeout_retry_from=getattr(ctx, "timeout_retry_from", None),
+    )
+
+
 def _is_status_regression(existing_status: str, new_status: str) -> bool:
     """Return True when writing *new_status* over *existing_status* would
     regress or corrupt a task that has already reached cancel-intent or a

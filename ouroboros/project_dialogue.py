@@ -18,7 +18,6 @@ import pathlib
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from ouroboros.acceptance_preparation import incident_cause_clauses
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.review_records import recorded_author_stop
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
@@ -1341,10 +1340,21 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any], *, includ
         warning_clauses.append(TASK_CAUSE_PHRASES["partial_result"])
     line = _join_cause_clauses([clause, *warning_clauses, TASK_CAUSE_PHRASES.get(review_cause, review_cause),
                                 _author_stop_rationale(decision, completion),
-                                *incident_cause_clauses(decision, reason, TASK_CAUSE_PHRASES),
+                                *_incident_cause_clauses(decision, reason),
                                 *_terminal_limitations(result, event, reason, held=held),
                                 TASK_CAUSE_PHRASES.get(custody, custody) if custody else ""])
     return line if not line or line.endswith((".", "!", "?", "…", ")")) else line + "."
+
+
+def _incident_cause_clauses(decision: Dict[str, Any], reason: str) -> List[str]:
+    """An old record's unresolved local evidence-assembly failure states both facts: it and the rail."""
+    from ouroboros.outcomes import REASON_FINAL_MESSAGE
+
+    incident = decision.get("acceptance_incident")
+    if not isinstance(incident, dict) or not incident or str(incident.get("status") or "") == "resolved":
+        return []
+    rail = TASK_CAUSE_PHRASES.get(reason, "") if reason not in {"", REASON_FINAL_MESSAGE} else ""
+    return [TASK_CAUSE_PHRASES["acceptance_preparation_failed"], rail]
 
 
 def _author_stop_rationale(decision: Dict[str, Any], completion: Optional[Dict[str, Any]] = None) -> str:
