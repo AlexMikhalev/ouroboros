@@ -597,6 +597,12 @@ calls and runtime behaviours:
 | `presence` | A reviewed transport skill may submit authenticated non-owner conversation events to the Host Service Presence boundary and poll only their correlated late work. Requires an explicit content-hash-bound owner grant. |
 | `notify_owner` | The skill may tell the owner one thing through `POST /notify` after an explicit owner permission grant (see "Telling the owner something" below): one bounded plain sentence the host shows in the owner's chat as a System row signed with the skill's name. It wakes no model; narrower than `inject_chat`. |
 
+`chat.typing` is a start/resume/activity-change wake, not proof of an active
+reply or an exactly-once start. The bundled Telegram bridge reads the internal
+`ouroboros.gateway.reply_preparation` projection; no stable PluginAPI or Host
+Service reader is exposed to third-party skills yet. A live activity may be
+waiting, stopped or doing post-answer work.
+
 A missing permission causes the matching `register_*` call to raise
 `ExtensionRegistrationError`, surfaced as a skill load error in the
 Skills UI.

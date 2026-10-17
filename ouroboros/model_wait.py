@@ -947,6 +947,15 @@ class TaskModelWait:
                 self.quota_leave(wait_id, slot_id)
             row.update(state="resolved", resolution=resolution)
             self._publish(row, applied_request_id=request_id)
+            if resolution in {"resource_available", "model_switched", "retry_requested"} and (
+                    self.tool_context is not None or "review_operation" in self.row_facts):
+                from types import SimpleNamespace
+
+                from ouroboros.model_sleep import announce_resumed
+
+                # The call goes on: the author's own, or a reviewer's for the task its panel serves.
+                announce_resumed(self.tool_context or SimpleNamespace(
+                    event_queue=self.event_queue, task_id=self.task_id, current_chat_id=self.task.get("chat_id")))
 
     def bind_answer_consumer(self) -> dict:
         """Bind this local receiver before dispatch; birth absence grants no death recovery."""

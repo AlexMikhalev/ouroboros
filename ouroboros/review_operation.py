@@ -533,7 +533,9 @@ def review_operation_scope(*, request: Any, slots: List[Any], usage_ctx: Any,
     try:
         token = _BOUND.set(operation)
         try:
-            with operation_wait_scope(operation.wait):
+            from ouroboros.review_pause import author_drain
+
+            with author_drain(parent, operation), operation_wait_scope(operation.wait):
                 yield binding
         finally:
             _BOUND.reset(token)
