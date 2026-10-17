@@ -455,11 +455,43 @@ def test_a_torn_export_that_a_boot_cutover_took_in_never_refuses_later_exports(t
     live.write_bytes(b"".join(encoded)[:len(encoded[0]) + 7])  # the kill came inside the second row
     report = di.cutover(tmp_path)  # the next boot plans the non-empty live file again
     assert report["chat"]["rotated"] and ds.range_coverage(tmp_path, "chat")["gaps"] == 1
-    assert ds.meta(tmp_path, "export_batch:chat") is not None
+    assert ds.meta(tmp_path, "export_batch:chat") is None, "the rotation settled the batch it held"
     exported = di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]
     assert exported["rows"] == 1 and live.read_bytes() == encoded[2], "the rows after the files' coordinate, once"
     assert ds.meta(tmp_path, "export_batch:chat") is None
     assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0
+
+
+def test_a_cutover_that_rotates_an_exported_prefix_settles_the_unwritten_batch(tmp_path, monkeypatch):
+    """A batch recorded but never written (the append itself failed), then a boot whose cutover rotated
+    the live file holding only rows exported before: the rotation settles the record, and the retry
+    exports the batch's rows once into the new live file instead of refusing every time."""
+    import os
+
+    di.cutover(tmp_path)
+    ds.append(tmp_path, "chat", chat("after-1", "после"))
+    assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 1
+    ds.append(tmp_path, "chat", chat("after-2", "ещё"))
+    live = tmp_path / "logs" / "chat.jsonl"
+    real_open = os.open
+
+    def refused(path, flags, *args):
+        if str(path) == str(live) and flags & os.O_APPEND:
+            raise OSError(28, "No space left on device")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(os, "open", refused)
+    with pytest.raises(OSError):
+        di.export_for_older_body(tmp_path)
+    monkeypatch.setattr(os, "open", real_open)
+    assert ds.meta(tmp_path, "export_batch:chat") is not None
+    exported_before = live.read_bytes()
+    report = di.cutover(tmp_path)  # the next boot rotates the live file of exported rows
+    assert report["chat"]["rotated"] and ds.meta(tmp_path, "export_batch:chat") is None
+    assert di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 1
+    assert live.read_bytes() == ds.encode(chat("after-2", "ещё")).encode("utf-8") + b"\n"
+    archived = b"".join(path.read_bytes() for path in sorted((tmp_path / "archive").glob("chat_*.jsonl")))
+    assert archived.endswith(exported_before) and di.export_for_older_body(tmp_path)[str(tmp_path)]["chat"]["rows"] == 0
 
 
 # ---- concurrent writer processes ---------------------------------------------------------------

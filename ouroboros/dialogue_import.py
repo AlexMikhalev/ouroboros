@@ -190,6 +190,9 @@ def cutover(root: Any) -> Dict[str, Any]:
             facts = {"at": utc_now_iso(), **{stream: marks[stream] for stream in ds.STREAMS}}
             ds._set_meta(conn, "cutover" if first else "reconciled", facts)
             ds._set_meta(conn, "archive_tails", _archive_tails(root))  # what this plan saw (``_replan_owed``)
+            for stream in ds.STREAMS:  # a rotated live file is archive now: an export batch it held is settled
+                if report[stream].get("rotated"):
+                    conn.execute("DELETE FROM meta WHERE key=?", (f"export_batch:{stream}",))
     report["first"] = first
     return report
 
