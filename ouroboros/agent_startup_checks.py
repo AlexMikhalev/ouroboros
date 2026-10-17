@@ -26,7 +26,7 @@ from ouroboros.utils import (
     utc_now_iso,
 )
 from ouroboros.config import runtime_setting
-from ouroboros.store import StoreError
+from ouroboros.store import StoreError, StoreMigrating
 
 log = logging.getLogger(__name__)
 
@@ -233,7 +233,13 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
             if _text_sha256(origin_text) != str(origin_ref.get("text_sha256") or ""):
                 return _unavailable(owner_source, "retained origin text does not match its ingress checksum")
         else:
-            matching = resolve_owner_message_source(root, origin_ref)
+            try:
+                matching = resolve_owner_message_source(root, origin_ref)
+            except StoreMigrating:  # unknown yet, never absent: the start waits for the upgrade, not a crash
+                return _unavailable(owner_source, "the named owner message is in saved history that is still "
+                                                  "being upgraded; retry when the upgrade finishes")
+            except StoreError as exc:
+                return _unavailable(owner_source, f"the dialogue store could not answer: {exc}")
             if matching is None:
                 return _unavailable(
                     owner_source, "named canonical owner row is not readable and no retention-proof text is stored")
