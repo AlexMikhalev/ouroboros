@@ -56,6 +56,12 @@ def _headers(text):
     return [line for line in text.split("\n") if line.startswith("### ")]
 
 
+def _dialogue_gaps(root):
+    """The legacy records the dialogue import's skipped intervals became (the fixture's torn line)."""
+    return [record["id"] for record in ChronicleStore(root).records(kinds=["legacy"])
+            if (record.get("metadata") or {}).get("dialogue_gaps")]
+
+
 def _fold_block_zero(root, rooms):
     _page(root, str(rooms["alpha"]), 2, 5)
     _page(root, "777", 4, 4)
@@ -204,7 +210,8 @@ def test_the_story_always_ends_with_the_pages_line_and_the_progress_line_only_wh
     rooms = shared.world(tmp_path)
     lines = _story(tmp_path).split("\n")
     assert lines[-2] == "Pages sealed by me: 0; drafted by a helper: 0; parts: 0." and lines[-3] == ""
-    assert lines[-1].startswith("Story status: the helper retelling is folded 0 of 2 blocks; 6 retold records are still open "
+    # Seven retold records: the six room sections and the dialogue gap record of the chain's torn line.
+    assert lines[-1].startswith("Story status: the helper retelling is folded 0 of 2 blocks; 7 retold records are still open "
                                 "(12 rows,") and "helper route " in lines[-1] and "pages sealed" not in lines[-1]
     _page(tmp_path, str(rooms["alpha"]), 6, 7, author=HELPER)
     assert _story(tmp_path).split("\n")[-2] == "Pages sealed by me: 0; drafted by a helper: 1; parts: 0."
@@ -212,11 +219,14 @@ def test_the_story_always_ends_with_the_pages_line_and_the_progress_line_only_wh
     _page(tmp_path, str(rooms["beta"]), 8, 9)
     _part(tmp_path, "1", ["legacy-b01-r1"])
     _part(tmp_path, "1", [_page(tmp_path, "1", 10, 11)])
+    # The dialogue gap record of the chain's torn line is old memory too: a pointer without rows, folded
+    # only through a part, like a cursor gap.
+    _part(tmp_path, "legacy", _dialogue_gaps(tmp_path), text="The torn line is a gap of the old chain.")
     done = _story(tmp_path)
     assert "Story status:" not in done and "Old memory retold" not in done  # the visible end of the transition
     store = ChronicleStore(tmp_path)
     latest = max(str(record["ts"])[:10] for record in store.records(kinds=("page",)) if record["author"]["kind"] == "mind")
-    assert done.split("\n")[-1] == f"Pages sealed by me: 5 (latest {latest}); drafted by a helper: 1; parts: 2."
+    assert done.split("\n")[-1] == f"Pages sealed by me: 5 (latest {latest}); drafted by a helper: 1; parts: 3."
     # All folded through parts alone: no page yet, and the line says so instead of falling silent.
     quiet = tmp_path / "quiet"
     quiet.mkdir()
@@ -224,8 +234,9 @@ def test_the_story_always_ends_with_the_pages_line_and_the_progress_line_only_wh
     for unit in ("b00-r1", f"b00-r{quiet_rooms['alpha']}", "b00-r777", "b01-r1", f"b01-r{quiet_rooms['alpha']}",
                  f"b01-r{quiet_rooms['beta']}"):
         _part(quiet, unit.split("-r")[1], [f"legacy-{unit}"])
+    _part(quiet, "legacy", _dialogue_gaps(quiet))
     assert "Story status:" not in _story(quiet)
-    assert _story(quiet).split("\n")[-1] == "Pages sealed by me: 0; drafted by a helper: 0; parts: 6."
+    assert _story(quiet).split("\n")[-1] == "Pages sealed by me: 0; drafted by a helper: 0; parts: 7."
     fresh = tmp_path / "fresh"
     fresh.mkdir()
     shared.world(fresh, legacy=False)
@@ -293,7 +304,7 @@ def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_
     stories = {task["id"]: _story(tmp_path, task) for task in tasks}
     assert len(set(stories.values())) == 1, stories.keys()  # a child reads the same bytes: no block is privileged
     story = stories["turn0001"]
-    assert "  Main talk." in story and "  Alpha worked." in story and "memory_read(node_id='legacy-" not in story
+    assert "  Main talk." in story and "  Alpha worked." in story and "memory_read(node_id='legacy-b" not in story
     assert story == _story(tmp_path, {**KID, "id": "kid00002", "chat_id": rooms["beta"]})
     assert '{"' not in story and " ago" not in story and "captured" not in story.lower()
     assert not [line for line in story.split("\n") if re.match(r"\s*\d+[.)] ", line)]  # no ordinals
@@ -326,7 +337,7 @@ def test_every_story_reads_every_unfolded_retold_record_whole_and_no_block_is_pr
                  {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}}, KID):
         text = _story(tmp_path, task)
         assert first in text and later in text and "  Beta asked." in text, task["id"]
-        assert "memory_read(node_id='legacy-" not in text, task["id"]  # nothing retold is a pointer by its block
+        assert "memory_read(node_id='legacy-b" not in text, task["id"]  # nothing retold is a pointer by its block
         assert text.index(first) < text.index(later), task["id"]
     nanny = {"id": "nan00001", "chat_id": 1, "delegation_role": "subagent",
              "configured_subagent": {"route": {"kind": "agent_session"}}}
@@ -358,9 +369,11 @@ def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(
     shared.world(tmp_path, cursor=False, flat="The flat old summary.")
     lines = _story(tmp_path).split("\n")
     gap = [line for line in lines if line.startswith("- memory gap: ")]
-    assert len(gap) == 1 and gap[0].startswith(
+    # Two gaps, each a pointer: the missing old cursor and the chain's torn line the dialogue import recorded.
+    assert len(gap) == 2 and gap[0].startswith(
         "- memory gap: Unknown provenance [legacy mixed record]; period known from the retelling text only; "
         "the old cursor file is missing while legacy blocks exist; memory_read(node_id='legacy-cursor-gap-")
+    assert "unreadable dialogue intervals in state/dialog.sqlite; memory_read(node_id='legacy-dialogue-gap-" in gap[1]
     # Rows not established: the old writer's own count, then the length; the flat file has only its length.
     assert ("#### legacy-b00-r1 — 2026-09-01 00:00 - 00:05 (block period) — Main — 4 messages retold (the old "
             "writer's count) in 10 chars") in lines
