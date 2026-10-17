@@ -280,10 +280,10 @@ def _plan(root: pathlib.Path, stream: str, plan: List[Dict[str, Any]]) -> Dict[s
                 conn.execute("INSERT INTO import_ledger (stream, name, base, size, mtime_ns, state) VALUES (?,?,?,?,?,'pending')",
                              (stream, segment["name"], base, segment["size"], segment["mtime_ns"]))
                 added += 1
-            elif (kept["base"], kept["size"]) != (segment["base"], segment["size"]) and kept["state"] != "mismatch" \
-                    and not (kept["base"] > segment["base"] and kept["size"] == segment["size"]):
-                # A frozen segment that changed size or place: its rows may not be where the ledger says
-                # (a segment placed after ``next_seq`` keeps its recorded place).
+            elif kept["size"] != segment["size"] and kept["state"] != "mismatch":
+                # A frozen segment whose bytes changed: its rows may not be the ledger's. A segment another
+                # one moved in the chain (an earlier one grew or joined) is byte for byte what the ledger
+                # recorded: its rows keep their recorded coordinates and an import stays done.
                 conn.execute("UPDATE import_ledger SET state='mismatch' WHERE stream=? AND name=?", (stream, segment["name"]))
                 mismatched += 1
         conn.execute("UPDATE streams SET next_seq=max(next_seq, ?), files_seq=max(files_seq, ?), "

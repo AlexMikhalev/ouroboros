@@ -452,3 +452,33 @@ def test_the_import_check_is_one_probe_whatever_is_still_pending(tmp_path, monke
         with pytest.raises(ds.StoreMigrating):
             ds.require_imported(tmp_path, "chat")
     assert counts["statements"] <= 4 and counts["steps"] <= 200, counts
+
+
+def test_only_the_segment_whose_bytes_changed_is_refused_never_the_ones_it_moved(tmp_path):
+    """An archive that grew after its import is refused (``mismatch``); the segments after it moved
+    in the chain but hold the bytes the ledger recorded, so their imports stay done and their
+    ranges stay covered (they were the cascade of false gaps before)."""
+    seed(tmp_path, archives={"chat_20261001T000000.jsonl": [owner("a")], "chat_20261002T000000.jsonl": [owner("b")]},
+         live={"chat": [owner("c")]})
+    di.run_dialogue_import(tmp_path)
+
+    def ledger():
+        with ds.transaction(tmp_path, write=False) as conn:
+            return {row["name"]: dict(row) for row in conn.execute("SELECT * FROM import_ledger WHERE stream='chat'")}
+
+    before = ledger()
+    assert set(row["state"] for row in before.values()) <= {"done", "live"}
+    grown = tmp_path / "archive" / "chat_20261001T000000.jsonl"
+    grown.write_bytes(grown.read_bytes() + encoded(owner("late")) + b"\n")
+    seed(tmp_path, live={"chat": [owner("d")]})  # another body wrote: the next cutover plans the chain again
+    di.cutover(tmp_path)
+    after = ledger()
+    assert after[grown.name]["state"] == "mismatch", "a segment whose bytes changed is never vouched for"
+    # The later archive and the segment the first cutover rotated out of the live file.
+    moved = {name: row for name, row in after.items() if name in before and name.startswith("chat_") and name != grown.name}
+    assert len(moved) == 2 and all((row["state"], row["base"]) == (before[name]["state"], before[name]["base"])
+                                   for name, row in moved.items())
+    for row in moved.values():
+        assert ds.range_coverage(tmp_path, "chat", lower=row["base"], upper=row["base"] + row["size"]) == {
+            "imported": True, "pending": 0, "mismatch": 0, "gaps": 0}
+
