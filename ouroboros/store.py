@@ -534,7 +534,9 @@ def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: fl
             conn._store_key = key
     try:
         conn.execute("PRAGMA synchronous = FULL")
-        mode = _journal_mode(path, tier) if journal_mode is None else journal_mode
+        if journal_mode is None:
+            journal_mode = "" if os.path.abspath(path) in _HANDED_OFF else _journal_mode(path, tier)
+        mode = journal_mode
         if mode:
             actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
             if actual != mode.lower():
@@ -660,22 +662,29 @@ def close_connections(path: Optional[pathlib.Path] = None) -> None:
 atexit.register(close_connections)  # before module globals (including the inode guard) are cleared
 
 
+# Files this process handed off (``prepare_handoff``): a later open in this process (the seam's own
+# receipt, a late writer before the exit) leaves their journal alone instead of choosing WAL again.
+_HANDED_OFF: set = set()
+
+
 def prepare_handoff(path: pathlib.Path, tier: str, *, wait_sec: float = STORE_WAIT_SEC) -> None:
     """Quiescent export/switch seam: release cached handles and leave a standalone DELETE file.
     Name-tier callers hold their name lock. An older SQLite may open the resulting file."""
     close_connections(path)
     with contextlib.closing(connect(path, tier, wait_sec=wait_sec, journal_mode="")) as conn:
         _delete_journal(conn)
+    _HANDED_OFF.add(os.path.abspath(path))
 
 
 def wal_file(path: pathlib.Path) -> bool:
-    """The database header says WAL (bytes 18-19 equal 2; sqlite.org/fileformat2.html)."""
+    """The database header says WAL (bytes 18-19 equal 2; sqlite.org/fileformat2.html), read
+    through the inode registry like every raw read (``_read_header``): a plain close would drop
+    this process's locks on the file, a transaction's on another thread included."""
     try:
-        with open(path, "rb") as handle:
-            header = handle.read(20)
+        header = _read_header(path)
     except FileNotFoundError:
         return False
-    return len(header) == 20 and header[18] == 2 and header[19] == 2
+    return len(header) >= 20 and header[18] == 2 and header[19] == 2
 
 
 def hand_off(root: Any, *, wait_sec: float = STORE_WAIT_SEC) -> bool:

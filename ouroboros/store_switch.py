@@ -444,6 +444,9 @@ def run_switch_seam(root: Any, *, repo_dir: Any, owner: Optional[Owner] = None, 
         with store.open_store(drive, write=True, service=True) as txn:
             txn.set_meta("export", receipt["export"])
     _write_receipt(root, receipt)
+    refusal = _hand_off_stores(root)  # the older body also gets no WAL file (``switch_or_reset``)
+    if refusal:
+        return _refuse(root, intent, receipt, f"store hand-off: {refusal}")
     os.unlink(root / INTENT_REL)  # consumed BEFORE the switch: the old body never sees an intent
     store.fsync_directory(root / "state")
     receipt["retired"] = {str(drive): _retire(drive) for drive in roots}

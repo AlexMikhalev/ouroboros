@@ -182,10 +182,12 @@ def test_failed_build_rolls_back_and_releases_its_temporary_journal(tmp_path, mo
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
 
 
+@pytest.mark.parametrize("dialogue", [False, True])
 @pytest.mark.parametrize("wal", [True, False])
-def test_a_door_reset_hands_every_store_off_out_of_wal_first(tmp_path, monkeypatch, wal):
-    # A store-aware older body never sets the journal mode: it must receive DELETE files,
-    # while a rollback-journal store needs no connection at all.
+def test_a_door_reset_hands_every_store_off_out_of_wal_first(tmp_path, monkeypatch, wal, dialogue):
+    # A store-aware older body never sets the journal mode: it must receive DELETE files, from the
+    # door's own reset and from the seam alike (every release before the dialogue store needs the
+    # seam), while a rollback-journal store needs no connection at all.
     monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
     monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs" if wal else None)
     publish(tmp_path)
@@ -198,15 +200,22 @@ def test_a_door_reset_hands_every_store_off_out_of_wal_first(tmp_path, monkeypat
     assert [store.wal_file(path) for path in paths] == [wal, wal]
     if not wal:
         monkeypatch.setattr(store, "prepare_handoff", lambda *a, **k: pytest.fail("rollback journals need no handoff"))
-    monkeypatch.setattr(store_switch, "switch_needs", lambda *_: {"facts": False, "money": False})
+    monkeypatch.setattr(store_switch, "switch_needs",
+                        lambda *_: {"facts": False, "money": False, "handles": False, "dialogue": dialogue})
+    monkeypatch.setattr(store_switch, "rev_parse", lambda _repo, _ref: "0" * 40)
     seen = []
 
-    def reset():
+    def reset(*_intent):
         seen.append([store.wal_file(path) for path in paths])
         return True, "reset done"
 
-    assert store_switch.switch_or_reset(tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="test",
-                                        door="ui_rollback", reset=reset) == (True, "reset done", False)
+    ok, _message, deferred = store_switch.switch_or_reset(tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old",
+                                                          reason="test", door="ui_rollback", reset=reset)
+    assert (ok, deferred) == (True, dialogue)
+    if deferred:  # the seam exports and moves the checkout at the restart exit, the door as its owner
+        assert [store.wal_file(path) for path in paths] == [wal, wal]  # nothing moved yet
+        store.close_connections()
+        assert store_switch.run_switch_seam(tmp_path, repo_dir=tmp_path, owner=reset)["status"] == "switched"
     assert seen == [[False, False]]
     assert all(not path.with_name(path.name + "-wal").exists() for path in paths)
     with store.open_store(tmp_path, write=False) as txn:
