@@ -100,7 +100,6 @@ class ChatOutbound(TypedDict):
     ingress_accepted: NotRequired[bool]  # Canonical inbound row saved; not processing/start proof.
     ingress_dispatched: NotRequired[bool]  # This live host process accepted the row and entered its dispatch.
     ingress_pending: NotRequired[bool]  # This live host process accepted the row and has entered or refused neither yet.
-    ingress_undispatched: NotRequired[bool]  # History only: this process proved the row's write raised before dispatch.
     attachments: NotRequired[List[ChatAttachmentView]]  # owner message's attachments (same views as history)
     text_placeholder: NotRequired[bool]  # owner row whose text the host wrote (no words were sent); shown as no caption
     markdown: NotRequired[bool]

@@ -70,7 +70,6 @@ class ChatHistoryMessage(TypedDict, total=False):
     ingress_accepted: bool
     ingress_dispatched: bool
     ingress_pending: bool
-    ingress_undispatched: bool
     attachments: List[ChatAttachmentView]
     text_placeholder: bool
     chat_annotation: Dict[str, Any]  # the routing outcome shown on an owner message

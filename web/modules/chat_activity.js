@@ -1448,15 +1448,15 @@ export function clearTransientRoutingAnnotations(messagesDiv = globalThis.docume
 }
 
 // В9: the host stamps a typed `ingress_accepted: true` on an owner echo only after the durable chat write, so that
-// client_message_id's bubble says `Input saved` — never that work began; `ingress_undispatched` (proven never dispatched) says
-// `Saved, not delivered.` and `ingress_pending` (the running host has not said yet) `Input saved`, each until the next fact.
+// client_message_id's bubble says `Input saved` — never that work began. `ingress_pending` keeps that note
+// provisional until dispatch is confirmed or the ended host's delivery becomes unknown.
 export function markIngressSaved(root, row) {
-    const cmid = String(row?.client_message_id || ''), state = row?.ingress_undispatched === true ? 'undispatched' : row?.ingress_pending === true ? 'pending' : '';
+    const cmid = String(row?.client_message_id || ''), state = row?.ingress_pending === true ? 'pending' : '';
     if (row?.role !== 'user' || row.ingress_accepted !== true || !cmid) return false;
     const bubble = [...root.querySelectorAll('.chat-bubble.user[data-client-message-id]')]
         .find((node) => node.dataset.clientMessageId === cmid), prior = bubble?.querySelector('[data-ingress-saved]');
-    if (!bubble || (prior && (!['undispatched', 'pending'].includes(prior.dataset.ingressSaved) || prior.dataset.ingressSaved === state))) return false;  // `Input saved` and a kept send's delivery doubt are final
-    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: state === 'undispatched' ? tr('chat.saved_undispatched', 'Saved, not delivered.') : 'Input saved' });
+    if (!bubble || (prior && (prior.dataset.ingressSaved !== 'pending' || prior.dataset.ingressSaved === state))) return false;  // `Input saved` and a kept send's delivery doubt are final
+    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: 'Input saved' });
     note.dataset.ingressSaved = state;
     for (const doubt of [prior, bubble.querySelector('[data-ingress-unconfirmed]')]) doubt?.remove();  // the saved row settles a "Send again" doubt
     bubble.insertBefore(note, bubble.querySelector('.msg-time'));

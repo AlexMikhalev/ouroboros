@@ -274,7 +274,6 @@
  * @property {boolean=} ingress_accepted Canonical inbound row saved; not proof of task start or model delivery.
  * @property {boolean=} ingress_dispatched This live host process accepted the row and entered its dispatch; absent after a host restart (unknown).
  * @property {boolean=} ingress_pending This live host process accepted the row and has entered or refused neither yet: a later echo or history read says which.
- * @property {boolean=} ingress_undispatched History only: this live host process proved the row's write raised before dispatch; one Send again hands it over.
  * @property {Array<NonNullable<UploadResponse['view']>>=} attachments The owner message's ChatAttachmentView list: the same views history replays.
  * @property {boolean=} text_placeholder The owner row's text is the host's placeholder (no words were sent): no caption is shown.
  * @property {boolean=} markdown
