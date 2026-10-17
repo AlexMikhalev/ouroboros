@@ -343,12 +343,11 @@ def test_the_first_request_after_a_crash_retry_dates_its_health_snapshot(tmp_pat
     assert OWN_LINE not in _system_text(_fresh_messages(tmp_path, successor, attempt=2))
 
 
-# --- D7 for a foreign reader: retained source vs legacy task-drive staging ----------
-# A retained source is readable through the task-result selector, so a foreign
-# reader is not told only the owner can READ it; reading still earns no
-# acknowledgement. The legacy row's wording stays byte for byte.
+# --- D7 for a foreign reader: the owner's unread runs, retained or legacy, on one line ----------
+# Another task's obligations fold into one line per owner task (Q3=A, 18.10.2026): the run ids and
+# the rule that only the owner reads and acknowledges, never a read instruction for this reader.
 
-def test_a_foreign_reader_is_told_reading_is_not_acknowledging_only_for_a_retained_source(geo, monkeypatch):
+def test_a_foreign_reader_sees_the_owners_unread_runs_on_one_line_without_a_read_instruction(geo, monkeypatch):
     from ouroboros.context import build_health_invariants
 
     _stage(geo, _top(geo, ROOT), monkeypatch, run_id="run-new")
@@ -362,10 +361,9 @@ def test_a_foreign_reader_is_told_reading_is_not_acknowledging_only_for_a_retain
     env = SimpleNamespace(drive_root=geo.canonical, drive_path=lambda rel="": geo.canonical / rel,
                           repo_path=lambda rel="": geo.repo / rel)
     health = build_health_invariants(env, task_id="intruder", attempt_key="1")
-    line = {run: next(item for item in health.splitlines() if f"NEVER READ — run {run} " in item)
-            for run in ("run-new", "run-old")}
-    assert line["run-old"].endswith(
-        f"(owner task {ROOT}). Only its owner task {ROOT} can read and acknowledge it; "
-        "note the gap honestly instead of attempting the read here.")
-    assert "Only its owner task" not in line["run-new"]
-    assert "Reading permission alone grants no acknowledgement" in line["run-new"]
+    rows = [item for item in health.splitlines() if f"owner task {ROOT}" in item]
+    assert len(rows) == 1 and "results not read to EOF: " in rows[0]
+    assert "run-new" in rows[0] and "run-old" in rows[0]
+    assert "Only the owner reads and acknowledges its results" in rows[0] and "read_file" not in rows[0]
+    owner = build_health_invariants(env, task_id=ROOT, attempt_key="1")
+    assert "NEVER READ — run run-old" in owner and "read_file" in owner  # the owner keeps each run's line
