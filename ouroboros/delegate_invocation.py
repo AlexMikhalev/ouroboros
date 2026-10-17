@@ -24,7 +24,10 @@ def operation_key(operation_id: str, slot_id: str) -> str:
 
 
 def event_ordinal(txn, event: dict) -> int:
-    """The event's durable place in the serialized custody commits, never its clock."""
+    """The event's durable place in the serialized custody commits, never its clock.
+
+    ``custody_event_ordinals`` also deduplicates repeated imports and publications.
+    """
     prior = txn.get_row(EVENTS, str(event.get("event_id") or "")) if event.get("event_id") else None
     return int(prior["ordinal"]) if prior else max(int(txn.meta(ORDINAL) or 0) + 1,
                                                  int(event.get("custody_ordinal") or 0))
