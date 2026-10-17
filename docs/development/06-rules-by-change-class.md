@@ -33,7 +33,7 @@ Ouroboros is one open core and many installations that evolve on their own: a sk
 - A new seam ships with its first real consumer in the same change; no seam without a consumer, no consumer-shaped seam. Core consumes the contract, never a skill's name. A shared provider contract (speech, realtime …) is minted only when more than one provider is plausible, consumers must not care which runs, and core owns selection; a fallback is never silent.
 - On an installation that evolves itself the wish becomes a skill, and a missing seam is offered upstream as a pull request instead of living on as a private core patch.
 
-Judgment, not a gate. Review: CHECKLISTS Plan Review row 6 and body item `capability_placement` (advisory). Mechanism: ARCHITECTURE §13 (skill contributions).
+Judgment, not a gate. Review: CHECKLISTS Plan Review row 6 and body item `capability_placement` (advisory). Mechanism: CREATING_SKILLS "Contributing controls and speech engines", CLIENT_CONTRACT §11.
 
 ### Extension dispatch and isolated dependencies
 
