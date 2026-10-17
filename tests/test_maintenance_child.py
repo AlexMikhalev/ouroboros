@@ -284,3 +284,111 @@ def test_a_retained_drive_rests_until_its_inputs_change(data, monkeypatch):
     sm._run_drive_custody_pass()
     assert not drive.exists() and "held" not in maintenance_jobs.job(data, "drive_settlement")["retained"]
     assert load_task_result(data, "held")["status"] == "completed"
+
+
+def _setup_job(name, data, monkeypatch):
+    """Synthetic inputs that give job NAME real work on its first run."""
+    import time
+
+    from ouroboros import store_import
+    from ouroboros.task_results import write_task_result
+
+    if name == "legacy_reconcile":
+        monkeypatch.setattr(store_import, "run_legacy_reconcile", lambda root, **kw: maintenance_jobs.record(
+            root, "legacy_reconcile", state="done", done=1), raising=False)
+        maintenance_jobs.record(data, "legacy_reconcile", state="pending")
+    elif name == "activity_backfill":
+        pr.create_project(data, "never-active", origin="reconcile")
+        _archive(data, 3)
+    elif name == "child_ref_promotion":
+        _promotion_member(data, "member")
+    elif name == "custody_trash":
+        moved = data / "state" / "custody_trash" / "task-0123456789ab" / "data"
+        moved.mkdir(parents=True)
+        (moved / "result.json").write_text("{}", encoding="utf-8")
+    elif name == "temp_sweep":
+        orphan = data / "state" / ".state.json.tmp.1.2.abc"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text("x", encoding="utf-8")
+        os.utime(orphan, (time.time() - 7200,) * 2)
+    elif name == "sqlite_analyze":
+        write_task_result(data, "task", "completed", result="answer")
+    elif name == "evidence_packing":
+        from tests.test_evidence_packs import _task
+
+        _task(data, "settled", blobs=1)
+
+
+@pytest.mark.parametrize("name", maintenance.JOB_NAMES)
+def test_every_job_rests_on_unchanged_inputs(name, data, opened, monkeypatch):
+    """The rest law, for every named job: once its work is done, another run over unchanged
+    inputs reads only its facts (no history file opened, no task body decoded, nothing
+    committed), and a fresh server process's dispatcher finds nothing due."""
+    _setup_job(name, data, monkeypatch)
+    outcomes = [maintenance.run_job(data, name) for _ in range(3)]  # a packing pass that unlinked owes one look
+    assert outcomes[0] is not None and outcomes[-1] is None, outcomes
+    before, decodes = _revision(data), _decodes(monkeypatch)
+    opened.clear()
+    assert maintenance.run_job(data, name) is None
+    assert decodes == [] and _revision(data) == before
+    for history in ("archive", "observability", "task_results", "state/headless_tasks"):
+        assert _under(opened, data / history) == [], history
+    assert name not in maintenance.due(data)
+
+
+def test_no_history_sized_duty_runs_in_the_server_and_the_child_spawns_under_custody(data, monkeypatch):
+    """Both cadences of the supervisor's maintenance tick run with every moved duty armed to fail
+    in this process: none runs, no thread carries one's name, and the dispatcher spawns the one
+    maintenance child through the custodied spawn (own module, session custody, own group)."""
+    import threading
+
+    from ouroboros import evidence_packer, observability, process_custody, server_maintenance as sm, task_custody, utils
+    from tests.test_evidence_packs import REPO, _FakeChild
+
+    ran = []
+
+    def refuse(name):
+        def run(*_args, **_kwargs):
+            ran.append(name)
+            raise AssertionError(f"{name} ran in the server process")
+        return run
+
+    monkeypatch.setattr(evidence_packer, "packing_pending", refuse("evidence discovery"))
+    monkeypatch.setattr(evidence_packer, "run_pass", refuse("evidence packing"))
+    monkeypatch.setattr(observability, "retry_pending_child_ref_promotions", refuse("child-ref promotion"))
+    monkeypatch.setattr(maintenance, "_activity_scan", refuse("activity backfill"))
+    monkeypatch.setattr(task_custody, "remove_custody_trash", refuse("trash removal"))
+    sweep = utils.sweep_stale_temp_files
+    monkeypatch.setattr(utils, "sweep_stale_temp_files", lambda root, **kw: (
+        refuse("atomic temp walk")() if kw.get("atomic_temps", True) else sweep(root, **kw)))
+    started, start = [], threading.Thread.start
+    monkeypatch.setattr(threading.Thread, "start", lambda thread: started.append(thread) or start(thread))
+    spawned = []
+    report = json.dumps({"status": "completed", "jobs": {}}).encode()
+    monkeypatch.setattr(process_custody, "spawn_supervised", lambda cmd, **kw: spawned.append((cmd, kw)) or _FakeChild(report))
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "session")
+    monkeypatch.setattr("ouroboros.config.REPO_DIR", REPO)
+    unit = maintenance.MaintenanceChild()
+    monkeypatch.setattr(maintenance, "child", unit)
+    monkeypatch.setattr(sm, "DATA_DIR", data)
+    monkeypatch.setattr(sm, "_periodic_zombie_reconcile", lambda **_kw: None)
+    maintenance_jobs.record(data, "legacy_reconcile", state="pending")  # a scheduled job: a reason to spawn
+    pr.create_project(data, "never-active", origin="reconcile")
+    _archive(data, 2)
+    (data / "state" / "custody_trash" / "moved-0123456789ab").mkdir(parents=True)
+
+    sm._periodic_supervisor_maintenance([0.0], [0.0])  # the 600 s and 300 s cadences are due too
+    while any(thread.is_alive() for thread in started):  # every pass and the dispatch it ends with
+        for thread in list(started):
+            thread.join(20)
+
+    assert ran == []
+    names = {thread.name for thread in started}
+    assert "maintenance-child" in names and "evidence-packer" not in names
+    # The process's first look and the reconcile pass's look each spawn while the scheduled job
+    # stays due (this stub child does no work); every spawn is the custodied one.
+    assert 1 <= len(spawned) <= 2
+    for cmd, kwargs in spawned:
+        assert cmd[1:3] == ["-m", "ouroboros.maintenance"] and cmd[cmd.index("--data-root") + 1] == str(data)
+        assert kwargs["purpose"] == "maintenance" and kwargs["scope"] == "session"
+        assert kwargs.get("new_process_group", True) and kwargs["env"]["OUROBOROS_DATA_DIR"] == str(data)
