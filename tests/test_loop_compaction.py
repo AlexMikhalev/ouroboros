@@ -182,14 +182,17 @@ def _measure_cycle(dispositions):
 
 
 def _steps_applied(monkeypatch, outcome=lambda step: True):
-    """Stub every refusal step; ``outcome(step)`` says whether it changed the candidate."""
+    """Stub every refusal step; ``outcome(step)`` says whether it changed the candidate.
+
+    A changing stub sheds 0 measured tokens, so every later step of its pass keeps the whole
+    target (``loop_model_call._apply_refusal_pass``); an unchanged one answers None."""
     from ouroboros import loop_model_call
 
     steps = []
 
     def apply(ctx, step, fit, target):
         steps.append((step, target))
-        return bool(outcome(step))
+        return 0 if outcome(step) else None
 
     monkeypatch.setattr(loop_model_call, "_apply_refusal_step", apply)
     return steps
