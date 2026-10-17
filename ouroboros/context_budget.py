@@ -200,9 +200,9 @@ def request_context_budget(
             "capacity_deficit_tokens": (max(0, measured + reserve - window_tokens) if window_tokens else None)}
 
 # One overflow vocabulary for every seam that must recognize a CONTEXT-WINDOW
-# overflow (Main provider-code precedence, the local transport, and the
-# summarizer split path). A provider code or message shape added here reaches
-# all three seams at once; per-module copies drifted independently before.
+# overflow (Main provider-code precedence and the local transport). A provider
+# code or message shape added here reaches both seams at once; per-module copies
+# drifted independently before.
 CONTEXT_OVERFLOW_CODES = frozenset({
     "context_length_exceeded",
     "context_window_exceeded",
@@ -245,7 +245,7 @@ def context_overflow_message(text: Any) -> bool:
     """True when a provider error message matches the shared overflow markers.
 
     Applies the output-size precedence itself so every seam (Main classifier,
-    local transport, summarizer split) classifies identically: a message that
+    local transport) classifies identically: a message that
     matches an output/body-size marker is NOT a context overflow. Callers check
     structured overflow codes first; a structured code still wins over this
     message-level verdict.
@@ -257,9 +257,8 @@ def context_overflow_message(text: Any) -> bool:
 
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
 ReclaimStatus = Literal[
-    "applied", "no_eligible", "no_positive_reclaim", "checkpoint_failed",
-    "summarizer_failed", "no_measurable_shrink", "binding_mismatch",
-    "no_op", "fit_rejected", "source_unavailable",
+    "applied", "no_eligible", "checkpoint_failed", "no_measurable_shrink", "binding_mismatch",
+    "no_op", "fit_rejected", "source_unavailable", "authored_note_required",
 ]
 
 
@@ -300,7 +299,7 @@ class ContextReclaimReceipt:
 
 
 class SummarizerContextOverflow(RuntimeError):
-    """Typed permission to split one summarizer batch or source."""
+    """A Light consolidation request its route cannot hold (``consolidator.py``)."""
 
 
 class LocalContextTooLargeError(RuntimeError):
@@ -321,10 +320,6 @@ class _UnsafeVisual(ValueError):
     pass
 
 
-class _UnitSummaryFailure(RuntimeError):
-    pass
-
-
 @dataclass(frozen=True)
 class _AtomicUnit:
     unit_id: str
@@ -342,15 +337,8 @@ class _AtomicUnit:
 
 
 @dataclass(frozen=True)
-class _SelectedUnit:
-    unit: _AtomicUnit
-    summary_budget_tokens: int
-    negative_memo_key: str
-
-
-@dataclass(frozen=True)
 class _Selection:
-    units: Tuple[_SelectedUnit, ...]
+    units: Tuple[_AtomicUnit, ...]
     fingerprint: str
     predicted_reclaim_tokens: int
 

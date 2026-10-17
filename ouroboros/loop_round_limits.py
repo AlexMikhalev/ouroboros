@@ -1,8 +1,7 @@
 """Round-limit and terminal-drain handling for the main loop: owner-stop drain
-and its window, incoming-message drain, round compaction and its usage
-accounting, the round-limit context, and the limit/forced/owner-stop/
-provider-unavailable/deadline handlers. Extracted from loop.py (v7 L-B split);
-loop.py re-exports every name."""
+and its window, incoming-message drain, the round's authored context view, the
+round-limit context, and the limit/forced/owner-stop/provider-unavailable/deadline
+handlers. Extracted from loop.py (v7 L-B split); loop.py re-exports every name."""
 
 from __future__ import annotations
 
@@ -16,16 +15,14 @@ import queue
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
-from ouroboros.config import get_light_model
 from ouroboros.context import build_incoming_user_content
 from ouroboros.context_budget import OWNER_WORDS_KIND
 from ouroboros.deadline_utils import parse_deadline_ts
-from ouroboros.llm import LLMClient, add_usage
-from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, emit_llm_usage_event
-from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
+from ouroboros.llm import LLMClient
+from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_trace_refs
 from ouroboros.loop_transport import TransportWaitEpisode, finalize_now_transport_terminal as _finalize_now_transport_terminal
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
-from ouroboros.pricing import estimate_cost_optional
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import invalidate_task_cache_splits
@@ -327,54 +324,25 @@ def _context_overflow_retries(tool_ctx: Any) -> set[Tuple[str, str]]:
 def _run_round_compaction(
     messages: List[Dict[str, Any]],
     ctx: _CompactionRoundContext,
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """The round's transcript maintenance before the send: an explicit manual
-    reclaim (Main fit owns automatic decisions), then -- on the transcript that
-    will actually go out -- the host roster of independent roots as a TAIL row
-    when it changed (owner 6C). The note follows any reclaim so it is never
-    folded into a rewrite, and precedes the acceptance observation and the seal."""
+) -> List[Dict[str, Any]]:
+    """The round's transcript maintenance before the send: the mind's pending authored
+    view (Main fit owns every automatic decision), then -- on the transcript that will
+    actually go out -- the host roster of independent roots as a TAIL row when it changed
+    (owner 6C). The note follows any view so it is never folded into a rewrite, and precedes
+    the acceptance observation and the seal."""
     from ouroboros.peer_roster import maybe_append_roster_note
     from ouroboros.tools.owner_delivery import publish_pending_owner_dialogue
 
     publish_pending_owner_dialogue(ctx.tools._ctx, messages)
-    # Only an explicit manual reclaim runs here; Main fit owns automatic decisions.
-    usage: Optional[Dict[str, Any]] = None
     pending = getattr(ctx.tools._ctx, "_pending_compaction", None)
     selected_names = getattr(ctx.tools._ctx, "_pending_tool_schema_names", None)
-    if pending is None and selected_names is None:
-        pass
-    elif isinstance(pending, dict) or pending is None:
+    if isinstance(pending, dict) or (pending is None and selected_names is not None):
         messages = _run_authored_context_view(messages, ctx, pending, selected_names)
-    else:
-        from ouroboros._usage_wait import receiver_abandonable
-
-        with receiver_abandonable():
-            messages, receipt, usage = _loop().compact_tool_history_llm(
-                messages,
-                keep_recent=max(0, int(pending)),
-                drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs).parent,
-                task_id=ctx.task_id,
-                negative_memo=reclaim_negative_memo(ctx.tools._ctx),
-                trace_refs_by_tool_call_id=reclaim_trace_refs(ctx.tools._ctx),
-                exposed_units=(getattr(ctx.tools._ctx, "_last_context_observation", {}) or {}).get("exposed_units", []),
-            )
-        ctx.tools._ctx._pending_compaction = None  # an interrupted request survives the pause
-        _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
-            "checkpoint_kind": "context_reclaim_manual",
-            "round": ctx.round_idx,
-            "status": receipt.status,
-            "reclaimed_tokens": receipt.reclaimed_tokens,
-            "goal_reached": receipt.goal_reached,
-            "checkpoint_ref": receipt.checkpoint_ref,
-        })
-        if receipt.status in {"checkpoint_failed", "summarizer_failed", "binding_mismatch"}:
-            ctx.emit_progress(
-                f"⚠️ Context compaction kept the transcript unchanged ({receipt.status})."
-            )
-        if receipt.status == "applied":
-            invalidate_task_cache_splits(ctx.task_id)
-            prune_reclaim_trace_refs(ctx.tools._ctx, messages)
-            sanction_rewrite(ctx.tools._ctx, "compaction")
+    elif pending is not None:
+        # A count-only request saved by an earlier version named a helper summarizer that no longer exists.
+        ctx.tools._ctx._pending_compaction = None
+        ctx.emit_progress("Context view kept unchanged: a saved count-only reclaim named a retired helper; "
+                          "fold with compact_context(working_note=...).")
     # Normally consumed by process_tool_results before any owner-wait park. This
     # also covers a typed producer notification published outside a tool batch.
     if getattr(ctx.tools._ctx, "_pending_review_context", None):
@@ -385,7 +353,7 @@ def _run_round_compaction(
     maybe_append_roster_note(ctx.tools._ctx, messages, ctx.drive_root)
     from ouroboros.skill_context_snapshot import maybe_append_skill_snapshots
     maybe_append_skill_snapshots(ctx.tools._ctx, messages, ctx.drive_root)
-    return messages, usage
+    return messages
 
 
 def _run_authored_context_view(messages, ctx, pending, selected_names):
@@ -440,7 +408,7 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
             measurement_basis="cold_estimate", measurement_density=1.0, reclaim_goal_tokens=0,
             **{key: proposal[key] for key in ("working_note", "expected_view_revision", "keep_unit_ids", "restore_unit_refs", "schema_names")},
         )
-        candidate, result, _ = compact_tool_history_llm(
+        candidate, result = compact_tool_history_llm(
             messages, request=request, observed_messages=observed["messages"],
             observed_tool_schemas=observed["tool_schemas"], tool_schemas=schemas,
             fit_candidate=fit_candidate, drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs).parent,
@@ -565,35 +533,6 @@ class _RoundLimitContext:
     # provider prefix as the working round instead of rebuilding it tool-less.
     # LAST field: existing positional construction (tests included) stays valid.
     tool_schemas: Optional[List[Dict[str, Any]]] = None
-
-
-def _account_compaction_usage(
-    accumulated_usage: Dict[str, Any],
-    compaction_usage: Dict[str, Any],
-    event_queue: Optional[queue.Queue],
-    task_id: str,
-) -> None:
-    """Fold a compaction pass's usage into the loop totals and emit its llm_usage
-    event (light-model lane). Extracted verbatim from ``run_llm_loop`` for the
-    300-line function gate; behavior unchanged."""
-    add_usage(accumulated_usage, compaction_usage)
-    _cm = get_light_model()
-    _cc = (
-        float(compaction_usage["cost"])
-        if compaction_usage.get("cost") is not None
-        else estimate_cost_optional(
-            _cm,
-            int(compaction_usage.get("prompt_tokens") or 0),
-            int(compaction_usage.get("completion_tokens") or 0),
-            cache_usage={
-                "cached_tokens": int(compaction_usage.get("cached_tokens") or 0),
-                "cache_write_tokens": int(compaction_usage.get("cache_write_tokens") or 0),
-                "prompt_cache_ttl": compaction_usage.get("prompt_cache_ttl"),
-            },
-            provider=str(compaction_usage.get("provider") or "openrouter"),
-        )
-    )
-    emit_llm_usage_event(event_queue, task_id, _cm, compaction_usage, _cc, "compaction")
 
 
 def _handle_round_limit(ctx: _RoundLimitContext) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:

@@ -31,7 +31,7 @@ def _noted(tmp_path):
     messages = _transcript()
     request = replace(_request(messages, 0), working_note=NOTE,
                       expected_view_revision=cc.context_reclaim_transcript_sha256(messages), keep_unit_ids=())
-    folded, receipt, _ = cc.compact_tool_history_llm(messages, request=request, observed_messages=messages,
+    folded, receipt = cc.compact_tool_history_llm(messages, request=request, observed_messages=messages,
                                                      tool_schemas=[], drive_root=tmp_path, task_id="renewal",
                                                      fit_candidate=lambda _m, _t: {"accepted": True})
     assert receipt.status == "applied"

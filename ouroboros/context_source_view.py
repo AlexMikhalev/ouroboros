@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequen
 
 from ouroboros import context_compaction as compaction
 from ouroboros.context_budget import (HOST_CONTEXT_KIND_KEY, ContextReclaimRequest, ContextReclaimReceipt, _AtomicUnit,
-                                      _Selection, _SelectedUnit, host_row_intact)
+                                      _Selection, host_row_intact)
 from ouroboros.tool_result_record import read_tool_result_record
 
 EmergencyRung = Literal["host_copies", "bodies", "unseen_bodies"]
@@ -169,7 +169,7 @@ def emergency_address_view(
                                            measurement_density=density)
         # This is the host record's identity, not a selectable unit of the original.
         unit = replace(unit, unit_id=f"host-copies:{fingerprint}")
-        record, ref = compaction._capsule_message(_SelectedUnit(unit, 0, ""),
+        record, ref = compaction._capsule_message(unit,
             f"{len(obsolete)} obsolete host rows replaced together; latest full snapshots retained.",
             [compaction._part(unit.unit_id, unit.source_text)], checkpoint_ref, request,
             retention="source_view", label=_EMERGENCY_LABELS[rung], address={"checkpoint_ref": dict(checkpoint_ref)})
@@ -207,7 +207,7 @@ def emergency_address_view(
             lineage_hashes=compaction._unique_strings([*combined.lineage_hashes, *(h for u in group for h in u.lineage_hashes)]),
             source_refs=compaction._unique_refs([*combined.source_refs, *(r for u in group for r in u.source_refs), *member_refs]))
         record, ref = compaction._capsule_message(
-            _SelectedUnit(combined, 0, ""), "\n".join(_unit_facts(messages, u) for u in group),
+            combined, "\n".join(_unit_facts(messages, u) for u in group),
             [compaction._part(combined.unit_id, combined.source_text)], checkpoint_ref, request, retention="source_view",
             label=_EMERGENCY_LABELS[rung], address={"checkpoint_ref": dict(checkpoint_ref), "units": members})
         proposal = {**replacements, start: (end, [record], [ref])}
@@ -221,7 +221,7 @@ def emergency_address_view(
         source_refs.append(member_refs[-1])
         if reclaimed >= request.reclaim_goal_tokens:
             break
-    selection = replace(selection, units=tuple(_SelectedUnit(u, 0, "") for u in selected),
+    selection = replace(selection, units=tuple(selected),
                         predicted_reclaim_tokens=sum(u.predicted_reclaim_tokens for u in selected))
     if reclaimed <= 0:
         return messages, compaction._receipt("no_measurable_shrink", before_sha=before_sha, selection=selection,

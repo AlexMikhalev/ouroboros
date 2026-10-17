@@ -454,7 +454,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_handle_forced_finalization", "_last_assistant_text", "_owner_marked_content",
         "_measure_main_context_view", "_measure_round_main_fit",
         "_provider_unavailable_result", "_record_owner_directive",
-        "_soft_land_exhausted_ceiling", "_task_deadline_epoch", "compact_tool_history_llm",
+        "_soft_land_exhausted_ceiling", "_task_deadline_epoch",
         "provider_no_call_source", "utc_now",
         # #1196: a budget-pause HOLD ended by control rejoins the model-wait rails and
         # merges its forced trace like every other controlled exit.

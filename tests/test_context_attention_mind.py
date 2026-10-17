@@ -1,5 +1,5 @@
 """Context attention, Lane B: dialogue-scope units with typed owner protection (3A), the
-per-round facts line (5A), and the model-free rungs of the refusal ladder (7A).
+per-round facts line (5A), and the model-free steps of the refusal passes (7A).
 
 Shares the serial Main fit fixtures of ``tests.test_loop_compaction``.
 """
@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-
-import pytest
 
 from ouroboros import context_compaction as cc
 from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, OWNER_WORDS_KIND, bound_host_row
@@ -86,10 +84,10 @@ def test_authored_view_folds_own_prose_keeps_owner_words_and_restores_exactly(tm
     request = replace(_request(messages, 0), working_note="Migration verified; old API kept.",
                       expected_view_revision=cc.context_reclaim_transcript_sha256(messages), keep_unit_ids=())
     assistant_unit = next(u for u in cc.context_units(messages, scope="dialogue") if cc.unit_kind(messages, u) == "assistant")
-    candidate, receipt, usage = cc.compact_tool_history_llm(
+    candidate, receipt = cc.compact_tool_history_llm(
         messages, request=request, observed_messages=messages, tool_schemas=[], drive_root=tmp_path, task_id="mind",
         fit_candidate=lambda _m, _t: {"accepted": True})
-    assert receipt.status == "applied" and usage is None
+    assert receipt.status == "applied"
     assert _owner(OWNER) in candidate  # the owner's words, verbatim and whole
     assert not any(m.get("role") == "assistant" and m.get("content") == ASSISTANT for m in candidate)
     assert not any(m.get("role") == "tool" for m in candidate) and candidate[:2] == messages[:2]
@@ -100,10 +98,10 @@ def test_authored_view_folds_own_prose_keeps_owner_words_and_restores_exactly(tm
     assert cc._capsule_metadata(restored[0])[1]["retention"] == "source_view"
 
 
-def test_actual_refusal_runs_the_host_copies_rung_before_any_helper(tmp_path, monkeypatch):
-    """7A end to end on the host side: the refusal opens rung (a) through the real emergency
-    pass (no model), the transcript is republished, and ONE strictly smaller retry follows;
-    the helper is never consulted while a model-free rung can still shrink the request."""
+def test_actual_refusal_runs_the_host_copies_step_first(tmp_path, monkeypatch):
+    """7A end to end on the host side: the refusal opens the first pass through the real emergency
+    pass (no model): superseded host copies collapse, bodies no usable turn showed stay raw, the
+    transcript is republished, and ONE strictly smaller retry follows before any second pass."""
     from ouroboros import loop
 
     context = _ctx(tmp_path)
@@ -142,8 +140,8 @@ def test_actual_refusal_runs_the_host_copies_rung_before_any_helper(tmp_path, mo
     assert any(_EMERGENCY_LABELS["host_copies"] in json.dumps(m.get("content")) for m in sends[1])
     assert inner.messages is context.messages and inner._transcript_rewrite_sanctioned == "compaction"
     emergency = [e for e in events if e.get("checkpoint_kind") == "context_reclaim_emergency"]
-    assert [(e["rung"], e["status"]) for e in emergency] == [("host_copies", "applied")]
-    assert inner._context_overflow_retries == {("route-a", "exec:round:1", "host_copies")}
+    assert [(e["rung"], e["status"]) for e in emergency] == [("host_copies", "applied"), ("bodies", "no_eligible")]
+    assert inner._context_overflow_retries == {("exec:round:1", "host_copies+bodies")}  # once per round, whatever the route
 
 
 def _candidate(disposition, size):
@@ -177,7 +175,7 @@ def test_a_model_free_wake_delivery_earns_the_first_retry_before_any_rung(tmp_pa
     assert context.tools._ctx._context_overflow_retries == set()
 
 
-def test_memory_rung_passes_the_actual_window_and_current_transcript(tmp_path, monkeypatch):
+def test_memory_step_passes_the_actual_window_and_current_transcript(tmp_path, monkeypatch):
     from ouroboros import loop
     from ouroboros.loop_round_limits import _coarsen_memory_view
 
@@ -207,22 +205,25 @@ def test_memory_rung_passes_the_actual_window_and_current_transcript(tmp_path, m
     # A large transcript changes memory granularity, never the route's physical window.
     fit = _fit(estimated_input=520_000, capacity_deficit=85_536)
     assert _coarsen_memory_view(context, fit) is True
-    # The refusal's measured deficit is what the view must save beyond the level it shows.
+    # Without a measured target the view saves the capacity deficit beyond the level it shows.
     assert seen == [{"window": 500_000, "known": True, "mode": "max", "messages": before,
                      "schemas": [], "reserve": 65_536, "refused": 85_536}]
     assert context.context_fit_plan.window_tokens == 500_000
     assert context.messages[0]["content"] == "COARSE" and context.messages[1:] == before[1:]
     assert context.tools._ctx.context_fit_plan is context.context_fit_plan
     assert _coarsen_memory_view(context, fit) is False  # already at this granularity
+    _coarsen_memory_view(context, fit, saving=12_345)  # the refusal's measured target outranks the deficit
+    assert seen[-1]["refused"] == 12_345
     fitting = _fit(estimated_input=300_000, capacity_deficit=0)  # refused although the estimate fits
     _coarsen_memory_view(context, fitting)
     assert seen[-1]["refused"] == 1  # still a strict narrowing: at least one element
+    # The refusal is the evidence: an unknown window still narrows, without inventing a window number.
     unknown = replace(fit, measurement=replace(fit.measurement, capacity_total_tokens=None))
-    count = len(seen)
-    assert _coarsen_memory_view(context, unknown) is False and len(seen) == count
+    _coarsen_memory_view(context, unknown)
+    assert seen[-1]["window"] == 0 and seen[-1]["known"] is False and seen[-1]["refused"] == 85_536
 
 
-def test_fallback_chain_admits_an_overflow_after_the_ladder_and_keeps_its_other_gates():
+def test_fallback_chain_admits_an_overflow_after_the_passes_and_keeps_its_other_gates():
     from ouroboros import loop_transport
     from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
 
@@ -287,6 +288,25 @@ def test_facts_line_names_room_money_and_tariff_as_known_or_unknown(tmp_path, mo
     unbound.context_fit_plan = None
     assert "input unmeasured" in context_facts_line(unbound, measured=False) and "window unknown" in context_facts_line(unbound, measured=False)
     assert append_context_facts(unbound) is True and "input unmeasured" in unbound.messages[-1]["content"]
+
+
+def test_facts_after_a_refusal_name_the_refused_size_and_no_free_room(tmp_path, monkeypatch):
+    """Both directions: an anchored, unrefused round states free room; once this model refused a
+    size in this task the line names that size and states no free room."""
+    from ouroboros import loop
+    from ouroboros.context_anchor import record_refused_input
+    from ouroboros.loop_messages import append_context_facts
+
+    context = _ctx(tmp_path)
+    monkeypatch.setattr(loop, "_measure_round_main_fit", _measure_cycle([_fit(anchor_input=110_000, anchor_round=3)]))
+    assert append_context_facts(context, money={})
+    line = context.messages[-1]["content"]
+    assert "free ~" in line and "refused at" not in line
+    record_refused_input(context.accumulated_usage, context.context_fit_plan, 520_000)
+    context.round_idx = 2
+    assert append_context_facts(context, money={})
+    line = context.messages[-1]["content"]
+    assert "refused at ~520,000" in line and "free unknown" in line and "free ~" not in line
 
 
 def test_facts_refresh_for_changed_send_but_preserve_all_prior_rows(tmp_path, monkeypatch):

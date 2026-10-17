@@ -54,7 +54,6 @@ from ouroboros.loop_tool_execution import (
     StatefulToolExecutor,
     handle_tool_calls,
     prune_reclaim_trace_refs,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
-    reclaim_negative_memo,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     reclaim_trace_refs,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
@@ -651,7 +650,7 @@ def run_llm_loop(
                         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
                         budget_remaining_usd=budget_remaining_usd, cost_ceiling=cost_ceiling, active_use_local=active_use_local)
 
-                    messages, _compaction_usage = _run_round_compaction(
+                    messages = _run_round_compaction(
                         messages,
                         _CompactionRoundContext(
                             tools=tools, drive_root=drive_root, drive_logs=drive_logs,
@@ -659,8 +658,6 @@ def run_llm_loop(
                             event_queue=event_queue, emit_progress=emit_progress, tool_schemas=tool_schemas))
                     tools._ctx.messages = messages
                     limit_ctx.messages = messages  # WA2: provider-death finalize must salvage the COMPACTED transcript
-                    if _compaction_usage:
-                        _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
                     prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages, tool_schemas)
                     seal_task_transcript(messages)
@@ -872,7 +869,6 @@ from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional pub
     _context_overflow_retries,
     _run_round_compaction,
     _RoundLimitContext,
-    _account_compaction_usage,
     _handle_round_limit,
     _handle_forced_finalization,
     _handle_owner_stop_finalization,

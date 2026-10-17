@@ -15,7 +15,7 @@ from ouroboros.context_source_view import _EMERGENCY_LABELS, emergency_address_v
 from ouroboros.loop_messages import CONTEXT_FACTS_NAME
 from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
 from ouroboros.tool_result_record import TOOL_RESULT_RECORD_KEY, make_tool_result_record
-from tests.test_context_reclaim_materializer import _request, _SPEC
+from tests.test_context_reclaim_materializer import _request
 from tests.test_main_authored_context import main_loop as _main_loop
 
 main_loop = _main_loop
@@ -74,8 +74,7 @@ def _assert_exact_restore(tmp_path, original, request, receipt):
         assert row["role"] == "user" and not row.get("tool_calls")  # source, never live protocol replay
 
 
-def test_only_producer_labelled_replaced_host_snapshots_become_addresses(tmp_path, monkeypatch):
-    monkeypatch.setattr(cc, "_call_summarizer", lambda *_a, **_kw: pytest.fail("No helper for an address view"))
+def test_only_producer_labelled_replaced_host_snapshots_become_addresses(tmp_path):
     old_facts = bound_host_row(CONTEXT_FACTS_NAME, "Past exact facts. " * 1600)
     old_roster = bound_host_row(ROSTER_SNAPSHOT_NAME, "Past full roster. " * 1600)
     old_delta = bound_host_row(ROSTER_UPDATE_NAME, "Past delta. " * 1600)
@@ -208,9 +207,7 @@ def test_short_unit_stays_raw_while_an_independent_large_unit_shrinks(tmp_path, 
     assert all(row in rebuilt for row in tail)
 
 
-def test_address_recovery_does_not_relax_authored_or_automatic_helper_exposure(tmp_path, monkeypatch):
-    monkeypatch.setattr(cc, "_summarizer_spec", lambda: dict(_SPEC))
-    monkeypatch.setattr(cc, "_call_summarizer", lambda *_a, **_kw: pytest.fail("Unseen bodies do not earn a helper summary"))
+def test_address_recovery_does_not_relax_authored_exposure(tmp_path):
     messages = [*_prefix(), *_tool()]
     request = _request(messages, 1)
     unchanged, ordinary = emergency_address_view(messages, request, rung="bodies", drive_root=tmp_path, task_id="source-view")
@@ -219,30 +216,10 @@ def test_address_recovery_does_not_relax_authored_or_automatic_helper_exposure(t
     assert receipt.status == "applied" and relocated != messages
     # A successful source relocation is not evidence that the actor understood it.
     authored = replace(request, working_note="", expected_view_revision=request.transcript_sha256, keep_unit_ids=())
-    unchanged, receipt, usage = cc.compact_tool_history_llm(messages, request=authored, observed_messages=messages,
+    unchanged, receipt = cc.compact_tool_history_llm(messages, request=authored, observed_messages=messages,
         exposed_units=[], tool_schemas=[], fit_candidate=lambda *_: {"accepted": True},
         drive_root=tmp_path, task_id="source-view")
-    assert unchanged == messages and receipt.status == "no_op" and usage is None
-    unchanged, receipt, _ = cc.compact_tool_history_llm(messages, request=request, exposed_units=[],
-        automatic_deficit_tokens=0, provider_refused=True, drive_root=tmp_path, task_id="source-view")
-    assert unchanged == messages and receipt.status == "no_eligible"
-
-
-def test_explicit_count_only_helper_still_reads_complete_sources(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(cc, "_summarizer_spec", lambda: dict(_SPEC))
-
-    def summarize(parts, **_kwargs):
-        calls.extend(part.text for part in parts)
-        return {part.source_id: "The helper retained the trailing conclusion." for part in parts}
-
-    monkeypatch.setattr(cc, "_call_summarizer", summarize)
-    messages = [*_prefix(), *_tool()]
-    rebuilt, receipt, _ = cc.compact_tool_history_llm(messages, keep_recent=0, drive_root=tmp_path, task_id="source-view")
-    assert calls and "CONSEQUENTIAL-TAIL" in "".join(calls)
-    assert receipt.status == "applied" and rebuilt != messages
-    assert cc._capsule_metadata(_records(rebuilt)[0])[1]["retention"] == "summarized"
-    assert _checkpoint(tmp_path, receipt)["messages"] == messages
+    assert unchanged == messages and receipt.status == "no_op"
 
 
 def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(main_loop, monkeypatch):
@@ -255,13 +232,13 @@ def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(ma
     f.messages.extend([*_tool(), {"role": "user", "content": OWNER}])
     before_observation = []
     rungs = []
-    apply_rung = loop_model_call._apply_overflow_rung
+    apply_step = loop_model_call._apply_refusal_step
 
-    def apply(ctx, rung, fit):
-        rungs.append(rung)
-        return apply_rung(ctx, rung, fit)
+    def apply(ctx, step, fit, target):
+        rungs.append(step)
+        return apply_step(ctx, step, fit, target)
 
-    monkeypatch.setattr(loop_model_call, "_apply_overflow_rung", apply)
+    monkeypatch.setattr(loop_model_call, "_apply_refusal_step", apply)
 
     def refuse(kwargs):
         if any(_EMERGENCY_LABELS["unseen_bodies"] in str(row.get("content")) for row in kwargs["messages"]):
@@ -278,10 +255,9 @@ def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(ma
             response=httpx.Response(400, json={"error": {"code": "context_length_exceeded", "message": "Input exceeds context window"}}))
 
     monkeypatch.setattr("ouroboros.loop_llm_call._sleep_within_deadline", lambda *_a, **_kw: True)
-    monkeypatch.setattr(cc, "_summarizer_spec", lambda: dict(_SPEC))
     answer, _, _ = f.run([refuse] * 8)
     assert answer == "Recovered from the exact address." and len(f.inputs) >= 2
-    assert rungs == ["host_copies", "bodies", "helper", "memory", "low", "unseen_bodies"]
+    assert rungs == ["host_copies", "bodies", "floor", "unseen_bodies"]  # both passes: nothing shown yet, then the floor and the late rescue
     assert before_observation and all(observation is None for observation in before_observation)
     assert len({entry["model"] for entry in f.inputs}) == 1
     assert len({entry["reasoning_effort"] for entry in f.inputs}) == 1
@@ -297,7 +273,10 @@ def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(ma
     assert "exposure is UNCONFIRMED" in _visible(record)
     checkpoint_ref = cc._capsule_metadata(record)[1]["checkpoint_ref"]
     checkpoint = json.loads(read_actor_source_bytes(f.ctx.drive_root, "authored-main", checkpoint_ref))
-    assert checkpoint["messages"] == f.inputs[-2]["messages"]
+    # The late rescue runs in the second pass after the floor lowered the view: its checkpoint holds the
+    # refused send's turns under the floor's system row, never a row the floor rewrote.
+    assert checkpoint["messages"][1:] == f.inputs[-2]["messages"][1:]
+    assert (checkpoint["messages"][0]["content"], f.inputs[-2]["messages"][0]["content"]) == ("LOW_SYSTEM", "MAX_SYSTEM")
     assert next(row["content"] for row in checkpoint["messages"] if row.get("tool_call_id") == "reused") == BODY
     assert {"role": "user", "content": OWNER} in f.ctx.messages
 

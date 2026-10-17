@@ -43,7 +43,7 @@ LOOP_LEAF_OWNERS: dict[str, str] = {
     ),
     "loop_round_limits": (
         "_CompactionRoundContext _drain_incoming_messages _context_overflow_retries "
-        "_run_round_compaction _RoundLimitContext _account_compaction_usage "
+        "_run_round_compaction _RoundLimitContext "
         "_handle_round_limit _handle_forced_finalization _handle_owner_stop_finalization "
         "_handle_provider_unavailable _maybe_deadline_local_finalize "
         "_maybe_early_finalize _finalize_limit_ctx"
