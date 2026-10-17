@@ -114,7 +114,7 @@ def test_update_keep_then_uninstall(env):
     digest = hub.add_hosted("notes", "2.0.0", category=["writing"])
     hub.commit()
     refresh_source(drive, rows[2])
-    stale = client.post("/api/skills/notes/update", json={"mode": "replace", "digest": "sha256v2:" + "3" * 64})
+    stale = client.post("/api/skills/notes/update", json={"mode": "replace", "digest": "3" * 64})
     assert stale.status_code == 409 and stale.json()["code"] == "candidate_changed"
     kept = client.post("/api/skills/notes/update", json={"mode": "keep", "digest": digest})
     assert assert_bound("POST /api/skills/{skill}/update", kept) and kept.json()["skipped"]["digest"] == digest

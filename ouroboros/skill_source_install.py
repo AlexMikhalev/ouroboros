@@ -4,16 +4,22 @@ The Skills page, Ouroboros's own tools and the starter installer all use these f
 one skill lifecycle lane. An install resolves a catalog item, copies the release from the source's
 local cache (a pointer entry fetches its author's repository at the exact commit), verifies the copy
 against the release digest (a mismatch is refused), lands it atomically with the existing rollback
-snapshot and writes the install record, whose basis is the source row's trust at that moment.
-``trusted`` grants what the skill asks for under the owner's auto-grant setting and turns it on once it
-is ready; ``review`` lands the skill, starts its review job and returns: it turns on only when the review
-leaves no blockers. One installed skill per name: another source's skill of the same name is replaced
-only on an explicit confirmation, and the replaced payload is kept as the previous copy.
+snapshot and writes the install record, whose basis is the source row's trust at that moment. A
+built-in lands through the built-in source's own installer (``skill_builtin``), which writes the same
+record. ``trusted`` keeps the deterministic preflight floor, then grants what the skill asks for under
+the owner's auto-grant setting, installs its dependencies and turns it on once it is ready; ``review``
+lands the skill, starts its ordinary review job and returns: the review grants, installs dependencies
+and turns it on only when it leaves no blockers. Turning on is ``reconcile_turn_on_when_ready``: an
+explicit choice of the owner is never overridden. One installed skill per name: another source's skill
+of the same name is replaced only on an explicit confirmation, and the replaced payload is kept as the
+previous copy.
 
 An update names its exact candidate (digest) and refuses when the source moved meanwhile. ``replace``
-keeps the previous payload, ``keep`` records the skipped release, ``merge`` hands base, new and local
-trees to an ordinary managed task (three-way only when the base release can be fetched again). Nothing
-here updates or repairs a skill on its own.
+keeps the previous payload, ``keep`` records the skipped release, ``merge`` lays out base, new and local
+trees (three-way only when the base release can be fetched again): the owner's request goes through the
+owner's door like Repair, so the task's edits count as the owner's; Ouroboros asking for itself gets
+the trees for its own task, whose edits stay unreviewed until a review passes. Nothing here updates or
+repairs a skill on its own.
 """
 
 from __future__ import annotations
@@ -37,16 +43,13 @@ from ouroboros.skill_source_catalog import (
     installed_index,
     installed_release_digest,
     record_matches_row,
-    snapshot_for,
     tree_release_digest,
 )
-from ouroboros.utils import read_json_dict, utc_now_iso
+from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
 
 BUCKETS = {"builtin": "native", "hub": "ouroboroshub", "git": "ouroboroshub"}
-# Direct owner actors: their explicit Off is never overridden (same set the lifecycle actions honour).
-OWNER_OFF_ACTORS = frozenset({"owner_ui", "owner_cli", "owner_launcher"})
 
 
 class SkillInstallError(RuntimeError):
@@ -72,13 +75,6 @@ def _note(progress: Optional[Callable[[str], None]], message: str) -> None:
 
 def _source_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     return {key: row[key] for key in ("id", "kind", "name", "url", "part") if row.get(key)}
-
-
-def _cyber() -> bool:
-    from ouroboros.config import get_runtime_mode
-    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
-
-    return mode_has_unrestricted_agency(get_runtime_mode())
 
 
 # --- planning ----------------------------------------------------------------------------------------
@@ -139,10 +135,6 @@ def _install_record(plan: Dict[str, Any], *, actor: str, reason: str, task_id: s
         prefix = str(snapshot.get("path") or "")
         release.update(commit=str(snapshot.get("commit") or ""),
                        path="/".join(part for part in (prefix, str(source.get("path") or "")) if part))
-    elif row["kind"] == "builtin":
-        from ouroboros.config import read_version
-
-        release.update(path=f"skills/{item['name']}", app_version=read_version())
     record = {"source": _source_fields(row), "entry": item["name"], "release": release,
               "base_digest": item["digest"], "basis": plan["basis"], "official": bool(item.get("official")),
               "installed_by": "ouroboros" if actor == "ouroboros" else "owner",
@@ -177,10 +169,47 @@ def _keep_previous(path: Optional[pathlib.Path], name: str) -> None:
         log.warning("Could not retain the previous payload of %s at %s", name, path, exc_info=True)
 
 
-def _mark_builtin(target: pathlib.Path, name: str) -> None:
-    """Built-in payloads keep the launcher's markers: release resync and no resurrection after removal."""
-    (target / ".seed-origin").write_text("seeded_from=skills\nsource=builtin\n", encoding="utf-8")
-    (target.parent / f".post-bootstrap-seed-{name}").write_text("offered\n", encoding="utf-8")
+def _unload(name: str) -> None:
+    try:
+        from ouroboros.extension_loader import unload_extension
+
+        unload_extension(name)
+    except Exception:
+        log.debug("unload before replacing %s failed", name, exc_info=True)
+
+
+def _land_builtin(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[str, Any], *,
+                  repo_dir: Optional[pathlib.Path], progress: Optional[Callable[[str], None]]) -> Dict[str, Any]:
+    """A built-in lands through its own source's installer, inside the same rollback as every release."""
+    from ouroboros.config import REPO_DIR, ensure_data_skills_dir
+    from ouroboros.marketplace.install import restore_payload_state, snapshot_payload_state
+    from ouroboros.skill_builtin import install_builtin_skill
+
+    name = plan["name"]
+    target = ensure_data_skills_dir(pathlib.Path(drive_root)) / BUCKETS["builtin"] / name
+    _note(progress, f"Installing {name} from the built-in skills…")
+    _unload(name)
+    rollback = snapshot_payload_state(drive_root, name, target)
+    occupant_dir = pathlib.Path((plan.get("occupant") or {}).get("skill_dir") or target)
+    aside = None
+    try:
+        if occupant_dir.exists() and occupant_dir.resolve() != target.resolve():
+            aside = _move_aside(occupant_dir, name)
+        result = install_builtin_skill(
+            name, drive_root=pathlib.Path(drive_root), seed_dir=pathlib.Path(repo_dir or REPO_DIR) / "skills",
+            turn_on_when_ready=bool(record.get("turn_on_when_ready")), installed_by=record["installed_by"],
+            reason=str(record.get("reason") or ""), task_id=str(record.get("task_id") or ""))
+        if not result.get("ok"):
+            raise SkillInstallError(str(result.get("code") or "builtin_install_failed"),
+                                    f"{name} was not installed: {result.get('error') or 'the built-in did not land'}")
+    except Exception:
+        restore_payload_state(rollback)
+        if aside is not None and not occupant_dir.exists():
+            aside.rename(occupant_dir)
+        raise
+    _keep_previous(rollback.backup_dir, name)
+    _keep_previous(aside, name)
+    return read_install_record(pathlib.Path(drive_root), name) or {}
 
 
 def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[str, Any], *,
@@ -190,6 +219,8 @@ def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
     from ouroboros.marketplace.install import restore_payload_state, snapshot_payload_state
 
     row, item, name = plan["row"], plan["item"], plan["name"]
+    if row["kind"] == "builtin":
+        return _land_builtin(drive_root, plan, record, repo_dir=repo_dir, progress=progress)
     bucket = ensure_data_skills_dir(pathlib.Path(drive_root)) / BUCKETS[row["kind"]]
     target = bucket / name
     _note(progress, f"Reading {name} from {row['name']}…")
@@ -212,12 +243,7 @@ def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
         raise SkillInstallError("digest_mismatch", f"The copy of {name} does not match its release digest; "
                                                    "nothing was installed.", expected=item["digest"], actual=digest)
     _note(progress, f"Installing {name}…")
-    try:
-        from ouroboros.extension_loader import unload_extension
-
-        unload_extension(name)
-    except Exception:
-        log.debug("pre-install unload failed for %s", name, exc_info=True)
+    _unload(name)
     rollback = snapshot_payload_state(drive_root, name, target)
     aside = None
     try:
@@ -225,8 +251,6 @@ def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
         if occupant_dir.exists() and occupant_dir.resolve() != target.resolve():
             aside = _move_aside(occupant_dir, name)
         land_staged_tree(staging, target, replacement_suffix="replaced-source")
-        if row["kind"] == "builtin":
-            _mark_builtin(target, name)
         written = write_install_record(pathlib.Path(drive_root), name, record)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -262,65 +286,46 @@ def _install_registry(drive_root: pathlib.Path, plan: Dict[str, Any], *, actor: 
 
 # --- acceptance and turning on -------------------------------------------------------------------------
 
-def turn_on_when_ready(drive_root: pathlib.Path, name: str, *, repo_path: Optional[str] = None) -> str:
-    """Enable an install whose record asks for it once review, grants and dependencies allow it.
+def accept_and_turn_on(drive_root: pathlib.Path, name: str, *, repo_path: Optional[str] = None,
+                       repo_dir: Optional[pathlib.Path] = None) -> Dict[str, Any]:
+    """After a trusted release landed (inside its lane job): the deterministic preflight floor, then the
+    grants the owner's auto-grant setting gives, the dependencies, and turning on when ready.
 
-    The owner's explicit Off wins for good: the request is dropped from the record. A refusal leaves
-    the skill off and is retried at the next acceptance (review end, grant, update).
+    A failed preflight keeps the release off (a payload failure persists the pending record the gate
+    honours before the install basis; an infrastructure failure persists nothing).
     """
-    from ouroboros.skill_loader import find_skill, skill_state_dir_path
-    from ouroboros.skill_review_status import normalize_skill_review_status
-
-    record = read_install_record(pathlib.Path(drive_root), name)
-    if record is None or not record.get("turn_on_when_ready"):
-        return "not_requested"
-    state = read_json_dict(skill_state_dir_path(pathlib.Path(drive_root), name) / "enabled.json") or {}
-    if state.get("enabled") is False and state.get("actor") in OWNER_OFF_ACTORS:
-        update_install_record(pathlib.Path(drive_root), name, turn_on_when_ready=False)
-        return "owner_off"
-    if repo_path is None:
-        from ouroboros.config import get_skills_repo_path
-
-        repo_path = get_skills_repo_path()
-    loaded = find_skill(pathlib.Path(drive_root), name, repo_path=repo_path)
-    if loaded is None or loaded.load_error:
-        return "waiting"
-    if (record.get("basis") == "review" and not _cyber()
-            and normalize_skill_review_status(loaded.review.status) == "blockers"):
-        return "waiting"
-    from ouroboros.skill_lifecycle_actions import _toggle
-
-    result = _toggle(loaded, pathlib.Path(drive_root), repo_path or "", True, "turn_on_when_ready", "install")
-    return "enabled" if result.get("ok") and result.get("enabled") else "waiting"
-
-
-def accept_and_turn_on(drive_root: pathlib.Path, name: str, *, repo_path: Optional[str] = None) -> Dict[str, Any]:
-    """After an accepted install (trusted basis, or a finished review): grants, dependencies, turn on."""
+    from ouroboros.config import REPO_DIR
+    from ouroboros.marketplace.install import _MarketplaceReviewCtx
+    from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
     from ouroboros.skill_loader import auto_grant_if_enabled, find_skill
+    from ouroboros.skill_review import run_acceptance_preflight
+    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
 
+    drive = pathlib.Path(drive_root)
     if repo_path is None:
         from ouroboros.config import get_skills_repo_path
 
         repo_path = get_skills_repo_path()
     out: Dict[str, Any] = {"accepted": False, "granted_keys": [], "granted_permissions": [], "deps_status": ""}
-    loaded = find_skill(pathlib.Path(drive_root), name, repo_path=repo_path)
+    preflight = run_acceptance_preflight(_MarketplaceReviewCtx(drive, pathlib.Path(repo_dir or REPO_DIR)), drive, name)
+    if not preflight.get("ok"):
+        return {**out, "turn_on": "not_ready", "preflight_error": str(preflight.get("error") or "")[:500]}
+    loaded = find_skill(drive, name, repo_path=repo_path)
     if loaded is not None and not loaded.load_error and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
-        from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
-
-        grant = auto_grant_if_enabled(pathlib.Path(drive_root), loaded)
+        grant = auto_grant_if_enabled(drive, loaded)
         out.update(accepted=True, granted_keys=list(grant.granted_keys),
                    granted_permissions=list(grant.granted_permissions))
-        out["deps_status"], deps_error = _reconcile_deps_after_pass_review(pathlib.Path(drive_root), name,
-                                                                           repo_path=repo_path)
+        out["deps_status"], deps_error = _reconcile_deps_after_pass_review(drive, name, repo_path=repo_path)
         if deps_error:
             out["deps_error"] = deps_error
-    out["turn_on"] = turn_on_when_ready(drive_root, name, repo_path=repo_path)
+    out["turn_on"] = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path,
+                                                  reason="installed from a trusted source")["action"]
     return out
 
 
 def run_in_lane(drive_root: pathlib.Path, kind: str, target: str, runner: Callable[[], Any], *,
                 message: str = "", chat_id: int = 0) -> Any:
-    """Run one blocking operation through the skill lifecycle lane (tools, starter, review follow-up)."""
+    """Run one blocking operation through the skill lifecycle lane (tools, starter)."""
     from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
 
     def _error(value: Any) -> str:
@@ -333,10 +338,11 @@ def run_in_lane(drive_root: pathlib.Path, kind: str, target: str, runner: Callab
 
 
 def start_review(drive_root: pathlib.Path, name: str, *, repo_dir: Optional[pathlib.Path] = None) -> None:
-    """Review an install in the background, then accept and turn it on when the review allows it.
+    """Start the ordinary review job of an install in the background.
 
-    The review runs in this process: an interrupted review stays an honest interrupted job, never an
-    acceptance. A non-blocking review start owned by the review runner can replace this thread.
+    The review lends the lifecycle lane out while its panel reads the frozen payload; when it leaves no
+    blockers it grants, installs dependencies and turns the skill on as its record asks
+    (``skill_review_runner``). An interrupted review stays an honest interrupted job, never an acceptance.
     """
     def _run() -> None:
         try:
@@ -346,8 +352,6 @@ def start_review(drive_root: pathlib.Path, name: str, *, repo_dir: Optional[path
 
             ctx = _MarketplaceReviewCtx(pathlib.Path(drive_root), pathlib.Path(repo_dir or REPO_DIR))
             run_skill_review_lifecycle_blocking(ctx, name, source="skills", repo_path=get_skills_repo_path())
-            run_in_lane(drive_root, "enable", name, lambda: accept_and_turn_on(drive_root, name),
-                        message=f"Turning on {name} when ready")
         except Exception:
             log.warning("Review after install failed for %s", name, exc_info=True)
 
@@ -375,10 +379,11 @@ def install_item(drive_root: pathlib.Path, item_id: str, *, replace: bool = Fals
                                                                  turn_on_when_ready=turn_on_when_ready),
                                repo_dir=repo_dir, progress=progress)
     release = record.get("release") or {}
-    result = {**base, "name": plan["name"], "version": release.get("version", item.get("version", "")),
+    basis = str(record.get("basis") or plan["basis"])  # the basis the record holds is what the gate reads
+    result = {**base, "name": plan["name"], "basis": basis, "version": release.get("version", item.get("version", "")),
               "digest": release.get("digest", ""), "replaced": bool(plan.get("occupant"))}
-    if plan["basis"] == "trusted":
-        result["acceptance"] = accept_and_turn_on(drive_root, result["name"])
+    if basis == "trusted":
+        result["acceptance"] = accept_and_turn_on(drive_root, result["name"], repo_dir=repo_dir)
     else:
         result["needs_review"] = True
     return result
@@ -409,56 +414,78 @@ def _candidate_plan(drive_root: pathlib.Path, name: str, record: Dict[str, Any],
     raise SkillInstallError("left_source", f"{name} is no longer offered by {row['name']}; it keeps working.")
 
 
-def _start_merge(drive_root: pathlib.Path, name: str, record: Dict[str, Any], plan: Dict[str, Any],
-                 loaded: Any, repo_dir: Optional[pathlib.Path]) -> Dict[str, Any]:
+def _merge_trees(drive_root: pathlib.Path, name: str, record: Dict[str, Any], plan: Dict[str, Any],
+                 repo_dir: Optional[pathlib.Path]) -> Dict[str, str]:
+    """Lay out the new release and, when it can be fetched again, the release the local copy started
+    from (verified against its base digest), under the data root."""
     from ouroboros.marketplace.fetcher import copy_tree_checked
     from ouroboros.skill_source_git import checkout_at_commit, scratch_dir
 
-    item = plan["item"]
-    scratch = scratch_dir(drive_root, f"merge-{name}")
-    folder = entry_payload_dir(drive_root, plan["row"], plan["snapshot"], name, repo_dir=repo_dir)
-    copy_tree_checked(folder, scratch / "new")
-    base_note = "unknown: the release this copy was installed from cannot be fetched again"
+    drive = pathlib.Path(drive_root)
+    scratch = scratch_dir(drive, f"merge-{name}")
+    copy_tree_checked(entry_payload_dir(drive, plan["row"], plan["snapshot"], name, repo_dir=repo_dir), scratch / "new")
     release = record.get("release") or {}
     url = release.get("repo") or (record.get("source") or {}).get("url")
     if release.get("commit") and url and record.get("base_digest"):
         try:
-            base_root = checkout_at_commit(drive_root, str(url), str(release["commit"]))
-            base_folder = (base_root / str(release.get("path") or "")).resolve()
-            copy_tree_checked(base_folder, scratch / "base")
-            if tree_release_digest(scratch / "base") == record["base_digest"]:
-                base_note = f"state/skill_sources/{scratch.relative_to(pathlib.Path(drive_root) / 'state' / 'skill_sources').as_posix()}/base"
-            else:
+            base_root = checkout_at_commit(drive, str(url), str(release["commit"]))
+            copy_tree_checked((base_root / str(release.get("path") or "")).resolve(), scratch / "base")
+            if tree_release_digest(scratch / "base") != record["base_digest"]:
                 shutil.rmtree(scratch / "base", ignore_errors=True)
         except Exception as exc:
             log.info("Base release of %s is not retrievable: %s", name, exc)
+    return {"new_tree": (scratch / "new").relative_to(drive).as_posix(),
+            "base_tree": (scratch / "base").relative_to(drive).as_posix() if (scratch / "base").is_dir() else ""}
+
+
+def _merge_instructions(name: str, item: Dict[str, Any], payload_root: str, trees: Dict[str, str], *,
+                        by_owner: bool) -> str:
+    base = trees["base_tree"]
+    return (
+        (f"The owner asked you to merge an update into the locally modified skill {name}.\n\n" if by_owner else
+         f"Merge the update of the locally modified skill {name} in this task.\n\n")
+        + f"Local copy (keep its intent): {payload_root}\n"
+        f"New release {item.get('version', '')} ({item['digest']}): {trees['new_tree']} (data root)\n"
+        "Original release it was installed from: "
+        + (f"{base} (data root)" if base else "unknown: that release cannot be fetched again") + "\n\n"
+        "Merge the new release into the local copy in place: keep the local changes, take the release's "
+        "changes, and resolve conflicts by judgment. "
+        + ("Use the original release as the common base for a three-way merge. " if base else
+           "Without the original release this is a two-way merge: say so in your summary. ")
+        + "Then run skill_review for it. Do not enable it or grant keys yourself."
+    )
+
+
+def _start_merge(drive_root: pathlib.Path, name: str, record: Dict[str, Any], plan: Dict[str, Any],
+                 loaded: Any, repo_dir: Optional[pathlib.Path], *, actor: str) -> Dict[str, Any]:
+    """The owner's request becomes a selected-skill task through the owner's door (the same door as
+    Repair), so its edits are owner edits; Ouroboros asking for itself merges in its own task."""
+    item = plan["item"]
+    trees = _merge_trees(drive_root, name, record, plan, repo_dir)
     try:
         payload_root = pathlib.Path(loaded.skill_dir).resolve().relative_to(pathlib.Path(drive_root).resolve()).as_posix()
     except ValueError:
         payload_root = ""
-    new_rel = (scratch / "new").relative_to(pathlib.Path(drive_root)).as_posix()
-    base_rel = (scratch / "base").relative_to(pathlib.Path(drive_root)).as_posix() if (scratch / "base").is_dir() else ""
-    prompt = (
-        f"The owner asked you to merge an update into the locally modified skill {name}.\n\n"
-        f"Local copy (keep its intent): {payload_root}\n"
-        f"New release {item.get('version', '')} ({item['digest']}): {new_rel} (data root)\n"
-        f"Original release it was installed from: {base_rel + ' (data root)' if base_rel else base_note}\n\n"
-        "Merge the new release into the local copy in place: keep the owner's local changes, take the "
-        "release's changes, and resolve conflicts by judgment. "
-        + ("Use the original release as the common base for a three-way merge. " if base_rel else
-           "Without the original release this is a two-way merge: say so in your summary. ")
-        + "Then run skill_review for it. Do not enable it or grant keys yourself."
-    )
-    from supervisor.message_bus import get_bridge
+    by_owner = actor != "ouroboros"
+    instructions = _merge_instructions(name, item, payload_root, trees, by_owner=by_owner)
+    if by_owner:
+        from supervisor.message_bus import get_bridge
 
-    get_bridge().ui_send(prompt, broadcast=False, task_constraint={
-        "mode": "normal", "skill_name": name, "payload_root": payload_root, "allow_enable": False,
-        "allow_review": True}, task_metadata={"client_surface": {"channel": "skill_update"}})
+        try:
+            bridge = get_bridge()
+        except AssertionError as exc:
+            raise SkillInstallError("not_ready", "Complete provider setup before asking Ouroboros.", 409) from exc
+        bridge.ui_send(instructions, broadcast=False, task_constraint={
+            "mode": "normal", "skill_name": name, "payload_root": payload_root, "allow_enable": False,
+            "allow_review": True}, task_metadata={"client_surface": {"channel": "skill_update"}})
     update_install_record(pathlib.Path(drive_root), name, skipped_release_digest=item["digest"], merge={
         "digest": item["digest"], "version": item.get("version", ""), "requested_at": utc_now_iso(),
-        "new_tree": new_rel, "base_tree": base_rel})
-    return {"ok": True, "name": name, "mode": "merge", "base_available": bool(base_rel), "task": "queued",
-            "candidate": {"version": item.get("version", ""), "digest": item["digest"]}}
+        "requested_by": "owner" if by_owner else "ouroboros", **trees})
+    out = {"ok": True, "name": name, "mode": "merge", "base_available": bool(trees["base_tree"]),
+           "candidate": {"version": item.get("version", ""), "digest": item["digest"]}}
+    if by_owner:
+        return {**out, "task": "queued"}
+    return {**out, "task": "current", "local_tree": payload_root, **trees, "instructions": instructions}
 
 
 def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: str = "", local_digest: str = "",
@@ -494,15 +521,16 @@ def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
         return {"ok": True, "name": name, "mode": "keep", "skipped": {"version": item.get("version", ""),
                                                                        "digest": item["digest"]}}
     if mode == "merge":
-        return _start_merge(drive_root, name, record, plan, loaded, repo_dir)
+        return _start_merge(drive_root, name, record, plan, loaded, repo_dir, actor=actor)
     plan["occupant"] = {"skill_dir": str(loaded.skill_dir), "locations": [loaded.location]}
     new_record = _install_record(plan, actor=actor, reason=reason, task_id=task_id,
                                  turn_on_when_ready=bool(record.get("turn_on_when_ready", True)))
-    _land_release(drive_root, plan, new_record, repo_dir=repo_dir, progress=progress)
-    result = {"ok": True, "name": name, "mode": "replace", "basis": plan["basis"],
+    landed = _land_release(drive_root, plan, new_record, repo_dir=repo_dir, progress=progress)
+    basis = str(landed.get("basis") or plan["basis"])
+    result = {"ok": True, "name": name, "mode": "replace", "basis": basis,
               "version": item.get("version", ""), "digest": item["digest"], "previous_kept": True}
-    if plan["basis"] == "trusted":
-        result["acceptance"] = accept_and_turn_on(drive_root, name)
+    if basis == "trusted":
+        result["acceptance"] = accept_and_turn_on(drive_root, name, repo_dir=repo_dir)
     else:
         result["needs_review"] = True
     return result
@@ -521,7 +549,8 @@ def _update_registry(drive_root: pathlib.Path, name: str, record: Dict[str, Any]
         raise SkillInstallError("registry_update_failed", result.error or "update failed", int(result.error_status or 400))
     trusted = record.get("basis") == "trusted"
     return {"ok": True, "name": name, "mode": "replace", "basis": record.get("basis"),
-            **({"acceptance": accept_and_turn_on(drive_root, name)} if trusted else {"needs_review": True})}
+            **({"acceptance": accept_and_turn_on(drive_root, name, repo_dir=repo_dir)} if trusted
+               else {"needs_review": True})}
 
 
 def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
@@ -549,16 +578,9 @@ def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
         return {"ok": True, "name": name, "source": "clawhub"}
     if loaded.location == "external" and record is None:
         raise SkillInstallError("not_from_source", f"{name} was made on this computer; use Delete to remove it.")
-    try:
-        from ouroboros.extension_loader import unload_extension
-
-        unload_extension(name)
-    except Exception:
-        log.debug("pre-uninstall unload failed for %s", name, exc_info=True)
-    shutil.rmtree(skill_dir)
+    _unload(name)
+    shutil.rmtree(skill_dir)  # nothing seeds built-ins at startup, so a removed one stays removed
     (skill_state_dir_path(pathlib.Path(drive_root), name) / DEPS_STATE_FILENAME).unlink(missing_ok=True)
-    if loaded.location == "native":
-        (skill_dir.parent / f".post-bootstrap-seed-{name}").write_text("offered\n", encoding="utf-8")
     source = str(((record or {}).get("source") or {}).get("id") or loaded.location)
     clear_install_record(pathlib.Path(drive_root), name)
     write_uninstall_tombstone(pathlib.Path(drive_root), name, source=source)
@@ -567,5 +589,5 @@ def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
 
 __all__ = [
     "BUCKETS", "SkillInstallError", "accept_and_turn_on", "install_item", "plan_install", "run_in_lane",
-    "snapshot_for", "start_review", "turn_on_when_ready", "uninstall_installed", "update_installed",
+    "start_review", "uninstall_installed", "update_installed",
 ]

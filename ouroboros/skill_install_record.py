@@ -9,15 +9,16 @@ basis the acceptance gate reads.
 
 Installs made before sources existed carry a payload sidecar instead. ``convert_legacy_records``
 reads those sidecars once (startup) and writes the equivalent record: an OuroborosHub sidecar names
-every file of the original release with its SHA-256, so its base digest is exact; a ClawHub one does
+every file of the original release with its SHA-256 and the declaration the installer used, so its
+release digest (``skill_identity.release_digest_from_files``) and base are exact; a ClawHub one does
 not, so its record says the original version is unknown (``legacy: true`` with an empty base).
-Legacy installs keep the basis they ran under (``review``): an old "official" label never becomes
-a trusted basis by conversion. The sidecars themselves stay where they are.
+Legacy installs keep the basis they ran under (``review``, marked ``converted_from``, which keeps
+their earlier Advisory behaviour in the gate): an old "official" label never becomes a trusted
+basis by conversion. The sidecars themselves stay where they are.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import pathlib
 from typing import Any, Dict, List, Optional
@@ -95,32 +96,6 @@ def clear_install_record(drive_root: pathlib.Path, name: str) -> None:
         pass
 
 
-def release_digest_from_inventory(files: List[Dict[str, Any]], install_specs: Any = None) -> str:
-    """The release digest of a file inventory (``[{path, sha256}]``) without the files themselves.
-
-    The same reduction ``skill_identity.payload_digest`` applies to a tree: paths in the loader's
-    order (by path parts), each followed by NUL and its raw SHA-256, per-install notes skipped, then
-    the declared install specs.
-    """
-    from ouroboros.marketplace.install_specs import install_specs_hash, normalize_install_specs
-    from ouroboros.skill_identity import DIGEST_PREFIX, PER_INSTALL_NOTE_FILENAMES
-
-    digest = hashlib.sha256()
-    pairs = sorted(((str(item.get("path") or ""), str(item.get("sha256") or "").lower()) for item in files),
-                   key=lambda pair: pathlib.PurePosixPath(pair[0]).parts)
-    for rel, sha in pairs:
-        if "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
-            continue
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(bytes.fromhex(sha))
-    auto_specs, _manual, _errors = normalize_install_specs(install_specs or [])
-    if auto_specs:
-        digest.update(b"\0install_specs\0")
-        digest.update(install_specs_hash(auto_specs).encode("utf-8"))
-    return DIGEST_PREFIX + digest.hexdigest()
-
-
 def _legacy_hub_source(catalog_url: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     from ouroboros.skill_sources import repo_from_catalog_url
 
@@ -132,17 +107,26 @@ def _legacy_hub_source(catalog_url: str, rows: List[Dict[str, Any]]) -> Dict[str
     return {key: row[key] for key in ("id", "kind", "name", "url", "part") if row.get(key)}
 
 
+def _sidecar_declaration(sidecar: Dict[str, Any]) -> Any:
+    """The dependency declaration the installer used, as the release identity reads a sidecar."""
+    specs = sidecar.get("install_specs")
+    if isinstance(specs, dict):
+        for key in ("raw", "auto"):
+            if specs.get(key) not in (None, "", [], {}):
+                return specs[key]
+    return None
+
+
 def legacy_hub_record(sidecar: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The install record an OuroborosHub payload sidecar stands for, or ``None`` when it is unusable."""
-    from ouroboros.skill_dependencies import _coerce_dependency_specs
+    from ouroboros.skill_identity import release_digest_from_files
 
     files = sidecar.get("files")
     if sidecar.get("source") != "ouroboroshub" or not isinstance(files, list) or not files:
         return None
     try:
-        specs = ((sidecar.get("install_specs") or {}).get("raw")) if isinstance(sidecar.get("install_specs"), dict) else None
-        digest = release_digest_from_inventory([item for item in files if isinstance(item, dict)],
-                                               _coerce_dependency_specs(specs))
+        digest = release_digest_from_files([item for item in files if isinstance(item, dict)],
+                                           _sidecar_declaration(sidecar))
     except (ValueError, TypeError):
         return None
     return {
@@ -205,5 +189,5 @@ def convert_legacy_records(drive_root: pathlib.Path, rows: Optional[List[Dict[st
 __all__ = [
     "INSTALL_BASES", "INSTALL_RECORD_FILENAME", "LEGACY_HUB_SOURCE_ID", "clear_install_record",
     "convert_legacy_records", "install_record_path", "legacy_hub_record", "read_install_record",
-    "release_digest_from_inventory", "update_install_record", "write_install_record",
+    "update_install_record", "write_install_record",
 ]

@@ -84,7 +84,7 @@ def _hub_install(monkeypatch, data_root):
     (payload / "scripts" / "check.py").write_text("print('fixture')\n", encoding="utf-8")
     write_install_record(data_root, "demo", {
         "source": {"id": "ouroboros-community", "kind": "hub", "name": "Ouroboros Community"},
-        "release": {"version": "1.0.0", "digest": "sha256v2:" + "0" * 64}, "basis": "review"})
+        "release": {"version": "1.0.0", "digest": "0" * 64}, "basis": "review"})
     assert skill_loader.find_skill(data_root, "demo") is not None
 
 

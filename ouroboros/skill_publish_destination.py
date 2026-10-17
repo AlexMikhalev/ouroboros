@@ -113,12 +113,12 @@ def resolve_publish_destination(drive_root: pathlib.Path, skill: str, requested:
 
 
 def captured_release_digest(snapshot: Any) -> str:
-    """The release digest of exactly the files a publication sends."""
-    from ouroboros.skill_dependencies import _coerce_dependency_specs
-    from ouroboros.skill_install_record import release_digest_from_inventory
+    """The release digest of exactly the files a publication sends with their manifest's declaration:
+    the digest a source index states and an installer verifies for those files."""
+    from ouroboros.skill_identity import release_digest_from_files
 
-    return release_digest_from_inventory([{"path": item.path, "sha256": item.sha256} for item in snapshot.public_files],
-                                         _coerce_dependency_specs(snapshot.manifest.install_specs()))
+    return release_digest_from_files([{"path": item.path, "sha256": item.sha256} for item in snapshot.public_files],
+                                     snapshot.manifest.install_specs())
 
 
 def hub_entry(skill: str, snapshot: Any, *, login: str, digest: str, existing: Optional[Dict[str, Any]],

@@ -31,18 +31,6 @@ def hub(tmp_path):
     return fixture
 
 
-@pytest.fixture
-def accepted(monkeypatch):
-    """Stand in for the acceptance gate (owned by the gate package): every current byte is executable."""
-    original = SkillReviewState.gate_for
-
-    def gate_for(self, current_hash, *, enforcement=None):
-        gate = original(self, current_hash, enforcement=enforcement)
-        return {**gate, "executable_review": True, "status": gate["status"]}
-
-    monkeypatch.setattr(SkillReviewState, "gate_for", gate_for)
-
-
 def _refresh(drive, rows):
     for row in rows:
         if row["kind"] in {"hub", "git"}:
@@ -69,7 +57,7 @@ def test_hub_rows_split_official_and_community_from_one_clone(drive, hub, tmp_pa
 
 
 def test_an_endorsement_of_other_bytes_is_not_official(drive, hub):
-    hub.official[0]["digest"] = "sha256v2:" + "0" * 64
+    hub.official[0]["digest"] = "0" * 64
     hub.commit("stale endorsement")
     rows = hub.rows()
     _refresh(drive, rows[1:2])
@@ -94,11 +82,11 @@ def test_catalog_reads_never_wait_for_the_network(drive, hub, monkeypatch):
     assert {s["state"] for s in view["sources"]} == {"reading"}
 
 
-def test_trusted_install_lands_records_and_turns_on(drive, hub, accepted):
+def test_trusted_install_lands_records_and_turns_on(drive, hub):
     rows = hub.rows()
     _refresh(drive, rows[1:2])
     result = installer.install_item(drive, "ouroboros/weather", rows=rows, reason="forecasts", actor="ouroboros")
-    assert result["basis"] == "trusted" and result["acceptance"]["turn_on"] == "enabled"
+    assert result["basis"] == "trusted" and result["acceptance"]["turn_on"] == "enabled", result
     target = drive / "skills" / "ouroboroshub" / "weather"
     assert (target / "SKILL.md").is_file() and not (target / ".ouroboroshub.json").exists()
     record = read_install_record(drive, "weather")
@@ -108,32 +96,50 @@ def test_trusted_install_lands_records_and_turns_on(drive, hub, accepted):
     assert json.loads((skill_state_dir(drive, "weather") / "enabled.json").read_text())["enabled"] is True
 
 
-def test_review_install_waits_for_review_and_blockers_keep_it_off(drive, hub, accepted):
+def test_review_install_waits_for_review_and_blockers_keep_it_off(drive, hub, monkeypatch):
+    from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+    from ouroboros.skill_loader import find_skill, save_review_state
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
     rows = hub.rows()
     _refresh(drive, rows[1:2])
     result = installer.install_item(drive, "ouroboros-community/notes", rows=rows)
     assert result["needs_review"] and result["basis"] == "review" and "acceptance" not in result
-    from ouroboros.skill_loader import find_skill, save_review_state
-
+    assert reconcile_turn_on_when_ready(drive, "notes", repo_path="")["missing"] == ["acceptance"]
     loaded = find_skill(drive, "notes")
+    # From a source that reviews each skill, blockers keep it off even under Advisory enforcement.
     save_review_state(drive, "notes", SkillReviewState(status="blockers", content_hash=loaded.content_hash))
-    assert installer.turn_on_when_ready(drive, "notes") == "waiting"
+    assert reconcile_turn_on_when_ready(drive, "notes", repo_path="")["action"] == "not_ready"
     save_review_state(drive, "notes", SkillReviewState(status="warnings", content_hash=loaded.content_hash))
-    assert installer.accept_and_turn_on(drive, "notes")["turn_on"] == "enabled"
+    assert reconcile_turn_on_when_ready(drive, "notes", repo_path="")["action"] == "enabled"
 
 
-def test_owner_off_is_never_overridden(drive, hub, accepted):
+def test_owner_off_is_never_overridden(drive, hub):
+    from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+
     rows = hub.rows()
     _refresh(drive, rows[1:2])
-    installer.install_item(drive, "ouroboros-community/notes", rows=rows)
-    save_enabled(drive, "notes", False, actor="owner_ui")
-    assert installer.turn_on_when_ready(drive, "notes") == "owner_off"
-    assert read_install_record(drive, "notes")["turn_on_when_ready"] is False
-    assert installer.turn_on_when_ready(drive, "notes") == "not_requested"
+    save_enabled(drive, "weather", False, actor="owner_ui")
+    result = installer.install_item(drive, "ouroboros/weather", rows=rows)
+    assert result["acceptance"]["accepted"] and result["acceptance"]["turn_on"] == "owner_choice"
+    assert json.loads((skill_state_dir(drive, "weather") / "enabled.json").read_text())["enabled"] is False
+    assert reconcile_turn_on_when_ready(drive, "weather", repo_path="")["action"] == "owner_choice"
+
+
+def test_a_failed_preflight_keeps_a_trusted_release_off(drive, hub, monkeypatch):
+    rows = hub.rows()
+    _refresh(drive, rows[1:2])
+    monkeypatch.setattr("ouroboros.skill_review.run_acceptance_preflight",
+                        lambda *_a, **_k: {"ok": False, "error": "controlled preflight failure"})
+    result = installer.install_item(drive, "ouroboros/weather", rows=rows)
+    assert result["acceptance"] == {"accepted": False, "granted_keys": [], "granted_permissions": [],
+                                    "deps_status": "", "turn_on": "not_ready",
+                                    "preflight_error": "controlled preflight failure"}
+    assert not (skill_state_dir(drive, "weather") / "enabled.json").exists()
 
 
 def test_digest_mismatch_is_refused_and_nothing_lands(drive, hub):
-    hub.entries["notes"]["digest"] = "sha256v2:" + "1" * 64
+    hub.entries["notes"]["digest"] = "1" * 64
     hub.commit("wrong digest")
     rows = hub.rows()
     _refresh(drive, rows[1:2])
@@ -209,12 +215,12 @@ def test_plain_git_repository_lists_every_manifest_folder(drive, tmp_path):
            "confirmed": True}
     _refresh(drive, [row])
     items = {i["name"]: i for i in catalog.catalog_view(drive, rows=[row])["items"]}
-    assert set(items) == {"alpha", "beta"} and items["beta"]["digest"].startswith("sha256v2:")
+    assert set(items) == {"alpha", "beta"} and len(items["beta"]["digest"]) == 64
     installer.install_item(drive, "mine/beta", rows=[row])
     assert read_install_record(drive, "beta")["release"]["path"] == "group/beta"
 
 
-def test_update_detection_replace_keep_and_stale_candidates(drive, hub, accepted):
+def test_update_detection_replace_keep_and_stale_candidates(drive, hub):
     rows = hub.rows()
     _refresh(drive, rows[1:2])
     installer.install_item(drive, "ouroboros/weather", rows=rows)
@@ -229,7 +235,7 @@ def test_update_detection_replace_keep_and_stale_candidates(drive, hub, accepted
     assert listing["install"]["update_available"] == {"version": "0.4.0", "digest": new_digest}
     assert listing["install"]["modified"] is False and listing["category"] == ["city"]
     with pytest.raises(installer.SkillInstallError) as stale:
-        installer.update_installed(drive, "weather", mode="replace", digest="sha256v2:" + "2" * 64, rows=rows)
+        installer.update_installed(drive, "weather", mode="replace", digest="2" * 64, rows=rows)
     assert stale.value.code == "candidate_changed"
     installer.update_installed(drive, "weather", mode="keep", digest=new_digest, rows=rows)
     listing = catalog.install_listing(drive, find_skill(drive, "weather"), catalog.cached_snapshots(drive, rows))
@@ -285,19 +291,23 @@ def test_uninstall_is_one_path_and_keeps_grants(drive, hub):
     assert refused.value.code == "not_from_source"
 
 
-def test_builtin_install_keeps_launcher_markers_and_is_not_resurrected(drive, tmp_path):
+def test_builtin_installs_through_the_builtin_source_and_is_not_resurrected(drive, tmp_path):
+    from ouroboros.skill_builtin import reseed_changed_builtins
+
     repo = builtin_repo(tmp_path)
     rows = [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]
-    installer.install_item(drive, "builtin/telegram", rows=rows, repo_dir=repo)
+    result = installer.install_item(drive, "builtin/telegram", rows=rows, repo_dir=repo, reason="starter skills")
     native = drive / "skills" / "native"
-    assert (native / "telegram" / ".seed-origin").is_file() and (native / ".post-bootstrap-seed-telegram").is_file()
+    assert (native / "telegram" / ".seed-origin").is_file() and result["acceptance"]["turn_on"] == "enabled"
     record = read_install_record(drive, "telegram")
     assert record["source"]["kind"] == "builtin" and record["basis"] == "trusted"
+    assert record["reason"] == "starter skills" and record["base_digest"] == record["release"]["digest"]
     installer.uninstall_installed(drive, "telegram")
-    assert not (native / "telegram").exists() and (native / ".post-bootstrap-seed-telegram").is_file()
+    assert not (native / "telegram").exists()
+    assert reseed_changed_builtins(drive, seed_dir=repo / "skills") == 0 and not (native / "telegram").exists()
 
 
-def test_merge_hands_three_trees_to_a_managed_task(drive, hub, monkeypatch):
+def test_owner_merge_goes_through_the_owner_door_and_ouroboros_merges_in_its_own_task(drive, hub, monkeypatch):
     sent = []
 
     class _Bridge:
@@ -320,6 +330,12 @@ def test_merge_hands_three_trees_to_a_managed_task(drive, hub, monkeypatch):
     assert kwargs["task_constraint"]["allow_enable"] is False
     record = read_install_record(drive, "notes")
     assert record["merge"]["version"] == "2.0.0" and record["skipped_release_digest"] == record["merge"]["digest"]
+    assert record["merge"]["requested_by"] == "owner"
+    own = installer.update_installed(drive, "notes", mode="merge", rows=rows, actor="ouroboros")
+    assert len(sent) == 1  # Ouroboros asking for itself never poses as the owner's request
+    assert own["task"] == "current" and own["local_tree"] == "skills/ouroboroshub/notes"
+    assert (drive / own["new_tree"] / "SKILL.md").is_file() and (drive / own["base_tree"] / "SKILL.md").is_file()
+    assert own["instructions"].startswith("Merge the update") and "skill_review" in own["instructions"]
 
 
 def test_legacy_record_without_base_says_original_unknown(drive, hub):

@@ -8,10 +8,10 @@ snapshot beside the clone, so every reader sees one commit and no reader ever wa
 The built-in source is the bundled ``skills/`` folder with ``skills/builtin.json``; a local folder is
 scanned in place; a registry (ClawHub) answers searches only.
 
-The release digest of a tree is ``tree_release_digest``: the payload files plus the install specs its
-manifest declares, in the form the installer reads them. Installed state, updates and the listing
-fields of an installed skill are joined here from install records and the cached snapshots, without
-network and without writing (the Skills list read stays passive).
+The release digest of a tree is ``skill_identity.payload_digest`` (``tree_release_digest`` reads the
+manifest once for it); an installed skill's digest is the loader's own content hash. Installed state,
+updates and the listing fields of an installed skill are joined here from install records and the
+cached snapshots, without network and without writing (the Skills list read stays passive).
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ _MAX_PLAIN_SKILLS = 500
 _MAX_ABOUT_CHARS = 20_000
 _SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".ouroboros_env", ".github"})
 _MEMO_LOCK = threading.Lock()
-_DIGEST_MEMO: Dict[tuple, str] = {}
 _BUILTIN_MEMO: Dict[str, Dict[str, Any]] = {}
 
 _PERMISSION_WORDS = {
@@ -71,13 +70,6 @@ def read_manifest(skill_dir: pathlib.Path) -> Any:
     return None
 
 
-def declared_install_specs(manifest: Any) -> Any:
-    """The manifest's declared install specs in the coerced raw form the installer normalizes."""
-    from ouroboros.skill_dependencies import _coerce_dependency_specs, _manifest_declared_raw
-
-    return _coerce_dependency_specs(_manifest_declared_raw(manifest))
-
-
 def tree_release_digest(skill_dir: pathlib.Path, manifest: Any = None) -> str:
     """Release digest of a skill tree; raises when it has no readable manifest or payload."""
     from ouroboros.skill_identity import payload_digest
@@ -86,30 +78,14 @@ def tree_release_digest(skill_dir: pathlib.Path, manifest: Any = None) -> str:
     if manifest is None:
         raise ValueError(f"{pathlib.Path(skill_dir).name}: no readable SKILL.md or skill.json")
     return payload_digest(pathlib.Path(skill_dir), manifest_entry=manifest.entry,
-                          manifest_scripts=manifest.scripts, install_specs=declared_install_specs(manifest))
+                          manifest_scripts=manifest.scripts, manifest=manifest)
 
 
 def installed_release_digest(loaded: Any) -> str:
-    """The release digest of an installed skill's current bytes ('' when unreadable).
-
-    Memoized by the loader's own content hash: unchanged bytes keep their digest without rehashing.
-    """
-    if is_release_digest(getattr(loaded, "content_hash", "")):
-        return str(loaded.content_hash)
-    key = (str(loaded.skill_dir), str(getattr(loaded, "content_hash", "") or ""))
-    with _MEMO_LOCK:
-        cached = _DIGEST_MEMO.get(key)
-    if cached is not None and key[1]:
-        return cached
-    try:
-        digest = tree_release_digest(pathlib.Path(loaded.skill_dir), getattr(loaded, "manifest", None))
-    except Exception:
-        return ""
-    with _MEMO_LOCK:
-        if len(_DIGEST_MEMO) > 2048:
-            _DIGEST_MEMO.clear()
-        _DIGEST_MEMO[key] = digest
-    return digest
+    """The release digest of an installed skill's current bytes: the loader's content hash ('' when
+    its payload is unreadable)."""
+    digest = str(getattr(loaded, "content_hash", "") or "")
+    return digest if is_release_digest(digest) else ""
 
 
 def _manifest_facts(manifest: Any) -> Dict[str, Any]:
@@ -699,7 +675,7 @@ def probe_source(drive_root: pathlib.Path, *, url: str = "", path: str = "") -> 
 
 
 __all__ = [
-    "REFRESH_AFTER_SEC", "builtin_snapshot", "cached_snapshots", "catalog_view", "declared_install_specs",
+    "REFRESH_AFTER_SEC", "builtin_snapshot", "cached_snapshots", "catalog_view",
     "entry_payload_dir", "find_item", "install_listing", "installed_index", "installed_release_digest",
     "listing_install_fields", "listing_snapshots",
     "item_detail", "items_for", "parse_hub_tree", "parse_plain_tree", "probe_source", "read_manifest", "read_snapshot",
