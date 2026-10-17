@@ -411,7 +411,7 @@
     "id": "test_styles_cover_chat_header_controls_and_grouped_cards",
     "path": "web/style.css",
     "kind": "contains",
-    "value": ".chat-live-card[data-expanded=\"1\"] > .chat-live-timeline {"
+    "value": ".chat-live-card[data-expanded=\"1\"] > .chat-live-timeline,"
   },
   {
     "id": "test_styles_cover_chat_header_controls_and_grouped_cards",
