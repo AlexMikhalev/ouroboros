@@ -310,7 +310,7 @@ def test_legacy_gen_line_addresses_resolve_to_the_row_the_chain_reader_returned(
     _legacy_root(tmp_path)
     di.cutover(tmp_path)
     di.run_dialogue_import(tmp_path)
-    for path in chat_chain.chat_chain_paths(tmp_path)[:-1]:
+    for path in sorted((tmp_path / "archive").glob("chat_*.jsonl")):
         gen = jsonl_generation_signature(path)["first_line_sha256"]
         for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             try:

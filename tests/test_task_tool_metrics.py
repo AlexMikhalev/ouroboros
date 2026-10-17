@@ -1,4 +1,6 @@
 """Exact generic call evidence survives metrics, the free facts row and history."""
+
+from tests import _dialogue as dialogue_test
 import asyncio
 import json
 import time
@@ -59,7 +61,7 @@ def test_actual_metrics_summary_and_history_keep_complete_tool_census(tmp_path, 
     stored_before = load_task_result(tmp_path, task["id"])
     _record_task_facts(env, task, {**usage, "outcome_axes": metric["outcome_axes"],
                                    "reason_code": metric["reason_code"]}, trace, logs)
-    facts = next(json.loads(line) for line in (logs / "chat.jsonl").read_text().splitlines()
+    facts = next(json.loads(line) for line in dialogue_test.log_text(logs / "chat.jsonl").splitlines()
                  if json.loads(line).get("summary_kind") == "host_task_facts")
     replay = next(row for row in _history(tmp_path) if row["system_type"] == "task_summary")
     addressing = sum(1 for name in names if name.strip() in ("promote_chat_to_task", "route_to_project", "steer_task"))

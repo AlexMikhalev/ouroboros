@@ -3,6 +3,8 @@
 Run through scripts/safe_test.py; every root and file below is synthetic.
 """
 from __future__ import annotations
+
+from tests import _dialogue as dialogue_test
 from tests._dialogue import advance_room_revision
 
 import json
@@ -386,7 +388,7 @@ def test_never_admitted_refusal_is_durable_but_not_a_late_project_completion(roo
     monkeypatch.setattr("supervisor.terminal_delivery.enqueue_terminal_delivery", lambda *a, **kw: queued.append(a) or True)
     assert reconcile_terminal_projections(room.root) == 0
     assert not queued
-    assert not (room.root / "logs" / "chat.jsonl").exists()
+    assert not dialogue_test.log_rows(room.root / "logs" / "chat.jsonl")
     # A failure lacking this POSITIVE producer fact remains ordinary terminal debt.
     write_task_result(room.root, "executed", "failed", project_id="target", chat_id=1,
                       root_task_id="executed", started_at="2026-01-01T00:00:00Z", result="Actual failure")

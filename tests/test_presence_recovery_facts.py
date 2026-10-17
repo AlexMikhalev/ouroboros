@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +39,7 @@ def _stored(root, status="failed", *, unknown=True, child="", source="Please ret
 
 def _rows(root):
     path = root / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return dialogue_test.log_rows(path)
 
 
 @pytest.mark.parametrize("carrier", ["metadata", "continuation", "initial", "absent"])

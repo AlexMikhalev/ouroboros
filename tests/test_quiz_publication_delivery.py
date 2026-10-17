@@ -1,4 +1,6 @@
 """Publication and closure use canonical receipts before exposing delivery success."""
+
+from tests import _dialogue as dialogue_test
 import json
 from types import SimpleNamespace
 
@@ -39,7 +41,9 @@ def _due(publication):
 
 
 def test_strict_publication_failure_keeps_timed_debt_then_exposes_delivered_fact(publication, monkeypatch):
-    real_append = message_bus.append_jsonl
+    from ouroboros import dialogue_store as ds
+
+    real_append = ds.append
     observed = []
 
     def refuse(*_args, **_kwargs):
@@ -47,9 +51,9 @@ def test_strict_publication_failure_keeps_timed_debt_then_exposes_delivered_fact
         observed.append(block["delivery"]["attempts"])
         assert block["publication_chat_id"] == 1
         assert block["publication_evidence"] == "pre_exposure"
-        return False
+        raise ds.StoreError("injected publication write failure")
 
-    monkeypatch.setattr(message_bus, "append_jsonl", refuse)
+    monkeypatch.setattr(ds, "append", refuse)
     handlers._handle_send_quiz(publication.event, publication.ctx)
     block = _block(publication)
     assert observed == [1] and not publication.frames and not publication.events
@@ -59,7 +63,7 @@ def test_strict_publication_failure_keeps_timed_debt_then_exposes_delivered_fact
     # A duplicate event must not bypass the persisted retry delay.
     handlers._handle_send_quiz(publication.event, publication.ctx)
     assert observed == [1] and _block(publication)["delivery"] == block["delivery"]
-    monkeypatch.setattr(message_bus, "append_jsonl", real_append)
+    monkeypatch.setattr(ds, "append", real_append)
     _due(publication)
     handlers._handle_send_quiz({**publication.event, "chat_id": 73}, publication.ctx)
     assert _block(publication)["delivery"]["attempts"] == 2
@@ -68,7 +72,7 @@ def test_strict_publication_failure_keeps_timed_debt_then_exposes_delivered_fact
     assert frame["chat_id"] == 1  # The failed write already bound the address.
     assert frame["question_delivery"] == {"kind": "publication", "state": "delivered"}
     assert publication.events[0][1]["question_delivery"] == frame["question_delivery"]
-    [row] = [json.loads(line) for line in (publication.root / "logs/chat.jsonl").read_text().splitlines()]
+    [row] = dialogue_test.log_rows(publication.root / "logs/chat.jsonl")
     assert row["client_message_id"] == "quiz_publication:t:q"
     assert row["quiz"]["question_delivery"]["state"] == "owed"  # Snapshot before durable append.
     from ouroboros.gateway.history import _assemble_history_response
@@ -126,7 +130,7 @@ def test_closure_without_publication_witness_never_guesses_from_ask_chat(publica
     block = _block(publication)
     assert block["delivery"]["reason_code"] == "publication_address_unknown"
     assert block["delivery"]["attempts"] == 1 and not block.get("discharged_at")
-    assert not publication.frames and not (publication.root / "logs/chat.jsonl").exists()
+    assert not publication.frames and not dialogue_test.log_rows(publication.root / "logs/chat.jsonl")
 
 
 def test_closure_ack_failure_reuses_durable_history_receipt(publication, monkeypatch):
@@ -139,13 +143,13 @@ def test_closure_ack_failure_reuses_durable_history_receipt(publication, monkeyp
     block = _block(publication)
     assert block["delivery"]["history_at"] and not block.get("discharged_at")
     assert not publication.frames
-    first_history = (publication.root / "logs/chat.jsonl").read_text()
+    first_history = dialogue_test.log_text(publication.root / "logs/chat.jsonl")
     handlers._handle_send_quiz_state(publication.event, publication.ctx)  # timer gates repeat effects
     assert _block(publication)["delivery"]["attempts"] == 1
     _due(publication)
     monkeypatch.setattr(owner_quiz, "mark_discharged", real_discharge)
     handlers._handle_send_quiz_state(publication.event, publication.ctx)
-    assert (publication.root / "logs/chat.jsonl").read_text() == first_history
+    assert dialogue_test.log_text(publication.root / "logs/chat.jsonl") == first_history
     assert _block(publication)["discharged_at"]
     [frame] = publication.frames
     assert frame["state"] == "closed" and frame["closed_reason"] == "Superseded"

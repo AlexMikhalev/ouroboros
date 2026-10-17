@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import threading
@@ -145,7 +147,6 @@ def test_a_late_answer_keeps_its_evidence_row_and_also_enters_dialogue(runtime, 
     assert fact["quiz"]["answered_after_terminal"] is True
     assert fact["quiz"]["comment"] == "  After the fact  "
 
-    _readable_by_the_chain_reader(runtime.root)
     rows, coverage = Memory(runtime.root).read_chat_generations()
     assert coverage["snapshot_stable"]
     inbound = [row for row in rows
@@ -164,6 +165,7 @@ def test_a_late_answer_keeps_its_evidence_row_and_also_enters_dialogue(runtime, 
     # the owner's words; no path re-injects the frame into the bubble.
     from ouroboros.gateway.history import make_chat_history_endpoint
 
+    _readable_by_the_chain_reader(runtime.root)
     response = asyncio.run(make_chat_history_endpoint(runtime.root)(
         SimpleNamespace(query_params={"n_human": "100", "thread": "1"})))
     messages = json.loads(response.body)["messages"]
@@ -223,11 +225,11 @@ def test_competing_answers_preserve_only_the_recorded_winner(runtime, monkeypatc
     assert {fact["client_message_id"] for fact in facts} == {"quiz_answer:task-quiz:race"}
     if force_overlap:
         assert len(facts) == 2
-    _readable_by_the_chain_reader(runtime.root)
     source = read_room_source(runtime.root, 1, task_id=runtime.task["id"])
     [fact] = [row for row in source["rows"] if row.get("type") == "quiz_answer"]
     assert decision(fact["quiz"]) == decision(winner)
     assert fact["quiz"]["comment"] == f"Owner choice {winner['answered_index']}"
+    _readable_by_the_chain_reader(runtime.root)
     response = asyncio.run(make_chat_history_endpoint(runtime.root)(
         SimpleNamespace(query_params={"n_human": "100", "thread": "1"})))
     messages = json.loads(response.body)["messages"]
@@ -274,7 +276,7 @@ def test_answer_history_uses_canonical_root_and_project_binding(runtime):
     assert _answer(runtime, "project", request_id="project-answer", comment="Keep the room")[0] == 200
     [fact] = _facts(runtime)
     assert fact["chat_id"] == project["chat_id"]
-    assert not (child / "logs" / "chat.jsonl").exists()
+    assert not dialogue_test.log_rows(child / "logs" / "chat.jsonl")
     [mailbox] = drain_owner_entries(child, runtime.task["id"], include_acknowledged=True)
     assert mailbox["text"] == fact["text"]
 
@@ -313,7 +315,6 @@ def test_recent_room_and_history_share_parent_root_and_origin_membership(runtime
         message_bus.log_chat("out", 1, 0, field, task_id="child-" + field,
                              message_meta={field: "parent"}, drive_root=runtime.root)
     # The memory view's open rows of the Project's room (``memory_inventory``): the lineage of both rows.
-    _readable_by_the_chain_reader(runtime.root)
     rows = [meta for _address, meta, _pos in open_room_rows(runtime.root, project["chat_id"])]
     assert {row["task_id"] for row in rows} == {"child-parent_task_id", "child-root_task_id"}
     assert open_room_rows(runtime.root, 1) == []  # bound by lineage: not Main's

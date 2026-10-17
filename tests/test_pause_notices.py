@@ -5,6 +5,8 @@ it never enumerates results and never reads chat history (invariant 10).
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 from types import SimpleNamespace
 
@@ -39,7 +41,7 @@ def _pause(root, episode="one", reason="budget", state="paused"):
 
 def _rows(root):
     path = root / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return dialogue_test.log_rows(path)
 
 
 def _owing(root):

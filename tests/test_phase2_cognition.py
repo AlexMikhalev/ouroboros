@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import pathlib
 from types import SimpleNamespace
@@ -7,9 +9,7 @@ from types import SimpleNamespace
 
 def _chat_rows(root):
     path = root / "logs" / "chat.jsonl"
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return dialogue_test.log_rows(path)
 
 
 def test_split_project_root_facts_row_lands_canonically_once_before_child_gc(tmp_path):
@@ -95,7 +95,7 @@ def test_root_checkpoint_prevents_a_second_facts_row_and_buys_no_summary(tmp_pat
     pipeline._run_post_task_processing_async(*args, blocking=True)
 
     assert llm.calls == 0
-    assert not (tmp_path / "logs" / "chat.jsonl").exists()
+    assert not dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     rotated = [json.loads(line) for line in (archive / "chat_rotated.jsonl").read_text(encoding="utf-8").splitlines()]
     kinds = [row.get("summary_kind") for row in rotated if row.get("task_id") == "root-llm"]
     assert kinds.count("host_task_facts") == 1 and "authored_root_summary" not in kinds

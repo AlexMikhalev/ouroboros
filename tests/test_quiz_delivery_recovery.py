@@ -172,18 +172,15 @@ def migrated_without_address(runtime):
     two chats: the one-time import keeps it a typed ``question:`` unknown, never a guessed chat."""
     from ouroboros.obligations import members
     from ouroboros.startup_migrations import migrate_question_publications
-    from ouroboros.dialogue_import import export_for_older_body
-    from ouroboros.utils import append_jsonl
+    from ouroboros import dialogue_store as ds
 
     def legacy(quizzes):
         for key in ("publication_chat_id", "publication_evidence", "publication_bound_at", "published_at", "delivery"):
             quizzes["q"].pop(key, None)
         return True
     _mutate_projection(runtime.root, runtime.task["id"], legacy)
-    # The older body's chain: the rows the store holds (transition: the migration reader, unit Q1b,
-    # still reads the chain files) plus the legacy row it appended itself.
-    export_for_older_body(runtime.root)
-    append_jsonl(runtime.root / "logs/chat.jsonl", {"direction": "out", "type": "quiz", "task_id": runtime.task["id"],
+    # Two imported publication witnesses disagree on the address.
+    ds.append(runtime.root, "chat", {"direction": "out", "type": "quiz", "task_id": runtime.task["id"],
                                                     "chat_id": 2, "quiz": {"quiz_id": "q"}})
     assert migrate_question_publications(runtime.root) == {"bound": 0, "unknown": 1}
     assert members(runtime.root, "unknowns")["question:task-quiz:q"]["reason"] == "publication_address_ambiguous"

@@ -5,6 +5,8 @@ the model is scripted; retaining a source does not prove semantic understanding.
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 from dataclasses import replace
 import json
 
@@ -140,7 +142,7 @@ def test_failed_source_retention_publishes_no_address_and_runs_no_actor(tmp_path
         run_presence_turn(admission=_admission(), event=_observed_event(), repo_dir=tmp_path,
             drive_root=tmp_path, agent_factory=lambda **_kwargs: pytest.fail("actor ran before retention"),
             gate=PresenceTurnGate(1))
-    assert not (tmp_path / "logs" / "chat.jsonl").exists()
+    assert not dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
 
 
 def test_ordinary_and_outgoing_rows_do_not_gain_incoming_context_speech():

@@ -8,6 +8,8 @@ line and the final bubble are labelled live and after a reload alike.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import queue
@@ -101,7 +103,7 @@ def test_the_initiator_survives_the_chat_row_the_summary_row_and_replay(tmp_path
         usage={"rounds": 1, "cost": 0.0}, llm_trace={"tool_calls": [], "reasoning_notes": []},
         drive_logs=tmp_path / "logs",
     )
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     assert next(row for row in rows if row.get("type") == "task_summary")["initiator"] == "consciousness"
     assert "initiator" in _PROGRESS_META_FIELDS
 

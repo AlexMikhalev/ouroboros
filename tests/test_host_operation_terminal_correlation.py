@@ -1,4 +1,6 @@
 """Named ingress keeps terminal reply identity and the normal cancellation owner."""
+
+from tests import _dialogue as dialogue_test
 from types import SimpleNamespace
 
 import pytest
@@ -80,7 +82,7 @@ def test_server_inline_replies_settle_their_exact_ingress(tmp_path, monkeypatch,
     body = {"chat_id": chat, "user_id": user, "client_message_id": case, "text": "/status"}
     assert client.post("/chat/inject", headers=_headers(), json=body).status_code == 202
     server._process_bridge_updates(bridge, 0, ctx)
-    rows = list(iter_jsonl_objects(tmp_path / "logs/chat.jsonl"))
+    rows = list(dialogue_test.log_rows(tmp_path / "logs/chat.jsonl"))
     assert len(rows) == 2 and rows[-1]["task_terminal_status"] == expected
     assert rows[-1]["origin_message_ref"]["client_message_id"] == case
     result = client.get(f"/chat/operations/{chat}:{case}", headers=_headers()).json()
@@ -140,7 +142,7 @@ def test_restart_acknowledgement_does_not_claim_the_operation_finished(tmp_path,
     body = {"chat_id": 42, "user_id": 42, "client_message_id": "restart-refused", "text": "/restart"}
     assert client.post("/chat/inject", headers=_headers(), json=body).status_code == 202
     server._process_bridge_updates(bridge, 0, ctx)
-    inbound, acknowledgement, refused = list(iter_jsonl_objects(tmp_path / "logs/chat.jsonl"))
+    inbound, acknowledgement, refused = list(dialogue_test.log_rows(tmp_path / "logs/chat.jsonl"))
     assert inbound["direction"] == "in"
     assert acknowledgement["text"] == "♻️ Restarting."
     assert acknowledgement["origin_message_ref"] == refused["origin_message_ref"]

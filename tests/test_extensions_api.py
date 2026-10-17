@@ -10,6 +10,8 @@ Uses Starlette TestClient so the full request path is exercised.
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import pathlib
 import asyncio
@@ -1866,17 +1868,13 @@ def test_lifecycle_queue_endpoint_leaves_stale_review_job_to_its_owners(tmp_path
         assert resp.status_code == 200
         assert "active" in resp.json()
         assert job_path.read_bytes() == before
-        assert not (drive_root / "logs" / "progress.jsonl").exists()
+        assert not dialogue_test.log_rows(drive_root / "logs" / "progress.jsonl")
 
         assert reconcile_stale_review_jobs(drive_root, repo_path="") == 1
         data = json.loads(job_path.read_text(encoding="utf-8"))
         assert data["status"] == "interrupted"
         assert data["interrupt_reason"] == "owner_process_exited"
-        progress = [
-            json.loads(line)
-            for line in (drive_root / "logs" / "progress.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        progress = dialogue_test.log_rows(drive_root / "logs" / "progress.jsonl")
         assert progress[-1]["lifecycle"]["status"] == "interrupted"
         assert progress[-1]["task_id"] == "skill_lifecycle_review_alpha_skill-job-old"
     finally:

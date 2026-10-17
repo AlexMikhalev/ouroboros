@@ -7,6 +7,8 @@ it reaches the stored chat row, history replay, the live frame and the owed
 outbox row through the plumbing every other card row already uses.
 """
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 from collections import deque
@@ -92,7 +94,7 @@ def _wire(tmp_path, monkeypatch):
 
 
 def _stored_rows(tmp_path):
-    lines = (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()
     return [json.loads(line) for line in lines]
 
 

@@ -9,6 +9,8 @@ chat gets a typed pointer ack.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 
 import pytest
@@ -154,8 +156,7 @@ class TestInterruptedRowChat:
         _append_interrupted_review_progress(
             tmp_path, "alpha", {"job_id": "job-1", "chat_id": 17},
             ts="2026-08-11T00:00:00Z")
-        rows = [json.loads(line) for line in
-                (tmp_path / "logs" / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
+        rows = dialogue_test.log_rows(tmp_path / "logs" / "progress.jsonl")
         assert rows[-1]["chat_id"] == 17
 
     def test_interrupted_row_negative_chat_falls_back_to_panel(self, tmp_path):
@@ -166,8 +167,7 @@ class TestInterruptedRowChat:
         _append_interrupted_review_progress(
             tmp_path, "alpha", {"job_id": "job-1", "chat_id": -5},
             ts="2026-08-11T00:00:00Z")
-        rows = [json.loads(line) for line in
-                (tmp_path / "logs" / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
+        rows = dialogue_test.log_rows(tmp_path / "logs" / "progress.jsonl")
         assert rows[-1]["chat_id"] == 0
 
 

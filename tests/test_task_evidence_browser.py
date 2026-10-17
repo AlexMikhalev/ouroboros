@@ -1,6 +1,8 @@
 """Real Chat replay and controls over isolated durable logs, with a controlled census."""
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import urllib.request
 
@@ -148,7 +150,7 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
             expect(card).to_contain_text("Model words stay unchanged")
             fallback = page.locator('.chat-bubble.system[data-task-id="without-card"]')
             expect(fallback).to_contain_text(translated)
-            assert english in (root / "logs/chat.jsonl").read_text(encoding="utf-8")
+            assert english in dialogue_test.log_text(root / "logs/chat.jsonl")
             page.screenshot(path=str(root.parent / "pause-notice-translated-chat.png"), full_page=True)
             for wait_state, quiz_state, label in (("waiting", "open", "Waiting for your answer"),
                 ("waiting", "answered", "Working"), ("resumed", "answered", "Working")):

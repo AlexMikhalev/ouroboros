@@ -10,6 +10,8 @@ a turn thread that never started, another event) still runs, and a real terminal
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import hashlib
 import json
@@ -209,7 +211,7 @@ def _answering_agent(calls, reply, drive_root, *, during=None, lost=False):
 
 def _chat_rows(drive_root):
     chat = drive_root / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in chat.read_text(encoding="utf-8").splitlines()] if chat.exists() else []
+    return dialogue_test.log_rows(chat)
 
 
 def _attempt_body(row):
@@ -754,7 +756,7 @@ def test_an_attempt_that_died_before_its_running_write_still_logs_the_message_on
         run_presence_turn(**{**kwargs, "agent_factory": factory})
     first = run_presence_turn(**{**kwargs, "agent_factory": factory})
     assert first.text == "Real answer" and "previous_attempt" not in calls[0]["metadata"]["presence"]
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     assert [row["direction"] for row in rows if row.get("task_id") == first.task_id].count("in") == 1
 
 

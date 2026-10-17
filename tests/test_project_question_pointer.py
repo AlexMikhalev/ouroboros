@@ -1,4 +1,6 @@
 """Project questions share their durable ask with every display lens."""
+
+from tests import _dialogue as dialogue_test
 import ast
 import pathlib
 import re
@@ -51,7 +53,7 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
     details = ["Single-machine files", "Multiple writers over network"]
     assert pointer["option_details"] == details and pointer["stake"] == "Where every later write lands."
     assert not {"comment", "answered_index"} & pointer.keys()
-    stored = (tmp_path / "logs/chat.jsonl").read_text().splitlines()
+    stored = dialogue_test.log_text(tmp_path / "logs/chat.jsonl").splitlines()
     assert len(stored) == 1 and json.loads(stored[0])["chat_id"] == project["chat_id"]
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
     assert len(main) == 1 and main[0]["quiz_id"] == qid

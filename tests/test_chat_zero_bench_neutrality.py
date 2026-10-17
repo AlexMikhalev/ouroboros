@@ -10,6 +10,8 @@ the answer reader), and a live host TOAST must not be written there at all, or a
 supervisor line would be published as something the model said.
 """
 
+from tests import _dialogue as dialogue_test
+
 import json
 import pathlib
 import sys
@@ -60,8 +62,8 @@ def test_progress_notices_never_enter_the_answer_stream(tmp_path):
     finally:
         monkey.undo()
     assert sent, "the notice still reaches the live bridge"
-    assert (data / "logs" / "progress.jsonl").exists()
-    assert not (data / "logs" / "chat.jsonl").exists()
+    assert dialogue_test.log_rows(data / "logs" / "progress.jsonl")
+    assert not dialogue_test.log_rows(data / "logs" / "chat.jsonl")
 
 
 def test_a_system_incident_row_is_not_read_as_the_answer(tmp_path):
@@ -218,8 +220,7 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
         send_with_budget=message_bus.send_with_budget,
     ))
 
-    rows = [json.loads(line) for line
-            in (data / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = dialogue_test.log_rows(data / "logs" / "chat.jsonl")
     untyped_outbound = [row["text"] for row in rows
                         if row["direction"] == "out" and not row.get("type")]
     assert untyped_outbound == [answer]

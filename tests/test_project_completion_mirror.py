@@ -9,6 +9,8 @@ unchanged text, and the key's survival live -> durable row -> history replay.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import types
@@ -115,8 +117,7 @@ def test_the_answer_survives_live_frame_durable_row_and_history_replay(monkeypat
     assert live["completion_answer"] == ANSWER
     assert live["role"] == "system"   # the wire voice is unchanged: one ending, one ring
 
-    durable = [json.loads(line) for line in
-               (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    durable = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     stored = next(row for row in durable if row.get("type") == "project_completion_summary")
     assert stored["completion_answer"] == ANSWER
     assert stored["text"] == "Launch › Ship release · Done\nOpen the Project for details."

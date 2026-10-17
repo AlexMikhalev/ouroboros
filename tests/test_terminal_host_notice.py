@@ -1,5 +1,7 @@
 """Model answer identity and host disclosures through the real terminal consumers."""
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 from collections import deque
 import hashlib
@@ -517,7 +519,7 @@ def test_the_notice_field_survives_every_machine_reader_without_a_chat_row(tmp_p
         DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl, send_with_budget=message_bus.send_with_budget))
     chats = [row for row in frames if row.get("type") == "chat"]
     assert [(row["role"], row["content"]) for row in chats] == [("assistant", ANSWER)]
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     assert [row["text"] for row in rows if not row.get("type")] == [ANSWER]
 
 

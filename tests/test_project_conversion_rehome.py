@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -94,11 +96,7 @@ def test_conversion_projects_canonical_owner_request_and_rehomes_subagents(tmp_p
     # Main still renders that same canonical row exactly once.
     owner_user_rows = [m for m in main_view if m.get("role") == "user" and "cyberpunk racing" in m.get("text", "")]
     assert len(owner_user_rows) == 1
-    raw_rows = [
-        json.loads(line)
-        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    raw_rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     assert len([row for row in raw_rows if "cyberpunk racing" in row.get("text", "")]) == 1
     # The subagent's raw chat stays out of main; only sanitized progress may mirror.
     assert all(not (m.get("task_id") == "child" and m.get("role") == "user") for m in main_view)
@@ -136,11 +134,7 @@ def test_repeat_conversion_does_not_duplicate_owner_message(tmp_path):
     asyncio.run(api_project_from_task(_request(tmp_path, body)))
     asyncio.run(api_project_from_task(_request(tmp_path, body)))
 
-    rows = [
-        json.loads(line)
-        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     canonical = [r for r in rows if r.get("direction") == "in" and "cyberpunk racing" in r.get("text", "")]
     assert len(canonical) == 1
 

@@ -7,6 +7,8 @@ still have their documented at-least-once send/register crash gap.
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -58,7 +60,7 @@ def records(tmp_path, monkeypatch):
 
 def _chat_rows(root):
     path = root / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return dialogue_test.log_rows(path)
 
 
 def _cancelled(records):

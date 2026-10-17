@@ -1,4 +1,6 @@
 """Quiz display path: shared validator, bridge send, delivery handler, replay."""
+
+from tests import _dialogue as dialogue_test
 import json
 import types
 
@@ -187,7 +189,7 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path, 
         "chat_id", "transport", "quiz_id", "task_id", "question", "options",
         "stake", "assumption", "state", "ts", "wait_for_answer", "question_delivery",
     }
-    row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text().splitlines()[-1])
+    row = json.loads(dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()[-1])
     assert row["type"] == "quiz"
     assert row["text"] == "Merge now?"
     assert row["task_id"] == "task-quiz"
@@ -220,7 +222,7 @@ def test_send_quiz_accepts_a_long_question_through_the_shared_validator(monkeypa
     assert live["question"] == question.strip()
     assert live["options"][0]["detail"] == detail.strip()
     assert events[-1][1]["question"] == question.strip()
-    row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    row = json.loads(dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()[-1])
     assert row["text"] == question.strip()
     # The same validator still refuses an over-long label atomically.
     ok, error = bridge.send_quiz(

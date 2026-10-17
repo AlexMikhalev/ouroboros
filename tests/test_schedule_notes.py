@@ -10,6 +10,8 @@ turn's context, both times after downtime, and never a model task.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import types
@@ -48,9 +50,7 @@ def _note(queue, schedule_id="note-1", *, text="Call mother", trigger=None, sour
 
 def _chat_rows(root):
     path = root / "logs" / "chat.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return dialogue_test.log_rows(path)
 
 
 def _row(queue, root, schedule_id="note-1"):

@@ -87,9 +87,6 @@ def test_facts_row_is_never_an_authored_narrative_while_legacy_rows_still_resolv
             {"id": "next", "predecessor_authority": authority}, drive_root=tmp_path,
         )["predecessor_authority"]["result"]
 
-    from ouroboros.dialogue_import import export_for_older_body
-
-    export_for_older_body(tmp_path)  # transition: the narrative reader (unit Q1b) still reads the chain files
     new = projected("new-root")
     assert new["narrative_status"] == "unavailable"
     assert new["narrative_gap"]["kind"] == "continuation_narrative_unavailable"

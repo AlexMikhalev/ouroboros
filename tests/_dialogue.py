@@ -38,6 +38,28 @@ def lines(root: Any, stream: str = "chat") -> List[str]:
     return [dialogue_store.encode(entry.row) for entry in dialogue_store.newest(pathlib.Path(root), stream, limit=1 << 40)]
 
 
+def log_rows(address: Any) -> List[Dict[str, Any]]:
+    """SQL rows at a test's ``root/logs/{chat,progress}.jsonl`` address; no file read.
+
+    Retains the address vocabulary of multi-log fixtures while their dialogue
+    assertions read the canonical store. Legacy import/export tests read files
+    explicitly and do not use this helper.
+    """
+    address = pathlib.Path(address)
+    assert address.parent.name == "logs" and address.name in {"chat.jsonl", "progress.jsonl"}, address
+    return rows(address.parent.parent, address.stem)
+
+
+def log_text(address: Any) -> str:
+    """Serialized SQL bodies for existing text assertions, including the final newline."""
+    return "".join(dialogue_store.encode(row) + "\n" for row in log_rows(address))
+
+
+def log_bytes(address: Any) -> bytes:
+    """A SQL dialogue snapshot for tests proving that an action wrote no new row."""
+    return log_text(address).encode("utf-8")
+
+
 def advance_room_revision(root: Any, *, project_id: str = "", chat_id: int = 0):
     """Synthetic unread fixture for UI tests, independent of the retired registry writer.
 
