@@ -228,10 +228,10 @@ for (const chatId of [1, 7]) {
             fx.census([row], true); // Missing optional metadata cannot erase already observed evidence.
             assert.equal(observed(fx)(id).text, 'Failed');
             fx.census([{ ...failed, status: 'cancelled', outcome_axes: { lifecycle: { status: 'cancelled' } } }], true);
-            assert.deepEqual(observed(fx)(id), { text: 'Cancelled', motion: '0', secondary: '',
+            assert.deepEqual(observed(fx)(id), { text: 'Stopped', motion: '0', secondary: '',
                 secondaryMotion: '0', typing: 'none', finished: '1' });
             fx.census([failed], true); // The original in-flight snapshot cannot revive a concluded task.
-            assert.equal(observed(fx)(id).text, 'Cancelled');
+            assert.equal(observed(fx)(id).text, 'Stopped');
             const later = `${id}-mounted-after-census`;
             fx.census([{ ...failed, activity_id: later }], true);
             progress(fx, later);
@@ -306,12 +306,12 @@ for (const withdrawBeforeMount of [false, true]) {
             const card = fx.card(id);
             assert.ok(card);
             assert.equal(card.dataset.finished, '1');
-            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Cancelled');
+            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
             assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '0');
             fx.census([row], true);
             fx.census([], true);
             await fx.settle();
-            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Cancelled');
+            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
             assert.equal(card.dataset.finished, '1');
             assert.equal(fx.calls.filter(url => url.endsWith(`/api/tasks/${id}`)).length, 0, 'the known outcome needs no rescue read');
             const fresh = { activity_id: 'independent', chat_id: 1, kind: 'managed_task', phase: 'working', status: 'running' };
@@ -334,7 +334,7 @@ for (const firstCarrier of ['narration', 'metrics', 'tool span']) {
                 fx.handlers.get('log')({ chat_id: 1, data: { task_id: id, ts: '2026-10-08T10:00:00Z',
                     ...(firstCarrier === 'metrics' ? { type: 'task_metrics_event', tool_calls: 1 }
                         : { type: 'tool_call_started', tool: 'read_file', tool_call_id: 'initial-span' }) } });
-                assert.equal(fx.card(id).querySelector('[data-live-phase]').textContent, 'Cancelled');
+                assert.equal(fx.card(id).querySelector('[data-live-phase]').textContent, 'Stopped');
                 assert.equal(fx.card(id).querySelector('[data-live-phase]').dataset.motion, '0');
             }
             const text = 'I found the relevant state transition.';
@@ -342,7 +342,7 @@ for (const firstCarrier of ['narration', 'metrics', 'tool span']) {
                 is_progress: true, narration: true, content: text, ts: '2026-10-08T10:00:01Z' });
             const card = fx.card(id);
             assert.equal(card.querySelector('[data-live-title]').textContent, text);
-            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Cancelled');
+            assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
             assert.equal(card.dataset.finished, '1');
             assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '0');
             assert.ok(card.querySelector('[data-live-timeline]').children.length > 0, 'initial content reaches the timeline renderer');

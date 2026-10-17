@@ -602,7 +602,7 @@ def test_canonical_cancel_keeps_existing_artifact_readiness_exception(project_ro
         project_id='launch', workspace_root=str(project_root.root/'workspace'),
         artifact_status='pending', result='Cancelled by custody')
     assert settle_terminal_projection(project_root.root, 'root-1') == SETTLEMENT_SETTLED
-    assert _project_rows(project_root.root, 'root-1')[0]['outcome'] == 'Cancelled'
+    assert _project_rows(project_root.root, 'root-1')[0]['outcome'] == 'Stopped'
 
 
 def test_split_root_uses_stored_adoption_facts_without_task_argument(project_root):

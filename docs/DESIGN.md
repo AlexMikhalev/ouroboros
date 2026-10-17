@@ -443,7 +443,7 @@ Status, owner action, and urgent notification are separate product concepts:
 
 - **Status** states a fact about the affected object, never implying that the
   owner can or must act. Task status uses one factual word family, `Working`,
-  `Done`, `Done with warnings`, `Failed`, `Cancelled`, which is also the host's
+  `Done`, `Done with warnings`, `Failed`, `Stopped`, which is also the host's
   durable label vocabulary for its own task rows in Main and the Project thread
   (`OUTCOME_PHASE_HEADLINE`), not only the browser's.
 - **Owner action** exists only when the responsible domain exposes a current
@@ -1317,7 +1317,7 @@ History with no current execution or known outcome keeps its expandable content 
 History placement is separate from the task's outcome: ordinary
 `Saving task history` and `Task history saved` appear only in task details and
 Logs, and a storage failure adds `History storage problem` to the existing
-collapsed-card metadata without changing Done/Failed/Cancelled or creating a
+collapsed-card metadata without changing Done/Failed/Stopped or creating a
 chat message (successful retention clears it). Details and Logs name the
 recorded failure reasons, repeated ones grouped with their counts; Logs Raw
 keeps the complete source/failure facts, and a missing recorded reason is stated

@@ -2373,7 +2373,7 @@ body.resizing-panels { user-select: none; }
     display: none;
 }
 
-/* A settled card (Done, Done with warnings, Failed, Cancelled) whose only action is Reply has no action row:
+/* A settled card (Done, Done with warnings, Failed, Stopped) whose only action is Reply has no action row:
    Reply stands at the right end of the meta line (its last line when the meta wraps), the same small neutral
    button, vertically centred on that line. A card with a lifecycle control keeps its row [Reply] [Resume] [Stop…],
    and a Reviews count keeps its row with Reply. */

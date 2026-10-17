@@ -893,7 +893,7 @@ test('Activity shows a row\'s own known outcome first and its unfinished finaliz
     assert.deepEqual(chip(rowOf(mount, 'done-root')).text + chip(rowOf(mount, 'done-root')).secondary, 'DoneFinalizing…');
     assert.deepEqual(chip(rowOf(mount, 'warn-root')), { text: 'Done with warnings', phase: 'warn',
         label: 'Task status: Done with warnings', secondary: '' });
-    assert.equal(chip(rowOf(mount, 'cancelled-root')).text, 'Cancelled');
+    assert.equal(chip(rowOf(mount, 'cancelled-root')).text, 'Stopped');
     // No known outcome: the queue's own words, exactly as before.
     for (const [id, word] of [['live-root', /running · task · 9s/], ['queued-root', /Queued work[\s\S]*pending · task/]]) {
         assert.equal(chip(rowOf(mount, id)), null, id);

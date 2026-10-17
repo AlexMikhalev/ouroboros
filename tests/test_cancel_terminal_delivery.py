@@ -455,7 +455,7 @@ def test_one_cancel_leaves_exactly_one_salvaged_paragraph_in_the_chat(tmp_path, 
     assert f"{SALVAGE_EXCERPT_LABEL}." in row["text"]
     assert salvage not in row["text"]
     assert "get_task_result" not in row["text"]
-    assert row["text"].startswith("Cancelled. Root task stopped-one.")
+    assert row["text"].startswith("Stopped. Root task stopped-one.")
 
 
 @pytest.mark.serial
