@@ -87,7 +87,10 @@ def test_the_dialogue_chains_rotate_only_at_the_cutover(tmp_path):
     archives = sorted((tmp_path / "archive").glob("chat_*.jsonl"))
     assert [path.name for path in archives] == [report["chat"]["rotated"]]
     assert archives[0].read_text(encoding="utf-8") == original and live.stat().st_size == 0
-    assert dialogue_store.counts(tmp_path)["chat"] == 50 and dialogue_import.cutover(tmp_path)["chat"]["rotated"] is None
+    assert dialogue_store.counts(tmp_path)["chat"] == 50
+    assert dialogue_import.cutover(tmp_path)["replanned"] is False
+    assert sorted((tmp_path / "archive").glob("chat_*.jsonl")) == archives
+    assert dialogue_store.counts(tmp_path)["chat"] == 50 and live.stat().st_size == 0
 
 
 def test_same_second_rotations_do_not_clobber_archives(tmp_path, monkeypatch):
