@@ -46,7 +46,6 @@ _MOVED_OWNERS = {
     # loader; they read only ``_ui_tabs``/``_extensions``, so they are owned here
     # and the loader re-exports the very same objects for its gateway callers.
     "live_module_sources": extension_registry_state,
-    "snapshot": extension_registry_state,
     "live_widget_projection": extension_registry_state,
     # The surface snapshot and the route/WS/companion listings are the same kind
     # of one-lock read over the registries this leaf owns.

@@ -8,7 +8,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
-import pathlib
 from urllib.parse import quote
 
 from ouroboros.extension_ui_validation import validate_contributions

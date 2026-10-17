@@ -1,7 +1,6 @@
 """Shape errors reject manifests; semantic errors drop only their own contribution."""
 from __future__ import annotations
 
-import copy
 import json
 
 import pytest

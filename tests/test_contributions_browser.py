@@ -286,7 +286,7 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
                     listed.first.click()
                     toast(page, f"Meter {hidden_first} pressed").wait_for()
                 else:
-                    page.click(f"#page-chat .chat-composer-chip[data-chip-key='chips1:chip']")
+                    page.click("#page-chat .chat-composer-chip[data-chip-key='chips1:chip']")
                     toast(page, "Meter 1 pressed").wait_for()
     afters = [value["after"] for value in evidence.values()]
     assert any(after["folded"] for after in afters), "six chips on a phone fold"
