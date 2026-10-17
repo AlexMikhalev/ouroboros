@@ -2620,6 +2620,7 @@ export function createChatInstance({
     }
 
     async function syncHistory({ fromReconnect = false } = {}) {
+        if (destroyed) return false;
         if (historySyncPromise) {
             // A reconnect joining an older read still owes a rebuild.
             if (fromReconnect) {
@@ -3739,7 +3740,7 @@ export function createChatInstance({
         updateMessagesPadding();
         loadUiPreferences()
             // Reconnect refetches lost task_done; first open shares idle-gated hydration.
-            .then(() => (isReconnect ? historyPager.read({ fromReconnect: true, whole: true })
+            .then(() => (isReconnect ? syncHistory({ fromReconnect: true })
                 : waitForHydrationWindow().then(awaitInitialHydration)))
             .then(() => {
                 if (reconnectBanner) {

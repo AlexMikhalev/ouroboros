@@ -377,6 +377,20 @@ test('a read of arrivals with a gap in the conversation takes the newest page in
     assert.deepEqual(s.reads, ['newest', 'after', 'newest'], 'an unfinished line may be the newest message: the newest page names it');
 });
 
+test('reconnects during a slow newest read fold into one more read', async (t) => {
+    const s = historyServer();
+    s.say(1);
+    const r = openRoom(t, s);
+    await r.instance.refreshHistory({ revision: 1 });
+    const release = s.hold('newest');
+    for (let index = 0; index < 10; index += 1) { r.reconnect(); await quiet(); }
+    assert.deepEqual(s.reads, ['newest', 'newest'], 'one newest read in flight');
+    release();
+    await until(() => s.reads.length >= 3);
+    await quiet();
+    assert.deepEqual(s.reads, ['newest', 'newest', 'newest'], 'ten reconnects, one queued rebuild');
+});
+
 test('triggers during a read of arrivals share one more read begun after them', async (t) => {
     const s = historyServer();
     s.say(1);
