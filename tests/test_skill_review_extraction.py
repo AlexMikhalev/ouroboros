@@ -90,6 +90,7 @@ def test_skill_review_keeps_the_lifecycle_driver_and_its_patchable_seams():
         "_stamp_paid_facts",
         "_persist_reviewed_outcome",
         "review_skill",
+        "run_acceptance_preflight",
     ):
         assert getattr(skill_review, name).__module__ == "ouroboros.skill_review", name
     for retired in ("_official_hub_review_profile", "is_official_hub_payload_verified", "hub_payload_matches"):
@@ -98,6 +99,7 @@ def test_skill_review_keeps_the_lifecycle_driver_and_its_patchable_seams():
         "SkillReviewOutcome",
         "render_skill_review_block",
         "review_skill",
+        "run_acceptance_preflight",
     ]
 
 

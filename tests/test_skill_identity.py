@@ -226,6 +226,28 @@ def test_install_record_feeds_the_loaded_gate(tmp_path, not_cyber):
     assert edited.review.gate_for(edited.content_hash)["executable_review"] is False
 
 
+def test_trusted_install_still_meets_the_deterministic_preflight(tmp_path, not_cyber, monkeypatch):
+    import ouroboros.skill_review as sr
+    from ouroboros.skill_install_record import write_install_record
+    from ouroboros.skill_loader import find_skill
+
+    drive_root = tmp_path / "data"
+    _skill(drive_root / "skills" / "ouroboroshub")
+    loaded = find_skill(drive_root, "probe")
+    write_install_record(drive_root, "probe", {"source": {"id": "ouroboros"}, "basis": "trusted",
+                                               "release": {"digest": loaded.content_hash}})
+    assert find_skill(drive_root, "probe").source == "ouroboroshub"  # the record proves the install
+    monkeypatch.setattr("ouroboros.tools.skill_preflight._handle_skill_preflight",
+                        lambda *a, **k: json.dumps({"ok": True}))
+    assert sr.run_acceptance_preflight(object(), drive_root, "probe")["ok"] is True
+    monkeypatch.setattr("ouroboros.tools.skill_preflight._handle_skill_preflight",
+                        lambda *a, **k: json.dumps({"ok": False, "error": "binary payload"}))
+    assert sr.run_acceptance_preflight(object(), drive_root, "probe")["ok"] is False
+    refused = find_skill(drive_root, "probe")
+    gate = refused.review.gate_for(refused.content_hash)
+    assert gate["executable_review"] is False and refused.review.status == "pending"
+
+
 # --- the owner-edit seam -------------------------------------------------------------------
 
 

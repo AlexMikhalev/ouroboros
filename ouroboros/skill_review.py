@@ -287,6 +287,25 @@ def _run_deterministic_preflight(
     return outcome
 
 
+def run_acceptance_preflight(ctx: Any, drive_root: pathlib.Path, skill_name: str) -> Dict[str, Any]:
+    """The deterministic floor for bytes a source's trust accepts without a review.
+
+    Installers call it after landing a trusted release, inside their lifecycle job.
+    A payload failure persists the ordinary PENDING preflight record for these bytes,
+    which the gate honours before the install basis; an infrastructure failure persists
+    nothing and returns ``ok: False`` so the installer keeps the release off.
+    """
+    from ouroboros.skill_loader import find_skill
+
+    skill = find_skill(pathlib.Path(drive_root), skill_name)
+    if skill is None or skill.load_error or not skill.content_hash:
+        return {"ok": False, "error": getattr(skill, "load_error", "") or f"skill {skill_name!r} not found"}
+    outcome = _run_deterministic_preflight(ctx, pathlib.Path(drive_root), skill, skill.content_hash, persist=True)
+    if outcome is not None:
+        return {"ok": False, "error": outcome.error, "content_hash": skill.content_hash}
+    return {"ok": True, "content_hash": skill.content_hash}
+
+
 def _admission_gate(
     ctx: Any, skill: Any, drive_root: pathlib.Path, content_hash: str, persist: bool,
 ) -> Optional[SkillReviewOutcome]:
@@ -833,4 +852,5 @@ __all__ = [
     "SkillReviewOutcome",
     "render_skill_review_block",
     "review_skill",
+    "run_acceptance_preflight",
 ]

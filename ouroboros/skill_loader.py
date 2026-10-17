@@ -1305,8 +1305,15 @@ def _classify_skill_source(
         SKILL_SOURCE_OUROBOROSHUB: ".ouroboroshub.json",
     }
     marker = marker_by_source.get(location)
-    if marker:
-        return location if (skill_dir / marker).is_file() else SKILL_SOURCE_EXTERNAL
+    if marker and (skill_dir / marker).is_file():
+        return location
+    if marker and location != SKILL_SOURCE_NATIVE:
+        # Installers no longer write payload sidecars: the host-owned install
+        # record proves a source install in its bucket (built-ins keep the marker).
+        from ouroboros.skill_install_record import install_record_path
+
+        if install_record_path(drive_root, _sanitize_skill_name(skill_dir.name)).is_file():
+            return location
     return SKILL_SOURCE_EXTERNAL
 
 
