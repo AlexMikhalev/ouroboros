@@ -21,14 +21,14 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D11 | Gateway, server & Web UI | 85 | 0 |
 | D12 | Settings & configuration | 21 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
-| D14 | Skills & extensions | 58 | 0 |
+| D14 | Skills & extensions | 62 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
 | D17 | Projects, workspaces & task results | 37 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **770** | **0** |
+| **total** | | **774** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **119**
+- lazy-only cross-domain pairs: **118**
   - D01->D10
   - D01->D11
   - D02->D05
@@ -173,7 +173,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D18->D14
   - D18->D16
   - D18->D17
-  - D18->D19
   - D19->D04
   - D19->D08
   - D19->D20
@@ -835,9 +834,13 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/marketplace/isolated_deps.py`
 - `ouroboros/marketplace/ouroboroshub.py`
 - `ouroboros/marketplace/provenance.py`
+- `ouroboros/skill_acceptance.py`
+- `ouroboros/skill_builtin.py`
 - `ouroboros/skill_catalogue.py`
 - `ouroboros/skill_conflicts.py`
 - `ouroboros/skill_dependencies.py`
+- `ouroboros/skill_identity.py`
+- `ouroboros/skill_install_record.py`
 - `ouroboros/skill_lifecycle_actions.py`
 - `ouroboros/skill_lifecycle_queue.py`
 - `ouroboros/skill_loader.py`

@@ -522,6 +522,10 @@ D20 = "Presence"
 "ouroboros/shell_parse.py" = "D13"
 "ouroboros/size_ratchet_manifest.py" = "D10"
 "ouroboros/skill_dependencies.py" = "D14"
+"ouroboros/skill_acceptance.py" = "D14"
+"ouroboros/skill_builtin.py" = "D14"
+"ouroboros/skill_identity.py" = "D14"
+"ouroboros/skill_install_record.py" = "D14"
 "ouroboros/skill_lifecycle_actions.py" = "D14"
 "ouroboros/skill_conflicts.py" = "D14"
 "ouroboros/skill_lifecycle_queue.py" = "D14"
@@ -1151,7 +1155,6 @@ lazy_only = [
   "D18->D14",
   "D18->D16",
   "D18->D17",
-  "D18->D19",
   "D19->D04",
   "D19->D08",
   "D19->D20",

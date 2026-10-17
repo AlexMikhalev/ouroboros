@@ -316,11 +316,12 @@ ouroboros/ — agent core and shared runtime (§6)
   skill_peer_inventory.py, skill_conflicts.py — Execution-time peers without payload reads: the non-executable `SkillPeer` projection and the one conflict verdict a loaded skill and a peer descriptor share (§13)
   skill_dependencies.py — Dependency-spec resolution and installed-readiness probe for skills
   skill_repair_admission.py — Selected-skill development admission: immutable `base_content_hash` against observed `expected_content_hash` before each payload operation; no long shell lock or rollback (§6 Skills and extensions)
-  skill_owner_attestation.py — Owner attestation lane: the owner may skip the LLM skill review for skills they authored
+  skill_owner_attestation.py — Skip review / Turn on anyway: the owner accepts any skill's exact bytes without the LLM review (§13)
+  skill_identity.py, skill_install_record.py, skill_acceptance.py, skill_builtin.py — Release digest and record conversion; install record; install-basis/owner-edit acceptance; the built-in source (§13)
   skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_eligibility.py — Publication leaves: captured-byte authority, exact-byte Betterleaks evidence, typed attempt/receipt, GitHub transport after the local gates, author publication authority (§6 Skill publication)
-  skill_review_status.py — Verdict aggregation → `executable_review` (anchors the §13 readiness statuses); an Advisory author acceptance may outlive a stale critic hash, Blocking requires fresh critic authority
+  skill_review_status.py — The review gate → `executable_review` (§13): verdicts, Advisory author acceptance, install-basis and owner facts
   skill_review_passes.py, skill_review_collect.py — One multi-model pass or chunked quorum, reserving the complete operation roster before dispatch; exact-wave collection without paid dispatch
-  skill_review.py — Skill review orchestration: deterministic preflight, then the tri-model gate against the Skill Review Checklist (docs/CHECKLISTS.md) and docs/CREATING_SKILLS.md
+  skill_review.py — Skill review: deterministic preflight, then the review pool against the Skill Review Checklist and CREATING_SKILLS
   skill_review_prompt.py, skill_review_packs.py, skill_review_output.py, skill_review_rebuttals.py — The skill reviewer's leaves: prompt contract and waves, the reviewable payload, parsed findings and rendering, review-history evidence read before re-judging
   skill_review_history.py — Write-ahead review-history marker and the idempotent `state/skill_review_root_tasks.jsonl` projection; a failed append is the typed `skill_review_history_append_failed` event
   skill_review_cycles.py — Paid skill-review cycle counting, $0 replay and typed exhaustion; the cap SSOT is review_cycles.py
@@ -334,8 +335,8 @@ ouroboros/ — agent core and shared runtime (§6)
   skill_token.py — Opaque Host Service token minting/validation (§12)
   marketplace/ — ClawHub and OuroborosHub (§13)
     clawhub.py, ouroboroshub.py, fetcher.py, adapter.py, install.py, install_specs.py, isolated_deps.py, provenance.py — Registry clients (the hub update is an adopt transaction with verified rollback), fetch, manifest adaptation, install and dependency metadata, isolated deps, provenance and the publication receipt
-  skill_lifecycle_queue.py — Single FIFO skill-mutation lane and event snapshot (§13)
-  skill_lifecycle_actions.py — Shared grant/toggle effects and owner-action admission for UI, launcher, CLI and task adapters; no new permission store
+  skill_lifecycle_queue.py — Single FIFO skill-mutation lane (a review panel lends it out) and event snapshot (§13)
+  skill_lifecycle_actions.py — Shared grant/toggle/turn-on-when-ready effects and owner-action admission for every adapter
   skill_uninstall_state.py — Marketplace-uninstall tombstones and explicitly authorized local payload/state deletion, with separate retention contracts
   skill_review_runner.py — Writes `review_job.json` and `skill_review_*` events; separate review, dependency and extension outcomes; a replayed verdict never overrides an owner disable
   server_auth.py — Non-localhost network gate via `OUROBOROS_NETWORK_PASSWORD`; warns when unset (§8)
