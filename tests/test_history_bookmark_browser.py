@@ -4,6 +4,7 @@ owner decisions 2026-07-10 and 2026-10-05)."""
 import json
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests.test_history_continuity_browser import (
     _bookmark_place, _deep_gesture_history, _nested_full_output_history, _open_nested_full_output, _OFFSET,
 )
@@ -587,8 +588,6 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
     """Live receipts of one revision keep their nodes and keys through a saved replay of the same
     revision. Closed and opened again, the room is at its newest message; its receipts come from
     the saved rows, and live frames update them in place only with a newer revision."""
-    import os
-    from pathlib import Path
     from ouroboros.merge_receipts import card_row_text
     from ouroboros.projects_registry import create_project
     from tests.ui_chat_viewport_smoke import _emit_ws_frame
@@ -656,7 +655,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
             assert lines.count() == 2
             assert line.get_attribute('data-live-line-key') != live_key
             _screenshot(page, tmp_path, f'receipt-bookmark-after-{browser_engine}')
-            evidence = Path(os.environ.get('HISTORY_UI_EVIDENCE_DIR') or tmp_path)
+            evidence = producer_evidence_dir(tmp_path, "history-bookmark", env='HISTORY_UI_EVIDENCE_DIR')
             (evidence / f'receipt-bookmark-{browser_engine}.json').write_text(json.dumps({
                 'live_key': live_key, 'cold_key': line.get_attribute('data-live-line-key'),
                 'card_expanded': card.get_attribute('data-expanded'),

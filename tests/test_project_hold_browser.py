@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import threading
-from pathlib import Path
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests.test_project_admission_refusal_browser import (
     PROJECT, PROJECT_NAME, _open_project, _producers,
 )
@@ -39,7 +38,7 @@ def test_project_hold_reload_reconnect_and_automatic_same_id_recovery(
 
     server = direct_server_with_data
     url, root = server["url"], server["data_dir"]
-    evidence = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tmp_path) / "project-hold" / engine
+    evidence = producer_evidence_dir(tmp_path / "project-hold" / engine, "project-hold-" + engine)
     evidence.mkdir(parents=True, exist_ok=True)
     print(f"HOLD_EVIDENCE={evidence}")
     facts, calls, entered = {}, [], threading.Event()

@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from ouroboros.test_evidence import diagnostic_directory
+
 pytestmark = pytest.mark.browser
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HTML = """<html data-theme="dark"><head><link rel="stylesheet" href="/static/ui.css">
@@ -64,7 +66,7 @@ def test_history_and_activity_recover_without_owner_action(tmp_path, width, monk
             expect(page.get_by_text("Saved history is being upgraded…", exact=True)).to_be_visible()
             expect(page.get_by_text("Saved tasks are being upgraded…", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="Retry loading messages")).to_be_hidden()
-            before = tmp_path / f"migrating-{width}.png"
+            before = diagnostic_directory(tmp_path, "store-migrating") / f"migrating-{width}.png"
             page.screenshot(path=str(before), full_page=True)
             published = True
             expect(page.get_by_text("Saved owner message", exact=True)).to_be_visible()
@@ -73,7 +75,7 @@ def test_history_and_activity_recover_without_owner_action(tmp_path, width, monk
             expect(page.get_by_text("Some saved history could not be loaded.", exact=True)).to_be_hidden()
             expect(page.get_by_role("button", name="Retry loading messages")).to_be_hidden()
             expect(page.get_by_text("Beginning of saved history", exact=True)).to_be_visible()
-            after = tmp_path / f"published-{width}.png"
+            after = diagnostic_directory(tmp_path, "store-migrating") / f"published-{width}.png"
             page.screenshot(path=str(after), full_page=True)
             page.evaluate("chat.destroy(); activity.destroy()")
             assert not errors

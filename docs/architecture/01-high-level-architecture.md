@@ -257,7 +257,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review.py — Size and complexity inventory behind the shrink-only ceilings and the diff pulse (§6 Structural gates, Commit preflight)
   size_ratchet_manifest.py — Generated data-only size-debt manifest (`scripts/regenerate_size_ratchet.py`)
   review_execution_projection.py — Reviewer-execution projection; kinds `api` | `harness` | `native`, so the owner can tell a retrieving review from a packet review on the same model
-  preflight_runner.py, preflight_node.py, preflight_receipts.py, test_parallelism.py — Hermetic gate, Node, receipts, worker budget (§6; §8)
+  preflight_runner.py, preflight_node.py, preflight_receipts.py, test_parallelism.py, test_evidence.py, safe_test_supervisor.py — Hermetic gate, Node, receipts, worker budget, durable results, command lifetime (§6; §8)
   test_selection.py, preflight_inventory.py, preflight_qualification.py — Scope, execution inventory, full adoption proof (§6)
   review_substrate.py — Review seat coordinator: independent seats, per-actor records that keep transport, parse, verdict, coverage and quorum distinct (§6 Review stack, Task acceptance)
   review_custody.py, review_source_closure.py, review_operation.py, review_live_join.py — Reviewer workers: no-resend custody, retained owner-bound inputs, panel waits/checkpoints, existing-producer collection/live joins (§6 Task acceptance)
@@ -599,10 +599,11 @@ Birth identity is separate from PID presence. Linux mints boot-qualified ticks, 
 
 ### Data layout (`~/Ouroboros/`)
 
-`~/Ouroboros/` is the default application root (overrides: §7). This tree is the orientation carrier; the complete per-entity registry of the data plane (writer, format, schema, retention and reset for every durable file) is `docs/PERSISTENCE.md`.
+Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSISTENCE.md` registers every durable entity's writer, format, schema, retention and reset.
 
 ```
 ~/Ouroboros/
+├── .test-evidence/                 ← taskless repo test results
 ├── repo/                          ← the self-modifying git repository (§2)
 │   ├── ouroboros/                 ← core package (module map above)
 │   ├── supervisor/                ← supervisor package

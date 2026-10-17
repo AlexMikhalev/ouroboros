@@ -9,15 +9,16 @@ exists for.
 
 Run: OUROBOROS_RUN_UI_SMOKE=1 OUROBOROS_DATA_DIR=$(mktemp -d) python -m pytest \
   tests/test_ui_smoke_origin_adopt.py -o addopts="" -m ui_browser -q
-Screenshots land in $OUROBOROS_UI_SHOTS (default: the test's tmp dir).
+Screenshots use the managed evidence channel; $OUROBOROS_UI_SHOTS overrides it.
 """
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 
 import pytest
+
+from tests._shared import producer_evidence_dir
 
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 
@@ -78,8 +79,7 @@ def test_ui_two_cards_one_origin_convert_into_one_project(direct_server_with_dat
     url = direct_server_with_data["url"]
     data_dir = pathlib.Path(direct_server_with_data["data_dir"])
     _seed(data_dir)
-    shots = pathlib.Path(os.environ.get("OUROBOROS_UI_SHOTS") or tmp_path)
-    shots.mkdir(parents=True, exist_ok=True)
+    shots = producer_evidence_dir(tmp_path, "origin-adopt", env="OUROBOROS_UI_SHOTS")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -227,8 +227,7 @@ def test_ui_live_sibling_loses_button_without_reload(direct_server_with_data, tm
     direct_server_with_data["stop_server"]()
     _seed_live_sibling(data_dir)
     direct_server_with_data["start_server"]()  # the queue snapshot is restored at boot
-    shots = pathlib.Path(os.environ.get("OUROBOROS_UI_SHOTS") or tmp_path)
-    shots.mkdir(parents=True, exist_ok=True)
+    shots = producer_evidence_dir(tmp_path, "origin-adopt", env="OUROBOROS_UI_SHOTS")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)

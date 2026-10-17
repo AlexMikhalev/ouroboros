@@ -13,7 +13,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 39 | 0 |
-| D06 | Review stack | 89 | 0 |
+| D06 | Review stack | 91 | 0 |
 | D07 | Delegation, subagents & Claudexor | 66 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 67 | 0 |
 | D09 | Cancellation, owner control & process custody | 23 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **768** | **0** |
+| **total** | | **770** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -444,8 +444,10 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/review_verdict_extraction.py`
 - `ouroboros/reviewer_slot_config.py`
 - `ouroboros/reviewer_window.py`
+- `ouroboros/safe_test_supervisor.py`
 - `ouroboros/task_continuation.py`
 - `ouroboros/test_environment.py`
+- `ouroboros/test_evidence.py`
 - `ouroboros/test_selection.py`
 - `ouroboros/tools/governance_context.py`
 - `ouroboros/tools/parallel_review.py`

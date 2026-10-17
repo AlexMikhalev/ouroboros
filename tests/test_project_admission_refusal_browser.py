@@ -30,6 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._shared import producer_evidence_dir
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 
@@ -288,7 +289,7 @@ def test_never_admitted_project_refusal_stays_an_origin_receipt(
 
     server = direct_server_with_data
     url, data_dir = server["url"], server["data_dir"]
-    evidence = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tmp_path) / "admission-consumer" / engine
+    evidence = producer_evidence_dir(tmp_path / "admission-consumer" / engine, "admission-consumer-" + engine)
     evidence.mkdir(parents=True, exist_ok=True)
     print(f"ADMISSION_EVIDENCE={evidence}")
     facts: dict = {"engine": engine}

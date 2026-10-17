@@ -36,6 +36,7 @@ from ouroboros.review_run_isolation import (
     ATTACH_HOME_ENV, ISOLATION_RECORD, REVIEW_RUN_CAP_ENV, isolate_review_data,
 )
 from ouroboros.settings_integrity import SETTINGS_INTEGRITY_ENV
+from ouroboros.test_evidence import diagnostic_directory
 
 # Real loopback ports and real child processes: the serial pass.
 pytestmark = pytest.mark.serial
@@ -341,7 +342,8 @@ def test_full_entrypoint_keeps_a_legacy_host_untouched(tmp_path, engine):
     assert set(_tree_state(control)) - set(_tree_state(host))  # new host-side files
 
     before = _tree_state(host)
-    out = tmp_path / "isolated"
+    # Keep the wrapper's persistent diagnostic drive outside the test's disposable scratch.
+    out = diagnostic_directory(tmp_path / "isolated", "contributor-entrypoint")
     # The invoking shell carries a stale projection of another panel: the panel
     # and its efforts still come from the pinned host settings.
     run = _review(repo, host, out, "--run-cap-usd=4", "--attach-host-engine", inherited=_INHERITED_PANEL)
