@@ -66,6 +66,7 @@ def collect_routes(
         api_skill_toggle,
     )
     from ouroboros.gateway.widgets import api_widgets
+    from ouroboros.gateway.cards import card_routes
     from ouroboros.gateway.files import (
         api_chat_upload,
         api_chat_upload_delete,
@@ -270,6 +271,7 @@ def collect_routes(
         *owner_tree_control_routes(),
         Route("/api/tasks/{task_id}/resume", endpoint=api_task_resume, methods=["POST"]),
     Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]),
+        *card_routes(),
         Route("/api/schedules", endpoint=api_schedules_list, methods=["GET"]),
         Route("/api/schedules", endpoint=api_schedules_upsert, methods=["POST"]),
         Route("/api/schedules/{schedule_id}/action", endpoint=api_schedules_action, methods=["POST"]),

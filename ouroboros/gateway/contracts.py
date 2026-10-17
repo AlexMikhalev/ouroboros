@@ -20,6 +20,11 @@ from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-
 )
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
+from ouroboros.gateway.card_contracts import CardOutbound, CardStateOutbound  # noqa: F401 -- public re-exports
+from ouroboros.gateway.update_contracts import (  # noqa: F401 -- public re-exports
+    UpdateApplyErrorResponse, UpdateApplyRequest, UpdateApplySuccessResponse, UpdateMergePlan,
+    UpdatePreflightRequest, UpdatePreflightResponse, UpdateProgressChangedOutbound, UpdateStatusReadyOutbound,
+)
 from ouroboros.gateway.management_contracts import (  # noqa: F401 -- public re-exports
     ExtensionsIndexResponse, LocalModelStatusResponse, MarketplaceInstalledResponse, MarketplaceSearchResponse,
     McpStatusResponse, ModelCatalogResponse, SkillLifecycleQueueResponse,
@@ -521,86 +526,6 @@ class MessageAnnotationOutbound(TypedDict):
     cause: NotRequired[str]
     reasoning_effort: NotRequired[str]  # #1539: the explicit start a New task picked from this card requests
     ts: NotRequired[str]
-
-
-class UpdateMergePlan(TypedDict, total=False):
-    """Exact, channel-bound merge plan shared by preflight and apply responses."""
-
-    available: bool
-    auto_mergeable: bool
-    kind: Literal["clean", "conflicting", "current", "unavailable", "unknown"]
-    error: str
-    remote: str
-    remote_branch: str
-    target_ref: str
-    update_channel: str
-    current_branch: str
-    base_sha: str
-    target_sha: str
-    local_dirty_count: int
-    local_snapshot: str
-    merge_commit: str
-    code_conflict_paths: List[str]
-    doc_conflict_paths: List[str]
-    hot_code_paths: List[str]
-    recommended_strategy: Literal["auto_merge", "assisted"]
-
-
-class UpdatePreflightRequest(TypedDict, total=False):
-    """POST /api/update/preflight has an intentionally empty JSON body."""
-
-
-class UpdatePreflightResponse(TypedDict):
-    merge_plan: UpdateMergePlan
-
-
-class UpdateApplyRequest(TypedDict):
-    strategy: Literal["auto_merge", "assisted", "manual", "replace"]
-    expected_base_sha: NotRequired[str]
-    expected_target_sha: NotRequired[str]
-    confirm_recovery: NotRequired[bool]
-
-
-class UpdateApplySuccessResponse(TypedDict):
-    status: Literal["ok", "restart_required", "assisted_started", "manual"]
-    restarting: NotRequired[bool]
-    strategy: NotRequired[Literal["auto_merge", "assisted", "manual", "replace"]]
-    task_id: NotRequired[str]
-    merge_plan: NotRequired[UpdateMergePlan]
-    error: NotRequired[str]
-
-
-class UpdateApplyErrorResponse(TypedDict):
-    error: str
-    reason: NotRequired[str]
-    abandoned: NotRequired[bool]
-    status: NotRequired[Dict[str, Any]]  # preparation observations, not the success discriminator
-    update_intent: NotRequired[Dict[str, Any]]
-    rescue: NotRequired[Dict[str, Any]]
-    keep_branch: NotRequired[str]
-    blockers: NotRequired[List[str]]
-    rolled_back: NotRequired[bool]
-    rollback: NotRequired[str]
-    restart_required: NotRequired[bool]
-    merge_plan: NotRequired[UpdateMergePlan]
-    smoke: NotRequired[Dict[str, Any]]
-    # Stash-first prologue disclosures (additive): how the owner's stashed work
-    # was unwound on an aborted update. The wave numbers rode the retired
-    # wave-floor refusal (#1487 removed it); the optional keys stay in the shape.
-    stash_note: NotRequired[str]
-    estimated_wave_usd: NotRequired[Optional[float]]
-    remaining_usd: NotRequired[Optional[float]]
-
-
-class UpdateProgressChangedOutbound(TypedDict):
-    """Invalidation only; never proof that boot finalization completed."""
-    type: Literal["update_progress_changed"]
-
-
-class UpdateStatusReadyOutbound(TypedDict):
-    type: Literal["update_status_ready"]
-    available: bool
-    check_ok: Optional[bool]
 
 
 class ProjectCreateRequest(TypedDict, total=False):
@@ -1503,6 +1428,7 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "links",
     "quiz",
     "quiz_state",
+    "card", "card_state",  # gateway/card_contracts.py frames
     "typing",
     "log",
     "heartbeat",
@@ -1524,6 +1450,7 @@ __all__ = [
     "PhotoOutbound", "VideoOutbound", "DocumentOutbound",
     "LinkAction", "LinksOutbound",
     "QuizOption", "QuizOutbound", "QuizStateOutbound",
+    "CardOutbound", "CardStateOutbound",
     "DecisionRequest", "DecisionResponse",
     "TypingOutbound",
     "LogOutbound",
