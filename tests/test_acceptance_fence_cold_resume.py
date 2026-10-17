@@ -215,13 +215,15 @@ def _pause_with_latch_pending(host, monkeypatch, task_id, request_id):  # noqa: 
     another thread holds that real lock from just after the durable fence lands to the answer."""
     import threading
 
-    from ouroboros import owner_pause, review_operation
+    from ouroboros import owner_pause
     from supervisor.owner_pause_control import request_owner_pause
 
     held, release, threads = threading.Event(), threading.Event(), []
-    real = review_operation.retain_preparing_owner_pause
+    real = owner_pause.install_fence
 
     def fence_landed(*args, **kwargs):
+        landed = real(*args, **kwargs)
+
         def holder():
             with owner_pause.launch_lock(host.root, 'held'):
                 held.set()
@@ -230,10 +232,10 @@ def _pause_with_latch_pending(host, monkeypatch, task_id, request_id):  # noqa: 
         threads.append(threading.Thread(target=holder, daemon=True))
         threads[0].start()
         assert held.wait(5), 'the launch lock is held at the latch boundary'
-        return real(*args, **kwargs)
+        return landed
 
     with monkeypatch.context() as boundary:
-        boundary.setattr(review_operation, 'retain_preparing_owner_pause', fence_landed)
+        boundary.setattr(owner_pause, 'install_fence', fence_landed)
         try:
             return request_owner_pause(task_id, request_id=request_id)
         finally:
