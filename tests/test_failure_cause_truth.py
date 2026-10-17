@@ -103,12 +103,12 @@ def test_durable_triad_rows_and_the_frozen_roster_keep_the_reported_cause():
     # The frozen-roster rebuild is an explicit field-by-field constructor: it must not drop it.
     slot = SimpleNamespace(slot_id="triad_1", model="codex=gpt-6-astra")
     assert _frozen_actor(failed, slot).reported_cause == WORDS
-    # Without an engine sentence, the producer's plain error survives pruning.
+    # Other direction: a failure without words writes no key at all, and a row persisted
+    # before the field existed rebuilds with the dataclass default.
     wordless = _durable_row({"error": "Error: route unavailable", "slot_id": "triad_2",
                              "failure_code": "route_unavailable"})
-    assert "route unavailable" in wordless["reported_cause"]
-    assert wordless["failure_code"] == "route_unavailable"
-    assert _frozen_actor(wordless, slot).reported_cause == wordless["reported_cause"]
+    assert "reported_cause" not in wordless and wordless["failure_code"] == "route_unavailable"
+    assert _frozen_actor(wordless, slot).reported_cause == ""
 
 
 def test_a_producer_outcome_persisted_before_the_field_existed_still_loads():
@@ -119,7 +119,7 @@ def test_a_producer_outcome_persisted_before_the_field_existed_still_loads():
     old = asdict(ReviewActorRecord(slot_id="s1", model="m", status="error", error="boom",
                                    failure_code="run_failed"))
     old.pop("reported_cause")  # the shape an older process wrote
-    assert ReviewActorRecord(**old).reported_cause == "boom"
+    assert ReviewActorRecord(**old).reported_cause == ""
     new = ReviewActorRecord(**{**old, "reported_cause": WORDS})
     assert asdict(new)["reported_cause"] == WORDS
 

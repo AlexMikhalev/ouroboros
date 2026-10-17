@@ -52,13 +52,6 @@ class ReviewActorRecord:
     error_event_logged: bool = False
     review_wave_id: str = ""
 
-    def __post_init__(self) -> None:
-        from ouroboros.review_records import review_failure_facts
-
-        facts = review_failure_facts(vars(self))
-        self.failure_code = facts["failure_code"]
-        self.reported_cause = facts["reported_cause"]
-
     def to_dict(self) -> Dict[str, Any]:
         # The durable id is the one the review substrate actually ran this row
         # under, carried on the envelope. Re-deriving it from the record's
@@ -822,8 +815,7 @@ def emit_review_run_errors(ctx: Any, request: Any, actors: Sequence[Any], *, dri
         row["error"] = actor.error or actor.reason or "Reviewer response was malformed or absent."
         from ouroboros.review_records import review_failure_facts
 
-        row.update(review_failure_facts(row))
-        actor.failure_code, actor.reported_cause = row["failure_code"], row["reported_cause"]
+        row.update(review_failure_facts(row))  # the event row only: the actor record keeps its producer's facts
         meta = getattr(request, "usage_attribution", {}) or {}
         actor.error_event_logged = _append_review_model_error(
             ctx, row, source=str(request.surface or ""), skill_name=str(meta.get("review_skill") or ""),

@@ -779,6 +779,14 @@ def _apply_raw(seat: Dict[str, Any], raw: Dict[str, Any]) -> None:
                 critical_count=sum(int(seat["answers"][p].get("critical") or 0) for p in seat["parts"]),
                 operation_state=str(raw.get("operation_state") or ("settled" if answered else status)))
     seat.update({key: raw[key] for key in TYPED_FAILURE_FACT_KEYS if key in raw})
+    if not answered and not seat_open(seat) and not seat.get("reported_cause"):
+        # The row outlives the raw answer and the side files: a failed seat keeps its producer's own
+        # words here (no code or sentence is invented for a seat whose producer said nothing).
+        from ouroboros.review_records import review_failure_facts
+
+        cause = review_failure_facts({**raw, "status": status, "failure_code": "x"})["reported_cause"]
+        if cause:
+            seat["reported_cause"] = cause
     coverage = raw.get("coverage")
     if isinstance(coverage, dict):
         seat["coverage"] = str(coverage.get("status") or coverage.get("state") or "unobserved")
