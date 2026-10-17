@@ -3,9 +3,10 @@
 Built-ins are an ordinary source: installing one writes the install record every
 installer writes (trusted by default), never a synthetic review verdict. A new install
 gets only what its starter selection ticks; an existing install keeps what it has.
-Built-ins ride app releases: a changed bundled version re-seeds in place (state, the
-owner's enablement and unchanged-request grants kept); nothing resurrects a built-in
-the owner removed; a built-in the app stops bundling keeps running as its owner's copy.
+Built-ins ride app releases: a changed bundled version re-seeds an unmodified copy in
+place (state, the owner's enablement and unchanged-request grants kept) and never
+rewrites local changes; nothing resurrects a built-in the owner removed; a built-in the
+app stops bundling keeps running as its owner's copy.
 """
 
 from __future__ import annotations
@@ -183,20 +184,44 @@ def test_reseed_replaces_payload_keeps_state_and_owner_choice(env):
     _write_skill(seed_dir, "weather", "1.0.0")
     assert _install("weather", seed_dir, drive_root, turn_on_when_ready=True)["ok"]
     target = drive_root / "skills" / "native" / "weather"
-    (target / "user_notes.txt").write_text("wiped on re-seed\n", encoding="utf-8")
     state = drive_root / "state" / "skills" / "weather"
     (state / "settings.json").write_text('{"CITY":"Paris"}', encoding="utf-8")
     save_enabled(drive_root, "weather", False, actor="owner_ui")
     _write_skill(seed_dir, "weather", "0.9.0")  # a downgrade is a change too (opaque versions)
+    (seed_dir / "weather" / "forecast.md").write_text("new in 0.9.0\n", encoding="utf-8")
     assert _reseed(seed_dir, drive_root) == 1
     assert "version: 0.9.0" in (target / "SKILL.md").read_text(encoding="utf-8")
-    assert not (target / "user_notes.txt").exists()
+    assert (target / "forecast.md").is_file()
     assert (state / "settings.json").read_text(encoding="utf-8") == '{"CITY":"Paris"}'
     assert load_enabled(drive_root, "weather") is False
     record = read_install_record(drive_root, "weather")
     skill = find_skill(drive_root, "weather")
     assert record["release"]["digest"] == skill.content_hash and record["turn_on_when_ready"] is True
     assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+
+
+def test_reseed_keeps_a_copy_with_local_changes(env, caplog):
+    """An app update never rewrites the owner's edits: a built-in whose bytes differ from
+    its recorded base stays as it is (Modified); the owner chooses on update."""
+    from ouroboros.skill_install_record import read_install_record
+
+    seed_dir, drive_root = env
+    _write_skill(seed_dir, "weather", "1.0.0")
+    assert _install("weather", seed_dir, drive_root)["ok"]
+    target = drive_root / "skills" / "native" / "weather"
+    record = read_install_record(drive_root, "weather")
+    (target / "user_notes.txt").write_text("the owner's change\n", encoding="utf-8")
+    _write_skill(seed_dir, "weather", "2.0.0")
+    log = logging.getLogger("t.builtin.modified")
+    with caplog.at_level(logging.WARNING, logger=log.name):
+        assert _reseed(seed_dir, drive_root, log) == 0
+    assert "has local changes" in caplog.text
+    assert "version: 1.0.0" in (target / "SKILL.md").read_text(encoding="utf-8")
+    assert (target / "user_notes.txt").is_file()
+    assert read_install_record(drive_root, "weather")["release"] == record["release"]
+    (target / "user_notes.txt").unlink()  # back to the recorded base: the next start re-seeds
+    assert _reseed(seed_dir, drive_root, log) == 1
+    assert "version: 2.0.0" in (target / "SKILL.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("drift", [False, True])
@@ -391,3 +416,25 @@ def test_conversion_leaves_an_edited_seed_unreviewed(env, monkeypatch):
     assert record["release"]["digest"] == record["base_digest"] == bundled != skill.content_hash
     assert skill.review.content_hash == legacy  # stale stays stale
     assert skill.review.gate_for(skill.content_hash)["executable_review"] is False
+
+
+@pytest.mark.parametrize("edit_after", [False, True])
+def test_first_start_re_seeds_a_drifted_launcher_copy(env, monkeypatch, edit_after):
+    """The first start after the upgrade converts, then re-seeds a launcher copy whose
+    bundled version moved. An unchanged copy was proven by its native-seed verdict; an
+    edited one has no recorded base (its original release is unknown), so the launcher's
+    version re-seed applies to it once, as before. From then on the recorded base decides."""
+    from ouroboros import skill_builtin
+    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.skill_loader import find_skill
+
+    seed_dir, drive_root = env
+    monkeypatch.setattr(skill_builtin, "bundled_skills_dir", lambda: seed_dir)
+    installed, _ = _legacy_native_seed(drive_root, seed_dir, edit_after=edit_after)
+    _write_skill(seed_dir, "weather", "2.0.0")
+    assert skill_builtin.ensure_builtin_skills(drive_root) == 1
+    assert "version: 2.0.0" in (installed / "SKILL.md").read_text(encoding="utf-8")
+    skill = find_skill(drive_root, "weather")
+    record = read_install_record(drive_root, "weather")
+    assert record["base_digest"] == record["release"]["digest"] == skill.content_hash
+    assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"

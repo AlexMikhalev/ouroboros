@@ -12,9 +12,10 @@ setting.
 
 A new install gets only the built-ins its starter selection ticks (the starter installer
 calls ``install_builtin_skill``); an existing install keeps what it has. Built-ins ride
-app releases: at startup a built-in whose bundled version changed is re-seeded in place,
-keeping its enablement, its Telegram state and the owner's grants while the requested
-keys and permissions are unchanged. Nothing re-installs a built-in the owner removed.
+app releases: at startup an unmodified built-in whose bundled version changed is re-seeded
+in place, keeping its enablement, its Telegram state and the owner's grants while the
+requested keys and permissions are unchanged; a copy with local changes is kept and the
+owner chooses on update. Nothing re-installs a built-in the owner removed.
 A built-in no longer bundled loses its launcher marker and keeps running as a skill that
 left its source.
 """
@@ -153,12 +154,31 @@ def install_builtin_skill(
             "auto_granted_keys": list(granted.granted_keys), "auto_granted_permissions": list(granted.granted_permissions)}
 
 
+def _changed_since_install(drive_root: pathlib.Path, name: str, target: pathlib.Path) -> Optional[bool]:
+    """Whether the installed copy differs from its recorded base digest; ``None`` when no
+    base is recorded (a launcher copy from before install records, whose original release
+    is unknown: the launcher's version re-seed still applies to it). Unreadable bytes
+    count as changed: nothing proves them unmodified."""
+    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.skill_loader import compute_content_hash
+
+    base = str((read_install_record(drive_root, name) or {}).get("base_digest") or "")
+    if not base:
+        return None
+    try:
+        return compute_content_hash(target) != base
+    except Exception:
+        return True
+
+
 def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[pathlib.Path] = None,
                             log_obj: Any = None) -> int:
-    """Re-seed in place the built-ins whose bundled version changed (marker-owned only).
+    """Re-seed in place the unmodified built-ins whose bundled version changed (marker-owned only).
 
-    A payload that differs at an equal version is kept and logged; a removed built-in is
-    never resurrected; enablement and Telegram state live outside the payload and stay.
+    A copy with local changes against its recorded base is kept: the owner chooses on
+    update (replace, keep or merge). A payload that differs at an equal version is kept
+    and logged; a removed built-in is never resurrected; enablement and Telegram state
+    live outside the payload and stay.
     """
     from ouroboros.skill_install_record import read_install_record
 
@@ -177,6 +197,10 @@ def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[path
             continue
         if seed_version == target_version:
             _warn_equal_version_drift(seed, target, seed_version, logger)
+            continue
+        if _changed_since_install(pathlib.Path(drive_root), seed.name, target):
+            logger.warning("Built-in skill %s has local changes (installed=%s, bundled=%s); kept — "
+                           "the owner chooses on update", seed.name, target_version, seed_version)
             continue
         logger.info("Built-in skill %s version drift (bundled=%s, installed=%s) — re-seeding",
                     seed.name, seed_version, target_version)
