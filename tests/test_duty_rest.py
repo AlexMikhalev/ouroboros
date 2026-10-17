@@ -330,11 +330,10 @@ def test_a_projection_deferred_on_its_child_files_never_reads_the_delivery_regis
 
 from ouroboros.terminal_cost_reconciliation import reconcile_abandoned_usage  # noqa: E402
 from tests.test_terminal_cost_reconciliation import attempt, dirty  # noqa: E402
-from tests.test_terminal_cost_reconciliation import env as cost_env  # noqa: E402,F401
+from tests.test_terminal_cost_reconciliation import env as env  # noqa: E402,F401
 
 
-def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(cost_env, monkeypatch):
-    env = cost_env
+def test_usage_duty_reads_no_unsettled_owner_and_rests_an_open_late_phase(env, monkeypatch):
     for tid in ("paused", "live"):
         write_task_result(env.root, tid, "running", result="r")
         attempt(env, tid)
