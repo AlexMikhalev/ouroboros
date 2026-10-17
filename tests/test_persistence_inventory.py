@@ -774,9 +774,14 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # earlier records keep theirs, nothing writes one any more.
 # 377 -> 378 (test health): adoption reads the receipt directory ``state/preflight_receipts``
 # (``ouroboros/preflight_qualification.py``; the existing receipts row).
-# 383 -> 385 (the dialogue store): ``state/dialog.sqlite`` and its name-tier lock ``state/dialog.lock``
-# (``ouroboros/dialogue_store.py``; one section-3 row that also names the cutover and import-job locks).
-EXPECTED_SCAN_PATHS = 385
+# 378 -> 379 (review copies' lifetime): the prune walks ``state/review_checkouts`` itself
+# (``ouroboros/review_checking_prune.py``; the existing seats and views rows).
+# 379 -> 386 (the startup-architecture change): the boot receipts ``state/git_bootstrap.json`` and
+# ``state/native_seed.json``, the content-addressed extension import trees and their locks
+# (``__extension_imports/*``, ``.extension-*.lock``), ``state/dialog.sqlite`` and its name-tier lock
+# ``state/dialog.lock`` (``ouroboros/dialogue_store.py``; one section-3 row that also names the cutover
+# and import-job locks).
+EXPECTED_SCAN_PATHS = 386
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

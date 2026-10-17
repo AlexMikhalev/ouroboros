@@ -11,7 +11,7 @@
 import { tr } from './i18n.js';
 
 export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
-    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
+    startup_notice: ['♻️ Restored pending queue: ', '♻️ Settling '],
     command_reply: ['⚠️ Command ignored: ', '✅ Owner chat registered.', '♻️ Restarting.', '⚠️ Restart cancelled: ',
         '🧬 Evolution campaign: ', '🧬 Evolution stayed OFF: ', '🧬 Evolution did not turn on: ',
         '🧠 Background consciousness ', '🧠 Background consciousness:'],
@@ -55,6 +55,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
 // Producers this install no longer runs: rows they already wrote keep losing only the mark at
 // display (host_notice_text.test.js pins that none of them is written again).
 export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
+    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
     attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
         '⚠️ Some declared attachments could not be staged; '],
     cancellation_notice: ['❌ cancel '],

@@ -1157,9 +1157,7 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
     try:
         from ouroboros.review_checking import terminal_seat_evidence
 
-        # The exact-detail policy retains unknown writers; failed runs need the
-        # engine's literal settled scope. Windows copy-use compatibility is success-only,
-        # not proof about arbitrary detached OS descendants.
+        # The receipt is written before the seat's one-shot copy is deleted.
         evidence = terminal_seat_evidence(root, request.task_id, operation_id, detail)
     except Exception as exc:
         # The paid verdict remains collectible even if retaining its checking

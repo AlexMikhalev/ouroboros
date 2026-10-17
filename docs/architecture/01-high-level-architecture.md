@@ -69,7 +69,7 @@ supervisor/ — background thread inside server.py (§5)
   log_addressing.py — audience of task-scoped log events: project binding wins, chat id 0 is `HIDDEN_CHAT_ID`, A2A frames are dropped at the `push_log` choke (§4 WebSocket protocol; §12)
   steering.py — steering into a running task's mailbox, keyed on the host-minted `issuer`; refused while a cancel intent is pending (§6 Owner routing verbs)
   plan_obligation.py — a promoting root hands an unmet `force_plan` to the new root inside the admission transaction (§6 Owner routing verbs)
-  direct_roots.py — off-lock `state/direct_roots.json` roster of live direct-chat roots for workers
+  direct_roots.py — live direct roster and ended-process handover (§5)
   telemetry_events.py — rare typed telemetry-only worker events: durable appends exclude high-rate narration
   git_ops.py — git operations (clone, checkout, rescue, rollback, push, credential helper) and the bounded local-Git runner
   git_ops_remotes.py, git_ops_rescue.py, git_ops_reset.py, git_ops_updates.py — leaves re-exported through `git_ops.py`: remotes and push, the rescue snapshot before destructive tree movement (§2), checkout/reset admission, managed-update status
@@ -267,7 +267,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_native_episode.py — Read-only native API reviewer episodes for pool seats and deep self-review (§6 Native tool-round episode)
   review_session_reads.py — Harness-journal reading diagnostics (`harness_observed`), never verdict, quorum or retry authority (§6 Review delivery)
   review_verdict_extraction.py — verdict canonicalization by output shape: strict parse, then light-model extraction (`array`, `object`, `report` pass-through)
-  review_session_custody.py, review_checking.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private checking copies (§6 Review delivery)
+  review_session_custody.py, review_checking.py, review_checking_prune.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private checking copies and their prune (§6 Review delivery)
   review_slot_cancel.py — A cancel outcome reports only what it proved; a succeeded run whose result read fails is the typed `ReviewSessionSucceededResultUnavailable`, never "may still be live"
   review_actor_aggregation.py, review_session_usage.py, review_thread_continuity.py — Completed-actor contract aggregation; delegated-session usage attribution; Claudexor thread operations for delegated plan reviewers
   commit_admission.py — Release/syntax admission and bound test proof (§6)
