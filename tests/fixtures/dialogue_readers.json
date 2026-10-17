@@ -17,7 +17,8 @@
         "history_position": {
           "source": "chat",
           "offset": 0
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:01Z#7f6e6fde6789"
       },
       {
         "text": "Archived answer",
@@ -35,7 +36,8 @@
         "history_position": {
           "source": "chat",
           "offset": 220
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:03Z#7c749e59c2cc"
       },
       {
         "text": "Archived progress",
@@ -50,7 +52,8 @@
           "source": "progress",
           "offset": 0
         },
-        "task_terminal_status": "completed"
+        "task_terminal_status": "completed",
+        "row_address": "row:1@2026-10-01T00:00:04Z#deb3302caf66"
       },
       {
         "text": "Current progress",
@@ -118,7 +121,8 @@
           "eligible": false,
           "cause": "finished",
           "refusal": "author_finished"
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:06Z#0568bae630f6"
       },
       {
         "text": "Document",
@@ -142,7 +146,8 @@
         "mime": "application/octet-stream",
         "download_url": "/api/tasks/golden-task/artifacts/report.txt",
         "download_url_compat": "",
-        "caption": ""
+        "caption": "",
+        "row_address": "row:1@2026-10-01T00:00:07Z#b33dae82086b"
       },
       {
         "text": "Main newest",
@@ -160,7 +165,8 @@
         "history_position": {
           "source": "chat",
           "offset": 784
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:09Z#df82c61d434f"
       }
     ],
     "window": {
@@ -212,7 +218,8 @@
         "history_position": {
           "source": "chat",
           "offset": 0
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:01Z#7f6e6fde6789"
       },
       {
         "text": "Archived answer",
@@ -230,7 +237,8 @@
         "history_position": {
           "source": "chat",
           "offset": 220
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:03Z#7c749e59c2cc"
       },
       {
         "text": "Archived progress",
@@ -245,7 +253,8 @@
           "source": "progress",
           "offset": 0
         },
-        "task_terminal_status": "completed"
+        "task_terminal_status": "completed",
+        "row_address": "row:1@2026-10-01T00:00:04Z#deb3302caf66"
       },
       {
         "text": "Current progress",
@@ -313,7 +322,8 @@
           "eligible": false,
           "cause": "finished",
           "refusal": "author_finished"
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:06Z#0568bae630f6"
       },
       {
         "text": "Document",
@@ -337,7 +347,8 @@
         "mime": "application/octet-stream",
         "download_url": "/api/tasks/golden-task/artifacts/report.txt",
         "download_url_compat": "",
-        "caption": ""
+        "caption": "",
+        "row_address": "row:1@2026-10-01T00:00:07Z#b33dae82086b"
       },
       {
         "text": "Main newest",
@@ -355,7 +366,8 @@
         "history_position": {
           "source": "chat",
           "offset": 784
-        }
+        },
+        "row_address": "row:1@2026-10-01T00:00:09Z#df82c61d434f"
       }
     ],
     "window": {
@@ -441,7 +453,8 @@
         "history_position": {
           "source": "chat",
           "offset": 124
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:02Z#8d5fc85ff9b9"
       },
       {
         "text": "Room question",
@@ -459,7 +472,8 @@
         "history_position": {
           "source": "chat",
           "offset": 338
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:06Z#7a8fdfafbc62"
       },
       {
         "text": "Room answer",
@@ -477,7 +491,8 @@
         "history_position": {
           "source": "chat",
           "offset": 689
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:08Z#78af2e502fc9"
       }
     ],
     "window": {
@@ -533,7 +548,8 @@
         "history_position": {
           "source": "chat",
           "offset": 124
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:02Z#8d5fc85ff9b9"
       },
       {
         "text": "Room question",
@@ -551,7 +567,8 @@
         "history_position": {
           "source": "chat",
           "offset": 338
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:06Z#7a8fdfafbc62"
       },
       {
         "text": "Room answer",
@@ -569,7 +586,8 @@
         "history_position": {
           "source": "chat",
           "offset": 689
-        }
+        },
+        "row_address": "row:77748779@2026-10-01T00:00:08Z#78af2e502fc9"
       }
     ],
     "window": {
