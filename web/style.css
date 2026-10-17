@@ -1430,13 +1430,28 @@ body.resizing-panels { user-select: none; }
     backdrop-filter: blur(10px);
 }
 
-.onboarding-frame {
+.onboarding-surface {
     position: relative;
     z-index: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     width: 100%;
-    height: 100%;
+}
+
+.onboarding-frame {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     border: 0;
     background: transparent;
+}
+
+.onboarding-recovery {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px;
+    background: var(--bg-primary);
 }
 
 .onboarding-restart-card {

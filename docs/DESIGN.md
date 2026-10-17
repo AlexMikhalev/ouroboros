@@ -335,28 +335,27 @@ Enter as a line break.
 
 ### Composer owner controls
 
-Two controls in the composer's pill row write a global owner setting rather than a
-fact about the next message: the context mode and the **effort range**. Both save at
-once through their owner endpoint, show the server's refusal as a toast and read the
-one saved value back from `/api/state`, so Main and every Project composer agree;
-Settings has no effort section.
+Each composer saves its room's **Context** and **Effort** through the owner endpoints.
+Main supplies a one-time copy to new Projects; later changes stay in their room.
+Readback comes from Main state or the named Project, never another room. Saves apply
+to new participants; running work retains its choices through Resume. A refusal
+keeps the saved value and says why. No scope selector or extra settings row.
 
 Each is a neutral **capsule** of the pills' height — ring, name, value: `Context Max`,
-`Effort X-High`; the name in the secondary ink at 500, the value in the meta ink at
-600, and the only colour the ring's lit arc (crimson; Low amber, Nano the Project's).
-Until `/api/state` reports the range the ring stays unlit and the value secondary,
-never a faded capsule. Closed, Effort names only the recommended level; its ring (a 300°
-arc: band minimum..maximum, dot recommended) and the button's name carry the range.
+`Effort X-High`; the name in secondary ink at 500, the value in meta ink at 600,
+and only the ring's lit arc coloured (crimson; Low amber, Nano the Project's).
+Until the room's values arrive the ring stays unlit and the value secondary,
+never a faded capsule. Closed, Effort names only the primary level; its ring (a 300°
+arc: band minimum..maximum, dot primary) and the button's name carry the range.
 Context's ring is three arcs, the chosen one lit: one of three modes, never a fill
 level or capacity. A capsule opens **inline**, never as a dropdown, one at a time;
 its value yields to the strip. Context's is Nano · Low · Max under a glass thumb; a
-choice posts at once and the strip waits for the answer (lowering only while idle,
-outside Cyber Pro). Effort's: seven levels, two brackets, the recommended pill. A
+choice posts at once and the strip waits for the answer. Effort's seven levels carry
+a primary pill and two helper bounds; the primary may lie outside them. A
 segment is its word plus `--capsule-seg-pad` a side; the pill covers its segment;
-band, pill and brackets share one vertical inset. Every handle pushes the ones it
-meets, a pushed bracket stays, the brackets never cross. A tap inside the range sets
-the recommended level, outside it the nearer bracket; a drag keeps the grab offset
-on whole levels. A stored `minimal` shows at Low until its handle moves.
+band, pill and brackets share one vertical inset. The primary and helper bounds never
+move each other; the brackets cannot cross. A level tap sets primary; each bracket
+has its own handle. A drag keeps its grab offset on whole levels. A stored `minimal` shows at Low until its handle moves.
 
 **A mark keeps from a rounded end the clearance it keeps from the straight edges.**
 A pill (the thumb, the recommended pill) is concentric with the capsule, so the band
@@ -378,7 +377,7 @@ or the chosen mode; arrows step a handle (PageUp/PageDown too) or choose the nex
 mode, Home/End reach the ends; Esc closes and returns focus to the head; an outside
 press closes. Handles are sliders naming their level; closed, they leave the tab
 order. An effort change saves when the gesture ends, saves run in order (last wins),
-and Send waits for a pending one so the next root starts at that level; a refused
+and Send waits for both pending Context and Effort saves; a refused
 save keeps the draft, says why and returns to the saved value — unsaved values are
 never shown as saved.
 
@@ -989,27 +988,29 @@ Project status bar without an opaque strip, Main's floating header on its own
 reading backing (§5).
 
 A room always opens at its newest message: Main and every Project, however long
-ago its last message was and however much other rooms wrote since; returning to
-a room in the same app session opens it there too, Main after a closed Project
-included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit
-navigation to one place lands elsewhere (a question opened from its Main mirror,
-a row of the room's work status); a window merely shown again keeps the reader
-where they were.
+ago its last message was and however much other rooms wrote since. Returning to
+a room in the same app session opens it at its newest message too, Main after a
+closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
+lands elsewhere: a question opened from its Main mirror, or a row of the room's
+work status, whose landing reads the page around that work as the room's history
+from there on: `Load more history` continues older from it and `Scroll to latest
+message` returns to the present. A window merely shown again keeps the reader where they were.
 
 A room's history is its own. A page is counted in the room's messages, never in
 bytes of other rooms' traffic: the newest page holds the room's newest messages,
-and `Load more history` reads only the next older messages of the same room
-(owner decisions 2026-09-14 and 2026-10-05). It shows only while older history
-exists, and one press keeps reading until messages land or the room's beginning
-is reached, so no press is empty; a positive scroll gesture at the reading edge
-loads the same way. Messages arriving while the reader is in older history never
-move where the next press goes on: it reads above what is being read, and
-anything a long absence left unloaded below is read by the return to the
-present. Narration (task progress) keeps loading alongside the conversation, but
-only the conversation keeps the control: once the room's beginning is reached it
-leaves, even if older narration of the oldest cards remains unread. The floating
-`Scroll to latest message` is the one return to the present; when the present is
-already loaded it moves there and follows without a read.
+and `Load more history` reads the next older messages of the same room, only
+ever older ones (owner decisions 2026-09-14 and 2026-10-05). It shows only while
+older history exists, and one press keeps reading until messages land or the
+room's beginning is reached, so no press is empty. A positive scroll gesture at
+the reading edge loads the same way. Messages arriving while the reader is in
+older history never move where the next press goes on: it reads above what is
+being read, and anything a long absence left unloaded below is read by the
+return to the present. Narration (task progress) keeps loading
+alongside the conversation, but only the conversation keeps the control: once the
+room's beginning is reached it leaves, even if older narration of the oldest
+cards remains unread. A page around work that only narrated pages that narration.
+The floating `Scroll to latest message` is the one return to the present; when
+the present is already loaded it moves there and follows without a read.
 
 A failed history read offers Retry; a failed read of the present by ↓ leaves the
 view in place with the same Retry. A failed full-output read keeps the line's
@@ -1057,14 +1058,19 @@ Project with nothing else keeps its latest represented root. A row names its wor
 keyboard focus or open details show whole, with the state under the name in the
 card's or census's own words: an outcome stays beside `Finalizing…`, an access
 wait is not an answer wait, unknown stays unknown, a pause keeps its cause and
-each paused remainder its own row; work outside the loaded messages says so in
-its details and accessible name. The name goes to the card, or
-opens details when the card is not loaded, finished work included; `View question`
+each paused remainder its own row. The name goes to the work's message wherever
+it lies, finished work included: its card or the owner's message when loaded, else
+the room reads the page of its history around the work's first message there and
+lands on it, the list staying open while it looks. Before that a row claims nothing
+about where its message is; when the room's history holds none (`No message yet.`,
+or `No message saved in this chat.` once ended), belongs to another room, or cannot
+be checked, its details say so. `View question`
 goes to the exact waited question and answers nothing; Resume and ⋯ are that exact
 activity's shared task controls, offered only while the census confirms it. While
 open, order and focus hold, and work that ends keeps its row and outcome, without
 controls, until close. Escape, an outside press or leaving closes it; `Back to
-reading` returns to the passage left. Navigation never changes the next message's
+reading` returns to the passage left, reading its page again if it was let go, or
+to the present the reader was following. Navigation never changes the next message's
 recipient, opens another pane or manufactures activity.
 
 ### List editors

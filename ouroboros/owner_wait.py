@@ -166,6 +166,8 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
     cost_ceiling = getattr(ctx, "_cost_ceiling", None)
     model_wait = getattr(ctx, "model_wait_context", None)
     model_state = model_wait.continuation_state() if model_wait is not None else {}
+    from ouroboros.settings_integrity import captured_cognition
+
     return {
         "task_id": ctx.task_id, "task_attempt": int(getattr(ctx, "task_attempt", None) or 1),
         "started_at": getattr(ctx, "task_started_at", None),
@@ -177,6 +179,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
         "usage": without_finalization_timing(usage),
         "cost_ceiling": asdict(cost_ceiling) if cost_ceiling is not None else None,
         "model_wait": model_state,
+        "cognition": captured_cognition(),
         "nanny_activity": {key: getattr(ctx, key, None) for key in (
             "_nanny_metered_progress", "_nanny_delegate_baseline",
         )},
@@ -948,8 +951,10 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
     from ouroboros.loop_delivery import DeliveryCandidate
 
     from ouroboros.model_wait import adopt_handoff_clock, budget_paused_seconds
+    from ouroboros.settings_integrity import restore_cognition
 
     ctx = tools._ctx
+    restore_cognition(state.get("cognition"))
     # Missing old observations are unknown, not this new process's startup seed.
     # None is the known fresh state; an empty mark has no historical anchor.
     for key in ("_nanny_metered_progress", "_nanny_delegate_baseline"):
@@ -985,8 +990,8 @@ def restore_continuation_state(tools: Any, state: dict, messages: list, trace: d
 def rebind_restored_route(tools: Any, state: dict, messages: list) -> tuple:
     """Rebind the restored route's context-fit plan; returns ``(plan, mode)``.
 
-    The new capture starts in the mode the task ran in (restored onto ``ctx``), never above the
-    owner's current one: a restore, like any route, never raises a mode."""
+    The actor's captured owner choice survives restart, separately from the physically
+    achieved mode. Legacy sources without that choice keep the previous fallback."""
     from ouroboros.loop import _rebind_context_fit_plan, get_context_mode
     from ouroboros.memory_floor import MODES
     from ouroboros.model_slots import task_model_binding

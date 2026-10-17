@@ -37,7 +37,7 @@
  * @property {boolean} skills_repo_configured
  * @property {boolean} github_token_configured
  * @property {Object} accounting  // physical-attempt ledger projection
- * @property {Array<Object>} projects  // active/deleting ProjectEntry sidebar projection
+ * @property {Array<ProjectEntry>} projects  // active/deleting sidebar projection
  * @property {Array<number>} project_chat_ids  // complete (uncapped) project chat_ids — WS fan-out isolation SSOT (v6.32.0)
  * @property {Object<string, {project_id: string, chat_id: number, origin_bound?: boolean}>} task_bindings  // bound task -> its project: suppress the stray "turn into project" button (v6.33.0 P2) + render a pointer that opens the project panel (v6.33.0 F4). origin_bound marks a task the host included because its OWNER MESSAGE already has a project (#902), so one message cannot keep a second convertible card
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
@@ -735,6 +735,7 @@
  * @property {boolean=} thread_activity_seen
  * @property {string=} last_task_result_id
  * @property {boolean=} created
+ * @property {ProjectCognition} cognition
  */
 
 /**
@@ -850,10 +851,12 @@
  * @typedef {Object} OwnerContextModeResponse
  * @property {boolean} ok
  * @property {string} context_mode
+ * @property {string} project_id
+ * @property {ProjectCognition} cognition
  */
 
 /**
- * @typedef {Object} EffortRange  min ≤ recommended ≤ max, each an EFFORT_SCALE tier (the tolerant read)
+ * @typedef {Object} EffortRange  helper min ≤ max; primary recommended independent; each an EFFORT_SCALE tier
  * @property {string} min
  * @property {string} recommended
  * @property {string} max
@@ -862,6 +865,14 @@
 /**
  * @typedef {Object} OwnerEffortRangeResponse
  * @property {boolean} ok
+ * @property {EffortRange} effort_range
+ * @property {string} project_id
+ * @property {ProjectCognition} cognition
+ */
+
+/**
+ * @typedef {Object} ProjectCognition
+ * @property {string} context_mode
  * @property {EffortRange} effort_range
  */
 

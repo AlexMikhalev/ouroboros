@@ -285,8 +285,7 @@ export function createChatInstance({
         </div>
     `;
     if (idPrefix !== 'chat') {
-        // Instance-namespaced ids + mirror classes so the shared #chat-* CSS
-        // (extended with .chat-* twins) keeps styling secondary instances.
+        // Namespace ids; mirror classes retain the shared composer styling.
         page.querySelectorAll('[id]').forEach((el) => {
             if (el.id.startsWith('chat-')) {
                 el.classList.add(el.id);
@@ -312,10 +311,9 @@ export function createChatInstance({
     const scrollActivityDot = scrollBottomBtn?.querySelector('.chat-scroll-activity-dot');
     let nestedSubagentsExpanded = false;
     let _remoteActivityDepth = 0;
-    let ownerControls = null;
+    let ownerControls = null, cognitionRead = false;
 
-    // Instance lifecycle (P3): destroy() flips this so rAF loops and late async
-    // continuations become no-ops instead of touching a removed DOM subtree.
+    // Destroyed instances ignore late async work and animation frames.
     let destroyed = false;
     // Every ws.on subscription's disposer, released together in destroy().
     const wsDisposers = [];
@@ -565,6 +563,7 @@ export function createChatInstance({
             moreSummary.classList.toggle('has-active', anyActive);
         }
         ownerControls?.syncState(data);
+        if (projectId && !data?.projects?.some(project => project.id === projectId && project.cognition)) void refreshProjectCognition();
         const budget = headerBudgetPresentation(data);
         const budgetText = byId('budget-text');
         const budgetFill = byId('budget-bar-fill');
@@ -641,6 +640,17 @@ export function createChatInstance({
             }
         }
         syncChatStatus();
+    }
+
+    // Rooms outside the bounded sidebar still read their settings.
+    async function refreshProjectCognition() {
+        if (destroyed || cognitionRead) return;
+        cognitionRead = true;
+        try {
+            const room = await apiFetch(`/api/projects?chat_id=${encodeURIComponent(chatId)}`, { cache: 'no-store' });
+            if (room.ok && !destroyed) ownerControls?.syncState(await room.json());
+        } catch { /* Preserve the last room value, never substitute Main. */ }
+        finally { cognitionRead = false; }
     }
 
     async function refreshHeaderControlState(force = false) {
@@ -1608,7 +1618,7 @@ export function createChatInstance({
     const historyResyncScheduler = createHistoryResyncScheduler({
         isReplayActive: () => _historyReplayActive,
         // Re-arm if the joined sync fetched its window before the arm.
-        run: () => syncHistory({ includeUser: false }).catch(() => {}).then(() => {
+        run: () => historyPager.read().catch(() => {}).then(() => {
             if (!destroyed && lastHistorySyncSucceeded && liveCardBound.isArmed()) scheduleHistorySync();
         }),
     });
@@ -2311,12 +2321,8 @@ export function createChatInstance({
     // Host-owned empty state: never a bubble, a history row or a model reply.
     const emptyWelcome = isMain ? mountEmptyChatWelcome(messagesDiv) : null;
 
-    // Hydration triggers share one sticky request; reconnect/resync still refetch.
-    function awaitInitialHydration({ includeUser = false } = {}) {
-        if (initialHydrationPromise) return initialHydrationPromise;
-        initialHydrationPromise = syncHistory({ includeUser });
-        return initialHydrationPromise;
-    }
+    // Hydration triggers share one sticky request; reconnect/resync read again.
+    const awaitInitialHydration = () => (initialHydrationPromise ||= syncHistory());
 
     // Main briefly yields hydration to an opening Project, with a hard bound.
     const MAIN_HYDRATION_MAX_DEFER_MS = 3500;
@@ -2362,7 +2368,7 @@ export function createChatInstance({
             pendingLiveEvictions.delete(id);
         }
     }
-    function applyHistoryMessages(messages, { fromReconnect = false, includeUser = true, archived = false } = {}) {
+    function applyHistoryMessages(messages, { fromReconnect = false, archived = false } = {}) {
         const knownCards = new Set(liveCardRecords.keys());
         _historyReplayActive = true;
         _historyAppending = archived;
@@ -2480,7 +2486,6 @@ export function createChatInstance({
                     if (fromReconnect && msg.role === 'user' && msg.client_message_id) {
                         pendingSubmissions.delete(String(msg.client_message_id));
                     }
-                    if (!includeUser && msg.role === 'user') continue;
                     if (msg.is_progress) {
                         // Progress-only/failed tasks still anchor at their first event.
                         insertCardIfNeeded(taskId);
@@ -2592,7 +2597,8 @@ export function createChatInstance({
         syncChatStatus();
     }
 
-    async function syncHistory({ includeUser = false, fromReconnect = false } = {}) {
+    async function syncHistory({ fromReconnect = false } = {}) {
+        if (destroyed) return false;
         if (historySyncPromise) {
             // A reconnect joining an older read still owes a rebuild.
             if (fromReconnect) {
@@ -2601,7 +2607,7 @@ export function createChatInstance({
                     // One waiter consumes the queued rebuild; peers await it.
                     if (pendingReconnectSync) {
                         pendingReconnectSync = false;
-                        return syncHistory({ includeUser: false, fromReconnect: true });
+                        return syncHistory({ fromReconnect: true });
                     }
                     return historySyncPromise || lastHistorySyncSucceeded;
                 });
@@ -2613,6 +2619,7 @@ export function createChatInstance({
             const cardsAtStart = new Set(liveCardRecords.keys());
             // Replay can refill the feed without moving the reader's intent.
             const followingAtStart = reading.stick, generationAtStart = reading.generation;
+            const landedAtStart = historyPager.arrivalsLanded();
             try {
                 // No welcome until this read lands.
                 emptyWelcome?.historyPending();
@@ -2636,12 +2643,12 @@ export function createChatInstance({
                 const reader = readingHistory();
                 const rechainRecent = admitted && !reader && !data.reason_code && pagerBeforeRecent.initialized
                     && !pagerBeforeRecent.canNewer && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
-                const result = historyPager.acceptRecent(data);
+                const result = historyPager.acceptRecent(data, rechainRecent && { fromReconnect });
                 if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect });
-                const recentState = historyPager.getState();
-                const releasableRecentIds = !admitted || rechainRecent || reader || recentState.canNewer ? [] : oldRecentIds;
-                withStableViewport(() => releaseHistoryIds(releasableRecentIds));
-                if (rechainRecent && !destroyed) void historyPager.latest();
+                withStableViewport(() => releaseHistoryIds(!admitted || rechainRecent || reader
+                    || historyPager.getState().canNewer ? [] : oldRecentIds));
+                // Arrivals that landed meanwhile may lie past this page: read them again.
+                if (historyPager.arrivalsLanded() !== landedAtStart) void historyPager.read();
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
@@ -2728,12 +2735,8 @@ export function createChatInstance({
     const newestFacts = { delivered: id => retainedHistoryIds().has(id), nodes: id => historyNodes(id),
         viewport: messagesDiv, header: pageHeader, composer: inputArea };
     const readReceipt = createProjectReadReceipt({
-        read: async (fresh) => {
-            if (!fresh && initialHydrationPromise) await initialHydrationPromise;
-            else {
-                if (historySyncPromise) await historySyncPromise;
-                await syncHistory({ includeUser: true });
-            }
+        read: async (fresh, whole) => {
+            await (!fresh && initialHydrationPromise || historyPager.read({ whole }));
             return lastHistorySyncSucceeded;
         },
         // A destroyed page reports hidden===false, hence the lifecycle flag.
@@ -2757,19 +2760,16 @@ export function createChatInstance({
 
     (async () => {
         await loadUiPreferences();
-        // Main waits for the (bounded) idle hydration window;
-        // project instances pass straight through. The sticky single-flight
-        // below folds this trigger with the first socket open / refreshHistory.
+        // Main waits for hydration; Projects pass through. History reads share one flight.
         await waitForHydrationWindow();
         if (destroyed) return;
         // A message this tab kept across a reload that the first read (or its preview) did not show saved is in doubt.
         const reconcileUnsaved = () => !destroyed && unconfirmed.reconcile(({ frame, views, ts }) => addMessage(frame.content,
             'user', false, ts || null, false, { source: 'web', senderSessionId: chatSessionId, clientMessageId: frame.client_message_id, attachments: views }));
-        if (await awaitInitialHydration({ includeUser: true })) return reconcileUnsaved();
+        if (await awaitInitialHydration()) return reconcileUnsaved();
         try {
             const saved = JSON.parse(sessionStorage.getItem(storeKey(CHAT_STORAGE_KEY)) || '[]');
-            // A snapshot row is the addMessage option bag persistedHistory wrote;
-            // addMessage normalizes every option, so no field list is kept in sync.
+            // Replay the persisted addMessage options through the same normalizer.
             for (const { text, role, markdown, ts, ...restored } of saved) {
                 addMessage(text, role, !!markdown, ts || null, false, restored);
             }
@@ -2788,7 +2788,7 @@ export function createChatInstance({
         inputDraft = '';
     }
 
-    // The field's height follows its text up to the stylesheet cap (chat_input_sizing.js).
+    // Text height is capped by chat_input_sizing.js.
     const inputSizing = attachChatInputSizing(input);
     function resizeChatInput() {
         inputSizing.sync();
@@ -2814,7 +2814,7 @@ export function createChatInstance({
 
     async function sendMessage(planMode = false) {
         if (sendBtn.disabled) return;  // guard against Enter re-entry during async upload
-        if (ownerControls.hasPendingSave()) {  // an effort change lands before the message it would govern
+        if (ownerControls.hasPendingSave()) {  // both room settings land before the next message
             setSendBusy(true, 'Saving');
             try { if (!(await ownerControls.pendingSave())) return; } finally { setSendBusy(false); }
         }
@@ -2823,7 +2823,7 @@ export function createChatInstance({
         let uploadedAttachments = [];
         if (!text && !hasAttachments) return;
         if (hasAttachments) {
-            // Upload immediately before send; offline queueing would orphan files.
+            // Upload at Send; offline queuing orphans files.
             if (ws.ws?.readyState !== WebSocket.OPEN) {
                 showToast('Cannot attach file while offline. Reconnect and try again.', 'error');
                 return;
@@ -2838,7 +2838,7 @@ export function createChatInstance({
             } finally {
                 setSendBusy(false);
             }
-            // The model reads these names (an exact /restart stays the command); the bubble shows the server views.
+            // Model sees file names; /restart stays exact, bubbles use server views.
             text = composerText(text, uploadedAttachments.map((item) => item.view?.name || item.display_name));
         }
         if (!text) return;
@@ -2861,7 +2861,7 @@ export function createChatInstance({
             showToast('Connection lost before send. Reconnect and try again.', 'error');
             return;
         }
-        // One-shot: disarm Swarm now that the message is sent.
+        // Send consumes Swarm.
         if (planMode) setSwarm(false);
         if (hasAttachments) composer.clear();
         rememberInput(text);
@@ -2878,12 +2878,11 @@ export function createChatInstance({
             attachments: uploadedAttachments.map((item) => item.view),
         });
         replies.clear();
-        // Only the host's saved echo proves acceptance: every message's frame stays for Send again (a bare
-        // slash command is a command); a queued one is the socket queue's until it is written.
+        // Only the host's saved echo proves acceptance: every message's frame stays (a bare slash command is a
+        // command); a queued one is the socket queue's until it is written.
         if (hasAttachments || !text.startsWith('/')) unconfirmed.track({ ...frame, client_message_id: result.clientMessageId },
             { views: uploadedAttachments.map((item) => item.view), ts: sentTs, queued: result?.status === 'queued' });
-        // ws.send always coins a client_message_id for chat frames; guard
-        // only against a non-chat result shape.
+        // Chat sends carry their minted client_message_id.
         const pendingId = result?.clientMessageId || '';
         if (pendingId) {
             pendingSubmissions.set(pendingId, {
@@ -2900,8 +2899,7 @@ export function createChatInstance({
     // Send mode lives on DOM so CSS and click/Enter share one source.
     const sendGroup = page.querySelector('.chat-send-group');
 
-    // Swarm is a one-shot arm: the next send goes through plan_task multi-model
-    // brainstorm/planning, then the pill auto-disarms so it never sticks.
+    // Swarm requests planning once, then disarms.
     const swarmBtn = byId('swarm');
     function swarmArmed() {
         return swarmBtn?.dataset.armed === 'true';
@@ -2924,11 +2922,11 @@ export function createChatInstance({
 
     swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
 
-    // Nano/Low/Max and the effort range write global owner settings; one module owns them.
+    // Each composer owns its room's Context and Effort settings.
     ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
-        saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
+        projectId, saveEffortRange: apiClient.ownerEffortRange, refreshState: refreshHeaderControlState, onLayout: () => updateMessagesPadding() });
 
-    // Arrow wrappers avoid MouseEvent leaking into sendMessage(planMode).
+    // Do not pass MouseEvent as planMode.
     sendBtn.addEventListener('click', () => sendMessage(swarmArmed()));
     bindEnterSubmit(input, sendBtn);
     input.addEventListener('keydown', (e) => {
@@ -2973,7 +2971,7 @@ export function createChatInstance({
         if (historySyncPromise) await historySyncPromise;
         await historyPager.whenIdle();
         if (destroyed || !current()) return;
-        if (historyPager.getState().canNewer || historyWindow?.horizonGap) {
+        if (historyPager.getState().away || historyWindow?.horizonGap) {
             if ((await historyPager.latest()).status !== 'applied') return;
         }
         if (destroyed || !current()) return;
@@ -3034,8 +3032,7 @@ export function createChatInstance({
 
     installChatResizeObservers();
 
-    // Per-thread drafts survive destroy-on-close: save on input, restore on
-    // creation, clear on send.
+    // Per-thread drafts survive room closure; Send clears them.
     function saveInputDraft() {
         try {
             if (input.value) sessionStorage.setItem(storeKey(CHAT_DRAFT_KEY), input.value);
@@ -3237,10 +3234,10 @@ export function createChatInstance({
         applyPage: (messages, descriptor) => {
             pageHistoryIds.set(descriptor.id, new Set(messages.flatMap(historyRowIds)));
             const oldRecentIds = recentHistoryIds;
-            const admitted = descriptor.direction === 'latest' && acceptRecentWindow(descriptor, messages);
+            const admitted = descriptor.direction === 'latest' && (acceptRecentWindow(descriptor, messages) || descriptor.rechained);
             const archived = descriptor.direction !== 'recent' && descriptor.direction !== 'latest';
             if (!archived) pagerRecent = descriptor;
-            applyHistoryMessages(messages, { archived });
+            applyHistoryMessages(messages, { ...descriptor, archived });
             // The present re-anchors the chain: rows no page or window owns any more
             // (windows kept while the reader was in older history) go with it.
             if (admitted) withStableViewport(() => releaseHistoryIds(new Set([...oldRecentIds,
@@ -3254,6 +3251,14 @@ export function createChatInstance({
             pageHistoryIds.delete(descriptor.id);
             withStableViewport(() => releaseHistoryIds(ids));
         },
+        // Rows stored since the newest read join its window.
+        applyArrivals: (messages, { window, fromReconnect }) => {
+            for (const id of messages.flatMap(historyRowIds)) recentHistoryIds.add(id);
+            applyHistoryMessages(messages, { fromReconnect });
+            readReceipt.arrived(window);
+        },
+        readNewest: syncHistory, newestInFlight: () => historySyncPromise,
+        canArrive: () => sourceHydrated && lastHistorySyncSucceeded && !liveCardBound.isArmed(),
         isPageProtected: isHistoryPageProtected,
         onState: snapshot => syncLoadOlderControl(snapshot),
     });
@@ -3270,7 +3275,7 @@ export function createChatInstance({
     async function loadOlderHistory() {
         if (historyControls.recentFailed()) {
             const owned = onHistoryRetry?.();
-            return historySyncPromise ? owned : syncHistory({ includeUser: true });
+            return historySyncPromise ? owned : syncHistory();
         }
         const snapshot = historyPager.getState();
         if (snapshot.error?.body?.reason_code === 'history_view_changed') {
@@ -3711,11 +3716,8 @@ export function createChatInstance({
         updateMessagesPadding();
         loadUiPreferences()
             // Reconnect refetches lost task_done; first open shares idle-gated hydration.
-            .then(() => (isReconnect
-                ? syncHistory({ includeUser: !historyLoaded, fromReconnect: isReconnect })
-                : waitForHydrationWindow().then(
-                    () => awaitInitialHydration({ includeUser: !historyLoaded }),
-                )))
+            .then(() => (isReconnect ? syncHistory({ fromReconnect: true })
+                : waitForHydrationWindow().then(awaitInitialHydration)))
             .then(() => {
                 if (reconnectBanner) {
                     addMessage(reconnectBanner, 'system', false, null, false, { ephemeral: true, systemType: 'reconnect' });
@@ -3755,7 +3757,7 @@ export function createChatInstance({
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        hostReady: () => hostReady });
+        historyPager, showLatest, hostReady: () => hostReady });
 
     return {
         page,
