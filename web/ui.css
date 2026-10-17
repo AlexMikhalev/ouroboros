@@ -443,7 +443,7 @@
 
 
 .ui-chip,
-:where(.status-badge, .skills-status-chip, .mcp-server-status, .evo-runtime-pill, .evo-runtime-chip) {
+:where(.status-badge, .mcp-server-status, .evo-runtime-pill, .evo-runtime-chip) {
     display: inline-flex;
     align-items: center;
     gap: 6px;
