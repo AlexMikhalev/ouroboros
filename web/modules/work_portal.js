@@ -115,6 +115,7 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
     const census = new Map();
     let censusComplete = false;
     let bindings = {};
+    let bindingsKnown = false;  // the first `task_bindings` is the baseline, not news
     const projects = new Map();
     // History reads newest pages first: a final can arrive before the older row that binds its card.
     const completions = new Map();
@@ -186,6 +187,8 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         if (!isPortal(record)) {
             completions.set(id, row);
             while (completions.size > 200) completions.delete(completions.keys().next().value);
+            // A final of a work Main holds no card for may be a portal's Continue that ended unseen.
+            if (!record?.root?.isConnected) askAbout(id, key(row.project_id));
             return false;
         }
         completions.delete(id);
@@ -289,23 +292,29 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         if (record?.root?.isConnected) ask(record, key(event.detail.successorId));
     });
 
-    // A Continue made anywhere else (another chat or tab, the mind) is written on the predecessor's own record; the
-    // census then lists its successor. A new root that may be the Continue of a settled card here (its Continue
-    // control names no successor yet, or that root) is when to ask: a root whose frames reach this chat (a room,
-    // Main's own work) has a card here; a portal's successor runs in the portal's Project and has none in Main.
+    // A Continue made anywhere else (another chat or tab, the mind) is written on the predecessor's own record. A work
+    // that may be its successor (a new root in the census, or, for a portal, a new binding or a final of a work Main
+    // holds no card for) is when a settled card here asks: one whose Continue control names no successor yet, or that
+    // work. A root whose frames reach this chat (a room, Main's own work) pairs with a card of this chat; a cardless one
+    // only with a Main portal of the Project it names. Project membership alone never joins the cards: only the
+    // record's admitted link does.
+    function askAbout(rootId, projectId = '') {
+        if (!rootId || follows.has(rootId)) return;
+        const candidate = records.get(rootId);
+        const here = Boolean(candidate?.root?.isConnected);
+        for (const record of records.values()) {
+            if (record.isSubagent || !record.finished || !record.root?.isConnected || record.root.dataset.episodeOf
+                || record === candidate) continue;
+            const scoped = here ? !isPortal(record) && !candidate.episodeName
+                : isMain && isPortal(record) && Boolean(projectId) && projectId === record.root.dataset.projectId;
+            const named = scoped ? continueControlSuccessor(record) : null;
+            if (named !== null && (!named || named === rootId)) ask(record, rootId);
+        }
+    }
+
     function askContinued() {
-        const roots = [...census.values()].filter((row) => row?.kind === 'managed_task' && !row.parent_task_id
-            && key(row.activity_id) && !follows.has(key(row.activity_id)));
-        for (const record of roots.length ? records.values() : []) {
-            const named = !record.isSubagent && record.finished && record.root?.isConnected && !record.root.dataset.episodeOf
-                ? continueControlSuccessor(record) : null;
-            for (const row of named === null ? [] : roots) {
-                const rootId = key(row.activity_id);
-                const candidate = records.get(rootId);
-                const scoped = candidate?.root?.isConnected ? !isPortal(record) && !candidate.episodeName && candidate !== record
-                    : isMain && isPortal(record) && key(row.project_id) === record.root.dataset.projectId;
-                if (scoped && (!named || named === rootId)) ask(record, rootId);
-            }
+        for (const row of census.values()) {
+            if (row?.kind === 'managed_task' && !row.parent_task_id) askAbout(key(row.activity_id), key(row.project_id));
         }
     }
 
@@ -322,7 +331,12 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
         }
         if (!isMain) return askContinued();  // a room has no portals; its cards still follow a Continue
         if (Array.isArray(data.projects)) for (const project of data.projects) if (project?.id) projects.set(project.id, project);
-        if (data.task_bindings && typeof data.task_bindings === 'object') bindings = data.task_bindings;
+        let fresh = [];
+        if (data.task_bindings && typeof data.task_bindings === 'object') {
+            if (bindingsKnown) fresh = Object.keys(data.task_bindings).filter((id) => !(id in bindings));
+            bindings = data.task_bindings;
+            bindingsKnown = true;
+        }
         onDomWrite(() => {
             let changed = false;
             for (const record of records.values()) {
@@ -337,6 +351,7 @@ export function createWorkPortals({ isMain, feed, records, card, onDomWrite, isC
             return reconcilePortalNotes(feed) || changed;
         });
         for (const successorId of [...follows.keys()]) hydrate(successorId);
+        for (const id of fresh) if (!records.get(id)?.root?.isConnected) askAbout(id, key(bindings[id]?.project_id));
         askContinued();
     }
 

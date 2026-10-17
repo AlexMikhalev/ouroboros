@@ -571,3 +571,59 @@ test('a chain of successors that each ended unseen follows its proven links to o
         assertSettledFollow(f, [node, f.card('w-1-c1')], { id: 'w-1-c2', episodes: 3 });
     } finally { f.close(); }
 });
+
+// Main already read the moved work's Failed record (no link yet) and offers Continue; the owner continues in the room and
+// the successor finishes before any census lists it (astra W3). What Main still receives about it: its new Project
+// binding and its mirrored final. Either is a reason for the settled portals of that Project to read their own record
+// once; only the record's admitted link joins the cards. Project membership alone never does.
+async function failedWithContinue(f, details) {
+    const node = await runningPortal(f);
+    details['w-1'] = failedDetail({ continuation_offer: { eligible: true, cause: 'model_provider_failed' } });
+    f.state({ task_bindings: bindings, active_chat_activities: [] });
+    await settle();
+    assert.deepEqual(controls(f, 'w-1'), ['Reply', 'Continue'], 'Main shows the interruption and offers Continue');
+    return node;
+}
+const lateFinal = (id = 'w-1-c1') => ({ role: 'system', system_type: 'project_completion_summary', task_id: id, project_id: 'p-1',
+    project_name: 'Audit', content: 'The audit is complete.', ts: '2026-10-10T12:42:30Z' });
+
+test('W3: a portal already showing Failed follows a later Continue that finished between censuses', async () => {
+    for (const via of ['binding and final', 'binding', 'final']) {
+        const details = {};
+        const f = fixture({ details });
+        try {
+            const node = await failedWithContinue(f, details);
+            details['w-1'] = failedDetail(continuedBy());
+            details['w-1-c1'] = finishedSuccessor();
+            const after = { task_bindings: { ...bindings, ...(via === 'final' ? {} : { 'w-1-c1': { project_id: 'p-1', chat_id: 7 } }) },
+                active_chat_activities: [] };
+            if (via !== 'binding') f.frame(lateFinal());
+            for (let pass = 0; pass < 3; pass += 1) { f.state(after); await settle(); }
+            assert.ok(f.card('w-1-c1'), `${via}: still the old episode, reads=${JSON.stringify(f.reads)}`);
+            assertSettledFollow(f, [node]);
+        } finally { f.close(); }
+    }
+});
+
+test('W3: an unrelated work in the same Project, or a claim still bound, leaves the Failed card as it was', async () => {
+    for (const [claim, other] of [['none', 'w-7'], ['bound', 'w-1-c1']]) {
+        const details = {};
+        const f = fixture({ details });
+        try {
+            const node = await failedWithContinue(f, details);
+            const reads = () => f.reads.filter((id) => id === 'w-1').length;
+            const read = reads();
+            if (claim === 'bound') details['w-1'] = failedDetail(continuedBy('bound'));
+            details[other] = finishedSuccessor(other);
+            const after = { task_bindings: { ...bindings, [other]: { project_id: 'p-1', chat_id: 7 } }, active_chat_activities: [] };
+            f.frame(lateFinal(other));
+            for (let pass = 0; pass < 3; pass += 1) { f.state(after); await settle(); }
+            assert.equal(f.card(other), null, `${claim}: no second card for ${other}`);
+            assert.equal(node.hidden, false, 'the old card stays');
+            assert.equal(f.part('w-1', 'live-phase').textContent, 'Failed');
+            assert.ok(reads() > read, 'the observation made the settled portal read its own record');
+            assert.ok(reads() <= read + 2, 'once per observation, never a poll');
+            assert.deepEqual(controls(f, 'w-1'), ['Reply', claim === 'bound' ? 'Retry Continue' : 'Continue']);
+        } finally { f.close(); }
+    }
+});
