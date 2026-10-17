@@ -630,8 +630,6 @@ body.resizing-panels { user-select: none; }
     padding: var(--space-3) var(--space-3) var(--space-1);
     color: var(--text-muted);
     font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
 }
 
 .nav-chevron {
@@ -4384,8 +4382,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     margin-bottom: 8px;
     display: flex;
     align-items: center;
@@ -4536,8 +4532,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-weight: 700;
     flex-shrink: 0;
     min-width: 78px;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
     font-size: 11px;
 }
 
@@ -5079,8 +5073,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: 13px;
     font-weight: 600;
     color: var(--text-meta);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
 }
 
 .activity-row {
@@ -5523,8 +5515,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .skills-access-label {
     color: var(--text-meta);
     font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     margin-right: 4px;
 }
 
@@ -5596,8 +5586,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .skills-detail-label {
     color: var(--text-meta);
     font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     min-width: 90px;
 }
 
@@ -5718,8 +5706,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-radius: 999px;
     font-size: 10.5px;
     font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     vertical-align: middle;
     border: 1px solid transparent;
 }
@@ -5755,8 +5741,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-radius: var(--radius-xs);
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     white-space: nowrap;
 }
 
@@ -6171,8 +6155,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     margin: 0 0 4px 0;
     font-size: 13px;
     color: var(--text-meta);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .marketplace-modal-actions {
