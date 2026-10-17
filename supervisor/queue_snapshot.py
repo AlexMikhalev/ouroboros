@@ -13,6 +13,7 @@ import datetime
 import json
 import logging
 import pathlib
+import threading
 import time
 import uuid
 from typing import Any, Optional
@@ -48,23 +49,27 @@ def _queue():
 
 log = logging.getLogger(__name__)
 
-# Snapshot paths this process restored its queue from (``restore_pending_from_snapshot``). Until it did,
-# or published one itself, its empty maps prove nothing about the saved queue on disk (#1952): the
-# stop doors (the worker shutdown and the restart exit) then leave that snapshot as it is.
+# Snapshot paths whose saved queue this process took into custody: a ``restore_pending_from_snapshot``
+# that read it and decided every row. Until then, or until it published one itself, its maps prove
+# nothing about the saved queue on disk (#1952), whichever door publishes. ``_RESTORING`` names the
+# thread reading one right now.
 _RESTORED: set = set()
-_STOP_REASONS = frozenset({"kill_workers", "pre_restart_exit"})
+_RESTORING: dict = {}
 
 
 def _keeps_saved_queue(path: Any, *held: Any) -> bool:
-    """Whether a publication from this process must leave the snapshot on disk as it is: the process
-    holds no work at all and neither restored nor published that snapshot, which still names pending
-    or running rows. That is the previous generation's saved queue (a stop door during the boot, a
-    boot without a provider, a stop before the supervisor restored it); an empty write would erase
-    every saved Pause it carries, and Resume would then find nothing to resume."""
-    if any(held):
-        return False
+    """Whether a publication from this process must leave the snapshot on disk as it is: another
+    thread is restoring it now, or the process holds no work at all and neither restored nor
+    published that snapshot, which still names pending or running rows. That is the previous
+    generation's saved queue (any publication during the boot: a stop, Update or Rollback, a boot
+    without a provider); an empty or partial write would erase saved Pauses it carries, and Resume
+    would then find nothing to resume."""
     key, publication = str(pathlib.Path(path).absolute()), _queue().QUEUE_PUBLICATION
     if key in _RESTORED or (publication is not None and str(pathlib.Path(publication[0]).absolute()) == key):
+        return False
+    if _RESTORING.get(key, threading.get_ident()) != threading.get_ident():
+        return True
+    if any(held):
         return False
     try:
         saved = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
@@ -130,9 +135,9 @@ def persist_queue_snapshot(reason: str = "") -> bool:
     Snapshots PENDING/RUNNING under the queue lock: iterating the live dicts
     while HTTP handlers mutate them raised "dictionary changed size during
     iteration" in the supervisor loop (counted toward its crash limit).
-    True when published, False when the publication failed, None when a stop
-    door of a process that never restored the queue keeps the saved one
-    (``_keeps_saved_queue``).
+    True when published, False when the publication failed, None when the
+    saved queue on disk is kept because this process has not taken it into
+    custody (``_keeps_saved_queue``).
     """
     from supervisor.direct_roots import collect_direct_roots
 
@@ -145,10 +150,9 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         ]
         acceptance_fences = [dict(row) for row in _queue().ACCEPTANCE_FENCES.values()]
         budget_root_fences = [dict(row) for row in _queue().BUDGET_ROOT_FENCES.values()]
-        if reason in _STOP_REASONS and _keeps_saved_queue(
-                _queue().QUEUE_SNAPSHOT_PATH, pending_items, running_items, acceptance_fences,
-                budget_root_fences, (direct or {}).get("roots")):
-            log.info("Queue snapshot kept (reason=%s): this process holds no work and never restored it", reason)
+        if _keeps_saved_queue(_queue().QUEUE_SNAPSHOT_PATH, pending_items, running_items, acceptance_fences,
+                              budget_root_fences, (direct or {}).get("roots")):
+            log.info("Queue snapshot kept (reason=%s): this process has not taken the saved queue into custody", reason)
             return None
         # Honest worker-pool counts from the ACTUAL pool (not the configured max): the live
         # pool can be smaller (a crash-storm/direct-chat fallback clears WORKERS) and a slot
@@ -911,13 +915,24 @@ def restore_pending_from_snapshot(
 
     Returns the PENDING count revived; ``terminalized`` separately collects
     surviving RUNNING ids fenced with cancel intents for the caller to name.
+    While it reads, another thread's publication keeps the saved queue; an
+    unreadable snapshot or an interrupted restore never grants the process
+    custody of it (``_keeps_saved_queue``).
     """
     if _queue().PENDING:
         return 0
+    key = str(pathlib.Path(_queue().QUEUE_SNAPSHOT_PATH).absolute())
+    _RESTORING[key] = threading.get_ident()
+    try:
+        return _restore_pending(key, max_age_sec, terminalized)
+    finally:
+        _RESTORING.pop(key, None)
+
+
+def _restore_pending(key: str, max_age_sec: int, terminalized: Optional[list]) -> int:
     try:
         from ouroboros.queue_observation import load_queue_document, queue_stamp
         snap = load_queue_document(_queue().DRIVE_ROOT)
-        _RESTORED.add(str(pathlib.Path(_queue().QUEUE_SNAPSHOT_PATH).absolute()))  # its publications may now replace it
         # An unreadable snapshot (its marker reads as empty) names no queue row; a direct root queue init's
         # handover names as caught still restores, over an empty, stale queue (the gate below).
         unread = bool(snap.get("_snapshot_invalid") or snap.get("_snapshot_missing"))
@@ -991,12 +1006,14 @@ def restore_pending_from_snapshot(
             restored += _refuse_restore_invalid_fences(snapshot_pending, budget=malformed_budget_fences)
             _record_queue_restore(restored=restored, terminalized_running=fenced_running,
                                   direct_roots_incomplete=direct_roots.get("incomplete", False))
+            _RESTORED.add(key)  # every row decided: this process's publications may now replace it
             if restored > 0:
                 _queue().persist_queue_snapshot(reason="queue_restored")
             return restored
         if stale and not snapshot_pending and not restored:
             _record_queue_restore(terminalized_running=fenced_running,
                                   direct_roots_incomplete=direct_roots.get("incomplete", False))
+            _RESTORED.add(key)
             return 0
 
         skipped_terminal, invalid_depth_restore = 0, []
@@ -1197,6 +1214,7 @@ def restore_pending_from_snapshot(
         sweep_orphaned_budget_fences(
             _queue().PENDING, _queue().BUDGET_ROOT_FENCES, _queue().DRIVE_ROOT,
         )
+        _RESTORED.add(key)
         if restored > 0 or skipped_terminal > 0 or invalid_depth_restore or blocked_restore:
             _queue().persist_queue_snapshot(reason="queue_restored")
         return restored

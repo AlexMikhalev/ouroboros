@@ -1,0 +1,146 @@
+"""The saved queue across a generation that has not restored it yet (razzant/ouroboros#1952).
+
+Until a restore read ``queue_snapshot.json`` and decided every row, or the process published one
+itself, no publication of a process that holds no work replaces a snapshot that still names pending
+or running rows, and none replaces it while another thread restores it (``supervisor/queue_snapshot.
+_keeps_saved_queue``): a stop, Update or Rollback during the boot keeps every saved Pause for the next
+generation, whose Resume finds it.
+"""
+from __future__ import annotations
+
+import json
+import pathlib
+
+import pytest
+
+from tests._budget_pause_exact_helpers import _install_queue, _parked
+
+
+@pytest.mark.parametrize("door", ["kill_workers", "publication", "update_quiesce", "rollback_aborted"])
+def test_a_stop_before_the_queue_restore_keeps_every_saved_pause_for_resume(tmp_path, monkeypatch, door):
+    """#1952: a generation that stops before its supervisor restored the queue holds no work of its own
+    (a stop door during the boot, Update or Rollback pressed then, a boot without a provider); no
+    publication of it may replace the saved snapshot with that emptiness, so the next generation
+    restores the saved Pause and the owner's Resume finds it. An aborted door still readmits the pool.
+    Once a generation restored the queue, an emptied queue is published as before."""
+    from ouroboros import process_custody
+    from ouroboros.gateway import control
+    from ouroboros.tools import services
+    from supervisor import git_ops, queue_snapshot
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    monkeypatch.setattr(queue_snapshot, "_RESTORED", set())
+    _parked(tmp_path, monkeypatch, task_id="saved-root")
+
+    def saved_ids():
+        return [row["id"] for row in json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())["pending"]]
+
+    def shutdown():
+        workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                             stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+
+    def stop():
+        if door == "kill_workers":
+            shutdown()
+        elif door == "publication":
+            assert queue.persist_queue_snapshot(reason="pre_restart_exit") is None
+        elif door == "update_quiesce":  # the Update door's pool stop, then the restart exit's shutdown
+            assert workers.kill_workers_for_update(result_reason="Owner requested update") == []
+            shutdown()
+        else:  # the Rollback door stops the pool, the checkout switch fails, the pool is readmitted
+            monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path, raising=False)
+            monkeypatch.setattr(services, "kill_all_services", lambda *_a, **_k: [])
+            monkeypatch.setattr(process_custody, "quiesce_custodied_services", lambda *_a, **_k: (True, []))
+            started = []
+            monkeypatch.setattr(workers, "ensure_worker_pool_started", lambda **kw: started.append(kw) or True)
+            try:
+                assert control._quiesce_repo_writers("manual_rollback") == []
+                control._respawn_workers_after_failed_update()
+            finally:
+                workers.open_repo_writer_admission()
+            assert started, "the aborted door readmits the pool"
+
+    shutdown()
+    assert saved_ids() == ["saved-root"]  # generation A stopped with its saved Pause
+    workers.PENDING[:] = []
+    queue.init(tmp_path)  # generation B: fresh maps, nothing published, nothing restored
+    stop()
+    assert saved_ids() == ["saved-root"], "an unrestored empty queue never replaces the saved one"
+    queue.init(tmp_path)  # generation C restores it
+    assert queue.restore_pending_from_snapshot() == 1
+    assert queue.resume_budget_paused_task("saved-root")["ok"] is True
+    workers.PENDING[:] = []  # its work ended: an emptied queue it restored is published
+    assert queue.persist_queue_snapshot(reason="test") is True and saved_ids() == []
+
+
+@pytest.mark.parametrize("boundary", ["stopped_during_the_restore", "snapshot_unreadable_at_the_restore"])
+def test_a_restore_that_did_not_finish_grants_no_custody_of_the_saved_queue(tmp_path, monkeypatch, boundary):
+    """The saved queue passes into this process's custody only when a restore read it and decided every
+    row: a stop while another thread restores it (rows not adopted yet), or a restore that could not
+    read it (a transient error), leaves the snapshot to the next generation, whose Resume finds it."""
+    import threading
+
+    from supervisor import queue_snapshot, restart_retention
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    monkeypatch.setattr(queue_snapshot, "_RESTORED", set())
+    _parked(tmp_path, monkeypatch, task_id="saved-root")
+    assert queue.persist_queue_snapshot(reason="test") is True
+    saved = queue.QUEUE_SNAPSHOT_PATH.read_bytes()
+    workers.PENDING[:] = []
+    queue.init(tmp_path)  # the next generation, before its restore
+
+    def stop():
+        workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                             stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+
+    if boundary == "stopped_during_the_restore":
+        entered, release = threading.Event(), threading.Event()
+        real_hold = restart_retention.saved_sleep_hold_reason
+
+        class Stopped(BaseException):
+            pass
+
+        def held(root, **kwargs):
+            if threading.current_thread().name == "restore":
+                entered.set()
+                assert release.wait(10)
+                raise Stopped()  # the process exits before any row is adopted
+            return real_hold(root, **kwargs)
+
+        monkeypatch.setattr(restart_retention, "saved_sleep_hold_reason", held)
+
+        def restore():
+            try:
+                queue.restore_pending_from_snapshot()
+            except Stopped:
+                pass
+
+        thread = threading.Thread(target=restore, name="restore")
+        thread.start()
+        try:
+            assert entered.wait(10)
+            stop()
+        finally:
+            release.set()
+            thread.join(10)
+        monkeypatch.setattr(restart_retention, "saved_sleep_hold_reason", real_hold)
+    else:
+        real_read = pathlib.Path.read_text
+
+        def unreadable(path, *args, **kwargs):
+            if path == queue.QUEUE_SNAPSHOT_PATH:
+                raise PermissionError("a transient read error")
+            return real_read(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(pathlib.Path, "read_text", unreadable)
+            assert queue.restore_pending_from_snapshot() == 0
+        stop()
+    assert queue.QUEUE_SNAPSHOT_PATH.read_bytes() == saved
+    queue_snapshot._RESTORED.clear()
+    queue.init(tmp_path)  # the following generation
+    assert queue.restore_pending_from_snapshot() == 1
+    assert queue.resume_budget_paused_task("saved-root")["ok"] is True
