@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests import _dialogue as dialogue_test
 from tests.test_consolidator_context_fit import fit  # noqa: F401 — offline Light route/window facts
 
 ROOT = "late-root"
@@ -155,7 +156,7 @@ def _jsonl(path: pathlib.Path) -> list:
 
 
 def _facts_rows(f) -> list:
-    return [row for row in _jsonl(f.root / "logs" / "chat.jsonl") if row.get("summary_kind") == "host_task_facts"]
+    return [row for row in dialogue_test.log_rows(f.root / "logs" / "chat.jsonl") if row.get("summary_kind") == "host_task_facts"]
 
 
 def _events(f, kind: str) -> list:
