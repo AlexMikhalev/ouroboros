@@ -782,7 +782,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # (``__extension_imports/*``, ``.extension-*.lock``), ``state/dialog.sqlite`` and its name-tier lock
 # ``state/dialog.lock`` (``ouroboros/dialogue_store.py``; one section-3 row that also names the cutover
 # and import-job locks).
-EXPECTED_SCAN_PATHS = 387
+# 387 -> 388: the saved storage count ``state/storage_measurement.json`` (``ouroboros/storage.py``; the last
+# two finished counts the Dashboard gauge and the mind's storage fact read) has its own row in section 2.
+EXPECTED_SCAN_PATHS = 388
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

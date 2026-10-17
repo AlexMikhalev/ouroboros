@@ -20,8 +20,10 @@ import time
 _REPORT_BYTES = 4096
 
 
-def spawn_maintenance_job(data_root, repo_dir, purpose):
-    """The audit and packer share session custody, a dedicated group and containment env."""
+def spawn_maintenance_job(data_root, repo_dir, purpose, *, args=(), **popen):
+    """The audit, the maintenance child and the storage count share session custody, a dedicated
+    group and containment env. ARGS follow the child's standard arguments; POPEN overrides the
+    stream defaults (a stdin pipe for a child that reads its input)."""
     from ouroboros.config import SETTINGS_PATH
     from ouroboros.process_containment import CONTAINMENT_ENV_PREFIX
     from ouroboros.process_custody import current_custody_session_id, lifeline_parent_env, spawn_supervised
@@ -36,10 +38,28 @@ def spawn_maintenance_job(data_root, repo_dir, purpose):
     # Never share the server group: custody-publication failure kills this group.
     return spawn_supervised(
         [sys.executable, "-m", "ouroboros." + purpose, "--data-root", str(data_root),
-         "--custody-session", current_custody_session_id()],
+         "--custody-session", current_custody_session_id(), *args],
         drive_root=data_root, purpose=purpose, scope="session", cwd=str(repo_dir), env=env,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        **{"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL, **popen},
     )
+
+
+def read_job_lines(process, on_line, signal, *, line_bytes=16 * _REPORT_BYTES):
+    """Streaming IPC, the report reader's sibling for a child that talks while it works (the
+    storage count): ON_LINE gets each complete line; a line past the bound signals the captured
+    child and ends the read; the pipe always closes."""
+    try:
+        while True:
+            raw = process.stdout.readline(line_bytes + 1)
+            if not raw:
+                break
+            if len(raw) > line_bytes:
+                signal(process)
+                break
+            on_line(raw)
+        return process.wait()
+    finally:
+        process.stdout.close()
 
 
 def read_job_report(process, signal):

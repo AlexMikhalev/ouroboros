@@ -460,15 +460,23 @@ export const apiClient = {
     /** @returns {Promise<import('./api_types.js').FsDirsResponse>} */
     fsDirs: (path = '') => fetchJson(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { cache: 'no-store' }),
     /**
-     * Dashboard storage: the server's last measurement, read passively (no walk, no write).
+     * Dashboard storage: the saved count, the running count's progress and fresh free space, read
+     * passively (no walk, no write); `count` names the finished count this client already holds.
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
-    storage: (init = {}) => fetchJson('/api/storage', { cache: 'no-store', ...init }),
+    storage: ({ count = '', ...init } = {}) => fetchJson(
+        `/api/storage${count ? `?count=${encodeURIComponent(count)}` : ''}`, { cache: 'no-store', ...init },
+    ),
     /**
-     * Start one bounded measurement, or join the running one (202 either way).
+     * Start one complete count in the server's child, or join the running one (202 either way).
      * @returns {Promise<import('./storage_types.js').StorageResponse>}
      */
     measureStorage: () => jsonPost('/api/storage/measure', {}),
+    /**
+     * Stop the running count; the saved count stays.
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    cancelStorageMeasure: () => jsonPost('/api/storage/measure/cancel', {}),
     /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
     /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
