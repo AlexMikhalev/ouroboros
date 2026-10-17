@@ -3758,6 +3758,93 @@ body.resizing-panels { user-select: none; }
    takes only the room they leave (a zero basis never wraps the row; it shrinks first and clips), and a chip keeps
    its own width. */
 .chat-voice-slot { display: inline-flex; flex: 0 0 auto; align-items: center; gap: var(--space-1); }
+/* The dictation mic and its recording face (voice_controls.js): quiet finger-sized controls like "+", whose negative
+   margin keeps the row's height; the chevron is a narrow, finger-high door to the engine menu. While recording, Stop
+   wears the crimson tone of a control that is on now and the dot follows the microphone's level. */
+.voice-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin: calc((var(--composer-control-height) - var(--touch-target-min)) / 2) 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+.voice-btn:hover { color: var(--text-primary); background: rgba(var(--neutral-rgb), 0.06); }
+.voice-btn:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+.voice-btn:disabled { color: var(--text-disabled); background: transparent; cursor: default; }
+.voice-chevron { width: 24px; margin-left: calc(-1 * var(--space-1)); }
+.voice-stop:not(:disabled), .voice-stop:not(:disabled):hover { background: var(--tone-crimson); color: var(--tone-crimson-ink); }
+.voice-time, .voice-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: var(--composer-control-font-size);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.voice-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--tone-crimson);
+    transform: scale(calc(0.75 + var(--voice-level, 0) * 0.75));
+}
+.chat-voice-slot[data-voice-state="permission"] .voice-dot { opacity: 0.4; }
+/* Dictated words whose draft changed meanwhile wait above the composer as a float sheet until the owner puts them in,
+   copies or discards them; the draft below stays as it is. */
+.voice-offer {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + var(--space-2));
+    z-index: 5;
+    box-sizing: border-box;
+    width: min(100%, 420px);
+    padding: var(--space-3);
+    border-radius: var(--radius-object);
+    background: var(--surface-float);
+    color: var(--text-primary);
+    box-shadow: var(--elev-float);
+    -webkit-backdrop-filter: var(--glass);
+    backdrop-filter: var(--glass);
+}
+.voice-offer-note { margin: 0 0 var(--space-1); color: var(--text-meta); font-size: var(--type-meta); }
+.voice-offer-text { margin: 0; max-height: 6.5em; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.voice-offer-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.voice-offer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    border-radius: var(--pill-radius);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.voice-offer-close:hover { background: var(--tone-quiet-hover); color: var(--text-primary); }
+/* Engine and voice menus: the shared menu sheet, an item's name over its destination line in the meta ink. */
+.voice-menu { width: min(360px, var(--ui-popup-max-width)); }
+.ui-popup .voice-menu-item { display: flex; flex-direction: column; gap: 2px; }
+.ui-popup .voice-menu-item[aria-checked="true"] { background: var(--accent-12); }
+.voice-menu-item[aria-checked="true"] .voice-menu-name { color: var(--accent-light); }
+.voice-menu-name { font-weight: 500; }
+.voice-menu-line, .voice-menu-note { color: var(--text-meta); font-size: var(--type-meta); }
+.voice-menu-hint { color: var(--accent-light); font-size: var(--type-meta); font-weight: 600; }
+.voice-menu-head { padding: var(--space-2) var(--space-3) var(--space-1); color: var(--text-meta); font-size: var(--type-meta); font-weight: 500; }
+.voice-menu-note { padding: 0 var(--space-3) var(--space-2); }
 .chat-composer-chips {
     display: flex;
     flex: 1 1 0;
@@ -9600,7 +9687,7 @@ textarea.chat-input {
 /* A question's × is a quiet control: no body until hover. */
 :root[data-theme] .chat-quiz-close { border-color: transparent; background: transparent; }
 :root[data-theme] .chat-quiz-close:hover:not(:disabled) { border-color: transparent; background: var(--tone-quiet-hover); }
-:root[data-theme] :is(.chat-plus-btn, .rw-more) { border-radius: var(--pill-radius); }
+:root[data-theme] :is(.chat-plus-btn, .rw-more, .voice-btn) { border-radius: var(--pill-radius); }
 /* Navigation over the transcript: Load older rests in the reading flow; ↓ latest and Back to reading fly over it. */
 :root[data-theme] .chat-load-older-btn { border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest); }
 :root[data-theme] :is(.chat-scroll-bottom-btn, .rw-back) {

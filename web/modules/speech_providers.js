@@ -1,8 +1,10 @@
 /** Provider facts and strict saved selection; sources are injected by the page.
  * source(kind) returns live contributions; clients() returns {key, kind, impl}.
  * No skill is enabled, selected or substituted by reading this registry.
+ * getSpeech() is the page's hub over the contributions store and page modules.
  */
-import { fetchJson } from './api_client.js';
+import { apiClient, fetchJson, jsonPost } from './api_client.js';
+import { getContributions } from './contributions.js';
 import { captureAvailability, captureReason, isLoopback } from './media_capture.js';
 import { recordingFormat } from './voice_recorder.js';
 
@@ -85,6 +87,80 @@ export function createSpeechProviders({ source = () => [], clients = () => [],
             return saveUiPreferences({ voice: { [kind]: key } });
         },
     };
+}
+
+/**
+ * The page's speech engines: the store's live providers (a page-module fault included) merged with the client
+ * providers page modules registered, the saved choices, and one change notice for every control that shows them.
+ * Saving a choice re-reads the projection, so every room sees it. `enableOffer` turns a bundled engine on through
+ * the Skills toggle and then chooses it; nothing else enables or substitutes an engine.
+ */
+export function createSpeechHub({ store, save = payload => apiClient.saveUiPreferences(payload), post = jsonPost,
+    emit = (name, result) => globalThis.dispatchEvent?.(new CustomEvent('ouro:skill-lifecycle',
+        { detail: { action: 'enable', name, ...result } })), env = globalThis } = {}) {
+    let hosts = null;
+    let offHosts = () => {};
+    const listeners = new Set();
+    const notify = () => {
+        for (const listener of [...listeners]) {
+            try { listener(); } catch (error) { console.error('speech listener failed', error); }
+        }
+    };
+    const registry = createSpeechProviders({ env, saveUiPreferences: save,
+        source: kind => store.providers(kind).map(row => ({ ...row, fault: store.fault(row.key) })),
+        clients: () => (hosts ? [...hosts.clientProviders('stt'), ...hosts.clientProviders('tts')] : []),
+        preferences: () => store.preferences() });
+    store.onChange(notify);
+    async function remember(voice) {
+        await save({ voice });
+        await store.refresh();
+        notify();
+    }
+    const voicePref = () => store.preferences()?.voice || {};
+    return {
+        list: registry.list,
+        selected: registry.selected,
+        offers: kind => store.offers(kind),
+        /** Follow the page modules' client providers (host_modules.js runtime). */
+        attachHosts(next) {
+            offHosts();
+            hosts = next || null;
+            offHosts = hosts?.onProvidersChange?.(notify) || (() => {});
+            notify();
+        },
+        onChange(listener) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        },
+        /** Choosing another Read aloud engine starts from its own voice pick. */
+        choose: (kind, key) => remember(kind === 'tts' ? { tts: key, tts_voice: '' } : { [kind]: key }),
+        chooseVoice: id => remember({ tts_voice: String(id || '') }),
+        voiceId: () => String(voicePref().tts_voice || ''),
+        /** The Read aloud engine: the chosen one (even when it cannot run: it says why), else a live one on this
+         * device, else any live one; null when there is none. */
+        readAloud() {
+            const chosen = registry.selected('tts');
+            if (chosen.key) return chosen;
+            const live = registry.list('tts').filter(row => row.available);
+            return live.find(row => row.destination === 'device') || live[0] || null;
+        },
+        async enableOffer(offer) {
+            const result = await post(`/api/skills/${encodeURIComponent(offer.skill)}/toggle`, { enabled: true });
+            if (result?.extension_action === 'extension_load_error')
+                throw new Error(result.extension_reason || `${offer.skill_label || offer.skill} did not start.`);
+            emit(offer.skill, result);
+            await remember({ stt: `${offer.skill}:${offer.id}` });
+            return result;
+        },
+    };
+}
+
+let shared = null;
+
+/** The page's one speech hub (app.js attaches the page-module runtime). */
+export function getSpeech() {
+    if (!shared) shared = createSpeechHub({ store: getContributions() });
+    return shared;
 }
 
 /** Hub speech routes accept raw audio and return text or the explicit no_speech status. */

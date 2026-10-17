@@ -89,7 +89,8 @@ export function createDictation({ capture = pageCapture, env = globalThis, readD
                 run.recorder = run.prepared.start(lease.stream);
                 run.recorder.result.catch(error => { if (!run.stopping) failed(run, error); });
             }
-            present('recording', { startedAt: Date.now() });
+            // The stream (absent for a client recognizer) feeds the face's level dot; the face never keeps it.
+            present('recording', { startedAt: Date.now(), stream: lease.stream || null });
             return { ok: true };
         }).catch(error => { failed(run, error); return { code: error.code || 'failed' }; });
     }

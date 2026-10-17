@@ -15,6 +15,7 @@ import { initFiles } from './modules/files.js';
 import { draftPort, getContributions } from './modules/contributions.js';
 import { bridgeContributedActions } from './modules/message_actions.js';
 import { startHostModules } from './modules/host_modules.js';
+import { startVoice } from './modules/voice_controls.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
 import { apiClient } from './modules/api_client.js';
@@ -304,12 +305,13 @@ mainChat = initChat(ctx);
 initFiles(ctx);
 
 // Skills' contributions (CLIENT_CONTRACT §11): one store, read now and on every lifecycle change; their message
-// actions join the row registry, and their page modules mount unless this start skips them (host_modules.js).
+// actions join the row registry, and their page modules mount unless this start skips them (host_modules.js). Voice
+// (voice_controls.js) reads their speech engines: the dictation mic, "+" → Add dictation… and Read aloud.
 const contributions = getContributions();
 contributions.attach({ ws });
 const visibleDraft = draftPort(() => projectInstances.get(navState.activeProjectId) || mainChat);
 bridgeContributedActions({ store: contributions, draft: visibleDraft });
-startHostModules({ store: contributions, draft: visibleDraft });
+startVoice({ hosts: startHostModules({ store: contributions, draft: visibleDraft }) });
 
 function hydrateOpenChatsFromState(data, snapshotRequestedAt) {
     mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt);

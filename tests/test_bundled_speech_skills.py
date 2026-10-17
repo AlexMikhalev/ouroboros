@@ -38,6 +38,9 @@ def test_actual_seed_is_valid_hash_bound_and_has_expected_enable_default(tmp_pat
     assert entries[0]["render"]["kind"] == "host"
     assert "page_module" in skill.manifest.permissions
     assert ("net" in skill.manifest.permissions) is (name == "browser_speech")
+    if name == "browser_speech":
+        # The chooser shows this before the engine runs: every browser's data path in the skill's own words.
+        assert all(vendor in entries[0]["title"] for vendor in ("Free", "Google", "Microsoft", "Apple"))
     assert skill.manifest.model_experience and skill.manifest.when_to_use
     # The new seed never erases a later owner choice on restamp.
     save_enabled(data, name, not enabled)

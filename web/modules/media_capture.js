@@ -42,6 +42,8 @@ const stopTracks = stream => stream?.getTracks().forEach(track => track.stop());
 export function createCaptureLease(env = globalThis) {
     let holder = null;
     const listeners = [];
+    // Panic (chat_activity.js raises ouro:panic after its /panic send) ends any capture at once.
+    env.addEventListener?.('ouro:panic', () => releaseAll('panic'));
     function listen(target, event, fn) {
         target?.addEventListener?.(event, fn);
         listeners.push(() => target?.removeEventListener?.(event, fn));
@@ -133,5 +135,5 @@ export function createCaptureLease(env = globalThis) {
 const pageCapture = createCaptureLease();
 export const acquire = options => pageCapture.acquire(options);
 export const currentHolder = () => pageCapture.currentHolder();
-// Panic releases all holders; room teardown calls its own handle.release().
+// Panic already releases every holder; room teardown calls its own handle.release().
 export const releaseAll = reason => pageCapture.releaseAll(reason);

@@ -63,7 +63,7 @@ def test_live_projection_instruction_review_and_disabled_offers(tmp_path, monkey
     installed(tmp_path, "off", kind="instruction", enabled=False)
     installed(tmp_path, "pending", kind="instruction", reviewed=False)
     installed(tmp_path, "unloaded", entries=[STT])
-    installed(tmp_path, "browser", entries=[{**CLIENT, "provides": "stt"}],
+    installed(tmp_path, "browser", entries=[{**CLIENT, "provides": "stt", "title": "Chrome sends audio to Google"}],
               permissions=["page_module"], enabled=False)
     assert extension_loader.load_extension(live, lambda: {}, drive_root=tmp_path) is None
     with client(tmp_path, monkeypatch) as http:
@@ -81,6 +81,9 @@ def test_live_projection_instruction_review_and_disabled_offers(tmp_path, monkey
         assert "sparkle" in payload["icons"]
         assert {item["skill"] for item in payload["offers"]["stt"]} == {"browser", "unloaded"}
         assert all(item["enabled"] is False for item in payload["offers"]["stt"])
+        # An offer carries its skill's own words on where audio goes, for the chooser before the engine runs.
+        assert {item["skill"]: item["title"] for item in payload["offers"]["stt"]} == {
+            "browser": "Chrome sends audio to Google", "unloaded": ""}
         index = http.get("/api/extensions").json()
         assert index["contributions"] == payload["contributions"]
         assert index["live"]["contributions"] == extension_loader.snapshot()["contributions"]

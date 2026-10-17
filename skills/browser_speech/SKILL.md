@@ -16,7 +16,7 @@ contributes:
   - id: speech
     provides: stt
     label: Browser speech
-    title: Free; audio may go to your browser vendor. The chooser names the destination on this device.
+    title: "Free. Your browser recognizes speech: Chrome sends audio to Google, Edge to Microsoft, Safari to Apple (on device when available)."
     runtime: client
     destination: vendor:Browser speech service
     render: {kind: host, entry: ui/stt.js}

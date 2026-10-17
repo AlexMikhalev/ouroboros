@@ -116,3 +116,19 @@ test('page hide, visibility hide and Panic release physical and logical holders'
         assert.equal(client.stream, null); client.release();
     }
 });
+
+test('Panic releases the holder at once and stops its tracks; a later capture still works', async () => {
+    const env = environment(), mic = stream();
+    env.navigator.mediaDevices.getUserMedia = () => Promise.resolve(mic);
+    const capture = createCaptureLease(env);
+    const lease = await capture.acquire({ owner: 'dictation', label: 'Dictation' });
+    env.dispatchEvent(new Event('ouro:panic'));
+    assert.equal(capture.currentHolder(), null, 'Panic ends the capture');
+    assert.equal(mic.track.stops, 1);
+    assert.equal(lease.signal.reason, 'panic', 'the holder learns why');
+    env.dispatchEvent(new Event('ouro:panic'));
+    env.navigator.mediaDevices.getUserMedia = () => Promise.resolve(stream());
+    const next = await capture.acquire({ owner: 'dictation' });
+    assert.equal(capture.currentHolder().owner, 'dictation');
+    next.release();
+});
