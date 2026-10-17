@@ -42,7 +42,7 @@ def test_navigation_shell_replaces_legacy_rail_selectors():
             "web/style.css",
             "web/modules/page_icons.js",
             "web/modules/skills.js",
-            "web/modules/marketplace.js",
+            "web/modules/skill_browse.js",
         )
     )
     assert "#nav-rail" not in combined

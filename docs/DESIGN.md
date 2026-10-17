@@ -236,7 +236,7 @@ Two failure modes this table exists to prevent, both observed in this codebase:
 The brand red is **one value**, `--accent`. Every appearance of it is either
 that token, the named roles built on it (`--accent-light` for accent text, the crimson ink on light,
 `--accent-dim` for a fill, `--focus-accent-border` / `--focus-accent-ring` for
-focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-65`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
+focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-55`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
 a grep.
