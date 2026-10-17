@@ -174,7 +174,8 @@ test('Details keep the record: review sentence and verdict, what it can use, the
     assert.match(weather, /Installed without review on 20 Sept? because you trust Ouroboros\./, 'the locale’s own month abbreviation');
     assert.doesNotMatch(weather, /data-tone="ok">pending</, 'no «pending» verdict beside a skill that runs on its install basis');
     assert.match(weather, /Internet · A widget and a settings section · Its own pages inside Ouroboros/);
-    assert.match(weather, /v0\.3\.1 · <code>0305fd55a4c7786753043df9<\/code> · installed without review — you trusted Ouroboros · by Ouroboros</);
+    // Ouroboros installed it: the host's listing carries the task and the reason from the install record (B8).
+    assert.match(weather, /v0\.3\.1 · <code>0305fd55a4c7786753043df9<\/code> · installed without review — you trusted Ouroboros · by Ouroboros · in task t-weather · because: the owner asked for the forecast</);
     assert.match(weather, />Loaded</);
     // The host's acceptance basis for these exact bytes decides the sentence, not the install basis alone.
     const install = { source: { id: 'ouroboros', name: 'Ouroboros' }, basis: 'trusted', installed_at: '2026-10-12T10:00:00Z', release: { version: '1.0.0' } };
@@ -188,10 +189,11 @@ test('Details keep the record: review sentence and verdict, what it can use, the
         'You skipped the review; it runs unreviewed.');
     assert.equal(reviewSentence(row('anime_studio')), 'Edited by you here; it runs without a new review.');
     assert.equal(reviewSentence(skill({ review_profile: 'owner_attested' })), 'You skipped the review; it runs unreviewed.');
-    // A task and a reason are said when the host's listing carries them from the install record (B8).
-    const told = row('weather');
-    Object.assign(told.install, { task_id: 't-weather', reason: 'the owner asked for the forecast' });
-    assert.match(renderInstalledSkillCard(told), /· by Ouroboros · in task t-weather · because: the owner asked for the forecast</);
+    // Without a recorded task or reason the line says neither.
+    const untold = row('weather');
+    delete untold.install.task_id;
+    delete untold.install.reason;
+    assert.match(renderInstalledSkillCard(untold), /· by Ouroboros</);
     const worker = renderInstalledSkillCard(skill({ enabled: true, live_loaded: true, dispatch_live: true, process: 'worker' }));
     assert.match(worker, />Loaded · worker</);
 });

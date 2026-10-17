@@ -22,9 +22,11 @@ test('Popular sorts by votes with unknown counts last; Name and Recently updated
     assert.deepEqual(popular.slice(0, 4), ['duckduckgo', 'pdf_tools', 'weather', 'whoop-health']);
     assert.ok(popular.indexOf('happy_farm') < popular.indexOf('telegram'), 'a counted zero outranks an unknown count');
     assert.deepEqual(sortCatalogItems(items, 'name').slice(0, 2).map((entry) => entry.name), ['chess-3d', 'duckduckgo']);
-    // The host's items carry no date yet; when an entry has one, «Recently updated» orders by it.
-    const dated = [{ name: 'b', updated_at: '2026-10-15T10:00:00Z' }, { name: 'a' }, { name: 'c', updated_at: '2026-10-16T10:00:00Z' }];
-    assert.deepEqual(sortCatalogItems(dated, 'updated').map((entry) => entry.name), ['c', 'b', 'a'], 'no date sorts last, by name');
+    // «Recently updated» orders by the host's dates; an item without one (built in, a folder, a release
+    // older than the fetched history) sorts last, by name.
+    const updated = sortCatalogItems(items, 'updated').map((entry) => entry.name);
+    assert.deepEqual(updated.slice(0, 3), ['slack-bridge', 'weather', 'whoop-health']);
+    assert.deepEqual(updated.slice(-4), ['chess-3d', 'happy_farm', 'old_tool', 'telegram'], 'no date sorts last, by name');
     assert.deepEqual(sortCatalogItems(items, 'best', 'weather').slice(0, 1).map((entry) => entry.name), ['weather']);
 });
 
@@ -140,7 +142,9 @@ test('a card: name opens the sheet, Official only on endorsed entries, unknown p
     const community = renderBrowseCard(item('ouroboros-community/whoop-health'), { state: { status: '', action: '' } });
     assert.doesNotMatch(community, /data-official-mark/);
     assert.match(community, /▲ 20 votes · needs 2 keys/);
-    assert.match(community, /Ouroboros Community · by kuznetsoffandrey</);
+    assert.match(community, /Ouroboros Community · by kuznetsoffandrey · updated [^<·]+</);
+    assert.doesNotMatch(renderBrowseCard(item('ouroboros-community/happy_farm'), { state: { status: '', action: '' } }), /updated/,
+        'an entry without a date says none');
     assert.match(renderBrowseCard(item('ouroboros-community/old_tool'), { state: { status: '', action: '' } }), />No data</);
     assert.match(renderBrowseCard(item('ouroboros-community/happy_farm'), { state: { status: '', action: '' } }), />No votes yet</);
     const builtin = renderBrowseCard(item('builtin/telegram'), { state: { status: '', action: '' } });

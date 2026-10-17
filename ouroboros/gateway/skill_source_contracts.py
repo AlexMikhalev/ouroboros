@@ -16,7 +16,8 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
 class SkillSourceRow(TypedDict, total=False):
     """One source with its read state. ``kind``: builtin | hub | git | local | registry; ``trust``:
     trusted (installs without review) | review (reviews each skill); ``part`` names the half of a hub
-    one row shows (official | community). ``state``: ready | reading | error | search."""
+    one row shows (official | community). ``state``: ready | reading | error | search. ``managed``: a
+    build's settings supplied the row (shown as set by the organization; it stays editable)."""
 
     id: Required[str]
     name: Required[str]
@@ -32,6 +33,7 @@ class SkillSourceRow(TypedDict, total=False):
     last_read_at: str
     error: str
     refreshing: bool
+    managed: bool
 
 
 class SkillSourcesResponse(TypedDict):
@@ -52,10 +54,12 @@ class SkillSourceProbeRequest(TypedDict, total=False):
 
 class SkillSourceProbeResponse(TypedDict, total=False):
     """What the address holds: ``kind`` hub (a ``hub.json`` repository), git (a plain skills repository)
-    or local (a folder); ``found`` names its skills. ``error`` explains an unreadable address."""
+    or local (a folder); ``found`` names its skills; ``owner`` is the hub's maintainer, else the account
+    the address names (absent for a folder). ``error`` explains an unreadable address."""
 
     kind: str
     suggested_name: str
+    owner: str
     found: List[str]
     error: str
 
@@ -92,7 +96,8 @@ class SkillCatalogItem(TypedDict, total=False):
     """One skill a source offers. ``id`` is ``<source_id>/<name>``; ``digest`` names the exact release;
     ``signals`` null means no data (never zero); ``installed`` null means not installed, else
     ``{state: installed, version, digest, modified, update_available}`` or ``{state: name_taken,
-    source_id, source_name}``."""
+    source_id, source_name}``. ``updated_at`` is when the release last changed in its source (a git
+    source's newest commit touching it, a registry's update time); absent when unknown."""
 
     id: Required[str]
     source_id: Required[str]
@@ -106,6 +111,7 @@ class SkillCatalogItem(TypedDict, total=False):
     official: bool
     recommended: bool
     owner: str
+    updated_at: str
     repo_url: str
     author_repo: str
     signals: Optional[Dict[str, Any]]  # {votes, comments, discussion_url, author_repo_stars}

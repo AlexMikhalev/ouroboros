@@ -56,7 +56,8 @@ def test_sources_list_probe_add_change_and_remove(env):
     assert assert_bound("GET /api/skill-sources", listed) == "SkillSourcesResponse"
     assert [row["id"] for row in listed.json()["sources"]] == ["builtin", "ouroboros", "ouroboros-community"]
     probe = client.post("/api/skill-sources/probe", json={"url": str(hub.bare)})
-    assert assert_bound("POST /api/skill-sources/probe", probe) and probe.json()["kind"] == "hub"
+    assert assert_bound("POST /api/skill-sources/probe", probe)
+    assert (probe.json()["kind"], probe.json()["owner"]) == ("hub", "m")
     folder = write_skill(tmp_path / "mine", "local_one").parent
     added = client.post("/api/skill-sources", json={"path": str(folder), "name": "Mine", "trust": "review"})
     assert assert_bound("POST /api/skill-sources", added) == "SkillSourceChangeResponse", added.json()
@@ -74,6 +75,20 @@ def test_sources_list_probe_add_change_and_remove(env):
     assert bad.status_code == 400 and assert_bound("POST /api/skill-sources", bad)
     refresh = client.post("/api/skill-sources/ouroboros/refresh")
     assert assert_bound("POST /api/skill-sources/{source_id}/refresh", refresh)
+
+
+def test_a_row_a_build_supplied_keeps_its_managed_mark_through_an_edit(env, monkeypatch):
+    client, _drive, hub, _tmp = env
+    rows = hub.rows()
+    rows[1]["managed"] = True
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
+    listed = client.get("/api/skill-sources")
+    assert assert_bound("GET /api/skill-sources", listed) == "SkillSourcesResponse"
+    assert [row.get("managed") for row in listed.json()["sources"]] == [None, True, None]
+    changed = client.post("/api/skill-sources/ouroboros", json={"trust": "review", "managed": False})
+    assert assert_bound("POST /api/skill-sources/{source_id}", changed)
+    row = changed.json()["source"]
+    assert row["trust"] == "review" and row["managed"] is True, "the mark locks nothing and no edit clears it"
 
 
 def test_catalog_search_and_detail(env):

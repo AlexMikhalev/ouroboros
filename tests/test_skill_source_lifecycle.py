@@ -377,9 +377,116 @@ def test_tree_digest_covers_declared_dependencies_and_ignores_install_notes(tmp_
     assert catalog.tree_release_digest(plain) != before
 
 
+def _commit_at(monkeypatch, when):
+    monkeypatch.setenv("GIT_AUTHOR_DATE", when)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", when)
+
+
+def _dates(drive, row):
+    return {item["name"]: item.get("updated_at") for item in catalog.catalog_view(drive, rows=[row])["items"]}
+
+
+def test_entries_are_dated_by_the_newest_commit_touching_their_release(drive, tmp_path, monkeypatch):
+    from ouroboros import skill_source_git
+
+    hub = HubFixture(tmp_path / "dated")
+    _commit_at(monkeypatch, "2026-10-01T10:00:00+00:00")
+    hub.add_hosted("weather")
+    hub.add_hosted("notes")
+    hub.commit("first")
+    _commit_at(monkeypatch, "2026-10-05T10:00:00+00:00")
+    hub.add_hosted("notes", "1.1.0")
+    hub.commit("notes release")
+    bare, commit, digest = author_repo(tmp_path, "scholar")
+    _commit_at(monkeypatch, "2026-10-09T10:00:00+00:00")
+    hub.add_hosted("weather", "1.1.0")
+    hub.add_pointer("scholar", str(bare), commit, digest)  # a pointer's release is its entry file
+    hub.commit("weather release, scholar listed")
+    community = hub.rows()[2]
+    monkeypatch.setattr(skill_source_git, "HISTORY_DEPTH", 2)  # the fetched history ends at the notes release
+    _refresh(drive, [community])
+    assert _dates(drive, community) == {"notes": None, "scholar": "2026-10-09T10:00:00+00:00",
+                                        "weather": "2026-10-09T10:00:00+00:00"}, "a change at the cut-off may be older"
+    monkeypatch.setattr(skill_source_git, "HISTORY_DEPTH", 100)
+    _refresh(drive, [community])
+    assert _dates(drive, community)["notes"] == "2026-10-05T10:00:00+00:00"
+
+
+def test_plain_repository_skills_are_dated_by_their_own_folders(drive, tmp_path, monkeypatch):
+    work = tmp_path / "plain"
+    work.mkdir()
+    git("init", "-q", cwd=work)
+    _commit_at(monkeypatch, "2026-09-01T08:00:00+00:00")
+    write_skill(work, "alpha")
+    write_skill(work / "group", "beta")
+    commit_all(work)
+    _commit_at(monkeypatch, "2026-09-03T08:00:00+00:00")
+    (work / "group" / "beta" / "notes.md").write_text("more", encoding="utf-8")
+    (work / "README.md").write_text("not a skill", encoding="utf-8")
+    commit_all(work)
+    publish(work, tmp_path / "plain.git")
+    plain = {"id": "mine", "name": "Mine", "kind": "git", "url": str(tmp_path / "plain.git"), "ref": "main",
+             "trust": "review", "confirmed": True}
+    single = {**plain, "id": "one", "url": str(author_repo(tmp_path, "solo")[0])}  # the repository root is the skill
+    _refresh(drive, [plain, single])
+    assert _dates(drive, plain) == {"alpha": "2026-09-01T08:00:00+00:00", "beta": "2026-09-03T08:00:00+00:00"}
+    assert _dates(drive, single) == {"solo": "2026-09-03T08:00:00+00:00"}
+
+
+def test_registry_hits_name_their_author_and_update_time(monkeypatch):
+    from ouroboros.marketplace import clawhub
+
+    records = [{"slug": "weather", "ownerHandle": "steipete", "updatedAt": 1789594554485, "summary": "Forecasts."},
+               {"slug": "plain", "publisher": {"handle": "someone"}, "summary": "No update time."},
+               {"slug": "bare", "updatedAt": "yesterday", "summary": "Nothing said."}]
+    page = {"results": [clawhub._summary_from_record(record) for record in records]}
+    monkeypatch.setattr(clawhub, "search", lambda *_a, **_k: page)
+    row = {"id": "clawhub", "name": "ClawHub", "kind": "registry", "trust": "review", "confirmed": True}
+    hits = {item["name"]: item for item in catalog.registry_items(row, "weather")}
+    assert (hits["weather"]["owner"], hits["weather"]["updated_at"]) == ("steipete", "2026-09-16T21:35:54.485000+00:00")
+    assert hits["plain"]["owner"] == "someone" and "updated_at" not in hits["plain"]
+    assert hits["bare"]["owner"] == "" and "updated_at" not in hits["bare"]
+
+
+def test_the_listing_says_why_and_in_which_task_ouroboros_installed(drive, hub):
+    from ouroboros.skill_loader import find_skill
+
+    rows = hub.rows()
+    _refresh(drive, rows[1:2])
+    installer.install_item(drive, "ouroboros/weather", rows=rows, actor="ouroboros",
+                           reason="the owner asked for a forecast", task_id="t-1")
+    installer.install_item(drive, "ouroboros-community/notes", rows=rows)
+    snapshots = catalog.cached_snapshots(drive, rows)
+    told = catalog.install_listing(drive, find_skill(drive, "weather"), snapshots)["install"]
+    assert told["installed_by"] == "ouroboros"
+    assert (told["reason"], told["task_id"]) == ("the owner asked for a forecast", "t-1")
+    owners = catalog.install_listing(drive, find_skill(drive, "notes"), snapshots)["install"]
+    assert owners["installed_by"] == "owner" and "reason" not in owners and "task_id" not in owners
+
+
+def test_a_build_marks_its_rows_managed_and_nothing_else_does():
+    from ouroboros.skill_sources import normalize_source, repository_owner, with_added_source, with_changed_source
+
+    shipped = normalize_source({"id": "team", "name": "Team", "kind": "git", "url": "https://git.example/t/skills",
+                                "trust": "trusted", "managed": True})
+    assert shipped["managed"] is True
+    rows = with_changed_source([shipped], "team", name="Team skills", trust="review")
+    assert rows[0]["managed"] is True and rows[0]["trust"] == "review", "an edit keeps the mark and is not refused"
+    rows, added = with_added_source(rows, kind="git", url="https://git.example/me/more", name="More", trust="review")
+    assert "managed" not in added
+    assert "managed" not in normalize_source({**shipped, "managed": "yes"}), "only a real true marks a row"
+    assert [repository_owner(url) for url in (
+        "https://github.com/kuznetsoffandrey/ru-skills", "git@github.com:razzant/OuroborosHub.git",
+        "ssh://git@git.example/group/sub/repo.git", "https://git.example/repo", "/srv/skills", "file:///srv/skills",
+    )] == ["kuznetsoffandrey", "razzant", "group/sub", "", "", ""]
+
+
 def test_probe_reads_a_hub_a_plain_repo_and_a_folder(drive, hub, tmp_path):
     probe = catalog.probe_source(drive, url=str(hub.bare))
     assert probe["kind"] == "hub" and probe["suggested_name"] == "TestHub" and "weather" in probe["found"]
+    assert probe["owner"] == "m", "a hub names its maintainer"
+    plain = catalog.probe_source(drive, url=str(author_repo(tmp_path, "solo")[0]))
+    assert plain["kind"] == "git" and "owner" not in plain, "a folder path names no account"
     folder = write_skill(tmp_path / "folder", "x").parent
     assert catalog.probe_source(drive, path=str(folder)) == {"kind": "local", "suggested_name": "folder", "found": ["x"]}
     assert "error" in catalog.probe_source(drive, url="https://user:secret@example.invalid/r")

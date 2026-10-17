@@ -66,7 +66,8 @@ class InstalledSkill(TypedDict, total=False):
     # The install record joined with the cached catalog of its source (skill_source_catalog.install_listing):
     # source {id, name, kind, part}, official, release, basis, base_known, modified (null: base unknown),
     # update_available {version, digest} | null, withdrawn, left_source, turn_on_when_ready, installed_by,
-    # installed_at. null: not installed from a source (made here, a local folder, a built-in seed).
+    # installed_at, and reason and task_id when the record has them (an install Ouroboros made says why and in
+    # which task). null: not installed from a source (made here, a local folder, a built-in seed).
     install: Optional[Dict[str, Any]]
     category: List[str]  # the source's category ids for this skill, [] when it has none
 

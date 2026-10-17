@@ -7,7 +7,9 @@ rows over one repository (its maintainer's Official endorsements and the communi
 the optional local folder. The first change materializes the list. Changing a row's trust never rewrites
 an existing install: the basis an install was made under lives in its install record. Adding a source is
 an owner act (the UI, or Ouroboros on the owner's instruction, or Cyber Pro); this module only validates
-and persists the list. An enterprise build ships its own list as settings data.
+and persists the list. An enterprise build ships its own list as settings data; a row it marks
+``managed: true`` keeps the mark through edits, so the Sources page can say who set it. The mark locks
+nothing, and the source changes made from the Sources page or by Ouroboros never set it.
 """
 
 from __future__ import annotations
@@ -84,6 +86,19 @@ def validate_git_url(url: str) -> str:
     return text
 
 
+def repository_owner(url: str) -> str:
+    """The account a repository address names (``https://host/<owner>/<repo>``, ``git@host:<owner>/<repo>``),
+    or '' for a folder, a ``file://`` address or an address without one."""
+    text = str(url or "").strip()
+    if _SCP_RE.match(text):
+        path = text.split(":", 1)[1]
+    else:
+        parsed = urllib.parse.urlparse(text)
+        path = parsed.path if parsed.scheme in {"https", "http", "ssh"} and parsed.hostname else ""
+    parts = [part for part in path.split("/") if part]
+    return "/".join(parts[:-1])
+
+
 def _flag(settings: Dict[str, Any], key: str, default: str) -> bool:
     raw = settings.get(key)
     if raw is None:
@@ -134,6 +149,8 @@ def normalize_source(row: Any) -> Dict[str, Any]:
         "id": source_id, "name": str(row.get("name") or source_id).strip()[:80] or source_id,
         "kind": kind, "trust": trust, "confirmed": row.get("confirmed") is not False,
     }
+    if row.get("managed") is True:
+        out["managed"] = True
     if kind in {"hub", "git"}:
         out["url"] = validate_git_url(str(row.get("url") or ""))
         ref = str(row.get("ref") or "").strip()
@@ -294,6 +311,6 @@ def without_source(rows: List[Dict[str, Any]], source_id: str) -> List[Dict[str,
 __all__ = [
     "BUILTIN_ID", "CLAWHUB_ID", "HUB_COMMUNITY_ID", "HUB_OFFICIAL_ID", "KINDS", "LOCAL_ID", "SOURCES_SETTING",
     "SkillSourceError", "TRUSTS", "derived_sources", "load_sources", "normalize_source", "parse_sources",
-    "repo_from_catalog_url", "save_sources", "source_by_id", "sources_problem", "validate_git_url",
-    "with_added_source", "with_changed_source", "without_source",
+    "repo_from_catalog_url", "repository_owner", "save_sources", "source_by_id", "sources_problem",
+    "validate_git_url", "with_added_source", "with_changed_source", "without_source",
 ]

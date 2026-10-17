@@ -113,6 +113,8 @@
         "turn_on_when_ready": true,
         "installed_by": "ouroboros",
         "installed_at": "2026-09-20T10:00:00Z",
+        "reason": "the owner asked for the forecast",
+        "task_id": "t-weather",
         "update_available": {
           "version": "0.3.2",
           "digest": "18a28b775e3f493d5323080c50523e2bec1356e37e76aa918f1fb298d9fd5d94"

@@ -2,6 +2,7 @@
   "ok": {
     "kind": "git",
     "suggested_name": "Russian services",
+    "owner": "kuznetsoffandrey",
     "found": [
       "2gis",
       "vkusvill",

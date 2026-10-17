@@ -18,6 +18,7 @@
  * @property {string=} last_read_at
  * @property {string=} error
  * @property {boolean=} refreshing
+ * @property {boolean=} managed  // a build's settings supplied this row; it stays editable
  */
 
 /**
@@ -39,6 +40,7 @@
  * @typedef {Object} SkillSourceProbeResponse
  * @property {string=} kind
  * @property {string=} suggested_name
+ * @property {string=} owner  // the hub's maintainer, else the account the address names
  * @property {string[]=} found
  * @property {string=} error
  */
@@ -84,6 +86,7 @@
  * @property {boolean=} official
  * @property {boolean=} recommended
  * @property {string=} owner
+ * @property {string=} updated_at  // when the release last changed in its source; absent when unknown
  * @property {string=} repo_url
  * @property {string=} author_repo
  * @property {?Object=} signals  // {votes, comments, discussion_url, author_repo_stars}; null = no data

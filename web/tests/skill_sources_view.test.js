@@ -28,6 +28,15 @@ test('the official hub row carries the Official glyph; the folder row says Folde
     assert.match(text(folder), /~\/ouroboros-skills · 1 skill/);
 });
 
+test('a row a build supplied says so; it keeps its trust value and ⋮ like any other', () => {
+    const managed = renderSourceRow({ ...source('ouroboros'), managed: true });
+    assert.match(managed, /data-tone="neutral">Set by your organization</);
+    assert.match(managed, /data-source-action="trust"/);
+    assert.match(managed, /data-source-menu="ouroboros"/);
+    assert.ok(SOURCES.every((row) => !row.managed), 'an owner’s own list has no such row');
+    assert.doesNotMatch(renderSourceRow(source('ouroboros')), /Set by your organization/);
+});
+
 test('trust is a setting on the right, marked suggested until the owner confirms the hub rows', () => {
     const suggested = renderSourceRow(source('ouroboros'), {});
     assert.match(suggested, /class="skills-trust-value is-suggested" data-source-action="trust" data-source-id="ouroboros"[^>]*>Installs without review \(suggested\) ›</);

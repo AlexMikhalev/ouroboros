@@ -4,7 +4,8 @@ A git-hosted source is read from its cache clone (``skill_source_git``): a repos
 at its root is a hub (``entries/<name>.json``, the maintainer's ``official.json``, ``categories.json``
 and an optional ``signals`` branch); any other repository is a plain skills repository whose folders
 with ``SKILL.md`` or ``skill.json`` are its skills. A refresh parses the commit it fetched into a
-snapshot beside the clone, so every reader sees one commit and no reader ever waits for the network.
+snapshot beside the clone, so every reader sees one commit and no reader ever waits for the network;
+it dates each entry by the newest fetched commit touching its release (``updated_at``).
 The built-in source is the bundled ``skills/`` folder with ``skills/builtin.json``; a local folder is
 scanned in place; a registry (ClawHub) answers searches only.
 
@@ -27,6 +28,7 @@ from ouroboros.skill_identity import is_release_digest
 from ouroboros.skill_source_git import (
     clone_dir,
     fetch_signals,
+    last_changed,
     read_meta,
     refresh_in_background,
     repo_cache_dir,
@@ -248,6 +250,25 @@ def _parse_signals(raw: Optional[bytes]) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) and isinstance(data.get("skills"), dict) else None
 
 
+def _date_entries(clone: pathlib.Path, snapshot: Dict[str, Any]) -> None:
+    """``updated_at`` of each entry: the newest commit in the clone touching its release (a hosted payload,
+    a pointer's entry file, a plain repository's skill folder); absent when the history cannot tell."""
+    paths = {}
+    for entry in snapshot.get("entries") or []:
+        source = entry.get("source") or {}
+        path = (f"entries/{entry['name']}.json" if source.get("kind") == "git" else
+                str(pathlib.PurePosixPath(str(snapshot.get("path") or "."), str(source.get("path") or "."))))
+        paths[entry["name"]] = "" if path == "." else path
+    try:
+        dates = last_changed(clone, paths)
+    except Exception:
+        log.debug("skill source history unavailable for dates", exc_info=True)
+        return
+    for entry in snapshot.get("entries") or []:
+        if dates.get(entry["name"]):
+            entry["updated_at"] = dates[entry["name"]]
+
+
 def refresh_source(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: float = 180) -> Dict[str, Any]:
     """Fetch a git-hosted source and write the snapshot of the fetched commit; returns its meta."""
     cache = repo_cache_dir(drive_root, row)
@@ -260,6 +281,7 @@ def refresh_source(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: f
         else:
             snapshot = parse_plain_tree(base, repo_name=pathlib.PurePosixPath(str(row.get("url") or "")).stem)
             snapshot["path"] = base.relative_to(clone).as_posix() if base != clone else ""
+        _date_entries(clone, snapshot)
         snapshot.update({"schema_version": SNAPSHOT_SCHEMA_VERSION, "commit": commit, "read_at": utc_now_iso()})
         atomic_write_json(cache / SNAPSHOT_FILENAME, snapshot)
 
@@ -382,8 +404,24 @@ def items_for(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> List[D
             item["author_repo"] = source.get("repo", "")
         if entry.get("install_specs"):
             item["install_specs"] = entry["install_specs"]
+        if entry.get("updated_at"):
+            item["updated_at"] = entry["updated_at"]
         out.append(item)
     return out
+
+
+def _registry_facts(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """The author of a registry record and, when it says, its update time (ClawHub: ``ownerHandle``,
+    ``updatedAt`` in milliseconds)."""
+    publisher = raw.get("publisher") if isinstance(raw.get("publisher"), dict) else {}
+    facts: Dict[str, Any] = {"owner": str(raw.get("ownerHandle") or publisher.get("handle") or "").strip()}
+    stamp = raw.get("updatedAt")
+    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp > 0:
+        try:
+            facts["updated_at"] = datetime.fromtimestamp(stamp / 1000, timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            pass
+    return facts
 
 
 def registry_items(row: Dict[str, Any], query: str, *, limit: int = 16) -> List[Dict[str, Any]]:
@@ -401,9 +439,9 @@ def registry_items(row: Dict[str, Any], query: str, *, limit: int = 16) -> List[
             "trust": row["trust"], "name": _sanitize_skill_name(summary.slug.split("/")[-1]),
             "registry_slug": summary.slug, "description": summary.summary or summary.description,
             "category": [], "version": summary.latest_version, "digest": "", "official": False,
-            "recommended": False, "owner": "", "signals": None, "withdrawn": None, "type": "",
+            "recommended": False, "signals": None, "withdrawn": None, "type": "",
             "needs_keys": list(summary.requires_env or []), "permissions": [], "installed": None,
-            "registry_stats": dict(summary.stats or {}),
+            "registry_stats": dict(summary.stats or {}), **_registry_facts(summary.raw or {}),
         })
     return out
 
@@ -482,6 +520,7 @@ def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, 
         "modified": (current != base) if base and current else None,
         "turn_on_when_ready": bool(record.get("turn_on_when_ready")),
         "installed_by": record.get("installed_by", ""), "installed_at": record.get("installed_at", ""),
+        **{key: str(record[key]) for key in ("reason", "task_id") if record.get(key)},
         **facts,
     }}
 
@@ -645,7 +684,7 @@ def probe_source(drive_root: pathlib.Path, *, url: str = "", path: str = "") -> 
     import shutil
 
     from ouroboros.skill_source_git import SkillSourceFetchError, fetch_tree, scratch_dir
-    from ouroboros.skill_sources import SkillSourceError, validate_git_url
+    from ouroboros.skill_sources import SkillSourceError, repository_owner, validate_git_url
 
     if path:
         root = pathlib.Path(path).expanduser()
@@ -664,10 +703,15 @@ def probe_source(drive_root: pathlib.Path, *, url: str = "", path: str = "") -> 
         stem = pathlib.PurePosixPath(url.rstrip("/")).stem or "skills"
         if (clone / "hub.json").is_file():
             snapshot = parse_hub_tree(clone)
-            name = str((snapshot.get("hub") or {}).get("name") or stem)
-            return {"kind": "hub", "suggested_name": name, "found": [e["name"] for e in snapshot["entries"]]}
-        snapshot = parse_plain_tree(clone, repo_name=stem)
-        return {"kind": "git", "suggested_name": stem, "found": [e["name"] for e in snapshot["entries"]]}
+            hub = snapshot.get("hub") or {}
+            answer = {"kind": "hub", "suggested_name": str(hub.get("name") or stem)}
+            owner = str(hub.get("maintainer") or "") or repository_owner(url)
+        else:
+            snapshot = parse_plain_tree(clone, repo_name=stem)
+            answer, owner = {"kind": "git", "suggested_name": stem}, repository_owner(url)
+        if owner:
+            answer["owner"] = owner
+        return {**answer, "found": [e["name"] for e in snapshot["entries"]]}
     except SkillSourceFetchError as exc:
         return {"error": f"This computer could not read {url}: {exc}"}
     finally:

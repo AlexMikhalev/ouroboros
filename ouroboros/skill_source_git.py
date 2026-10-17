@@ -6,6 +6,8 @@ one repository), fetched with this computer's own git credentials, so a private 
 the host can fetch it. Reads are local files; a refresh fetches the newest commit of the configured
 branch (or the pinned commit) and is started in the background by whoever shows or searches a catalog.
 A pointer entry's author repository is fetched at its exact commit into ``pointers/<key>/repo``.
+A source clone keeps the last ``HISTORY_DEPTH`` commits so its catalog can say when each skill last
+changed (``last_changed``); a skill unchanged within them has no date. Probes and pointers fetch one.
 
 Git never prompts here (``GIT_TERMINAL_PROMPT=0``, batch SSH): an unreachable or private repository is
 an error message on its source row, never a hidden dialog. No credential is written into a URL, an
@@ -30,6 +32,7 @@ log = logging.getLogger(__name__)
 
 STATE_DIRNAME = "skill_sources"
 FETCH_TIMEOUT_SEC = 180
+HISTORY_DEPTH = 100
 _LOCK_STALE_SEC = 3 * FETCH_TIMEOUT_SEC
 _THREADS: Dict[str, threading.Thread] = {}
 _THREADS_LOCK = threading.Lock()
@@ -82,8 +85,9 @@ def _origin_text(url: str) -> str:
     return url if "://" in url or "@" in url else pathlib.Path(url).as_uri()
 
 
-def fetch_tree(target: pathlib.Path, url: str, selector: str) -> str:
-    """Make ``target`` a shallow checkout of ``selector`` (branch, commit or '' for the default branch)."""
+def fetch_tree(target: pathlib.Path, url: str, selector: str, *, depth: int = 1) -> str:
+    """Make ``target`` a shallow checkout of ``selector`` (branch, commit or '' for the default branch)
+    holding its last ``depth`` commits."""
     if not (target / ".git").is_dir():
         if target.exists():
             shutil.rmtree(target)
@@ -92,7 +96,7 @@ def fetch_tree(target: pathlib.Path, url: str, selector: str) -> str:
         _git(["remote", "add", "origin", _origin_text(url)], cwd=target)
     else:
         _git(["remote", "set-url", "origin", _origin_text(url)], cwd=target)
-    _git(["fetch", "--depth", "1", "--no-tags", "--quiet", "origin", selector or "HEAD"], cwd=target)
+    _git(["fetch", "--depth", str(depth), "--no-tags", "--quiet", "origin", selector or "HEAD"], cwd=target)
     _git(["checkout", "--quiet", "--force", "--detach", "FETCH_HEAD"], cwd=target)
     _git(["clean", "-ffdxq"], cwd=target)
     return _git(["rev-parse", "HEAD"], cwd=target).strip()
@@ -128,7 +132,7 @@ def update_clone(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: flo
                      "pinned": str(row.get("commit") or "")})
         try:
             commit = fetch_tree(cache / "repo", str(row.get("url") or ""),
-                                 str(row.get("commit") or row.get("ref") or ""))
+                                 str(row.get("commit") or row.get("ref") or ""), depth=HISTORY_DEPTH)
             if after_fetch is not None:
                 after_fetch(cache / "repo", commit)
             meta.update({"commit": commit, "fetched_at": utc_now_iso(), "error": "", "error_at": ""})
@@ -171,6 +175,35 @@ def fetch_signals(clone: pathlib.Path, branch: str = "signals") -> Optional[byte
         return None
 
 
+def last_changed(clone: pathlib.Path, paths: Dict[str, str]) -> Dict[str, str]:
+    """When each of ``paths`` (``{key: path in the repository}``, ``""`` = all of it) last changed:
+    ``{key: ISO time}`` of the newest commit of the fetched history touching it. A path whose newest
+    commit is where the shallow history is cut off is left out: its real change may be older."""
+    from datetime import datetime, timezone
+
+    wanted: Dict[str, list] = {}
+    for key, path in paths.items():
+        wanted.setdefault(str(path or "").strip("/"), []).append(key)
+    if not wanted:
+        return {}
+    shallow = clone / ".git" / "shallow"
+    cut = set(shallow.read_text(encoding="utf-8").split()) if shallow.is_file() else set()
+    out = _git(["log", "-z", "--date-order", "--no-renames", "--no-follow", "--no-color", "--no-show-signature",
+                "--name-only", "--format=%x01%H %ct", "HEAD", "--", *([] if "" in wanted else sorted(wanted))],
+               cwd=clone, timeout=60)
+    seen: Dict[str, str] = {}
+    for chunk in out.split("\x01")[1:]:
+        header, _, names = chunk.partition("\0")
+        sha, _, stamp = header.partition(" ")
+        when = "" if sha in cut else datetime.fromtimestamp(int(stamp), timezone.utc).isoformat()
+        for name in filter(None, (part.strip("\n") for part in names.split("\0"))):
+            path = pathlib.PurePosixPath(name)
+            for prefix in (path, *path.parents):  # the newest commit touching a path is listed first
+                for key in wanted.get("" if str(prefix) == "." else str(prefix), ()):
+                    seen.setdefault(key, when)
+    return {key: when for key, when in seen.items() if when}
+
+
 def checkout_at_commit(drive_root: pathlib.Path, url: str, commit: str) -> pathlib.Path:
     """A local tree of ``url`` at exactly ``commit`` (a pointer entry or a base release), cached by both."""
     from ouroboros.platform_layer import release_exclusive_file_lock
@@ -205,7 +238,7 @@ def scratch_dir(drive_root: pathlib.Path, label: str) -> pathlib.Path:
 
 
 __all__ = [
-    "FETCH_TIMEOUT_SEC", "SkillSourceFetchError", "checkout_at_commit", "clone_dir", "fetch_signals", "fetch_tree",
-    "is_refreshing", "read_meta", "refresh_in_background", "repo_cache_dir", "scratch_dir",
-    "sources_state_root", "update_clone",
+    "FETCH_TIMEOUT_SEC", "HISTORY_DEPTH", "SkillSourceFetchError", "checkout_at_commit", "clone_dir",
+    "fetch_signals", "fetch_tree", "is_refreshing", "last_changed", "read_meta", "refresh_in_background",
+    "repo_cache_dir", "scratch_dir", "sources_state_root", "update_clone",
 ]

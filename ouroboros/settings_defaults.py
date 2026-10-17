@@ -257,8 +257,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SKILLS_REPO_PATH": "",
     "OUROBOROS_CLAWHUB_REGISTRY_URL": "https://clawhub.ai/api/v1",
     "OUROBOROS_HUB_CATALOG_URL": "https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json",
-    # Skill sources (JSON list of {id, name, kind, url|path, ref|commit, part, trust, confirmed}); empty = derived
-    # from the three keys above and OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS (skill_sources.derived_sources).
+    # Skill sources (JSON list of {id, name, kind, url|path, ref|commit, part, trust, confirmed}; a build may mark
+    # its rows managed: true); empty = derived from the three keys above and OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS
+    # (skill_sources.derived_sources).
     "OUROBOROS_SKILL_SOURCES": "",
     # Starter skills installed once on a new install (JSON list of catalog ids); empty = the built-in and
     # Official skills their maintainers mark recommended (skill_starter.default_starter_ids).
