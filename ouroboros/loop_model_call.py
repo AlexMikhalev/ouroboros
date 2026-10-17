@@ -1438,7 +1438,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
             if key in done:
                 continue
             done.add(key)
-            if not [step for step in steps if _apply_refusal_step(ctx, step, fit, target)]:
+            if not _apply_refusal_pass(ctx, steps, fit, target):
                 continue
         fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
         if fit is None:
@@ -1451,7 +1451,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
             )
         except PhysicalAttemptPreconditionFailed:
             _emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller", rung="+".join(steps))
-            continue
+            continue  # ``fit`` already measures the changed view the next pass starts from
         cost = float(cost or 0.0) + float(retry_cost or 0.0)
         if retry_msg is not None or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") != "context_overflow":
             return retry_msg, cost, ctx.active_context_mode  # answered, or another kind: ordinary recovery
@@ -1468,8 +1468,28 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
     return None, cost, ctx.active_context_mode
 
 
-def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target: Optional[int]) -> bool:
-    """Apply one step of a refusal pass to the live transcript; True when the candidate changed.
+def _apply_refusal_pass(ctx: _RoundModelCallContext, steps: Tuple[str, ...], fit: Any,
+                        target: Optional[int]) -> bool:
+    """Apply a pass's steps in order until together they shed ``target``; True when the candidate changed.
+
+    Each step is sized by what the earlier steps of the pass left of the target: host copies that
+    already freed the room leave every body in place, and memory the floor narrowed enough addresses
+    no unseen body (the gradual order the owner asked for). An unknown target lets each step take its
+    whole category.
+    """
+    changed, remaining = False, target
+    for step in steps:
+        if remaining is not None and remaining <= 0:
+            break
+        shed = _apply_refusal_step(ctx, step, fit, remaining)
+        if shed is not None:
+            changed = True
+            remaining = None if remaining is None else remaining - shed
+    return changed
+
+
+def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target: Optional[int]) -> Optional[int]:
+    """Apply one step of a refusal pass to the live transcript: the tokens it shed, None when unchanged.
 
     Bodies are addressed oldest first until ``target`` (the whole category when it is unknown); the
     floor narrows memory by the target and leaves books in place when memory alone saved it (the
@@ -1477,14 +1497,22 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
     """
     if step in ("host_copies", "bodies", "unseen_bodies"):
         goal = None if step == "host_copies" else target
-        return _run_emergency_address_pass(ctx, fit, rung=step, goal_tokens=goal).status == "applied"
-    if step == "floor":
-        before = fit.measurement.estimated_input_tokens
-        coarsened = _coarsen_memory_view(ctx, fit, saving=target)
-        after = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True) if coarsened else None
-        if target and after is not None and before - after.measurement.estimated_input_tokens >= target:
-            return True
-        mode = ctx.active_context_mode
-        _reproject_actual_overflow_low(ctx)
-        return coarsened or ctx.active_context_mode != mode
-    return False
+        receipt = _run_emergency_address_pass(ctx, fit, rung=step, goal_tokens=goal)
+        return max(0, int(receipt.reclaimed_tokens or 0)) if receipt.status == "applied" else None
+    if step != "floor":
+        return None
+    before = fit.measurement.estimated_input_tokens
+
+    def shed_since_before(default: int) -> int:
+        after = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
+        return max(0, before - after.measurement.estimated_input_tokens) if after is not None else default
+
+    coarsened = _coarsen_memory_view(ctx, fit, saving=target)
+    saved = shed_since_before(0) if coarsened else 0
+    if target and saved >= target:
+        return saved
+    mode = ctx.active_context_mode
+    _reproject_actual_overflow_low(ctx)
+    if ctx.active_context_mode != mode:
+        return shed_since_before(saved)
+    return saved if coarsened else None
