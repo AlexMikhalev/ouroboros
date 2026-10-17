@@ -325,3 +325,55 @@ test('a replaced card shows its new title and words: heading, label, Copy, a mes
         dom.restore();
     }
 });
+
+test('a stopped widget frame cannot size or fault the frame that replaced it; the live frame still sizes itself', async () => {
+    const dom = installCardDom();
+    let revision = 1;
+    const server = serve({
+        'GET /api/cards/card_m1': () => json(200, { card_id: 'card_m1', kind: 'widget', title: 'Clock', fallback_text: '10:00', revision,
+            widget: { skill: 'clock', tab_id: 'face' }, submissions_summary: [] }),
+        'GET /api/widgets': json(200, { ui_tabs: [{ key: 'clock:face', skill: 'clock', tab_id: 'face', revision: '1',
+            render: { kind: 'module', entry: 'widget.js' } }] }),
+        'GET /api/extensions/clock/module/widget.js': page('// reviewed module'),
+    });
+    try {
+        const cards = feed();
+        cards.lifecycle({ skill: 'clock', action: 'enabled' });  // the shared widget list is read fresh
+        const bubble = cards.buildCard(identity('card_m1', 'widget', { card: { card_id: 'card_m1', kind: 'widget', title: 'Clock', revision: 1 }, fallback_text: '10:00' }));
+        await flush();
+        const open = async () => {
+            bubble.querySelector('[data-card-open]').click();
+            await flush();
+            const frame = bubble.querySelector('iframe');
+            const nonce = frame.srcdoc.match(/const nonce = "([^"]+)"/)[1];
+            frame.contentWindow = { postMessage() {} };  // a live child: its stop waits for the acknowledgement
+            const send = (data) => window.emit('message', { source: frame.contentWindow, data: { nonce, ...data } });
+            return { host: bubble.querySelector('.chat-card-frame-host'), send };
+        };
+        const height = (host) => host.style.getPropertyValue('--widget-frame-height');
+        const first = await open();
+        first.send({ type: 'ouro-widget-resize', height: 300 });
+        assert.equal(height(first.host), '302px', 'a live frame sizes itself');
+        revision = 2;
+        cards.applyCardState({ type: 'card_state', card: { card_id: 'card_m1', kind: 'widget', title: 'Clock', revision: 2 }, submissions_summary: [] });
+        await flush();
+        const second = await open();
+        assert.notEqual(second.host, first.host);
+        assert.equal(height(second.host), '120px');
+        // The first frame is still in its ordered stop and keeps answering its child.
+        first.send({ type: 'ouro-widget-resize', height: 900 });
+        first.send({ type: 'ouro-widget-error', kind: 'script', message: 'boom' });
+        assert.equal(height(second.host), '120px', 'the stopped frame did not size the new one');
+        assert.equal(bubble.querySelector('.chat-card-expand').hidden, true, 'nor show the shared Expand');
+        assert.equal(bubble.querySelector('.chat-card-status').hidden, true, 'nor paint its fault on the new frame');
+        second.send({ type: 'ouro-widget-resize', height: 300 });
+        assert.equal(height(second.host), '302px', 'the live frame still sizes itself');
+        first.send({ type: 'ouro-widget-disposed' });
+        cards.destroy();
+        second.send({ type: 'ouro-widget-disposed' });
+        assert.equal(window.listeners('message'), 0);
+    } finally {
+        server.restore();
+        dom.restore();
+    }
+});

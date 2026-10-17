@@ -191,17 +191,21 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         // The host reserves the frame's height from the start, so the frame arriving later moves nothing.
         const host = document.createElement('div');
         host.className = 'chat-card-frame-host';
-        let inline = null;
-        write(() => { record.body.replaceChildren(host); setStatus(record, ''); inline = createInlineFit(host, record.toggle); });
-        record.fit = { fit: (height) => write(() => inline.fit(height)), dispose: () => inline.dispose() };
         const controller = new AbortController();
+        let sizing = null;
+        write(() => { record.body.replaceChildren(host); setStatus(record, ''); sizing = createInlineFit(host, record.toggle); });
+        // This frame's own size policy and fault line. A stopped frame reaches neither the frame that replaced it nor
+        // the shared Expand: a module widget answers until its ordered stop ends, and a mount can resolve late.
+        const untilStopped = (fn) => (value) => { if (!controller.signal.aborted) fn(value); };
+        const fit = { fit: untilStopped((height) => write(() => sizing.fit(height))), dispose: () => sizing?.dispose() };
+        record.fit = fit;
         let dispose = null;
         const done = (fn) => { if (controller.signal.aborted) fn?.(); else dispose = fn; };
         const fail = (text) => { if (!controller.signal.aborted) showFallback(record, text, 'danger', true); };
         const body = record.data;
         if (record.framedKind === 'app') {
             readAppText(body.app.url, body.app.sha256).then((html) => done(write(() => mountCardApp(host, {
-                cardId: record.id, title: body.title, sha256: body.app.sha256, html, fit: record.fit,
+                cardId: record.id, title: body.title, sha256: body.app.sha256, html, fit,
                 onSubmit: (line) => insertLine(line),
                 onLeave: () => {
                     budget.forget(record);
@@ -210,13 +214,13 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             }))), (error) => fail(`The app could not be read: ${error.message || error}`));
         } else {
             const { tab } = record;
-            const inline = { fit: (height) => record.fit?.fit(height), fault: (text) => write(() => setStatus(record, text, 'danger')) };
+            const hooks = { fit: fit.fit, fault: untilStopped((text) => write(() => setStatus(record, text, 'danger'))) };
             Promise.resolve().then(() => (tab.render.kind === 'module'
-                ? mountModuleWidget(host, tab, tab.render, controller.signal, messageHandlers, inline)
+                ? mountModuleWidget(host, tab, tab.render, controller.signal, messageHandlers, hooks)
                 : mountRouteIframeWidget(host, tab, tab.render))).then((fn) => {
                 if (tab.render.kind !== 'module') {
                     host.querySelector('iframe')?.style.removeProperty('--widget-frame-height');
-                    record.fit?.fit(frameHeight(tab.render));
+                    fit.fit(frameHeight(tab.render));
                 }
                 done(fn);
             }, (error) => fail(`The widget could not start: ${error.message || error}`));
@@ -225,8 +229,8 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             controller.abort();
             const settle = dispose?.();
             if (settle?.then) settle.catch(() => {});
-            record.fit?.dispose();
-            record.fit = null;
+            fit.dispose();
+            if (record.fit === fit) record.fit = null;
         };
     }
 
