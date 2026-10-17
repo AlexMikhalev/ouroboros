@@ -5,7 +5,7 @@ Ported 1:1 in spirit and contract from Yegor Kosyrev's Praxis/Hélène
 matching, the choose() refusal-on-ambiguity, plan parsing with honest limit
 clamping, the three different "not found" answers, receipts that never claim
 success, and UTF-16-safe text clipping. Everything here runs on any OS and is
-covered by tests/test_core.py (ported from the Rust unit tests).
+covered by tests/test_windows_computer_use_core.py (ported from the Rust unit tests).
 
 The Windows-specific layers (UIA via comtypes, the Win32 fallback) live in
 ``win_uia`` and ``win32fb`` and import nothing from this module's tests.
@@ -69,6 +69,8 @@ ACT_TIMEOUT_DEFAULT_MS = 3000
 ACT_TIMEOUT_CAP_MS = 60000
 FIND_LIMIT_DEFAULT = 20
 FIND_LIMIT_CAP = 200
+WINDOW_LIST_LIMIT_DEFAULT = 100
+WINDOW_LIST_LIMIT_CAP = 500
 
 READ_ARGS = (
     "hwnd",
@@ -274,16 +276,14 @@ def parse_hwnd(value: Any) -> int:
     return parsed
 
 
-def _trim(value: Any) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    return value if value.strip() else None
-
-
 def reject_blank_selector(select: dict[str, Any]) -> None:
     for name in ("automation_id", "role", "name", "name_contains", "value_contains"):
-        value = select.get(name)
-        if isinstance(value, str) and not value.strip():
+        if name not in select:
+            continue
+        value = select[name]
+        if not isinstance(value, str):
+            raise ValueError(f"selector field {name} must be a string; omitting it would widen the selection")
+        if not value.strip():
             raise ValueError(
                 f"selector field {name} is present but blank; omitting it would widen the selection"
             )
@@ -294,7 +294,8 @@ def reject_blank_selector(select: dict[str, Any]) -> None:
 
 
 def selector_from(select: dict[str, Any]) -> Selector:
-    select = select or {}
+    if not isinstance(select, dict):
+        raise ValueError("select must be an object")
     unknown = [key for key in select if key not in SELECT_ARGS]
     if unknown:
         raise ValueError(
@@ -302,11 +303,11 @@ def selector_from(select: dict[str, Any]) -> Selector:
         )
     reject_blank_selector(select)
     return Selector(
-        automation_id=_trim(select.get("automation_id")),
-        role=_trim(select.get("role")),
-        name=_trim(select.get("name")),
-        name_contains=_trim(select.get("name_contains")),
-        value_contains=_trim(select.get("value_contains")),
+        automation_id=select.get("automation_id"),
+        role=select.get("role"),
+        name=select.get("name"),
+        name_contains=select.get("name_contains"),
+        value_contains=select.get("value_contains"),
         nth=select.get("nth"),
     )
 
@@ -384,15 +385,16 @@ def act_plan(args: dict[str, Any]) -> ActPlan:
             "select is empty: name the element by automation_id, role, name, name_contains "
             'or value_contains. Acting on "any element of the window" is a miss by design'
         )
-    if act == "set_value" and "text" not in args:
+    if act == "set_value" and not isinstance(args.get("text"), str):
+        # A null is not "no text": the pattern would be handed an empty string and
+        # clear the field. Only an explicit "" clears.
+        said = repr(args["text"]) if "text" in args else "no key at all"
         raise ValueError(
-            "set_value needs text: pass an empty string to clear the field, not no key at all"
+            f"set_value needs text as a string: pass an empty string to clear the field, not {said}"
         )
     if act != "set_value" and args.get("text") is not None:
         raise ValueError(f"text belongs to set_value only: {act} ignores it")
     text = args.get("text")
-    if text is not None and not isinstance(text, str):
-        raise ValueError("text must be a string")
     return ActPlan(
         hwnd=parse_hwnd(args["hwnd"]) if "hwnd" in args and args["hwnd"] is not None else None,
         select=select,
@@ -491,18 +493,48 @@ def ambiguous_error(total: int, candidates: list[Any]) -> dict[str, Any]:
     }
 
 
+UNREADABLE_SHOWN = 20
+
+
+def unreadable_error(matched: int, unreadable: list[Any], scanned: int, waited_ms: int, polls: int) -> dict[str, Any]:
+    """Some elements fit every field the provider could read but failed a field the
+    selector names: each may be the target or a competitor, so nothing is chosen."""
+    return {
+        "ok": False,
+        "reason": "unreadable_candidates",
+        "matched": matched,
+        "unreadable": len(unreadable),
+        "unreadable_candidates": unreadable[:UNREADABLE_SHOWN],
+        "nodes_scanned": scanned,
+        "searched_whole_window": False,
+        "waited_ms": waited_ms,
+        "polls": polls,
+        "hint": "the window did not answer a field the selector names on these elements, so the "
+        "choice cannot be made: retry (or pass timeout_ms), narrow the selector "
+        "(automation_id is exact), or read the window",
+    }
+
+
 def receipt(plan: ActPlan, chosen: Any, after: Any, waited_ms: int, polls: int) -> dict[str, Any]:
+    unread = after.get("unread", [])
+    fields = {"role", "name", "automation_id", "class", "value", "enabled", "focused", "offscreen"}
+    after_read = "unavailable" if fields <= set(unread) else "partial" if unread else "complete"
     return {
         "ok": True,
         "did": plan.act,
         "mutating": act_mutating(plan.act),
+        "action_call_made": True,
+        "action_outcome": "completed",
+        "after_read": after_read,
         "select": plan.select.json(),
         "element": chosen,
         "element_after": after,
         "waited_ms": waited_ms,
         "polls": polls,
-        "note": "the pattern was invoked and the element re-read afterwards; "
-        "whether that achieved the goal is yours to judge",
+        "note": "the action call completed; " + (
+            "the element was re-read afterwards; " if not unread else
+            "the after-state could not be read completely (see element_after.unread); "
+        ) + "whether that achieved the goal is yours to judge",
     }
 
 
@@ -514,9 +546,10 @@ def find_receipt(
     whole: bool,
     waited_ms: int,
     polls: int,
+    unreadable: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
     shown = len(elements)
-    return {
+    out = {
         "ok": True,
         "select": plan.select.json(),
         "matched": matched,
@@ -530,6 +563,11 @@ def find_receipt(
         "note": "ids are not part of this answer on purpose: name the element the same "
         "way when you act on it (element_act)",
     }
+    if unreadable:
+        # Matches may be missing: these failed a selector field instead of answering it.
+        out["unreadable"] = len(unreadable)
+        out["unreadable_candidates"] = unreadable[:UNREADABLE_SHOWN]
+    return out
 
 
 def clip_utf16(text: str, limit: int) -> tuple[str, bool]:

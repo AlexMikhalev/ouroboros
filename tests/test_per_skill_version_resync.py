@@ -390,8 +390,9 @@ def test_telegram_owner_wait_upgrade_reseeds_current_version(tmp_path, fake_log)
     ("telegram", "181b7ff4029a89c33b7060150b8dda91cc568090", "1.3.0", "1.3.2"),
     ("telegram", "8fc237123292", "1.3.0", "1.3.2"),
     ("telegram", "7f71fe8d29c975e25b35a235e1c821e1b547674f", "1.3.1", "1.3.2"),
-    ("unix_computer_use", "162ad3fe6791fcaf6cf625e6b0c50d3a2a27e7f8", "0.4.1", "0.4.3"),
-    ("unix_computer_use", "ec3fc6e5b5ae5ee99a746b5e1a0f6343a41926d4", "0.4.2", "0.4.3"),
+    ("unix_computer_use", "162ad3fe6791fcaf6cf625e6b0c50d3a2a27e7f8", "0.4.1", "0.5.0"),
+    ("unix_computer_use", "ec3fc6e5b5ae5ee99a746b5e1a0f6343a41926d4", "0.4.2", "0.5.0"),
+    ("unix_computer_use", "1e237c1bc89f0600a7362f69eddafdff4ddd1f2d", "0.4.3", "0.5.0"),
 ])
 def test_resync_delivers_payload_from_real_previous_seed(
     tmp_path, fake_log, monkeypatch, name, source, old_version, new_version,
@@ -412,6 +413,8 @@ def test_resync_delivers_payload_from_real_previous_seed(
     drive = tmp_path / "data"
     monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "true")
     monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", drive / "settings.json")
+    # The Unix seed applies on macOS/Linux only; pin a host it applies to.
+    monkeypatch.setattr("ouroboros.contracts.skill_manifest.host_platform", lambda: "linux")
     native = drive / "skills" / "native"
     installed = native / name
     installed.mkdir(parents=True)

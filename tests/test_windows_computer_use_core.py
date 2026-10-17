@@ -7,11 +7,7 @@ layer separate.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
+import tests._windows_computer_use  # noqa: F401  (registers the payload package)
 from windows_computer_use import core, tree  # noqa: E402
 from windows_computer_use.core import (  # noqa: E402
     NodeView,
@@ -124,11 +120,13 @@ def test_an_unknown_action_lists_the_known_ones():
 
 
 def test_setting_a_value_without_text_is_a_forgotten_argument():
-    try:
-        act_plan({"do": "set_value", "select": {"role": "edit"}})
-        raise AssertionError("must refuse")
-    except ValueError as error:
-        assert "empty string to clear" in str(error)
+    # A null is refused like a missing key: handed to the pattern it would clear the field.
+    for args in ({}, {"text": None}, {"text": 7}):
+        try:
+            act_plan({"do": "set_value", "select": {"role": "edit"}, **args})
+            raise AssertionError("must refuse")
+        except ValueError as error:
+            assert "empty string to clear" in str(error)
     ok = act_plan({"do": "set_value", "select": {"role": "edit"}, "text": ""})
     assert ok.text == ""
 

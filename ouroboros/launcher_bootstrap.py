@@ -9,6 +9,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -533,7 +534,7 @@ def install_deps(context: BootstrapContext) -> bool:
 
 
 _SEED_COMPLETE_MARKER = ".bootstrap-seed-complete"
-_POST_BOOTSTRAP_NEW_NATIVE_SEEDS = frozenset({"telegram", "unix_computer_use"})
+_POST_BOOTSTRAP_NEW_NATIVE_SEEDS = frozenset({"telegram", "unix_computer_use", "windows_computer_use"})
 
 
 def _read_skill_manifest(skill_dir: pathlib.Path):
@@ -561,6 +562,15 @@ def _read_skill_manifest_version(skill_dir: pathlib.Path) -> str:
     return str(manifest.version or "").strip() if manifest is not None else ""
 
 
+def _seed_applies_here(seed_skill: pathlib.Path) -> bool:
+    """A seed whose manifest ``os`` excludes this host is not offered here.
+
+    An unreadable manifest is still copied: the loader shows it as broken.
+    """
+    manifest = _read_skill_manifest(seed_skill)
+    return manifest is None or manifest.applies_to_platform()
+
+
 def _reseed_native_skill_in_place(
     seed_skill: pathlib.Path,
     target_skill: pathlib.Path,
@@ -578,12 +588,30 @@ def _reseed_native_skill_in_place(
     choice is preserved (auto-enable fires only when no choice exists yet).
     """
     try:
+        from ouroboros.contracts.skill_manifest import host_platform
+        from ouroboros.skill_loader import _LEGACY_UNIX_REMOTE_PLATFORM, skill_state_dir_path
+        from ouroboros.utils import read_json_dict
+
+        legacy_remote = ""
+        if target_skill.name == "unix_computer_use" and (target_skill / ".seed-origin").is_file():
+            provenance = (target_skill / ".seed-origin").read_text(encoding="utf-8")
+            if _LEGACY_UNIX_REMOTE_PLATFORM in provenance.splitlines():
+                legacy_remote = _LEGACY_UNIX_REMOTE_PLATFORM + "\n"
+            elif drive_root is not None and host_platform() == "win32" and not _seed_applies_here(seed_skill):
+                old = _read_skill_manifest(target_skill)
+                choice = read_json_dict(skill_state_dir_path(drive_root, target_skill.name) / "enabled.json") or {}
+                # Actor-less ON can be manual or inherited from early auto-ON
+                # seeds. Preserve that indistinguishable existing state; only
+                # a recorded native auto-ON is known not to be an owner choice.
+                if (old is not None and old.os == "any" and "net" in old.permissions
+                        and choice.get("enabled") is True and choice.get("actor") != "native_seed"):
+                    legacy_remote = _LEGACY_UNIX_REMOTE_PLATFORM + "\n"
         if target_skill.exists():
             shutil.rmtree(target_skill)
         shutil.copytree(seed_skill, target_skill)
         # Preserve launcher-owned provenance on the replacement copy.
         (target_skill / ".seed-origin").write_text(
-            f"seeded_from={seed_skill.parent.name}\nupgrade=true\n",
+            f"seeded_from={seed_skill.parent.name}\nupgrade=true\n{legacy_remote}",
             encoding="utf-8",
         )
         if drive_root is not None:
@@ -679,6 +707,11 @@ def _per_skill_version_resync(
 # inject_chat, subscribe_event, ...) keep the skill DISABLED until the owner
 # enables it, even though the native-trust review verdict is stamped.
 _NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS = frozenset({"tool", "subprocess"})
+# The bundled computer-use seeds ship ON on the platforms their manifests name:
+# the owner's product decision. unix_computer_use keeps `net` for remote targets
+# the owner, a runner or the agent configures; it needs no grant, so naming the
+# seed is the whole exception. Explicit choices and the trust opt-out still win.
+_DEFAULT_ON_NATIVE_SEEDS = frozenset({"unix_computer_use", "windows_computer_use"})
 
 
 def _stamp_native_seed_trust(
@@ -693,7 +726,8 @@ def _stamp_native_seed_trust(
     hash computed AFTER seeding (control files excluded from the hash). Any
     later edit flips the verdict stale exactly like an ordinary review.
     Zero-grant skills (no secret keys, no privileged permissions, only
-    tool/subprocess surface) also auto-enable. Owner opt-out:
+    tool/subprocess surface, or a ``_DEFAULT_ON_NATIVE_SEEDS`` member) also
+    auto-enable. Owner opt-out:
     ``OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false``. Never raises.
     """
     try:
@@ -748,10 +782,9 @@ def _stamp_native_seed_trust(
             list(skill.manifest.permissions or []),
             list(skill.manifest.subscribe_events or []),
         )
-        zero_grant = (
-            not keys
-            and not perms
-            and set(skill.manifest.permissions or []) <= _NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS
+        zero_grant = not keys and not perms and (
+            set(skill.manifest.permissions or []) <= _NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS
+            or skill.name in _DEFAULT_ON_NATIVE_SEEDS
         )
         # Owner sovereignty: auto-enable only when NO explicit choice exists.
         # A version resync must never override an owner's disable (same
@@ -760,15 +793,83 @@ def _stamp_native_seed_trust(
         from ouroboros.skill_loader import skill_state_dir
 
         no_explicit_choice = not (skill_state_dir(drive_root, skill.name) / "enabled.json").exists()
-        auto_enabled = bool(zero_grant and no_explicit_choice)
+        # A resync also upgrades an earlier release's seed for another platform,
+        # so its manifest can hide it; that copy is never switched on here.
+        auto_enabled = bool(zero_grant and no_explicit_choice and skill.manifest.applies_to_platform())
         if auto_enabled:
-            save_enabled(drive_root, skill.name, True)
+            save_enabled(drive_root, skill.name, True, actor="native_seed")
         log_obj.info(
             "Native-trust review stamped for seeded skill %s (auto_enabled=%s)",
             skill.name, auto_enabled,
         )
     except Exception:
         log_obj.warning("Native-trust stamp failed for %s", skill_dir, exc_info=True)
+
+
+def native_seed_trusted(skill: Any) -> bool:
+    """A current ``native_seed`` verdict on a launcher-owned payload."""
+    review = skill.review
+    return (skill.source == "native" and review.review_profile == "native_seed"
+            and bool(review.gate_for(skill.content_hash)["executable_review"]))
+
+
+def native_seed_dependencies(
+    drive_root: pathlib.Path, skill: Any, *, repo_path: str | None = None,
+) -> tuple[str, str]:
+    """Install a trusted native seed's declared isolated dependencies.
+
+    A reviewed skill gets them from the post-PASS step; a native seed's PASS is
+    the launcher stamp, so that same step runs here instead of a paid first
+    review. Returns its ``(status, error)``; ``("", "")`` for any other skill.
+    """
+    if not native_seed_trusted(skill):
+        return "", ""
+    from ouroboros.skill_review_runner import _reconcile_deps_after_pass_review
+
+    return _reconcile_deps_after_pass_review(pathlib.Path(drive_root), skill.name, repo_path=repo_path)
+
+
+def _native_seed_dependency_pass(drive_root: pathlib.Path, seed_names: list[str], log_obj: Any) -> list[str]:
+    """Ready the dependencies of enabled trusted native seeds, then reconcile each.
+
+    Runs off the boot path, one lifecycle-lane job per skill. A failed install
+    stays in ``deps.json`` for the Skills page and is retried at the next boot;
+    a disabled seed waits for its enable (``skill_lifecycle_actions._toggle``).
+    """
+    try:
+        from ouroboros import extension_loader
+        from ouroboros.config import get_skills_repo_path, load_settings
+        from ouroboros.skill_dependencies import skill_deps_not_ready
+        from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
+        from ouroboros.skill_loader import find_skill
+
+        repo_path = get_skills_repo_path() or None
+        found = [find_skill(drive_root, name, repo_path=repo_path) for name in seed_names]
+        names = [skill.name for skill in found
+                 if skill is not None and skill.enabled and skill.manifest.is_extension()
+                 and native_seed_trusted(skill) and skill_deps_not_ready(drive_root, skill)[1]]
+    except Exception:
+        log_obj.warning("Native seed dependency pass could not inspect skills", exc_info=True)
+        return []
+
+    def step(name: str) -> dict[str, Any]:
+        skill = find_skill(drive_root, name, repo_path=repo_path)
+        if skill is None or not skill.enabled:
+            return {"deps_status": "skipped"}
+        status, error = native_seed_dependencies(drive_root, skill, repo_path=repo_path)
+        state = extension_loader.reconcile_extension(name, drive_root, load_settings, repo_path=repo_path)
+        return {"deps_status": status, "error": error, "extension_action": state.get("action")}
+
+    for name in names:
+        try:
+            run_lifecycle_job_blocking(
+                kind="deps", target=name, source="native_seed", runner=lambda name=name: step(name),
+                dedupe_key=f"native-seed-dependencies:{name}",
+                options=LifecycleJobOptions(drive_root=drive_root, result_error=lambda result: result.get("error", "")),
+            )
+        except Exception:
+            log_obj.warning("Native seed dependency step failed for %s", name, exc_info=True)
+    return names
 
 
 def _carry_grants_across_reseed(
@@ -883,7 +984,8 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
     """Copy seed skills into ``target_root/native/`` once, guarded by a marker.
 
     The marker preserves deletion intent: after first bootstrap, an empty
-    native bucket is not auto-populated again.
+    native bucket is not auto-populated again. A seed whose manifest ``os``
+    excludes this host is never copied (``_seed_applies_here``).
     """
     if not seed_dir.is_dir():
         return 0
@@ -923,8 +1025,18 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             offered_marker = native_root / f".post-bootstrap-seed-{name}"
             if offered_marker.exists():
                 continue
-            if dest.exists() or not any((entry / candidate).is_file() for candidate in ("SKILL.md", "skill.json")):
+            if dest.exists():
+                # An earlier launcher seed was offered; a manual payload was not.
+                if (dest / ".seed-origin").is_file():
+                    try:
+                        offered_marker.write_text("offered\n", encoding="utf-8")
+                    except OSError:
+                        pass
                 continue
+            if not any((entry / candidate).is_file() for candidate in ("SKILL.md", "skill.json")):
+                continue
+            if not _seed_applies_here(entry):
+                continue  # not offered on this platform, so no offered marker either
             if name in installed_names:
                 log_obj.warning(
                     "New bundled native skill %s was not seeded because an installed payload already uses that name",
@@ -968,7 +1080,7 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
         if not any((entry / candidate).is_file() for candidate in ("SKILL.md", "skill.json")):
             continue
         dest = native_root / entry.name
-        if dest.exists():
+        if dest.exists() or not _seed_applies_here(entry):
             continue
         try:
             shutil.copytree(entry, dest)
@@ -976,6 +1088,9 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
             (dest / ".seed-origin").write_text(
                 f"seeded_from={seed_dir.name}\n", encoding="utf-8",
             )
+            if entry.name in _POST_BOOTSTRAP_NEW_NATIVE_SEEDS:
+                # Offered now, so a later removal stays a removal (deletion intent).
+                (native_root / f".post-bootstrap-seed-{entry.name}").write_text("offered\n", encoding="utf-8")
             copied += 1
             _stamp_native_seed_trust(target_root.parent, dest, log_obj)
         except OSError as exc:
@@ -999,7 +1114,8 @@ def _seed_skills_into(seed_dir: pathlib.Path, target_root: pathlib.Path, log_obj
 
 
 def ensure_data_skills_seeded() -> int:
-    """Seed native skills once, then version-resync marker-owned native skills."""
+    """Seed native skills once, version-resync marker-owned ones, then start the
+    background dependency pass for enabled trusted seeds."""
     import logging as _logging
     from ouroboros.config import DATA_DIR, REPO_DIR
 
@@ -1025,6 +1141,15 @@ def ensure_data_skills_seeded() -> int:
         cleanup_orphaned_seed_markers(seed_dir, target_root / "native", log_obj)
     except Exception:  # pragma: no cover - defensive
         log_obj.warning("Orphaned seed-marker cleanup raised", exc_info=True)
+    try:
+        seed_names = sorted(entry.name for entry in seed_dir.iterdir()
+                            if entry.is_dir() and not entry.name.startswith("."))
+        threading.Thread(
+            target=_native_seed_dependency_pass, args=(drive_root, seed_names, log_obj),
+            name="native-seed-dependencies", daemon=True,
+        ).start()
+    except OSError:  # pragma: no cover - defensive
+        log_obj.warning("Native seed dependency pass not started", exc_info=True)
     return copied + upgraded
 
 

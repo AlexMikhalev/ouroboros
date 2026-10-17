@@ -92,7 +92,7 @@ def window_class(hwnd) -> str:
     return buffer.value if copied > 0 else ""
 
 
-def window_title(hwnd) -> str:
+def window_title(hwnd, unread: Optional[list[str]] = None) -> str:
     """GetWindowTextW in a foreign process only returns the caption; the label on
     a button lives behind WM_GETTEXT, which must never be sent without a timeout."""
     length = _user32.GetWindowTextLengthW(hwnd)
@@ -107,9 +107,13 @@ def window_title(hwnd) -> str:
         ctypes.byref(result),
     )
     if not ok:
+        if unread is not None:
+            unread.append("name")
         return ""
     length = int(result.value or 0)
     if length == 0 or length > 8192:
+        if length > 8192 and unread is not None:
+            unread.append("name")  # known length, but the text was not read
         return ""
     buffer = ctypes.create_unicode_buffer(length + 1)
     result = ctypes.c_size_t(0)
@@ -118,6 +122,8 @@ def window_title(hwnd) -> str:
         WIN32_TEXT_TIMEOUT_MS, ctypes.byref(result),
     )
     if not ok:
+        if unread is not None:
+            unread.append("name")
         return ""
     copied = int(result.value or 0)
     return buffer.value[:copied] if copied else ""
@@ -142,15 +148,18 @@ def resolve_window(hwnd_arg: Optional[int]) -> WindowInfo:
         raise ValueError("there is no foreground window in the interactive desktop")
     if not is_window(hwnd):
         raise ValueError(f"window 0x{_hwnd_int(hwnd):X} no longer exists")
+    unread: list[str] = []
+    title = window_title(hwnd, unread)
     return WindowInfo(
         hwnd=_hwnd_int(hwnd),
-        title=window_title(hwnd),
+        title=title,
         cls=window_class(hwnd),
         pid=window_pid(hwnd),
         rect=window_rect(hwnd),
         foreground=_hwnd_int(_user32.GetForegroundWindow()) == _hwnd_int(hwnd),
         resolved_from=resolved_from,
         dpi=window_dpi(hwnd),
+        unread=("title",) if unread else (),
     )
 
 
@@ -164,8 +173,9 @@ def list_windows(limit: int = 100) -> list[dict[str, Any]]:
             return False  # stop enumeration
         if not _user32.IsWindowVisible(hwnd):
             return True
-        title = window_title(hwnd)
-        if not title:
+        unread: list[str] = []
+        title = window_title(hwnd, unread)
+        if not title and not unread:
             return True
         found.append(
             WindowInfo(
@@ -177,6 +187,7 @@ def list_windows(limit: int = 100) -> list[dict[str, Any]]:
                 foreground=_hwnd_int(_user32.GetForegroundWindow()) == _hwnd_int(hwnd),
                 resolved_from="enumeration",
                 dpi=window_dpi(hwnd),
+                unread=("title",) if unread else (),
             ).json()
         )
         return True
@@ -210,7 +221,8 @@ def win32_walk(window: WindowInfo, limits: ReadLimits, visible_only: bool = Fals
         walk.depth_reached = max(walk.depth_reached, depth)
         index = len(walk.nodes)
         cls = window_class(hwnd)
-        name, name_cut = clip_utf16(window_title(hwnd) or "", limits.max_text_chars)
+        unread: list[str] = []
+        name, name_cut = clip_utf16(window_title(hwnd, unread) or "", limits.max_text_chars)
         class_text, class_cut = clip_utf16(cls, limits.max_text_chars)
         node = Node(
             parent=parent,
@@ -223,6 +235,7 @@ def win32_walk(window: WindowInfo, limits: ReadLimits, visible_only: bool = Fals
             enabled=bool(_user32.IsWindowEnabled(hwnd)),
             offscreen=not visible,
             text_truncated=name_cut or class_cut,
+            unread=tuple(unread),
         )
         if depth + 1 > limits.max_depth:
             node.children_unread = "max_depth"

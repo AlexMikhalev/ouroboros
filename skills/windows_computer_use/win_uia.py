@@ -2,15 +2,24 @@
 
 Ported from the Windows half of Praxis/Hélène ``uia.rs``:
 
-- one cache request per walk (properties + patterns read in a batch) instead of
-  five inter-process calls per element - the live-probe lesson of 10.09;
+- one cache request per walk (properties, pattern state properties included,
+  read in a batch) instead of five inter-process calls per element - the
+  live-probe lesson of 10.09;
 - the control-view tree walker, breadth-first with a deadline on every node;
 - act/find share ONE sweep so selector fixes land in both;
 - ambiguity is a refusal with candidates; "not found" is never confused with
-  "didn't finish reading";
+  "didn't finish reading", and a field the selector names that the provider
+  failed to read is neither: the candidate stays a candidate, so act refuses;
 - a hung provider degrades honestly: the worker thread is abandoned (Python
   cannot kill threads) and, for reads, the plain Win32 fallback answers with a
   named ``fallback_reason``.
+
+comtypes facts this module relies on: a successful NULL interface out-param is
+a falsy pointer object, never ``None``; ``GetCurrentPattern`` hands back
+``IUnknown``, so the pattern interface needs ``QueryInterface``;
+``GetCachedPropertyValue`` returns plain Python values (``BoundingRectangle``
+as a left/top/width/height tuple) and a non-matching type for an unsupported
+property. A raised call is a failed query, named as one.
 
 The apartment: per worker thread, MTA requested (comtypes' import may have
 set STA; RPC_E_CHANGED_MODE is honored - the apartment stays as the importer
@@ -20,6 +29,7 @@ boundary (isolated dependency, host-owned kill) is the hang guard.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from typing import Any, Optional
@@ -28,30 +38,40 @@ from .core import (
     SWEEP_MS,
     WORKER_GRACE_MS,
     choose,
+    clip_utf16,
     not_found,
     role_name,
 )
 from .tree import Node, Rect, Walk, WindowInfo
 from .tree import render as render_tree
 
+# Property and pattern ids (UIAutomationClient.h).
 UIA_NamePropertyId = 30005
 UIA_ControlTypePropertyId = 30003
 UIA_LocalizedControlTypePropertyId = 30004
 UIA_BoundingRectanglePropertyId = 30001
 UIA_IsEnabledPropertyId = 30010
-UIA_IsOffscreenPropertyId = 30013
+UIA_IsOffscreenPropertyId = 30022
 UIA_HasKeyboardFocusPropertyId = 30008
 UIA_AutomationIdPropertyId = 30011
 UIA_ClassNamePropertyId = 30012
 UIA_NativeWindowHandlePropertyId = 30020
 UIA_ProcessIdPropertyId = 30002
+UIA_IsExpandCollapsePatternAvailablePropertyId = 30028
+UIA_IsSelectionItemPatternAvailablePropertyId = 30036
+UIA_IsTogglePatternAvailablePropertyId = 30041
+UIA_IsValuePatternAvailablePropertyId = 30043
+UIA_ValueValuePropertyId = 30045
+UIA_ExpandCollapseExpandCollapseStatePropertyId = 30070
+UIA_SelectionItemIsSelectedPropertyId = 30079
+UIA_ToggleToggleStatePropertyId = 30086
 UIA_ValuePatternId = 10002
 UIA_TogglePatternId = 10015
 UIA_SelectionItemPatternId = 10010
 UIA_ExpandCollapsePatternId = 10005
 UIA_InvokePatternId = 10000
 UIA_ScrollItemPatternId = 10017
-UIA_TextPatternId = 10020
+UIA_TextPatternId = 10014
 UIA_EditControlTypeId = 50004
 UIA_DocumentControlTypeId = 50030
 
@@ -67,23 +87,42 @@ CACHED_PROPERTIES = (
     UIA_ClassNamePropertyId,
     UIA_NativeWindowHandlePropertyId,
     UIA_ProcessIdPropertyId,
-)
-CACHED_PATTERNS = (
-    UIA_ValuePatternId,
-    UIA_TogglePatternId,
-    UIA_SelectionItemPatternId,
-    UIA_ExpandCollapsePatternId,
+    # Pattern state rides the same batch as plain properties: no pattern object
+    # is needed to read a value, a toggle state, a selection or an expansion.
+    UIA_IsValuePatternAvailablePropertyId,
+    UIA_ValueValuePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId,
+    UIA_ToggleToggleStatePropertyId,
+    UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_SelectionItemIsSelectedPropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_ExpandCollapseExpandCollapseStatePropertyId,
 )
 
 TOGGLE_STATES = {0: "off", 1: "on", 2: "mixed"}
 EXPAND_STATES = {0: "collapsed", 1: "expanded", 2: "partially_expanded", 3: "leaf"}
+# How much of a document's text a receipt or candidate shows; a longer one is
+# marked text_truncated. A selector's value_contains always sees the whole text.
+DESCRIBE_TEXT_CHARS = 4000
 
 
 class UIAError(RuntimeError):
     pass
 
 
-def _automation():
+class ActionCallError(UIAError):
+    """The action method was entered; an exception cannot establish its effects."""
+
+
+def client_module():
+    """Import the UIAutomationClient wrapper, generating it on first use.
+
+    Only the registry and the type library are read, never a target window, so
+    callers run this before the hang deadline: comtypes writes the generated
+    module in place, and an abandoned worker must not leave it half written.
+    Importing comtypes here also keeps its own STA initialisation on the
+    calling thread, so the worker below gets the MTA it asks for.
+    """
     import comtypes
     import comtypes.client
     from comtypes import GUID
@@ -93,7 +132,14 @@ def _automation():
     tlib = comtypes.typeinfo.LoadRegTypeLib(
         GUID("{944DE083-8FB8-45CF-BCB7-C477ACB2F897}"), 1, 0, 0
     )
-    comtypes.client.GetModule(tlib)
+    return comtypes.client.GetModule(tlib)
+
+
+def _automation():
+    import comtypes
+    import comtypes.client
+
+    client_module()
     from comtypes.gen.UIAutomationClient import CUIAutomation, IUIAutomation
 
     return comtypes.client.CreateObject(
@@ -116,7 +162,7 @@ def thread_automation():
     # MTA, not STA: an STA thread must pump messages or incoming calls never
     # arrive, and we run no message loop (the Rust original's reason, and
     # Microsoft's recommendation for UIA clients). RPC_E_CHANGED_MODE (comtypes
-    # already put this thread in STA on import) is honored, not fought.
+    # was first imported on this thread and put it in STA) is honored, not fought.
     try:
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
     except OSError as error:
@@ -137,37 +183,45 @@ def _build_cache(automation):
     cache.AutomationElementMode = AutomationElementMode_Full
     for prop in CACHED_PROPERTIES:
         cache.AddProperty(prop)
-    for pattern in CACHED_PATTERNS:
-        cache.AddPattern(pattern)
     return cache
 
 
-def _rect_of(tag_rect) -> Optional[Rect]:
-    try:
-        rect = Rect(
-            int(tag_rect.left), int(tag_rect.top), int(tag_rect.right), int(tag_rect.bottom)
-        )
-    except (TypeError, ValueError, AttributeError):
-        return None
-    return None if rect.is_empty() else rect
+# ─── reads: a failed read is a fact of its own, never "absent" ─────────────────
+
+_UNREAD = object()
 
 
-def _get_cached(element, prop_id: int, default=None):
+def _cached(element, prop_id: int) -> Any:
     try:
         return element.GetCachedPropertyValue(prop_id)
     except Exception:
-        return default
+        return _UNREAD
 
 
-def _cached_str(element, prop_id: int) -> Optional[str]:
+def _text(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _flag(value: Any) -> Optional[bool]:
+    return value if isinstance(value, bool) else None
+
+
+def _number(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _rect_of(raw: Any) -> Optional[Rect]:
+    """BoundingRectangle as a property read returns it (left, top, width, height)
+    or as a RECT structure (left, top, right, bottom)."""
     try:
-        value = element.GetCachedPropertyValue(prop_id)
-    except Exception:
+        if hasattr(raw, "left"):
+            rect = Rect(int(raw.left), int(raw.top), int(raw.right), int(raw.bottom))
+        else:
+            left, top, width, height = (float(part) for part in raw)
+            rect = Rect(round(left), round(top), round(left + width), round(top + height))
+    except (TypeError, ValueError, AttributeError):
         return None
-    if value is None:
-        return None
-    text = str(value)
-    return text if text.strip() else None
+    return None if rect.is_empty() else rect
 
 
 def _clip(text: Optional[str], limit: int) -> tuple[Optional[str], bool]:
@@ -179,111 +233,136 @@ def _clip(text: Optional[str], limit: int) -> tuple[Optional[str], bool]:
     return (clipped if clipped else None), cut
 
 
+def _pattern_present(unknown: Any) -> bool:
+    """A NULL pointer (falsy, not None) means the element has no such pattern."""
+    return unknown is not None and bool(unknown)
+
+
+def _live_value(element, limit: Optional[int] = None) -> tuple[Optional[str], bool]:
+    """Live ValuePattern value, else the TextPattern document text (WinForms
+    multiline, RichEdit documents), and whether ``limit`` cut the document.
+    ``None`` when the element exposes neither or both are empty; a failed query
+    RAISES - it is not absence.
+
+    GetText truncates at its maxLength without saying so: a limit asks for one
+    UTF-16 unit more, which tells a longer document from one that fits. Without
+    a limit it is GetText(-1), the whole document - what matching needs."""
+    from comtypes.gen.UIAutomationClient import IUIAutomationTextPattern, IUIAutomationValuePattern
+
+    unknown = element.GetCurrentPattern(UIA_ValuePatternId)
+    if _pattern_present(unknown):
+        text = _text(unknown.QueryInterface(IUIAutomationValuePattern).CurrentValue)
+        if text:
+            return text, False
+    unknown = element.GetCurrentPattern(UIA_TextPatternId)
+    if _pattern_present(unknown):
+        document = unknown.QueryInterface(IUIAutomationTextPattern).DocumentRange
+        text, cut = document.GetText(-1 if limit is None else limit + 1), False
+        if limit is not None and isinstance(text, str):
+            text, cut = clip_utf16(text, limit)
+        text = _text(text)
+        if text or cut:
+            return text, cut
+    return None, False
+
+
+def _cached_value(element) -> Any:
+    """The cached ValuePattern value, ``None`` without the pattern, or ``_UNREAD``."""
+    available = _cached(element, UIA_IsValuePatternAvailablePropertyId)
+    if available is _UNREAD:
+        return _UNREAD
+    if available is not True:
+        return None
+    value = _cached(element, UIA_ValueValuePropertyId)
+    return value if value is _UNREAD else _text(value)
+
+
+def _cached_state(element, available_id: int, state_id: int, coerce) -> Any:
+    available = _cached(element, available_id)
+    if available is _UNREAD:
+        return _UNREAD
+    if available is not True:
+        return None
+    state = _cached(element, state_id)
+    return state if state is _UNREAD else coerce(state)
+
+
 def node_from(element, depth: int, parent: Optional[int], limits) -> Node:
-    """Element -> Node from the CACHE (one batch read per subtree)."""
-    truncated = False
-    control_type = _get_cached(element, UIA_ControlTypePropertyId, 0) or 0
-    name, cut = _clip(_cached_str(element, UIA_NamePropertyId), limits.max_text_chars)
-    truncated |= cut
-    localized, cut = _clip(_cached_str(element, UIA_LocalizedControlTypePropertyId), limits.max_text_chars)
-    truncated |= cut
-    automation_id, cut = _clip(_cached_str(element, UIA_AutomationIdPropertyId), limits.max_text_chars)
-    truncated |= cut
-    cls, cut = _clip(_cached_str(element, UIA_ClassNamePropertyId), limits.max_text_chars)
-    truncated |= cut
+    """Element -> Node from the CACHE (one batch read per subtree). Fields the
+    provider failed to read are listed in ``unread`` instead of looking absent."""
+    unread: list[str] = []
 
-    value = None
-    try:
-        pattern = element.GetCachedPatternAs(UIA_ValuePatternId)
-        if pattern is not None:
-            raw = pattern.CachedValue
-            value, cut = _clip(str(raw) if raw is not None and str(raw).strip() else None, limits.max_text_chars)
-            truncated |= cut
-    except Exception:
-        pass
-    if value is None and control_type in (UIA_EditControlTypeId, UIA_DocumentControlTypeId):
-        # Proxy controls (WinForms/Win32 EDIT via the MSAA bridge) expose an EMPTY
-        # cached ValuePattern while a live query returns the text (live probe 08.09).
-        # Live call only for edit/document, or every node would cost one.
-        value = _live_value(element, limits)
-
-    checked = None
-    try:
-        pattern = element.GetCachedPatternAs(UIA_TogglePatternId)
-        if pattern is not None:
-            checked = TOGGLE_STATES.get(int(pattern.CachedToggleState))
-    except Exception:
-        pass
-    selected = None
-    try:
-        pattern = element.GetCachedPatternAs(UIA_SelectionItemPatternId)
-        if pattern is not None:
-            selected = bool(pattern.CachedIsSelected)
-    except Exception:
-        pass
-    expanded = None
-    try:
-        pattern = element.GetCachedPatternAs(UIA_ExpandCollapsePatternId)
-        if pattern is not None:
-            expanded = EXPAND_STATES.get(int(pattern.CachedExpandCollapseState))
-    except Exception:
-        pass
-
-    def _bool_of(prop_id: int) -> Optional[bool]:
-        try:
-            value = element.GetCachedPropertyValue(prop_id)
-            return bool(value) if value is not None else None
-        except Exception:
+    def read(field: str, raw: Any, coerce=lambda value: value) -> Any:
+        if raw is _UNREAD:
+            unread.append(field)
             return None
+        return coerce(raw)
 
-    hwnd = _get_cached(element, UIA_NativeWindowHandlePropertyId, 0) or 0
+    truncated = False
+    control_type = read("role", _cached(element, UIA_ControlTypePropertyId), _number) or 0
+    texts = {}
+    for field, prop_id in (
+        ("name", UIA_NamePropertyId),
+        ("localized_role", UIA_LocalizedControlTypePropertyId),
+        ("automation_id", UIA_AutomationIdPropertyId),
+        ("class", UIA_ClassNamePropertyId),
+    ):
+        texts[field], cut = _clip(read(field, _cached(element, prop_id), _text), limits.max_text_chars)
+        truncated |= cut
+
+    value = read("value", _cached_value(element))
+    if value is None and "value" not in unread and control_type in (UIA_EditControlTypeId, UIA_DocumentControlTypeId):
+        # Proxy controls (WinForms/Win32 EDIT via the MSAA bridge) expose an EMPTY
+        # cached value while a live query returns the text (live probe 08.09).
+        # Live call only for edit/document, or every node would cost one.
+        try:
+            value, cut = _live_value(element, limits.max_text_chars)
+            truncated |= cut
+        except Exception:
+            unread.append("value")
+    value, cut = _clip(value, limits.max_text_chars)
+    truncated |= cut
+
+    checked = read("checked", _cached_state(
+        element, UIA_IsTogglePatternAvailablePropertyId, UIA_ToggleToggleStatePropertyId,
+        lambda state: TOGGLE_STATES.get(_number(state))))
+    selected = read("selected", _cached_state(
+        element, UIA_IsSelectionItemPatternAvailablePropertyId, UIA_SelectionItemIsSelectedPropertyId, _flag))
+    expanded = read("expanded", _cached_state(
+        element, UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId,
+        lambda state: EXPAND_STATES.get(_number(state))))
+    hwnd = read("hwnd", _cached(element, UIA_NativeWindowHandlePropertyId), _number) or 0
     return Node(
         parent=parent,
         depth=depth,
         role=role_name(int(control_type)),
-        localized_role=localized,
-        name=name,
+        localized_role=texts["localized_role"],
+        name=texts["name"],
         value=value,
-        automation_id=automation_id,
-        cls=cls,
-        hwnd=int(hwnd) or None,
-        rect=_rect_of(_get_cached(element, UIA_BoundingRectanglePropertyId)),
-        enabled=_bool_of(UIA_IsEnabledPropertyId),
-        focused=_bool_of(UIA_HasKeyboardFocusPropertyId),
-        offscreen=_bool_of(UIA_IsOffscreenPropertyId),
+        automation_id=texts["automation_id"],
+        cls=texts["class"],
+        hwnd=hwnd or None,
+        rect=read("rect", _cached(element, UIA_BoundingRectanglePropertyId), _rect_of),
+        enabled=read("enabled", _cached(element, UIA_IsEnabledPropertyId), _flag),
+        focused=read("focused", _cached(element, UIA_HasKeyboardFocusPropertyId), _flag),
+        offscreen=read("offscreen", _cached(element, UIA_IsOffscreenPropertyId), _flag),
         checked=checked,
         selected=selected,
         expanded=expanded,
         text_truncated=truncated,
         children_unread=None,
+        unread=tuple(unread),
     )
 
 
-def _live_value(element, limits) -> Optional[str]:
-    """Live ValuePattern query for proxy edit/document controls; falls back to
-    TextPattern's document range (WinForms multiline)."""
+def _root_element(automation, hwnd_value: int, cache):
     try:
-        pattern = element.GetCurrentPattern(UIA_ValuePatternId)
-        if pattern is not None:
-            raw = pattern.CurrentValue
-            text = str(raw) if raw is not None and str(raw).strip() else None
-            if text:
-                clipped, _ = _clip(text, limits.max_text_chars)
-                return clipped
-    except Exception:
-        pass
-    try:
-        pattern = element.GetCurrentPattern(UIA_TextPatternId)
-        if pattern is not None:
-            document = pattern.DocumentRange
-            raw = document.GetText(limits.max_text_chars)
-            text = str(raw) if raw and str(raw).strip() else None
-            if text:
-                clipped, _ = _clip(text, limits.max_text_chars)
-                return clipped
-    except Exception:
-        pass
-    return None
+        root = automation.ElementFromHandleBuildCache(hwnd_value, cache)
+    except Exception as error:
+        raise UIAError(f"ElementFromHandle: {error}") from error
+    if not root:
+        raise UIAError("ElementFromHandle returned no element for this window")
+    return root
 
 
 def uia_walk(automation, cache, walker, hwnd_value: int, plan) -> Walk:
@@ -293,10 +372,7 @@ def uia_walk(automation, cache, walker, hwnd_value: int, plan) -> Walk:
     started = time.monotonic()
     deadline = started + plan.limits.timeout_ms / 1000.0
     walk = Walk()
-    try:
-        root = automation.ElementFromHandleBuildCache(hwnd_value, cache)
-    except Exception as error:
-        raise UIAError(f"ElementFromHandle: {error}") from error
+    root = _root_element(automation, hwnd_value, cache)
     queue: deque = deque()
     queue.append((root, 0, None))
 
@@ -359,34 +435,25 @@ def uia_walk(automation, cache, walker, hwnd_value: int, plan) -> Walk:
 
 _PROVIDER_REFUSED = object()
 _END_OF_LIST = object()
-_E_POINTER = -2147467261  # 0x80004003
-
-
-def _com_error_code(error: Exception) -> Optional[int]:
-    return getattr(error, "hresult", None) if isinstance(error, Exception) else None
 
 
 def _walk_first_child(walker, element, cache):
-    """Successful NULL means 'no children'; E_POINTER from these walkers is the
-    generated wrapper collapsing a successful null (the windows-crate lesson:
-    call the vtable to keep both pieces of evidence). Provider refusals are
-    named refusals - matched by HRESULT only, never by message text (an
-    unrelated error mentioning a pointer must stay a refusal)."""
+    """A successful NULL (a falsy pointer in comtypes) is the end of the list.
+    Any raised error - E_POINTER included, which in comtypes is a real failure,
+    not a collapsed NULL as in the Rust windows crate - is a provider refusal."""
     try:
-        return walker.GetFirstChildElementBuildCache(element, cache)
-    except Exception as error:
-        if _com_error_code(error) == _E_POINTER:
-            return _END_OF_LIST
+        child = walker.GetFirstChildElementBuildCache(element, cache)
+    except Exception:
         return _PROVIDER_REFUSED
+    return child if child else _END_OF_LIST
 
 
 def _walk_next_sibling(walker, element, cache):
     try:
-        return walker.GetNextSiblingElementBuildCache(element, cache)
-    except Exception as error:
-        if _com_error_code(error) == _E_POINTER:
-            return _END_OF_LIST
+        sibling = walker.GetNextSiblingElementBuildCache(element, cache)
+    except Exception:
         return _PROVIDER_REFUSED
+    return sibling if sibling else _END_OF_LIST
 
 
 # ─── act/find: ONE sweep for both ───────────────────────────────────────────────
@@ -400,21 +467,58 @@ class Match:
         self.describe = describe_json
 
 
+_SELECTOR_FIELDS = {
+    "role": ("role",),
+    "name": ("name", "name_contains"),
+    "automation_id": ("automation_id",),
+    "value": ("value_contains",),
+}
+
+
+def _selector_view(element, select):
+    """The fields ``select`` constrains, plus those the provider failed to read."""
+    from .core import NodeView
+
+    failed: list[str] = []
+    raw_type = _cached(element, UIA_ControlTypePropertyId)
+    control_type = None if raw_type is _UNREAD else (_number(raw_type) or 0)
+    if control_type is None and select.role is not None:
+        failed.append("role")
+    texts: dict[str, Optional[str]] = {"name": None, "automation_id": None}
+    for field, prop_id, wanted in (
+        ("name", UIA_NamePropertyId, select.name is not None or select.name_contains is not None),
+        ("automation_id", UIA_AutomationIdPropertyId, select.automation_id is not None),
+    ):
+        if wanted:
+            raw = _cached(element, prop_id)
+            if raw is _UNREAD:
+                failed.append(field)
+            else:
+                texts[field] = _text(raw)
+    value = None
+    if select.value_contains is not None:
+        try:
+            value = _value_for_select(element, control_type)[0]
+        except Exception:
+            failed.append("value")
+    view = NodeView(role=role_name(control_type or 0), name=texts["name"], value=value,
+                    automation_id=texts["automation_id"])
+    return view, failed
+
+
 def sweep(automation, cache, walker, hwnd_value: int, select, max_nodes: int, max_depth: int, deadline: float):
-    """Walk the control view collecting matches; returns (found, scanned, hit_limit).
+    """Walk the control view collecting matches; returns (found, scanned, hit_limit, unread).
 
     hit_limit is None when the whole window was read - "not found" and "didn't
-    finish" must stay different answers.
+    finish" must stay different answers. ``unread`` holds elements that match
+    every field the provider could read but failed a field the selector names:
+    they may be competitors, so they are never silently dropped.
     """
     from collections import deque
 
-    from .core import NodeView
-
-    try:
-        root = automation.ElementFromHandleBuildCache(hwnd_value, cache)
-    except Exception as error:
-        raise UIAError(f"ElementFromHandle: {error}") from error
+    root = _root_element(automation, hwnd_value, cache)
     found: list[Match] = []
+    unread: list[dict[str, Any]] = []
     queue: deque = deque()
     queue.append((root, 0))
     scanned = 0
@@ -428,21 +532,16 @@ def sweep(automation, cache, walker, hwnd_value: int, select, max_nodes: int, ma
             break
         element, depth = queue.popleft()
         scanned += 1
-        control_type = _get_cached(element, UIA_ControlTypePropertyId, 0) or 0
-        role = role_name(int(control_type))
-        # Read only what the selector asks of display fields; value live-reads
-        # only for edit/document proxy controls (the 11.09 acceptance hole).
-        name = None
-        if select.name is not None or select.name_contains is not None:
-            name = _cached_str(element, UIA_NamePropertyId)
-        automation_id = None
-        if select.automation_id is not None:
-            automation_id = _cached_str(element, UIA_AutomationIdPropertyId)
-        value = None
-        if select.value_contains is not None:
-            value = _value_for_select(element)
-        view = NodeView(role=role, name=name, value=value, automation_id=automation_id)
-        if select.matches(view):
+        view, failed = _selector_view(element, select)
+        role = view.role
+        if failed:
+            readable = dataclasses.replace(
+                select, **{key: None for field in failed for key in _SELECTOR_FIELDS[field]})
+            if readable.matches(view):
+                description = _describe(element, role, cached=True)
+                description["unread"] = list(dict.fromkeys([*description.get("unread", []), *failed]))
+                unread.append(description)
+        elif select.matches(view):
             found.append(Match(element, None, None))
             found[-1].describe = lambda el=element, r=role: _describe(el, r, cached=True)
         child = _walk_first_child(walker, element, cache)
@@ -471,126 +570,88 @@ def sweep(automation, cache, walker, hwnd_value: int, select, max_nodes: int, ma
             child = nxt
         if hit_limit:
             break
-    return found, scanned, hit_limit
+    return found, scanned, hit_limit, unread
 
 
-def _value_for_select(element) -> Optional[str]:
-    """Value for SELECTION: cached first, live for empty-cache proxy edits.
-    RichEditD2DPT (modern Notepad) exposes document value through TextPattern,
-    not ValuePattern - the live probe taught this on 12.10."""
-    cached = None
-    try:
-        pattern = element.GetCachedPatternAs(UIA_ValuePatternId)
-        if pattern is not None:
-            raw = pattern.CachedValue
-            cached = str(raw) if raw is not None and str(raw).strip() else None
-    except Exception:
-        cached = None
+def _value_for_select(element, control_type: Optional[int], limit: Optional[int] = None) -> tuple[Optional[str], bool]:
+    """Value as SELECTION sees it: cached first, live for empty-cache proxy edits
+    and documents (ValuePattern, then TextPattern - where RichEdit documents keep
+    their text); with whether ``limit`` cut a document. Matching passes no limit,
+    so it sees the whole text: a prefix would turn a later match into a false
+    "not found", or a competitor into a false unique choice. Raises when a read
+    fails, including an unreadable control type that decides whether the live
+    read applies."""
+    cached = _cached_value(element)
+    if cached is _UNREAD:
+        raise UIAError("the cached value could not be read")
     if cached:
-        return cached
-    control_type = _get_cached(element, UIA_ControlTypePropertyId, 0) or 0
-    if int(control_type) not in (UIA_EditControlTypeId, UIA_DocumentControlTypeId):
-        return cached
-    return _live_value_brief(element) or _live_text_value(element) or cached
-
-
-def _live_text_value(element) -> Optional[str]:
-    """TextPattern document range - where RichEdit documents keep their text."""
-    try:
-        pattern = element.GetCurrentPattern(UIA_TextPatternId)
-        if pattern is None:
-            return None
-        concrete = pattern.QueryInterface(_text_pattern_iid())
-        document = concrete.DocumentRange
-        raw = document.GetText(4000)
-        return str(raw) if raw and str(raw).strip() else None
-    except Exception:
-        return None
-
-
-def _text_pattern_iid():
-    from comtypes.gen.UIAutomationClient import IUIAutomationTextPattern
-
-    return IUIAutomationTextPattern
-
-
-def _live_value_brief(element) -> Optional[str]:
-    try:
-        unknown = element.GetCurrentPattern(UIA_ValuePatternId)
-        if unknown is None or not getattr(unknown, "value", None):
-            return None
-        from comtypes.gen.UIAutomationClient import IUIAutomationValuePattern
-
-        pattern = unknown.QueryInterface(IUIAutomationValuePattern)
-        raw = pattern.CurrentValue
-        return str(raw) if raw is not None and str(raw).strip() else None
-    except Exception:
-        return None
-
-
-def _pattern_unknown_ok(unknown) -> bool:
-    """comtypes returns a POINTER(IUnknown) even for a successful null (ptr=0):
-    both the None case and the zero-pointer case mean 'no such pattern'."""
-    if unknown is None:
-        return False
-    value = getattr(unknown, "value", None)
-    if value is None:
-        return True  # a comtypes pointer object without .value attr: assume real
-    try:
-        return int(value) != 0
-    except (TypeError, ValueError):
-        return True
+        return cached, False
+    if control_type is None:
+        raise UIAError("the control type could not be read")
+    if control_type not in (UIA_EditControlTypeId, UIA_DocumentControlTypeId):
+        return None, False
+    return _live_value(element, limit)
 
 
 def _describe(element, role: str, cached: bool = True) -> dict[str, Any]:
     """Element in words - the same field set window_read uses, so receipts and
     readings read the same way. Cached=True is 'as the walk saw it'; False is the
     live re-read after an action (showing the stale cache as 'after' would show
-    'before' twice)."""
+    'before' twice). Unsupported fields are absent; failed fields are unread."""
 
     out: dict[str, Any] = {"role": role}
+    unread: list[str] = []
 
-    def prop(prop_id: int):
+    def prop(field: str, prop_id: int):
         try:
             return element.GetCachedPropertyValue(prop_id) if cached else element.GetCurrentPropertyValue(prop_id)
         except Exception:
-            return None
+            unread.append(field)
+            return _UNREAD
+
+    raw_type = prop("role", UIA_ControlTypePropertyId)
+    out["role"] = role_name(_number(raw_type) or 0)
 
     for key, prop_id in (
         ("name", UIA_NamePropertyId),
         ("automation_id", UIA_AutomationIdPropertyId),
         ("class", UIA_ClassNamePropertyId),
     ):
-        value = prop(prop_id)
-        text = str(value) if value is not None else None
-        if text and text.strip():
+        text = _text(prop(key, prop_id))
+        if text:
             out[key] = text
     try:
         if cached:
-            out["value"] = _value_for_select(element)
+            value, cut = _value_for_select(
+                element, None if raw_type is _UNREAD else (_number(raw_type) or 0), DESCRIBE_TEXT_CHARS)
         else:
-            live = _live_value_brief(element)
-            if live:
-                out["value"] = live
+            value, cut = _live_value(element, DESCRIBE_TEXT_CHARS)
+        out["value"] = value
+        if cut:
+            out["text_truncated"] = True
     except Exception:
-        pass
+        unread.append("value")
     state: dict[str, Any] = {}
     for key, prop_id in (
         ("enabled", UIA_IsEnabledPropertyId),
         ("focused", UIA_HasKeyboardFocusPropertyId),
         ("offscreen", UIA_IsOffscreenPropertyId),
     ):
-        value = prop(prop_id)
+        value = _flag(prop(key, prop_id))
         if value is not None:
-            state[key] = bool(value)
+            state[key] = value
     if state:
         out["state"] = state
+    if unread:
+        out["unread"] = unread
     return out
 
 
 def patterns_of(element) -> list[str]:
-    """Which patterns the element supports - the refusal needs this to be useful."""
+    """Which patterns the element supports - the refusal needs this to be useful.
+    A failed query is named as unknown, not counted as support or its absence."""
     said: list[str] = []
+    unknown: list[str] = []
     for pattern_id, name in (
         (UIA_InvokePatternId, "invoke"),
         (UIA_ValuePatternId, "set_value"),
@@ -600,18 +661,21 @@ def patterns_of(element) -> list[str]:
         (UIA_ScrollItemPatternId, "scroll_into_view"),
     ):
         try:
-            if _pattern_unknown_ok(element.GetCurrentPattern(pattern_id)):
-                said.append(name)
+            present = _pattern_present(element.GetCurrentPattern(pattern_id))
         except Exception:
+            unknown.append(name)
             continue
+        if present:
+            said.append(name)
     if not said:
         said.append("none (focus still works)")
+    if unknown:
+        said.append(f"could not query {', '.join(unknown)}")
     return said
 
 
 def act_pattern(element, pattern_id: int, want: str):
-    """Pattern for the ACTION, outcomes separated: a successful null (None or a
-    zero pointer - comtypes returns POINTER(IUnknown) with ptr=0) means the
+    """Pattern for the ACTION, outcomes separated: a successful NULL means the
     element really has no such pattern; a failed query is a provider error and
     is named as one (the 11.09 review hole - never report a failed instrument
     as a fact about the world)."""
@@ -622,7 +686,7 @@ def act_pattern(element, pattern_id: int, want: str):
             f"{want}: the pattern query itself failed - this is a provider error, "
             f"not proof that the element lacks {want}: {error}"
         ) from error
-    if not _pattern_unknown_ok(unknown):
+    if not _pattern_present(unknown):
         return None
     return unknown
 
@@ -655,6 +719,13 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
             "click at coordinates - that is the unreliability it exists to avoid"
         )
 
+    def call(method, *args):
+        guard()  # a refusal here is still before the action method
+        try:
+            method(*args)
+        except Exception as error:
+            raise ActionCallError(f"{act}: action call raised: {error}") from error
+
     if act == "invoke":
         pattern = _cast_pattern(
             act_pattern(element, UIA_InvokePatternId, "InvokePattern"),
@@ -662,8 +733,7 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("InvokePattern")
-        guard()  # fresh check right before the mutation, not before the pattern query
-        pattern.Invoke()
+        call(pattern.Invoke)
     elif act == "set_value":
         pattern = _cast_pattern(
             act_pattern(element, UIA_ValuePatternId, "ValuePattern"),
@@ -671,8 +741,7 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("ValuePattern")
-        guard()
-        pattern.SetValue(text or "")
+        call(pattern.SetValue, text)  # act_plan admits only a string; "" is the explicit clear
     elif act == "toggle":
         pattern = _cast_pattern(
             act_pattern(element, UIA_TogglePatternId, "TogglePattern"),
@@ -680,8 +749,7 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("TogglePattern")
-        guard()
-        pattern.Toggle()
+        call(pattern.Toggle)
     elif act in ("expand", "collapse"):
         pattern = _cast_pattern(
             act_pattern(element, UIA_ExpandCollapsePatternId, "ExpandCollapsePattern"),
@@ -689,11 +757,10 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("ExpandCollapsePattern")
-        guard()
         if act == "expand":
-            pattern.Expand()
+            call(pattern.Expand)
         else:
-            pattern.Collapse()
+            call(pattern.Collapse)
     elif act == "select":
         pattern = _cast_pattern(
             act_pattern(element, UIA_SelectionItemPatternId, "SelectionItemPattern"),
@@ -701,8 +768,7 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("SelectionItemPattern")
-        guard()
-        pattern.Select()
+        call(pattern.Select)
     elif act == "scroll_into_view":
         pattern = _cast_pattern(
             act_pattern(element, UIA_ScrollItemPatternId, "ScrollItemPattern"),
@@ -710,11 +776,9 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
         )
         if pattern is None:
             raise missing("ScrollItemPattern")
-        guard()
-        pattern.ScrollIntoView()
+        call(pattern.ScrollIntoView)
     elif act == "focus":
-        guard()
-        element.SetFocus()
+        call(element.SetFocus)
     else:  # pragma: no cover - act_plan validated the verb
         raise UIAError(f"unknown act {act!r}")
 
@@ -722,6 +786,8 @@ def perform(element, act: str, text: Optional[str], guard) -> None:
 def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
     """Find-and-act inside one apartment visit: the element never leaves COM
     between selection and pattern invocation."""
+    from .core import ambiguous_error, receipt, unreadable_error
+
     started = time.monotonic()
     deadline = started + max(plan.timeout_ms, WORKER_GRACE_MS) / 1000.0
     cache = _build_cache(automation)
@@ -731,17 +797,26 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
     polls = 0
     while True:
         polls += 1
-        found, scanned, hit_limit = sweep(
+        found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, window.hwnd, plan.select, plan.max_nodes, plan.max_depth, deadline
         )
+        waited_ms = int((time.monotonic() - started) * 1000)
+        out_of_time = plan.timeout_ms == 0 or time.monotonic() >= deadline
         if hit_limit is not None:
             reason, hint = not_found(hit_limit, False, False)
             return {
                 "ok": False, "reason": reason, "hint": hint,
-                "matched": len(found), "nodes_scanned": scanned,
+                "matched": len(found), "unreadable": len(unread), "nodes_scanned": scanned,
                 "searched_whole_window": False,
-                "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
+                "waited_ms": waited_ms, "polls": polls,
             }
+        if unread:
+            # A candidate the provider could not read may be the real target or a
+            # competitor: choosing among the readable rest would be a guess.
+            if out_of_time:
+                return unreadable_error(len(found), unread, scanned, waited_ms, polls)
+            time.sleep(0.12)
+            continue
         indexes = list(range(len(found)))
         choice = choose(indexes, plan.select.nth)
         if choice.which == "one":
@@ -757,27 +832,33 @@ def act_in_session(automation, plan, window: WindowInfo, resolve_pid):
 
                     if _w32._hwnd_int(_w32._user32.GetForegroundWindow()) != window.hwnd:
                         raise UIAError("foreground changed before element action")
-            role = role_name(int(_get_cached(element, UIA_ControlTypePropertyId, 0) or 0))
+            role = role_name(_number(_cached(element, UIA_ControlTypePropertyId)) or 0)
             before = _describe(element, role, cached=True)
-            perform(element, plan.act, plan.text, guard)
-            after_role = role_name(int(_live_control_type(element) or 0))
-            after = _describe(element, after_role, cached=False)
-            from .core import receipt
+            try:
+                perform(element, plan.act, plan.text, guard)
+            except ActionCallError as error:
+                from .core import act_mutating
 
+                return {
+                    "ok": False, "error": str(error), "requested": plan.act,
+                    "mutating": act_mutating(plan.act), "action_call_made": True,
+                    "action_outcome": "unknown", "select": plan.select.json(), "element": before,
+                    "hint": "the action call was made but its outcome is unknown. Do not retry blindly; "
+                    "check the window state first",
+                }
+            after = _describe(element, role, cached=False)
             return receipt(plan, before, after, int((time.monotonic() - started) * 1000), polls)
         if choice.which == "ambiguous":
-            from .core import ambiguous_error
-
             candidates = [m.describe() for m in found]
             return ambiguous_error(choice.total, candidates)
         # none: wait and retry until deadline
-        if plan.timeout_ms == 0 or time.monotonic() >= deadline:
+        if out_of_time:
             reason, hint = not_found(hit_limit, plan.select.nth is not None, bool(found))
             return {
                 "ok": False, "reason": reason, "hint": hint,
                 "matched": len(found), "nodes_scanned": scanned,
                 "searched_whole_window": hit_limit is None,
-                "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
+                "waited_ms": waited_ms, "polls": polls,
             }
         time.sleep(0.12)
 
@@ -786,55 +867,29 @@ def _guard_live_match(element, select) -> None:
     """Fresh look before acting: what the walk remembered may have redrawn.
     A provider failure on a field the selector ASKED for aborts the action (a
     failed instrument is never a fact about the world - the 11.09 lesson);
-    display-only fields may degrade to absence."""
+    the value is re-read with the sweep's own semantics (ValuePattern, then
+    TextPattern), so a document matched by its text is not refused here."""
     from .core import NodeView
 
-    role = ""
-    if select.role is not None:
+    def live(read):
         try:
-            control_type = int(element.CurrentControlType or 0)
+            return read()
         except Exception as error:
             raise UIAError(f"re-reading the chosen element before the action: {error}") from error
-        role = role_name(control_type)
+
+    role = role_name(_number(live(lambda: element.CurrentControlType)) or 0) if select.role is not None else ""
     name = None
     if select.name is not None or select.name_contains is not None:
-        try:
-            name = element.CurrentName or None
-        except Exception as error:
-            raise UIAError(f"re-reading the chosen element before the action: {error}") from error
-    automation_id = None
-    if select.automation_id is not None:
-        try:
-            automation_id = element.CurrentAutomationId or None
-        except Exception as error:
-            raise UIAError(f"re-reading the chosen element before the action: {error}") from error
-    value = None
-    if select.value_contains is not None:
-        try:
-            unknown = element.GetCurrentPattern(UIA_ValuePatternId)
-            if _pattern_unknown_ok(unknown):
-                from comtypes.gen.UIAutomationClient import IUIAutomationValuePattern
-
-                pattern = unknown.QueryInterface(IUIAutomationValuePattern)
-                raw = pattern.CurrentValue
-                value = str(raw) if raw is not None and str(raw).strip() else None
-        except Exception as error:
-            raise UIAError(f"re-reading the chosen element before the action: {error}") from error
+        name = _text(live(lambda: element.CurrentName))
+    automation_id = _text(live(lambda: element.CurrentAutomationId)) if select.automation_id is not None else None
+    value = live(lambda: _live_value(element)[0]) if select.value_contains is not None else None
     if not select.matches(NodeView(role=role, name=name, value=value, automation_id=automation_id)):
         raise UIAError("selected element changed before action")
 
 
-def _live_control_type(element) -> int:
-    try:
-        return int(element.CurrentControlType or 0)
-    except Exception:
-        try:
-            return int(element.GetCurrentPropertyValue(UIA_ControlTypePropertyId) or 0)
-        except Exception:
-            return 0
-
-
 def find_in_session(automation, plan, hwnd_value: int):
+    from .core import find_receipt, unreadable_error
+
     started = time.monotonic()
     deadline = started + plan.timeout_ms / 1000.0
     cache = _build_cache(automation)
@@ -846,25 +901,26 @@ def find_in_session(automation, plan, hwnd_value: int):
         # still read something, not nothing.
         sweep_by = time.monotonic() + SWEEP_MS / 1000.0
         by = max(deadline, sweep_by)
-        found, scanned, hit_limit = sweep(
+        found, scanned, hit_limit, unread = sweep(
             automation, cache, walker, hwnd_value, plan.select, plan.max_nodes, plan.max_depth, by
         )
         if found or time.monotonic() >= deadline:
             matched = len(found)
+            waited_ms = int((time.monotonic() - started) * 1000)
             shown = [m.describe() for m in found[: plan.limit]]
+            if matched == 0 and unread and hit_limit is None:
+                return unreadable_error(0, unread, scanned, waited_ms, polls)
             if matched == 0:
                 reason, hint = not_found(hit_limit, False, False)
                 return {
                     "ok": False, "reason": reason, "hint": hint,
-                    "matched": 0, "nodes_scanned": scanned,
+                    "matched": 0, "unreadable": len(unread), "nodes_scanned": scanned,
                     "searched_whole_window": hit_limit is None,
-                    "waited_ms": int((time.monotonic() - started) * 1000), "polls": polls,
+                    "waited_ms": waited_ms, "polls": polls,
                 }
-            from .core import find_receipt
-
             return find_receipt(
-                plan, matched, shown, scanned, hit_limit is None,
-                int((time.monotonic() - started) * 1000), polls,
+                plan, matched, shown, scanned, hit_limit is None and not unread, waited_ms, polls,
+                unreadable=unread,
             )
         time.sleep(0.12)
 
