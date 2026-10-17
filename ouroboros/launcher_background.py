@@ -91,13 +91,19 @@ def status_line(port: int) -> str:
     if state.get("works_complete") is not True or not isinstance(summary, dict) or summary.get("confirmed") is not True \
             or any(work.get("activity") == "unknown" for work in works):
         return "Ouroboros: activity unconfirmed"
+    # The server's order (working, queued, waiting, paused), with the room's own transitions.
+    activities = {work.get("activity") for work in works}
     working = [work for work in works if work.get("activity") == "working"]
     moving = [work for work in working if work.get("transition") != "pausing"]
-    if moving:
+    if moving and all(work.get("transition") == "finalizing" for work in moving):
+        line = "Ouroboros: finalizing"  # only answers' upkeep runs, as the page says
+    elif moving:
         line = f"Ouroboros: working on {len(moving)} task{'' if len(moving) == 1 else 's'}"
     elif working:  # settling its Pause: neither working nor paused yet, as on the page
         line = "Ouroboros: pausing"
-    elif any(work.get("activity") == "paused" for work in works):
+    elif "queued" in activities:
+        line = "Ouroboros: queued"
+    elif "paused" in activities and "waiting" not in activities:
         line = "Ouroboros: paused"
     else:
         line = "Ouroboros: waiting"

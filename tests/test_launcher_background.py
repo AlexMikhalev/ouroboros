@@ -532,7 +532,10 @@ def work(activity, transition="none", turn=False):
     (OSError("refused"), "Ouroboros: not responding"),  # refused, timed out (a busy server is not "stopped")
     (b"<html>", "Ouroboros: not responding"),
     (projection(), "Ouroboros: waiting"),
-    (projection(work("queued")), "Ouroboros: waiting"),
+    (projection(work("queued")), "Ouroboros: queued"),
+    (projection(work("queued"), work("paused")), "Ouroboros: queued"),  # the server's order: queued before paused
+    (projection(work("working", "finalizing")), "Ouroboros: finalizing"),  # an answer's upkeep is not a new task
+    (projection(work("working", "finalizing"), work("working")), "Ouroboros: working on 2 tasks"),
     (projection(work("working"), work("working", "finalizing"), work("working"), work("queued")),
      "Ouroboros: working on 3 tasks"),
     (projection(work("working")), "Ouroboros: working on 1 task"),
@@ -543,7 +546,7 @@ def work(activity, transition="none", turn=False):
     (projection(work("working")), "Ouroboros: working on 1 task"),
     # What waits for the owner is counted on the same line.
     (projection(work("working"), work("waiting", turn=True)), "Ouroboros: working on 1 task · 1 waits for you"),
-    (projection(work("paused", turn=True), work("waiting", turn=True)), "Ouroboros: paused · 2 wait for you"),
+    (projection(work("paused", turn=True), work("waiting", turn=True)), "Ouroboros: waiting · 2 wait for you"),
     # What the server says it does not know is neither "waiting" nor "working" (review r1).
     (projection(supervisor_ready=False, supervisor_error="Supervisor init failed: boom"),
      "Ouroboros: error, tasks are not running"),
