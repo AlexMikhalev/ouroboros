@@ -877,9 +877,8 @@ def _late_phase_refusal(q: Any, root: pathlib.Path, task_id: str, row: Dict[str,
 def _release_late_fence(q: Any, root: pathlib.Path, task_id: str, row: dict, fence: Dict[str, Any]) -> Dict[str, Any]:
     """Resume of an answered root's Pause with no saved post-task remainder (D10).
 
-    Nothing left at all: the tree census already releases it. Only deferred,
-    unsent late work left (a late review still preparing): this explicit
-    Resume reopens the fence once nothing sent remains in flight.
+    Nothing left at all: the tree census already releases it. Otherwise this
+    explicit Resume reopens the fence once nothing sent remains in flight.
     """
     from ouroboros.owner_pause import FENCE_RELEASED, launch_lock, set_fence_state
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
@@ -904,10 +903,8 @@ def _release_late_fence(q: Any, root: pathlib.Path, task_id: str, row: dict, fen
         try:
             with launch_lock(root, task_id):
                 from ouroboros.owner_pause import read_fence
-                from ouroboros.acceptance_late import resume_paused_acceptance_preparations
                 if read_fence(root, task_id) != fence:
                     return {"ok": False, "error": "selection_authority_changed"}
-                resume_paused_acceptance_preparations(root, task_id, fence)
                 set_fence_state(root, task_id, fence_id=str(fence.get("fence_id") or ""), state=FENCE_RELEASED,
                                 expected_state=str(fence.get("state") or ""), release_reason="owner_resume_late")
         except Exception as exc:

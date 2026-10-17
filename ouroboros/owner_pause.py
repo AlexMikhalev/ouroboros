@@ -378,11 +378,6 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
             if not fence_closed(current) or current.get("supersedes_fence_id") != fence_id:
                 raise ValueError("owner_pause_fence_changed")
         elif root_actor(root_drive, root_task_id, task_id):
-            if fence_closed(current):
-                # One root Resume restores every saved unsent owner before opening
-                # their shared fence, including acceptance beside post-task work.
-                from ouroboros.acceptance_late import resume_paused_acceptance_preparations
-                resume_paused_acceptance_preparations(root_drive, root_task_id, current)
             try:
                 release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
             except StoreBusy as exc:
@@ -395,9 +390,9 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
 
 def _finish_resume_publication(root_drive: Any, root_task_id: str, task_id: str, fence_id: str, grant_id: str,
                                error: StoreBusy | LaunchBusy) -> None:
-    """Retry only the root fence write after preparation handoff, outside its lock.
+    """Retry only the root fence write, outside its lock.
 
-    The preparation is already owned and must never restart here. Each try
+    Nothing the Resume already started restarts here. Each try
     rechecks the physical actor's grant under its logical root lock; unknown
     rollback or the existing STORE_WAIT_SEC physical acquisition bound leaves
     the caller's hold intact; no task/review lifetime is extended.

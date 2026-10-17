@@ -285,13 +285,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # wait ceiling is min(configured ceiling, remaining/4); below this floor plan_task SKIPS
     # with a typed reason + telemetry rather than eat the tail of the budget.
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
-    # Acceptance-review budget layer (task_pacing SSOT): the configurable
-    # acceptance admission floor, clamped to >=200 s by task_pacing.
-    "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
-    # STRING "N"|"unlimited": paid plan/acceptance/commit/skill waves; final feedback still permits author response. Explicit task-local author limits and free identical-material replay remain separate.
+    # STRING "N"|"unlimited": paid plan/result/commit/skill waves; final feedback still permits author response. Explicit task-local author limits and free identical-material replay remain separate.
     "OUROBOROS_REVIEW_MAX_CYCLES": "2",
-    "OUROBOROS_ACCEPTANCE_RESERVE_PCT": 5,
     # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08, batch #2 Q2=A): applied to
     # EVERY cache_control breakpoint on the Anthropic-normalizing family — main loop, review lanes, safety
     # supervisor alike — at the ONE send-time finalizer (llm._normalize_payload_cache_ttl). 'default' = bare
@@ -400,6 +396,13 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_EFFORT_SCOPE_REVIEW",
     "OUROBOROS_EFFORT_DEEP_SELF_REVIEW",
     "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
+    # The task-acceptance machine folded into review_change(subject="result") (owner 17.10, Q2-A):
+    # its launch floor was a duration prediction, and its reserve percentage was the default
+    # reserve that floor's window was measured above (a budget profile's own
+    # reserve_finalization_pct still applies). A review is bounded by the deadline less the
+    # finalization grace.
+    "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC",
+    "OUROBOROS_ACCEPTANCE_RESERVE_PCT",
 )
 
 
