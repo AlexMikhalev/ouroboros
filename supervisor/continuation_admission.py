@@ -352,6 +352,9 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
     canonical = result.get("task_contract") if isinstance(result.get("task_contract"), dict) else {}
     contract = {**stored, **canonical}
     self_body_docs = contract.get("context_requires_self_body_docs")
+    # The recorded resource choice rides with the folder (#1315), so placement keeps an explicit
+    # folder or opt-out instead of the destination room's default (``project_placement``).
+    intent = metadata.get("resource_intent")
     task: Dict[str, Any] = {
         **({"reasoning_effort": effort} if effort in EFFORT_SCALE else {}),
         **({"context_requires_self_body_docs": self_body_docs} if isinstance(self_body_docs, bool) else {}),
@@ -363,6 +366,7 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
         **{key: binding[key] for key in ("workspace_root", "workspace_mode") if binding.get(key)},
         "metadata": {
             **({"project_id": binding["project_id"]} if binding.get("project_id") else {}),
+            **({"resource_intent": dict(intent)} if isinstance(intent, dict) and intent.get("kind") else {}),
             # Keep verified owner-door provenance on its canonical carrier;
             # the new objective below is still the host's continuation text.
             **({"origin_message_ref": dict(origin_ref), "origin_message_text": original["content"]}
