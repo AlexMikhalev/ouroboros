@@ -370,8 +370,8 @@ def test_old_settled_fail_and_linked_open_obligation_survive_another_history_gro
     shown = _index(after)[-1]
     assert "OPEN CRITIC REASON" in str(shown) and "OPEN OBLIGATION STILL NEEDS REPAIR" in str(shown)
     assert any(r["decision_kind"] == "actor_history_group" for r in shown["decision_rows"])
-    prior = next(r for r in shown["rounds"] if r.get("review_record_id") == records[0])
-    assert prior["verdict"]["aggregate"] == "FAIL"
+    prior = next(e for e in shown["addresses"].values() if e["read"].get("arguments", {}).get("ids") == [records[0]])
+    assert "aggregate verdict FAIL" in prior["what"] and "rounds" not in shown
     assert [review_ledger.load_record(drive, rid) for rid in records] == canonical
     assert review_dispute_history(drive_root=drive, repo_root=root, task_id=ctx.task_id)["open_obligations"]
 
