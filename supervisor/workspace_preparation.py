@@ -8,8 +8,10 @@ commits the durable ``workspace_preparation`` marker on that row; a FIFO lane
 of the supervisor generation then runs the existing schedule owner with the
 claim (``events_schedule_task._handle_schedule_task(..., preparation=claim)``).
 Copies and new projects stay serialized in acceptance order on one lane; an
-existing folder's validation uses the other, so it never waits behind a copy.
-Command and event draining wait on neither. A host that never opened
+existing folder's validation uses the other, so it never waits behind a copy
+(a child admitted on a folder may write it while a copy of that folder still
+waits; the copy's whole-tree diff then refuses the moved source, as it already
+did in the other order). Command and event draining wait on neither. A host that never opened
 a generation (a direct caller of the handler) keeps the historical inline path.
 Positive entry contention keeps the unaccepted event on its original transport;
 after marker acceptance, acquisition waits retain the same FIFO stack off Q.

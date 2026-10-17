@@ -202,3 +202,24 @@ def test_population_refuses_a_path_checkout_left_as_a_link(tmp_path, monkeypatch
         provision(tmp_path, target)
     assert (tmp_path / "outside.cfg").read_bytes() == b"never written\n"
     nothing_left(tmp_path, target, "fill")
+
+
+@pytest.mark.parametrize("independent", [False, True], ids=["worktree", "clone"])
+def test_an_entry_outside_an_inherited_sparse_cone_is_still_copied(tmp_path, independent):
+    root = tmp_path / "sparse"
+    (root / "docs").mkdir(parents=True)
+    for args in (("init", "-q"), ("config", "user.name", "Fixture"), ("config", "user.email", "f@example.invalid")):
+        git(root, *args)
+    (root / "a.txt").write_bytes(b"in cone\n")
+    (root / "docs" / "b.txt").write_bytes(b"committed\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "fixture")
+    (root / "docs" / "b.txt").write_bytes(b"dirty outside the cone\n")
+    if git(root, "sparse-checkout", "set", "--no-cone", "/a.txt", check=False).returncode != 0:
+        pytest.skip("this git has no sparse-checkout")
+    if not (root / "docs" / "b.txt").exists():
+        pytest.skip("this git removed the modified entry outside the cone")
+    handle = provision(tmp_path, root, snapshot_id="sparse", independent=independent)
+    copy = pathlib.Path(handle.path)
+    assert (copy / "docs" / "b.txt").read_bytes() == b"dirty outside the cone\n"
+    assert (copy / "a.txt").read_bytes() == b"in cone\n"

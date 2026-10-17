@@ -600,12 +600,19 @@ def _fill_private_copy(source: Path, checkout: Path) -> None:
     per-file temporary file and rename of ``copy_artifact_file`` (the measured
     cost) buys nothing here. The same stable source read rewrites the file in
     place from its first differing byte, an equal file is not written, and
-    ``copystat`` applies the source's mode, times and flags as before. A path
-    that checkout did not leave as a regular file is refused, never written through.
+    ``copystat`` applies the source's mode, times and flags as before. An entry
+    checkout did not write (outside an inherited sparse-checkout cone) is created
+    by ``copy_artifact_file`` as before; a path checkout left as something other
+    than a regular file is refused, never written through. No retention flow
+    provisions copies, so skipping that helper's publication fence loses nothing.
     """
-    from ouroboros.artifacts import stream_artifact_file
+    from ouroboros.artifacts import copy_artifact_file, stream_artifact_file
 
-    info = os.lstat(checkout)
+    try:
+        info = os.lstat(checkout)
+    except FileNotFoundError:
+        copy_artifact_file(source, checkout)
+        return
     if not stat.S_ISREG(info.st_mode):
         raise OSError(f"snapshot checkout is not a regular file: {checkout}")
     if info.st_mode & 0o600 != 0o600:  # an owner-unwritable umask; copystat restores the mode
