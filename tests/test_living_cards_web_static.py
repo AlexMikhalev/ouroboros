@@ -3,7 +3,7 @@
 An app card runs model-written HTML. The frame that holds it is decided once and pinned here like the widget
 frames (tests/test_widgets_ui_static.py): sandbox ``allow-scripts`` and nothing else (no same-origin, forms,
 popups, modals, downloads or top navigation), the document assigned through the ``srcdoc`` property from bytes
-read as text (never a URL the frame navigates to), and a document policy with no network at all. The feed's
+read as text (never a URL the frame navigates to), and a document policy with no fetch, WebSocket or load. The feed's
 card logic lives in chat_cards.js, beside the other deliveries, not in chat.js.
 """
 
