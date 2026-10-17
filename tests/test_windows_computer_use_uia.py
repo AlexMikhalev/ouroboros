@@ -381,7 +381,7 @@ def test_a_walker_error_is_a_refusal_never_the_end_of_the_children():
         act(root, {"select": {"name": "Pane"}, "do": "focus"})
 
 
-# ── waiting: a re-poll the deadline cut is not the answer ─────────────────────
+# ── waiting: the last whole walk answers; a walk the deadline cut stays a timeout
 
 class Clock:
     """win_uia's clock: time passes between polls, and where a test stalls a read."""
@@ -413,9 +413,11 @@ def stall_second_walk(clock, element, *, rename=None):
     element.GetCachedPropertyValue = stalling
 
 
-def test_act_answers_not_found_from_the_last_whole_walk_when_the_deadline_cuts_a_re_poll(monkeypatch):
-    # The real-desktop sequence: every walk of a small window completes, and the
-    # poll begun after the default 3000 ms wait ran out is cut before its first node.
+def test_act_answers_not_found_from_the_last_whole_walk_instead_of_starting_a_cut_re_poll(monkeypatch):
+    # The real-desktop sequence (run 39058404823): every walk of a small window
+    # completed, then a poll begun after the 3000 ms wait ran out was cut before
+    # its first node and the answer read 'timeout, 0 nodes'. A whole walk that
+    # ends inside the last pause is now the final look.
     monkeypatch.setattr(win_uia, "time", Clock())
     calls = Calls()
     root = dialog(calls, make(calls, "a", 50000, name="A"), make(calls, "b", 50020, name="B"))
@@ -424,7 +426,38 @@ def test_act_answers_not_found_from_the_last_whole_walk_when_the_deadline_cuts_a
     result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
 
     assert result["reason"] == "not_found" and result["searched_whole_window"] is True
-    assert result["nodes_scanned"] == 3 and result["polls"] > 1 and result["waited_ms"] >= 3000
+    assert result["nodes_scanned"] == 3 and result["polls"] > 1
+    assert 3000 - 1000 * win_uia.POLL_PAUSE_S - 1 <= result["waited_ms"] <= 3000
+
+
+def test_act_keeps_a_timeout_when_the_target_appears_in_the_part_of_a_walk_the_deadline_cut(monkeypatch):
+    # The target appears after a whole walk; the next walk stalls past the
+    # deadline before reaching it. That walk began in time, so its cut is the
+    # answer - a 'not_found' from the older walk would deny what is now there.
+    clock = Clock()
+    monkeypatch.setattr(win_uia, "time", clock)
+    calls = Calls()
+    first = make(calls, "a", 50000, name="A")
+    target = make(calls, "late", 50000, name="Later", patterns={10000: None})
+    root = dialog(calls, first, target)
+    read = first.GetCachedPropertyValue
+    seen = []
+
+    def stalling(prop_id):
+        if prop_id == 30003:
+            seen.append(clock.now)
+            if len(seen) == 2:
+                target.props[30005] = "Go"
+                clock.now += 30
+        return read(prop_id)
+
+    first.GetCachedPropertyValue = stalling
+    plan = core.act_plan({"hwnd": 1, "select": {"name": "Go"}, "do": "invoke"})
+
+    result = win_uia.act_in_session(Automation(root), plan, window(), lambda hwnd: 42)
+
+    assert result["reason"] == "timeout" and result["searched_whole_window"] is False
+    assert result["polls"] == 2 and ("Invoke", "late") not in calls
 
 
 def test_a_cut_walk_that_met_a_candidate_stays_a_timeout(monkeypatch):
@@ -443,7 +476,18 @@ def test_a_cut_walk_that_met_a_candidate_stays_a_timeout(monkeypatch):
     assert ("Invoke", "late") not in calls
 
 
-def test_find_answers_from_the_last_whole_walk_when_a_slow_re_poll_is_cut(monkeypatch):
+def test_find_answers_not_found_from_the_last_whole_walk_of_its_wait(monkeypatch):
+    monkeypatch.setattr(win_uia, "time", Clock())
+    calls = Calls()
+    root = dialog(calls, make(calls, "a", 50000, name="A"), make(calls, "b", 50020, name="B"))
+
+    result = find(root, {"select": {"name": "no such element"}, "timeout_ms": 1000})
+
+    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
+    assert result["nodes_scanned"] == 3 and result["polls"] > 1
+
+
+def test_find_keeps_a_timeout_when_a_re_poll_begun_in_time_is_cut(monkeypatch):
     clock = Clock()
     monkeypatch.setattr(win_uia, "time", clock)
     calls = Calls()
@@ -453,8 +497,8 @@ def test_find_answers_from_the_last_whole_walk_when_a_slow_re_poll_is_cut(monkey
 
     result = find(root, {"select": {"name": "no such element"}, "timeout_ms": 1000})
 
-    assert result["reason"] == "not_found" and result["searched_whole_window"] is True
-    assert result["nodes_scanned"] == 3 and result["polls"] == 2
+    assert result["reason"] == "timeout" and result["searched_whole_window"] is False
+    assert result["polls"] == 2
 
 
 # ── window_read: values, states, rectangles and visibility from the cache ─────
