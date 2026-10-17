@@ -172,7 +172,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 
 Update-status, log-tail and schedule-list reads run off the event loop.
 
-`/api/state` adds `current_questions`/`main_attention`, each with completeness and typed gaps (§3); `active_chat_activities` stays root-only. It also carries the work projection (`gateway/work_projection.py`): `works` (one row per request with its Continue episodes and live members), `rooms` (one status per chat), `work_summary` (the tray's line), `works_complete` and `works_gaps`. GET neither scans chat nor writes; actions reuse `/api/decisions` and task endpoints.
+`/api/state` adds `current_questions`/`main_attention`, each with completeness and typed gaps (§3); `active_chat_activities` stays root-only. `works`, `rooms`, `work_summary`, `works_complete`/`works_gaps` carry one status per work and per room (`gateway/work_projection.py`). GET neither scans chat nor writes; actions reuse `/api/decisions` and task endpoints.
 
 ### WebSocket protocol
 
