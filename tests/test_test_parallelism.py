@@ -52,6 +52,21 @@ def test_physical_headroom_and_parent_slots_cap_the_same_budget(monkeypatch, req
     assert budget.worker_budget(requested, env=env) == expected
 
 
+@pytest.mark.parametrize("capacity", [2, 3])
+def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch, capacity):
+    """The requested three slots still obey measured memory, not a hostile pytest override."""
+    total = 20 * config.TEST_WORKER_PEAK_RSS_BYTES
+    memory = budget.MemorySnapshot(total, int(total * config.TEST_MEMORY_RESERVE_FRACTION)
+                                   + capacity * config.TEST_WORKER_PEAK_RSS_BYTES)
+    monkeypatch.setattr(budget, "physical_memory", lambda: memory)
+    monkeypatch.setenv(budget.WORKERS_ENV, "3")
+    monkeypatch.setenv(budget.NESTED_WORKERS_ENV, "3")
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
+    env = preflight_runner._preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
+    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == str(capacity)
+    assert budget.WORKERS_ENV not in env  # the candidate cannot re-lower the admission seam
+
+
 def test_preflight_keeps_the_admission_it_measured_before_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight_runner, "_preflight_worker_count", lambda: 2)
     preflight_runner._install_worker_probe(tmp_path)

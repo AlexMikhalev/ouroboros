@@ -770,7 +770,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # earlier records keep theirs, nothing writes one any more.
 # 377 -> 378 (test health): adoption reads the receipt directory ``state/preflight_receipts``
 # (``ouroboros/preflight_qualification.py``; the existing receipts row).
-EXPECTED_SCAN_PATHS = 378
+# 378 -> 379 (review copies' lifetime): the prune walks ``state/review_checkouts`` itself
+# (``ouroboros/review_checking_prune.py``; the existing seats and views rows).
+EXPECTED_SCAN_PATHS = 379
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

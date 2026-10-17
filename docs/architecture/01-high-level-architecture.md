@@ -266,7 +266,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_native_episode.py — Read-only native API reviewer episodes for pool seats and deep self-review (§6 Native tool-round episode)
   review_session_reads.py — Harness-journal reading diagnostics (`harness_observed`), never verdict, quorum or retry authority (§6 Review delivery)
   review_verdict_extraction.py — Verdict canonicalization by output shape: strict parse, then light-model extraction; `array` keeps the findings ladder, `object` the whole verdict, `report` passes through verbatim
-  review_session_custody.py, review_checking.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private checking copies (§6 Review delivery)
+  review_session_custody.py, review_checking.py, review_checking_prune.py — Delegated-review recovery validation, the pre-POST invocation checkpoint, writable seats' checking copies (§6 Review delivery)
   review_slot_cancel.py — A cancel outcome reports only what it proved; a succeeded run whose result read fails is the typed `ReviewSessionSucceededResultUnavailable`, never "may still be live"
   review_actor_aggregation.py, review_session_usage.py, review_thread_continuity.py — Completed-actor contract aggregation; delegated-session usage attribution; Claudexor thread operations for delegated plan reviewers
   commit_admission.py — Release/syntax admission and bound test proof (§6)
