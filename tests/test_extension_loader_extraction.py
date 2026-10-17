@@ -184,7 +184,8 @@ def test_the_public_loader_surface_is_unchanged():
 def test_companion_projection_preserves_order_and_excludes_nonspawnable_markers(monkeypatch):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(extension_loader, "_extensions", {
+    # The registry belongs to extension_registry_state; the facade re-export serves the projection.
+    monkeypatch.setattr(extension_registry_state, "_extensions", {
         "first": SimpleNamespace(companion_names=[None, "", "daemon", "task:hidden", "worker-skip:other"]),
         "second": SimpleNamespace(companion_names=["other", "daemon"]),
     })

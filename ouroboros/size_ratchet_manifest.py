@@ -119,7 +119,6 @@ BAND_PATHS = {
     "ouroboros/delegate_recovery.py": "Native owner waits and delegated sessions share the existing planned-restart transaction and repeated-cleanup preservation owner.",
     "ouroboros/delegate_supervision.py": "The existing event-only supervision owner keeps observation cadence separate from the HTTP read allowance, preserving current controls and exact-run custody through transient read timeouts.",
     "ouroboros/evidence_packs.py": "S5 corruption and unlink guards keep the sidecar authority, verified decoder, atomic pack publication and A+ restore together; shared scheduling and process plumbing stay in evidence_packer and startup_historical_audit. The accepted cuts remove duplicate decoder and temp-file lifecycle code.",
-    "ouroboros/extension_loader.py": "Reviewed snapshot publication stays with extension registration; restoring the readable companion-name projection removes cap-only formatting, not a lifecycle owner.",
     "ouroboros/extension_plugin_api.py": "The PluginAPI transport owner retains per-child best-effort WS failure aggregation beside the relay that observes failures; the existing process-result channel carries that aggregate without a separate diagnostic service.",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/claudexor_accounts.py": "Account-family transport keeps independent daemon facets and login receipts together at one HTTP boundary.",
