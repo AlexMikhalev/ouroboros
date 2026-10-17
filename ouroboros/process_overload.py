@@ -107,7 +107,7 @@ def stop_reason(total: int, memory, *, floor: int, reserve: int) -> str:
     """Why an owned tree must stop now, or "".
 
     Only real pressure stops a tree that outgrew what admission gave it: the machine
-    is under its physical reserve, or its kernel reports memory pressure. A tree
+    is under its physical reserve, or its kernel reports critical memory pressure. A tree
     within its admitted floor is never killed for another program's pressure, and a
     large tree on a machine that keeps its reserve runs on (a start-of-run
     free-memory snapshot and summed RSS both misjudge room, which killed healthy
@@ -118,7 +118,7 @@ def stop_reason(total: int, memory, *, floor: int, reserve: int) -> str:
     if memory.available_bytes < reserve:
         return "machine under its reserve and tree past its admitted size"
     if memory.pressure:
-        return "kernel reports memory pressure and tree past its admitted size"
+        return "kernel reports critical memory pressure and tree past its admitted size"
     return ""
 
 
