@@ -146,7 +146,6 @@ def test_strict_chat_failure_cannot_acknowledge_then_repair_survives_registry_ag
     monkeypatch.setattr(bus, "load_state", lambda: {"owner_id": 1})
     monkeypatch.setattr(bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(bus, "publish_event", lambda *_a, **_kw: None)
-    monkeypatch.setattr(bus, "_advance_project_visible_revision", lambda *_a: None)
     monkeypatch.setattr(handler, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     context = SimpleNamespace(DRIVE_ROOT=owed.root, RUNNING={}, send_with_budget=bus.send_with_budget,
                               append_jsonl=append_jsonl)
@@ -330,7 +329,6 @@ def test_every_terminal_delivery_id_requires_durable_chat_before_ack(tmp_path, m
     monkeypatch.setattr(bus, "load_state", lambda: {"owner_id": 1})
     monkeypatch.setattr(bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(bus, "publish_event", lambda *_a, **_kw: None)
-    monkeypatch.setattr(bus, "_advance_project_visible_revision", lambda *_a: None)
     monkeypatch.setattr(handler, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     context = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl,
                               send_with_budget=bus.send_with_budget)

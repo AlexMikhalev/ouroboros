@@ -286,9 +286,6 @@ def test_cancel_receipt_rides_verbatim_live_durable_and_on_replay(
     monkeypatch.setattr(
         message_bus, "load_state", lambda: {"session_id": "s-1", "owner_id": 7},
     )
-    monkeypatch.setattr(
-        message_bus, "_advance_project_visible_revision", lambda _chat_id: None,
-    )
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
 
     verbatim = (

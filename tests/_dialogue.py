@@ -38,6 +38,25 @@ def lines(root: Any, stream: str = "chat") -> List[str]:
     return [dialogue_store.encode(entry.row) for entry in dialogue_store.newest(pathlib.Path(root), stream, limit=1 << 40)]
 
 
+def advance_room_revision(root: Any, *, project_id: str = "", chat_id: int = 0):
+    """Synthetic unread fixture for UI tests, independent of the retired registry writer.
+
+    Legacy fixture rows are imported explicitly. Real row/revision atomicity is
+    tested through the message bus in test_project_unread_producers.
+    """
+    from ouroboros.projects_registry import get_project, list_projects
+
+    project = (get_project(root, project_id) if project_id else
+               next((row for row in list_projects(root) if row["chat_id"] == chat_id), None))
+    if project is None:
+        return None
+    import_all(root)
+    with dialogue_store.transaction(root, write=True) as conn:
+        conn.execute("INSERT INTO rooms (chat_id, revision) VALUES (?, 1) ON CONFLICT(chat_id) "
+                     "DO UPDATE SET revision = rooms.revision + 1", (project["chat_id"],))
+    return get_project(root, project["id"])
+
+
 def write_segment(path: pathlib.Path, entries: Iterable[Any]) -> pathlib.Path:
     """A legacy chain file: dict rows are encoded as ``append_jsonl`` did, strings are written verbatim."""
     path.parent.mkdir(parents=True, exist_ok=True)

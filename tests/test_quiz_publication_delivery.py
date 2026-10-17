@@ -21,7 +21,6 @@ def publication(tmp_path, monkeypatch):
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 1})
     monkeypatch.setattr(message_bus, "publish_event", lambda *args: events.append(args))
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda *_: None)
     ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, bridge=bridge, append_jsonl=append_jsonl)
     event = {"type": "send_quiz", "task_id": "t", "quiz_id": "q", "chat_id": 1,
              "question": "Which approach?", "options": [{"label": "First"}, {"label": "Second"}],

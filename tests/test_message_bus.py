@@ -211,9 +211,6 @@ def test_project_completion_summary_keeps_event_time_label_live_and_on_reload(
         message_bus, "load_state",
         lambda: {"session_id": "session-1", "owner_id": 7},
     )
-    monkeypatch.setattr(
-        message_bus, "_advance_project_visible_revision", lambda _chat_id: None,
-    )
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
 
     message_bus.send_with_budget(
@@ -276,7 +273,6 @@ def test_terminal_incident_persists_and_replays_as_system_without_raw_salvage(
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
 
     message_bus.send_with_budget(
@@ -364,7 +360,6 @@ def test_send_links_broadcasts_publishes_and_persists_compact_row(monkeypatch, t
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -399,7 +394,6 @@ def test_send_links_caps_title_across_broadcast_event_and_persistence(monkeypatc
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -444,7 +438,6 @@ def test_send_links_accepts_valid_link_actions(monkeypatch, tmp_path, label, url
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -497,7 +490,6 @@ def test_send_links_refuses_dirty_action_without_side_effects(
     events = []
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -557,8 +549,6 @@ def test_send_photo_and_video_persist_compact_rows_before_unread_revision(monkey
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_k: None)
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    revisions = []
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", revisions.append)
 
     bridge.send_photo(123, b"image", caption="shot", mime="image/png", task_id="media-task")
     bridge.send_video(123, b"video", caption="clip", mime="video/mp4", task_id="media-task")
@@ -586,7 +576,8 @@ def test_send_photo_and_video_persist_compact_rows_before_unread_revision(monkey
     assert all(row["download_url"].startswith("/api/tasks/media-task/artifacts/chat-media-") for row in rows)
     stored = list((tmp_path / "task_results" / "artifacts" / "media-task" / "chat_media").iterdir())
     assert {path.read_bytes() for path in stored} == {b"image", b"video"}
-    assert revisions == [123, 123]
+    from ouroboros import dialogue_store
+    assert dialogue_store.room(tmp_path, 123)["revision"] == 2
 
 
 def test_send_photo_keeps_live_delivery_when_media_persistence_fails(monkeypatch, tmp_path):

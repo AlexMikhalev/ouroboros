@@ -14,6 +14,7 @@ the older pages the opening reads itself. Clients share one read cursor: a room 
 the dot on another at its next state refresh.
 """
 from __future__ import annotations
+from tests._dialogue import advance_room_revision
 
 import json
 import os
@@ -70,7 +71,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
     composer it is not read, clear of it it is."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+    from ouroboros.projects_registry import create_project
 
     data = direct_server_with_data["data_dir"]
     project = create_project(data, "late-room", name="Late room")
@@ -83,7 +84,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
     (data / "logs").mkdir(parents=True, exist_ok=True)
     chat_log = data / "logs" / "chat.jsonl"
     chat_log.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    revision = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+    revision = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
     evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", data.parent))
     evidence.mkdir(parents=True, exist_ok=True)
     acks = []
@@ -114,7 +115,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
             with chat_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"ts": "2026-09-28T10:15:30Z", "direction": "out", "chat_id": chat_id,
                                          "text": f"{LATER}\nwith its details"}) + "\n")
-            second = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            second = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
             messages.locator(".chat-bubble").filter(has_text=LATER).wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
@@ -153,7 +154,7 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
     room opens on it and reads it (owner decision 2026-10-11); reopened once read, it opens at its bottom."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+    from ouroboros.projects_registry import create_project
 
     data = direct_server_with_data["data_dir"]
     project = create_project(data, "tail-room", name="Tail room")
@@ -174,7 +175,7 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
     (data / "logs" / "progress.jsonl").write_text(json.dumps(
         {"ts": at(40), "chat_id": chat_id, "task_id": "tail-task", "content": "Working on the follow-up"}) + "\n",
         encoding="utf-8")
-    revision = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+    revision = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
     evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", data.parent))
     evidence.mkdir(parents=True, exist_ok=True)
     acks = []
@@ -216,13 +217,13 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
 
 
 def _seed_room(data, project_id, name, rows):
-    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+    from ouroboros.projects_registry import create_project
 
     chat_id = create_project(data, project_id, name=name)["chat_id"]
     chat_log = data / "logs" / "chat.jsonl"
     chat_log.parent.mkdir(parents=True, exist_ok=True)
     chat_log.write_text("".join(json.dumps({**row, "chat_id": chat_id}) + "\n" for row in rows), encoding="utf-8")
-    return chat_id, chat_log, increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+    return chat_id, chat_log, advance_room_revision(data, chat_id=chat_id)["visible_revision"]
 
 
 def _client(browser, url, project_id, acks, init=()):
@@ -259,7 +260,6 @@ def test_a_question_delivered_live_is_read_where_its_card_is_shown(direct_server
     """The live card is the node the next read names: it gains that row, so the reader at it has read."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import increment_project_visible_revision
 
     data = direct_server_with_data["data_dir"]
     chat_id, chat_log, first = _seed_room(data, "ask-room", "Ask room", [
@@ -293,7 +293,7 @@ def test_a_question_delivered_live_is_read_where_its_card_is_shown(direct_server
             with chat_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"ts": ts, "direction": "out", "chat_id": chat_id, "text": QUESTION,
                                          "type": "quiz", "task_id": "ask-task", "quiz": quiz}) + "\n")
-            second = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            second = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
             read = _wait_for(page, lambda: seen() == [first, second])
             page.evaluate(_SETTLE_RESTORE_FRAMES)
@@ -474,7 +474,6 @@ def test_a_question_revealed_from_main_is_not_reading_the_newer_messages_below_i
 def test_a_reply_arriving_while_the_window_is_hidden_is_read_when_it_is_shown_again(direct_server_with_data, engine):
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import increment_project_visible_revision
 
     data = direct_server_with_data["data_dir"]
     chat_id, chat_log, first = _seed_room(data, "away-room", "Away room", [
@@ -496,7 +495,7 @@ def test_a_reply_arriving_while_the_window_is_hidden_is_read_when_it_is_shown_ag
             with chat_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"ts": "2026-09-28T10:30:00Z", "direction": "out", "chat_id": chat_id,
                                          "text": "Reply while away"}) + "\n")
-            second = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            second = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
             row.locator(".nav-unread-dot").wait_for(state="attached")
             messages.locator(".chat-bubble").filter(has_text="Reply while away").wait_for(state="attached")
@@ -588,7 +587,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
     moves nothing and takes neither the draft nor the focus."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import bind_task_to_project, get_project, increment_project_visible_revision
+    from ouroboros.projects_registry import bind_task_to_project, get_project
     from ouroboros.task_results import write_task_result
 
     data = direct_server_with_data["data_dir"]
@@ -633,7 +632,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
                 with chat_log.open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps({"ts": "2026-09-28T10:30:00Z", "direction": "out", "chat_id": chat_id,
                                              "text": "Reply while closed"}) + "\n")
-                revision = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+                revision = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
                 _emit_ws_frame(page, {"type": "projects_changed"})
                 row.locator(".nav-unread-dot").wait_for(state="attached")
             before = seen()
@@ -749,7 +748,6 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
     leaves it unknown and ends that reach. A newer answer is read only where it is."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import increment_project_visible_revision
 
     data = direct_server_with_data["data_dir"]
     at = lambda second: f"2026-09-28T10:{second // 60:02d}:{second % 60:02d}Z"  # noqa: E731
@@ -808,7 +806,7 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
             with chat_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"ts": at(2000), "direction": "out", "chat_id": chat_id,
                                          "text": "Newer answer"}) + "\n")
-            newer = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            newer = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
             row.locator(".nav-unread-dot").wait_for(state="attached")
             messages.evaluate(_PLACE, [LATE, -160])
@@ -847,7 +845,6 @@ def test_a_photo_a_child_delivers_is_read_where_it_is_not_at_the_root_answer_abo
     from playwright.sync_api import sync_playwright
 
     from ouroboros.artifacts import store_chat_media_bytes
-    from ouroboros.projects_registry import increment_project_visible_revision
     from ouroboros.task_results import write_task_result
 
     data = direct_server_with_data["data_dir"]
@@ -885,7 +882,7 @@ def test_a_photo_a_child_delivers_is_read_where_it_is_not_at_the_root_answer_abo
                     "ts": at(30), "direction": "out", "chat_id": chat_id, "task_id": "kid-photo", "type": "photo",
                     "text": "Child chart", "caption": "Child chart", "mime": "image/png",
                     "download_url": f"/api/tasks/kid-photo/artifacts/{quote(stored['name'])}"}) + "\n")
-            second = increment_project_visible_revision(data, chat_id=chat_id)["visible_revision"]
+            second = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
             photo = messages.locator("figure.chat-gallery-item").filter(has_text="Child chart")
             photo.wait_for(state="attached")

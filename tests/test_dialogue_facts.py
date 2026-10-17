@@ -348,25 +348,29 @@ def test_rows_whose_only_task_identifier_is_subagent_task_id_are_found_by_the_ta
 # ---- fact 5: room revision continuity ------------------------------------------------------------
 
 def test_room_revision_continues_from_the_projects_visible_revision_at_every_planning_cutover(tmp_path):
-    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+    from ouroboros.projects_registry import create_project
 
     project = create_project(tmp_path, "unread-proof", name="Unread proof")
     quiet = create_project(tmp_path, "quiet", name="Quiet")
     chat_id = project["chat_id"]
-    for _ in range(3):
-        kept = increment_project_visible_revision(tmp_path, chat_id=chat_id)
+    def legacy_revision(value):
+        path = tmp_path / "state/projects.json"
+        registry = json.loads(path.read_text(encoding="utf-8"))
+        next(row for row in registry["projects"] if row["id"] == "unread-proof")["visible_revision"] = value
+        path.write_text(json.dumps(registry), encoding="utf-8")
+
+    legacy_revision(3)
     seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner("archived", chat_id=chat_id)]},
          live={"chat": [owner("live", chat_id=quiet["chat_id"])]})
     report = di.cutover(tmp_path)
-    assert kept["visible_revision"] == 3 and ds.room(tmp_path, chat_id)["revision"] == 3 and report["rooms"] == {chat_id: 3}
+    assert ds.room(tmp_path, chat_id)["revision"] == 3 and report["rooms"] == {chat_id: 3}
     assert ds.room(tmp_path, quiet["chat_id"])["revision"] == 0, "a project without unread arrivals keeps 0"
     di.run_dialogue_import(tmp_path)
     assert ds.room(tmp_path, chat_id)["revision"] == 3, "imported rows do not count as unread"
     ds.append(tmp_path, "chat", {"direction": "out", "chat_id": chat_id, "text": "new arrival"}, feed=True)
     assert ds.room(tmp_path, chat_id)["revision"] == 4
     assert ds.mark_room_read(tmp_path, chat_id, 4)["read_revision"] == 4
-    increment_project_visible_revision(tmp_path, chat_id=chat_id)
-    increment_project_visible_revision(tmp_path, chat_id=chat_id)  # an older body advanced the registry's counter to 5
+    legacy_revision(5)  # an older body advanced the frozen registry counter
     seed(tmp_path, live={"chat": [owner("that body's row", chat_id=quiet["chat_id"])]})  # and appended
     assert di.cutover(tmp_path)["rooms"] == {chat_id: 5} and ds.room(tmp_path, chat_id)["revision"] == 5
     ds.append(tmp_path, "chat", {"direction": "out", "chat_id": chat_id, "text": "another"}, feed=True)

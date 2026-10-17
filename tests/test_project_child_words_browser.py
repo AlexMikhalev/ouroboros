@@ -1,4 +1,5 @@
 """Each stored child-speech occurrence stays one card line through live delivery and replay."""
+from tests._dialogue import advance_room_revision
 
 import json
 import os
@@ -34,7 +35,6 @@ def test_a_childs_words_said_again_are_another_line_of_its_card_live_and_after_a
     included: as the bridge delivers them, once a read adopts them, past its final, and on reload."""
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import increment_project_visible_revision
     from ouroboros.task_results import write_task_result
 
     data = direct_server_with_data["data_dir"]
@@ -98,7 +98,7 @@ def test_a_childs_words_said_again_are_another_line_of_its_card_live_and_after_a
             with chat_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"ts": at(30), "direction": "out", "chat_id": chat_id,
                                          "text": "Reply after the child"}) + "\n")
-            increment_project_visible_revision(data, chat_id=chat_id)
+            advance_room_revision(data, chat_id=chat_id)
             _emit_ws_frame(page, {"type": "projects_changed"})
             messages.locator(".chat-bubble").filter(has_text="Reply after the child").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)

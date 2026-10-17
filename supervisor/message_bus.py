@@ -152,18 +152,6 @@ def get_bridge() -> "LocalChatBridge":
     return _BRIDGE
 
 
-def _advance_project_visible_revision(chat_id: int) -> None:
-    """Advance unread for one new message in a Project's conversation feed."""
-    if DATA_DIR is None:
-        return
-    try:
-        from ouroboros.projects_registry import increment_project_visible_revision
-
-        increment_project_visible_revision(DATA_DIR, chat_id=int(chat_id or 0))
-    except Exception:
-        log.debug("Project visible-revision update failed for chat %s", chat_id, exc_info=True)
-
-
 def try_get_bridge() -> "Optional[LocalChatBridge]":
     """Return initialized bridge, if any."""
     return _BRIDGE
@@ -767,7 +755,7 @@ class LocalChatBridge:
             owner_id = int(load_state().get("owner_id") or 0)
         except Exception:
             owner_id = 0
-        if log_chat(
+        log_chat(
             "out",
             int(chat_id or 0),
             owner_id,
@@ -779,8 +767,7 @@ class LocalChatBridge:
             download_url=download_url,
             download_url_compat=download_url_compat,
             caption=str(caption or ""),
-        ):
-            _advance_project_visible_revision(chat_id)
+        )
         return True, "ok"
 
     def send_video(
@@ -829,7 +816,7 @@ class LocalChatBridge:
             owner_id = int(load_state().get("owner_id") or 0)
         except Exception:
             owner_id = 0
-        if log_chat(
+        log_chat(
             "out",
             int(chat_id or 0),
             owner_id,
@@ -841,8 +828,7 @@ class LocalChatBridge:
             download_url=download_url,
             download_url_compat=download_url_compat,
             caption=str(caption or ""),
-        ):
-            _advance_project_visible_revision(chat_id)
+        )
         return True, "ok"
 
     def send_document(
@@ -912,7 +898,7 @@ class LocalChatBridge:
             owner_id = int(load_state().get("owner_id") or 0)
         except Exception:
             owner_id = 0
-        if log_chat(
+        log_chat(
             "out",
             int(chat_id or 0),
             owner_id,
@@ -926,8 +912,7 @@ class LocalChatBridge:
             caption=str(caption or ""),
             size_bytes=size_bytes,
             download_url_compat=download_url_compat,
-        ):
-            _advance_project_visible_revision(chat_id)
+        )
         return True, "ok"
 
     def send_links(
@@ -970,12 +955,11 @@ class LocalChatBridge:
             owner_id = int(load_state().get("owner_id") or 0)
         except Exception:
             owner_id = 0
-        if log_chat(
+        log_chat(
             "out", int(chat_id or 0), owner_id, safe_title, ts=ts,
             task_id=str(task_id or ""), record_type="links", feed=True,
             actions=validated, title=safe_title,
-        ):
-            _advance_project_visible_revision(chat_id)
+        )
         return True, "ok"
 
     def send_quiz(
@@ -1094,7 +1078,6 @@ class LocalChatBridge:
             if delivery := question_delivery_projection(quiz_states(DATA_DIR, str(task_id)).get(qid)):
                 lifecycle["question_delivery"] = delivery
                 msg["question_delivery"] = delivery
-            _advance_project_visible_revision(chat_id)
         if self._broadcast_fn:
             self._broadcast_fn(msg)
         quiz_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
@@ -1425,8 +1408,8 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
             progress_record.update(dict(progress_meta))
         dialogue_store.append_quietly(DATA_DIR, "progress", progress_record)
     else:
-        feed = not is_task_card_message(progress_meta)  # only stored feed rows count as unread
-        stored = log_chat(
+        feed = _text.strip() not in ("", "\u200b") and not is_task_card_message(progress_meta)
+        log_chat(
             # S3 (Q4): a typed SYSTEM row persists as direction="system", the
             # role history replay already maps to a system rendering — so the
             # receipt survives reload as system, never as Ouroboros's speech.
@@ -1447,8 +1430,6 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
 
     if _text.strip() in ("", "\u200b"):
         return
-    if not is_progress and stored and feed:
-        _advance_project_visible_revision(chat_id)
     # Budget footers belong in dashboard/status flows, not every chat reply.
     full = _text
 

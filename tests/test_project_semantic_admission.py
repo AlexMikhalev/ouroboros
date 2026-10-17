@@ -3,6 +3,7 @@
 Run through scripts/safe_test.py; every root and file below is synthetic.
 """
 from __future__ import annotations
+from tests._dialogue import advance_room_revision
 
 import json
 import threading
@@ -37,7 +38,7 @@ def test_activity_is_not_a_routing_change(room, activity):
     if activity.endswith("touch"):
         registry.touch_project(room.root, "target" if activity == "own_touch" else "other")
     elif activity == "visible":
-        registry.increment_project_visible_revision(room.root, project_id="target")
+        advance_room_revision(room.root, project_id="target")
     elif activity == "result":
         registry.update_project(room.root, "other", last_task_result_id="finished")
     admitted = room.queue.enqueue_task(task(), project_admission=basis)
@@ -557,7 +558,7 @@ def test_registry_writers_preserve_unrelated_raw_rows(room, operation):
         changed = registry.bind_task_to_project(room.root, "bound", "target", origin={"absent": "system"})
         assert changed["project_id"] == "target"
     elif operation.startswith("visible"):
-        changed = registry.increment_project_visible_revision(room.root, **(
+        changed = advance_room_revision(room.root, **(
             {"project_id": "target"} if operation == "visible_id"
             else {"chat_id": registry.project_admission_view(room.root, "target")["project"]["chat_id"]}))
         assert changed["visible_revision"] == 1

@@ -155,7 +155,6 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path, 
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -204,7 +203,6 @@ def test_send_quiz_accepts_a_long_question_through_the_shared_validator(monkeypa
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda topic, data: events.append((topic, data)))
     question = "Длинное объяснение решения. " * 200
     detail = "consequence " * 60

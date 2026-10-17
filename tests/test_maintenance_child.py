@@ -104,59 +104,21 @@ def data(tmp_path, monkeypatch):
     return root
 
 
-def test_reconcile_projects_opens_no_archive_while_the_job_reads_it_once(data, opened):
-    """``reconcile_projects`` (boot and every reconcile pass) never reads the chain for a
-    never-active project; the job that does is the only reader, once per installation."""
-    pr.create_project(data, "never-active", origin="reconcile")
-    _archive(data, 300)
-    opened.clear()
-    pr.reconcile_projects(data)
-    pr.reconcile_projects(data)
-    assert _under(opened, data / "archive") == []
-    # The guard counts what it claims to: the job does open the same 600 segments.
-    assert maintenance.run_job(data, "activity_backfill")["items"] == 602  # 600 segments + 2 live files
-    assert len(set(_under(opened, data / "archive"))) == 600
-    assert maintenance_jobs.job(data, "activity_backfill")["empty"] == ["never-active"]
+def test_reconcile_and_room_reads_open_no_archive_after_dialogue_import(data, opened):
+    from tests._dialogue import import_all
 
-
-def test_activity_backfill_rests_on_its_second_run(data, opened, monkeypatch):
     pr.create_project(data, "never-active", origin="reconcile")
     _archive(data, 5)
-    assert maintenance.run_job(data, "activity_backfill")["state"] == "done"
-    before, decodes = _revision(data), _decodes(monkeypatch)
+    import_all(data)
+    from ouroboros import dialogue_store
+    assert dialogue_store.counts(data) == {"chat": 10, "progress": 10}
     opened.clear()
-    assert maintenance.run_job(data, "activity_backfill") is None  # at rest: only its row was read
-    assert _under(opened, data / "archive") == [] and _under(opened, data / "logs") == []
-    assert decodes == [] and _revision(data) == before
-    assert "activity_backfill" not in maintenance.due(data)
-
-
-def test_activity_backfill_killed_after_k_sources_resumes_at_k(data, opened, monkeypatch):
-    legacy = pr.create_project(data, "legacy", origin="reconcile")
-    pr.create_project(data, "never-active", origin="reconcile")
-    _archive(data, 6)
-    _write_rows(data / "archive" / "progress_20260101T000005.jsonl", int(legacy["chat_id"]))  # the newest
-    scan, scanned = maintenance._activity_scan, []
-
-    def killed_after_three(path, wanted):
-        if len(scanned) == 3:
-            raise _Killed()
-        scanned.append(path)
-        return scan(path, wanted)
-
-    monkeypatch.setattr(maintenance, "_activity_scan", killed_after_three)
-    with pytest.raises(_Killed):
-        maintenance.run_job(data, "activity_backfill")
-    row = maintenance_jobs.job(data, "activity_backfill")
-    assert row["state"] == "running" and row["done"] == 3
-    # A fresh server process: a new dispatcher, no module memory; the row says the job waits.
-    assert "activity_backfill" in maintenance.due(data)
-    monkeypatch.setattr(maintenance, "_activity_scan", lambda path, wanted: scanned.append(path) or scan(path, wanted))
-    assert maintenance.run_job(data, "activity_backfill")["state"] == "done"
-    assert len(scanned) == len(set(scanned)) == 14, "a source read before the kill was read again"
-    row = maintenance_jobs.job(data, "activity_backfill")
-    assert row["flagged"] == ["legacy"] and row["empty"] == ["never-active"] and row["total"] == 14
-    assert pr.get_reserved_project(data, "legacy")["thread_activity_seen"] is True
+    pr.reconcile_projects(data)
+    pr.reconcile_projects(data)
+    [room] = pr.projects_summary(data)
+    assert room["has_thread_activity"] is False
+    assert _under(opened, data / "archive") == []
+    assert "activity_backfill" not in maintenance.JOBS
 
 
 def _promotion_member(parent, task):
@@ -297,9 +259,6 @@ def _setup_job(name, data, monkeypatch):
         monkeypatch.setattr(store_import, "run_legacy_reconcile", lambda root, **kw: maintenance_jobs.record(
             root, "legacy_reconcile", state="done", done=1), raising=False)
         maintenance_jobs.record(data, "legacy_reconcile", state="pending")
-    elif name == "activity_backfill":
-        pr.create_project(data, "never-active", origin="reconcile")
-        _archive(data, 3)
     elif name == "child_ref_promotion":
         _promotion_member(data, "member")
     elif name == "custody_trash":
@@ -369,7 +328,6 @@ def test_no_history_sized_duty_runs_in_the_server_and_the_child_spawns_under_cus
     monkeypatch.setattr(evidence_packer, "packing_pending", refuse("evidence discovery"))
     monkeypatch.setattr(evidence_packer, "run_pass", refuse("evidence packing"))
     monkeypatch.setattr(observability, "retry_pending_child_ref_promotions", refuse("child-ref promotion"))
-    monkeypatch.setattr(maintenance, "_activity_scan", refuse("activity backfill"))
     monkeypatch.setattr(task_custody, "remove_custody_trash", refuse("trash removal"))
     sweep = utils.sweep_stale_temp_files
     monkeypatch.setattr(utils, "sweep_stale_temp_files", lambda root, **kw: (
@@ -419,7 +377,7 @@ def test_the_real_child_process_runs_the_due_jobs_and_reports(data):
     from ouroboros import dialogue_import
 
     dialogue_import.cutover(data)  # as the boot does before the dialogue opens: the archive is planned
-    assert maintenance.due(data) == ["dialogue_import", "activity_backfill", "custody_trash"]
+    assert maintenance.due(data) == ["dialogue_import", "custody_trash"]
     unit = maintenance.MaintenanceChild()
     assert unit.tick(data, REPO)
     unit._thread.join(240)
@@ -428,8 +386,8 @@ def test_the_real_child_process_runs_the_due_jobs_and_reports(data):
     finished = [row for row in rows if row.get("type") == "maintenance" and row["phase"] != "started"]
     assert [row["phase"] for row in finished] == ["completed"], finished
     assert finished[0]["exit_code"] == 0
-    assert finished[0]["jobs"]["activity_backfill"]["state"] == "done"
+    assert "activity_backfill" not in finished[0]["jobs"]
     assert finished[0]["jobs"]["custody_trash"] == {"state": "done", "items": 1}
     assert finished[0]["jobs"]["dialogue_import"]["state"] == "done"
-    assert maintenance_jobs.job(data, "activity_backfill")["empty"] == ["never-active"]
+    assert pr.projects_summary(data)[0]["has_thread_activity"] is False
     assert maintenance.due(data) == [], "the child left every job at rest"

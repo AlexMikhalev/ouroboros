@@ -211,7 +211,6 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
     monkeypatch.setattr(message_bus, "DATA_DIR", data)
     monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_kw: None)
     monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     delivery._handle_send_message(event, SimpleNamespace(

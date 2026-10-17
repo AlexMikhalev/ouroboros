@@ -43,7 +43,6 @@ def records(tmp_path, monkeypatch):
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 1})
     monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(message_bus, "try_get_bridge", lambda: bridge)
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda *_: None)
     monkeypatch.setattr(events_chat_delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     monkeypatch.setattr(queue, "DRIVE_ROOT", root)
     monkeypatch.setattr(queue, "RUNNING", {})

@@ -39,7 +39,6 @@ def _sender(root, monkeypatch):
     monkeypatch.setattr(bus, 'load_state', lambda: {'owner_id': 1})
     monkeypatch.setattr(bus, 'get_bridge', lambda: bridge)
     monkeypatch.setattr(bus, 'publish_event', lambda *_a, **_kw: None)
-    monkeypatch.setattr(bus, '_advance_project_visible_revision', lambda *_a: None)
     monkeypatch.setattr(handler, '_DELIVERED_MESSAGE_IDS', deque(maxlen=256))
     return SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, send_with_budget=bus.send_with_budget,
                            append_jsonl=append_jsonl), frames

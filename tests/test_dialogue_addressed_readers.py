@@ -355,3 +355,24 @@ def test_presence_readers_do_equal_sql_work_with_one_or_thirty_foreign_rooms(tmp
             assert result[1]["basis"] == "accepted_boundary"
         measurements.append(dict(measured))
     assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_addressed_room_summary_does_equal_sql_work_with_foreign_history(tmp_path, monkeypatch, active):
+    from ouroboros.projects_registry import create_project, projects_summary
+
+    measurements = []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        project = create_project(root, "selected", origin="reconcile")
+        ds.ensure(root)
+        if active:
+            ds.append(root, "chat", owner(chat_id=project["chat_id"]), feed=True)
+        for room in range(rooms):
+            for number in range(3):
+                ds.append(root, "chat", owner(f"foreign-{room}-{number}", chat_id=room + 10))
+        with metered(monkeypatch) as measured:
+            [result] = projects_summary(root, chat_id=project["chat_id"])
+        assert result["has_thread_activity"] is active and result["visible_revision"] == int(active)
+        measurements.append(dict(measured))
+    assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0

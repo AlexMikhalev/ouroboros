@@ -322,7 +322,6 @@ def published_terminal_fixture(root, monkeypatch):
     monkeypatch.setattr(bus, 'DATA_DIR', root)
     monkeypatch.setattr(bus, 'get_bridge', lambda: bridge)
     monkeypatch.setattr(bus, 'load_state', lambda: {'session_id': 'qualification', 'owner_id': 7})
-    monkeypatch.setattr(bus, '_advance_project_visible_revision', lambda *_: None)
     monkeypatch.setattr(bus, 'publish_event', lambda *_a, **_k: None)
     monkeypatch.setattr(sender, '_DELIVERED_MESSAGE_IDS', deque(maxlen=256))
     context = SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, send_with_budget=bus.send_with_budget,
