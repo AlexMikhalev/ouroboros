@@ -928,7 +928,7 @@ def _run_supervisor(settings: dict) -> None:
                 assign_tasks()
             if _restart_requested.is_set():
                 break  # restart just triggered (drain done) — exit without assigning new work (bridge intake already ran early this iteration)
-            if not persist_queue_snapshot(reason="main_loop"):
+            if persist_queue_snapshot(reason="main_loop") is False:  # None: a saved queue kept as it is
                 raise RuntimeError("queue publication failed")
             if _consciousness is not None:
                 try:
