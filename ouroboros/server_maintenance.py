@@ -827,11 +827,11 @@ def _startup_prune_sweeps(*, preserve_task_sources=False, recovery_report=None):
         log.debug("Memory journal observation failed", exc_info=True)
 
 
-def _run_reconcile_prunes():
+def _run_reconcile_prunes(stop_event: Any = None):
     """The age-only retirers of small planes, on every reconcile pass, so a server that stays up
     for weeks retires them too. Task trees and service logs wait while startup recovery left a gap
     and for a pass whose recovery links cannot be read (``startup_tree_exclusions``); every step
-    fails soft and the next pass tries again."""
+    fails soft and the next pass tries again; a closed generation starts no further step."""
     if not _STARTUP_RECOVERY_GAPS[0]:
         try:
             from ouroboros.headless import prune_task_trees
@@ -845,6 +845,8 @@ def _run_reconcile_prunes():
                              services=prune_service_logs(DATA_DIR))
         except Exception:
             log.debug("Task tree and service log prune failed", exc_info=True)
+    if _stop_requested(stop_event):
+        return
     try:
         from ouroboros.delegate_state_sweep import sweep_settled_delegate_state
 
@@ -852,6 +854,8 @@ def _run_reconcile_prunes():
                      report=sweep_settled_delegate_state(DATA_DIR))
     except Exception:
         log.debug("Delegate state sweep failed", exc_info=True)
+    if _stop_requested(stop_event):
+        return
     try:
         # CPL4-C11 (owner batch 3A): clear owner state of tombstoned-uninstalled
         # skills; grants survive as owner authority, reinstalls self-heal.
@@ -861,6 +865,8 @@ def _run_reconcile_prunes():
                      report=sweep_uninstalled_skill_state(DATA_DIR))
     except Exception:
         log.debug("Uninstalled-skill state sweep failed", exc_info=True)
+    if _stop_requested(stop_event):
+        return
     try:
         # CPL4-C14/C15: pure-cache and dead-marker age prunes (GC retention).
         from ouroboros.code_intelligence import prune_stale_code_intel_roots
@@ -871,6 +877,8 @@ def _run_reconcile_prunes():
                      extension_reconcile_failed=prune_failed_reconcile_markers(DATA_DIR))
     except Exception:
         log.debug("Stale cache prune failed", exc_info=True)
+    if _stop_requested(stop_event):
+        return
     try:
         # CPL4-C21 (owner 6A): agent screenshots/views follow GC retention;
         # owner attachments in the uploads/ root are never touched.
@@ -1037,7 +1045,7 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
             from supervisor.workspace_preparation import recover_interrupted_preparations
             recover_interrupted_preparations(DATA_DIR, stop=lambda: _stop_requested(stop_event))
         if not _stop_requested(stop_event):
-            _run_reconcile_prunes()
+            _run_reconcile_prunes(stop_event)
         if _stop_requested(stop_event):
             return
         from ouroboros.late_review_marks import replay_owed_late_reviews

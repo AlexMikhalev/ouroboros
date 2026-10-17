@@ -45,7 +45,7 @@ def test_reconcile_pass_reserves_the_child_and_walks_no_stamp_in_the_server(root
     monkeypatch.setattr(server_maintenance, "_periodic_zombie_reconcile", lambda **_: None)
     monkeypatch.setattr(server_maintenance, "_run_drive_custody_pass", lambda *_: None)
     monkeypatch.setattr(server_maintenance, "_step_recovered", calls.append)
-    monkeypatch.setattr(server_maintenance, "_run_reconcile_prunes", lambda: None)
+    monkeypatch.setattr(server_maintenance, "_run_reconcile_prunes", lambda *_a: None)
     monkeypatch.setattr("supervisor.workspace_preparation.recover_interrupted_preparations", lambda *a, **k: None)
     monkeypatch.setattr("ouroboros.late_review_marks.replay_owed_late_reviews", lambda *a, **k: None)
     monkeypatch.setattr("ouroboros.review_operation.collect_orphaned_operations_softly", lambda *a, **k: None)

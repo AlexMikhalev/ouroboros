@@ -82,6 +82,25 @@ def test_the_age_only_retirers_run_again_on_a_later_pass_and_trees_wait_out_a_re
     assert observations == [root, root]
 
 
+def test_a_generation_closed_between_two_reconcile_prunes_starts_no_further_one(root, monkeypatch):
+    from ouroboros import code_intelligence, delegate_state_sweep, skill_uninstall_state
+
+    closed, calls = threading.Event(), []
+
+    def first(_root):
+        calls.append("delegate")
+        closed.set()
+        return {}
+
+    monkeypatch.setattr(delegate_state_sweep, "sweep_settled_delegate_state", first)
+    monkeypatch.setattr(skill_uninstall_state, "sweep_uninstalled_skill_state", lambda _root: calls.append("skills") or {})
+    monkeypatch.setattr(code_intelligence, "prune_stale_code_intel_roots", lambda _root: calls.append("caches") or {})
+    sm._run_reconcile_prunes(closed)
+    assert calls == ["delegate"], "the generation closed: no further retirer starts"
+    sm._run_reconcile_prunes(threading.Event())
+    assert calls == ["delegate", "delegate", "skills", "caches"], "an open generation runs every step"
+
+
 @pytest.fixture
 def custody_pass(root, monkeypatch):
     """The 600 s custody pass with its reaping and delegated-run steps idle."""
