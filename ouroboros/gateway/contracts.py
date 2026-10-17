@@ -12,6 +12,7 @@ from ouroboros.storage import (  # noqa: F401 -- public re-exports
 )
 from ouroboros.gateway.claudexor_contracts import (  # noqa: F401 -- public re-exports
     ClaudexorReadState, ClaudexorStatusReads, ClaudexorPassiveReadError, ClaudexorQuotaResponse,
+    ClaudexorStatusResponse,
 )
 
 from ouroboros.gateway.history_contracts import ChatHistoryResponse  # noqa: F401 -- public re-export
@@ -1190,31 +1191,6 @@ class TaskDetailResponse(TypedDict, total=False):
     owner_hurry: OwnerHurryProjection
     owner_hurry_history: list[OwnerHurryProjection]
     project_admission_hold: Dict[str, Any]  # While the queue snapshot lists the row: its hold {reason, detail, label} or {}.
-    error: str
-
-
-class ClaudexorStatusResponse(TypedDict, total=False):
-    """``GET /api/claudexor/status`` — owned-daemon lifecycle plus the daemon's
-    own catalog/account/quota truth, each stamped with its read state. Read-only;
-    never spawns the daemon (waking it is the owner-initiated POST)."""
-
-    daemon: Dict[str, Any]
-    config_dir: str
-    harnesses: List[Dict[str, Any]]
-    profiles: Dict[str, Any]
-    quota: List[Dict[str, Any]]
-    quota_absences: List[Dict[str, Any]]
-    resources: List[Dict[str, Any]]
-    resource_capabilities: Dict[str, bool]
-    resource_capabilities_read: ClaudexorReadState
-    reads: ClaudexorStatusReads
-    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when the read /v2/operations catalog
-    # advertises `GET /v2/account-pools` (default CLI logins become named registry rows, `harnessAccounts`
-    # empties, routing rides `profiles.accountPools`); False or absent: legacy pseudo-rows (unreadable: False).
-    unified_accounts: bool
-    # Per facet: `observed_at`, `stale`, `error`; a failed or unasked facet serves its last read (stale).
-    facets: Dict[str, Dict[str, Any]]
-    subagent_last_delegation: Dict[str, Any]
     error: str
 
 

@@ -173,3 +173,13 @@ def test_the_public_loader_surface_is_unchanged():
     ]
     for name in extension_loader.__all__:
         assert hasattr(extension_loader, name), name
+
+
+def test_companion_projection_preserves_order_and_excludes_nonspawnable_markers(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(extension_loader, "_extensions", {
+        "first": SimpleNamespace(companion_names=[None, "", "daemon", "task:hidden", "worker-skip:other"]),
+        "second": SimpleNamespace(companion_names=["other", "daemon"]),
+    })
+    assert extension_loader.list_companion_names() == ["daemon", "other", "daemon"]
