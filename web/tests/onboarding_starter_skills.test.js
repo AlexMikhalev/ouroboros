@@ -65,7 +65,7 @@ test('expanded: one scroll of categorized cards, Tick all / Untick all, and the 
     assert.match(html, /<h4>Built in — comes with the app<span>2<\/span><\/h4>/);
     assert.match(html, /<h4>Search &amp; research<span>3<\/span><\/h4>/);
     assert.match(html, /class="wizard-choice skills-starter-card active">[\s\S]*?data-starter-item="ouroboros\/duckduckgo" checked/);
-    assert.match(html, /data-starter-item="builtin\/unix_computer_use"><strong>unix_computer_use<\/strong><span class="ui-chip skills-chip" data-tone="neutral">Built in<\/span>/);
+    assert.match(html, /data-starter-item="builtin\/unix_computer_use"><strong>unix_computer_use<\/strong><span class="skills-starter-marks"><span class="ui-chip skills-chip" data-tone="neutral">Built in<\/span>/);
     assert.match(html, /Needs: KEENABLE_API_KEY/);
     assert.match(html, /They install without review — you trust Ouroboros\. Skills that need a key wait for it\./);
     assert.match(html, /data-starter-trust="ouroboros-community" data-trust="review">Review each</);

@@ -100,7 +100,7 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
             + (item.official ? officialMarkHtml({ control: false }) : '');
         const needs = needsLine(item);
         return `<label class="wizard-choice skills-starter-card${on ? ' active' : ''}">
-            <span class="skills-starter-head"><input type="checkbox" class="ui-checkbox" data-starter-item="${escapeHtml(item.id)}"${on ? ' checked' : ''}><strong>${escapeHtml(item.name)}</strong>${mark}</span>
+            <span class="skills-starter-head"><input type="checkbox" class="ui-checkbox" data-starter-item="${escapeHtml(item.id)}"${on ? ' checked' : ''}><strong>${escapeHtml(item.name)}</strong><span class="skills-starter-marks">${mark}</span></span>
             <span class="skills-starter-desc" data-i18n-authored>${escapeHtml(item.description || '')}</span>
             ${needs ? `<span class="skills-starter-needs">${escapeHtml(needs)}</span>` : ''}
         </label>`;

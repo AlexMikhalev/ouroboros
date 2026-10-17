@@ -89,6 +89,7 @@ test('publish destinations: back to the origin, the owner’s git source, the co
     assert.deepEqual(destinationFromChoice('new:ouroboros-community'), { source_id: 'ouroboros-community', mode: 'new_entry' });
     assert.deepEqual(destinationFromChoice('source:mine'), { source_id: 'mine', mode: 'entry' });
     assert.equal(destinationFromChoice(''), null);
+    assert.equal(destinationFromChoice('default'), null, 'no connected destination keeps the host default, never an invented source id');
     assert.deepEqual(publishDestinations(byName('telegram'), SOURCES).map((choice) => choice.value), ['source:ouroboros-community']);
     assert.deepEqual(publishDestinations(byName('telegram'), SOURCES.filter((row) => row.kind !== 'hub')), [],
         'nothing to choose: the host publishes to its default');

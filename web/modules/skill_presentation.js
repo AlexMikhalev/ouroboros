@@ -90,10 +90,10 @@ export function trayHtml({ sentence = '', note = '', actions = '', tone = '', at
 }
 
 /** The Official mark: identity, quieter than the name; pressing it explains the promise. */
-export function officialMarkHtml({ control = true } = {}) {
+export function officialMarkHtml({ control = true, sourceId = '' } = {}) {
     const inner = `<span class="skills-mark-glyph" aria-hidden="true">${OFFICIAL_GLYPH}</span>Official`;
     return control
-        ? `<button type="button" class="skills-mark" data-mark="official" data-official-mark aria-haspopup="dialog">${inner}</button>`
+        ? `<button type="button" class="skills-mark" data-mark="official" data-official-mark${sourceId ? ` data-official-source="${escapeHtml(sourceId)}"` : ''} aria-haspopup="dialog">${inner}</button>`
         : `<span class="skills-mark" data-mark="official">${inner}</span>`;
 }
 

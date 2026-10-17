@@ -1489,7 +1489,6 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
   overflow-y: auto;
   overscroll-behavior: contain;
   min-width: 0;
-  margin: 0 calc(-1 * var(--space-2));
   padding: var(--space-1) var(--space-2) var(--space-4);
   --starter-fade-top: 0px;
   --starter-fade-bottom: 0px;
@@ -1508,8 +1507,7 @@ textarea:not(.ui-control):not(.ui-checkbox):focus {
 .wizard-choice.skills-starter-card { display: grid; align-content: start; gap: var(--space-1); padding: var(--space-3); }
 .skills-starter-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-2); }
 .skills-starter-head strong { color: var(--text-primary); font-size: var(--type-body); font-weight: 600; overflow-wrap: anywhere; }
-.skills-starter-head .skills-mark,
-.skills-starter-head .ui-chip { margin-left: auto; }
+.skills-starter-marks { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-left: auto; }
 .skills-starter-desc,
 .skills-starter-needs {
   padding-left: calc(14px + var(--space-2));

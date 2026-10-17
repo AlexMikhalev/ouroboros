@@ -793,7 +793,7 @@ export function initSkills(ctx = {}) {
         const mark = event.target.closest('[data-official-mark]');
         if (mark) {
             await store.sources().catch(() => null);
-            openOfficialExplanation(mark, officialSource());
+            openOfficialExplanation(mark, (cache.sourcesValue || []).find((source) => source.id === mark.dataset.officialSource) || officialSource());
             return;
         }
         const goto = event.target.closest('[data-skills-goto]');

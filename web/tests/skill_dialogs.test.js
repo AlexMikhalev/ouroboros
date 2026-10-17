@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMySkillsDestination, sourceProbeWarning, updateWithoutReview } from '../modules/skill_dialogs.js';
+import { createMySkillsDestination, firstStartTrustHtml, sourceProbeWarning, updateWithoutReview } from '../modules/skill_dialogs.js';
 import { skillSourcesApi } from '../modules/api_client.js';
 
 test('rejected update confirms its exact version and sends only that release after literal confirmation', async () => {
@@ -25,6 +25,16 @@ test('rejected update confirms its exact version and sends only that release aft
 test('an unencrypted probe discloses the warning; a regular probe has none', () => {
     assert.equal(sourceProbeWarning({ warning: 'not_encrypted' }), 'This address is not encrypted: anyone on the network path could change what you install.');
     assert.equal(sourceProbeWarning({ kind: 'git' }), '');
+});
+
+test('first-start trust discloses that suggestions apply and keeps either supplied choice selected', () => {
+    for (const trust of ['trusted', 'review']) {
+        const html = firstStartTrustHtml([{ id: 'hub', name: 'Team <hub>', trust }]);
+        assert.match(html, /Suggested choices apply until you choose\./);
+        assert.match(html, new RegExp(`aria-checked="true" data-trust="${trust}"`));
+        assert.equal((html.match(/aria-checked="true"/g) || []).length, 1);
+        assert.match(html, /Team &lt;hub&gt;/);
+    }
 });
 
 test('My skills selects the source from both create and connect answers', async () => {

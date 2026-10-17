@@ -197,7 +197,7 @@ export function openCompareDialog({ mine = {}, other = {} }) {
 export function openPublishDestinationDialog({ name, choices = [], changed = false, createMySkills = () => skillSourcesApi.mySkills() }) {
     return new Promise((resolve) => {
         const host = mountDialog({ title: `Publish ${name}`, wide: true, onSettle: resolve });
-        const destinations = choices.length ? [...choices] : [{ value: 'source:hub', label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
+        const destinations = choices.length ? [...choices] : [{ value: 'default', label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
         let selected = destinations[0].value;
         let created = false;
         const paint = (error = '') => {
@@ -379,23 +379,25 @@ export function openAddSourceDialog({ api, initialAddress = '' } = {}) {
     });
 }
 
-/**
- * First start of the public hub (B3): both rows with their suggested choices
- * selected; the owner confirms once. Resolves {id: trust} or null (Later).
- */
-export function openFirstStartDialog(rows = []) {
-    return new Promise((resolve) => {
-        const choice = (row) => `<div class="skills-first-row" data-row="${escapeHtml(row.id)}">
+/** Suggested trust choices and their consequence, before the owner confirms. */
+export function firstStartTrustHtml(rows = []) {
+    const choice = (row) => `<div class="skills-first-row" data-row="${escapeHtml(row.id)}">
                 <div class="skills-first-name"><strong>${escapeHtml(row.name)}</strong>${row.markHtml || ''}<span class="skills-first-about">${escapeHtml(row.about || '')}</span></div>
                 <div class="ui-segment-group skills-trust-segments" role="radiogroup" aria-label="${escapeHtml(`How skills from ${row.name} install`)}">
                     ${[['trusted', 'Install without review'], ['review', 'Review each skill']].map(([value, label]) => `<button type="button" class="ui-segment${row.trust === value ? ' active' : ''}" role="radio" aria-checked="${row.trust === value ? 'true' : 'false'}" data-trust="${value}">${label}</button>`).join('')}
                 </div></div>`;
+    return `<p>Ouroboros comes connected to its public hub. Confirm how its skills install — you do this once.</p>
+        <div class="skills-first-rows">${rows.map(choice).join('')}</div>
+        <p class="skills-dialog-note">Suggested choices apply until you choose. Official doesn’t skip the review by itself: if you choose “Review each skill” for Ouroboros, its Official skills are reviewed too. A review sends the skill’s files to your review models.</p>
+        <p class="skills-dialog-note">You choose once. You can change it later in Skills → Sources.</p>`;
+}
+
+/** First start of the public hub (B3). Resolves {id: trust} or null (Later). */
+export function openFirstStartDialog(rows = []) {
+    return new Promise((resolve) => {
         const host = mountDialog({
             title: 'How should skills from the Ouroboros hub install?', wide: true, onSettle: resolve,
-            bodyHtml: `<p>Ouroboros comes connected to its public hub. Confirm how its skills install — you do this once.</p>
-                <div class="skills-first-rows">${rows.map(choice).join('')}</div>
-                <p class="skills-dialog-note">Suggested choices apply until you choose. Official doesn’t skip the review by itself: if you choose “Review each skill” for Ouroboros, its Official skills are reviewed too. A review sends the skill’s files to your review models.</p>
-                <p class="skills-dialog-note">You choose once. You can change it later in Skills → Sources.</p>`,
+            bodyHtml: firstStartTrustHtml(rows),
         });
         host.actions.innerHTML = '<button type="button" class="btn btn-default" data-dialog-cancel>Later</button><button type="button" class="btn btn-primary" data-first-ok>Confirm</button>';
         host.body.addEventListener('click', (event) => {

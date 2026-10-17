@@ -159,6 +159,7 @@ def test_the_hub_rows_are_confirmed_once_with_their_suggested_trust(skills_brows
         dialog = page.locator(".skills-dialog")
         dialog.wait_for()
         assert "How should skills from the Ouroboros hub install?" in dialog.inner_text()
+        assert "Suggested choices apply until you choose." in dialog.inner_text()
         rows = dialog.locator(".skills-first-row")
         assert rows.nth(0).locator('[aria-checked="true"]').inner_text() == "Install without review"
         assert rows.nth(1).locator('[aria-checked="true"]').inner_text() == "Review each skill"

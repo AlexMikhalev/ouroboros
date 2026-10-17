@@ -643,7 +643,7 @@ export function renderInstalledSkillCard(skill, reviewingSkills = new Set(), rep
     </label>`;
     const marks = [
         isBuiltIn(skill) ? chipHtml('Built in', 'neutral') : '',
-        model.install?.official ? officialMarkHtml() : '',
+        model.install?.official ? officialMarkHtml({ sourceId: model.install.source?.id }) : '',
         model.modified ? chipHtml(model.modified.by === 'owner' ? 'Modified · edited by you' : 'Modified', 'neutral') : '',
     ].join('');
     const widgetsButton = model.widgets && !model.trays.length
