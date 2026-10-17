@@ -95,6 +95,7 @@ def test_money_and_deliveries_read_once_for_all_tasks(root, monkeypatch, operati
     if operation == "job":
         packer.run_pass(root)
         packer.run_pass(root)
+    store.close_connections(root / usage_store.STORE_REL)  # the next lease opens a traced, persistent connection
     monkeypatch.setattr(usage_store, "_connect", connect)
     monkeypatch.setattr(utils, "read_json_dict", read)
     if operation == "job":  # the child's discovery: nothing changed, so no pass follows it

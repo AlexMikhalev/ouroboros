@@ -339,20 +339,21 @@ def test_an_undeclared_duty_arriving_before_the_unlink_keeps_every_loose_file(ro
 def test_census_reads_the_store_once_for_every_loose_task(root, monkeypatch):
     for number in range(24):
         _task(root, f"t{number}", blobs=1, status="running" if number % 2 else "completed")
-    opened, original = [], store.connect
+    # A store transaction leases this thread's persistent connection: count the leases, not the connects.
+    leased, original = [], store.connection
 
-    def connect(path, *args, **kwargs):
+    def connection(path, *args, **kwargs):
         if pathlib.Path(path) == store.store_path(root):
-            opened.append(path)
+            leased.append(path)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(store, "connect", connect)
+    monkeypatch.setattr(store, "connection", connection)
     assert len(packer.changed_tasks(root)) == 24
-    assert len(opened) == 1  # one short read for every row and duty, not one per task
+    assert len(leased) == 1  # one short read for every row and duty, not one per task
     with packer.pack_sweep(root) as sweep:
-        opened.clear()
+        leased.clear()
         assert len(packer.changed_stamps(root, obligation_rows=sweep.duties, external=sweep.external, seqs=sweep.seqs)) == 24
-    assert opened == []  # the child census reuses the sweep's baseline read
+    assert leased == []  # the child census reuses the sweep's baseline read
 
 
 @pytest.mark.parametrize("operation", ["changed_tasks", "run_pass"])
