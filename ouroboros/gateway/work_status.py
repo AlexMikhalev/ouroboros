@@ -188,8 +188,8 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         state["release"] = release
         if row.get("finishing_reviews"):
             state["reasons"].append(reason("review_work_finishing"))
-        # The census's own explicit-Resume rule (events_budget.explicit_resume_required) is the turn.
-        if phase == "budget_paused" and row.get("can_resume") is True and code not in {"paused_by_owner"}:
+        # Main's attention rule (main_decisions.owner_actions) is the turn: the census's explicit-Resume rule.
+        if _owner_actions(row)[1]:
             state["turn"].append({"kind": "action", "task_id": task_id, "code": code})
             state["release"] = "owner"
         return state
@@ -206,7 +206,7 @@ def classify_member(row: Mapping[str, Any], raw: Optional[Mapping[str, Any]] = N
         return state
     waits = _current_waits(row)
     if waits:
-        human = [key for key, wait_row in waits if wait_row.get("requires_owner_action") is True]
+        human = sorted(_owner_actions(row)[0])
         state["activity"] = "waiting"
         if human:
             state["release"] = "owner"
@@ -278,6 +278,12 @@ def controls_for(current: Optional[Mapping[str, Any]], current_row: Optional[Map
     for task_id in earlier:
         controls.append({"action": "stop_earlier", "target": task_id, "scope": "cascade"})
     return controls
+
+
+def _owner_actions(row: Mapping[str, Any]) -> tuple:
+    from ouroboros.gateway.main_decisions import owner_actions
+
+    return owner_actions(dict(row))
 
 
 def _rank(activity: str) -> int:

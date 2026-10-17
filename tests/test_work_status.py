@@ -312,3 +312,19 @@ def test_resume_is_offered_only_where_the_resume_door_releases_the_pause(cause, 
 def test_an_ended_episode_with_running_helpers_offers_only_stop_on_its_tree():
     controls = ws.controls_for(None, None, earlier_live=[], live_roots=["p"])
     assert _actions(controls) == [("stop", "p")]
+
+
+def test_the_works_turn_and_mains_attention_share_one_rule():
+    from ouroboros.gateway.main_decisions import owner_actions
+
+    rows = [
+        row("a", "budget_paused", pause_cause="budget", can_resume=True),
+        row("b", "budget_paused", pause_cause="owner", can_resume=False),
+        row("c", model_waits={"w": {"state": "waiting", "task_attempt": 1, "requires_owner_action": True, "revision": 1}}),
+        row("d", model_waits={"w": {"state": "waiting", "task_attempt": 1, "requires_owner_action": True}}),  # no revision
+        row("e", "budget_paused", pause_cause="restart", can_resume=False),
+    ]
+    for item in rows:
+        waits, resume = owner_actions(item)
+        owner_turns = [turn for turn in ws.classify_member(item)["turn"] if turn["kind"] == "action"]
+        assert bool(owner_turns) is bool(waits or resume), item["activity_id"]
