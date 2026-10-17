@@ -52,7 +52,7 @@ def _summary(meter: CostMeter, tag: str) -> Dict[str, Any]:
     snap = meter.snapshot(tag)
     statements = sorted(snap["statements"].items(), key=lambda item: -item[1])[:STATEMENT_SAMPLE]
     return {"counts": snap["counts"], "paths": snap["paths"], "names": snap["names"],
-            "statements": dict(statements)}
+            "statements": dict(statements), "callers": snap["callers"]}
 
 
 def _all_counts(meter: CostMeter) -> Dict[str, Dict[str, int]]:
@@ -162,6 +162,15 @@ def _request(meter: CostMeter, client: Any, result: Dict[str, Any], tag: str, me
     _mark(result, tag)
     result[tag] = _summary(meter, tag)
     result.setdefault("responses", {})[tag] = {"status": response.status_code, "bytes": len(response.content)}
+    if tag in {"B3", "B3w"}:
+        payload = response.json()
+        result["responses"][tag]["decisions"] = {
+            "current_questions": sorted(
+                [{key: value for key, value in row.items() if key != "ts"} for row in payload["current_questions"]],
+                key=lambda row: (row["task_id"], row["quiz_id"])),
+            "current_questions_complete": payload["current_questions_complete"],
+            "current_questions_gaps": payload["current_questions_gaps"],
+        }
 
 
 def _chat_frame(meter: CostMeter, client: Any, result: Dict[str, Any], tag: str, message_id: str) -> None:

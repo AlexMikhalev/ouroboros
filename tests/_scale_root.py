@@ -10,7 +10,9 @@ project) as the previous process left them in the queue snapshot; a pending tree
 (``CURRENT["stop_root"]``, the tree the Stop boundary stops); a paused root whose owner fence is
 closed and which holds one open owner question; Main's own recent rows; two project rooms: the
 active one with its rows in the OLDEST archive segment, and one bound later to an old task
-(``CURRENT["late_task"]``) whose rows are just as old.
+(``CURRENT["late_task"]``) whose rows are just as old. A finished author keeps one expired,
+still-answerable question; its already-delivered result grows with ``k`` while its question
+stays fixed, so reading the full body for that question cannot pass the state contract.
 
 Unrelated history (per unit of ``k``): ``LEGACY_PER_K`` frozen ``task_results/*.json`` files
 imported at the cutover by the real boot preparation (``startup_migrations.prepare_startup_state``,
@@ -19,9 +21,10 @@ the store, ``CHILDREN_PER_K`` child drives under ``state/headless_tasks/`` with 
 ``current.sqlite``, archive segments of chat/progress/tools/events (``SEGMENTS_PER_K``) whose
 rows belong to OTHER rooms and are NEWER than the requested room's rows (a LIMIT cannot hide a
 walk), ``CUSTODY_PER_K`` closed delegated-run custody records, one settled task per unit that
-still carries an answered owner question. ``NEVER_ACTIVE_PROJECTS`` stays constant: a registered
-project is a current fact (every ``/api/state`` lists it), and one project that never had a row
-already sends a boot through the whole growing archive.
+still carries an answered, fully delivered owner question. Undelivered answers are CURRENT
+facts under ``quiz_needs_retention`` and must not scale with history. ``NEVER_ACTIVE_PROJECTS``
+stays constant: a registered project is a current fact (every ``/api/state`` lists it), and one
+project that never had a row already sends a boot through the whole growing archive.
 
 Run in its own interpreter with ``OUROBOROS_DATA_DIR`` set to the root (the writers that use
 the process data root then write there): ``python -m tests._scale_root ROOT K OUT.json``.
@@ -58,6 +61,7 @@ CURRENT: Dict[str, Any] = {
     "pending": ("cur-pend-root", "cur-pend-child"),
     "paused_root": "cur-paused-root",
     "question": ("cur-paused-root", "quiz-open-1"),
+    "retained_question": ("cur-finished-author", "quiz-expired-1"),
     "active_project": "p-active",
     "late_project": "p-late",
     "late_task": "hist-late-0",
@@ -195,8 +199,10 @@ def _settled(root: pathlib.Path, k: int) -> Dict[str, int]:
         write_task_result(root, answered, "running", chat_id=MAIN)
         owner_quiz.record_asked(root, answered, quiz_id=f"quiz-{unit}", question="Which one?",
                                 options=["A", "B"], chat_id=MAIN)
+        owner_quiz.record_publication(root, answered, f"quiz-{unit}", MAIN)
         owner_quiz.record_answered(root, answered, quiz_id=f"quiz-{unit}", option_index=0,
                                    request_id=f"answer-{unit}")
+        owner_quiz.mark_discharged(root, answered, f"quiz-{unit}")
         write_task_result(root, answered, "completed", result="Answered and finished.")
         _discharged(root, answered)
     return {"settled": k * (SETTLED_PER_K + 1) + 1, "child_drives": children}
@@ -268,7 +274,7 @@ def _projects(root: pathlib.Path, k: int) -> Dict[str, Any]:
     return {"never_active_projects": quiet}
 
 
-def _current(root: pathlib.Path) -> Dict[str, Any]:
+def _current(root: pathlib.Path, k: int) -> Dict[str, Any]:
     from ouroboros import budget_pause, owner_pause, owner_quiz
     from ouroboros import projects_registry as registry
     from ouroboros.contracts.chat_id_policy import project_chat_id
@@ -310,6 +316,15 @@ def _current(root: pathlib.Path) -> Dict[str, Any]:
     owner_quiz.record_asked(root, asker, quiz_id=quiz_id, question="Which layout do you prefer?",
                             options=["Rows", "Grid"], chat_id=MAIN, recommended_index=0)
     owner_quiz.record_publication(root, asker, quiz_id, MAIN)
+    asker, quiz_id = CURRENT["retained_question"]
+    write_task_result(root, asker, "completed", chat_id=MAIN,
+                      result=_body(20_000 * k, "already-delivered result"), ts=_iso(OLD))
+    _discharged(root, asker)
+    owner_quiz.record_asked(root, asker, quiz_id=quiz_id, question="Which follow-up format?",
+                            options=["PDF", "HTML"], chat_id=MAIN)
+    owner_quiz.record_publication(root, asker, quiz_id, MAIN)
+    owner_quiz.mark_published(root, asker, quiz_id)
+    owner_quiz.reconcile_terminal(root, asker)
     with queue._queue_lock:
         queue.PENDING[:] = [dict(tasks[pend_root], priority=0, queued_at=time.time()),
                             dict(tasks[pend_child], priority=0, queued_at=time.time())]
@@ -365,7 +380,7 @@ def build(root: Any, k: int) -> Dict[str, Any]:
     facts["segments"] = step("segments", lambda: _segments(root, k))
     facts.update(step("rooms", lambda: _rooms(root)))
     facts.update(step("projects", lambda: _projects(root, k)))
-    facts.update(step("current", lambda: _current(root)))
+    facts.update(step("current", lambda: _current(root, k)))
     step("main_rows", lambda: _main_rows(root))
     facts["build_seconds"] = round(time.monotonic() - started, 2)
     facts["build_steps"] = steps

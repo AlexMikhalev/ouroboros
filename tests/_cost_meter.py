@@ -21,6 +21,9 @@ What is counted, per tag:
 - ``json_loads`` and ``json_chars``: every ``json.loads``/``json.load`` and its input length;
 - ``popen`` (argv[0] names kept in ``popen_names``) and ``thread_start`` (thread names).
 
+``callers`` attributes counter amounts and SQL statements to reader stacks, including
+root-local work and JSON decodes which have no history path to name.
+
 Locations (``category``): ``root`` and the history locations ``CATEGORIES`` under the data root,
 ``lock`` for lock files there (how often a lock is probed follows contention between threads, not
 the amount of history), ``outside`` for everything else (the interpreter, the ancestors a path
@@ -107,6 +110,7 @@ class CostMeter:
         self.counts: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.paths: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.statements: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+        self.callers: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.names: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.spawned: Dict[str, List[threading.Thread]] = collections.defaultdict(list)
         self._lock = threading.Lock()
@@ -148,9 +152,11 @@ class CostMeter:
         tag = tag_of()
         if category is None and path is not None:
             category = self.category(path)
+        source = f"{kind}:{category} <- {caller(4)}" if category else f"{kind} <- {caller(4)}"
         with self._lock:
             counter = self.counts[tag]
             counter[kind] += amount
+            self.callers[tag][source] += amount
             if category is not None:
                 counter[f"{kind}:{category}"] += amount
                 if category in HISTORY and path is not None:
@@ -176,9 +182,11 @@ class CostMeter:
     def note_statement(self, statement: str) -> None:
         head = statement.lstrip().split(None, 1)[0].upper() if statement.strip() else ""
         tag = tag_of()
+        source = caller(4)
         with self._lock:
             counter = self.counts[tag]
             counter["statements"] += 1
+            self.callers[tag][f"statements <- {source}"] += 1
             if head in ("COMMIT", "END"):
                 counter["commits"] += 1
             elif head == "BEGIN":
@@ -197,6 +205,7 @@ class CostMeter:
         """A frozen copy of everything recorded for ``tag`` so far."""
         with self._lock:
             return {"counts": dict(self.counts.get(tag, {})),
+                    "callers": dict(self.callers.get(tag, {})),
                     "paths": dict(self.paths.get(tag, {})),
                     "statements": dict(self.statements.get(tag, {})),
                     "names": dict(self.names.get(tag, {}))}

@@ -136,10 +136,14 @@ def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
                 if key in ("status", "echo")} for k in (K_SMALL, large)]
     assert answers[0] == answers[1], f"{tag} answered differently at the two sizes: {answers}"  # a failure is not flat
     big = boundary(measured, tag, large)
-    breaches = contract_breaches(boundary(measured, tag, K_SMALL)["counts"], big["counts"], large)
+    little = boundary(measured, tag, K_SMALL)
+    breaches = contract_breaches(little["counts"], big["counts"], large)
     touched = sorted(big.get("paths", {}).items(), key=lambda item: -item[1])[:8]
+    growing = sorted(((source, amount - little.get("callers", {}).get(source, 0))
+                      for source, amount in big.get("callers", {}).items()
+                      if amount > little.get("callers", {}).get(source, 0)), key=lambda item: -item[1])[:8]
     assert not breaches, (f"{tag} grows with unrelated history (k={K_SMALL} -> k={large}): {breaches}; "
-                          f"history touched at k={large}: {touched}")
+                          f"history touched at k={large}: {touched}; growing readers: {growing}")
 
 
 # ---- B1-B5 and the room ------------------------------------------------------------------------
@@ -172,17 +176,28 @@ def test_b2_publication_to_supervisor_ready_is_flat(measured):
     assert_flat(measured, "B2_ready")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU3b: /api/state reads every owner_questions member one store connection each, including answered "
-    "questions of settled tasks retained by quiz_needs_retention (k=1 -> k=30: connect 16 -> 74, "
-    f"statements 105 -> 482, json_chars 17642 -> 51876). Still red on {PREVIEW} (statements 133 -> 568)."))
+def _assert_state_questions(measured, tag):
+    """Visible questions stay fixed; k grows delivered history, including the finished author's result."""
+    from tests._scale_root import CURRENT
+
+    expected = {"current_questions": sorted([
+        {"task_id": CURRENT[key][0], "quiz_id": CURRENT[key][1], "chat_id": 1, "native": True,
+         "quiz_state": state} for key, state in (("question", "open"), ("retained_question", "expired_terminal"))
+    ], key=lambda row: (row["task_id"], row["quiz_id"])),
+        "current_questions_complete": True, "current_questions_gaps": []}
+    for k in (K_SMALL, measured["large"]):
+        assert measured[k]["responses"][tag]["decisions"] == expected
+
+
+@pytest.mark.xfail(strict=True, reason="WU5b: Main decodes the finished question author's full result per poll.")
 def test_b3_state_cold_is_flat(measured):
+    _assert_state_questions(measured, "B3")
     assert_flat(measured, "B3")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU3b: the same owner_questions reads on every poll (warm, k=1 -> k=30: connect 11 -> 40, statements 73 -> 276)."))
+@pytest.mark.xfail(strict=True, reason="WU5b: Main decodes the finished question author's full result per poll.")
 def test_b3_state_warm_is_flat(measured):
+    _assert_state_questions(measured, "B3w")
     assert_flat(measured, "B3w")
 
 
