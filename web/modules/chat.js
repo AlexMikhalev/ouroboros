@@ -431,6 +431,8 @@ export function createChatInstance({
         if (!preserveWaits) modelWaits.forget(id);
         const record = liveCardRecords.get(id);
         record?.timelineDispose?.();
+        record?.episodeDisclosureDispose?.();
+        if (record?.episodeDisclosure) releaseMessageNode(record.episodeDisclosure);
         if (record?.root) releaseMessageNode(record.root);
         liveCardRecords.delete(id);
     }
@@ -581,7 +583,8 @@ export function createChatInstance({
             collapse: (record) => (explicitCardExpansion.delete(record.groupId), record.root.dataset.expanded === '1'
                 && setLiveCardExpanded(record, false)) } });
     const episodes = createTaskEpisodes({ records: liveCardRecords, reanchor: reanchorTaskCard,
-        activity: (record) => currentActivity(record), follow: portals.follow });
+        activity: (record) => currentActivity(record), follow: portals.follow,
+        expand: (record) => { setLiveCardExpanded(record, true); hydrateCardReviews(record.groupId); } });
     const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, cardOf: (id) => liveCardRecords.get(id),
         activityOf: (record) => currentActivity(record) });
 
@@ -1272,6 +1275,7 @@ export function createChatInstance({
             </div>
             <div class="chat-live-timeline" data-live-timeline id="${escapeHtmlAttr(timelineId)}"></div>
             <div data-live-reviews-host></div>
+            <div class="chat-live-episode-history" data-live-episode-history hidden></div>
         `;
         const record = {
             groupId: normalizedGroupId,
@@ -1281,6 +1285,7 @@ export function createChatInstance({
             inlineTypingEl: root.querySelector('[data-live-typing]'),
             titleEl: root.querySelector('[data-live-title]'),
             episodesEl: root.querySelector('[data-live-episodes]'),
+            episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
             activityEl: root.querySelector('[data-live-activity]'),
             countEl: root.querySelector('[data-live-count]'),
             footEl: root.querySelector('[data-live-foot]'),
@@ -1399,20 +1404,7 @@ export function createChatInstance({
             }
             return false;
         }
-        if (record.isSubagent) return false;
-        // An episode card keeps the work's first name; the successor's own name is the mechanism's.
-        if (record.episodeName) return false;
-        const titleChanged = Boolean(record.titleEl && record.titleEl.textContent !== nm);
-        let changed = record.suggestedName !== nm || titleChanged;
-        record.suggestedName = nm;
-        if (titleChanged) record.titleEl.textContent = nm;
-        // Restore the deferred collapsed activity after naming.
-        changed = renderCollapsedActivity(record, projectCollapsedActivity({
-            suggestedName: nm,
-            headline: record.collapsedActivity,
-            previous: record.collapsedActivity,
-        })) || changed;
-        return Boolean(changed && record.root?.isConnected);
+        return episodes.rename(record, nm);
     }
 
     // A parent card comes only from the parent's OWN evidence here (its record, a census
@@ -2360,6 +2352,8 @@ export function createChatInstance({
             const record = liveCardRecords.get(id);
             if (!record) { pendingLiveEvictions.delete(id); continue; }
             if (record.historyIds?.size || activeDirectActivities.has(id)
+                    // A retained successor still owns this physical episode's content/controller.
+                    || record.episodeDisclosure?.isConnected
                     || (!record.finished && !record.historicalUnavailable)
                     || historyNodeIsProtected(record.root, messagesDiv)) continue;
             disposeLiveCard(id);
@@ -3216,6 +3210,7 @@ export function createChatInstance({
                 updateLiveCardCount(record);
             }
             if (!affected || record.historyIds?.size || activeDirectActivities.has(id)
+                    || record.episodeDisclosure?.isConnected
                     || record.subagentsEl?.querySelector('.chat-live-card')
                     || historyNodeIsProtected(record.root, messagesDiv)) continue;
             if (!record.finished && !record.historicalUnavailable && !record.historicalUnconfirmed) continue;

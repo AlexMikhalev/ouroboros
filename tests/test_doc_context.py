@@ -180,7 +180,8 @@ def test_forked_context_uses_canonical_global_cognition_not_child_noise(monkeypa
     assert f"{len('CANONICAL_DEEP_REVIEW')} chars" in rendered
     assert "CANONICAL_DEEP_REVIEW" not in rendered and "CHILD_DEEP_NOISE" not in rendered
     call = {"root": "runtime_data", "path": str((canonical / "memory" / "deep_review.md").resolve())}
-    assert f"Read: read_file(root='runtime_data', path='{call['path']}')" in rendered
+    pointer = f"Read: read_file(root='runtime_data', path='{call['path']}')"
+    assert json.dumps(pointer, ensure_ascii=False)[1:-1] in rendered
     registry = ToolRegistry(repo_dir=env.repo_dir, drive_root=child)
     registry.set_context(ctx)
     read = registry.execute("read_file", call)
@@ -203,7 +204,7 @@ def test_deep_review_is_a_historical_pointer_dated_only_by_its_header(tmp_path):
             ("<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n",
              "generated_at=2026-01-01T00:00:00Z, source_revision=unknown (its provenance header)")):
         original = prefix + "retained historical reasoning " * 400
-        path.write_text(original, encoding="utf-8")
+        path.write_bytes(original.encode("utf-8"))  # pin the source bytes, not the host's text-mode EOL
         # A recent file mtime is not a review date, even on a copied old report.
         os.utime(path, (1900000000, 1900000000))
         messages, _ = build_llm_messages(

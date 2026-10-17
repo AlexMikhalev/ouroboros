@@ -307,6 +307,7 @@ def test_photo_material_serves_exact_selected_bytes_at_existing_artifact_endpoin
     from starlette.routing import Route
     from starlette.testclient import TestClient
     from ouroboros.artifacts import store_task_artifact_bytes
+    from ouroboros.gateway import task_archive
     from ouroboros.gateway.tasks import api_task_artifact
     from ouroboros.tools.core_artifacts import _escalate
     from tests.test_quiz_answer import _tool_ctx
@@ -321,6 +322,9 @@ def test_photo_material_serves_exact_selected_bytes_at_existing_artifact_endpoin
     app = Starlette(routes=[Route("/api/tasks/{task_id}/artifacts/{name}", api_task_artifact)])
     app.state.drive_root = tmp_path
     reply = TestClient(app).get(material["download_url"])
+    if not task_archive.CONFINED:  # owner-approved #1297: no confined open, a typed refusal, never unconfined bytes
+        assert reply.status_code == 503 and reply.json()["reason_code"] == "artifact_unavailable"
+        return
     assert reply.status_code == 200 and reply.content == photo
     assert reply.headers["content-type"] == "image/png"
 

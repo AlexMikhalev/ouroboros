@@ -296,13 +296,20 @@ def capture_projection(root, entry, *, reader_task_id="") -> dict | None:
     try:
         manifest = json.loads((cap_dir / "workspace_patch.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"status": "pending", "note": "Body capture is still owed; no patch was applied.",
+        from ouroboros.delegate_registration_policy import evidence_only
+
+        if evidence_only(entry):  # no author decision is owed
+            return {"status": "pending", "note": "Body capture is still owed; evidence only, never applied.",
+                    "patch_disposition": entry.patch_disposed or "not_applicable"}
+        return {"status": "pending", "note": "Body capture is still owed; no patch was applied. integrate_delegated_patch "
+                "prepares a finished run's capture itself and returns it for inspection first.",
                 "patch_disposition": entry.patch_disposed or "pending"}
     if directory:
         from ouroboros.delegate_directory import directory_capture_block
-        return directory_capture_block(root, entry, manifest)
-    from ouroboros.tools.delegate_integration import _capture_block
-    block = _capture_block(entry, cap_dir, manifest, manifest.get("authority_drift") or {})
+        block = directory_capture_block(root, entry, manifest)
+    else:
+        from ouroboros.tools.delegate_integration import _capture_block
+        block = _capture_block(entry, cap_dir, manifest, manifest.get("authority_drift") or {})
     if reader_task_id and reader_task_id != entry.task_id:
         for kind in ("patch", "manifest"):
             if block.get(f"{kind}_read") and block.get(f"{kind}_artifact"):

@@ -172,6 +172,9 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "forward_to_worker", "peek_task", "cancel_task", "discard_child_result",
     "resume_child_task",
     "verify_and_record",
+    # An independent look at the assigned work, never child approval or commit.
+    # review_change admits the physical subject before freezing or dispatching.
+    "review_change",
     "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chronicle_write",
     "chat_history",
     "tree_note", "tree_read", "override_delegation_constraint",

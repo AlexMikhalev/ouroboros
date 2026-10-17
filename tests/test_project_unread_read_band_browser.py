@@ -718,26 +718,23 @@ def test_a_legacy_child_final_after_the_root_answer_does_not_hold_the_room_unrea
             browser.close()
 
 
-# What each Project history read the page received says about the newest message. A read of what
-# arrived after the window (an ``after`` cursor) is no page of the room: it is kept apart.
+# What each Project history read the page received says about the newest message. A read's
+# cursor names it (``kind``): ``older`` walks the chain, ``after`` takes what arrived since the
+# newest read; a read without one (null) is the newest page.
 _RECORD_HISTORY = """() => {
     const original = window.fetch.bind(window);
     window.__historyReads = [];
-    window.__arrivalReads = [];
-    const kind = cursor => JSON.parse(atob(cursor.replace(/-/g, '+').replace(/_/g, '/'))).kind;
     window.fetch = async (input, init) => {
         const response = await original(input, init);
         const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-        const cursor = url.searchParams.get('cursor');
-        if (url.pathname === '/api/chat/history' && url.searchParams.get('chat_id') && cursor && kind(cursor) === 'after') {
-            response.clone().json().then(data => window.__arrivalReads.push({
-                named: 'latest_message' in (data.window || {}), rows: (data.messages || []).length}), () => {});
-        } else if (url.pathname === '/api/chat/history' && url.searchParams.get('chat_id')) {
+        if (url.pathname === '/api/chat/history' && url.searchParams.get('chat_id')) {
+            const cursor = url.searchParams.get('cursor');
+            const kind = cursor ? JSON.parse(atob(cursor.replace(/-/g, '+').replace(/_/g, '/'))).kind : null;
             response.clone().json().then(data => window.__historyReads.push({
-                older: Boolean(cursor), named: 'latest_message' in (data.window || {}),
+                kind, older: kind === 'older', named: 'latest_message' in (data.window || {}),
                 latest: data.window?.latest_message ?? null, before: data.window?.latest_before ?? null,
                 absent: data.window?.latest_absent === true,
-                upper: data.coverage?.upper?.chat ?? null,
+                upper: data.coverage?.upper?.chat ?? null, from: data.coverage?.spans?.chat?.from ?? null,
                 texts: (data.messages || []).map(row => String(row.text || '').slice(0, 24)),
             }), () => {});
         }
@@ -804,11 +801,13 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
                 assert row.locator(".nav-unread-dot").count() == 1
                 return
             assert read and clear["top"] >= clear["feedTop"], ("the opening lands on the answer and reads it", acks, clear)
-            # The receipt's refresh reads the uncovered revision again: what arrived after the window
-            # the walk joined (the search past it is known), and nothing newer arrived.
-            arrivals = page.evaluate("() => window.__arrivalReads")
-            assert arrivals and arrivals[-1] == {"named": False, "rows": 0}, \
-                ("the uncovered revision was read again, and that read found nothing newer", arrivals, reads)
+            # A refresh reads what arrived since the newest read once the newest message is known
+            # (project_read_state.js `refresh`): those arrivals start at the chain's frozen upper.
+            since = reads[max(index for index, item in enumerate(reads) if item["older"]) + 1:]
+            assert [item["kind"] for item in reads].count(None) == 1 and since \
+                and all(item["kind"] == "after" and not item["named"] for item in since) \
+                and since[0]["from"] == older[-1]["upper"], \
+                ("the uncovered revision was read again, and what arrived since the chain found nothing newer", reads)
             row.locator(".nav-unread-dot").wait_for(state="detached")
 
             dialogue_store.append(data, "chat", {"ts": at(2000), "direction": "out", "chat_id": chat_id,
@@ -982,7 +981,7 @@ def test_a_long_room_with_no_standalone_message_is_read_at_the_bottom_once_the_o
             assert newest["bottom"] > newest["feedTop"], ("the room's own newest note is on screen", newest)
             if early:
                 start = max(index for index, item in enumerate(reads) if item["absent"])
-                assert len(older) > 3 and [item["older"] for item in reads[start + 1:start + 2]] == [False], \
+                assert len(older) > 3 and [item["kind"] for item in reads[start + 1:start + 2]] == [None], \
                     ("past the pages kept, the opening went on to read the newest page again", reads)
                 assert messages.locator(".chat-bubble").filter(has_text="Early note 0").count() == 0, \
                     "the pages walked past went with their chain"

@@ -48,10 +48,16 @@ def _remember_message(api, chat_id: int, message_id: int, record: dict) -> None:
             for stale in list(latest)[:-_MAX_MESSAGE_REFS]:
                 latest.pop(stale, None)
         path = _state_file(api, "message_refs.json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        # The map is derived: losing an entry costs one reference, never the
+        # owner's message or a confirmed chunk's later siblings.
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            api.log("warning", f"Telegram message reference was not saved ({type(exc).__name__}); "
+                               "its reply reference may be unavailable or stale.")
 
 
 def _owner_message_seen(api, chat_id: int, message_id: int) -> None:
@@ -116,7 +122,9 @@ def _mirror_options(api, event: dict, chat_id: int) -> dict:
     """A client mirrors one host row; all of its physical parts share this fact."""
     task_id = str(event.get("subagent_task_id") or event.get("task_id") or "")
     kind = str(event.get("kind") or event.get("type") or event.get("system_type") or "message")
-    if event.get("subagent_event") or kind == "task_summary":
+    if (event.get("subagent_event") or kind == "task_summary"
+            or event.get("role") == "system" and event.get("system_type") == "project_completion_summary"):
+        # Telegram shows a status/salvage notice, not Main's completion_answer.
         kind = "work_card"
     elif event.get("quiz_id"):
         kind = "question"
