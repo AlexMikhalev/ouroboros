@@ -42,6 +42,9 @@ function pressOutcome(status, body = {}) {
     if (status === 202) return { feedback: OWED, retry: true };
     if (status === 409 && body.reason_code === 'card_stale') return { feedback: STALE, stale: Number(body.revision) || 1 };
     if (status === 409 && body.reason_code === 'card_action_once') {
+        // Another press of this once control won; while it is still owed, the next press retries that one.
+        const winner = body.winner || {};
+        if (winner.delivery === 'owed' && winner.request_id) return { feedback: OWED, retryWith: String(winner.request_id) };
         return { feedback: { status: 'success', message: 'Already sent ✓' }, lock: true };
     }
     if (status === 404) {
@@ -59,8 +62,10 @@ function pressOutcome(status, body = {}) {
  * The presses of one card, by `submit.id`. Each press is its own submission with a fresh `request_id`; a press that
  * got no answer, failed on the server or is still owed is retried by the next press with the SAME id (when its values
  * are the same), so the host records it once. A press the card records as still owed (`adopt`, after a reload too) is
- * retried under its recorded id; for a `once` control that retry is the only press left, whatever the form now holds.
- * A `once` control locks once its press was delivered or forwarded — here, or in the card's recorded presses.
+ * retried under its recorded id when it is a `once` control's (the only press left, whatever the form now holds) or an
+ * action's; a form's next press with values is a new press. A `once` control's press that lost to another still owed
+ * (409 with the winner) retries the winner. A `once` control locks once its press was delivered or forwarded — here,
+ * or in the card's recorded presses.
  * `press(actionId, {values, once, revision})` resolves to the control's feedback (with `stale`, the card's current
  * revision, when it changed since it was drawn), or null while that control's earlier press is still in flight.
  */
@@ -98,7 +103,8 @@ export function createCardPresses({ cardId, post = postCardDecision, newId = new
             });
             inFlight.delete(actionId);
             const outcome = pressOutcome(answer?.status ?? 0, answer?.body || {});
-            if (!outcome.retry) retry.delete(actionId);
+            if (outcome.retryWith) retry.set(actionId, { requestId: outcome.retryWith, values: null, anyValues: true });
+            else if (!outcome.retry) retry.delete(actionId);
             if (outcome.lock || (once && outcome.sent)) locked.set(actionId, outcome.feedback);
             return outcome.stale ? { ...outcome.feedback, stale: outcome.stale } : outcome.feedback;
         },

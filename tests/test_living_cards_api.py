@@ -176,7 +176,8 @@ def test_a_press_reaches_the_live_author_as_card_input_once(tmp_path, decide):
     assert len(_mail(tmp_path)) == 1
     later = decide({"request_id": "r2", "revision": 1, "decision_id": decision_id, "values": {"from": "Sun"}})
     assert later.status_code == 409 and later.json()["error"] == "card_action_once"
-    assert later.json()["winner"]["request_id"] == "r1" and len(load_card(tmp_path, card["card_id"])["submissions"]) == 1
+    assert later.json()["winner"] == {"request_id": "r1", "at": later.json()["winner"]["at"], "delivery": "delivered"}
+    assert len(load_card(tmp_path, card["card_id"])["submissions"]) == 1
 
 
 def test_each_press_of_an_ordinary_action_is_its_own_submission(tmp_path, decide):
@@ -268,6 +269,33 @@ def test_a_kept_copy_cannot_press_a_replaced_card_but_a_recorded_press_still_ret
     assert fresh.status_code == 200 and load_card(tmp_path, card["card_id"])["submissions"][-1]["label"] == "Book C"
     again = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:book"})
     assert again.status_code == 200 and again.json()["duplicate"] is True, "a recorded press answers whatever the card became"
+
+
+def test_an_owed_press_retried_after_a_replace_reaches_the_author_it_was_pressed_for(tmp_path, decide):
+    card = _component_card(tmp_path, chat_id=-7)  # a machine chat: the press stays owed while its author is gone
+    decide.state["live"] = False
+    owed = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:dates", "values": {"from": "Mon"}})
+    assert owed.status_code == 202 and owed.json()["delivery"] == "owed"
+    write_card(tmp_path, chat_id=-7, task_id="task-2", title="New task card", fallback_text="C", kind="components",
+               body={"components": [{"type": "action", "label": "Other", "submit": {"id": "other"}}]},
+               replace=card["card_id"])
+    again = decide({"request_id": "r2", "revision": 2, "decision_id": f"card:{card['card_id']}:other"})
+    assert again.status_code == 202, "a press of the new card is the new author's"
+    decide.state["live"] = True
+    retried = decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:dates"})
+    assert retried.status_code == 200 and retried.json()["duplicate"] is True and retried.json()["delivery"] == "delivered"
+    [entry] = _mail(tmp_path, "task-1")
+    assert "«Dates» on your card «Flights»" in entry["text"] and json.loads(entry["text"].split("Values:\n", 1)[1]) == {"from": "Mon"}
+    assert all("«Dates»" not in row["text"] for row in _mail(tmp_path, "task-2")), "never the replacing task's"
+
+
+def test_a_once_press_that_lost_to_an_owed_winner_says_so(tmp_path, decide):
+    card = _component_card(tmp_path, chat_id=-7)
+    decide.state["live"] = False
+    assert decide({"request_id": "r1", "revision": 1, "decision_id": f"card:{card['card_id']}:dates"}).status_code == 202
+    later = decide({"request_id": "r2", "revision": 1, "decision_id": f"card:{card['card_id']}:dates"})
+    assert later.status_code == 409 and later.json()["winner"]["delivery"] == "owed"
+    assert later.json()["winner"]["request_id"] == "r1"
 
 
 def test_the_summary_names_each_press_by_its_request(tmp_path, decide):

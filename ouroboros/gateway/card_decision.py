@@ -83,8 +83,10 @@ def _deliver(drive_root: pathlib.Path, record: Dict[str, Any], submission: Dict[
 
     card_id, request_id = str(record["card_id"]), str(submission["request_id"])
     label = str(submission.get("label") or submission["action_id"])
-    text = card_input_frame(record, label, submission.get("values"))
-    task_id = str(record.get("task_id") or "")
+    # A press goes to the author of the card it was pressed on, also when it is retried after a replace.
+    text = card_input_frame({**record, "title": submission.get("title", record.get("title"))}, label,
+                            submission.get("values"))
+    task_id = str(submission.get("task_id", record.get("task_id")) or "")
     if task_id:
         agent = get_direct_chat_agent(task_id)
         # Room intake's admission owner: no mailbox write after the author's final drain closed.
@@ -169,7 +171,8 @@ async def answer_card_decision(drive_root: pathlib.Path, body: Dict[str, Any], *
     if "winner" in outcome:
         winner = outcome["winner"]
         return 409, {"ok": False, "error": "card_action_once", "decision_id": decision_id, "reason_code": "card_action_once",
-                     "winner": {"request_id": str(winner.get("request_id") or ""), "at": str(winner.get("at") or "")}}
+                     "winner": {"request_id": str(winner.get("request_id") or ""), "at": str(winner.get("at") or ""),
+                                "delivery": str(winner.get("delivered") or "owed")}}
     submission, record = outcome["submission"], outcome["record"]
     delivery, reason = str(submission.get("delivered") or "owed"), ""
     if delivery == "owed":

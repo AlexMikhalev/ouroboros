@@ -80,7 +80,8 @@ class DecisionResponse(TypedDict, total=False):
     up included) or Panic saves nothing, nor does an unreadable (unknown) state.
 
     A card press is recorded per ``request_id`` (each press its own; ``once``
-    actions keep the first and answer 409 ``card_action_once`` with ``winner``; a card
+    actions keep the first and answer 409 ``card_action_once`` with ``winner`` (its request_id,
+    time and delivery: a winner still owed is retried under its request_id); a card
     that changed since it was drawn answers 409 ``card_stale`` with its ``revision``).
     ``delivery`` says where it went: ``delivered`` into the authoring task's
     mailbox, ``forwarded`` as the owner's message after that task ended, or

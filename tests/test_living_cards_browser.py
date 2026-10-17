@@ -160,6 +160,10 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
 
                     def answer(route, request):
                         pressed.append(json.loads(request.post_data or "{}"))
+                        if type(pressed[-1].get("revision")) is not int or pressed[-1]["revision"] < 1:  # as the ingress
+                            route.fulfill(status=400, content_type="application/json", body=json.dumps({
+                                "error": "revision required", "reason_code": "revision_required"}))
+                            return
                         route.fulfill(status=200, content_type="application/json", body=json.dumps({
                             "ok": True, "decision_id": pressed[-1].get("decision_id"), "request_id": pressed[-1].get("request_id"),
                             "duplicate": False, "delivery": "delivered", "card_id": ids["components"], "revision": 1}))
@@ -169,7 +173,7 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                     card.locator("[data-widget-action]").click()
                     card.locator("[data-widget-feedback]", has_text="Sent ✓").wait_for(timeout=10_000)
                     assert len(pressed) == 1, pressed
-                    assert set(pressed[0]) == {"request_id", "decision_id"}, pressed
+                    assert set(pressed[0]) == {"request_id", "decision_id", "revision"} and pressed[0]["revision"] == 1, pressed
                     assert pressed[0]["decision_id"] == f"card:{ids['components']}:pick_pro", pressed
                     assert card.locator("[data-widget-action]").is_disabled(), "a once control locks"
 
@@ -203,6 +207,10 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                     kept = page.locator(f'[data-widget-key="_cards:{ids["components"]}"]')
                     kept.wait_for(state="visible", timeout=30_000)
                     assert "Basic" in kept.inner_text() and kept.locator(".widgets-card-source").inner_text() == "kept from the chat"
+                    kept.locator("[data-widget-action]").click()
+                    kept.locator("[data-widget-feedback]", has_text="Sent ✓").wait_for(timeout=10_000)
+                    assert pressed[-1]["decision_id"] == f"card:{ids['components']}:pick_pro" and pressed[-1]["revision"] == 1, \
+                        "a kept card presses the revision it was kept at"
                     page.screenshot(path=str(evidence / f"living-cards-{engine}-widgets.png"), animations="disabled")
                     kept.locator("[data-widget-menu-trigger]").click()
                     page.locator(".skills-card-menu-dialog [data-widget-unpin]").click()

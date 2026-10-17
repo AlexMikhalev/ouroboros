@@ -153,8 +153,10 @@ def record_submission(root: Any, card_id: str, *, request_id: str, action_id: st
         if winner is not None:
             outcome.update(winner=winner)
             return None
+        # The author and title the press was made on: a retry after a replace still reaches them.
         submission = {"request_id": request_id, "action_id": action_id, "label": label,
-                      **({"values": values} if values is not None else {}), "at": utc_now_iso(), "delivered": "owed"}
+                      **({"values": values} if values is not None else {}), "at": utc_now_iso(), "delivered": "owed",
+                      "task_id": str(current.get("task_id") or ""), "title": str(current.get("title") or "")}
         submissions.append(submission)
         dropped = max(0, len(submissions) - MAX_SUBMISSIONS)
         del submissions[:dropped]

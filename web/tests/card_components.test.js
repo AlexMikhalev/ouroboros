@@ -64,7 +64,7 @@ test('a once control locks after its press counted, here or in the card\'s recor
     assert.equal((await presses.press('pick', { once: true })).message, 'Sent ✓');
     assert.equal(r.sent.length, 1);
 
-    const late = recorder({ status: 409, body: { ok: false, reason_code: 'card_action_once', winner: { request_id: 'x' } } });
+    const late = recorder({ status: 409, body: { ok: false, reason_code: 'card_action_once', winner: { request_id: 'x', delivery: 'delivered' } } });
     const elsewhere = createCardPresses({ cardId: 'card_c', post: late.post, newId: late.newId });
     assert.equal((await elsewhere.press('pick', { once: true })).message, 'Already sent ✓');
     assert.equal(elsewhere.locked('pick'), true);
@@ -83,6 +83,7 @@ test('a once control locks after its press counted, here or in the card\'s recor
 
 const CARD = {
     card_id: 'card_d',
+    revision: 1,
     components: [
         { type: 'markdown', text: 'Pick a plan' },
         { type: 'tabs', tabs: [{ label: 'Monthly', components: [{ type: 'metric', label: 'Price', value: 9 }] },
@@ -114,7 +115,7 @@ test('the card draws in place: data fills path fields, local tabs never post, pr
         assert.match(mount.querySelector('[data-widget-action]').textContent, /Sending…/);
         assert.equal(mount.querySelector('[data-widget-action]').disabled, true);
         await tick();
-        assert.deepEqual(r.sent, [{ request_id: 'req-1', decision_id: 'card:card_d:buy' }]);
+        assert.deepEqual(r.sent, [{ request_id: 'req-1', decision_id: 'card:card_d:buy', revision: 1 }]);
         assert.equal(mount.querySelector('[data-widget-action]').disabled, true, 'a once control locks');
         assert.match(mount.querySelector('[data-widget-feedback]').textContent, /Sent ✓/);
 
@@ -122,7 +123,7 @@ test('the card draws in place: data fills path fields, local tabs never post, pr
         form.elements = { namedItem: (name) => (name === 'text' ? { value: 'Call me' } : null) };
         form.dispatch('submit');
         await tick();
-        assert.deepEqual(r.sent[1], { request_id: 'req-2', decision_id: 'card:card_d:note', values: { text: 'Call me' } });
+        assert.deepEqual(r.sent[1], { request_id: 'req-2', decision_id: 'card:card_d:note', revision: 1, values: { text: 'Call me' } });
         mounted.dispose();
         mount.querySelector('[data-widget-action]').click();
         assert.equal(r.sent.length, 2, 'a disposed card listens to nothing');
@@ -225,4 +226,16 @@ test('a press names the revision it was drawn from; a changed card is read again
     } finally {
         dom.restore();
     }
+});
+
+test('a once press that lost to another press still owed retries that one; a delivered winner locks', async () => {
+    const owedWinner = { status: 409, body: { ok: false, reason_code: 'card_action_once', winner: { request_id: 'first', delivery: 'owed' } } };
+    const r = recorder(owedWinner, { status: 200, body: { ok: true, delivery: 'forwarded', duplicate: true } });
+    const presses = createCardPresses({ cardId: 'card_f', post: r.post, newId: r.newId });
+    const feedback = await presses.press('pick', { once: true, revision: 2 });
+    assert.equal(feedback.message, 'Saved, not delivered yet. Press again to retry.', 'never "Already sent" while the winner is owed');
+    assert.equal(presses.locked('pick'), false);
+    assert.equal((await presses.press('pick', { once: true, revision: 2 })).message, 'Sent ✓');
+    assert.deepEqual(r.sent.map((body) => body.request_id), ['req-1', 'first'], 'the second press retries the winner');
+    assert.equal(presses.locked('pick'), true);
 });
