@@ -1064,6 +1064,8 @@ body.resizing-panels { user-select: none; }
     flex-wrap: nowrap;
     gap: 10px;
     overflow-x: auto;
+    min-width: 0;
+    max-width: 100%;
     padding: var(--pill-strip-padding);
     scrollbar-width: none;
 }
@@ -9532,7 +9534,19 @@ textarea.chat-input {
 /* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen one takes the crimson tone and stays
    standing. Their strip scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping
    it. Filters are quiet controls: no body, so no shadow; a chosen filter takes the crimson tone. */
-:root[data-theme] .app-tab-strip { padding: 6px 16px 24px; margin: 0 -16px -16px; }
+:root[data-theme] .app-tab-strip {
+    padding: var(--space-2) var(--space-4) var(--space-5);
+    scroll-padding-inline: var(--space-4);
+    margin: 0;
+    --tab-fade-start: 0px;
+    --tab-fade-end: 0px;
+    -webkit-mask-image: linear-gradient(to right, transparent, black var(--tab-fade-start),
+        black calc(100% - var(--tab-fade-end)), transparent);
+    mask-image: linear-gradient(to right, transparent, black var(--tab-fade-start),
+        black calc(100% - var(--tab-fade-end)), transparent);
+}
+:root[data-theme] .app-tab-strip[data-scroll-start] { --tab-fade-start: var(--space-4); }
+:root[data-theme] .app-tab-strip[data-scroll-end] { --tab-fade-end: var(--space-4); }
 :root[data-theme] .app-tab {
     border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-capsule); box-shadow: var(--elev-rest);
 }

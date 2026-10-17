@@ -260,7 +260,6 @@ export function renderSettingsPage() {
             description: 'Configure providers, secrets, models, behavior, source control, and runtime controls.',
             tabsHtml: `
                 <div class="settings-tabs-bar">
-                    <button type="button" class="settings-mobile-back" data-settings-back hidden>Settings</button>
                     ${renderTabStrip({
                         items: SETTINGS_TABS.map((item) => ({ ...item,
                             tabId: `settings-tab-${item.value}`, panelId: `settings-panel-${item.value}` })),

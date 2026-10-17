@@ -1,4 +1,5 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { bindScrollFade } from './scroll_fade.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
@@ -146,6 +147,7 @@ export function renderTabStrip({
 export function bindTabStrip(strip, { dataAttr, activeClass = 'active', onChange } = {}) {
     if (!dataAttr) throw new Error('bindTabStrip requires dataAttr');
     let disposed = false;
+    const disposeFade = bindScrollFade(strip, { axis: 'x' });
     const tabs = () => Array.from(strip.querySelectorAll(`[role="tab"][${dataAttr}]`))
         .filter((tab) => tab.closest('[role="tablist"]') === strip);
     const enabled = (tab) => !tab.disabled && tab.getAttribute('aria-disabled') !== 'true'
@@ -221,6 +223,7 @@ export function bindTabStrip(strip, { dataAttr, activeClass = 'active', onChange
         select,
         destroy() {
             disposed = true;
+            disposeFade();
             strip.removeEventListener('click', onClick);
             strip.removeEventListener('keydown', onKey);
             observer?.disconnect();
