@@ -382,7 +382,7 @@ ouroboros/ — agent core and shared runtime (§6)
   claudexor_startup_failure.py — Stdlib `ExitFact`; `failed_without_control` drives spawn latch; diagnostic-only log labels and latch record (§9)
   gateway/ — Gateway Boundary v1: browser-facing route ownership and the frontend contract SSOT (Gateway Boundary v1 below)
     contracts.py — Active WS/HTTP envelope contract owner
-    decision_contracts.py, history_contracts.py, attachment_contracts.py, schedule_contracts.py — Typed leaves re-exported by contracts.py: decisions, paged Chat, attachments, schedules; each ingress owns validation
+    decision_contracts.py, history_contracts.py, attachment_contracts.py, schedule_contracts.py, health_contracts.py — Typed leaves re-exported by contracts.py: decisions, paged Chat, attachments, schedules, `/api/health` and its boot phases; each ingress owns validation
     ui_i18n_contracts.py, model_route_contracts.py, mcp_import_contracts.py, client_contracts.py, management_contracts.py — interface-language envelopes (`/api/ui/i18n*`), model-route and MCP import previews, replaceable-client and product-management envelopes, separate for contracts.py's size cap; browser twins `web/modules/ui_i18n_types.js`, `model_route_types.js`, `mcp_import_types.js`, `client_contract_types.js`, `management_contract_types.js`
     endpoint_index.py — `HTTP_ENDPOINTS` index, re-exported by contracts.py, and its `HTTP_SHAPES`/`WS_SHAPES` bindings; routers own the Route objects
     schema.py — Executable gateway contract: JSON Schema derived from the TypedDicts, validating ingress; `contract_document`: `GET /api/contract`
