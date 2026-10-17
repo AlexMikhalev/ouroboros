@@ -9,7 +9,7 @@ import json
 import pytest
 
 from ouroboros import context_compaction as cc
-from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
+from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, bound_host_row
 from ouroboros.artifacts import read_actor_source_bytes
 from ouroboros.context_source_view import _EMERGENCY_LABELS, emergency_address_view
 from ouroboros.loop_messages import CONTEXT_FACTS_NAME
@@ -76,18 +76,18 @@ def _assert_exact_restore(tmp_path, original, request, receipt):
 
 def test_only_producer_labelled_replaced_host_snapshots_become_addresses(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "_call_summarizer", lambda *_a, **_kw: pytest.fail("No helper for an address view"))
-    old_facts = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Past exact facts. " * 1600}
-    old_roster = {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_SNAPSHOT_NAME, "content": "Past full roster. " * 1600}
-    old_delta = {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_UPDATE_NAME, "content": "Past delta. " * 1600}
+    old_facts = bound_host_row(CONTEXT_FACTS_NAME, "Past exact facts. " * 1600)
+    old_roster = bound_host_row(ROSTER_SNAPSHOT_NAME, "Past full roster. " * 1600)
+    old_delta = bound_host_row(ROSTER_UPDATE_NAME, "Past delta. " * 1600)
     warning = {"role": "user", "content": "A warning that remains operative. " * 600}
-    latest_facts = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Current full facts"}
-    latest_roster = {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_SNAPSHOT_NAME, "content": "Current full roster"}
-    latest_delta = {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_UPDATE_NAME, "content": "Current later change. " * 1000}
+    latest_facts = bound_host_row(CONTEXT_FACTS_NAME, "Current full facts")
+    latest_roster = bound_host_row(ROSTER_SNAPSHOT_NAME, "Current full roster")
+    latest_delta = bound_host_row(ROSTER_UPDATE_NAME, "Current later change. " * 1000)
     messages = [*_prefix(), old_facts, warning, old_roster, old_delta,
                 {"role": "user", "content": OWNER}, latest_facts, latest_roster, latest_delta]
     before = deepcopy(messages)
     request = _request(messages, 1)
-    rebuilt, receipt = emergency_address_view(messages, request, rung="host_copies", protected_texts=(OWNER,),
+    rebuilt, receipt = emergency_address_view(messages, request, rung="host_copies",
                                              drive_root=tmp_path, task_id="source-view")
     assert receipt.status == "applied" and receipt.reclaimed_tokens > 0
     assert messages == before
@@ -105,9 +105,9 @@ def test_only_producer_labelled_replaced_host_snapshots_become_addresses(tmp_pat
 
 def test_latest_delta_and_unlabelled_host_prose_do_not_replace_a_full_snapshot(tmp_path):
     messages = [*_prefix(),
-        {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_SNAPSHOT_NAME, "content": "Full roster. " * 1600},
-        {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_UPDATE_NAME, "content": "Later delta. " * 1600},
-        {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Only facts row. " * 1600},
+        bound_host_row(ROSTER_SNAPSHOT_NAME, "Full roster. " * 1600),
+        bound_host_row(ROSTER_UPDATE_NAME, "Later delta. " * 1600),
+        bound_host_row(CONTEXT_FACTS_NAME, "Only facts row. " * 1600),
         {"role": "user", "content": "[CONTEXT_FACTS] unlabelled legacy text " * 1600},
         {"role": "user", "content": "[INDEPENDENT_ROOTS] unlabelled legacy roster " * 1600},
         {"role": "user", "content": "[Context view receipt] still relevant warning " * 1600}]
@@ -179,7 +179,7 @@ def test_dialogue_question_quiz_warning_and_opaque_protocol_survive_body_relocat
     fixed = [question, answer, quiz, warning, {"role": "user", "content": OWNER}, opaque]
     messages = [*_prefix(), *fixed, *_tool(), *active_call]
     request = _request(messages, 1)
-    rebuilt, receipt = emergency_address_view(messages, request, rung="unseen_bodies", protected_texts=(OWNER, quiz["content"]),
+    rebuilt, receipt = emergency_address_view(messages, request, rung="unseen_bodies",
                                              drive_root=tmp_path, task_id="source-view")
     assert receipt.status == "applied"
     assert all(row in rebuilt for row in fixed) and rebuilt[-1] == active_call[0]
@@ -195,10 +195,10 @@ def test_short_unit_stays_raw_while_an_independent_large_unit_shrinks(tmp_path, 
         large = _tool("large")
         tail = []
     else:
-        small = [{"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "small"}]
-        large = [{"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_SNAPSHOT_NAME, "content": "Large old roster. " * 2000}]
-        tail = [{"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "current facts"},
-                {"role": "user", HOST_CONTEXT_KIND_KEY: ROSTER_SNAPSHOT_NAME, "content": "current roster"}]
+        small = [bound_host_row(CONTEXT_FACTS_NAME, "small")]
+        large = [bound_host_row(ROSTER_SNAPSHOT_NAME, "Large old roster. " * 2000)]
+        tail = [bound_host_row(CONTEXT_FACTS_NAME, "current facts"),
+                bound_host_row(ROSTER_SNAPSHOT_NAME, "current roster")]
     messages = [*_prefix(), *small, divider, *large, *tail]
     rebuilt, receipt = emergency_address_view(messages, _request(messages, 1), rung=rung,
                                              drive_root=tmp_path, task_id="source-view")
@@ -305,8 +305,8 @@ def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(ma
 def test_short_obsolete_host_rows_and_review_indexes_share_one_exact_source(tmp_path):
     from ouroboros.review_history_view import _index_message
 
-    obsolete = [{"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME,
-                 "content": f"round {n}: input 90000, reply 16000, window 128000, quota unknown"} for n in range(199)]
+    obsolete = [bound_host_row(CONTEXT_FACTS_NAME, f"round {n}: input 90000, reply 16000, window 128000, quota unknown")
+                for n in range(199)]
     old_index = _index_message({"closed": "Prior exact review state. " * 60}, "plan")
     latest_index = _index_message({"open": "Current obligation remains."}, "plan")
     foreign = _index_message({"open": "Another repository's current obligation."}, "commit", "/other")
@@ -317,7 +317,7 @@ def test_short_obsolete_host_rows_and_review_indexes_share_one_exact_source(tmp_
     messages = [*_prefix(), old_index]
     for n, row in enumerate(obsolete):
         messages.extend([row, {"role": "assistant", "content": f"Retained narration {n}."}])
-    latest = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Current complete facts."}
+    latest = bound_host_row(CONTEXT_FACTS_NAME, "Current complete facts.")
     messages.extend([latest, latest_index, foreign, malformed, opaque, *_tool(invocation="still-raw")])
     rebuilt, receipt = emergency_address_view(messages, _request(messages, 1), rung="host_copies",
                                               drive_root=tmp_path, task_id="source-view")
@@ -330,11 +330,11 @@ def test_short_obsolete_host_rows_and_review_indexes_share_one_exact_source(tmp_
 
 
 def test_exposure_matches_shifted_cache_wrapped_occurrence_but_not_a_new_equal_body(tmp_path):
-    old_facts = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Old facts. " * 600}
+    old_facts = bound_host_row(CONTEXT_FACTS_NAME, "Old facts. " * 600)
     old = _tool(invocation="old-occurrence", facts={"status": "ok", "exit_code": 0})
     observed = [*_prefix(), old_facts, *old]
     observation = _observation(observed)
-    latest = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Current facts."}
+    latest = bound_host_row(CONTEXT_FACTS_NAME, "Current facts.")
     fresh = _tool(invocation="new-occurrence", facts={"status": "ok", "exit_code": 0})
     current = [*observed, latest, *fresh]
     compacted, host_receipt = emergency_address_view(current, _request(current, 1), rung="host_copies",
@@ -391,7 +391,7 @@ def test_body_prefix_stops_at_final_measured_goal_and_checkpoints_once(tmp_path,
         # keep going when an intermediate materializer alone would meet the goal.
         actual = deepcopy(rows)
         if _records(actual):
-            actual.append({"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "f" * 30_000})
+            actual.append(bound_host_row(CONTEXT_FACTS_NAME, "f" * 30_000))
         return cc._context_tokens_for_messages(actual, 1.0)
 
     monkeypatch.setattr(cc, "_persist_reclaim_checkpoint", save)

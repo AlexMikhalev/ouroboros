@@ -70,26 +70,6 @@ def record_context_view(ctx, messages, tool_schemas, *, physical_capture=_CANONI
             log.debug("Physical context source unavailable", exc_info=True)
 
 
-def owner_protected_texts(ctx) -> tuple:
-    """Verbatim owner/principal words from the task's typed owner corpus (``_owner_directives``).
-
-    Typed provenance is the only authorship signal: ``role=user`` alone never protects a
-    row. Text and ``input_text`` blocks of a multipart directive count; nothing else does.
-    """
-    from ouroboros.context_compaction import _plain_text, _unique_strings
-
-    directives = getattr(ctx, "_owner_directives", None)
-    texts = []
-    for row in directives if isinstance(directives, list) else []:
-        content = row.get("content") if isinstance(row, dict) else None
-        text = _plain_text(content) if not isinstance(content, list) else "".join(
-            str(block.get("text") or "") for block in content
-            if isinstance(block, dict) and str(block.get("type") or "") in {"text", "input_text"})
-        if isinstance(text, str) and text.strip():
-            texts.append(text.strip())
-    return _unique_strings(texts)
-
-
 def _compact_context(ctx, keep_last_n: int | None = None, *, inspect: bool = False,
                      expected_view_revision: str = "", working_note: str | None = None,
                      keep_unit_ids: List[str] | None = None, restore_unit_refs: List[dict] | None = None,
@@ -113,7 +93,7 @@ def _compact_context(ctx, keep_last_n: int | None = None, *, inspect: bool = Fal
                 text="Context view unavailable: this actor has no recorded model-send observation yet."))
         ctx._inspected_context_view = observed
         units = context_units(observed["messages"], scope="dialogue")
-        protected = owner_protected_unit_ids(observed["messages"], units, owner_protected_texts(ctx))
+        protected = owner_protected_unit_ids(observed["messages"], units)
         checkpoint = observed.get("checkpoint_ref")
         if not checkpoint and getattr(ctx, "task_id", "") and getattr(ctx, "drive_root", None):
             from ouroboros.artifacts import store_actor_source_bytes

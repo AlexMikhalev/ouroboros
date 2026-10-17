@@ -27,6 +27,36 @@ from typing import Any, Dict, Literal, Optional, Tuple
 # Canonical host-row classification; physical requests omit this top-level metadata.
 HOST_CONTEXT_KIND_KEY = "_host_context_kind"
 
+# Provenance is typed at delivery, never inferred from text (17.10.2026: a one-letter owner
+# answer "A" matched every host row as a substring and shielded 94k tokens of obsolete
+# state). A row of the owner's or a principal's inbound words carries ``OWNER_WORDS_KIND``;
+# Ouroboros's outward words carry ``owner_dialogue``. Such rows are their own rows, never
+# merged with other content, and no host or helper rewrite takes them.
+OWNER_WORDS_KIND = "owner_words"
+OWNER_ROW_KINDS = frozenset({OWNER_WORDS_KIND, "owner_dialogue"})
+
+# A host-produced state row (round facts, clock, roster) is bound to its visible text at
+# production. Only a row whose text still matches is retirable host state; a row written
+# before this binding, or changed since (an old merge), stays whole for the mind to fold.
+HOST_TEXT_SHA_KEY = "_host_text_sha256"
+
+
+def bound_host_row(kind: str, text: str) -> Dict[str, Any]:
+    """A typed host row bound to its exact visible text (``HOST_TEXT_SHA_KEY``)."""
+    import hashlib
+
+    return {"role": "user", HOST_CONTEXT_KIND_KEY: kind, "content": text,
+            HOST_TEXT_SHA_KEY: hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+
+def host_row_intact(row: Any) -> bool:
+    """Whether ``row`` is still exactly the host state it was produced as."""
+    import hashlib
+
+    content = row.get("content") if isinstance(row, dict) else None
+    return (isinstance(content, str) and not row.get("tool_calls")
+            and row.get(HOST_TEXT_SHA_KEY) == hashlib.sha256(content.encode("utf-8")).hexdigest())
+
 # Owner-selected Low's total-context economy/short-window target. This is an
 # elastic target, not a provider admission ceiling: Phase 2 measures the sealed
 # Main input plus its unchanged response reserve against T and the selected

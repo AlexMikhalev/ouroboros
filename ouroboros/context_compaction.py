@@ -447,17 +447,16 @@ def unit_kind(messages: Sequence[Mapping[str, Any]], unit: _AtomicUnit) -> UnitK
     return "assistant" if str(message.get("role") or "") == "assistant" else "user"
 
 
-def owner_protected_unit_ids(
-    messages: Sequence[Mapping[str, Any]], units: Sequence[_AtomicUnit], protected_texts: Sequence[str],
-) -> frozenset:
-    """Keep governing words and typed outward dialogue whole, without promoting
-    the actor's speech to owner authority. A mixed owner row stays whole."""
-    texts = [text for text in protected_texts if text]
-    return frozenset(
-        unit.unit_id for unit in units
-        if messages[unit.start].get(HOST_CONTEXT_KIND_KEY) == "owner_dialogue"
-        or (texts and unit_kind(messages, unit) == "user"
-            and any(text in (_plain_text(messages[unit.start].get("content")) or "") for text in texts)))
+def owner_protected_unit_ids(messages: Sequence[Mapping[str, Any]], units: Sequence[_AtomicUnit]) -> frozenset:
+    """Keep the owner's and principals' inbound words and the outward dialogue whole.
+
+    Provenance is the row's kind, typed at delivery (``context_budget.OWNER_ROW_KINDS``),
+    never a text match: a short owner answer is a substring of most host rows. A row
+    delivered before typing is ordinary prose the mind may fold by its own choice.
+    """
+    from ouroboros.context_budget import OWNER_ROW_KINDS
+
+    return frozenset(unit.unit_id for unit in units if messages[unit.start].get(HOST_CONTEXT_KIND_KEY) in OWNER_ROW_KINDS)
 
 
 def _source_atoms(messages: Sequence[Mapping[str, Any]]) -> Counter:
@@ -1185,11 +1184,10 @@ def _authored_view(
     tool_schemas: Sequence[Mapping[str, Any]], fit_candidate: Optional[Callable[[list, list], Mapping[str, Any]]],
     drive_root: pathlib.Path, task_id: str, trace_refs: Mapping[str, Any],
     exposed_units: Optional[Sequence[Mapping[str, Any]]] = None,
-    protected_texts: Sequence[str] = (),
 ) -> Tuple[list, ContextReclaimReceipt, None]:
     """Materialize one actor's selection through the existing unit/checkpoint/capsule engine
     over the dialogue scope (tool units, capsules, the actor's own completed replies, host
-    prose). Rows carrying the owner's typed words (``protected_texts``) stay whole."""
+    prose). Rows typed as people's words (``owner_protected_unit_ids``) stay whole."""
     restore_refs = []
     for ref in request.restore_unit_refs:
         checkpoint = ref.get("checkpoint_ref") if isinstance(ref, Mapping) else None
@@ -1220,7 +1218,7 @@ def _authored_view(
     keep = set(request.keep_unit_ids) if request.keep_unit_ids is not None else {u.unit_id for u in units}
     if not keep <= {u.unit_id for u in units}:
         return messages, _receipt("binding_mismatch", before_sha=before_sha, **facts), None
-    protected = owner_protected_unit_ids(observed, units, protected_texts)
+    protected = owner_protected_unit_ids(observed, units)
     authored = [u for u in units if (_capsule_metadata(observed[u.start])[1] or {}).get("authorship") == "actor"]
     removed = [u for u in units if u.unit_id not in keep and u.unit_id not in protected]
     if exposed_units is not None:
@@ -1329,7 +1327,6 @@ def compact_tool_history_llm(
     exposed_units: Optional[Sequence[Mapping[str, Any]]] = None,
     automatic_deficit_tokens: Optional[int] = None,
     provider_refused: bool = False,
-    protected_texts: Sequence[str] = (),
 ) -> Tuple[list, ContextReclaimReceipt, Optional[Dict[str, Any]]]:
     """Return a candidate and receipt; the caller owns atomic view publication.
 
@@ -1346,8 +1343,8 @@ def compact_tool_history_llm(
     admits earlier capsules, after every raw unit, as the last resort; a re-folded
     capsule is one generation up and keeps its lineage. Adjacent replaced units of an
     automatic pass merge into one record without another paid fold, each original
-    still restorable. ``protected_texts`` keeps governing source rows whole in an
-    explicit authored view; automatic and count-only passes never touch dialogue rows.
+    still restorable. Rows typed as people's words stay whole in an explicit authored
+    view; automatic and count-only passes never touch dialogue rows.
     """
 
     before_sha = context_reclaim_transcript_sha256(messages)
@@ -1369,7 +1366,7 @@ def compact_tool_history_llm(
                               observed_tool_schemas=observed_tool_schemas,
                               tool_schemas=tool_schemas, fit_candidate=fit_candidate, drive_root=root,
                               task_id=str(task_id or "context_compaction"), trace_refs=trace_refs_by_tool_call_id or {},
-                              exposed_units=exposed_units, protected_texts=protected_texts)
+                              exposed_units=exposed_units)
 
     memo = negative_memo if negative_memo is not None else set()
     trace_refs = trace_refs_by_tool_call_id or {}

@@ -12,7 +12,8 @@ from dataclasses import replace
 from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 
 from ouroboros import context_compaction as compaction
-from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, ContextReclaimRequest, ContextReclaimReceipt, _AtomicUnit, _Selection, _SelectedUnit
+from ouroboros.context_budget import (HOST_CONTEXT_KIND_KEY, ContextReclaimRequest, ContextReclaimReceipt, _AtomicUnit,
+                                      _Selection, _SelectedUnit, host_row_intact)
 from ouroboros.tool_result_record import read_tool_result_record
 
 EmergencyRung = Literal["host_copies", "bodies", "unseen_bodies"]
@@ -31,23 +32,26 @@ _FACT_ARGUMENTS_CHARS = 400
 def _obsolete_host_rows(messages: Sequence[Mapping[str, Any]]) -> set[int]:
     """Only producer-labelled state replaced by a later full snapshot is obsolete.
 
-    Legacy/unlabelled prose stays raw. A user protocol role alone says nothing
-    about authorship, and neither an old warning nor a peer message is obsolete
-    merely because the mind has already seen it.
+    A row counts only while it is still exactly what its producer wrote
+    (``context_budget.host_row_intact``): a row written before that binding, or
+    changed since, stays whole for the mind to fold. Legacy/unlabelled prose stays
+    raw, and neither an old warning nor a peer message is obsolete merely because
+    the mind has already seen it. Provenance is typed; no text is matched.
     """
     from ouroboros.loop_messages import CONTEXT_FACTS_NAME
     from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
     from ouroboros.review_history_view import obsolete_review_index_positions
+    from ouroboros.send_clock import CLOCK_ROW_NAME
 
     obsolete = set()
-    for full_name, names in ((CONTEXT_FACTS_NAME, {CONTEXT_FACTS_NAME}),
-                            (ROSTER_SNAPSHOT_NAME, {ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME})):
+    for full_name, names in ((CONTEXT_FACTS_NAME, {CONTEXT_FACTS_NAME}), (CLOCK_ROW_NAME, {CLOCK_ROW_NAME}),
+                             (ROSTER_SNAPSHOT_NAME, {ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME})):
         latest = max((i for i, row in enumerate(messages)
                       if row.get("role") == "user" and row.get(HOST_CONTEXT_KIND_KEY) == full_name
-                      and not row.get("tool_calls") and not row.get("function_call")
-                      and compaction._plain_text(row.get("content"))), default=-1)
+                      and host_row_intact(row)), default=-1)
         obsolete.update(i for i, row in enumerate(messages[:max(0, latest)])
-                        if row.get("role") == "user" and row.get(HOST_CONTEXT_KIND_KEY) in names)
+                        if row.get("role") == "user" and row.get(HOST_CONTEXT_KIND_KEY) in names
+                        and host_row_intact(row))
     return obsolete | set(obsolete_review_index_positions(messages))
 
 
@@ -113,7 +117,6 @@ def emergency_address_view(
     request: ContextReclaimRequest,
     *,
     rung: EmergencyRung,
-    protected_texts: Sequence[str] = (),
     observation: Optional[Mapping[str, Any]] = None,
     measure_candidate: Optional[Callable[[list], int]] = None,
     trace_refs_by_tool_call_id: Optional[Mapping[str, Any]] = None,
@@ -136,13 +139,11 @@ def emergency_address_view(
         return messages, compaction._receipt("binding_mismatch", before_sha=before_sha)
     units = compaction.context_units(messages, scope="dialogue", trace_refs_by_tool_call_id=trace_refs,
                           measurement_density=density)
-    protected = compaction.owner_protected_unit_ids(messages, units, protected_texts)
+    protected = compaction.owner_protected_unit_ids(messages, units)
     obsolete = _obsolete_host_rows(messages) if rung == "host_copies" else set()
     first_user = next((i for i, row in enumerate(messages) if row.get("role") == "user"), -1)
-    obsolete = {i for i in obsolete if i != first_user and not messages[i].get("tool_calls")
-                and not messages[i].get("function_call")
-                and (text := compaction._plain_text(messages[i].get("content"))) is not None
-                and not any(word and word in text for word in protected_texts)}
+    obsolete = {i for i in obsolete if i != first_user and not messages[i].get("function_call")
+                and compaction._plain_text(messages[i].get("content")) is not None}
     raw = [u for u in units if compaction.unit_kind(messages, u) == "tool" and u.generation == 0
            and u.unit_id not in protected]
     exposed = _exposed_units(messages, raw, observation or {})

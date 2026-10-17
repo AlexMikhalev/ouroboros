@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.config import get_light_model
 from ouroboros.context import build_incoming_user_content
+from ouroboros.context_budget import OWNER_WORDS_KIND
 from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.llm import LLMClient, add_usage
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, emit_llm_usage_event
@@ -157,7 +158,7 @@ def _drain_incoming_messages(
                     ts=str(injected.get("ts") or ""),
                 )
                 _loop()._append_or_merge_user_content(
-                    messages, _loop()._owner_marked_content(owner_content), slot=owner_ctx,
+                    messages, _loop()._owner_marked_content(owner_content), slot=owner_ctx, kind=OWNER_WORDS_KIND,
                 )
             else:
                 _loop()._record_owner_directive(
@@ -167,7 +168,7 @@ def _drain_incoming_messages(
                     owner_ctx, msg_id="", client_message_id="", text=str(injected), ts="",
                 )
                 _loop()._append_or_merge_user_message(
-                    messages, _loop()._owner_marked_content(injected), slot=owner_ctx,
+                    messages, _loop()._owner_marked_content(injected), slot=owner_ctx, kind=OWNER_WORDS_KIND,
                 )
         except queue.Empty:
             break
@@ -226,9 +227,10 @@ def _drain_incoming_messages(
                         origin={"source_task_id": str(entry.get("source_task_id") or ""),
                                 "relayed_from_task_id": str(entry.get("relayed_from_task_id") or "")},
                     )
+                words = OWNER_WORDS_KIND if provenance not in CONTEXT_ONLY_TASK_PROVENANCES else ""
                 deliver_task_message(
                     entry, task_id, event_queue,
-                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx),
+                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx, kind=words),
                 )
                 if provenance == "system" and isinstance(entry.get("review_feedback"), dict) and messages:
                     messages[-1].setdefault("review_feedback", []).append(dict(entry["review_feedback"]))
@@ -237,7 +239,7 @@ def _drain_incoming_messages(
             if kind == KIND_QUIZ_CLOSED:
                 _loop()._record_owner_directive(owner_ctx, source="owner_mailbox",
                     content=dmsg, msg_id=str(entry.get("msg_id") or ""))
-                _loop()._append_or_merge_user_message(messages, dmsg, slot=owner_ctx)
+                _loop()._append_or_merge_user_message(messages, dmsg, slot=owner_ctx, kind=OWNER_WORDS_KIND)
                 ack_content(entry)
                 continue
             if kind == KIND_QUIZ_ANSWER:
@@ -253,7 +255,8 @@ def _drain_incoming_messages(
                 )
                 deliver_quiz_answer(
                     entry, task_id, event_queue,
-                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx),
+                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx,
+                                                                       kind=OWNER_WORDS_KIND),
                 )
                 ack_content(entry)
                 continue
@@ -291,7 +294,7 @@ def _drain_incoming_messages(
                 owner_content = noted_owner_text(owner_ctx, entry, owner_content)
             _loop()._append_or_merge_user_content(
                 messages, _loop()._owner_marked_content(owner_content),
-                slot=owner_ctx,
+                slot=owner_ctx, kind=OWNER_WORDS_KIND,
             )
             ack_content(entry)
             if event_queue is not None:
@@ -404,7 +407,6 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
     from ouroboros.context_budget import ContextReclaimRequest
     from ouroboros.context_compaction import compact_tool_history_llm, context_reclaim_transcript_sha256
     from ouroboros.tool_policy import request_tool_schema_selection, select_tool_schemas
-    from ouroboros.tools.compact_context import owner_protected_texts
 
     tool_ctx = ctx.tools._ctx
     mode = getattr(tool_ctx, "active_context_mode", "") or "max"
@@ -458,9 +460,6 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
             fit_candidate=fit_candidate, drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs).parent,
             task_id=ctx.task_id, trace_refs_by_tool_call_id=reclaim_trace_refs(tool_ctx),
             exposed_units=observed.get("exposed_units"),
-            # Typed provenance, not role=user: the owner's words (direct, mailbox, late
-            # answers, quiz frames, principal task messages) stay whole in an authored view.
-            protected_texts=owner_protected_texts(tool_ctx),
         )
         receipt = asdict(result)
         if receipt["status"] == "no_op" and (proposal.get("review_transfers") or proposal.get("review_notes")):
@@ -1063,7 +1062,6 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any
     """Publish a model-free source view, measuring the sealed candidate with its next facts line."""
     from ouroboros.context_budget import ContextReclaimRequest
     from ouroboros.context_compaction import context_reclaim_transcript_sha256, emergency_address_view
-    from ouroboros.tools.compact_context import owner_protected_texts
     from ouroboros.loop_messages import append_context_facts
 
     measurement = disposition.measurement
@@ -1093,7 +1091,6 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str) -> Any
     )
     rebuilt, receipt = emergency_address_view(
         ctx.messages, request, rung=rung,
-        protected_texts=owner_protected_texts(tool_ctx),
         observation=getattr(tool_ctx, "_last_context_observation", {}) or {},
         measure_candidate=measure_candidate,
         trace_refs_by_tool_call_id=reclaim_trace_refs(tool_ctx),

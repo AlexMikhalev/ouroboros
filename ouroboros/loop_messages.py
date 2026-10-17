@@ -5,7 +5,7 @@ Extracted from loop.py (v7 L-B split); loop.py re-exports every name."""
 
 from __future__ import annotations
 
-from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
+from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, bound_host_row
 from ouroboros.config import runtime_setting
 
 import hashlib
@@ -101,10 +101,10 @@ def _extract_plain_text_from_content(content: Any) -> str:
 
 
 def _append_or_merge_user_message(
-    messages: List[Dict[str, Any]], text: str, *, slot: Any = None,
+    messages: List[Dict[str, Any]], text: str, *, slot: Any = None, kind: str = "",
 ) -> None:
-    """Append a user message, merging only when its tail is known unsent."""
-    _append_or_merge_user_content(messages, text, slot=slot)
+    """Append a user message, merging only when its tail is known unsent (``kind``: typed, never merged)."""
+    _append_or_merge_user_content(messages, text, slot=slot, kind=kind)
 
 
 def transcript_growth_signature(messages: List[Dict[str, Any]]) -> Tuple[int, int]:
@@ -155,13 +155,16 @@ def _evict_stale_image_blocks(messages: List[Dict[str, Any]], *, incoming: int =
 
 
 def _append_or_merge_user_content(
-    messages: List[Dict[str, Any]], content: Any, *, slot: Any = None,
+    messages: List[Dict[str, Any]], content: Any, *, slot: Any = None, kind: str = "",
 ) -> None:
     """Append user content without flattening multipart blocks.
 
     ``slot`` is the execution slot the send observer parks the previous send's
     digests on (the loop's ToolContext). Merge only when that recorded send
-    proves the tail absent; an unknown or sent tail stays intact.
+    proves the tail absent; an unknown or sent tail stays intact. ``kind`` types
+    the row at delivery (``context_budget.OWNER_WORDS_KIND``): a typed row is its
+    own row, and nothing merges into a typed tail, so provenance never has to be
+    recovered from text.
     """
     from ouroboros.transcript_prefix import unsent_in_previous_send
 
@@ -172,9 +175,10 @@ def _append_or_merge_user_content(
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
-    if not (messages and unsent_in_previous_send(slot, messages[-1])):
-        # Unknown or sent content stays intact, including slot-less producers.
-        messages.append({"role": "user", "content": content})
+    if kind or not (messages and unsent_in_previous_send(slot, messages[-1])
+                    and set(messages[-1]) <= {"role", "content"}):
+        # Typed words, unknown or sent content and any typed tail stay intact (slot-less producers too).
+        messages.append({"role": "user", **({HOST_CONTEXT_KIND_KEY: kind} if kind else {}), "content": content})
         return
     if messages and messages[-1].get("role") == "user":
         prior = messages[-1].get("content")
@@ -941,7 +945,7 @@ def append_context_facts(ctx: Any, *, money: Optional[Dict[str, Any]] = None) ->
         money = {"wallet": observed["wallet"], "tree": observed["tree"],
                  "cost_ceiling": getattr(tool_ctx, "_cost_ceiling", None)}
     line = context_facts_line(ctx, money=money, measured=measured, focus_fact=focus_fact)
-    ctx.messages.append({"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": line})
+    ctx.messages.append(bound_host_row(CONTEXT_FACTS_NAME, line))
     usage["_context_facts_round"] = ctx.round_idx
     usage["_context_facts_key"] = key
     usage["_context_facts_line"] = line

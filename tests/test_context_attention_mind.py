@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import context_compaction as cc
-from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
+from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, OWNER_WORDS_KIND, bound_host_row
 from ouroboros.context_source_view import _EMERGENCY_LABELS
 from ouroboros.loop_messages import CONTEXT_FACTS_NAME
 from tests.test_context_reclaim_materializer import _request
@@ -31,9 +31,14 @@ def _tool(call_id="read", text="exact evidence " * 400):
         {"role": "tool", "tool_call_id": call_id, "content": text}]
 
 
+def _owner(text):
+    """The owner's words as delivery types them (``context_budget.OWNER_WORDS_KIND``)."""
+    return {"role": "user", HOST_CONTEXT_KIND_KEY: OWNER_WORDS_KIND, "content": text}
+
+
 def _transcript():
     return [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "Assignment: migrate the API."},
-            *_tool("one"), {"role": "assistant", "content": ASSISTANT}, {"role": "user", "content": OWNER},
+            *_tool("one"), {"role": "assistant", "content": ASSISTANT}, _owner(OWNER),
             {"role": "user", "content": HOST}, *_tool("two")]
 
 
@@ -63,21 +68,17 @@ def test_unfinished_protocol_native_and_non_text_rows_stay_atomic():
 
 
 def test_typed_owner_words_protect_their_rows_and_role_user_alone_does_not():
-    from ouroboros.tools.compact_context import owner_protected_texts
-
     messages = _transcript()
     units = cc.context_units(messages, scope="dialogue")
-    directives = [{"role": "user", "content": OWNER}, {"role": "user", "content": [{"type": "text", "text": "Answer: B"}]},
-                  {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:,"}}]}]
-    texts = owner_protected_texts(SimpleNamespace(_owner_directives=directives))
-    assert texts == (OWNER, "Answer: B") and owner_protected_texts(SimpleNamespace()) == ()
-    protected = cc.owner_protected_unit_ids(messages, units, texts)
+    protected = cc.owner_protected_unit_ids(messages, units)
     assert [unit.start for unit in units if unit.unit_id in protected] == [5]  # not the host receipt at 6
-    assert cc.owner_protected_unit_ids(messages, units, ()) == frozenset()
-    mixed = _transcript() + [{"role": "user", "content": "[Quiz answered]\nAnswer: B\n(submitted from the web UI)"}]
-    mixed_units = cc.context_units(mixed, scope="dialogue")
-    protected = cc.owner_protected_unit_ids(mixed, mixed_units, ("Answer: B",))
-    assert [unit.start for unit in mixed_units if unit.unit_id in protected] == [len(mixed) - 1]  # whole row
+    untyped = [*messages[:5], {"role": "user", "content": OWNER}, *messages[6:]]  # delivered before typing
+    assert cc.owner_protected_unit_ids(untyped, cc.context_units(untyped, scope="dialogue")) == frozenset()
+    # 17.10.2026: a one-letter answer is a substring of most host rows; only the row's kind protects it.
+    answered = [*messages, _owner("A")]
+    answered_units = cc.context_units(answered, scope="dialogue")
+    protected = cc.owner_protected_unit_ids(answered, answered_units)
+    assert [unit.start for unit in answered_units if unit.unit_id in protected] == [5, len(answered) - 1]
 
 
 def test_authored_view_folds_own_prose_keeps_owner_words_and_restores_exactly(tmp_path):
@@ -87,9 +88,9 @@ def test_authored_view_folds_own_prose_keeps_owner_words_and_restores_exactly(tm
     assistant_unit = next(u for u in cc.context_units(messages, scope="dialogue") if cc.unit_kind(messages, u) == "assistant")
     candidate, receipt, usage = cc.compact_tool_history_llm(
         messages, request=request, observed_messages=messages, tool_schemas=[], drive_root=tmp_path, task_id="mind",
-        fit_candidate=lambda _m, _t: {"accepted": True}, protected_texts=(OWNER,))
+        fit_candidate=lambda _m, _t: {"accepted": True})
     assert receipt.status == "applied" and usage is None
-    assert {"role": "user", "content": OWNER} in candidate  # the owner's words, verbatim and whole
+    assert _owner(OWNER) in candidate  # the owner's words, verbatim and whole
     assert not any(m.get("role") == "assistant" and m.get("content") == ASSISTANT for m in candidate)
     assert not any(m.get("role") == "tool" for m in candidate) and candidate[:2] == messages[:2]
     restored, _ = cc._restored_source_views([{"checkpoint_ref": receipt.checkpoint_ref, "unit_id": assistant_unit.unit_id,
@@ -106,12 +107,13 @@ def test_actual_refusal_runs_the_host_copies_rung_before_any_helper(tmp_path, mo
     from ouroboros import loop
 
     context = _ctx(tmp_path)
-    old_facts = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": HOST * 5}
-    latest_facts = {"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": "Current measured facts"}
-    context.messages.extend([*_tool("one"), {"role": "user", "content": OWNER}, old_facts, latest_facts])
+    # 17.10.2026: the owner's one-letter answer "A" is a substring of every host row; it shields nothing now.
+    old_facts = bound_host_row(CONTEXT_FACTS_NAME, "[CONTEXT_FACTS] Answer A recorded. " + HOST * 5)
+    latest_facts = bound_host_row(CONTEXT_FACTS_NAME, "[CONTEXT_FACTS] Current measured facts")
+    context.messages.extend([*_tool("one"), _owner(OWNER), _owner("A"), old_facts, latest_facts])
     inner = context.tools._ctx
     assert not getattr(inner, "_last_context_observation", None)  # first refused request: no usable exposure
-    inner._owner_directives = [{"role": "user", "content": OWNER}]
+    inner._owner_directives = [{"role": "user", "content": OWNER}, {"role": "user", "content": "A"}]
     events, sends = [], []
     def measure(trial, **_kwargs):
         from ouroboros.loop_model_call import _remember_main_fit
@@ -136,7 +138,8 @@ def test_actual_refusal_runs_the_host_copies_rung_before_any_helper(tmp_path, mo
     assert msg["content"] == "fits" and mode == "max" and len(sends) == 2
     assert old_facts in sends[0] and old_facts not in sends[1]
     assert latest_facts in sends[1]
-    assert {"role": "user", "content": OWNER} in sends[1] and sends[1][2:4] == _tool("one")  # bodies: a later rung
+    assert _owner(OWNER) in sends[1] and _owner("A") in sends[1]  # the owner's rows stay whole
+    assert sends[1][2:4] == _tool("one")  # bodies: a later rung
     assert any(_EMERGENCY_LABELS["host_copies"] in json.dumps(m.get("content")) for m in sends[1])
     assert inner.messages is context.messages and inner._transcript_rewrite_sanctioned == "compaction"
     emergency = [e for e in events if e.get("checkpoint_kind") == "context_reclaim_emergency"]
