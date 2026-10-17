@@ -70,9 +70,9 @@ def test_census_result_memo_refreshes_without_inventing_a_missing_outcome(tmp_pa
     original = task_store.read_document
     reads = []
 
-    def counted(root, task_id):
+    def counted(root, task_id, **kwargs):  # the memo reads a signed document
         reads.append(str(task_id))
-        return original(root, task_id)
+        return original(root, task_id, **kwargs)
 
     monkeypatch.setattr(task_store, "read_document", counted)  # the memo's body read
     gateway_state._task_activity_facts(tmp_path, "root")
