@@ -355,6 +355,43 @@ def test_paused_row_survives_stale_snapshot_restore_without_waking(tmp_path, mon
     assert workers.PENDING[0]["_budget_pause"]["exact_continuation"] is True  # still paused, not dispatched
 
 
+@pytest.mark.parametrize("door", ["kill_workers", "publication"])
+def test_a_stop_before_the_queue_restore_keeps_every_saved_pause_for_resume(tmp_path, monkeypatch, door):
+    """#1952: a generation that stops before its supervisor restored the queue holds no work of its own
+    (a stop door during the boot, a boot without a provider); its stop must not replace the saved
+    snapshot with that emptiness, so the next generation restores the saved Pause and the owner's
+    Resume finds it. Once a generation restored the queue, an emptied queue is published as before."""
+    from supervisor import queue_snapshot
+
+    queue, state, workers = _install_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
+    monkeypatch.setattr(queue_snapshot, "_RESTORED", set())
+    _parked(tmp_path, monkeypatch, task_id="saved-root")
+
+    def saved_ids():
+        return [row["id"] for row in json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())["pending"]]
+
+    def stop():
+        if door == "kill_workers":
+            workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                                 stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+        else:
+            assert queue.persist_queue_snapshot(reason="pre_restart_exit") is None
+
+    workers.kill_workers(force=True, terminal_status="cancelled", result_reason="Server shutdown.",
+                         stop_source="server_shutdown", retain_saved_work=True, preserve_pending=True)
+    assert saved_ids() == ["saved-root"]  # generation A stopped with its saved Pause
+    workers.PENDING[:] = []
+    queue.init(tmp_path)  # generation B: fresh maps, nothing published, nothing restored
+    stop()
+    assert saved_ids() == ["saved-root"], "an unrestored empty queue never replaces the saved one"
+    queue.init(tmp_path)  # generation C restores it
+    assert queue.restore_pending_from_snapshot() == 1
+    assert queue.resume_budget_paused_task("saved-root")["ok"] is True
+    workers.PENDING[:] = []  # its work ended: an emptied queue it restored is published
+    assert queue.persist_queue_snapshot(reason="test") is True and saved_ids() == []
+
+
 def test_restore_returns_undispatched_grant_to_its_pause(tmp_path, monkeypatch):
     queue, state, workers = _install_queue(tmp_path, monkeypatch)
     monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 5.0)
