@@ -227,8 +227,11 @@ def _room_entries(root: Any, store: ChronicleStore, room: str,
     """One room's rows in append order, sealed ones included: after the frontier, or in a half-open range.
 
     ``pos_range`` is a legacy unit's ``raw_range.pos``; its rows carry the membership fields
-    (``_MEMBERSHIP_FIELDS``) as their metadata. Empty before activation.
+    (``_MEMBERSHIP_FIELDS``) as their metadata. Empty before activation, and for the room-less
+    retelling (``chronicle_import.LEGACY_ROOM_ID``): it names no chat, so no row is its own.
     """
+    if not str(room).lstrip("-").isdigit():
+        return []
     if pos_range is None:
         frontier = _active_frontier(store)
         if frontier is None:
