@@ -95,6 +95,31 @@ def _parse_manifest(skill_dir: pathlib.Path) -> Any:
     return None
 
 
+def sidecar_declaration(sidecar: Dict[str, Any]) -> Any:
+    """The raw declaration the legacy installer used, if it recorded one."""
+    specs = sidecar.get("install_specs")
+    if isinstance(specs, dict):
+        for key in ("raw", "auto"):
+            if not _empty(specs.get(key)):
+                return specs[key]
+    return None
+
+
+def legacy_release_declaration(skill_dir: pathlib.Path, sidecar: Dict[str, Any]) -> Any:
+    """Reconstruct the original declaration; a manifest fallback needs its recorded byte hash."""
+    declaration = sidecar_declaration(sidecar)
+    if declaration is not None:
+        return declaration
+    files = {item.get("path"): item.get("sha256") for item in sidecar.get("files", []) if isinstance(item, dict)}
+    for name in _MANIFEST_NAMES:
+        path = pathlib.Path(skill_dir) / name
+        if path.is_file():
+            if _file_sha256(path, name).hex() == files.get(name):
+                return manifest_declaration(_parse_manifest(pathlib.Path(skill_dir)))
+            break  # only the manifest the loader selects can supply a declaration
+    return None
+
+
 def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
     """Raw dependency declaration of the release in ``skill_dir``.
 
@@ -108,11 +133,9 @@ def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
         sidecar = root / name
         if not sidecar.is_file():
             continue
-        specs = (read_json_dict(sidecar) or {}).get("install_specs")
-        if isinstance(specs, dict):
-            for key in ("raw", "auto"):
-                if not _empty(specs.get(key)):
-                    return specs[key]
+        declaration = sidecar_declaration(read_json_dict(sidecar) or {})
+        if declaration is not None:
+            return declaration
     if manifest is None:
         manifest = _parse_manifest(root)
     return manifest_declaration(manifest) if manifest is not None else None
@@ -266,7 +289,7 @@ def _rebind_review(data: Dict[str, Any], legacy: frozenset, digest: str) -> bool
 def convert_skill_records(drive_root: pathlib.Path, name: str, legacy: Iterable[str], digest: str) -> List[str]:
     """Rebind the authority records of one skill from a version-1 hash of its unchanged
     bytes to ``digest``. Returns the converted file names. Records bound to other bytes
-    are left alone (stale stays stale); publication receipts are history and untouched."""
+    are left alone (stale stays stale); publication history keeps its facts with the current identity."""
     from ouroboros.skill_loader import skill_state_dir_path
     from ouroboros.utils import atomic_write_json, read_json_dict
 
@@ -284,6 +307,13 @@ def convert_skill_records(drive_root: pathlib.Path, name: str, legacy: Iterable[
         if data is not None and _rebind(data, "content_hash", legacy_set, digest):
             atomic_write_json(state_dir / filename, data)
             converted.append(filename)
+    from ouroboros.marketplace.provenance import PUBLICATION_FILENAME, merge_state_record
+
+    receipt = read_json_dict(state_dir / PUBLICATION_FILENAME) or {}
+    published = receipt.get("published")
+    if isinstance(published, dict) and _rebind(published, "content_hash", legacy_set, digest):
+        merge_state_record(drive_root, name, PUBLICATION_FILENAME, {"published": published})
+        converted.append(PUBLICATION_FILENAME)
     return converted
 
 
@@ -322,9 +352,10 @@ def convert_skill_identities(drive_root: pathlib.Path, *, log_obj: Any = None,
             continue
         if files:
             summary["converted"][skill.name] = files
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(marker, {"schema_version": 1, "converted_at": utc_now_iso(),
-                               "converted": summary["converted"], "errors": summary["errors"]})
+    if not summary["errors"]:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(marker, {"schema_version": 1, "converted_at": utc_now_iso(),
+                                   "converted": summary["converted"], "errors": []})
     if summary["converted"]:
         logger.info("Skill identity v2: converted records for %d skill(s)", len(summary["converted"]))
     return summary

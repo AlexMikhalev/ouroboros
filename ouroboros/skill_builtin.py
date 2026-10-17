@@ -161,15 +161,16 @@ def install_builtin_skill(
 
 def _changed_since_install(drive_root: pathlib.Path, name: str, target: pathlib.Path) -> Optional[bool]:
     """Whether the installed copy differs from its recorded base digest; ``None`` when no
-    base is recorded (a launcher copy from before install records, whose original release
-    is unknown: the launcher's version re-seed still applies to it). Unreadable bytes
+    base or evidence of edits is recorded (the launcher's version re-seed still applies).
+    A stale native-seed review proves edits even when the original release is unknown. Unreadable bytes
     count as changed: nothing proves them unmodified."""
     from ouroboros.skill_install_record import read_install_record
     from ouroboros.skill_loader import compute_content_hash
 
-    base = str((read_install_record(drive_root, name) or {}).get("base_digest") or "")
+    record = read_install_record(drive_root, name) or {}
+    base = str(record.get("base_digest") or "")
     if not base:
-        return None
+        return True if record.get("modified") else None
     try:
         return compute_content_hash(target) != base
     except Exception:
@@ -263,11 +264,12 @@ def record_converted_builtin(drive_root: pathlib.Path, skill: Any, legacy: Any, 
     """Identity-conversion hook: give an existing launcher-seeded built-in its install record.
 
     The bytes the launcher trusted (a native-seed verdict on a version-1 hash of the
-    current bytes) become the installed release; otherwise the bundled release of the same
-    version names the base and the current bytes stay unreviewed (original unknown when
-    the bundled version differs). Existing records are never rewritten.
+    current bytes) become the installed release. A stale native-seed verdict proves local
+    edits, so the unknown original is recorded and reseeding preserves the copy. Without
+    that evidence the bundled release supplies the base at the same version; otherwise
+    the legacy version reseed still applies. Existing records are never rewritten.
     """
-    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.skill_install_record import read_install_record, write_install_record
     from ouroboros.skill_loader import compute_content_hash
     from ouroboros.utils import read_json_dict
     from ouroboros.skill_loader import skill_state_dir_path
@@ -277,6 +279,16 @@ def record_converted_builtin(drive_root: pathlib.Path, skill: Any, legacy: Any, 
     if read_install_record(pathlib.Path(drive_root), skill.name) is not None:
         return False
     review = read_json_dict(skill_state_dir_path(pathlib.Path(drive_root), skill.name) / "review.json") or {}
+    if review.get("review_profile") == "native_seed" and review.get("content_hash") not in set(legacy or ()):
+        write_install_record(pathlib.Path(drive_root), skill.name, {
+            "source": dict(BUILTIN_SOURCE), "entry": skill.name, "basis": "review", "legacy": True,
+            "release": {"version": str(skill.manifest.version or ""), "digest": ""}, "base_digest": "",
+            "modified": True, "official": False, "installed_by": "ouroboros", "turn_on_when_ready": False,
+            "converted_from": SEED_MARKER,
+        })
+        log.warning("Built-in skill %s changed after native seeding; original unknown, installed files retained",
+                    skill.name)
+        return True
     covered = (str(review.get("review_profile") or "") == "native_seed"
                and str(review.get("content_hash") or "") in set(legacy or ()))
     version = str(skill.manifest.version or "")

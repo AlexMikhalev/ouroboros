@@ -107,26 +107,17 @@ def _legacy_hub_source(catalog_url: str, rows: List[Dict[str, Any]]) -> Dict[str
     return {key: row[key] for key in ("id", "kind", "name", "url", "part") if row.get(key)}
 
 
-def _sidecar_declaration(sidecar: Dict[str, Any]) -> Any:
-    """The dependency declaration the installer used, as the release identity reads a sidecar."""
-    specs = sidecar.get("install_specs")
-    if isinstance(specs, dict):
-        for key in ("raw", "auto"):
-            if specs.get(key) not in (None, "", [], {}):
-                return specs[key]
-    return None
-
-
-def legacy_hub_record(sidecar: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def legacy_hub_record(sidecar: Dict[str, Any], rows: List[Dict[str, Any]],
+                      payload: pathlib.Path) -> Optional[Dict[str, Any]]:
     """The install record an OuroborosHub payload sidecar stands for, or ``None`` when it is unusable."""
-    from ouroboros.skill_identity import release_digest_from_files
+    from ouroboros.skill_identity import legacy_release_declaration, release_digest_from_files
 
     files = sidecar.get("files")
     if sidecar.get("source") != "ouroboroshub" or not isinstance(files, list) or not files:
         return None
     try:
         digest = release_digest_from_files([item for item in files if isinstance(item, dict)],
-                                           _sidecar_declaration(sidecar))
+                                           legacy_release_declaration(payload, sidecar))
     except (ValueError, TypeError):
         return None
     return {
@@ -173,7 +164,7 @@ def convert_legacy_records(drive_root: pathlib.Path, rows: Optional[List[Dict[st
                 if not (payload / marker).is_file() or install_record_path(drive_root, name).is_file():
                     continue
                 if bucket == "ouroboroshub":
-                    record = legacy_hub_record(read_json_dict(payload / marker) or {}, rows)
+                    record = legacy_hub_record(read_json_dict(payload / marker) or {}, rows, payload)
                 else:
                     record = _legacy_clawhub_record(pathlib.Path(drive_root), name, rows)
                 if record is None:
