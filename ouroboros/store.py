@@ -555,9 +555,15 @@ class _CachedConnection:
         self.active = True
 
 
+# Cached connections one thread keeps open (an LRU of idle handles): the root's few hot stores stay
+# open across requests, while a thread that touches many stores over its life (child drives, test
+# roots) closes the least recently used idle one instead of holding a descriptor per store forever.
+_THREAD_POOL_LIMIT = 8
+
+
 class _ThreadConnections:
     def __init__(self) -> None:
-        self.entries: Dict[str, _CachedConnection] = {}
+        self.entries: Dict[str, _CachedConnection] = {}  # insertion order = least recently leased first
 
     def __del__(self) -> None:
         # Thread-local values die with their thread, including short-lived request threads.
@@ -599,8 +605,14 @@ def connection(path: pathlib.Path, tier: str, *, wait_sec: float = 0.0,
         if not nested:
             if entry is None:
                 entry = _CachedConnection(path, tier)
-                pool.entries[key] = entry
+            pool.entries.pop(key, None)
+            pool.entries[key] = entry  # now the most recently leased
             entry.active = True
+            idle = [name for name, held in pool.entries.items() if not held.active]
+            for name in idle[:max(0, len(pool.entries) - _THREAD_POOL_LIMIT)]:
+                evicted = pool.entries.pop(name)
+                if evicted.conn is not None:
+                    evicted.conn.close()
     if nested:
         with contextlib.closing(opener(path, tier, wait_sec=wait_sec)) as conn:
             yield conn

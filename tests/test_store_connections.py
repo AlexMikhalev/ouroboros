@@ -67,6 +67,29 @@ def test_fifty_reads_open_one_connection_per_thread(tmp_path, monkeypatch, money
     assert observed[0].execute("SELECT 1").fetchone()[0] == 1
 
 
+def test_a_thread_that_touches_many_stores_keeps_only_its_recent_handles_open(tmp_path):
+    """A long-lived thread (a server worker, a test process) touches many stores over its life:
+    child drives, other roots. It keeps the recently leased handles, the hot one included, and
+    closes the least recently used idle ones instead of holding a descriptor per store forever."""
+    hot = tmp_path / "hot"
+    publish(hot)
+    with store.open_store(hot, write=False) as txn:
+        hot_conn = txn.conn
+    seen = []
+    for index in range(3 * store._THREAD_POOL_LIMIT):
+        root = tmp_path / f"child-{index}"
+        publish(root)
+        with store.open_store(root, write=False) as txn:
+            seen.append(txn.conn)
+        with store.open_store(hot, write=False) as txn:  # the root store is read between them
+            assert txn.conn is hot_conn
+    pool = store._LOCAL_CONNECTIONS.pool
+    assert len(pool.entries) <= store._THREAD_POOL_LIMIT
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        seen[0].execute("SELECT 1")  # the least recently used idle handle was closed
+    assert seen[-1].execute("SELECT 1").fetchone()[0] == 1 and hot_conn.execute("SELECT 1").fetchone()[0] == 1
+
+
 def test_connection_reuse_keeps_revision_barrier_and_rollback_semantics(tmp_path):
     publish(tmp_path)
     with store.open_store(tmp_path, write=True) as txn:
