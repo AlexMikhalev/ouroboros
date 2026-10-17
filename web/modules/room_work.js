@@ -203,12 +203,15 @@ export function createRoomWork({
     }
 
     // `text` is the bounded visible name; `full` is the whole one, for the accessible name and the details.
-    // The work's own name first (never a Continue's "Continue: …" title), then its card's coined name.
+    // Its card's coined name first (the newest), then the work's own name (never a Continue's "Continue: …"
+    // title), then the card's title.
     function nameOf(item, bubble) {
         const named = (full, source) => ({ text: clip(full, NAME_CHARS), full, source });
+        const coinedOnCard = clean(item.record?.suggestedName);
+        if (coinedOnCard) return named(coinedOnCard, 'card');
         const work = clean(item.work?.name);
         if (work) return named(work, 'work');
-        const own = clean(item.record?.suggestedName || item.record?.titleEl?.textContent);
+        const own = clean(item.record?.titleEl?.textContent);
         if (own) return named(own, 'card');
         const coined = clean(names.get(item.episode) || names.get(item.id));
         if (coined) return named(coined, 'task_named');
@@ -228,18 +231,20 @@ export function createRoomWork({
     const workOf = (id) => listOf(works()?.works).find((work) => String(work.work_id) === id) || null;
 
     function collect() {
-        const online = connected();
+        // A closed socket or a host that is not ready proves nothing current: each work stays, unconfirmed and
+        // without controls, as an incomplete body leaves it.
+        const current = connected() && hostReady();
         const state = works() || {};
         const items = [];
         for (const work of listOf(state.works)) {
             const id = String(work.work_id || '');
             if (!id) continue;
             const episode = String(work.episode?.task_id || id);
-            // A closed socket proves nothing current: the work stays, unconfirmed, as an incomplete body leaves it.
-            const view = workRowView(online ? work : { ...work, activity: 'unknown', because: [], turn: [], confirmed: false });
+            const view = workRowView(current ? work : { ...work, activity: 'unknown', because: [], turn: [], confirmed: false },
+                { stopping: records.get(episode)?.cancelPendingPolicy || '' });
             items.push({ id, kind: work.kind === 'task' ? 'task' : 'direct', work, record: workCard(work, records), view,
-                episode, attempt: state.attempts?.get?.(episode) ?? null, activity: online ? String(work.activity || '') : 'unknown',
-                online: online && hostReady(), confirmed: online && hostReady() && work.confirmed !== false,
+                episode, attempt: state.attempts?.get?.(episode) ?? null, activity: current ? String(work.activity || '') : 'unknown',
+                online: current, confirmed: current && work.confirmed !== false,
                 cmid: String(work.client_message_id || ''),
                 startedAt: Number(work.since) || 0 });
         }

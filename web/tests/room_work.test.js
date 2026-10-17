@@ -216,6 +216,46 @@ test('a work the server lists but cannot confirm keeps its Stop; a work kept fro
     } finally { shade?.destroy(); restoreDom(prior); }
 });
 
+test('a row names its card\'s coined name first, then its work\'s own name; a host not ready leaves every row unknown', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let shade = null;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const badge = node('span', 'status-badge', node('div', 'app-page-actions ui-chrome-group', header));
+        const messages = node('div', 'chat-messages', page);
+        const card = node('div', 'chat-live-block', messages);
+        const record = { root: card, groupId: 't-run', suggestedName: 'Compare the cited pages' };
+        let ready = true;
+        shade = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { cancel() {}, scroll() {} }, works: () => workState([running('t-run', { name: 'Source comparison' })],
+                room('working')), liveCardRecords: new Map([['t-run', record]]), pendingSubmissions: new Map(),
+            hostReady: () => ready });
+        titleRow.children.find((el) => el.classList.contains('rw-trigger')).click();
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const row = () => list.children.find((el) => el.dataset.id === 't-run');
+        const name = () => row().querySelector('.rw-name').textContent;
+        const more = () => row().children.find((el) => el.classList.contains('rw-more-slot')).children.length;
+        // The card's coined name is the newest: the server's work name may still lag behind it.
+        assert.equal(name(), 'Compare the cited pages');
+        record.suggestedName = '';
+        shade.update();
+        assert.equal(name(), 'Source comparison', 'without a coined name, the work\'s own name');
+        assert.deepEqual([row().dataset.tone, more()], ['live', 1]);
+        // A host that is not ready proves nothing current: the row stays, unknown and with nothing to press.
+        ready = false;
+        shade.update();
+        assert.deepEqual([row().dataset.tone, more()], ['unknown', 0]);
+        ready = true;
+        shade.update();
+        assert.deepEqual([row().dataset.tone, more()], ['live', 1]);
+    } finally { shade?.destroy(); restoreDom(prior); }
+});
+
 test('the one mark after the word turns amber for the owner\'s question beside any other word; the control paints the producer\'s tone', () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
     let work;

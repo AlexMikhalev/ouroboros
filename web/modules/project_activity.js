@@ -7,7 +7,7 @@
 // reconciling an incomplete body.
 
 import { activeModelWaits, mergeModelWaits } from './model_wait.js';
-import { activityWord, amberNote, reasonBeside, roomAmber } from './work_status.js';
+import { activityWord, amberNote, reasonBesideWord, roomAmber } from './work_status.js';
 
 /** Whether a census row's own model waits are current (Activity reads the same rule). */
 export function waitingModel(row) {
@@ -34,11 +34,11 @@ export function summarizeRoom(room, works = []) {
     if (!room || typeof room !== 'object' || room.activity === 'idle') return IDLE_SUMMARY;
     const state = MARK_STATES[room.mark] || 'unknown';
     const first = (Array.isArray(works) ? works : []).find((work) => work?.work_id === room.works?.[0]);
-    const reason = state === 'unknown' ? '' : reasonBeside(first?.because?.[0]);
     const word = activityWord(room);
+    const reason = state === 'unknown' ? '' : reasonBesideWord(first?.because?.[0], word);
     const note = state === 'unknown' ? '' : amberNote(roomAmber(room));
     return { state, motion: state === 'working', amber: Boolean(room.amber) && state !== 'unknown', word,
-        label: [word, reason !== word ? reason : '', note].filter(Boolean).join(' · ') };
+        label: [word, reason, note].filter(Boolean).join(' · ') };
 }
 
 // A room an incomplete or unavailable body did not list again: still shown, never as confirmed motion.

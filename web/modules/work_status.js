@@ -11,7 +11,7 @@ import { fmt, tr } from './i18n.js';
 import { taskPresentation, taskTerminalPhase } from './log_events.js';
 import { chipWord, shortReason } from './task_phase_chip.js';
 import {
-    ACTION_FINALIZE, ACTION_HURRY, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP_EARLIER, ACTION_STOP_NOW,
+    ACTION_FINALIZE, ACTION_HURRY, ACTION_PAUSE, ACTION_RESUME, ACTION_STOP_EARLIER, ACTION_STOP_NOW, REUSABLE_TASK_IDS,
     hurryTaskAction, openTaskControlMenu, openTaskControls, requestStop, requestStopAll, resumeTaskAction, taskControlActions,
     taskControlBusy,
 } from './task_control_menu.js';
@@ -85,19 +85,42 @@ export function activityWord(state = {}) {
     }
 }
 
+// A counted reason says its number in the catalog's template, so a translation keeps the count. These are the
+// server's sentences (gateway/work_status.py REASON_TEXT); the web fixture pins them to the server's own.
+const COUNTED_REASONS = {
+    earlier_attempt_finishing: (n) => (n === 1
+        ? tr('work.because.earlier_attempt_finishing', 'Continue starts when the helper of the earlier attempt finishes')
+        : fmt('Continue starts when {count} helpers of the earlier attempt finish', { count: n, n })),
+    earlier_runs_finishing: (n) => (n === 1
+        ? tr('work.because.earlier_runs_finishing', 'Continue starts when the external run of the earlier attempt finishes')
+        : fmt('Continue starts when {count} external runs of the earlier attempt finish', { count: n, n })),
+    helpers_running: (n) => (n === 1 ? tr('work.because.helpers_running', '1 helper still working')
+        : fmt('{count} helpers still working', { count: n, n })),
+    delegated_running: (n) => (n === 1 ? tr('work.because.delegated_running', '1 external run still working')
+        : fmt('{count} external runs still working', { count: n, n })),
+};
+
 /** One reason in the owner's words: the server's code read through the catalog, its sentence as the English (a
- *  code this client has never seen still reads its sentence). A count stays a parameter of the sentence. */
+ *  code this client has never seen still reads its sentence). A count stays a parameter of its template; a counted
+ *  code this client does not know keeps the server's sentence as it is. */
 export function reasonText(reason) {
     if (!reason || typeof reason !== 'object') return '';
     const code = String(reason.code || '');
     const text = String(reason.text || code);
     if (!code) return text;
-    return Number.isInteger(reason.count)
-        ? fmt(`work.because.${code}`, { count: reason.count, n: reason.count }, text) : tr(`work.because.${code}`, text);
+    if (Number.isInteger(reason.count)) return COUNTED_REASONS[code] ? COUNTED_REASONS[code](reason.count) : text;
+    return tr(`work.because.${code}`, text);
 }
 
 /** The reason said beside a word: its short word where one exists (Paused · by you), else its sentence. */
 export const reasonBeside = (reason) => shortReason(reason?.code) || reasonText(reason);
+
+/** The reason said beside `word`, '' when the word already says it (an answer wait's own words, in any language). */
+export function reasonBesideWord(reason, word) {
+    if (!reason || (reason.code === 'owner_answer' && word === chipWord('ownerWait'))) return '';
+    const said = reasonBeside(reason);
+    return said === word ? '' : said;
+}
 
 /** What waits for the owner in a room ('question' | 'action'), '' when nothing does or its own word says so. */
 export const roomAmber = (room) => (!room?.amber || (room.activity === 'waiting' && asked(room)) ? ''
@@ -146,15 +169,19 @@ export function ownStopPress(state, records) {
 /**
  * One work's row in the room's Shade: its word (an outcome beside Finalizing…), the reason beside it, the row's tone,
  * its dots (moving while it works, a Pause still settling included; still while queued; else one dot) and whether its
- * mark turns amber (something waits for the owner). Paused by the owner or by Ouroboros is not amber.
+ * mark turns amber (something waits for the owner). Paused by the owner or by Ouroboros is not amber. `stopping` is
+ * the owner's own Stop press on the work's card ('finalize' | 'immediate'), said at once as the card says it.
  */
-export function workRowView(work = {}) {
+export function workRowView(work = {}, { stopping = '' } = {}) {
+    if (stopping && work.activity === 'working' && work.confirmed !== false) {
+        return { word: chipWord(stopping === 'finalize' ? 'finalizing' : 'cancelling'), secondary: '', tone: 'live',
+            dots: 'moving', amber: list(work.turn).length > 0, focus: '' };
+    }
     const outcome = work.transition === 'finalizing' && work.outcome
         ? taskPresentation(taskTerminalPhase({ status: work.outcome })) : null;
     const word = outcome ? outcome.headline : activityWord(work);
-    const first = list(work.because)[0];
-    const reason = first ? reasonBeside(first) : '';
-    const secondary = [outcome ? chipWord('finalizing') : '', reason !== word ? reason : ''].filter(Boolean).join(' · ');
+    const reason = reasonBesideWord(list(work.because)[0], word);
+    const secondary = [outcome ? chipWord('finalizing') : '', reason].filter(Boolean).join(' · ');
     const pausing = work.activity === 'working' && work.transition === 'pausing';
     const tone = outcome ? OUTCOME_TONES[outcome.phase] || 'live'
         : !work.confirmed || work.activity === 'unknown' ? 'unknown'
@@ -184,14 +211,12 @@ export function cardWorkView(work) {
     const reviews = work.activity === 'paused' && list(work.because).some((entry) => entry?.code === 'review_work_finishing');
     const word = [activityWord(work), shortReason(first?.code), reviews ? chipWord('reviewWorkFinishing') : '']
         .filter(Boolean).join(' · ');
-    const short = shortReason(first?.code);
-    const sentence = first && !short ? reasonText(first) : '';
+    const sentence = first && !shortReason(first.code) ? reasonBesideWord(first, activityWord(work)) : '';
     const running = work.activity === 'working';
     const tone = list(work.turn).length ? 'warn' : running ? (work.transition === 'pausing' ? 'working waiting' : 'working')
         : work.activity;
     return {
-        phase: running ? 'working' : work.activity, text: word,
-        secondary: sentence !== activityWord(work) ? sentence : '', classes: tone,
+        phase: running ? 'working' : work.activity, text: word, secondary: sentence, classes: tone,
         motion: running && work.transition === 'none', waiting: !running || work.transition !== 'none',
     };
 }
@@ -216,8 +241,9 @@ export function applyCardWorkViews(records, state) {
 export function workControls(work) {
     const out = { stop: [], stopEarlier: [], pause: '', resume: '', hurry: '', wrapUp: '' };
     for (const control of list(work?.controls)) {
+        // A reusable slot (`active`) hosts many cycles: no control reaches one of them by that id.
         const target = String(control?.target || '').trim();
-        if (!target) continue;
+        if (!target || REUSABLE_TASK_IDS.has(target)) continue;
         const many = { stop: out.stop, stop_earlier: out.stopEarlier }[control.action];
         if (many) { if (!many.includes(target)) many.push(target); continue; }
         const one = { pause: 'pause', resume: 'resume', hurry: 'hurry', wrap_up: 'wrapUp' }[control.action];

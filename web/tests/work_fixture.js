@@ -4,8 +4,10 @@
 // for a test's census rows, so a test pins what the client says for that room, never a client derivation.
 import { readFileSync } from 'node:fs';
 
-export const SERVER_CASES = JSON.parse(readFileSync(new URL('./fixtures/work_projection_cases.json', import.meta.url),
-    'utf8')).cases;
+const SERVER = JSON.parse(readFileSync(new URL('./fixtures/work_projection_cases.json', import.meta.url), 'utf8'));
+export const SERVER_CASES = SERVER.cases;
+// Every reason sentence the server can send, by code: a counted one at 1 and at 3 ('' for an uncounted one).
+export const SERVER_REASONS = SERVER.reasons;
 
 // The mark the server's room rollup gives each activity (gateway/work_status.roll_up_room; the fixture pins it).
 const MARKS = { working: 'moving', queued: 'still', waiting: 'dot', paused: 'dot', unknown: 'ring' };

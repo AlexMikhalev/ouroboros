@@ -22,6 +22,7 @@ from tests.test_retry_pause_identity import _assign, _loop_once, reaper  # noqa:
 from tests.test_retry_resume_stop_authority import paused_retry
 from tests.test_subscription_setup_browser import subscription_ui  # noqa: F401
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests._work_projection_shared import state_fields
 
 pytestmark = pytest.mark.serial
 
@@ -80,8 +81,9 @@ def test_browser_resumes_current_retry_once(host, monkeypatch, clock, reaper, su
                 posts.append({"path": path, "status": response.status_code, "body": response.json()})
             route.fulfill(status=response.status_code, content_type="application/json", body=response.content)
         def census(route):
+            # The real census and the server's own work projection of it, which the page reads.
             facts = {"supervisor_ready": True, "projects": [], "active_chat_activities_complete": True,
-                     "active_chat_activities": _chat_activities_snapshot_safe(host.root, {}, direct_turns=[])}
+                     **state_fields(host.root, {}, direct_turns=[])}
             snapshots.append(facts)
             route.fulfill(content_type="application/json", body=json.dumps(facts))
         page.route("**/api/chat/history*", forward)

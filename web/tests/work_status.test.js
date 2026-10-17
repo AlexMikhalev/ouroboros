@@ -17,6 +17,7 @@ import {
     ownStopPress, reasonBeside, reasonText, reconcileWorkState, resumeTargets, roomStatusView, workControls,
     workMenuActions, workQuestion, workRowView,
 } from '../modules/work_status.js';
+import { SERVER_REASONS } from './work_fixture.js';
 
 setMissTransport(() => Promise.resolve(null));
 const CASES = JSON.parse(readFileSync(new URL('./fixtures/work_projection_cases.json', import.meta.url), 'utf8')).cases;
@@ -101,15 +102,62 @@ test('reasons read their code through the catalog; counts stay parameters; an un
     const prior = currentPayload();
     try {
         applyPayload({ language: 'ru', english: false, entries: {
-            'work.because.earlier_attempt_finishing': { text: 'Продолжение начнётся, когда закончат {count} помощника прошлой попытки' },
+            'Continue starts when {count} helpers of the earlier attempt finish':
+                { text: 'Продолжение начнётся, когда закончат {count} помощника прошлой попытки' },
+            [CODE_PREFIX + 'work.because.earlier_attempt_finishing']: { text: 'Продолжение начнётся, когда закончит помощник' },
             [CODE_PREFIX + 'work.because.model_access']: { text: 'Модели нужен вход' },
             [CODE_PREFIX + 'work.short.by_you']: { text: 'вами' },
         } });
+        // The count is a parameter of the translated template, never a number baked into a translation.
         assert.equal(reasonText(held.because[0]), 'Продолжение начнётся, когда закончат 3 помощника прошлой попытки');
+        assert.equal(reasonText({ ...held.because[0], count: 18, text: 'Continue starts when 18 helpers of the earlier attempt finish' }),
+            'Продолжение начнётся, когда закончат 18 помощника прошлой попытки');
+        assert.equal(reasonText({ ...held.because[0], count: 1 }), 'Продолжение начнётся, когда закончит помощник');
         assert.equal(reasonText(work('model_access').because[0]), 'Модели нужен вход');
         assert.equal(reasonBeside(work('paused_by_owner').because[0]), 'вами');
         assert.equal(reasonText({ code: 'brand_new_reason', text: 'Unknown sentence' }), 'Unknown sentence');
     } finally { applyPayload(prior); }
+});
+
+test('every reason the server can send reads in the server\'s own sentence; a counted one in its template', () => {
+    assert.ok(Object.keys(SERVER_REASONS).length > 10);
+    for (const [code, forms] of Object.entries(SERVER_REASONS)) {
+        for (const [count, text] of Object.entries(forms)) {
+            const reason = count ? { code, text, count: Number(count) } : { code, text };
+            assert.equal(reasonText(reason), text, `${code} ${count}`);
+        }
+    }
+    // A counted code this client does not know keeps the server's sentence: no translation bakes its number.
+    assert.equal(reasonText({ code: 'brand_new_count', count: 2, text: '2 brand new things' }), '2 brand new things');
+});
+
+test('the reason beside a word is never the one the word already says, in any language', () => {
+    const asked = work('direct_question');
+    assert.deepEqual([workRowView(asked).word, workRowView(asked).secondary], ['Waiting for your answer', '']);
+    const prior = currentPayload();
+    try {
+        applyPayload({ language: 'ru', english: false, entries: {
+            [CODE_PREFIX + 'task.chip.waiting_for_answer']: { text: 'Ждёт вашего ответа' } } });
+        // The word is translated and the server's sentence is not: still nothing beside the word.
+        assert.deepEqual([workRowView(asked).word, workRowView(asked).secondary], ['Ждёт вашего ответа', '']);
+        // Another reason beside the same word still shows.
+        assert.equal(workRowView(work('model_access')).secondary, 'The model needs you: sign in or restore access');
+    } finally { applyPayload(prior); }
+});
+
+test('the owner\'s own Stop press on a work\'s card says itself on the row at once; work that does not work keeps its word', () => {
+    const live = work('working_call');
+    assert.deepEqual(['word', 'secondary', 'tone', 'dots'].map((key) => workRowView(live, { stopping: 'finalize' })[key]),
+        ['Finalizing…', '', 'live', 'moving']);
+    assert.equal(workRowView(live, { stopping: 'immediate' }).word, 'Cancelling…');
+    assert.equal(workRowView(live).word, 'Sending');
+    assert.equal(workRowView(work('paused_by_owner'), { stopping: 'immediate' }).word, 'Paused');
+});
+
+test('a reusable slot gets no control by its id; a real target keeps its own', () => {
+    const slot = { controls: [{ action: 'stop', target: 'active' }, { action: 'pause', target: 'active' },
+        { action: 'stop', target: 't-1' }] };
+    assert.deepEqual(workControls(slot), { stop: ['t-1'], stopEarlier: [], pause: '', resume: '', hurry: '', wrapUp: '' });
 });
 
 test('a held Continue with three helpers of its failed earlier attempt: one working row with the reason, Stop and Stop earlier attempt, no Resume', () => {

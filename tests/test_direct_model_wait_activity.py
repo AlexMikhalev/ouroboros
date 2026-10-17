@@ -19,6 +19,7 @@ from ouroboros.settings_integrity import TaskSettingsSnapshot
 from ouroboros.task_results import write_task_result
 from supervisor import queue as supervisor_queue
 from supervisor.active_activity import get_direct_activity_registry
+from tests._work_projection_shared import state_fields
 
 NODE_BIN = (
     str(Path.home() / ".claudexor" / "node" / "bin" / "node")
@@ -30,11 +31,7 @@ WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
 
 def _state_body(drive_root, **census) -> dict:
     """The census rows and the server's work projection of them, as ``/api/state`` builds both (gateway/state.py)."""
-    from ouroboros.gateway.work_projection import works_snapshot
-
-    owners, facts = [], {}
-    rows = gateway_state._chat_activities_snapshot_safe(drive_root, decision_owners=owners, work_facts=facts, **census)
-    return {"active_chat_activities": rows, **json.loads(json.dumps(works_snapshot(drive_root, owners, facts)))}
+    return state_fields(drive_root, **census)
 
 
 def _js_project_summary(body: dict, chat_id: int) -> dict:
