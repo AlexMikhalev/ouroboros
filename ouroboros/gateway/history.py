@@ -23,19 +23,19 @@ from starlette.responses import Response
 
 from ouroboros import dialogue_store as ds
 from ouroboros.chat_uploads import attachment_views
-from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
+from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway._helpers import coerce_int
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
-    HistoryCursorError, RoomLens, deferred_before, history_page_coverage, history_page_tokens,
-    progress_quota_predicate, replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival,
-    notes_stamp, IMPORTING, PROJECTION_FAILED, _PROBE_ROWS,
+    HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
+    replay_evidence_rows, room_lens, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp,
+    IMPORTING, PROJECTION_FAILED, _PROBE_ROWS,
 )
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
-from ouroboros.project_dialogue import ORIGIN_ADDRESSED_NOTICE_TYPES, entry_matches_source_ref, historical_terminal_projection
+from ouroboros.project_dialogue import ORIGIN_ADDRESSED_NOTICE_TYPES, historical_terminal_projection
 from ouroboros.store import StoreError, StoreMigrating
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, delegated_activity_meta, executor_observation_meta, initiator_meta, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
@@ -267,63 +267,6 @@ def _recent_entries(root: pathlib.Path, stream: str, want: int, counts) -> list:
         before = rows[0].seq
     entries.reverse()
     return entries
-
-
-def _descendants(data_dir: pathlib.Path, tasks: list) -> list:
-    """The task ids the store's lineage places under ``tasks`` (children by parent, the whole tree by
-    root), in one indexed read per 500 roots; an unavailable store names none (their rows then
-    stay where they were written, as the room rule itself would leave them)."""
-    from ouroboros.task_store import task_facts
-
-    found: list = []
-    for start in range(0, len(tasks), 500):
-        chunk = tasks[start:start + 500]
-        marks = ",".join("?" * len(chunk))
-        try:
-            facts = task_facts(data_dir, where=f"root_task_id IN ({marks}) OR parent_task_id IN ({marks})",
-                               params=(*chunk, *chunk))
-        except StoreError:
-            log.debug("task lineage unavailable for the room lens", exc_info=True)
-            continue
-        found.extend(task for task in facts if task not in tasks)
-    return sorted(set(found))
-
-
-def _room_lens(data_dir: pathlib.Path, thread_id: int, project_chat_ids: set, source_refs: list,
-               bindings_by_task: Dict[str, int]) -> Dict[str, RoomLens]:
-    """How the room's rows are addressed in the store, per stream (``room_membership`` decides each
-    candidate; the lens is its superset). A Project reads its own chat, the lineage columns of the
-    tasks bound to it, the task ids of their descendants (the store's lineage: a child's row the
-    supervisor recorded under Main with its task id alone belongs to the room its parent was turned
-    into) and the owner rows its bindings name (by client id, else by chat and time). Main and every
-    chat no Project owns read the rooms no Project owns (A2A and hidden traffic excluded), the rows
-    without a chat and the question rows Main pins as pointers. The cost is the room's own facts and
-    tasks, never another room's history."""
-    if thread_id in project_chat_ids:
-        bound = sorted(task for task, chat in bindings_by_task.items() if chat == thread_id)
-        keys: list = [("chat_id", thread_id)]
-        for task in bound:
-            keys.extend((("task_id", task), ("parent_task_id", task), ("root_task_id", task)))
-        keys.extend(("task_id", task) for task in _descendants(data_dir, bound))
-        owners, seqs = [], []
-        for ref in source_refs:
-            if not isinstance(ref, dict):
-                continue
-            if ref.get("client_message_id"):
-                owners.append(("client_message_id", str(ref["client_message_id"])))
-            elif ref.get("ts"):  # a binding older than client ids names its owner row by chat and time
-                chat = _stored_chat_id(ref.get("chat_id"), 1)
-                candidates = ds.rows_by_identity(data_dir, chat, str(ref["ts"]))
-                if chat == 1:
-                    candidates += ds.rows_by_identity(data_dir, None, str(ref["ts"]))
-                seqs.extend(row.seq for row in candidates if entry_matches_source_ref(row.row, [ref]))
-        return {"chat": RoomLens((*keys, *dict.fromkeys(owners)), tuple(sorted(set(seqs)))),
-                "progress": RoomLens(tuple(keys))}
-    chats = [room["chat_id"] for room in ds.rooms(data_dir) if room["chat_id"] not in project_chat_ids
-             and room["chat_id"] != HIDDEN_CHAT_ID and not is_a2a_chat_id(room["chat_id"])]
-    keys = [("chat_id", chat) for chat in chats] + [("chat_id", None)]
-    return {"chat": RoomLens((*keys, ("kind", "quiz"), ("kind", "quiz_answer"), ("kind", "quiz_closed"))),
-            "progress": RoomLens(tuple(keys))}
 
 
 def _chat_quota_predicate(row_matches_thread):
@@ -1455,7 +1398,7 @@ def _assemble_history_response(
                                {"chat": _chat_quota_predicate(row_matches_thread),
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
-                               _room_lens(data_dir, thread_id, project_chat_ids, project_source_refs, bindings_by_task),
+                               room_lens(data_dir, thread_id, project_chat_ids, project_source_refs, bindings_by_task),
                                notes, rooms.warm)
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]

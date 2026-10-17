@@ -21,14 +21,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import pathlib
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from ouroboros import dialogue_store as ds
-from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
 from ouroboros.dialogue_positions import skipped_between
-from ouroboros.project_dialogue import _ANNOTATIONS_NAME, MAIN_PINNED_ROW_TYPES, ORIGIN_ADDRESSED_NOTICE_TYPES
-from ouroboros.store import StoreMigrating
+from ouroboros.project_dialogue import (
+    _ANNOTATIONS_NAME, MAIN_PINNED_ROW_TYPES, ORIGIN_ADDRESSED_NOTICE_TYPES, entry_matches_source_ref,
+)
+from ouroboros.store import StoreError, StoreMigrating
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
@@ -61,6 +64,8 @@ _GAP_NAMES = {"invalid": "malformed_jsonl", "non_object": "invalid_jsonl_row"}
 # renders them before a child's words are routed to its card, and their
 # producers (message_bus ``send_photo`` ...) count every one.
 _STANDALONE_KINDS = ("document", "links", "photo", "video", "quiz")
+
+log = logging.getLogger(__name__)
 
 
 def progress_quota_predicate(row_matches_thread, stored_chat_id):
@@ -164,6 +169,66 @@ class RoomLens(NamedTuple):
 
     keys: Tuple[Tuple[str, Any], ...]
     seqs: Tuple[int, ...] = ()
+
+
+def _descendants(data_dir: pathlib.Path, tasks: list) -> list:
+    """The task ids the store's lineage places under ``tasks`` (children by parent, the whole tree by
+    root), in one indexed read per 500 roots; an unavailable store names none (their rows then
+    stay where they were written, as the room rule itself would leave them)."""
+    from ouroboros.task_store import task_facts
+
+    found: list = []
+    for start in range(0, len(tasks), 500):
+        chunk = tasks[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        try:
+            facts = task_facts(data_dir, where=f"root_task_id IN ({marks}) OR parent_task_id IN ({marks})",
+                               params=(*chunk, *chunk))
+        except StoreError:
+            log.debug("task lineage unavailable for the room lens", exc_info=True)
+            continue
+        found.extend(task for task in facts if task not in tasks)
+    return sorted(set(found))
+
+
+def room_lens(data_dir: pathlib.Path, thread_id: int, project_chat_ids: set, source_refs: list,
+               bindings_by_task: Dict[str, int]) -> Dict[str, RoomLens]:
+    """How the room's rows are addressed in the store, per stream (``room_membership`` decides each
+    candidate; the lens is its superset). A Project reads its own chat, the lineage columns of the
+    tasks bound to it, the task ids of their descendants (the store's lineage: a child's row the
+    supervisor recorded under Main with its task id alone belongs to the room its parent was turned
+    into) and the owner rows its bindings name (by client id, else by chat and time). Main and every
+    chat no Project owns read the rooms no Project owns (A2A and hidden traffic excluded), the rows
+    without a chat and the question rows Main pins as pointers. The cost is the room's own facts and
+    tasks, never another room's history."""
+    if thread_id in project_chat_ids:
+        bound = sorted(task for task, chat in bindings_by_task.items() if chat == thread_id)
+        keys: list = [("chat_id", thread_id)]
+        for task in bound:
+            keys.extend((("task_id", task), ("parent_task_id", task), ("root_task_id", task)))
+        keys.extend(("task_id", task) for task in _descendants(data_dir, bound))
+        owners, seqs = [], []
+        for ref in source_refs:
+            if not isinstance(ref, dict):
+                continue
+            if ref.get("client_message_id"):
+                owners.append(("client_message_id", str(ref["client_message_id"])))
+            elif ref.get("ts"):  # a binding older than client ids names its owner row by chat and time
+                try:
+                    chat = int(ref["chat_id"]) if ref.get("chat_id") not in (None, "") else 1
+                except (TypeError, ValueError):
+                    chat = 1
+                candidates = ds.rows_by_identity(data_dir, chat, str(ref["ts"]))
+                if chat == 1:
+                    candidates += ds.rows_by_identity(data_dir, None, str(ref["ts"]))
+                seqs.extend(row.seq for row in candidates if entry_matches_source_ref(row.row, [ref]))
+        return {"chat": RoomLens((*keys, *dict.fromkeys(owners)), tuple(sorted(set(seqs)))),
+                "progress": RoomLens(tuple(keys))}
+    chats = [room["chat_id"] for room in ds.rooms(data_dir) if room["chat_id"] not in project_chat_ids
+             and room["chat_id"] != HIDDEN_CHAT_ID and not is_a2a_chat_id(room["chat_id"])]
+    keys = [("chat_id", chat) for chat in chats] + [("chat_id", None)]
+    return {"chat": RoomLens((*keys, ("kind", "quiz"), ("kind", "quiz_answer"), ("kind", "quiz_closed"))),
+            "progress": RoomLens(tuple(keys))}
 
 
 def import_floor(root: pathlib.Path, source: str) -> int:
