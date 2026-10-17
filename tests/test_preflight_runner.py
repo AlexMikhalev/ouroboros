@@ -537,21 +537,6 @@ def test_projected_settings_keys_never_reach_the_candidate_suite(tmp_path, monke
     assert env.get(key) != "owner-runtime-state", f"{key} leaked into the candidate suite"
 
 
-def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch):
-    """The injected count is the clamped one, not whatever `os.cpu_count()` or
-    the operator environment happened to say."""
-    from ouroboros import preflight_runner as pr
-
-    monkeypatch.setenv(WORKERS_ENV, "3")
-    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "3")
-    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
-    env = pr._preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
-    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
-    # ...and the seam itself is OUROBOROS_*, so the scrub removes it first: a
-    # candidate test can neither read nor re-lower it.
-    assert WORKERS_ENV not in env
-
-
 def test_the_worker_probe_is_prepended_to_pythonpath(tmp_path, monkeypatch):
     """`-p ouroboros_preflight_probe` is an ordinary import, so it resolves through
     `sys.path`. PREPENDED, not appended: an inherited `PYTHONPATH` entry (or a

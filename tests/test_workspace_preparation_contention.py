@@ -158,13 +158,13 @@ def test_nested_queue_refusal_retries_only_positive_contention(env, monkeypatch,
     copies, reads, tokens = spy_provisions(monkeypatch), [], []
     original = projects_registry.task_project_membership
 
-    def membership(root, task):
+    def membership(root, task, *, bindings_snapshot=None):
         if task.get("id") == "inner-busy":
             reads.append(task["id"])
             tokens.append(queue.ADMISSION_RESERVATIONS.get("inner-busy"))
             if len(reads) == 1:
                 raise store.StoreBusy("held Project read", reason=reason)
-        return original(root, task)
+        return original(root, task, bindings_snapshot=bindings_snapshot)
 
     monkeypatch.setattr(projects_registry, "task_project_membership", membership)
     assert env.dispatch_returns(event) and env.gen.wait_idle(_WAIT_SEC)
@@ -243,8 +243,9 @@ def test_queue_refusal_flag_after_actual_append_never_authorizes_retry(env, monk
     real_view = projects_registry.project_admission_view
     calls = []
     # Use the real queue's guarded append but inject its failing context exit.
-    monkeypatch.setattr(projects_registry, "task_project_membership", lambda root, task: (
-        ("bound", False) if task.get("id") == "post-append" else real_membership(root, task)))
+    monkeypatch.setattr(projects_registry, "task_project_membership", lambda root, task, *, bindings_snapshot=None: (
+        ("bound", False) if task.get("id") == "post-append"
+        else real_membership(root, task, bindings_snapshot=bindings_snapshot)))
     monkeypatch.setattr(projects_registry, "project_admission_view", lambda root, project, **kw: (
         {"project_id": "bound", "project": {"id": "bound"}} if project == "bound"
         else real_view(root, project, **kw)))
