@@ -38,13 +38,13 @@ def _item(key, **extra):
             "icon": "", "order": 0, "revision": "r1", "render": {"kind": "declarative", "url": ""}, **extra}
 
 
-def _chip(index):
+def _chip(index, action=None):
     return _item(f"chips{index}:chip", placement="composer.chips", label=f"Meter {index}", order=100 + index,
                  source={"url": f"/api/extensions/chips{index}/chip", "refresh_s": 60},
-                 action={"verb": "notice", "text": f"Meter {index} pressed"})
+                 action=action or {"verb": "notice", "text": f"Meter {index} pressed"})
 
 
-def projection(chips=0):
+def projection(chips=0, chip_action=None):
     return {
         "contributions": [
             _item("templates:simpler", placement="composer.plus", label="Explain simpler", icon="sparkle", order=10,
@@ -58,7 +58,7 @@ def projection(chips=0):
                   label="Device voice", render={"kind": "host", "url": VOICE_URL}),
             _item("broken:panel", placement="composer.plus", action={"verb": "notice", "text": "unused"},
                   render={"kind": "host", "url": BROKEN_URL}),
-            *(_chip(index) for index in range(1, chips + 1)),
+            *(_chip(index, chip_action) for index in range(1, chips + 1)),
         ],
         "offers": {"stt": []}, "voice": {}, "icons": [], "problems": {},
         "preferences": {"voice": {"stt": "", "tts": ""}, "contributions": {"hidden": [], "order": []}},
@@ -83,7 +83,7 @@ def open_app(ui, path="/", *, width=1280, scheme="dark", state=None):
     page.route("**/*", lambda route: route.fallback()
                if urlparse(route.request.url).netloc == origin else route.abort())
     page.route("**/api/ui/contributions*", lambda route: route.fulfill(
-        content_type="application/json", body=json.dumps(projection(state["chips"]))))
+        content_type="application/json", body=json.dumps(projection(state["chips"], state.get("chip_action")))))
     page.route("**/api/chat/history*", lambda route: route.fulfill(
         content_type="application/json", body=json.dumps(HISTORY)))
 
@@ -288,6 +288,15 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
     afters = [value["after"] for value in evidence.values()]
     assert any(after["folded"] for after in afters), "six chips on a phone fold"
     assert any(not after["folded"] and len(after["shown"]) == 1 for after in afters), "one chip shows whole"
+
+
+def test_a_chip_that_opens_its_widgets_takes_the_owner_to_the_widgets_page(subscription_ui):
+    page, _loaded, _posted = open_app(subscription_ui, state={"chips": 1, "chip_action": {"verb": "open.tab"}})
+    chip = page.locator("#page-chat .chat-composer-chip[data-chip-key='chips1:chip']")
+    chip.wait_for()
+    chip.click()
+    page.wait_for_function("document.querySelector('#page-widgets')?.classList.contains('active')")
+    assert not page.evaluate("document.querySelector('#page-chat').classList.contains('active')")
 
 
 def test_plugins_off_starts_without_page_code_and_its_notice_restarts_with_it(subscription_ui):
