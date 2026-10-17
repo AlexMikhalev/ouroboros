@@ -3,7 +3,7 @@
 // the composer or the feed (placements are the way into those). A module that fails to load, throws, rejects or does
 // not start within the host's module bound is off for this page: its providers are unregistered, one notice names
 // its skill, and it stays off until the page reloads or the skill's revision changes. A module is disposed when its
-// skill leaves or changes revision, on Panic and when the page goes away.
+// skill leaves or changes revision, on this page's Panic and when the page goes away.
 //
 // Recovery never depends on the modules. A boot marker stands in storage while modules mount; a page that finds one
 // (the last start did not finish: a frozen or crashed page, however long ago) starts without them, and so does a page

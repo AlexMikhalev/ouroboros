@@ -17,7 +17,7 @@ const COMMIT_TYPES = new Set(['action', 'form']);
 const SENT = { status: 'success', message: 'Sent ✓' };
 const OWED = { status: 'warning', message: 'Saved, not delivered yet. Press again to retry.' };
 const STALE = { status: 'warning', message: 'This card changed since it was drawn. Look at the new version first.' };
-const KEPT_STALE = { status: 'warning', message: 'This kept copy is out of date. Keep the new version from the chat.' };
+const KEPT_STALE = { status: 'warning', message: 'This kept copy is out of date. In the chat, remove it and keep it again.' };
 
 const newRequestId = () => globalThis.crypto?.randomUUID?.() || `card-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const sameValues = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
