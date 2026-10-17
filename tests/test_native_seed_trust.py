@@ -281,3 +281,34 @@ def test_bundled_unix_computer_use_net_permission_needs_no_grants_but_owner_enab
     assert requested_skill_permissions(["tool", "subprocess", "net"], []) == []
     # ...but is NOT in the auto-enable-exempt set (so the skill needs owner enable).
     assert "net" not in _NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS
+
+
+def test_native_page_modules_get_hash_bound_grants_and_preserve_owner_choice(seed_env):
+    from ouroboros.skill_loader import grant_status_for_skill, save_enabled
+
+    seed_dir, target_root, data_root = seed_env
+    _write_skill(seed_dir, "device_voice", permissions="[page_module]")
+    _write_skill(seed_dir, "browser_speech", permissions="[page_module, net]")
+    assert _seed_skills_into(seed_dir, target_root, log) == 2
+    for name in ("device_voice", "browser_speech"):
+        skill = load_skill(target_root / "native" / name, data_root)
+        grants = grant_status_for_skill(data_root, skill)
+        assert grants["granted_permissions"] == ["page_module"]
+        assert grants["all_granted"] is True
+        assert skill.review.review_profile == "native_seed"
+    assert load_enabled(data_root, "device_voice") is True
+    assert load_enabled(data_root, "browser_speech") is False
+    save_enabled(data_root, "device_voice", False)
+    _stamp_native_seed_trust(data_root, target_root / "native/device_voice", log)
+    assert load_enabled(data_root, "device_voice") is False
+
+
+def test_new_contribution_seeds_reach_existing_installs(seed_env):
+    from ouroboros.launcher_bootstrap import _SEED_COMPLETE_MARKER
+
+    seed_dir, target_root, data_root = seed_env
+    (target_root / _SEED_COMPLETE_MARKER).write_text("done")
+    for name in ("templates", "device_voice", "browser_speech", "not_new"):
+        _write_skill(seed_dir, name, permissions="[tool]")
+    assert _seed_skills_into(seed_dir, target_root, log) == 3
+    assert {path.name for path in (target_root / "native").iterdir()} == {"templates", "device_voice", "browser_speech"}

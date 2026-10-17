@@ -561,3 +561,152 @@ def read_module_sources(skill_dir: pathlib.Path | None, *entries: str) -> Dict[s
         if entry not in sources:
             raise ExtensionRegistrationError(f"module widget entry {entry!r} is missing from the skill directory")
     return sources
+
+
+# Contribution catalog: the projection publishes icons so clients share this vocabulary.
+CONTRIBUTION_PLACEMENTS = ("composer.plus", "composer.chips", "message.action")
+CONTRIBUTION_PROVIDERS = ("stt", "tts")
+CONTRIBUTION_RUNTIMES = ("server", "client")
+CONTRIBUTION_DESTINATIONS = ("device", "host")  # or vendor:<nonblank name>
+CONTRIBUTION_VERBS = ("draft.insert", "skill.request", "open.tab", "notice")
+CONTRIBUTION_RENDER_KINDS = ("declarative", "host")
+CONTRIBUTION_ICONS = (
+    "sparkle", "mic", "volume", "list", "plus", "template", "gauge", "check", "book",
+    "chat", "projects", "files", "skills", "widgets", "dashboard", "settings",
+)
+CONTRIBUTION_AUDIO_FORMATS = ("audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/wav")
+
+
+def _contribution_text(value: Any, field: str, limit: int, *, empty: bool = False) -> str:
+    if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()):
+        raise ValueError(f"{field} must be {'possibly empty ' if empty else 'nonblank '}text of at most {limit} characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{field} must be valid Unicode") from None
+    return value
+
+
+def _contribution_path(value: Any, field: str, *, host: bool = False) -> str:
+    path = _contribution_text(value, field, 200)
+    if (any(c in path for c in "\\\0?#%:") or any(c.isspace() for c in path)
+            or any(part in {"", ".", ".."} or part.startswith(".") for part in path.split("/"))):
+        raise ValueError(f"{field} must be a plain relative path without traversal, query or fragment")
+    if host and (not path.startswith("ui/") or not path.endswith(".js")):
+        raise ValueError("render.entry must name a .js module under ui/")
+    return path
+
+
+def _contribution_object(value: Any, field: str, allowed: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict) or any(key not in allowed for key in value):
+        raise ValueError(f"{field} must be a mapping using only {', '.join(allowed)}")
+    return dict(value)
+
+
+def _contribution_int(value: Any, field: str, lo: int, hi: int) -> int:
+    if type(value) is not int or not lo <= value <= hi:
+        raise ValueError(f"{field} must be an integer from {lo} to {hi}")
+    return value
+
+
+def _contribution_action(value: Any) -> dict:
+    action = _contribution_object(value, "action", ("verb", "text", "route", "with", "then"))
+    verb = action.get("verb")
+    if verb not in CONTRIBUTION_VERBS:
+        raise ValueError(f"action.verb must be one of {CONTRIBUTION_VERBS}")
+    allowed = {"verb"}
+    if verb in ("draft.insert", "notice"):
+        allowed.add("text")
+        action["text"] = _contribution_text(action.get("text"), "action.text", 4000 if verb == "draft.insert" else 300)
+    elif verb == "skill.request":
+        allowed.update(("route", "with", "then"))
+        action["route"] = _contribution_path(action.get("route"), "action.route")
+        action.setdefault("with", "none")
+        action.setdefault("then", "keep_draft")
+        if action["with"] not in ("none", "draft", "message") or action["then"] not in ("keep_draft", "clear_draft"):
+            raise ValueError("skill.request needs with: none|draft|message and then: keep_draft|clear_draft")
+    if set(action) - allowed:
+        raise ValueError(f"{verb} only accepts {', '.join(sorted(allowed))}")
+    return action
+
+
+def _validate_contribution(entry: dict, manifest: Any, skill_dir: pathlib.Path | None) -> dict:
+    common = ("id", "label", "title", "icon", "order", "render")
+    fields = (("placement", "action", "source") if "placement" in entry else
+              ("provides", "runtime", "route", "destination", "languages", "formats", "install_size", "max_bytes", "max_seconds"))
+    item = _contribution_object(entry, "contribution", common + fields)
+    item["label"] = _contribution_text(item.get("label"), "label", 40)
+    item["title"] = _contribution_text(item.get("title", ""), "title", 200, empty=True)
+    if item.get("icon", "") not in ("", *CONTRIBUTION_ICONS):
+        raise ValueError(f"icon must be one of {CONTRIBUTION_ICONS}")
+    item.setdefault("icon", "")
+    if type(item.get("order", 0)) is not int:
+        raise ValueError("order must be an integer")
+    item.setdefault("order", 0)
+    render = _contribution_object(item.get("render", {}), "render", ("kind", "entry"))
+    render.setdefault("kind", "declarative")
+    if render["kind"] not in CONTRIBUTION_RENDER_KINDS:
+        raise ValueError(f"render.kind must be one of {CONTRIBUTION_RENDER_KINDS}")
+    if render["kind"] == "host":
+        render["entry"] = _contribution_path(render.get("entry"), "render.entry", host=True)
+        if skill_dir is not None:
+            target = pathlib.Path(skill_dir) / render["entry"]
+            if not target.is_file() or not target.resolve().is_relative_to(pathlib.Path(skill_dir).resolve()):
+                raise ValueError("render.entry must exist inside the reviewed skill directory")
+    elif "entry" in render:
+        raise ValueError("declarative render has no entry")
+    item["render"] = render
+    if render["kind"] == "host" or item.get("runtime") == "client":
+        if not manifest.is_extension() or "page_module" not in manifest.permissions:
+            raise ValueError("page code requires type: extension and permissions: [page_module]")
+    if "placement" in item:
+        if item["placement"] not in CONTRIBUTION_PLACEMENTS:
+            raise ValueError(f"placement must be one of {CONTRIBUTION_PLACEMENTS}")
+        item["action"] = _contribution_action(item.get("action"))
+        if item["placement"] == "composer.chips":
+            source = _contribution_object(item.get("source"), "source", ("route", "refresh_s"))
+            source["route"] = _contribution_path(source.get("route"), "source.route")
+            source["refresh_s"] = _contribution_int(source.get("refresh_s"), "source.refresh_s", 15, 3600)
+            item["source"] = source
+        elif "source" in item:
+            raise ValueError("source is only supported on composer.chips")
+        return item
+    if item.get("provides") not in CONTRIBUTION_PROVIDERS:
+        raise ValueError(f"provides must be one of {CONTRIBUTION_PROVIDERS}")
+    if item.get("runtime") not in CONTRIBUTION_RUNTIMES:
+        raise ValueError(f"runtime must be one of {CONTRIBUTION_RUNTIMES}")
+    destination = _contribution_text(item.get("destination"), "destination", 120)
+    if destination not in CONTRIBUTION_DESTINATIONS and not (destination.startswith("vendor:") and destination[7:].strip()):
+        raise ValueError("destination must be device, host or vendor:<Name>")
+    if item["runtime"] == "server":
+        item["route"] = _contribution_path(item.get("route"), "route")
+    elif render["kind"] != "host" or "route" in item:
+        raise ValueError("client providers need render.kind: host and no server route")
+    for field in ("languages", "formats"):
+        if field not in item:
+            continue
+        values = item[field]
+        if not isinstance(values, list) or len(values) > 64:
+            raise ValueError(f"{field} must be a list of at most 64 strings")
+        item[field] = list(dict.fromkeys(_contribution_text(v, field, 120) for v in values))
+        if field == "formats" and any(v not in CONTRIBUTION_AUDIO_FORMATS for v in item[field]):
+            raise ValueError(f"formats must be a subset of {CONTRIBUTION_AUDIO_FORMATS}")
+    if "install_size" in item:
+        item["install_size"] = _contribution_text(item["install_size"], "install_size", 120)
+    for field, maximum in (("max_bytes", 524288), ("max_seconds", 600)):
+        if field in item:
+            if item["provides"] != "stt":
+                raise ValueError(f"{field} is only supported by stt providers")
+            item[field] = _contribution_int(item[field], field, 1, maximum)
+    return item
+
+
+def validate_contributions(manifest: Any, *, skill_dir: pathlib.Path | None = None) -> tuple[list[dict], list[str]]:
+    """Drop only invalid entries; problems are author-facing manifest/preflight warnings."""
+    clean, problems = [], []
+    for entry in getattr(manifest, "contributes", []):
+        try:
+            clean.append(_validate_contribution(entry, manifest, skill_dir))
+        except ValueError as exc:
+            problems.append(f"contributes.{entry.get('id', '?')}: {exc}; fix this entry or remove it")
+    return clean, problems

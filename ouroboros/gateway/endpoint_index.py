@@ -115,6 +115,8 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/extensions",
     "GET /api/extensions/{skill}/manifest",
     "GET /api/extensions/{skill}/module/{entry:path}",
+    "GET /api/extensions/{skill}/ui/{revision}/{path:path}",
+    "GET /api/ui/contributions",
     "GET /api/extensions/{skill}/settings_section",
     "ANY /api/extensions/{skill}/{rest:path}",
     "GET /api/skills/daemons",
@@ -212,6 +214,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/settings/secret": Shape("200:SettingsSecretResponse 400,404,409:ErrorResponse", "SettingsSecretRequest",
                                        note="reveals one stored secret, no-store; writes nothing"),
     "GET /api/ui/preferences": Shape("200:UiPreferencesResponse"),
+    "GET /api/ui/contributions": Shape("200:UiContributionsResponse", note="live contributions, offers and owner preferences; no-store"),
     "POST /api/ui/preferences": Shape("200:UiPreferencesResponse 400,503:ErrorResponse", "json"),
     "GET /api/ui/i18n": Shape("200:UiI18nResponse"),
     "POST /api/ui/i18n/language": Shape(
@@ -311,6 +314,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "GET /api/extensions/{skill}/module/{entry:path}": Shape("200:js 400,404,409:ErrorResponse",
                                                             note="reviewed module text; host protocol: docs/WIDGET_HOST_PROTOCOL.md"),
     "GET /api/extensions/{skill}/settings_section": Shape("200:ExtensionSettingsSectionResponse 400:ErrorResponse"),
+    "GET /api/extensions/{skill}/ui/{revision}/{path:path}": Shape("200:any 404:empty", note="captured live ui assets; stale revisions are unavailable"),
     "ANY /api/extensions/{skill}/{rest:path}": Shape(
         "200:any 404,405,409,413,502:ErrorResponse", "any", note="the skill's own route, inside its own prefix"),
     "POST /api/skills/{skill}/toggle": Shape(f"200:SkillToggleResponse {_SKILL_REFUSAL}", "SkillToggleRequest",

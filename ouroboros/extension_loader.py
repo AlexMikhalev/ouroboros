@@ -40,6 +40,7 @@ from ouroboros.contracts.plugin_api import (
     capability_available,  # noqa: F401
 )
 from ouroboros.event_bus import get_global_event_bus
+from ouroboros.extension_contributions import stage_contributions
 from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process  # noqa: F401
 from ouroboros.extension_ui_validation import (
     _assert_ws_message_type,  # noqa: F401
@@ -97,6 +98,7 @@ from ouroboros.extension_registry_state import (
     # The two live read-projections stay importable as ``extension_loader.<name>``
     # (gateway/widgets.py, gateway/extensions.py, tests/test_gateway_widgets.py);
     # their bodies belong to the module that owns ``_ui_tabs``/``_extensions``.
+    snapshot,  # noqa: F401 — facade re-export
     live_module_sources,  # noqa: F401 — facade re-export (extraction contract)
     live_widget_projection,  # noqa: F401 — facade re-export (extraction contract)
     _ExtensionLoadFailure,
@@ -211,6 +213,8 @@ def _publish_out_of_process_registration(
     ))
     try:
         _stage_out_of_process_surfaces(api, skill, catalog)
+        if current_hash is not None:
+            stage_contributions(api, skill, current_hash)
         for name in names:
             if name not in declared:
                 raise ExtensionRegistrationError(
@@ -742,6 +746,7 @@ def load_extension(
             if current_execution_mode() is ExecutionMode.IN_PROCESS:
                 api._disclose_model_capable_dispatch("register", "register")
             register(api)
+            stage_contributions(api, skill, current_hash)
             # ABI-9: nothing register() staged is visible yet; publish the
             # whole snapshot atomically (validate -> swap -> attach; deferred
             # side effects attach only after the swap).
@@ -939,25 +944,6 @@ def reload_all(
     _announce_extension_state_change(drive_root, "", reason="reload_all")
     return results
 
-
-def snapshot() -> Dict[str, Any]:
-    """Return a read-only snapshot of live extension surfaces."""
-    with _lock:
-        return {
-            "extensions": sorted(_extensions.keys()),
-            "tools": sorted(_tools.keys()),
-            "routes": sorted(_routes.keys()),
-            "ws_handlers": sorted(_ws_handlers.keys()),
-            "ui_tabs": [
-                dict(copy.deepcopy(value), key=key)
-                for key, value in sorted(_ui_tabs.items())
-            ],
-            # Settings sections follow the same host-surfaced shape as UI tabs.
-            "settings_sections": [
-                dict(copy.deepcopy(value), key=key)
-                for key, value in sorted(_settings_sections.items())
-            ],
-        }
 
 
 def get_tool(name: str) -> Optional[Dict[str, Any]]:

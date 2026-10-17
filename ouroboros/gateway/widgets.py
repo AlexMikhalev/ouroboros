@@ -52,6 +52,7 @@ class ExtensionLiveSnapshot(TypedDict):
     ws_handlers: List[str]
     ui_tabs: List[Dict[str, Any]]
     settings_sections: List[Dict[str, Any]]
+    contributions: List[Dict[str, Any]]
 
 
 def widget_tabs() -> List[WidgetTab]:
