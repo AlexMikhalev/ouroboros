@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from ouroboros.betterleaks_runtime import resolve_betterleaks
-from ouroboros.config import get_ouroboroshub_catalog_url, get_runtime_mode, get_skills_repo_path
+from ouroboros.config import get_runtime_mode, get_skills_repo_path
 from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.gateway._helpers import request_drive_root
 from ouroboros.gateway.contracts import SkillPublishPreflightResponse
@@ -318,17 +318,20 @@ def build_skill_publish_preflight(
     raw_skill = str(skill_name or "").strip()
     safe_skill = _sanitize_skill_name(raw_skill)
     try:
-        owner, repo, _base_branch = parse_skill_publish_destination(
-            catalog_url if catalog_url is not None else get_ouroboroshub_catalog_url()
-        )
-        repository = f"{owner}/{repo}"
+        if catalog_url is not None:  # an explicit hub catalog address (the destination before sources)
+            owner, repo, _base_branch = parse_skill_publish_destination(catalog_url)
+            repository = f"{owner}/{repo}"
+        else:
+            from ouroboros.skill_publish_destination import resolve_publish_destination
+
+            repository = resolve_publish_destination(drive_root, safe_skill).repository
     except SkillPublishDestinationError as exc:
         return _hard_block(
             skill=safe_skill if safe_skill != "_unnamed" else "",
             repository="",
             reason_code=exc.reason_code,
-            summary="The configured Hub destination is invalid.",
-            repair_hint="Repair the configured OuroborosHub catalog URL, then retry.",
+            summary="The publication destination is not a GitHub repository this install can publish to.",
+            repair_hint="Connect the hub or a GitHub git source in Skills → Sources, then retry.",
             status_code=409,
         )
     if not raw_skill or safe_skill == "_unnamed" or safe_skill != raw_skill:

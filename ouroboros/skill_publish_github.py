@@ -128,12 +128,20 @@ def github_login(ctx: ToolContext) -> str:
     return raw
 
 
-def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch: str) -> Tuple[Dict[str, Any], str]:
+def fetch_branch_head(ctx: ToolContext, owner: str, repo: str, branch: str) -> Tuple[str, str]:
+    """``(head commit, branch)`` of the destination; an empty branch is the repository's default."""
+    if not branch:
+        info = _json_object(ctx, ["api", f"/repos/{owner}/{repo}"], reason_code="upstream_read_failed",
+                            operation="repos", repository=f"{owner}/{repo}")
+        branch = str(info.get("default_branch") or "")
+        if not branch:
+            raise SkillPublishGitHubError("upstream_read_failed", "Inspect the destination repository, then retry.",
+                                          detail=json.dumps(info)[:600], operation="repos")
     ref = _json_object(
         ctx,
-        ["api", f"/repos/{owner}/{repo}/git/refs/heads/{base_branch}"],
+        ["api", f"/repos/{owner}/{repo}/git/refs/heads/{branch}"],
         reason_code="upstream_read_failed",
-        operation="git/refs", repository=f"{owner}/{repo}", branch=base_branch,
+        operation="git/refs", repository=f"{owner}/{repo}", branch=branch,
     )
     ref_object = ref.get("object")
     base_sha = str((ref_object.get("sha") if isinstance(ref_object, dict) else "") or "")
@@ -143,6 +151,39 @@ def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch:
             "Inspect the configured Hub base branch, then retry.",
             detail=json.dumps(ref), operation="git/refs",
         )
+    return base_sha.lower(), branch
+
+
+def fetch_upstream_file(ctx: ToolContext, owner: str, repo: str, sha: str, path: str) -> bytes | None:
+    """One file of the destination at an exact commit; ``None`` when the commit has no such file."""
+    repository = f"{owner}/{repo}"
+    result = _gh_run(["api", f"/repos/{repository}/contents/{urllib.parse.quote(path)}?ref={sha}"], ctx)
+    if not result.ok and result.http_status == 404:
+        return None
+    try:
+        if not result.ok:
+            raise ValueError("unreadable")
+        return base64.b64decode(str(json.loads(result.text or "{}").get("content") or ""))
+    except (ValueError, AttributeError) as exc:
+        raise SkillPublishGitHubError(
+            "upstream_read_failed",
+            github_repair_hint(result, operation="contents", repository=repository,
+                               default="Inspect the destination repository, then retry."),
+            detail=f"{path} at {sha}: {result.text or exc}", http_status=result.http_status, operation="contents",
+        ) from exc
+
+
+def fetch_tree_paths(ctx: ToolContext, owner: str, repo: str, sha: str, folder: str) -> List[str]:
+    """File paths under ``folder`` (relative to it) at an exact commit of the destination."""
+    tree = _json_object(ctx, ["api", f"/repos/{owner}/{repo}/git/trees/{sha}?recursive=1"],
+                        reason_code="upstream_read_failed", operation="git/trees", repository=f"{owner}/{repo}")
+    prefix = folder.strip("/") + "/" if folder.strip("/") else ""
+    return sorted(str(item.get("path"))[len(prefix):] for item in tree.get("tree") or []
+                  if isinstance(item, dict) and item.get("type") == "blob" and str(item.get("path") or "").startswith(prefix))
+
+
+def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch: str) -> Tuple[Dict[str, Any], str]:
+    base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch)
     content = _json_object(
         ctx,
         ["api", f"/repos/{owner}/{repo}/contents/catalog.json?ref={base_sha}"],
@@ -165,7 +206,7 @@ def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch:
             detail=f"catalog.json at {base_sha}: top-level JSON is {type(catalog).__name__}, not an object",
             operation="contents",
         )
-    return catalog, base_sha.lower()
+    return catalog, base_sha
 
 
 def prepare_publish_repository(
@@ -177,6 +218,8 @@ def prepare_publish_repository(
     base_branch: str,
     login: str,
 ) -> None:
+    """Make sure the account has its fork (its own repository needs none). The submission branch is
+    created at the destination's exact commit, which a fork shares, so the fork is not synchronized."""
     repository = f"{login}/{repo}"
     if login.casefold() == owner.casefold():
         attempt.mark("fork_ready", repository=repository, actor=login)
@@ -196,29 +239,25 @@ def prepare_publish_repository(
                 detail=created.text, http_status=created.http_status, operation="repo fork",
             )
     attempt.mark("fork_ready", repository=repository, actor=login)
-    merged = _gh_run(
-        [
-            "api",
-            "-X",
-            "POST",
-            f"/repos/{login}/{repo}/merge-upstream",
-            "-f",
-            f"branch={base_branch}",
-        ],
-        ctx,
-        timeout=45,
-    )
+
+
+def _sync_fork(ctx: ToolContext, attempt: Any, login: str, repo: str, base_branch: str) -> None:
+    """Bring a fork up to the destination branch; only when GitHub refused a branch at its commit."""
+    merged = _gh_run(["api", "-X", "POST", f"/repos/{login}/{repo}/merge-upstream", "-f", f"branch={base_branch}"],
+                     ctx, timeout=45)
     if not merged.ok:
         raise SkillPublishGitHubError(
             "fork_sync_failed",
-            github_repair_hint(merged, operation="merge-upstream", repository=repository, branch=base_branch,
+            github_repair_hint(merged, operation="merge-upstream", repository=f"{login}/{repo}", branch=base_branch,
                                default="Repair or synchronize the GitHub fork, then retry."),
             detail=merged.text, http_status=merged.http_status, operation="merge-upstream",
         )
-    attempt.mark("fork_synced", repository=repository, actor=login)
+    if attempt is not None:
+        attempt.mark("fork_synced", repository=f"{login}/{repo}", actor=login)
 
 
-def ensure_branch(ctx: ToolContext, login: str, repo: str, branch: str, base_sha: str) -> str:
+def ensure_branch(ctx: ToolContext, login: str, repo: str, branch: str, base_sha: str, *,
+                  base_branch: str = "", attempt: Any = None) -> str:
     existing = _gh_run(
         ["api", f"/repos/{login}/{repo}/git/ref/heads/{branch}"],
         ctx,
@@ -229,21 +268,18 @@ def ensure_branch(ctx: ToolContext, login: str, repo: str, branch: str, base_sha
             "Remove the old submission branch or bump the skill version, then retry.",
             detail=existing.text, http_status=existing.http_status, operation="git/ref",
         )
-    created = _json_object(
-        ctx,
-        [
-            "api",
-            "-X",
-            "POST",
-            f"/repos/{login}/{repo}/git/refs",
-            "-f",
-            f"ref=refs/heads/{branch}",
-            "-f",
-            f"sha={base_sha}",
-        ],
-        reason_code="branch_create_failed",
-        operation="git/refs", repository=f"{login}/{repo}", branch=branch,
-    )
+    create = ["api", "-X", "POST", f"/repos/{login}/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}",
+              "-f", f"sha={base_sha}"]
+    try:
+        created = _json_object(ctx, create, reason_code="branch_create_failed",
+                               operation="git/refs", repository=f"{login}/{repo}", branch=branch)
+    except SkillPublishGitHubError as exc:
+        # A fork that never saw this commit refuses a ref to it (422): synchronize once, then retry.
+        if exc.http_status != 422 or not base_branch:
+            raise
+        _sync_fork(ctx, attempt, login, repo, base_branch)
+        created = _json_object(ctx, create, reason_code="branch_create_failed",
+                               operation="git/refs", repository=f"{login}/{repo}", branch=branch)
     branch_sha = str((created.get("object") or {}).get("sha") or "")
     if not _HEX_OID_RE.fullmatch(branch_sha):
         raise SkillPublishGitHubError(
@@ -499,7 +535,10 @@ __all__ = [
     "commit_payload",
     "create_pr_receipt",
     "ensure_branch",
+    "fetch_branch_head",
+    "fetch_tree_paths",
     "fetch_upstream_catalog",
+    "fetch_upstream_file",
     "github_login",
     "github_repair_hint",
     "prepare_publish_repository",

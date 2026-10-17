@@ -366,3 +366,56 @@ def test_probe_reads_a_hub_a_plain_repo_and_a_folder(drive, hub, tmp_path):
     assert "error" in catalog.probe_source(drive, url="https://user:secret@example.invalid/r")
     assert "error" in catalog.probe_source(drive, url=str(tmp_path / "missing.git"))
     assert not list((drive / "state" / "skill_sources" / ".scratch").iterdir())
+
+
+def test_a_failed_landing_restores_the_installed_release(drive, hub, monkeypatch):
+    rows = hub.rows()
+    _refresh(drive, rows[1:2])
+    installer.install_item(drive, "ouroboros-community/notes", rows=rows)
+    target = drive / "skills" / "ouroboroshub" / "notes"
+    before = (target / "SKILL.md").read_text(encoding="utf-8")
+    new_digest = hub.add_hosted("notes", "2.0.0", category=["writing"])
+    hub.commit()
+    _refresh(drive, rows[1:2])
+
+    def unwritable(*_args, **_kwargs):
+        raise OSError("controlled record failure")
+
+    monkeypatch.setattr(installer, "write_install_record", unwritable)
+    with pytest.raises(OSError, match="controlled record failure"):
+        installer.update_installed(drive, "notes", mode="replace", digest=new_digest, rows=rows)
+    assert (target / "SKILL.md").read_text(encoding="utf-8") == before
+    assert read_install_record(drive, "notes")["release"]["version"] == "1.0.0"
+    assert not list((target.parent / ".staging").iterdir())
+
+
+def test_partial_state_restore_never_deletes_restored_payload(tmp_path, monkeypatch):
+    from ouroboros.marketplace import install as rollback
+
+    drive = tmp_path / "data"
+    target = drive / "skills" / "ouroboroshub" / "demo"
+    target.mkdir(parents=True)
+    (target / "payload.txt").write_text("old", encoding="utf-8")
+    snapshot = rollback.snapshot_payload_state(drive, "demo", target)
+    (target / "payload.txt").write_text("new", encoding="utf-8")
+    restore = rollback.restore_lifecycle_state
+    monkeypatch.setattr(rollback, "restore_lifecycle_state", lambda *args: ["controlled state failure"])
+    with pytest.raises(OSError, match="controlled state failure"):
+        rollback.restore_payload_state(snapshot)
+    assert (target / "payload.txt").read_text(encoding="utf-8") == "old"
+    monkeypatch.setattr(rollback, "restore_lifecycle_state", restore)
+    rollback.restore_payload_state(snapshot)
+    assert (target / "payload.txt").read_text(encoding="utf-8") == "old"
+
+
+def test_missing_snapshot_refuses_before_removing_current_payload(tmp_path):
+    from ouroboros.marketplace import install as rollback
+
+    drive = tmp_path / "data"
+    target = drive / "skills" / "ouroboroshub" / "demo"
+    target.mkdir(parents=True)
+    (target / "payload.txt").write_text("keep", encoding="utf-8")
+    snapshot = rollback.PayloadRollbackSnapshot(drive, "demo", target, tmp_path / "missing")
+    with pytest.raises(OSError, match="rollback payload is missing"):
+        rollback.restore_payload_state(snapshot)
+    assert (target / "payload.txt").read_text(encoding="utf-8") == "keep"

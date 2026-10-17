@@ -136,27 +136,21 @@ def test_owner_actor_skips_fork_and_sync(monkeypatch):
     assert attempt.marks == [("fork_ready", {"repository": "hubowner/project", "actor": "hubowner"})]
 
 
-def test_non_owner_sync_failure_is_typed(monkeypatch):
+def test_non_owner_prepare_keeps_the_fork_without_synchronizing_it(monkeypatch):
     calls = []
 
     def fake_gh(args, _ctx, **_kwargs):
         calls.append(args)
-        if args[:2] == ["repo", "view"]:
-            return GhResult(True, '{"name":"project"}', 0, None, "")
-        return GhResult(False, "⚠️ GH_ERROR: synthetic", 1, None, "exit")
+        assert args[:2] == ["repo", "view"], "preparing a fork must not merge upstream"
+        return GhResult(True, '{"name":"project"}', 0, None, "")
 
     monkeypatch.setattr(github, "_gh_run", fake_gh)
-    with pytest.raises(github.SkillPublishGitHubError) as caught:
-        github.prepare_publish_repository(
-            types.SimpleNamespace(),
-            _attempt(),
-            owner="hub",
-            repo="project",
-            base_branch="main",
-            login="alice",
-        )
-    assert caught.value.reason_code == "fork_sync_failed"
-    assert [call[0] for call in calls] == ["repo", "api"]
+    attempt = _attempt()
+    github.prepare_publish_repository(
+        types.SimpleNamespace(), attempt, owner="hub", repo="project", base_branch="main", login="alice",
+    )
+    assert [call[0] for call in calls] == ["repo"]
+    assert [stage for stage, _ in attempt.marks] == ["fork_ready"]
 
 
 def test_direct_pr_url_yields_validated_receipt_without_lookup(monkeypatch):
@@ -265,6 +259,27 @@ def test_existing_branch_is_never_overwritten(monkeypatch):
     assert caught.value.reason_code == "submission_branch_exists"
 
 
+def _branch_run(calls, tmp_path, *, sync):
+    """subprocess.run for ensure_branch: the branch is new, the fork refuses the commit (422), then ``sync``."""
+    created = {"count": 0}
+
+    def run(cmd, *, cwd, capture_output, text, timeout, input, env):
+        calls.append(cmd)
+        assert cwd == str(tmp_path) and env["GH_TOKEN"] == "ghp_SYNTHETIC1234567890"
+        if cmd[1:3] == ["api", "/repos/alice/project/git/ref/heads/submit/demo-v1.0.0"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)")
+        if cmd[1:5] == ["api", "-X", "POST", "/repos/alice/project/git/refs"]:
+            created["count"] += 1
+            if created["count"] == 1:
+                return subprocess.CompletedProcess(cmd, 1, "", "gh: Object does not exist (HTTP 422)")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"object": {"sha": BASE_SHA}}), "")
+        assert cmd == ["gh", "api", "-X", "POST", "/repos/alice/project/merge-upstream", "-f", "branch=main"]
+        assert timeout == 45
+        return sync(cmd, timeout)
+
+    return run
+
+
 @pytest.mark.parametrize(
     "failure,stderr,http_status,hint",
     [
@@ -280,35 +295,25 @@ def test_sync_failure_preserves_process_evidence_and_stops(
 ):
     calls = []
 
-    def run(cmd, *, cwd, capture_output, text, timeout, input, env):
-        calls.append(cmd)
-        assert cwd == str(tmp_path)
-        assert capture_output is True and text is True and input is None
-        assert env["GH_TOKEN"] == "ghp_SYNTHETIC1234567890"
-        if cmd[1:3] == ["repo", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, '{"name":"project"}', "")
-        assert cmd == ["gh", "api", "-X", "POST", "/repos/alice/project/merge-upstream", "-f", "branch=main"]
-        assert timeout == 45
+    def sync(cmd, timeout):
         if failure == "timeout":
             raise subprocess.TimeoutExpired(cmd, timeout)
         if failure == "cli_missing":
             raise FileNotFoundError("synthetic missing CLI")
         return subprocess.CompletedProcess(cmd, 1, "", stderr)
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", _branch_run(calls, tmp_path, sync=sync))
     attempt = _attempt()
     with pytest.raises(github.SkillPublishGitHubError) as caught:
-        github.prepare_publish_repository(
-            types.SimpleNamespace(repo_dir=tmp_path), attempt,
-            owner="hub", repo="project", base_branch="main", login="alice",
-        )
+        github.ensure_branch(types.SimpleNamespace(repo_dir=tmp_path), "alice", "project", "submit/demo-v1.0.0",
+                             BASE_SHA, base_branch="main", attempt=attempt)
     error = caught.value
     assert error.reason_code == "fork_sync_failed"
     assert error.http_status == http_status
     assert error.operation == "merge-upstream"
     assert hint in error.repair_hint
-    assert [stage for stage, _ in attempt.marks] == ["fork_ready"]
-    assert len(calls) == 2  # Exactly one merge-upstream; never retry a mutation.
+    assert attempt.marks == []
+    assert sum("merge-upstream" in " ".join(cmd) for cmd in calls) == 1  # never retry a mutation
     assert "ghp_SYNTHETIC1234567890" not in error.detail
     if "ghp_SYNTHETIC" in stderr:
         assert "***" in error.detail
@@ -320,21 +325,22 @@ def test_sync_failure_preserves_process_evidence_and_stops(
         assert error.detail == "⚠️ GH_TIMEOUT: exceeded 45s."
 
 
-def test_sync_success_marks_fork_synced(monkeypatch, tmp_path):
+def test_a_fork_is_synchronized_only_when_github_refuses_the_commit(monkeypatch, tmp_path):
     calls = []
-
-    def run(cmd, **kwargs):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, '{}', "")
-
-    monkeypatch.setattr(subprocess, "run", run)
+    synced = lambda cmd, _timeout: subprocess.CompletedProcess(cmd, 0, "{}", "")  # noqa: E731
+    monkeypatch.setattr(subprocess, "run", _branch_run(calls, tmp_path, sync=synced))
     attempt = _attempt()
-    github.prepare_publish_repository(
-        types.SimpleNamespace(repo_dir=tmp_path), attempt,
-        owner="hub", repo="project", base_branch="main", login="alice",
-    )
-    assert [stage for stage, _ in attempt.marks] == ["fork_ready", "fork_synced"]
-    assert len(calls) == 2
+    sha = github.ensure_branch(types.SimpleNamespace(repo_dir=tmp_path), "alice", "project", "submit/demo-v1.0.0",
+                               BASE_SHA, base_branch="main", attempt=attempt)
+    assert sha == BASE_SHA and [stage for stage, _ in attempt.marks] == ["fork_synced"]
+    assert len(calls) == 4  # ref read, refused create, one sync, the created ref
+    calls.clear()
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **_k: calls.append(cmd) or (
+        subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)") if "git/ref/heads" in cmd[2]
+        else subprocess.CompletedProcess(cmd, 0, json.dumps({"object": {"sha": BASE_SHA}}), "")))
+    github.ensure_branch(types.SimpleNamespace(repo_dir=tmp_path), "alice", "project", "submit/demo-v1.0.0",
+                         BASE_SHA, base_branch="main", attempt=attempt)
+    assert not any("merge-upstream" in " ".join(cmd) for cmd in calls)
 
 
 @pytest.mark.parametrize(

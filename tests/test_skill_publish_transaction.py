@@ -134,11 +134,11 @@ def _install_transaction_fakes(
     )
     loaded = types.SimpleNamespace(review=review, source=SKILL_SOURCE_EXTERNAL)
     monkeypatch.setattr(skill_publish, "_validate_local_skill", lambda *_args: ("demo", loaded))
-    monkeypatch.setattr(
-        skill_publish,
-        "get_ouroboroshub_catalog_url",
-        lambda: "https://raw.githubusercontent.com/hub/project/main/catalog.json",
-    )
+    from ouroboros.skill_publish_destination import PublishDestination
+
+    monkeypatch.setattr(skill_publish, "resolve_publish_destination", lambda *_a, **_k: PublishDestination(
+        "hub", "hub", "project", "main", "skills", "ouroboros", "Ouroboros"))
+    monkeypatch.setattr(skill_publish, "fetch_upstream_file", lambda *_a, **_k: None)  # an older hub: no hub.json
     monkeypatch.setattr(skill_publish, "capture_skill_publish_snapshot", lambda _loaded: snapshot)
     monkeypatch.setattr(
         skill_publish,
@@ -164,7 +164,7 @@ def _install_transaction_fakes(
         attempt.mark("fork_ready", repository="alice/project", actor="alice")
         attempt.mark("fork_synced", repository="alice/project", actor="alice")
 
-    def branch(*_args):
+    def branch(*_args, **_kwargs):
         events.append(("mutation", "branch"))
         return BASE_SHA
 
@@ -313,25 +313,25 @@ def test_publish_failure_projection_uses_confirmed_transport_progress(monkeypatc
         if args[:2] == ["repo", "view"]:
             return GhResult(True, '{"name":"project"}', 0, None, "")
         if "/repos/alice/project/merge-upstream" in args:
-            return (GhResult(False, "⚠️ GH_ERROR: sync rejected", 1, None, "exit")
-                    if failure == "fork_sync" else GhResult(True, "{}", 0, None, ""))
+            return GhResult(False, "⚠️ GH_ERROR: sync rejected", 1, None, "exit")
         if args[1] == "/repos/alice/project/git/ref/heads/submit/demo-v1.0.0":
             return GhResult(False, "⚠️ GH_ERROR: not found", 1, 404, "exit")
         assert args[3] == "/repos/alice/project/git/refs"
+        if failure == "fork_sync":  # the fork never saw the commit: GitHub refuses, the fork is synced once
+            return GhResult(False, "⚠️ GH_ERROR: object missing (HTTP 422)", 1, 422, "exit")
         return GhResult(False, "⚠️ GH_TIMEOUT: exceeded 30s.", None, None, "timeout")
 
     monkeypatch.setattr(github, "_gh_run", transport)
     result = _submit(ctx)
     assert result["ok"] is False
-    expected_stage = "fork_ready" if failure == "fork_sync" else "fork_synced"
-    assert result["completed_stage"] == expected_stage
+    assert result["completed_stage"] == "fork_ready"  # the fork is never synchronized up front
     assert result["reason_code"] == f"{failure}_failed"
     outcome = {"outcome_axes": {"objective": {"status": "degraded"}, "review": {"status": "degraded"}}}
     apply_skill_publish_receipt_veto(outcome, {
         "type": "skill_publish", "metadata": {"skill_publish_target": {"skill": "demo", "repository": "hub/project"}},
     }, {"tool_calls": [{"tool": "submit_skill_to_hub", **extract_skill_publish_result_metadata(json.dumps(result))}]})
     assert outcome["outcome_axes"]["objective"]["status"] == ("fail" if failure == "fork_sync" else "degraded")
-    assert len(requests) == (2 if failure == "fork_sync" else 4)
+    assert len(requests) == 4 if failure == "fork_sync" else len(requests) == 3
 
 
 def test_high_payload_finding_blocks_before_any_github_or_mutation(monkeypatch, tmp_path):
@@ -602,7 +602,10 @@ def test_confirmation_failure_is_parseable_and_calls_nothing(tmp_path):
 
 @pytest.mark.parametrize("long_stderr", [False, True])
 def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeypatch, tmp_path, long_stderr):
-    """Real repository preparation + real transport; only the gh process is fake."""
+    """Real repository preparation and branch creation + real transport; only the gh process is fake.
+
+    The fork never saw the destination commit, GitHub refuses the branch (422), and the one
+    synchronization that follows fails."""
     from ouroboros import skill_publish_github
     from ouroboros.skill_publish_result import _bounded_text, extract_skill_publish_result_metadata
 
@@ -611,12 +614,17 @@ def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeyp
     monkeypatch.setattr(
         skill_publish, "prepare_publish_repository", skill_publish_github.prepare_publish_repository,
     )
+    monkeypatch.setattr(skill_publish, "ensure_branch", skill_publish_github.ensure_branch)
     commands = []
 
     def run(cmd, **_kwargs):
         commands.append(cmd)
         if cmd[1:3] == ["repo", "view"]:
             return subprocess.CompletedProcess(cmd, 0, '{"name":"project"}', "")
+        if cmd[1:3] == ["api", "/repos/alice/project/git/ref/heads/submit/demo-v1.0.0"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)")
+        if cmd[1:5] == ["api", "-X", "POST", "/repos/alice/project/git/refs"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "gh: Object does not exist (HTTP 422)")
         assert cmd[1:4] == ["api", "-X", "POST"] and cmd[4].endswith("/merge-upstream")
         stderr = "gh: token ghp_SYNTHETIC1234567890 was rejected (HTTP 403)"
         if long_stderr:
