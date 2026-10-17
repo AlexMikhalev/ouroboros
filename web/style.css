@@ -259,8 +259,10 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 .nav-activity-marker[hidden] { display: none; }
 
 /* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins. */
+   would lose on order; name the composed marker so the row ink wins for the still states. Confirmed work is the
+   crimson live ink (DESIGN principle 3: "live dots"), like the room's status sentence; a wait is the one amber. */
 .nav-activity-marker.chat-live-typing span { background: currentColor; }
+.nav-activity-marker[data-state="working"] span { background: var(--accent); }
 .nav-activity-marker[data-state="waiting"] span { background: var(--amber); }
 .nav-activity-marker[data-state="queued"],
 .nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
@@ -7396,6 +7398,11 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     color: var(--text-meta);
     cursor: pointer;
     border-radius: var(--radius-sm);
+}
+
+.nav-project-kebab > svg {
+    width: 18px;
+    height: 18px;
 }
 
 @media (hover: hover) {

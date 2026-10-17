@@ -201,6 +201,10 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     assert "font-size: var(--type-meta)" in version and "opacity" not in version
     dot = css.split(".nav-unread-dot {", 1)[1].split("}", 1)[0]
     assert "background: var(--accent)" in dot and "box-shadow" not in dot
+    # Working dots are the crimson live ink; the row's ⋯ is the shell's one More glyph, never a text copy.
+    assert '.nav-activity-marker[data-state="working"] span { background: var(--accent); }' in css
+    app_js = _read("web/app.js")
+    assert "kebab.innerHTML = SHELL_ICONS.more;" in app_js and "kebab.textContent = '⋯'" not in app_js
     assert "navProjectsToggle?.classList.toggle('active'" not in _read("web/app.js")
     assert "openProjectPanel(project, { openOnly: true })" in _read("web/app.js")
 
