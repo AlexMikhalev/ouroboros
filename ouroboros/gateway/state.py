@@ -502,7 +502,7 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
 
 
 def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None,
-                                  decision_owners=None) -> list:
+                                  decision_owners=None, owners_only: bool = False) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
     Additive beside ``active_direct_turns`` (kept unchanged for compatibility):
@@ -515,10 +515,14 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     ``origin_bound`` row is a convert-gate fact only and re-homes nothing. A
     post-task wait keeps the task row's own ``_is_direct_chat`` fact as its
     ``kind``, so a direct turn waiting for a model after its answer is never
-    relabelled a managed task. Never raises.
+    relabelled a managed task. ``owners_only`` keeps the same owners and rooms
+    but skips every per-row phase, pause and question projection (each a store
+    read): a reader that needs only which work is current (one room's history)
+    must not pay for the whole census. Never raises.
     """
     direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe()
-    activities = [_direct_activity_pause_projection(drive_root, row, availability) for row in direct_rows]
+    activities = [dict(row) if owners_only else _direct_activity_pause_projection(drive_root, row, availability)
+                  for row in direct_rows]
     census_ids = {row.get("activity_id") for row in activities}
     bindings = task_bindings if isinstance(task_bindings, dict) else {}
     try:
@@ -609,6 +613,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 if root:
                     census_ids.add(task_id)
                     active_roots.add(str(row.get("root_task_id") or task_id))
+                if owners_only:
+                    activities.append(_activity(task_id, row, "queued", _epoch_or_zero(row.get("queued_at")), root=root))
+                    continue
                 # #322 (P1): a budget-paused member must not masquerade as
                 # "queued" — nothing will dispatch it until an explicit resume.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
@@ -629,6 +636,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 if root:
                     census_ids.add(task_id)
                     active_roots.add(str(row.get("root_task_id") or task_id))
+                if owners_only:
+                    activities.append(_activity(task_id, row, "working", started_at, root=root))
+                    continue
                 # #1196: a RUNNING root whose durable budget_pause row says
                 # "pausing" is neither working nor paused yet — additive phase.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
@@ -706,6 +716,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             for key in ("chat_id", "project_id"):
                 if binding.get(key):
                     activity[key] = binding[key]
+    if owners_only:
+        return [row for row in activities if row.get("activity_id") in census_ids]
     try:
         from ouroboros.project_dialogue import owner_wait_projection, project_question_pointer
         from ouroboros.projects_registry import list_reserved_projects
@@ -778,11 +790,12 @@ def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[
     An answered root whose late phase alone remains (D10: the answer stays, the owner
     paused only its post-task work) is not current conversation: its card stays beside
     its delivered answer and Activity offers the saved remainder, so it is never
-    re-addressed at the end of a page that no longer holds its own rows."""
-    return [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings)
-            if row.get("activity_id") and row.get("chat_id") is not None
-            and not _answer_stored((row.get("root_phase_checkpoint") or {}).get("post_task_synthesis"))
-            and matches(row["chat_id"], {**row, "task_id": row["activity_id"]})]
+    re-addressed at the end of a page that no longer holds its own rows. Only this room's
+    owners pay for their facts: the census of every room's work stays with ``/api/state``."""
+    in_room = [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings, owners_only=True)
+               if row.get("activity_id") and row.get("chat_id") is not None
+               and matches(row["chat_id"], {**row, "task_id": row["activity_id"]})]
+    return [task_id for task_id in in_room if not _answer_stored(_task_activity_facts(drive_root, task_id).get("late_phase"))]
 
 
 async def api_state(request: Request) -> JSONResponse:
