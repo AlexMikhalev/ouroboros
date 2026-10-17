@@ -55,12 +55,14 @@ class SkillSourceProbeRequest(TypedDict, total=False):
 class SkillSourceProbeResponse(TypedDict, total=False):
     """What the address holds: ``kind`` hub (a ``hub.json`` repository), git (a plain skills repository)
     or local (a folder); ``found`` names its skills; ``owner`` is the hub's maintainer, else the account
-    the address names (absent for a folder). ``error`` explains an unreadable address."""
+    the address names (absent for a folder). ``error`` explains an unreadable address;
+    ``warning: not_encrypted`` discloses an accepted plain-HTTP address."""
 
     kind: str
     suggested_name: str
     owner: str
     found: List[str]
+    warning: str  # not_encrypted
     error: str
 
 
@@ -97,7 +99,8 @@ class SkillCatalogItem(TypedDict, total=False):
     ``signals`` null means no data (never zero); ``installed`` null means not installed, else
     ``{state: installed, version, digest, modified, update_available}`` or ``{state: name_taken,
     source_id, source_name}``. ``updated_at`` is when the release last changed in its source (a git
-    source's newest commit touching it, a registry's update time); absent when unknown."""
+    source's newest commit touching it, a registry's update time); absent when unknown.
+    Official/recommended require exact endorsement through an Official hub row or the bundled source."""
 
     id: Required[str]
     source_id: Required[str]

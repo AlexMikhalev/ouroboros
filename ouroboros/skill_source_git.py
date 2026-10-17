@@ -60,6 +60,13 @@ def clone_dir(drive_root: pathlib.Path, row: Dict[str, Any]) -> pathlib.Path:
     return repo_cache_dir(drive_root, row) / "repo"
 
 
+def view_cache_dir(drive_root: pathlib.Path, row: Dict[str, Any]) -> pathlib.Path:
+    """A snapshot belongs to url/ref/path; parts of the same view share it and all views share the clone."""
+    cache = repo_cache_dir(drive_root, row)
+    path = str(pathlib.PurePosixPath(str(row.get("path") or ".")))
+    return cache if path == "." else cache / "views" / _key(path)
+
+
 def read_meta(drive_root: pathlib.Path, row: Dict[str, Any]) -> Dict[str, Any]:
     return read_json_dict(repo_cache_dir(drive_root, row) / "meta.json") or {}
 
@@ -147,13 +154,13 @@ def update_clone(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: flo
 
 def is_refreshing(drive_root: pathlib.Path, row: Dict[str, Any]) -> bool:
     with _THREADS_LOCK:
-        thread = _THREADS.get(str(repo_cache_dir(drive_root, row)))
+        thread = _THREADS.get(str(view_cache_dir(drive_root, row)))
         return bool(thread and thread.is_alive())
 
 
 def refresh_in_background(drive_root: pathlib.Path, row: Dict[str, Any], refresh: Any) -> bool:
-    """Run ``refresh(drive_root, row)`` on a daemon thread unless one already runs for this repository."""
-    key = str(repo_cache_dir(drive_root, row))
+    """Run one refresh per view; the shared clone lock serializes different paths of a repository."""
+    key = str(view_cache_dir(drive_root, row))
     with _THREADS_LOCK:
         current = _THREADS.get(key)
         if current is not None and current.is_alive():
@@ -240,5 +247,5 @@ def scratch_dir(drive_root: pathlib.Path, label: str) -> pathlib.Path:
 __all__ = [
     "FETCH_TIMEOUT_SEC", "HISTORY_DEPTH", "SkillSourceFetchError", "checkout_at_commit", "clone_dir",
     "fetch_signals", "fetch_tree", "is_refreshing", "last_changed", "read_meta", "refresh_in_background",
-    "repo_cache_dir", "scratch_dir", "sources_state_root", "update_clone",
+    "repo_cache_dir", "scratch_dir", "sources_state_root", "update_clone", "view_cache_dir",
 ]

@@ -42,6 +42,7 @@
  * @property {string=} suggested_name
  * @property {string=} owner  // the hub's maintainer, else the account the address names
  * @property {string[]=} found
+ * @property {string=} warning  // not_encrypted: accepted plain-HTTP address
  * @property {string=} error
  */
 
@@ -73,6 +74,7 @@
 
 /**
  * One skill a source offers; `id` is `<source_id>/<name>`.
+ * Official/recommended require exact endorsement through an Official hub row or the bundled source.
  * @typedef {Object} SkillCatalogItem
  * @property {string} id
  * @property {string} source_id

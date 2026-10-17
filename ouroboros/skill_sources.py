@@ -64,7 +64,7 @@ def repo_from_catalog_url(url: str) -> tuple[str, str]:
 def validate_git_url(url: str) -> str:
     """The URL as given when git may fetch it, or ``SkillSourceError``.
 
-    https, ssh (``git@host:path`` or ``ssh://``), ``file://`` and an absolute path on this computer are
+    http(s), ssh (``git@host:path`` or ``ssh://``), ``file://`` and an absolute path on this computer are
     accepted. Credentials never ride in a URL: the host's own git credentials authenticate.
     """
     text = str(url or "").strip()
@@ -76,11 +76,9 @@ def validate_git_url(url: str) -> str:
         return text
     parsed = urllib.parse.urlparse(text)
     if parsed.scheme not in {"https", "ssh", "file", "http"}:
-        raise SkillSourceError("Use an https://, ssh:// or file:// repository address, or a folder path.")
+        raise SkillSourceError("Use an http://, https://, ssh:// or file:// repository address, or a folder path.")
     if parsed.password or (parsed.scheme in {"https", "http"} and parsed.username):
         raise SkillSourceError("Remove the credentials from the address; git uses this computer's own sign-in.")
-    if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"}:
-        raise SkillSourceError("Use https:// for a repository on another computer.")
     if parsed.scheme != "file" and not parsed.hostname:
         raise SkillSourceError("The repository address has no host.")
     return text
@@ -269,13 +267,20 @@ def _new_id(rows: List[Dict[str, Any]], name: str) -> str:
 
 def with_added_source(rows: List[Dict[str, Any]], *, kind: str, url: str = "", path: str = "",
                       name: str, trust: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """``rows`` plus one new source; the new row is returned too. Nothing is written."""
+    """Add a source; reconnecting the default public hub restores its two views. Nothing is written."""
     location = {"url": url} if kind in {"hub", "git"} else {"path": path}
     for row in rows:
         if kind in {"hub", "git"} and row.get("url") == url and not row.get("part"):
             raise SkillSourceError(f"{row['name']} already reads this repository.")
         if kind == "local" and row.get("path") == str(pathlib.Path(path).expanduser()):
             raise SkillSourceError(f"{row['name']} already reads this folder.")
+    public = [r for r in derived_sources({}) if r["kind"] == "hub"]
+    if kind == "hub" and public and url.rstrip("/").removesuffix(".git") == public[0]["url"]:
+        missing = [normalize_source({**r, "trust": trust, "confirmed": True}) for r in public
+                   if not source_by_id(rows, r["id"])]
+        if missing:
+            return [*rows, *missing], missing[0]
+        raise SkillSourceError("The public hub is already connected.")
     row = normalize_source({"id": _new_id(rows, name), "name": name, "kind": kind, "trust": trust,
                             "confirmed": True, **location})
     return [*rows, row], row
