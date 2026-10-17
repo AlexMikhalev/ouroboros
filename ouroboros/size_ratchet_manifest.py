@@ -122,6 +122,7 @@ BAND_PATHS = {
     "ouroboros/extension_plugin_api.py": "The PluginAPI transport owner retains per-child best-effort WS failure aggregation beside the relay that observes failures; the existing process-result channel carries that aggregate without a separate diagnostic service.",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/claudexor_accounts.py": "Account-family transport keeps independent daemon facets and login receipts together at one HTTP boundary.",
+    "ouroboros/gateway/contracts.py": "Shrank INTO the band from 1568 lines: the update-flow envelopes moved byte-identical to update_contracts.py when the living-card frames joined the WS contract (plugin-first sprint); shrink-only residue, typed leaves keep moving out.",
     "ouroboros/gateway/control.py": "Entered the band from 966 lines: the update-flow redesign added the shared stash-first prologue (_stash_local_work_fenced/_unwind_stashed_update) and the review-wave affordability floor to the update apply orchestration (update-flow-redesign sprint, Q9/Q10 owner decisions).",
     "ouroboros/gateway/extensions.py": "Extensions HTTP surface re-entered the band when the module endpoint moved to the in-memory reviewed bundle (widgets lifecycle 1a); shrink next touch.",
     "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
