@@ -362,6 +362,14 @@ def running_result_review(rows: List[Dict[str, Any]], subject_sha: str) -> str:
     return ""
 
 
+def supersede_result_runs(llm_trace: Dict[str, Any], marker: str) -> None:
+    """A new delivery candidate (a changed answer, or the same answer over changed evidence) is a new subject,
+    on every rail: the result runs bound so far speak for an earlier one. Superseded, never deleted."""
+    for run in llm_trace.get("review_runs") or []:
+        if isinstance(run, dict) and run.get("surface") == RESULT_KIND and not run.get("superseded_by_revision"):
+            run["superseded_by_revision"] = marker
+
+
 def _supersede_other_result_runs(llm_trace: Dict[str, Any], subject_sha: str) -> None:
     """A result run of an earlier answer never speaks for this one: superseded, never deleted."""
     for run in llm_trace.get("review_runs") or []:

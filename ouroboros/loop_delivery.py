@@ -447,6 +447,9 @@ def _replace_delivery_candidate(
     )
     tools._ctx._delivery_candidate = candidate
     tools._ctx._delivery_control_required = False
+    from ouroboros.tools.review_result import supersede_result_runs
+
+    supersede_result_runs(llm_trace, f"candidate-{revision}")  # forced rails replace here too
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
     return candidate
 
