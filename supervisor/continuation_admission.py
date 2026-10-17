@@ -331,7 +331,8 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
         log.debug("Predecessor authority pointer unavailable for %s", predecessor, exc_info=True)
     deadline_at = str(binding.get("deadline_at") or "")
     text = work_order_text(predecessor, verdict["cause"], sources, deadline_at=deadline_at,
-                           authority_source=authority_source, checkout=recorded_system_checkout(result))
+                           authority_source=authority_source, checkout=recorded_system_checkout(result),
+                           successor_task_id=str(binding.get("successor_task_id") or ""))
     title = str(result.get("title") or result.get("suggested_name") or result.get("objective") or predecessor)
     while title.startswith(CONTINUE_TITLE_PREFIX):
         title = title[len(CONTINUE_TITLE_PREFIX):]
@@ -340,14 +341,18 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
     origin_ref = original.get("origin_message_ref")
     from ouroboros.settings_scales import EFFORT_SCALE
 
-    # The same work keeps the effort it was explicitly started on. A root's stored value is
-    # only that explicit choice (dispatch stamps children alone; a switch_model is not
-    # stored), read from the result row its admission wrote even if no worker ever ran.
+    # The same work keeps the effort and the model ROLE it was explicitly started on. A
+    # root's stored values are only those explicit choices (dispatch stamps children alone;
+    # a switch_model is not stored; ``metadata.model_role`` names a slot such as a
+    # consciousness wake's, never the route it resolved to), read from the result row its
+    # admission wrote even if no worker ever ran. A task on the install default stores
+    # neither and so follows the current default.
     effort = str(result.get("reasoning_effort") or "")
     # Admission/replay persist under metadata until a worker publishes the canonical
     # contract. Merge stored carriers per field, canonical winning; don't normalize
     # an absent handbook choice into false before deciding whether to copy it.
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    model_role = str(metadata.get("model_role") or "").strip()
     stored = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
     canonical = result.get("task_contract") if isinstance(result.get("task_contract"), dict) else {}
     contract = {**stored, **canonical}
@@ -366,6 +371,7 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
         **{key: binding[key] for key in ("workspace_root", "workspace_mode") if binding.get(key)},
         "metadata": {
             **({"project_id": binding["project_id"]} if binding.get("project_id") else {}),
+            **({"model_role": model_role} if model_role else {}),
             **({"resource_intent": dict(intent)} if isinstance(intent, dict) and intent.get("kind") else {}),
             # Keep verified owner-door provenance on its canonical carrier;
             # the new objective below is still the host's continuation text.

@@ -176,6 +176,12 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     assert "actor_history_group" in str(second) and RATIONALE not in str(second)
     selected = review_history_view.load_review_history_view(receipt["selected_review_history_view"],
         lambda ref: read_actor_source_bytes(ctx.drive_root, ctx.task_id, ref))
+    # Peer mail of a long-running root: many notes from other tasks, none of them owner words.
+    from ouroboros.owner_mailbox import write_task_message
+    peer_bodies = [f"peer note {index}: the quota helper reports " + "q" * 400 + f" END{index}" for index in range(30)]
+    for index, body in enumerate(peer_bodies):
+        assert write_task_message(ctx.drive_root, body, ctx.task_id, source_task_id=f"helper-{index % 5}",
+                                  msg_id=f"peer-{index}")
 
     task = continue_task(ctx.drive_root, ctx.task_id, monkeypatch,
                          workspace_root=str(ctx.workspace_root), workspace_mode="external")
@@ -184,6 +190,25 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     text = message_text(request["messages"])
     for retained in (FIRST, SECOND, CURRENT, ANSWER):
         assert retained in text and retained in message_text(assembled)
+    # Peer mail is a count plus the exact reader, never bodies; the work order appears once
+    # (the contract objective inside the frozen prefix is a typed reference to the assignment).
+    from ouroboros.context_compaction import context_units, unit_kind
+    assert "30 messages" in task["text"] and "select='metadata.continuation.peer_context'" in task["text"]
+    assert not any(body in text for body in peer_bodies)
+    assert text.count("[CONTINUE] Continue was requested for task") == 1
+    runtime_block = next(block["text"] for block in assembled[0]["content"] if "## Runtime context\n\n" in block["text"])
+    prefix = json.loads(runtime_block.split("## Runtime context\n\n", 1)[1].split("\n\n## ", 1)[0])
+    assert prefix["task_contract"]["objective"]["representation"] == "assignment"
+    assert "historical_review_context" not in json.dumps(prefix) and "previous_review_context" not in json.dumps(prefix)
+    brief = prefix["predecessor_authority"]  # the conditions and the exact reader, once
+    assert brief["source"]["arguments"] == {"task_id": ctx.task_id, "include_authority": True}
+    assert brief["status"] == "cancelled" and brief["task_contract"] and brief["plan_review_state"]
+    assert "omitted_fields" in brief and "predecessor_authority" not in prefix["task_contract"]
+    assert json.dumps(prefix).count(f'"task_id": "{ctx.task_id}"') >= 1 and OWNER in task["text"]
+    # The notes row is a foldable dialogue unit of the mind's own view; the assignment is not.
+    units = context_units(assembled, scope="dialogue")
+    assert 2 in [unit.start for unit in units] and 1 not in [unit.start for unit in units]
+    assert unit_kind(assembled, next(unit for unit in units if unit.start == 2)) == "user"
     # Newline escaping varies by provider content wrapper; the room keeps the exact words.
     assert all(line in text for line in SPOKEN.splitlines())
     assert raw_review not in text and RAW_REASON not in text and RATIONALE not in text

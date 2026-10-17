@@ -307,6 +307,87 @@ def test_without_a_materializable_authority_the_work_order_keeps_the_only_route(
     assert "Recorded observation of that task's system checkout" not in row["text"], "nothing recorded, no line"
 
 
+def test_peer_mail_rides_as_a_count_and_reader_not_bodies(tmp_path, monkeypatch):
+    """Messages other tasks addressed to the predecessor are not concatenated into the
+    assignment: the work order carries their count, size and senders plus the exact
+    reader of the successor's own stored ``metadata.continuation.peer_context``, which
+    the real store resolves; a predecessor without peer mail gets no such line."""
+    from ouroboros.owner_mailbox import write_task_message
+    from ouroboros.task_results import load_task_result
+    from ouroboros.tools.query_data import _query_data
+    from ouroboros.tools.registry import ToolContext
+    from supervisor.continuation_admission import admit_continuation
+
+    _queue, _state, workers = _install_queue(tmp_path, monkeypatch)
+    _interrupted(tmp_path)
+    bodies = [f"peer note {index}: " + "x" * 600 + f" END{index}" for index in range(40)]
+    for index, body in enumerate(bodies):
+        assert write_task_message(tmp_path, body, "pred-1", source_task_id=f"peer-task-{index % 3}",
+                                  msg_id=f"peer-{index}")
+    ack = admit_continuation("pred-1", action_nonce=NONCE)
+    assert ack["ok"] is True, ack
+    successor = ack["successor_task_id"]
+    row = next(task for task in workers.PENDING if task["id"] == successor)
+    text = row["text"]
+    reader = (f"query_data(op='json', kind='task_result', ids=[{successor!r}], "
+              "select='metadata.continuation.peer_context')")
+    assert f"40 messages, {sum(len(b) for b in bodies)} characters, from peer-task-0, peer-task-1, peer-task-2." in text
+    assert reader in text and text.count("Messages from other tasks") == 1
+    assert not any(body in text for body in bodies), "no peer body rides in the assignment"
+    assert "Owner's original instruction (verbatim):\nWrite the Friday report" in text
+    carried = row["metadata"]["continuation"]["peer_context"]
+    assert [item["text"] for item in carried] == bodies
+    assert [item["text"] for item in load_task_result(tmp_path, successor)["metadata"]["continuation"]["peer_context"]] == bodies
+    # The named reader resolves the exact rows from the successor's own record, in order.
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, budget_drive_root=str(tmp_path), task_id=successor)
+    payload = _query_data(ctx, op="json", kind="task_result", ids=[successor],
+                          select="metadata.continuation.peer_context")
+    assert all(body in payload for body in bodies) and payload.index(bodies[0]) < payload.index(bodies[-1])
+
+    _interrupted(tmp_path, "pred-2")
+    quiet = admit_continuation("pred-2", action_nonce=NONCE)
+    assert quiet["ok"] is True, quiet
+    quiet_row = next(task for task in workers.PENDING if task["id"] == quiet["successor_task_id"])
+    assert "Messages from other tasks" not in quiet_row["text"] and "query_data" not in quiet_row["text"]
+    assert quiet_row["metadata"]["continuation"]["peer_context"] == []
+
+
+@pytest.mark.parametrize("stored,carried", [
+    pytest.param({"model_role": "consciousness"}, "consciousness", id="role-carried"),
+    pytest.param({"model_role": "consciousness", "model": "claudexor::codex=gpt-6-astra"}, "consciousness",
+                 id="role-carried-route-dropped"),
+    pytest.param({"model": "claudexor::codex=gpt-6-astra"}, "", id="route-alone-not-a-choice"),
+    pytest.param({}, "", id="install-default-stays-default"),
+])
+def test_continue_carries_the_stored_model_role_never_the_resolved_route(tmp_path, monkeypatch, stored, carried):
+    """The successor keeps the predecessor's explicit per-task model choice the way it
+    keeps effort: the stored role (a slot name the dispatcher resolves at ITS start),
+    never the model string the predecessor happened to run on; a task on the install
+    default carries nothing and follows the current default."""
+    from ouroboros.agent_dispatch import model_role_slot_override
+    from ouroboros.model_slots import MODEL_ROLE_SETTINGS
+    from ouroboros.task_results import load_task_result
+    from supervisor.continuation_admission import admit_continuation
+
+    _queue, _state, workers = _install_queue(tmp_path, monkeypatch)
+    _interrupted(tmp_path, metadata=stored, reasoning_effort="high")
+    ack = admit_continuation("pred-1", action_nonce=NONCE)
+    assert ack["ok"] is True, ack
+    successor = ack["successor_task_id"]
+    row = next(task for task in workers.PENDING if task["id"] == successor)
+    assert row["reasoning_effort"] == "high"
+    assert row["metadata"].get("model_role", "") == carried
+    assert "model" not in row and "model" not in row["metadata"], "a resolved route is never copied"
+    assert load_task_result(tmp_path, successor)["metadata"].get("model_role", "") == carried
+    replay = admit_continuation("pred-1", action_nonce=NONCE)
+    assert replay["replay"] is True
+    assert load_task_result(tmp_path, successor)["metadata"].get("model_role", "") == carried
+    # The dispatcher resolves the carried role against the CURRENT slot setting at start.
+    slot = {MODEL_ROLE_SETTINGS["consciousness"]: "provider/current-slot-model"}
+    monkeypatch.setattr("ouroboros.agent_dispatch.runtime_setting", lambda key, default="": slot.get(key, default))
+    assert model_role_slot_override(row["metadata"]) == (("provider/current-slot-model", False) if carried else None)
+
+
 @pytest.mark.parametrize("evidence,expected", [
     ({}, {}),
     ({"baseline": {"surfaces": [{"surface_type": "external_workspace", "canonical_root": "/w",
