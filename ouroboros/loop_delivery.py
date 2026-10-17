@@ -1376,17 +1376,17 @@ def _no_tool_final_answer(
     _retrieval = limit_ctx.accumulated_usage.get("retrieval")
     if isinstance(_retrieval, dict) and _retrieval:
         llm_trace["retrieval"] = dict(_retrieval)
-    if not stopping and _loop()._run_task_acceptance_review_once(
-        tools=tools,
-        content=content or "",
-        task_id=limit_ctx.task_id,
-        task_type=limit_ctx.task_type,
-        llm_trace=llm_trace,
-        drive_root=limit_ctx.drive_root,
-        messages=messages,
-        emit_progress=emit_progress,
-    ):
-        # The author can continue working freely; its next complete answer is selected explicitly.
+    def _hold_for_review(text: str) -> None:
+        if content and str(content).strip():
+            messages.append({"role": "assistant", "content": str(content)})
+        _loop()._append_or_merge_user_message(messages, text)
+        emit_progress("Result review outcome shown before delivery.")
+        llm_trace["reasoning_notes"].append("Result review outcome shown before delivery.")
+
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    if not stopping and result_review_at_delivery(tools._ctx, content or "", llm_trace, _hold_for_review):
+        # The author continues freely; its next complete answer is selected explicitly.
         return held()
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, _loop().DeliveryCandidate):

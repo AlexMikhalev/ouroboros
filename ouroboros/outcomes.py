@@ -615,6 +615,8 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
         "run_count": len(runs),
         "aggregate_signals": signals,
     }
+    if all(run.get("surface") == "result" for run in runs):
+        axis["source"] = "result_review"  # review_change(subject="result") bound to the delivered answer
     tier = _aggregate_outcome_tier(_extract_outcome_tiers(runs))
     if tier and status != AWAITING_PROJECTION:  # a minority answer is not the panel's tier
         axis["outcome_tier"] = tier
@@ -680,7 +682,7 @@ def _objective_axis(review: Dict[str, Any]) -> Dict[str, Any]:
             objective = OBJECTIVE_FAIL
         return {
             "status": objective,
-            "source": "task_acceptance_review",
+            "source": str(review.get("source") or "task_acceptance_review"),
             "review_status": status,
             "outcome_tier": tier,
         }
@@ -694,7 +696,7 @@ def _objective_axis(review: Dict[str, Any]) -> Dict[str, Any]:
         objective = OBJECTIVE_NOT_EVALUATED
     return {
         "status": objective,
-        "source": "task_acceptance_review" if objective != OBJECTIVE_NOT_EVALUATED else "none",
+        "source": str(review.get("source") or "task_acceptance_review") if objective != OBJECTIVE_NOT_EVALUATED else "none",
         "review_status": status,
     }
 
@@ -818,7 +820,10 @@ def normalize_outcome_axes(result: Dict[str, Any]) -> Dict[str, Any]:
         "plan_review_cycles_exhausted", "plan_review_quorum_unreachable", "plan_review_author_stop"}
         and objective.get("reason") in {REASON_REVIEW_CYCLES_EXHAUSTED, REASON_REVIEW_QUORUM_UNREACHABLE, "author_stop"})
     stopped = objective_source == "task_completion" and (normalized["execution"].get("task_completion") or {}).get("action") == "stop"
-    if objective_status != OBJECTIVE_NOT_EVALUATED and objective_source != "task_acceptance_review" and not (author_current or plan_blocked or stopped):
+    # ``task_acceptance_review`` names an objective a recorded task acceptance decided (older records);
+    # ``result_review`` one a settled result review of the delivered answer decided.
+    reviewed = objective_source in {"task_acceptance_review", "result_review"}
+    if objective_status != OBJECTIVE_NOT_EVALUATED and not reviewed and not (author_current or plan_blocked or stopped):
         normalized["objective"] = {
             **objective,
             "status": OBJECTIVE_NOT_EVALUATED,

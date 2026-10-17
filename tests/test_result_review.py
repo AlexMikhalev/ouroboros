@@ -120,3 +120,94 @@ def test_a_result_call_that_cannot_mean_anything_is_refused_before_payment(args,
 def test_the_result_subject_implies_its_surface():
     request = parse_request({"subject": "result", "answer": "Done."})
     assert (request.surface, request.answer) == ("result", "Done.")
+
+
+# --- The delivery step: binding and the Required floor ------------------------------------------
+
+def _floor_ctx(tmp_path, monkeypatch, *, mode="required", enforcement="advisory", root=True):
+    ctx, _project = _foreign_project(tmp_path, monkeypatch)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", mode)
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    if not root:
+        ctx.parent_task_id = "parent-task"
+        ctx.task_metadata = {"parent_task_id": "parent-task", "root_task_id": "parent-task"}
+    return ctx
+
+
+def _produced_answer_protocol(monkeypatch):
+    """A benchmark-style result: the adapter's answer protocol makes the answer line produced work."""
+    monkeypatch.setattr("ouroboros.contracts.task_contract.answer_protocol_active", lambda ctx: True)
+
+
+def test_required_reviews_a_root_result_with_produced_work_once_and_shows_its_findings_first(tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch)
+    _produced_answer_protocol(monkeypatch)
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    shown, trace = [], {"tool_calls": []}
+    answer = "FINAL ANSWER: 2"
+
+    assert result_review_at_delivery(ctx, answer, trace, shown.append) is True, "Advisory: findings first"
+    assert len(sends) == 3 and "[Result review]" in shown[0] and "FAIL" in shown[0] and "You decide" in shown[0]
+    [run] = trace["review_runs"]
+    assert (run["surface"], run["aggregate_signal"], run["authority"]) == ("result", "FAIL", "host_root")
+
+    assert result_review_at_delivery(ctx, answer, trace, shown.append) is False, "the mind decided: deliver"
+    assert len(sends) == 3 and len(shown) == 1, "the same result is never reviewed or shown twice"
+
+
+def test_blocking_holds_the_same_failed_result_until_it_changes_and_passes(tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    sends: list[dict] = []
+    answers = {"t1": CRITICAL}
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, answers))
+    shown, trace = [], {"tool_calls": []}
+
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True, "Blocking holds again"
+    assert "not delivered until a review passes it" in shown[-1] and len(sends) == 3
+    answers.clear()  # the revised result satisfies the reviewers
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False
+    assert len(sends) == 6
+    current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
+    assert [run["aggregate_signal"] for run in current] == ["PASS"]
+
+
+def test_nothing_is_forced_for_a_child_auto_off_or_a_plain_text_answer(tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    sends: list[dict] = []
+    for kwargs, protocol in (({"root": False}, True), ({"mode": "auto"}, True), ({"mode": "off"}, True), ({}, False)):
+        ctx = _floor_ctx(tmp_path / str(len(sends)) / repr(sorted(kwargs.items())).replace("/", ""), monkeypatch, **kwargs)
+        if protocol:
+            _produced_answer_protocol(monkeypatch)
+        else:
+            monkeypatch.setattr("ouroboros.contracts.task_contract.answer_protocol_active", lambda ctx: False)
+        monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+        trace = {"tool_calls": []}
+        assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False, kwargs
+        assert not trace.get("review_runs")
+    assert sends == []
+
+
+def test_a_mind_reviewed_result_is_bound_at_delivery_in_auto_without_a_second_wave(tmp_path, monkeypatch):
+    from ouroboros.outcomes import _objective_axis, _review_axis
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="auto")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    answer = "The summary is in summary.md."
+    assert run_review_change(ctx, subject="result", answer=answer)["aggregate"] == "PASS"
+    trace = {"tool_calls": []}
+
+    assert result_review_at_delivery(ctx, answer, trace, lambda text: None) is False
+    assert len(sends) == 3, "binding never buys a second wave"
+    review = _review_axis(trace)
+    assert review["status"] == "pass" and review["source"] == "result_review"
+    assert _objective_axis(review) == {"status": "pass", "source": "result_review", "review_status": "pass"}
