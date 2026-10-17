@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.3.1
+version: 1.3.2
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -55,6 +55,10 @@ failure arrives as one line. A relayed row quotes the owner's words verbatim as
 plain text, under where he wrote them and with the file names, above the note.
 Quiz buttons and replies keep their decision path; earlier parts of a long
 question carry ordinary references.
+
+Version 1.3.2 warns when the derived reference map cannot be saved, without
+blocking an owner message or later outbound parts. Completion notifications
+reference their work, not an authored answer shown only in Main.
 
 Version 1.2.1 marks questions that wait for an owner answer and clears the
 waiting line after an answer submitted through Telegram.

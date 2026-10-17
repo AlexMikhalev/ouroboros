@@ -2420,6 +2420,21 @@ body.resizing-panels { user-select: none; }
 .chat-live-episode-outcome[data-tone="error"] { color: var(--status-error-fg); }
 .chat-live-episode-outcome[data-tone="neutral"] { color: var(--status-neutral-fg); }
 
+/* Earlier physical episodes disclose their existing content, never another work/control card. */
+.chat-live-episode-history { margin: var(--space-2) var(--space-4) var(--space-3); }
+.chat-live-episode-history[hidden],
+.chat-live-card:not([data-expanded="1"]) > .chat-live-episode-history { display: none; }
+.chat-episode-history { border-top: 1px solid var(--divider); min-width: 0; }
+.chat-episode-history > summary {
+    cursor: pointer;
+    padding-block: var(--space-2);
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    overflow-wrap: anywhere;
+}
+.chat-episode-history > summary:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+.chat-episode-history[open] > [data-live-reviews-host] > .chat-live-reviews { display: block; }
+
 /* Why a chip word or an amount reads as it does: part of the expanded card, which the
    summary button opens by pointer, touch and keyboard (never a hover-only title); selectable. */
 .chat-live-details {
@@ -2653,7 +2668,8 @@ body.resizing-panels { user-select: none; }
     gap: var(--space-2);
 }
 
-.chat-live-card[data-expanded="1"] > .chat-live-timeline {
+.chat-live-card[data-expanded="1"] > .chat-live-timeline,
+.chat-episode-history[open] > .chat-live-timeline {
     display: flex;
     border-top: 1px solid rgba(var(--neutral-rgb), 0.05);
     max-height: 420px;

@@ -559,7 +559,7 @@ Projects are rooms of one mind (§6 Durable memory and project focus). `projects
 
 #### Project placement
 
-`project_placement.move_task_to_project` serves the mind and owner button. Durable exact-task binding wins; a bound task's requested name renames its room. Shared origin remains provenance. Preparation compares destination routing generation/incarnation before commit. Only PENDING rows are marked; RUNNING folder and writer lease stay unchanged. At the next execution boundary readmission checks the same active room incarnation, refreshes generation/folder and acquires its lease before folder access changes. Journal/workpad, knowledge tools and routing use the new binding immediately; one host notice names the room and deferred resources, with no automatic memory reload. Children keep inherited scope. Main row products retain the same task id.
+`project_placement.move_task_to_project` serves mind and button. Durable exact-task binding wins; a new name renames that room, shared origin only proves provenance. Preparation compares routing generation/incarnation. PENDING rows are marked; RUNNING folder/lease stay. Next-boundary readmission revalidates the room and takes its lease, changing only defaults: explicit folders/opt-outs stay; Main body work keeps its own or inherited candidate as recorded `system_repo` intent, which room-lens and scratch defaults read, so consumers agree. Notices distinguish placement from applied readmission and name the actual folder. Journal/workpad, knowledge and routing follow binding immediately, without reloading memory. Children retain scope; Main retains task identity.
 
 #### Durable memory and project focus
 
