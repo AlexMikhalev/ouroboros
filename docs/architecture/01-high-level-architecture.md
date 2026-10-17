@@ -549,7 +549,7 @@ ouroboros/ — agent core and shared runtime (§6)
 
 ### Devtools boundary
 
-`devtools/` is excluded from runtime imports and package discovery; review applies and outputs stay external. A benchmark launcher stamps the isolated-benchmark sentinel into its throwaway data root, turning off JSONL log rotation and hot-store-growth warnings there (`supervisor/state.py`, `agent_startup_checks.py`). Each benchmark's own README keeps its module map and methodology: `devtools/benchmarks/cybergym/` pauses dispatch on three typed gates (dead gateway transport, refused budget claim, a sibling's unresolved workspace-custody gate) and keeps never-dispatched ids row-free; `devtools/benchmarks/cowork_bench/` keeps scoring authority in its audit (`METHODOLOGY.md`); `devtools/benchmarks/osworld/` splits runners from their owner leaves. `devtools/e2e_live/` is the live E2E stand: isolated real servers running the owner-shaped scenarios SM1, SW1 and SK1, judged on durable artifacts and a browser probe (manual `devtools/e2e_live/README.md`; the one rule binding runtime changes: DEVELOPMENT "Live E2E stand").
+`devtools/` is excluded from runtime imports and package discovery; review applies and outputs stay external. A benchmark launcher stamps the isolated-benchmark sentinel into its throwaway data root, turning off JSONL log rotation there (`supervisor/state.py`). Each benchmark's own README keeps its module map and methodology: `devtools/benchmarks/cybergym/` pauses dispatch on three typed gates (dead gateway transport, refused budget claim, a sibling's unresolved workspace-custody gate) and keeps never-dispatched ids row-free; `devtools/benchmarks/cowork_bench/` keeps scoring authority in its audit (`METHODOLOGY.md`); `devtools/benchmarks/osworld/` splits runners from their owner leaves. `devtools/e2e_live/` is the live E2E stand: isolated real servers running the owner-shaped scenarios SM1, SW1 and SK1, judged on durable artifacts and a browser probe (manual `devtools/e2e_live/README.md`; the one rule binding runtime changes: DEVELOPMENT "Live E2E stand").
 
 ### Gateway Boundary v1
 
@@ -628,7 +628,7 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── usage_attempts.jsonl   ← imported journal; historical audit and older-seed input
 │   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt rows
 │   │   ├── usage_import_watermark.json ← import watermark
-│   │   ├── skill_review_root_tasks.jsonl ← derived skill-review index; warns at `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES`
+│   │   ├── skill_review_root_tasks.jsonl ← derived skill-review index (acceptance packet assembly reads a bounded suffix)
 │   │   ├── storage_measurement.json ← the last two finished storage counts (a derived gauge, never deletion authority)
 │   │   ├── request_wire_compatibility.json ← exact-route wire evidence
 │   │   ├── capability_evidence.json ← sourced model-capability evidence
