@@ -244,15 +244,31 @@ def test_short_sidebar_bounds_projects_list_and_cost_cards_keep_local_table_over
     open_app(ui)
     page.wait_for_selector(".nav-project-row")
     sidebar = page.locator("#primary-sidebar")
-    scrolling = sidebar.evaluate("""el => [...el.querySelectorAll('*')].filter(e =>
-        ['auto','scroll'].includes(getComputedStyle(e).overflowY) && e.scrollHeight>e.clientHeight+1).map(e=>e.className)""")
-    # The projects list carries its own bounded window, so the column itself
-    # stays the same height whatever the project count.
-    assert set(scrolling) == {"sidebar-scroll", "nav-projects-list"}, scrolling
+    scrollers = """el => [...el.querySelectorAll('*')].filter(e =>
+        ['auto','scroll'].includes(getComputedStyle(e).overflowY) && e.scrollHeight>e.clientHeight+1).map(e=>e.className)"""
+    main_top = lambda: page.locator(".nav-row-main").evaluate("el => el.getBoundingClientRect().top")
+    # Three zones (DESIGN "Shell"): a window this short cannot hold the pinned zones, so the column itself scrolls
+    # with Main sticky at its top; the Projects list keeps its three rows and stays the one scroller inside.
+    assert set(sidebar.evaluate(scrollers)) == {"nav-projects-list"}, sidebar.evaluate(scrollers)
+    assert sidebar.evaluate("el => el.scrollHeight > el.clientHeight + 1"), "the column is the fallback scroller"
+    top_before = main_top()
+    sidebar.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    page.wait_for_timeout(100)
+    assert abs(main_top() - top_before) <= 1, "Main stays pinned while the column scrolls"
     nav = page.locator('[data-nav-page="settings"]')
-    nav.scroll_into_view_if_needed()
     assert hit_box(nav)["reachable"]
     setup_browser.capture(page, "shell-sidebar-short-bottom")
+    # A window tall enough for the zones: the Projects list is the ONE scroller and the column does not scroll.
+    page.set_viewport_size({"width": 1280, "height": 720})
+    page.wait_for_timeout(200)
+    assert set(sidebar.evaluate(scrollers)) == {"nav-projects-list"}, sidebar.evaluate(scrollers)
+    assert not sidebar.evaluate("el => el.scrollHeight > el.clientHeight + 1")
+    top_before = main_top()
+    page.locator("#nav-projects-list").evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    page.wait_for_timeout(100)
+    assert abs(main_top() - top_before) <= 1, "Main never scrolls away"
+    assert hit_box(page.locator('[data-nav-page="settings"]'))["reachable"]
+    page.set_viewport_size({"width": 844, "height": 320})
     page.locator('[data-nav-page="dashboard"]').click()
     page.locator('[data-dashboard-tab="costs"]').click()
     page.wait_for_function("document.querySelector('#cost-confirmed').textContent==='$25.00'")

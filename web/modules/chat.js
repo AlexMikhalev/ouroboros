@@ -1,7 +1,8 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
-import { renderPageHeader } from './page_header.js';
-import { PAGE_ICONS } from './page_icons.js';
+import { bindHeaderControlPlacement, renderPageHeader } from './page_header.js';
+import { SHELL_ICONS, strokeIcon } from './page_icons.js';
+import { pageLabel } from './pages.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
 import { hostRowDisplayText } from './host_notice_text.js';
@@ -206,7 +207,7 @@ export function createChatInstance({
     ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
-    asPanel = false, title = 'Chat',
+    asPanel = false, title = pageLabel('chat'),
     // app.js signal "a project panel is opening right now" — Main
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,
@@ -222,26 +223,24 @@ export function createChatInstance({
     const page = document.createElement('div');
     page.id = asPanel ? `panel-${idPrefix}` : 'page-chat';
     page.className = asPanel ? 'chat-instance-panel' : 'page active';
-    // A project panel reuses index.html's `.project-panel-bar` (title + close): a
-    // status-only header, never the page header's global agent chrome (Restart,
-    // Panic, budget). Main keeps the full header.
+    // A Project panel's bar comes from app.js (page_header.js); the instance seeds only its status badge.
     const headerHtml = asPanel
         ? `<div class="chat-panel-statusbar"><span id="chat-status" class="status-badge offline">Connecting…</span></div>`
         : renderPageHeader({
             title: title,
-            icon: PAGE_ICONS.chat,
             variant: 'overlay',
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
+            // Stack: Restart and the budget sit inside ⋯ (bindHeaderControlPlacement).
             actionsHtml: `
                 <div class="chat-header-actions" id="chat-header-actions">
                     <button class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
                     <button class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
                     <details class="chat-header-more">
-                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls">More</summary>
+                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls"><span class="chat-header-more-word">More</span><span class="chat-header-more-glyph" aria-hidden="true">${SHELL_ICONS.more}</span></summary>
                         <div class="chat-header-menu">
-                            <button class="chat-header-menu-item" type="button" data-chat-command="bg" title="Toggle background consciousness">Consciousness</button>
-                            <button class="chat-header-menu-item" type="button" data-chat-command="evolve" title="Toggle evolution mode">Evolve</button>
+                            <button class="chat-header-menu-item" type="button" data-chat-command="bg">Consciousness</button>
+                            <button class="chat-header-menu-item" type="button" data-chat-command="evolve">Evolve</button>
                             <button class="chat-header-menu-item" type="button" data-chat-command="review" title="Run review now">Review</button>
                         </div>
                     </details>
@@ -261,7 +260,7 @@ export function createChatInstance({
         <div id="chat-input-area">
             <div class="chat-input-wrap">
                 <button class="chat-scroll-bottom-btn" id="chat-scroll-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>
+                    ${strokeIcon('<path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/>', 16)}
                     <span class="chat-scroll-activity-dot" aria-hidden="true" hidden></span>
                 </button>
                 <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
@@ -273,7 +272,7 @@ export function createChatInstance({
                 </div>
                 <div class="chat-text-row">
                     <button class="chat-attach-btn" id="chat-attach" type="button" title="Attach file">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                        ${strokeIcon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 18)}
                     </button>
                     <input type="file" id="chat-file-input" class="chat-file-input-hidden" accept="*/*" multiple>
                     <textarea id="chat-input" placeholder="Message Ouroboros..." rows="1" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
@@ -304,6 +303,7 @@ export function createChatInstance({
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
     const budgetPill = byId('budget-pill');
+    const disposeHeaderPlacement = asPanel ? () => {} : bindHeaderControlPlacement({ headerActions, budgetPill });
     const attachBtn = byId('attach');
     const fileInput = byId('file-input');
     const attachmentPreview = byId('attachment-preview');
@@ -3092,21 +3092,25 @@ export function createChatInstance({
     let documentKeydownHandler = null;
     if (!asPanel) {
         const collapseHeaderMenus = (predicate) => {
+            let collapsed = false;
             page.querySelectorAll('details.chat-header-more[open]').forEach((details) => {
-                if (predicate(details)) details.removeAttribute('open');
+                if (predicate(details)) { details.removeAttribute('open'); collapsed = true; }
             });
+            return collapsed;
         };
         documentClickHandler = (event) => {
             collapseHeaderMenus((details) => !details.contains(event.target));
         };
         document.addEventListener('click', documentClickHandler);
         documentKeydownHandler = (event) => {
-            if (event.key === 'Escape') collapseHeaderMenus(() => true);
+            // An open menu owns its Escape.
+            if (event.key === 'Escape' && !event.defaultPrevented && collapseHeaderMenus(() => true)) event.preventDefault();
         };
         document.addEventListener('keydown', documentKeydownHandler);
     }
 
     budgetPill?.addEventListener('click', () => {
+        budgetPill.closest('details')?.removeAttribute('open');
         if (typeof openDashboardTab === 'function') openDashboardTab('costs');
         else if (typeof openSettingsTab === 'function') openSettingsTab('costs');
     });
@@ -3809,6 +3813,7 @@ export function createChatInstance({
             document.removeEventListener('visibilitychange', handlePageShown);
             if (documentClickHandler) document.removeEventListener('click', documentClickHandler);
             if (documentKeydownHandler) document.removeEventListener('keydown', documentKeydownHandler);
+            disposeHeaderPlacement();
             chatResizeObserver?.disconnect();
             chatResizeObserver = null;
             inputSizing.dispose();

@@ -28,7 +28,13 @@ import { initActivity } from './modules/activity.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
 import { initStorage } from './modules/storage.js';
-import { hydrateNavIcons } from './modules/page_icons.js';
+import { SHELL_ICONS } from './modules/page_icons.js';
+import { renderNavRows, renderProjectsHeader } from './modules/pages.js';
+import { renderPageHeader } from './modules/page_header.js';
+import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
+import { createLayerStack } from './modules/layers.js';
+import { createTelegramHost } from './modules/host_telegram.js';
+import { DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -63,10 +69,31 @@ const navState = {
     projectsExpanded: true,
     mobileDrawerOpen: false,
 };
+// The one stack of layers over the room (layers.js): the drawer and the Project panel register here, so Escape,
+// the scrim, ×, the system Back and Telegram's Back all close exactly one layer, the top one.
+const layers = createLayerStack();
+// Loopback-only debug hook, like __ouroWs: browser tests read the stack through it.
+window.__ouroLayers = layers;
 const primarySidebar = document.getElementById('primary-sidebar');
+// The places come from the one registry (pages.js): Main into the pinned head, the tools into the pinned foot
+// before the version, the Projects header into the middle zone. Nothing below looks a row up before this.
+primarySidebar?.querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', renderNavRows('head'));
+primarySidebar?.querySelector('.sidebar-foot-meta')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
+const navProjectsHeader = primarySidebar?.querySelector('.nav-projects-header');
+if (navProjectsHeader) navProjectsHeader.innerHTML = renderProjectsHeader();
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
 const projectPanel = document.getElementById('project-panel');
+// The Project panel's header is the one page header (page_header.js): ☰ · name · status … ×. A Project is
+// named by its owner, not by the sidebar, so its name stays visible in every layout (owner Q3=A).
+projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({
+    title: '',
+    titleId: 'project-panel-title',
+    named: false,
+    variant: 'project',
+    className: 'project-panel-bar project-inspector-header',
+    trailingHtml: `<button id="project-panel-close" class="shell-icon-control project-panel-close" type="button" title="Close project thread" aria-label="Close project thread">${SHELL_ICONS.close}</button>`,
+}));
 const projectPanelBody = document.getElementById('project-panel-body');
 const projectPanelTitle = document.getElementById('project-panel-title');
 const navProjects = document.getElementById('nav-projects');
@@ -169,6 +196,18 @@ function syncNavigationState() {
         button.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
     });
     if (navDrawerBackdrop) navDrawerBackdrop.hidden = !drawerOpen;
+    // In the stack layout the closed drawer is off screen: inert and out of the tab order.
+    if (primarySidebar) primarySidebar.inert = isStackLayout() && !drawerOpen;
+    // The drawer is a modal layer (its scrim stays live); the Project panel is one too, modal only where it
+    // covers the room (stack).
+    if (drawerOpen) {
+        layers.push({ id: 'drawer', el: primarySidebar, modal: true, live: [navDrawerBackdrop].filter(Boolean),
+            onClose: () => setMobileDrawerOpen(false) });
+    } else layers.remove('drawer');
+    if (activeProjectId) {
+        layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
+            onClose: () => closeProjectPanel() });
+    } else layers.remove('project');
 
     document.querySelectorAll('[data-nav-page]').forEach((button) => {
         const isActive = !activeProjectId && button.dataset.navPage === state.activePage;
@@ -176,7 +215,7 @@ function syncNavigationState() {
         if (isActive) button.setAttribute('aria-current', 'page');
         else button.removeAttribute('aria-current');
     });
-    navProjectsToggle?.classList.toggle('active', Boolean(activeProjectId));
+    // One chosen row at a time: the open Project's row, never the Projects header (owner Q6).
     navProjectsToggle?.setAttribute('aria-expanded', navState.projectsExpanded ? 'true' : 'false');
     navProjectsList.hidden = !navState.projectsExpanded;
     document.querySelectorAll('[data-project-id]').forEach((button) => {
@@ -193,6 +232,7 @@ function syncNavigationState() {
         if (activeProjectId) {
             projectPanel.hidden = false;
             if (projectPanelBackdrop) projectPanelBackdrop.hidden = false;
+            syncProjectPanelFill();
             requestAnimationFrame(() => {
                 projectPanel.classList.add('open');
                 projectPanelBackdrop?.classList.add('open');
@@ -210,6 +250,28 @@ function syncNavigationState() {
     }
 }
 
+// Docked: the Project panel is the frosted overlay over the content area and takes the whole
+// area once Main would keep less than the minimum beside it (layout.js, P1). Measured with the
+// attribute off, so the natural width decides and the attribute never feeds itself.
+function syncProjectPanelFill() {
+    const root = document.documentElement;
+    root.removeAttribute('data-project-fill');
+    if (!projectPanel || projectPanel.hidden || isStackLayout()) return;
+    const fills = projectPanelFillsContent({
+        viewportWidth: window.innerWidth,
+        sidebarWidth: primarySidebar?.getBoundingClientRect().width || 0,
+        panelWidth: projectPanel.getBoundingClientRect().width,
+    });
+    root.toggleAttribute('data-project-fill', fills);
+}
+window.addEventListener('resize', syncProjectPanelFill);
+// Crossing the switch: a drawer has no place in the docked layout; the Project layer changes its modality.
+onLayoutChange((layout) => {
+    if (layout === 'docked') navState.mobileDrawerOpen = false;
+    syncProjectPanelFill();
+    syncNavigationState();
+});
+
 document.querySelectorAll('[data-nav-page]').forEach(btn => {
     btn.addEventListener('click', () => {
         showPage(btn.dataset.navPage);
@@ -221,7 +283,17 @@ document.addEventListener('click', (event) => {
     setMobileDrawerOpen(!navState.mobileDrawerOpen);
 });
 navDrawerBackdrop?.addEventListener('click', () => setMobileDrawerOpen(false));
-hydrateNavIcons();
+// The drawer follows a finger (drawer_drag.js; DRAWER_DRAG switches it off); ☰ and × remain its controls.
+const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
+    sidebar: primarySidebar, scrim: navDrawerBackdrop, layers,
+    isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
+    isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
+}) : () => {};
+const navDrawerClose = document.getElementById('nav-drawer-close');
+if (navDrawerClose) {
+    navDrawerClose.innerHTML = SHELL_ICONS.close;
+    navDrawerClose.addEventListener('click', () => setMobileDrawerOpen(false));
+}
 
 // While a Project panel paints, Main defers first hydration (bounded in chat.js).
 let projectPanelOpeningSince = 0;
@@ -748,7 +820,8 @@ function paintProjectsNav() {
             trailing = kebab;
         }
         if (project.id === navState.activeProjectId) btn.classList.add('active');
-        if (!deleting) btn.addEventListener('click', () => openProjectPanel(project));
+        // Pressing a row opens its Project; pressing the open one again keeps it open (like every reference).
+        if (!deleting) btn.addEventListener('click', () => openProjectPanel(project, { openOnly: true }));
         item.append(btn, trailing);
         navProjectsList.appendChild(item);
     }
@@ -817,7 +890,7 @@ window.addEventListener('ouro:open-project', (event) => {
 
 // Resizable side sections: edge drag-handles write --sidebar-width /
 // --project-panel-width on :root and persist (debounced) to /api/ui/preferences.
-// Disabled under the mobile drawer breakpoint. Width 0 = keep the CSS default.
+// Disabled in the stack layout (layout.js). Width 0 = keep the CSS default.
 // CW10 note: the DEVELOPMENT.md "no inline styles in JS" rule targets static styling
 // that belongs in a stylesheet — the drag's transient `userSelect:none` was that, and
 // is now the `.resizing-panels` class. Setting a custom property (`--sidebar-width`)
@@ -837,7 +910,6 @@ function setupResizablePanels(prefs) {
     };
     if (Number(prefs?.sidebar_width) > 0) root.style.setProperty('--sidebar-width', `${prefs.sidebar_width}px`);
     if (Number(prefs?.project_panel_width) > 0) root.style.setProperty('--project-panel-width', `${prefs.project_panel_width}px`);
-    const isMobile = () => window.matchMedia('(max-width: 980px)').matches;
     const makeHandle = (target, cssVar, dir, prefKey, min, max) => {
         if (!target) return;
         const handle = document.createElement('div');
@@ -846,7 +918,7 @@ function setupResizablePanels(prefs) {
         target.appendChild(handle);
         let startX = 0, startW = 0, dragging = false;
         handle.addEventListener('pointerdown', (e) => {
-            if (isMobile()) return;  // mobile uses the drawer, not a resizable column
+            if (isStackLayout()) return;  // the stack layout has a drawer, not a resizable column
             dragging = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
             try { handle.setPointerCapture(e.pointerId); } catch {}
             document.body.classList.add('resizing-panels');  // CW10: class, not inline style
@@ -857,6 +929,7 @@ function setupResizablePanels(prefs) {
             const delta = dir === 'right' ? (e.clientX - startX) : (startX - e.clientX);
             const w = Math.max(min, Math.min(max, Math.round(startW + delta)));
             root.style.setProperty(cssVar, `${w}px`);
+            syncProjectPanelFill();
         });
         const end = (e) => {
             if (!dragging) return;
@@ -870,6 +943,7 @@ function setupResizablePanels(prefs) {
     };
     makeHandle(document.getElementById('primary-sidebar'), '--sidebar-width', 'right', 'sidebar_width', 180, 560);
     makeHandle(document.getElementById('project-panel'), '--project-panel-width', 'left', 'project_panel_width', 320, 1100);
+    syncProjectPanelFill();
 }
 
 apiFetch('/api/ui/preferences', { cache: 'no-store' })
@@ -930,11 +1004,16 @@ initUpdateStatus(ctx);
 initOnboardingOverlay();
 
 const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
+// Inside Telegram the host's chrome follows the shell (host_telegram.js); a no-op elsewhere.
+const telegramHost = createTelegramHost({ layers });
+telegramHost.bind();
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     disposeEvolution();
     disposeStorage?.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
+    telegramHost.dispose();
+    disposeDrawerDrag();
 });
 loadVersion();
 syncNavigationState();
@@ -1052,7 +1131,7 @@ if (hashPage && hashPage !== state.activePage) showPage(hashPage);
 
     const updateVvh = () => {
         const h = viewportHeight();
-        if (window.innerWidth <= 640) {
+        if (isStackLayout()) {
             vvhStyle.textContent = ':root{--vvh:' + Math.max(320, Math.ceil(h)) + 'px}';
             if (!focusedKeyboardEditable()) {
                 applyKeyboardState(false);

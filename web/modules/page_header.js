@@ -1,21 +1,36 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { bindScrollFade } from './scroll_fade.js';
+import { SHELL_ICONS } from './page_icons.js';
+import { pageLabel } from './pages.js';
+import { currentLayout, onLayoutChange } from './layout.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
 }
 
+// The shell's ☰: one of the shell's icon controls (style.css .shell-icon-control), present in the leading slot of
+// every header in the stack layout; the drawer's × takes its exact place (tests/test_shell_drawer_static.py).
 export function renderMobileNavToggle() {
     return `
-        <button class="mobile-nav-toggle" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded="false">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
-        </button>
+        <button class="shell-icon-control mobile-nav-toggle" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded="false">${SHELL_ICONS.menu}</button>
     `;
 }
 
+/**
+ * The one header of every page AND the Project panel (docs/DESIGN.md "Shell", plan P5): one row, one height,
+ * one title style, one close control. `☰ · title · status … actions · ×`: the leading slot holds ☰ (the stack
+ * layout shows it), the title row takes the room's status after the title (room_work.js), the toolbar and the
+ * trailing slot end the row. A description is not header chrome: it is rendered as the page's first quiet
+ * paragraph right after the header (`.app-page-lede`), and a tab strip as its own strip under it, so the row
+ * stays one row. `named` says the sidebar's chosen row already names this place: on a desk such a header shows no
+ * title (the h2 stays for readers) and, with no actions, no bar at all; a Project keeps its name. No icon anywhere:
+ * `icon` is accepted for the callers that still pass one and ignored.
+ */
 export function renderPageHeader({
+    page = '',   // a registry id: the title is its label unless `title` says otherwise
     title,
-    icon = '',
+    titleId = '',
+    icon = '',  // eslint-disable-line no-unused-vars -- the place is named by words, never a glyph (owner 5A)
     description = '',
     leadingHtml,
     toolbarHtml = '',
@@ -26,39 +41,68 @@ export function renderPageHeader({
     className = '',
     toolbarClass = '',
     showMobileNav = true,
+    named = true,
 } = {}) {
     const variantClass = variant ? `app-page-header-${escapeHtml(variant)}` : '';
-    const iconHtml = icon ? `<span class="app-page-icon" aria-hidden="true">${icon}</span>` : '';
+    const words = title ?? pageLabel(page);
     const leading = leadingHtml !== undefined
         ? leadingHtml
         : (showMobileNav ? renderMobileNavToggle() : '');
-    const descriptionHtml = description
-        ? `<p class="app-page-description">${escapeHtml(description)}</p>`
-        : '';
     const toolbar = (toolbarHtml || actionsHtml)
         ? `<div class="${classAttr(['app-page-toolbar', 'app-page-actions', escapeHtml(toolbarClass)])}">${toolbarHtml || actionsHtml}</div>`
         : '';
     const trailing = trailingHtml
         ? `<div class="app-page-trailing">${trailingHtml}</div>`
         : '';
+    const lede = description
+        ? `<p class="app-page-lede">${escapeHtml(description)}</p>`
+        : '';
     const tabs = tabsHtml
         ? `<div class="app-page-tabs">${tabsHtml}</div>`
         : '';
+    const facts = [
+        named ? ' data-sidebar-names' : '',
+        named && !toolbar && !trailing ? ' data-empty' : '',
+    ].join('');
+    const id = titleId ? ` id="${escapeHtml(titleId)}"` : '';
     return `
-        <div class="${classAttr(['page-header', 'app-page-header', variantClass, className])}">
+        <div class="${classAttr(['page-header', 'app-page-header', variantClass, className])}"${facts}>
             <div class="app-page-leading">${leading}</div>
             <div class="app-page-title-block">
                 <div class="app-page-title-row">
-                    ${iconHtml}
-                    <h2 class="app-page-title">${escapeHtml(title)}</h2>
+                    <h2 class="app-page-title"${id}>${escapeHtml(words)}</h2>
                 </div>
-                ${descriptionHtml}
             </div>
             ${toolbar}
             ${trailing}
-            ${tabs}
         </div>
+        ${lede}
+        ${tabs}
     `;
+}
+
+/**
+ * Main's header controls by layout (owner Q4=A): docked keeps Restart in the row and the budget after the
+ * actions; the stack layout moves the same two nodes into the ⋯ menu (the budget first, Restart last), so each
+ * keeps its one handler and its one id. Returns the disposer of the layout subscription.
+ */
+export function bindHeaderControlPlacement({ headerActions, budgetPill = null } = {}) {
+    const restart = headerActions?.querySelector?.('[data-chat-command="restart"]');
+    const panic = headerActions?.querySelector?.('[data-chat-command="panic"]');
+    const menu = headerActions?.querySelector?.('.chat-header-menu');
+    const toolbar = budgetPill?.parentElement || null;
+    if (!restart || !menu) return () => {};
+    const place = (layout) => {
+        if (layout === 'stack') {
+            if (budgetPill) menu.prepend(budgetPill);
+            menu.append(restart);
+        } else {
+            headerActions.insertBefore(restart, panic);
+            if (budgetPill && toolbar) toolbar.insertBefore(budgetPill, headerActions.nextSibling);
+        }
+    };
+    place(currentLayout());
+    return onLayoutChange(place);
 }
 
 // SSOT for a segmented single-select control (the settings effort/mode toggles):

@@ -2022,10 +2022,10 @@ def _mobile_keyboard_drawer_assertions(page, url: str, screenshot_path: pathlib.
     # surface even though the keyboard touch lock was active one frame earlier.
     scroll = page.evaluate(
         """() => {
-            const scroller = document.querySelector('#primary-sidebar .sidebar-scroll');
+            const scroller = document.querySelector('#primary-sidebar #nav-projects-list');
             for (let i = 0; i < 60; i += 1) {
                 const row = document.createElement('button');
-                row.className = 'nav-row';
+                row.className = 'nav-row nav-project-row';
                 row.type = 'button';
                 row.textContent = `Drawer overflow probe ${i}`;
                 scroller.appendChild(row);
