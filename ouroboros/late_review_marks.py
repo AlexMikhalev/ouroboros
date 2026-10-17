@@ -51,8 +51,8 @@ from ouroboros.utils import truncate_within_limit
 log = logging.getLogger(__name__)
 
 # The review a mark names, by its writer's surface; another surface is named as recorded.
-SURFACE_NAMES = {"task_acceptance": "result review", "plan_review": "plan review", "commit_gate": "commit review",
-                 "multi_model_review": "change review", "change": "change review"}
+SURFACE_NAMES = {"task_acceptance": "result review", "result": "result review", "plan_review": "plan review",
+                 "commit_gate": "commit review", "multi_model_review": "change review", "change": "change review"}
 LINE_LIMIT = 800  # one line of the writer's words
 TEXT_LIMIT = 4000  # the whole mark: the view never degrades a mark, so the bound is set here
 OWED_SET = "late_review_marks"  # owner-held rows: id -> {record | left_review, after_end?}

@@ -1347,7 +1347,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
     try:
         result_json = _handle_multi_model_review(
             ctx,
-            content=TRIAD_USER_TURN,
+            content=prepared.get("user_turn") or TRIAD_USER_TURN,
             prompt=prepared["prompt"],
             models=prepared["models"],
             stable_prefix_len=prepared["stable_prefix_len"],

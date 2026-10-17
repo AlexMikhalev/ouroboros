@@ -497,18 +497,20 @@ def parse_seat_answers(result_json: Dict[str, Any], row_parts: Dict[str, Sequenc
         raw_text = str(actor.get("text") or "")
         model_label = model or "reviewer"
         slot_id = str(actor.get("slot_id") or "")
-        parts = [p for p in ("change", "coupling") if p in tuple(row_parts.get(slot_id) or ("change",))]
+        parts = [p for p in ("change", "coupling", "result") if p in tuple(row_parts.get(slot_id) or ("change",))]
         if str(actor.get("operation_state") or "") == "not_dispatched":
             record = _actor_record(actor, idx=idx, model_label=model_label, status="not_dispatched", raw_text=raw_text)
         elif str(actor.get("verdict") or "").upper() == "ERROR":
             record = _actor_record(actor, idx=idx, model_label=model_label, status="error", raw_text=raw_text)
         else:
-            if parts == ["change"]:
+            if parts in (["change"], ["result"]):
+                # Contract A: the change question of a packet seat, and the one question of every
+                # result seat (``review_change(subject="result")``), answer the findings array.
                 parsed = extract_json_array(raw_text, normalize=True)
                 if parsed is None or (not parsed and not empty_array_is_verified_clean(raw_text)):
                     answers = None
                 else:
-                    answers = {"change": _change_answer(_change_items(
+                    answers = {parts[0]: _change_answer(_change_items(
                         [e for e in parsed if isinstance(e, dict)], model_label=model_label, slot_id=slot_id))}
             else:
                 answers = parse_two_part_answer(raw_text, parts, model_label=model_label, slot_id=slot_id)

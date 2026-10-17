@@ -50,8 +50,11 @@ VERDICT_PASS, VERDICT_FAIL = "PASS", "FAIL"
 VERDICT_NOT_PERFORMED, VERDICT_QUORUM_FAILED, VERDICT_NOT_DISPATCHED = "NOT_PERFORMED", "QUORUM_FAILED", "NOT_DISPATCHED"
 AGGREGATE_VERDICTS = frozenset({VERDICT_PASS, VERDICT_FAIL, VERDICT_NOT_PERFORMED, VERDICT_QUORUM_FAILED, VERDICT_NOT_DISPATCHED})
 QUESTION_NOT_PERFORMED, QUESTION_UNANSWERED = "not_performed", "unanswered"
-PART_CHANGE, PART_COUPLING = "change", "coupling"
-PARTS = (PART_CHANGE, PART_COUPLING)
+PART_CHANGE, PART_COUPLING, PART_RESULT = "change", "coupling", "result"
+PARTS = (PART_CHANGE, PART_COUPLING)  # a change wave's two questions
+# A result wave (``review_change(subject="result")``) asks one question of every seat:
+# does this task result do what was asked. It never asks the change or coupling question.
+ALL_PARTS = (*PARTS, PART_RESULT)
 SURFACES = frozenset({"commit_gate", "change", "intention", "result", "skill", "system", "preflight"})
 ANSWERED_STATUSES = frozenset({"responded", "partial"})  # a readable answer arrived
 HEAVY_VERDICT_FIELDS = ("critical_findings", "advisory_findings", "additional_findings")
@@ -571,6 +574,12 @@ def seat_parts(slot: Any, *, coupling_only: bool = False) -> tuple:
     return PARTS if retrieves else (PART_CHANGE,)
 
 
+def answer_keys(parts: Iterable[str]) -> tuple:
+    """The answer block a seat carries: a result seat the result question alone, every
+    other seat both change-wave questions (one it was not asked stays ``not_asked``)."""
+    return (PART_RESULT,) if PART_RESULT in tuple(parts) else PARTS
+
+
 def _answered(seat: Dict[str, Any]) -> bool:
     return str(seat.get("status") or "") in ANSWERED_STATUSES
 
@@ -634,6 +643,9 @@ def reduce_verdict(rows: List[Dict[str, Any]], *, gate_blocked: bool = False, ga
     PASS when both parts PASS and the gate did not block for another reason (a blocked
     gate never reads PASS). ``reason`` names the branch that decided."""
     per_row = {str(seat.get("seat_id") or ""): row_verdict(seat) for seat in rows}
+    if any(PART_RESULT in (seat.get("parts") or []) for seat in rows):
+        return _reduce_result_wave(rows, per_row, gate_blocked=gate_blocked, gate_reason=gate_reason,
+                                   dispatch_refusal=dispatch_refusal, pending=pending, quorum_required=quorum_required)
     assigned_of = {part: sum(1 for s in rows if part in (s.get("parts") or [])) for part in PARTS}
     parts = {PART_CHANGE: {"required": _quorum_for(assigned_of[PART_CHANGE]), "assigned": assigned_of[PART_CHANGE],
                            "responded": sum(1 for s in rows if _part_verdict(s, PART_CHANGE))},
@@ -663,6 +675,37 @@ def reduce_verdict(rows: List[Dict[str, Any]], *, gate_blocked: bool = False, ga
     return {"aggregate": aggregate, "quorum": quorum, "per_row": per_row, "per_question": per_question, "reason": reason}
 
 
+def _reduce_result_wave(rows: List[Dict[str, Any]], per_row: Dict[str, str], *, gate_blocked: bool, gate_reason: str,
+                        dispatch_refusal: Optional[Dict[str, Any]], pending: bool,
+                        quorum_required: Optional[int]) -> Dict[str, Any]:
+    """A result wave in the same order as a change wave, with its one question in place
+    of the two: NOT_DISPATCHED → pending → QUORUM_FAILED → FAIL → PASS. No coupling
+    question is asked, so none can leave the wave unperformed."""
+    assigned = sum(1 for seat in rows if PART_RESULT in (seat.get("parts") or []))
+    required_part = _quorum_for(assigned)
+    parts = {PART_RESULT: {"required": required_part, "assigned": assigned,
+                           "responded": sum(1 for seat in rows if _part_verdict(seat, PART_RESULT))}}
+    per_question = {PART_RESULT: question_verdict(rows, PART_RESULT, required=required_part)}
+    responded = sum(1 for seat in rows if _answered(seat))
+    required = int(quorum_required) if quorum_required is not None else _quorum_for(len(rows))
+    quorum = {"required": required, "responded": responded, "assigned": len(rows), "parts": parts}
+    if dispatch_refusal is not None or not rows or all(v == VERDICT_NOT_DISPATCHED for v in per_row.values()):
+        aggregate, reason = VERDICT_NOT_DISPATCHED, "dispatch_refusal" if dispatch_refusal is not None else "nothing_dispatched"
+    elif pending:
+        aggregate, reason = VERDICT_NOT_PERFORMED, "review_late_result_pending"
+    elif responded < max(1, required):
+        aggregate, reason = VERDICT_QUORUM_FAILED, "review_quorum"
+    elif per_question[PART_RESULT] == VERDICT_FAIL:
+        aggregate, reason = VERDICT_FAIL, "critical_findings"
+    elif gate_blocked:
+        aggregate, reason = VERDICT_NOT_PERFORMED, f"gate_block:{gate_reason}" if gate_reason else "gate_block"
+    elif per_question[PART_RESULT] == VERDICT_PASS:
+        aggregate, reason = VERDICT_PASS, "pass"
+    else:
+        aggregate, reason = VERDICT_NOT_PERFORMED, "result_unanswered"
+    return {"aggregate": aggregate, "quorum": quorum, "per_row": per_row, "per_question": per_question, "reason": reason}
+
+
 # The gate's own words for a wave that reduced to NOT_PERFORMED, keyed by the
 # ``reason`` above; the commit gate's block message and ``review_status``'s
 # reason line say the same thing about the same code.
@@ -670,6 +713,7 @@ NOT_PERFORMED_PHRASES: Dict[str, str] = {
     "coupling_not_performed": "the coupling question (Part 2) was answered by no seat",
     "change_unanswered": "no seat answered the change (Part 1) with a PASS/FAIL verdict",
     "review_late_result_pending": "physical review operation(s) remain unresolved",
+    "result_unanswered": "no seat answered the result question with a PASS/FAIL verdict",
 }
 
 
@@ -681,20 +725,21 @@ def _seat_from_plan(seat_id: str, parts: Iterable[str], plan: Dict[str, Any]) ->
                  "processing_preference": str(plan.get("processing_preference") or ""),
                  "subagent_id": str(plan.get("subagent_id") or "")}
     effective = {k: requested[k] for k in ("route", "model", "effort", "profile", "delivery")}
-    parts = [part for part in PARTS if part in tuple(parts)]
+    parts = [part for part in ALL_PARTS if part in tuple(parts)]
     return {"seat_id": seat_id, "subagent_id": requested["subagent_id"], "parts": parts,
             "additional": bool(plan.get("additional")),
             "requested": requested, "effective": {**effective, "verdict_method": "", "source": "requested"},
             "observed_model": UNKNOWN, "status": "not_dispatched", "operation_state": "not_dispatched",
             "answers": {part: _blank_answer(part, ANSWER_NOT_ASKED if part not in parts else "not_dispatched")
-                        for part in PARTS},
+                        for part in answer_keys(parts)},
             "parts_answered": [], "coverage": "not_asked", "capability_delta": [], "usd": None,
             "critical_count": 0, "raw_text": "", "brief_sha": str(plan.get("brief_sha") or ""), "source_refs": []}
 
 
 def _blank_answer(part: str, status: str) -> Dict[str, Any]:
     return {"status": status, "verdict": "", "findings": [], "critical": 0,
-            "coverage": "n/a" if part == PART_CHANGE else COVERAGE_NOT_ASKED if status == ANSWER_NOT_ASKED else COVERAGE_MISSING}
+            "coverage": ("n/a" if part != PART_COUPLING
+                         else COVERAGE_NOT_ASKED if status == ANSWER_NOT_ASKED else COVERAGE_MISSING)}
 
 
 def _legacy_change_answer(raw: Dict[str, Any], answered: bool, status: str) -> Dict[str, Any]:
@@ -717,7 +762,7 @@ def _apply_raw(seat: Dict[str, Any], raw: Dict[str, Any]) -> None:
     status = str(raw.get("status") or "") or seat["status"]
     answered = status in ANSWERED_STATUSES
     answers = raw.get("answers") if isinstance(raw.get("answers"), dict) else {}
-    for part in PARTS:
+    for part in answer_keys(seat["parts"]):
         if part not in seat["parts"]:
             continue
         given = answers.get(part)
@@ -988,7 +1033,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
         root_task_id=str(facts.get("root_task_id") or ""), review_wave_id=str(facts.get("review_wave_id") or ""),
         surface=surface, subject=subject,
         brief={"goal": str(facts.get("goal") or ""), "scope": str(facts.get("scope") or ""),
-               "parts": [part for part in PARTS if any(part in (seat.get("parts") or []) for seat in rows)],
+               "parts": [part for part in ALL_PARTS if any(part in (seat.get("parts") or []) for seat in rows)],
                "author_questions": list(facts.get("author_questions") or []), "checklist": checklist,
                "dispute_input": dispute_input},
         enforcement=enforcement, mode=str(facts.get("mode") or ""),
@@ -1061,7 +1106,7 @@ def seat_findings(triad_raw: Iterable[Dict[str, Any]],
         seat = str(raw.get("slot_id") or "")
         answers = raw.get("answers") if isinstance(raw.get("answers"), dict) else None
         if answers:
-            items = [(part, item) for part in PARTS for item in (answers.get(part) or {}).get("findings") or []
+            items = [(part, item) for part in ALL_PARTS for item in (answers.get(part) or {}).get("findings") or []
                      if isinstance(item, dict)]
         else:
             items = [(PART_CHANGE, item) for item in raw.get("parsed_items") or []
@@ -1214,7 +1259,8 @@ def coupling_outcome(verdict: dict, rows: list) -> CouplingOutcome:
 
 
 __all__ = [
-    "REVIEW_LEDGER_SCHEMA_VERSION", "ReviewLedgerRecord", "build_commit_gate_record", "build_rows", "build_wave_record",
+    "ALL_PARTS", "PART_RESULT", "REVIEW_LEDGER_SCHEMA_VERSION", "ReviewLedgerRecord", "answer_keys", "build_commit_gate_record",
+    "build_rows", "build_wave_record",
     "distinct_model_facts", "find_reusable", "index_path", "index_row", "ledger_dir", "ledger_root", "load_record",
     "mark_provenance_unknown", "new_record_id", "normalize_model_name", "note_author_decision", "panel_facts", "read_source",
     "recent_records", "record_path", "record_sources_resolvable", "reduce_verdict", "retain_text_source", "reuse_key_digest",

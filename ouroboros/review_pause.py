@@ -491,8 +491,9 @@ def wake_restored_left_review(ctx: Any) -> bool:
     return written
 
 
-_LEFT_TOOLS = {"commit": "commit_reviewed", "change": "review_change"}
-_LEFT_SURFACES = {"commit": "commit_gate", "change": "change"}  # the mark's writer surface (late_review_marks)
+_LEFT_TOOLS = {"commit": "commit_reviewed", "change": "review_change", "result": "review_result"}
+# the mark's writer surface (late_review_marks)
+_LEFT_SURFACES = {"commit": "commit_gate", "change": "change", "result": "result"}
 _SEAT_FACTS = ("model", "status", "operation_id", "operation_state", "late_result_pending", "raw_text", "error",
                "failure_code", "response_ref")
 

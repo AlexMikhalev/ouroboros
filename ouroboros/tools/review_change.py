@@ -62,11 +62,15 @@ from ouroboros.utils import run_cmd, utc_now_iso
 log = logging.getLogger(__name__)
 
 TOOL_NAME = "review_change"
+# A result wave keeps its own paid-cycle count per task tree (attempt rows carry this tool
+# name), as task acceptance did: change reviews never use up an owed result review.
+RESULT_TOOL_NAME = "review_result"
 SURFACE = "change"
-SURFACES = ("change", "preflight", "system")
+RESULT = "result"
+SURFACES = ("change", "preflight", "system", RESULT)
 ROOTS = ("active_workspace", "system_repo")
 CHANGE_KINDS = ("index", "worktree", "base..head")
-SUBJECT_KINDS = (*CHANGE_KINDS, "system")
+SUBJECT_KINDS = (*CHANGE_KINDS, "system", RESULT)
 # The part a system review's one seat answers: a report, outside the verdict
 # questions (``review_ledger.PARTS``), so its record never states a verdict.
 REPORT_PART = "report"
@@ -100,11 +104,17 @@ class ReviewChangeRequest:
     review_rebuttal: str = ""
     treat_as_body: bool = False
     surface: str = SURFACE
+    answer: str = ""  # subject=result: the reply under review (omitted = the task's latest reply)
 
 
 _ARG_NAMES = frozenset(ReviewChangeRequest.__dataclass_fields__)
 _TEXT_ARGS = ("root", "workspace_root", "subject", "base", "head", "surface", "goal", "scope",
-              "reason", "reviewer_effort", "review_rebuttal")
+              "reason", "reviewer_effort", "review_rebuttal", "answer")
+
+
+def wave_tool_name(request: Any) -> str:
+    """The attempt rows' tool name: one paid-cycle count per kind of review."""
+    return RESULT_TOOL_NAME if str(getattr(request, "surface", "") or "") == RESULT else TOOL_NAME
 
 
 def _text(args: Dict[str, Any], name: str, problems: List[str]) -> str:
@@ -133,6 +143,8 @@ def parse_request(args: Dict[str, Any]) -> ReviewChangeRequest:
     root = text["root"].strip() or "active_workspace"
     subject, base, head = text["subject"].strip(), text["base"].strip(), text["head"].strip()
     surface = text["surface"].strip() or SURFACE
+    if subject == RESULT and surface == SURFACE:
+        surface = RESULT  # the subject names its surface, as /review's does
     lists = {name: _strings(args, name, problems, verbatim=name == "author_questions")
              for name in ("author_questions", "reviewers", "coupling_only")}
     if root not in ROOTS:
@@ -145,6 +157,10 @@ def parse_request(args: Dict[str, Any]) -> ReviewChangeRequest:
         problems.append(f"subject must be one of {', '.join(SUBJECT_KINDS)}, got {subject!r}")
     elif (subject == "system") != (surface == "system"):
         problems.append("subject=system goes with surface=system: /review reads the whole system repository")
+    elif (subject == RESULT) != (surface == RESULT):
+        problems.append("subject=result goes with surface=result: it reviews this task's result, not a change")
+    elif subject == RESULT and (text["workspace_root"].strip() or base or head or root != "active_workspace"):
+        problems.append("subject=result reviews this task's own result; root, workspace_root, base and head do not apply")
     elif subject == "system" and (text["workspace_root"].strip() or base or head):
         problems.append("subject=system reads the installed system repository; workspace_root, base and head do not apply")
     elif subject == "base..head" and not (base and head):
@@ -159,6 +175,10 @@ def parse_request(args: Dict[str, Any]) -> ReviewChangeRequest:
         problems.append(f"surface={surface} seats exactly one reviewer, named in reviewers"
                         + (" (omitted = the direct Main row)" if surface == "system" else "")
                         + "; coupling_only does not apply")
+    if subject == RESULT and lists["coupling_only"]:
+        problems.append("coupling_only belongs to a change review; a result review asks one question of every seat")
+    if text["answer"].strip() and subject != RESULT:
+        problems.append("answer belongs to subject=result")
     effort = text["reviewer_effort"].strip()
     if effort and effort not in EFFORT_SCALE:
         problems.append(f"reviewer_effort must be one of {', '.join(EFFORT_SCALE)}, got {effort!r}")
@@ -172,7 +192,8 @@ def parse_request(args: Dict[str, Any]) -> ReviewChangeRequest:
         subject=subject, base=base, head=head,
         goal=text["goal"], scope=text["scope"], author_questions=lists["author_questions"],
         reviewers=lists["reviewers"], reason=text["reason"], coupling_only=lists["coupling_only"],
-        reviewer_effort=effort, review_rebuttal=text["review_rebuttal"], treat_as_body=treat is True,
+        reviewer_effort=effort, review_rebuttal=text["review_rebuttal"], treat_as_body=treat is True and subject != RESULT,
+        answer=text["answer"],
         surface=surface)
 
 
@@ -316,6 +337,8 @@ def compose_panel(request: ReviewChangeRequest, *, adds_only: bool) -> ComposedP
         return slots._delivery_slot(row, role_hint="", default_effort=order)
 
     def placed(slot: Any, *, additional: bool = False, coupling_only: bool = False) -> Any:
+        if request.surface == RESULT:  # every seat answers the one result question
+            return slots.PoolSeat(slot, (ledger.PART_RESULT,), additional)
         return slots.PoolSeat(slot, tuple(ledger.seat_parts(slot, coupling_only=coupling_only)), additional)
 
     named = list({slot.slot_id: slot for slot in map(seat, request.reviewers)}.values())
@@ -342,9 +365,10 @@ def compose_panel(request: ReviewChangeRequest, *, adds_only: bool) -> ComposedP
             ignored.append(name)
             continue
         seats.append(placed(slot, additional=True, coupling_only=True))
-    if not any(PART_CHANGE in parts for _slot, parts, extra in seats if not extra):
+    question = ledger.PART_RESULT if request.surface == RESULT else PART_CHANGE
+    if not any(question in parts for _slot, parts, extra in seats if not extra):
         raise ReviewChangeArgumentError(
-            "the panel has no seat for the change question; name at least one reviewer from the review pool "
+            f"the panel has no seat for the {question} question; name at least one reviewer from the review pool "
             "(an enabled row outside the pool is an added critic, never the quorum)")
     if len(seats) > MAX_CONFIGURED_SUBAGENTS:
         raise ReviewChangeArgumentError(
@@ -354,7 +378,9 @@ def compose_panel(request: ReviewChangeRequest, *, adds_only: bool) -> ComposedP
                  coupling_only_ignored=ignored, additional=[slot.slot_id for slot, _parts, extra in seats if extra],
                  reviewer_effort=_effort_facts(order, seats, own))
     facts.setdefault("reviewers_subset_ignored", False)
-    return ComposedPanel(tuple(seats), tuple(seats) != tuple(placed(slot) for slot in configured), facts)
+    # A result wave always runs its own composition: the configured pool's parts are a change wave's.
+    override = request.surface == RESULT or tuple(seats) != tuple(placed(slot) for slot in configured)
+    return ComposedPanel(tuple(seats), override, facts)
 
 
 @contextlib.contextmanager
@@ -421,6 +447,8 @@ def _round_sha(request: ReviewChangeRequest, frozen: Any) -> str:
 
 
 def _wave_label(request: ReviewChangeRequest, root: pathlib.Path) -> str:
+    if request.surface == RESULT:
+        return "review_change result: this task's result against what was asked (review only; nothing is delivered)"
     span = {"base..head": f"{request.base}..{request.head}", "index": "staged index", "worktree": "worktree"}
     against = f" against {request.base}" if request.base and request.subject != "base..head" else ""
     surface = "" if request.surface == SURFACE else f" {request.surface}"
@@ -432,7 +460,12 @@ def _prepare_wave(ctx: ToolContext, request: ReviewChangeRequest, frozen: Any, p
     """Every identity of this wave, computed under its own panel."""
     from ouroboros.tools.commit_gate import commit_review_contract_fingerprint, compute_rebuttal_sha256, resolve_root_task_id
 
-    rules = checklist_fingerprint(layer)
+    if request.surface == RESULT:
+        from ouroboros.tools.review_result import result_rules
+
+        rules = result_rules()
+    else:
+        rules = checklist_fingerprint(layer)
     enforcement = str(get_review_enforcement() or "")
     contract_fp = str(rejoin.review_contract_fingerprint or "") if rejoin is not None else str(commit_review_contract_fingerprint() or "")
     rebuttal_sha = str(compute_rebuttal_sha256(request.review_rebuttal) or "")
@@ -478,7 +511,7 @@ def _wave_context(ctx: ToolContext, wave: _Wave) -> Iterator[None]:
     saved = {name: getattr(ctx, name, missing) for name in _CTX_FIELDS}
     try:
         git_mod._reset_commit_review_state(ctx)
-        ctx._current_review_tool_name = TOOL_NAME
+        ctx._current_review_tool_name = wave_tool_name(wave.request)
         ctx._current_review_retry_key = wave.retry_key
         ctx._current_review_record_id = wave.record_id
         ctx._current_review_rebuttal_sha256 = wave.rebuttal_sha
@@ -706,8 +739,9 @@ def _settle(ctx: ToolContext, wave: _Wave, facts: Dict[str, Any], outcome: Dict[
     settle_attempt(ctx, wave, outcome, payload, facts)
     result = review_result(payload, reused=False)
     result["durable"] = durable
-    from ouroboros.review_history_view import queue_review_history_context
-    queue_review_history_context(ctx, family="commit", repo_root=wave.root)
+    if wave.request.surface != RESULT:
+        from ouroboros.review_history_view import queue_review_history_context
+        queue_review_history_context(ctx, family="commit", repo_root=wave.root)
     return result
 
 
@@ -737,10 +771,11 @@ def review_result(record: Dict[str, Any], *, reused: bool) -> Dict[str, Any]:
 
 
 def _cycles_exhausted(ctx: ToolContext, wave: _Wave) -> Optional[Dict[str, Any]]:
-    """The shared per-task-tree ceiling of (this root, ``review_change``)."""
+    """The shared per-task-tree ceiling of (this root, this kind of review: ``wave_tool_name``)."""
     from ouroboros.tools.commit_gate import check_review_cycles_ceiling
 
-    probe = SimpleNamespace(drive_root=ctx.drive_root, repo_dir=str(wave.root), _current_review_tool_name=TOOL_NAME)
+    probe = SimpleNamespace(drive_root=ctx.drive_root, repo_dir=str(wave.root),
+                            _current_review_tool_name=wave_tool_name(wave.request))
     return check_review_cycles_ceiling(probe, root_task_id=wave.root_task_id)
 
 
@@ -748,7 +783,7 @@ def _refuse_exhausted(ctx: ToolContext, wave: _Wave, exhausted: Dict[str, Any]) 
     from ouroboros.review_cycles import emit_review_cycles_exhausted
 
     emit_review_cycles_exhausted(
-        getattr(ctx, "event_queue", None), ctx.drive_root, surface=TOOL_NAME,
+        getattr(ctx, "event_queue", None), ctx.drive_root, surface=wave_tool_name(wave.request),
         task_id=str(getattr(ctx, "task_id", "") or ""), cycles_paid=int(exhausted["cycles_paid"]),
         cap=int(exhausted["cap"]), enforcement=wave.enforcement, root_task_id=wave.root_task_id,
         fingerprint=str(wave.frozen.diff_sha), root=str(wave.root))
@@ -914,14 +949,23 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         return run_system_review(ctx, reviewer=request.reviewers[0] if request.reviewers else "",
                                  effort=request.reviewer_effort, goal=request.goal,
                                  author_questions=request.author_questions, reason=request.reason)
-    root_kind, root = resolve_review_root(ctx, binding, request)
-    _verify_revisions(root, request)
     governance = _governance_repo(ctx)
-    fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=request.treat_as_body)
-    layer = layer_for(fact)
-    spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
-                             head=request.head, governance_root=str(governance), surface=request.surface,
-                             body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
+    if request.subject == RESULT:
+        from ouroboros.tools.review_result import RESULT_LAYER, refuse_when_off, result_subject
+
+        refuse_when_off()  # before any subject is built or any seat is paid
+        result = result_subject(ctx, request, governance_root=governance)
+        root = pathlib.Path(result.spec.root)
+        fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=False)
+        layer, spec = RESULT_LAYER, result.spec
+    else:
+        root_kind, root = resolve_review_root(ctx, binding, request)
+        _verify_revisions(root, request)
+        fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=request.treat_as_body)
+        layer = layer_for(fact)
+        spec = ReviewSubjectSpec(root_kind=root_kind, root=str(root), kind=request.subject, base=request.base,
+                                 head=request.head, governance_root=str(governance), surface=request.surface,
+                                 body_fact=str(fact.body), body_how=str(fact.how), layer=layer)
     # The gate's own subject (the body's staged index against HEAD) is read on its live
     # root exactly as the gate reads it unless its interactive author may leave the wave
     # on an addressed message (``_read_subject``); every other subject is materialized in an
@@ -933,12 +977,14 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     retention: Dict[str, Any] = {}
     task_id = str(getattr(ctx, "task_id", "") or "")
     unfrozen: List[str] = []
-    with _read_subject(ctx, spec, request, retention, task_id, unfrozen) as frozen:
+    reading = (contextlib.nullcontext(result) if request.subject == RESULT
+               else _read_subject(ctx, spec, request, retention, task_id, unfrozen))
+    with reading as frozen:
         if not str(getattr(frozen, "diff_text", "") or "").strip():
             raise ReviewChangeArgumentError(f"subject={request.subject} of {root} has no change to review")
         # Locate an already-paid round before consulting mutable pool settings.
         # An absent or changed row cannot substitute a new operation for this one.
-        rejoin = pending_round_attempt(ctx, root=root,
+        rejoin = pending_round_attempt(ctx, root=root, tool_name=wave_tool_name(request),
             retry_key=review_retry_key(frozen, round_sha=_round_sha(request, frozen)))
         if rejoin is not None:
             from ouroboros.tools.review_change_custody import recorded_change_panel
@@ -968,16 +1014,17 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                 retention.update(_checkout_custody(ctx, forensic))
                 from ouroboros import review_pause
 
-                left = review_pause.watch_left_review(ctx, surface="change", retry_key=wave.retry_key,
+                kind = RESULT if request.surface == RESULT else "change"
+                left = review_pause.watch_left_review(ctx, surface=kind, retry_key=wave.retry_key,
                                                       record_id=wave.record_id,
                                                       reissue="the same unchanged review_change call")
-            result = _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
-            if result.get("state") == "pending" and left is None:
+            settled = _settle(ctx, wave, wave_facts(ctx, wave, outcome=outcome, forensic=forensic), outcome, retention)
+            if settled.get("state") == "pending" and left is None:
                 # Nobody waits for these seats any more: their record settles once they finish
                 # (at the latest when this task ended), whether or not the call is re-issued.
-                review_pause.owe_unwaited_review(ctx, surface="change", retry_key=wave.retry_key,
-                                                 record_id=str(result.get("record_id") or wave.record_id))
-            return result
+                review_pause.owe_unwaited_review(ctx, surface=kind, retry_key=wave.retry_key,
+                                                 record_id=str(settled.get("record_id") or wave.record_id))
+            return settled
 
 
 @contextlib.contextmanager
@@ -1014,7 +1061,7 @@ def _handle_review_change(
     base: str = "", head: str = "", surface: str = SURFACE, goal: str = "", scope: str = "",
     author_questions: Optional[List[str]] = None, reviewers: Optional[List[str]] = None, reason: str = "",
     coupling_only: Optional[List[str]] = None, reviewer_effort: str = "", review_rebuttal: str = "",
-    treat_as_body: bool = False, _resolved_binding: Any = None,
+    treat_as_body: bool = False, answer: str = "", _resolved_binding: Any = None,
 ) -> str:
     from ouroboros import review_pause
 
@@ -1027,11 +1074,11 @@ def _handle_review_change(
                 ctx, root=root, workspace_root=workspace_root, subject=subject, base=base, head=head, surface=surface,
                 goal=goal, scope=scope, author_questions=author_questions, reviewers=reviewers, reason=reason,
                 coupling_only=coupling_only, reviewer_effort=reviewer_effort, review_rebuttal=review_rebuttal,
-                treat_as_body=treat_as_body, _resolved_binding=_resolved_binding)
+                treat_as_body=treat_as_body, answer=answer, _resolved_binding=_resolved_binding)
     except ReviewChangeArgumentError as exc:
         return argument_refusal(ctx, "TOOL_ARG_ERROR (review_change)", [str(exc)], effect="No reviewer was dispatched.")
     result.pop("usage", None)
-    if (getattr(ctx, "_left_review_wait", None) or {}).get("surface") == "change":
+    if (getattr(ctx, "_left_review_wait", None) or {}).get("surface") in {"change", RESULT}:
         result["message"] = ("An addressed message reached you while the reviewers ran: this call returned and their "
                              "paid work continues separately; a [Review settled] notice follows the whole wave. "
                              + str(result.get("message") or ""))
@@ -1061,7 +1108,12 @@ _DESCRIPTION = (
     "and reason records why — its counted seats are pool rows, an enabled row outside the pool is an added "
     "critic. surface=preflight seats exactly the ONE enabled catalog row you name (pool member or "
     "not): an optional early look, never the commit panel. subject=system with surface=system is /review: one row "
-    "(default: the Main model) reads the whole system against BIBLE.md and returns a report. The same subject, "
+    "(default: the Main model) reads the whole system against BIBLE.md and returns a report. subject=result "
+    "(surface=result) reviews THIS task's result instead of a change: the reply (answer, default your latest reply), "
+    "the files and effects the task produced, and what was asked; every seat answers one question, whether the "
+    "result does what was asked, judged on the result, never the method. Nobody asks for it in Auto: ask when "
+    "another mind's check could change what you deliver, or when your human asks for a careful check. It is "
+    "unavailable when task review is Off, and it has its own paid-cycle count. The same subject, "
     "surface, rules and panel return the settled record free (reused=true); enforcement is recorded and on another "
     "root never locks anything. Returns JSON {record_id, aggregate, per_question, panel, rows, subject, checklist, "
     "tests, cost, reused, findings} (+ report for subject=system)."
@@ -1083,11 +1135,13 @@ def get_tools() -> List[ToolEntry]:
         "workspace_root": _string("A registered folder to review instead (schedule_subagent's workspace_root policy)."),
         "subject": {"type": "string", "enum": list(SUBJECT_KINDS),
                     "description": ("base..head = commits between two revisions; index = staged; worktree = live; "
-                                    "system = the whole installed system (surface=system only).")},
+                                    "system = the whole installed system (surface=system only); result = this "
+                                    "task's result against what was asked.")},
         "base": _string("Base revision (required for base..head; index/worktree default HEAD)."),
         "head": _string("Head revision (base..head only)."),
-        "surface": _string("change = the panel review; preflight = one named row's early look; system = /review.",
-                           enum=list(SURFACES), default=SURFACE),
+        "surface": _string("change = the panel review; preflight = one named row's early look; system = /review; "
+                           "result = goes with subject=result (implied by it).", enum=list(SURFACES), default=SURFACE),
+        "answer": _string("subject=result only: the reply under review. Omitted = your latest reply in this task."),
         "goal": _string("What the change is meant to achieve."),
         "scope": _string("What the change deliberately covers."),
         "author_questions": _names("Your own questions to the reviewers, passed verbatim."),
