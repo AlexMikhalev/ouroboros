@@ -318,8 +318,8 @@ The host imports every live `render.kind: host` entry from its revision URL
 and calls the module's exported `mount(ctx)` once per contribution (several
 contributions may share one file). `mount` may return `{dispose()}`, directly
 or through a promise; the host calls `dispose` when the skill is disabled,
-updated or removed, on Panic and when the page goes away, and aborts
-`ctx.signal` at the same moment. The context is frozen and versioned; a
+updated or removed, on this page's Panic and when the page goes away, and
+aborts `ctx.signal` at the same moment. The context is frozen and versioned; a
 capability a later version adds is absent from an older context, never a stub.
 
 | `ctx` field | Meaning |

@@ -1496,12 +1496,12 @@ While recording, the slot holds a level dot and the time, Stop in the mic's
 place wearing the crimson tone, and Cancel; the draft stays visible. Stop
 transcribes; the words go in at the caret saved at Stop when the draft has
 not changed since, otherwise a sheet above the composer holds them with
-Insert and Copy. Dictation never sends. Esc, Cancel, Panic, a hidden room and
-the engine leaving end a recording; a chosen engine that cannot run here is
-named with its reason in the chooser. Read aloud is a saved reply's action
-(Replies): the reply's words with code announced, not read; one reply at a
-time, Stop on the one being read; Panic and leaving the page stop it. With
-no engine chosen it uses one on this device. The row menu's Read aloud
+Insert and Copy. Dictation never sends. Esc, Cancel, the page's Panic, a
+hidden room and the engine leaving end a recording; a chosen engine that
+cannot run here is named with its reason in the chooser. Read aloud is a saved
+reply's action (Replies): the reply's words with code announced, not read; one
+reply at a time, Stop on the one being read; the page's Panic and leaving it
+stop it. With no engine chosen it uses one on this device. The row menu's Read aloud
 voice… lists Automatic (a voice on this device) and every voice, "On
 this device" only when the browser marks it local, otherwise "Online voice".
 
