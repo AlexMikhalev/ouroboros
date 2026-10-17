@@ -40,7 +40,7 @@ function preflight(state = 'ready', overrides = {}) {
 
 test('the browser renders all five backend-authored states without reclassifying reason_code', () => {
     const expected = {
-        ready: { canStart: true, label: 'Publish to OuroborosHub' },
+        ready: { canStart: true, label: 'Publish' },
         warnings: { canStart: true, label: 'Publish with warnings' },
         needs_attention: { canStart: true, label: 'Ask Ouroboros to fix and publish' },
         repairable: { canStart: true, label: 'Ask Ouroboros to fix and publish' },
@@ -76,7 +76,7 @@ test('a typed hard block renders and starts no task even without a canonical tar
     assert.equal(result.started, false);
     assert.equal(creates, 0);
     assert.equal(dialogs.length, 1);
-    assert.equal(dialogs[0].title, 'Publishing is unavailable');
+    assert.equal(dialogs[0].title, 'Can’t publish');
     assert.equal(dialogs[0].alert, true);
 });
 
@@ -292,4 +292,42 @@ test('named API functions use the encoded selected route and ordinary task route
     assert.equal(calls[1].url, '/api/tasks');
     assert.equal(calls[0].init.method, 'POST');
     assert.equal(calls[1].init.method, 'POST');
+});
+
+test('the destination the owner chose reaches the preflight and the task, and is absent when none was chosen', async () => {
+    const destination = { source_id: 'ouroboros-community', mode: 'new_entry' };  // SkillPublishDestinationChoice
+    const calls = { preflight: [], create: [] };
+    const result = await runSkillPublishFlow('demo', {
+        destination,
+        preflightImpl: async (...args) => { calls.preflight.push(args); return preflight('ready', { skill: 'demo', repository: 'razzant/OuroborosHub' }); },
+        dialogImpl: async () => true,
+        createTaskImpl: async (payload) => { calls.create.push(payload); return { task_id: 't1' }; },
+    });
+    assert.equal(result.started, true);
+    assert.deepEqual(calls.preflight, [['demo', destination]]);
+    assert.deepEqual(calls.create[0].metadata.skill_publish_target, { skill: 'demo', repository: 'razzant/OuroborosHub', destination });
+    // The publish tool reads the owner's choice from the task's target; the prose names only skill and repository.
+    assert.doesNotMatch(calls.create[0].context, /destination/);
+
+    const plain = { preflight: [] };
+    await runSkillPublishFlow('demo', {
+        preflightImpl: async (...args) => { plain.preflight.push(args); return preflight('ready', { skill: 'demo', repository: 'r/r' }); },
+        dialogImpl: async () => false,
+        createTaskImpl: async () => { throw new Error('cancelled flows start nothing'); },
+    });
+    assert.deepEqual(plain.preflight, [['demo']], 'without a chosen destination the request is unchanged');
+
+    const originalFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (url, init) => { bodies.push([url, init.body]); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
+    try {
+        await skillPublishPreflight('demo', destination);
+        await skillPublishPreflight('demo');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(bodies, [
+        ['/api/skills/demo/publish-preflight', JSON.stringify({ destination })],
+        ['/api/skills/demo/publish-preflight', '{}'],
+    ]);
 });

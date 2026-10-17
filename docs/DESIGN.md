@@ -236,7 +236,7 @@ Two failure modes this table exists to prevent, both observed in this codebase:
 The brand red is **one value**, `--accent`. Every appearance of it is either
 that token, the named roles built on it (`--accent-light` for accent text, the crimson ink on light,
 `--accent-dim` for a fill, `--focus-accent-border` / `--focus-accent-ring` for
-focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-65`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
+focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-55`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
 a grep.
@@ -597,8 +597,7 @@ Two shapes carry a tone, and they are not interchangeable:
   *is* the status and has nothing else to carry it.
 
 Surfaces whose tone is a class suffix rather than `data-tone`
-(`.skills-status-*`, `.skills-badge-*`, `.toast-*`, `.marketplace-state-*`,
-`.chat-live-phase`, `.log-phase`, `.evo-runtime-pill`, `.widget-table-status`,
+(`.toast-*`, `.chat-live-phase`, `.log-phase`, `.evo-runtime-pill`, `.widget-table-status`,
 `.widget-metric` / `.widget-callout`) name the same tokens. A surface that
 paints only its edge (a card tinted by its state, a callout's left rule) takes
 the border and leaves its own background alone; a toast keeps its glass
@@ -1851,13 +1850,14 @@ has migrated. Migrated today:
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
   card, one action row, collapsed Recovery with one restore list) and Storage;
+  the Skills page (Installed, Browse, Sources, the detail sheet, its dialogs);
   chat typography, foreground and status colour. Chat geometry retains local
   literals per the viewport reserve contract; shared palette channels keep
   translucent glass coherent across themes.
 - the global `.muted`, `.form-section h3` and shared `.ui-status` tone rules
 
-The remaining page-specific typography in skills, marketplace, widgets, logs
-and evolution is historical. Their adopted common controls follow the shared
+The remaining page-specific typography in widgets, logs and evolution is
+historical. Their adopted common controls follow the shared
 family; unrelated page rules keep their literals until their own pass. Migrate
 each selected family completely and remove its replaced recipes in the same
 change. Do not introduce a half-tokenised second field family or describe a
