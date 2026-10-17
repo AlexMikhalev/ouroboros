@@ -160,10 +160,13 @@ test('a modal layer makes everything outside it inert; a non-modal one leaves th
     w.layers.push({ id: 'project', el: w.panel, modal: false, onClose() {} });
     assert.equal(w.sidebar.inert, false);
     assert.equal(w.content.inert, false);
-    // The phone: the drawer (modal) opens over the Project layer; the panel below goes inert, the drawer stays live.
-    w.layers.push({ id: 'drawer', el: w.sidebar, modal: true, onClose() {} });
+    // The phone: the drawer (modal) opens over the Project layer; the panel below goes inert, the drawer stays
+    // live, and so does what the layer names as live beside it (its scrim).
+    const scrim = w.node('div', w.app);
+    w.layers.push({ id: 'drawer', el: w.sidebar, modal: true, live: [scrim], onClose() {} });
     assert.equal(w.panel.inert, true);
     assert.equal(w.sidebar.inert, false);
+    assert.equal(scrim.inert, false, 'the scrim stays tappable under the modal drawer');
     // A layer above a modal one stays live.
     w.layers.remove('drawer');
     w.layers.configure('project', { modal: true });

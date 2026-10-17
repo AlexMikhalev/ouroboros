@@ -1,14 +1,15 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { SHELL_ICONS } from './page_icons.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
 }
 
+// The shell's ☰: one of the shell's icon controls (style.css .shell-icon-control), present in the leading slot of
+// every header in the stack layout; the drawer's × takes its exact place (tests/test_shell_drawer_static.py).
 export function renderMobileNavToggle() {
     return `
-        <button class="mobile-nav-toggle" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded="false">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
-        </button>
+        <button class="shell-icon-control mobile-nav-toggle" type="button" data-mobile-nav-toggle aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded="false">${SHELL_ICONS.menu}</button>
     `;
 }
 

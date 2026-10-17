@@ -189,7 +189,7 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     head = css.split(".sidebar-head {", 1)[1].split("}", 1)[0]
     assert "position: sticky" in head and "top: 0" in head
     assert html.index('class="sidebar-head"') < html.index('id="nav-projects"') < html.index('class="sidebar-foot"')
-    assert 'data-nav-page="chat"' in html.split('class="sidebar-head"', 1)[1].split('</div>', 1)[0]
+    assert 'data-nav-page="chat"' in html.split('class="sidebar-head"', 1)[1].split('id="nav-projects"', 1)[0]
     for page in ("files", "skills", "widgets", "dashboard", "settings"):
         assert f'data-nav-page="{page}"' in html.split('class="sidebar-foot"', 1)[1]
     assert "Utilities" not in html and "nav-section-label" not in html

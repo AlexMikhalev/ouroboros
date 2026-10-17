@@ -15,6 +15,16 @@ export const PAGE_ICONS = {
     settings: strokeIcon('<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>'),
 };
 
+// The shell's control glyphs, each once: the menu (☰), back (‹), the one close (×), the one more (⋯) and the
+// chevron. Same stroke family as the page icons; a control's accessible name says what the glyph does.
+export const SHELL_ICONS = {
+    menu: strokeIcon('<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>'),
+    back: strokeIcon('<path d="m15 18-6-6 6-6"/>'),
+    close: strokeIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+    more: strokeIcon('<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>'),
+    chevron: strokeIcon('<path d="m9 18 6-6-6-6"/>', 16),
+};
+
 export function hydrateNavIcons(root = document) {
     Object.entries(PAGE_ICONS).forEach(([page, svg]) => {
         const button = root.querySelector(`[data-nav-page="${page}"]`);

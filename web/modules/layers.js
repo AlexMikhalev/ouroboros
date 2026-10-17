@@ -43,6 +43,7 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
         if (modalIndex < 0 || !doc?.body) return;
         const modal = stack[modalIndex];
         const above = new Set(stack.slice(modalIndex + 1).map((layer) => layer.el).filter(Boolean));
+        for (const el of stack.slice(modalIndex).flatMap((layer) => layer.live || [])) above.add(el);
         const keep = (node) => node === modal.el || [...above].some((el) => el === node || node.contains?.(el) || el.contains?.(node));
         let node = modal.el;
         while (node && node !== doc.body && node.parentElement) {
@@ -111,7 +112,8 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
         emit();
     }
 
-    /** Open: `{ id, el, modal = true, onClose(reason), opener = activeElement, focus }`. A known id keeps its
+    /** Open: `{ id, el, modal = true, onClose(reason), opener = activeElement, focus, live }` (`live`: elements
+     * beside the layer that stay usable under a modal one, its scrim). A known id keeps its
      * place in the stack and takes the new facts (an owner that syncs its state calls push on every sync). */
     function push(layer) {
         if (disposed || !layer || !layer.id) return false;

@@ -27,9 +27,36 @@ body {
     position: relative;
 }
 
-/* App navigation shell: desktop persistent sidebar, mobile drawer below. */
-.mobile-nav-toggle {
+/* App navigation shell: a docked sidebar column, a drawer in the stack layout. */
+.mobile-nav-toggle,
+.drawer-head {
     display: none;
+}
+
+/* The shell's icon controls (☰, the drawer's ×, a Project's ×): one round neutral capsule holding one glyph, the
+   chrome height on a desk and the touch minimum in the stack layout. Material: the "Airy dopamine" tail. */
+.shell-icon-control {
+    flex: 0 0 auto;
+    width: var(--chrome-control-h);
+    height: var(--chrome-control-h);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: var(--pill-radius);
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.shell-icon-control > svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+}
+html[data-layout="stack"] .shell-icon-control {
+    width: 44px;
+    height: 44px;
 }
 
 .nav-drawer-backdrop {
@@ -127,8 +154,8 @@ body {
     padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
-:root[data-window-chrome="integrated"][data-layout="stack"] .sidebar-head {
-    padding-top: max(64px, calc(var(--space-4) + var(--window-chrome-top)));
+:root[data-window-chrome="integrated"][data-layout="stack"] .drawer-head {
+    padding-top: max(calc(var(--page-header-padding-y) + var(--inset-top)), calc(var(--space-2) + var(--window-chrome-top)));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
 
@@ -3537,26 +3564,17 @@ html[data-layout="stack"] #app {
 html[data-layout="stack"] .mobile-nav-toggle {
     position: static;
     flex: 0 0 44px;
-    width: 44px;
-    height: 44px;
     display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-md);
-    background: rgba(var(--shell-rgb), 0.76);
-    color: var(--text-primary);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
 }
+/* The drawer (a layer, layers.js): the same sidebar slides in from the left over a scrim; it leaves 48px of the
+   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where the header's ☰
+   was (the header's inset and leading slot), so the control the finger reached for stays under it. */
 html[data-layout="stack"] .nav-drawer-backdrop {
     position: fixed;
     inset: 0;
     z-index: 68;
     display: block;
     background: rgba(0, 0, 0, 0.48);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
 }
 html[data-layout="stack"] .nav-drawer-backdrop[hidden] {
     display: none;
@@ -3565,13 +3583,19 @@ html[data-layout="stack"] #primary-sidebar {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 70;
-    width: min(86vw, 320px);
-    max-width: 320px;
+    width: min(100vw - 48px, 360px);
     transform: translateX(-105%);
     transition: transform 0.18s ease, box-shadow 0.18s ease;
+    padding-bottom: calc(var(--space-3) + var(--inset-bottom));
 }
 html[data-layout="stack"] .sidebar-head {
-    padding-top: calc(64px + var(--inset-top));
+    padding-top: 0;
+}
+html[data-layout="stack"] .drawer-head {
+    display: flex;
+    align-items: center;
+    min-height: calc(44px + 2 * var(--page-header-padding-y));
+    padding: calc(var(--page-header-padding-y) + var(--inset-top)) 0 var(--page-header-padding-y);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
 html[data-layout="stack"] #primary-sidebar.open {
@@ -3587,9 +3611,6 @@ html[data-layout="stack"] .unread-badge {
 html[data-layout="stack"] #content {
     padding-left: 0;
     padding-bottom: var(--inset-bottom);
-}
-html[data-layout="stack"] body.project-panel-open .mobile-nav-toggle {
-    display: none;
 }
 /* Restart / Panic / More is a short control set — let it wrap instead of
    trapping the absolutely-positioned More menu inside an overflow-clip
@@ -7464,7 +7485,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 
 /* The bars' icon controls wear the one focus ring (DESIGN §3 Focus), like every other control. */
 .project-panel-close:focus-visible,
-.mobile-nav-toggle:focus-visible {
+.mobile-nav-toggle:focus-visible,
+.nav-drawer-close:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: 2px;
 }
@@ -9493,15 +9515,15 @@ html[data-layout="stack"] .project-panel.open {
    controls (the Project bar's close and the phone's menu button among them) are neutral capsules; Panic is danger,
    the budget amber (it is the owner's money). The room's status beside the title is not a control: it stays a bare
    sentence (room_work.css). */
-:root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle) {
+:root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle, .nav-drawer-close) {
     border-color: transparent; background: var(--surface-capsule); color: var(--text-primary); box-shadow: var(--elev-rest);
     -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
     transition: var(--motion-tone);
 }
-:root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle):hover {
+:root[data-theme] :is(.chat-header-btn.ui-chrome-control, .project-panel-close, .mobile-nav-toggle, .nav-drawer-close):hover {
     border-color: transparent; background: var(--surface-capsule-hover); box-shadow: var(--elev-rest);
 }
-:root[data-theme] :is(.project-panel-close, .mobile-nav-toggle) { border-radius: var(--pill-radius); }
+:root[data-theme] :is(.project-panel-close, .mobile-nav-toggle, .nav-drawer-close) { border-radius: var(--pill-radius); }
 :root[data-theme] .chat-header-btn.danger.ui-chrome-control { background: var(--tone-red); color: var(--status-error-fg); }
 :root[data-theme] .chat-header-btn.danger.ui-chrome-control:hover { background: var(--tone-red-hover); }
 :root[data-theme] .chat-budget-pill.ui-chrome-control {

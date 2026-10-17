@@ -28,7 +28,7 @@ import { initActivity } from './modules/activity.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
 import { initStorage } from './modules/storage.js';
-import { hydrateNavIcons } from './modules/page_icons.js';
+import { SHELL_ICONS, hydrateNavIcons } from './modules/page_icons.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
@@ -177,11 +177,18 @@ function syncNavigationState() {
         button.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
     });
     if (navDrawerBackdrop) navDrawerBackdrop.hidden = !drawerOpen;
-    // The drawer is a modal layer; the Project panel is one too, modal only where it covers the room (stack).
-    if (drawerOpen) layers.push({ id: 'drawer', el: primarySidebar, modal: true, onClose: () => setMobileDrawerOpen(false) });
-    else layers.remove('drawer');
-    if (activeProjectId) layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), onClose: () => closeProjectPanel() });
-    else layers.remove('project');
+    // In the stack layout the closed drawer is off screen: inert and out of the tab order.
+    if (primarySidebar) primarySidebar.inert = isStackLayout() && !drawerOpen;
+    // The drawer is a modal layer (its scrim stays live); the Project panel is one too, modal only where it
+    // covers the room (stack).
+    if (drawerOpen) {
+        layers.push({ id: 'drawer', el: primarySidebar, modal: true, live: [navDrawerBackdrop].filter(Boolean),
+            onClose: () => setMobileDrawerOpen(false) });
+    } else layers.remove('drawer');
+    if (activeProjectId) {
+        layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
+            onClose: () => closeProjectPanel() });
+    } else layers.remove('project');
 
     document.querySelectorAll('[data-nav-page]').forEach((button) => {
         const isActive = !activeProjectId && button.dataset.navPage === state.activePage;
@@ -257,6 +264,11 @@ document.addEventListener('click', (event) => {
     setMobileDrawerOpen(!navState.mobileDrawerOpen);
 });
 navDrawerBackdrop?.addEventListener('click', () => setMobileDrawerOpen(false));
+const navDrawerClose = document.getElementById('nav-drawer-close');
+if (navDrawerClose) {
+    navDrawerClose.innerHTML = SHELL_ICONS.close;
+    navDrawerClose.addEventListener('click', () => setMobileDrawerOpen(false));
+}
 hydrateNavIcons();
 
 // While a Project panel paints, Main defers first hydration (bounded in chat.js).
