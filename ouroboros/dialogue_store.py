@@ -922,3 +922,14 @@ def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[
         raise StoreError("Dialogue history: a segment could not be imported")
     if pending:
         raise StoreMigrating("Dialogue history is still importing")
+
+
+def generation_metadata(root: Any, stream: str) -> List[Dict[str, Any]]:
+    """Appended read function (Q1b2 M): the imported generations and live counting unit.
+
+    Only whole-stream recall and legacy cursor translation need this catalogue;
+    addressed room/row readers never enumerate it.
+    """
+    with transaction(root, write=False) as conn:
+        return [dict(record) for record in conn.execute(
+            "SELECT * FROM import_ledger WHERE stream=? ORDER BY base, id", (stream,))]

@@ -245,3 +245,71 @@ def test_mismatched_import_is_not_coverage_or_absence(tmp_path):
     with pytest.raises(ds.StoreError, match="could not be imported"):
         ds.require_imported(tmp_path, "chat")
     assert ds.range_coverage(tmp_path, "chat", lower=segment["base"] + segment["size"])["imported"]
+
+
+@pytest.mark.parametrize("reader", ["identity", "room", "evidence", "task"])
+def test_memory_readers_do_equal_work_with_one_or_thirty_foreign_rooms(tmp_path, monkeypatch, reader):
+    from ouroboros import chat_chain
+    from ouroboros.dialogue_evidence import read_room_source
+    from ouroboros.memory import Memory
+
+    measurements = []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        row = owner(chat_id=777, task_id="selected")
+        ds.append(root, "chat", row)
+        for room in range(rooms):
+            for number in range(3):
+                ds.append(root, "chat", owner(f"foreign-{room}-{number}", chat_id=room + 10))
+        reads = {
+            "identity": lambda: chat_chain.resolve_row(root, chat_chain.row_address(row))[0],
+            "room": lambda: [r for _a, r, _p in chat_chain.iter_room_rows(root, 777)],
+            "evidence": lambda: read_room_source(root, 777),
+            "task": lambda: Memory(root).read_task_recent("chat.jsonl", "selected", 5)[0],
+        }
+        with metered(monkeypatch) as measured:
+            result = reads[reader]()
+        assert result
+        if reader == "evidence":
+            assert len(result["rows"]) == 1 and result["rows"][0]["text"] == row["text"]
+        else:
+            assert result == (row if reader == "identity" else [row])
+        measurements.append(dict(measured))
+    assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
+
+
+def test_memory_readers_disclose_pending_failed_and_invalid_import(tmp_path):
+    from ouroboros import chat_chain
+    from ouroboros.chronicle_store import ChronicleStore
+    from ouroboros.dialogue_evidence import read_room_source
+    from ouroboros.memory import Memory
+
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner(chat_id=777), "{broken\n"]})
+    ds.ensure(tmp_path)
+    assert "history_importing" in Memory(tmp_path).chat_history()
+    assert read_room_source(tmp_path, 777)["coverage"]["chat"]["gaps"]
+    assert ChronicleStore(tmp_path).ensure_activated()["kind"] == "import_pending"
+    with pytest.raises(ds.StoreMigrating):
+        list(chat_chain.iter_room_rows(tmp_path, 777))
+    di.run_dialogue_import(tmp_path)
+    receipt = ChronicleStore(tmp_path).ensure_activated()
+    assert receipt["kind"] == "activation" and receipt["metadata"]["dialogue_gaps"]
+    assert "completeness unknown" in Memory(tmp_path).chat_history()
+    missing = tmp_path / "mismatch"
+    seed(missing, archives={"chat_20261016T000000.jsonl": [owner(chat_id=777)]})
+    ds.ensure(missing)
+    (missing / "archive/chat_20261016T000000.jsonl").write_text("changed\n")
+    di.run_dialogue_import(missing)
+    assert "history_import_failed" in Memory(missing).chat_history()
+    assert ChronicleStore(missing).ensure_activated()["kind"] == "import_refused"
+
+
+def test_memory_recall_keeps_the_frozen_public_golden(tmp_path):
+    import json
+    from ouroboros.memory import Memory
+    from tests.test_dialogue_reader_golden import GOLDEN, conversation, _normalize
+
+    conversation(tmp_path)
+    di.run_dialogue_import(tmp_path)
+    expected = json.loads(GOLDEN.read_text(encoding="utf-8"))["memory"]
+    assert _normalize(Memory(tmp_path).chat_history(count=20), tmp_path) == expected

@@ -13,6 +13,13 @@ from typing import Any, Dict, Iterable, List
 from ouroboros import dialogue_store
 
 
+def import_all(root: Any) -> None:
+    """Finish the explicit legacy import before testing a settled SQL reader."""
+    from ouroboros.dialogue_import import run_dialogue_import
+
+    run_dialogue_import(pathlib.Path(root))
+
+
 def rows(root: Any, stream: str = "chat") -> List[Dict[str, Any]]:
     """Every stored row of ``stream`` in chain order (the decoded bodies)."""
     return [entry.row for entry in dialogue_store.newest(pathlib.Path(root), stream, limit=1 << 40)]

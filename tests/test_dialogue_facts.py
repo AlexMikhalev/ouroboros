@@ -127,8 +127,8 @@ def gen_of(root, name) -> str:
 def test_ordinals_are_the_chain_readers_counts_and_unknown_until_the_archive_is_complete(tmp_path):
     chain_root(tmp_path)
     oracle = {stream: chain_oracle(tmp_path, stream) for stream in ds.STREAMS}
-    old = {(gen, line): pos for _i, _p, gen, line, _row, pos in chat_chain._stream_rows(chat_chain.generation_signatures(tmp_path))}
-    assert {(e.gen, e.line): e.pos for e in oracle["chat"].values() if e.pos is not None} == old, "the oracle is the old reader's"
+    old = [e.pos for e in oracle["chat"].values() if e.pos is not None]
+    assert old == list(range(7)), "independent frozen-file oracle, including A2A exclusion"
     live_gen = jsonl_generation_signature(tmp_path / "logs" / "chat.jsonl")["first_line_sha256"]
     di.cutover(tmp_path)
     live_seq = ds.rows_by_client_id(tmp_path, "live-1")[0].seq
@@ -184,16 +184,25 @@ def test_rows_appended_after_the_cutover_continue_the_same_counting(tmp_path):
 def test_generation_cursors_resolve_as_the_old_consolidation_reader_did(tmp_path):
     chain_root(tmp_path, non_object=False)
     live = tmp_path / "logs" / "chat.jsonl"
-    paths = chat_chain._ordered_chat_generation_paths(live)
+    paths = sorted((tmp_path / "archive").glob("chat_*.jsonl")) + [live]
+
+    def legacy_rows(path):
+        result = []
+        for raw in path.read_bytes().splitlines():
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and not chat_chain.is_a2a_chat_id(row.get("chat_id", 1)):
+                result.append(row)
+        return result
+
     cases = []
-    for path in paths:
+    for index, path in enumerate(paths):
         signature = jsonl_generation_signature(path)
-        for offset in range(len(chat_chain._read_chat_entries(path)) + 2):
-            segments, cursor, gap = chat_chain._resolve_generation_segments(
-                {"chat_log_signature": signature, "last_consolidated_offset": offset}, live)
-            pending = [entry for segment in segments for entry in chat_chain._read_chat_entries(segment)]
-            assert not gap
-            cases.append((signature["first_line_sha256"], offset, pending[cursor] if cursor < len(pending) else None))
+        pending = [entry for segment in paths[index:] for entry in legacy_rows(segment)]
+        for offset in range(len(legacy_rows(path)) + 2):
+            cases.append((signature["first_line_sha256"], offset, pending[offset] if offset < len(pending) else None))
     di.cutover(tmp_path)
     di.run_dialogue_import(tmp_path)
     for gen, offset, expected in cases:
