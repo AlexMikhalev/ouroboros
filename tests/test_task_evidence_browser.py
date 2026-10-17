@@ -1,10 +1,14 @@
 """Real Chat replay and controls over isolated durable logs, with a controlled census."""
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import urllib.request
 
 import pytest
+
+from ouroboros import dialogue_store
 
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests._store_shared import seed_result
@@ -22,8 +26,8 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
     fixture["stop_server"]()
     logs = root / "logs"
     logs.mkdir(exist_ok=True)
-    (logs / "chat.jsonl").write_text(json.dumps({"direction": "in", "chat_id": 1,
-        "task_id": task_id, "text": "Inspect the saved sources", "ts": "2026-10-04T09:00:00Z"}) + "\n", encoding="utf-8")
+    dialogue_store.append(root, "chat", {"direction": "in", "chat_id": 1,
+        "task_id": task_id, "text": "Inspect the saved sources", "ts": "2026-10-04T09:00:00Z"})
     calls = [{"type": kind, "task_id": task_id, "invocation_id": f"call-{index}",
               "tool": "read_file", "is_error": False, "ts": "2026-10-04T09:00:01Z"}
              for index in range(24) for kind in ("tool_call_started", "tool_call")]
@@ -116,9 +120,10 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
                 "card_row": "timeline", "card_row_id": f"pause:{task}:one", "narration": False,
                 "text": english, "chat_id": 1, "ts": "2026-10-04T12:00:00Z"}
                for task in ("with-card", "without-card")]
-    (root / "logs/chat.jsonl").write_text("".join(json.dumps(row) + "\n" for row in notices), encoding="utf-8")
-    (root / "logs/progress.jsonl").write_text(json.dumps({"task_id": "with-card", "chat_id": 1,
-        "content": "Model words stay unchanged", "ts": "2026-10-04T11:59:00Z"}) + "\n", encoding="utf-8")
+    for row in notices:
+        dialogue_store.append(root, "chat", row)
+    dialogue_store.append(root, "progress", {"task_id": "with-card", "chat_id": 1,
+        "content": "Model words stay unchanged", "ts": "2026-10-04T11:59:00Z"})
     fixture["start_server"]()
     with urllib.request.urlopen(fixture["url"] + "/api/state", timeout=10) as response:
         state = json.load(response)
@@ -149,7 +154,7 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
             expect(card).to_contain_text("Model words stay unchanged")
             fallback = page.locator('.chat-bubble.system[data-task-id="without-card"]')
             expect(fallback).to_contain_text(translated)
-            assert english in (root / "logs/chat.jsonl").read_text(encoding="utf-8")
+            assert english in dialogue_test.log_text(root / "logs/chat.jsonl")
             page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / "pause-notice-translated-chat.png"), full_page=True)
             for wait_state, quiz_state, label in (("waiting", "open", "Waiting for your answer"),
                 ("waiting", "answered", "Working"), ("resumed", "answered", "Working")):

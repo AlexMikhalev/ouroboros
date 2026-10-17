@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests._dialogue import advance_room_revision
 
 import json
 import os
@@ -148,12 +149,12 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 
-    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+    from ouroboros.projects_registry import create_project
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
     create_project(data_dir, "alpha", name="Alpha project")
-    increment_project_visible_revision(data_dir, project_id="alpha")
+    advance_room_revision(data_dir, project_id="alpha")
 
     try:
         with sync_playwright() as pw:

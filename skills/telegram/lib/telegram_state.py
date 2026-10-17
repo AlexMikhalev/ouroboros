@@ -190,8 +190,33 @@ def _jsonl_tail(
     max_entries: int,
     tail_bytes: int,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Return a parsed JSONL tail and whether either bound omitted a prefix."""
+    """A bounded tail; canonical chat/progress come only from the dialogue store.
+
+    The legacy path is an address, not a file fallback. Missing import coverage
+    raises a typed outcome before a notifier can mark the window as observed.
+    Other telemetry files still use the shared JSONL parser.
+    """
     path = pathlib.Path(path)
+    if path.parent.name == "logs" and path.name in {"chat.jsonl", "progress.jsonl"}:
+        from ouroboros import dialogue_store as ds
+
+        root, stream = path.parent.parent, path.stem
+        upper = ds.stream_end(root, stream)
+        lower = max(0, upper - tail_bytes)
+        entries = [row for row in ds.newest(root, stream, before=upper, limit=max_entries + 1)
+                   if row.seq >= lower]
+        omitted_prefix = lower > 0 or len(entries) > max_entries
+        if len(entries) > max_entries:
+            entries = entries[-max_entries:]
+            lower = entries[0].seq
+        coverage = ds.range_coverage(root, stream, lower=lower, upper=upper)
+        if coverage["mismatch"]:
+            raise ds.StoreError(f"{stream}: a segment could not be imported")
+        if coverage["pending"]:
+            raise ds.StoreMigrating(f"{stream}: history is still importing")
+        if coverage["gaps"]:
+            raise ds.StoreError(f"{stream}: recorded invalid intervals in the requested window")
+        return [entry.row for entry in entries], omitted_prefix
     try:
         omitted_prefix = path.stat().st_size > tail_bytes
     except OSError:
