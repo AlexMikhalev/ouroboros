@@ -44,14 +44,14 @@ def send_card(bridge: Any, record: Dict[str, Any], chat_id: int, *, task_id: str
         owner_id = int(load_state().get("owner_id") or 0)
     except Exception:
         owner_id = 0
+    # ``feed``: a card is a standalone message, so the room's unread moves with its row (one transaction).
     stored = bus.log_chat("out", int(chat_id), owner_id, fallback, ts=ts, task_id=task_id,
-                          record_type="card", card=identity)
+                          record_type="card", feed=True, card=identity)
     # The same ``card`` identity the history row carries (CardOutbound; literal keys for the parity scan).
     frame = {"type": "card", "role": "assistant", "card": identity, "fallback_text": fallback,
              "ts": ts, "chat_id": int(chat_id), "task_id": task_id}
     if stored:
         frame.update(projection_fields(stored))
-        bus._advance_project_visible_revision(chat_id)
     stamp_project_thread(bus.DATA_DIR, frame)
     bridge.broadcast(frame)
     transport = bridge.chat_transport(chat_id)

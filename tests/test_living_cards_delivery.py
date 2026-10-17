@@ -23,6 +23,7 @@ from ouroboros.gateway import card_contracts
 from supervisor import message_bus
 from supervisor.card_delivery import INTERACTIVE_NOTE
 from supervisor.events_chat_delivery import _handle_send_card
+from tests._dialogue import chat_rows
 from tests.test_contracts import _assert_envelope_parity
 from tests.test_gateway_parity import _js_typedef_fields
 
@@ -41,7 +42,6 @@ def wired(tmp_path, monkeypatch):
     bridge._chat_transports[1] = {"kind": "telegram", "conversation_id": 777}
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(card_delivery, "publish_event", lambda topic, data: events.append((topic, data)))
     ctx = types.SimpleNamespace(bridge=bridge, DRIVE_ROOT=tmp_path, append_jsonl=lambda *a, **k: None)
     return ctx, frames, events
@@ -53,8 +53,7 @@ def _card(tmp_path, *, chat_id=1, components=(ACTION,)):
 
 
 def _rows(tmp_path):
-    path = tmp_path / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    return chat_rows(tmp_path)
 
 
 def _event(card, **extra):
@@ -105,7 +104,6 @@ def test_history_replays_the_card_row_with_its_identity(tmp_path, wired):
     ctx, _frames, _events = wired
     card = _card(tmp_path)
     _handle_send_card(_event(card), ctx)
-    (tmp_path / "logs" / "progress.jsonl").write_text("", encoding="utf-8")
     response = asyncio.run(make_chat_history_endpoint(tmp_path)(types.SimpleNamespace(query_params={"limit": "10"})))
     [rec] = [m for m in json.loads(response.body)["messages"] if m.get("msg_type") == "card"]
     assert rec["card"] == {"card_id": card["card_id"], "kind": "components", "title": "Flights", "revision": 1}
@@ -188,3 +186,25 @@ def test_the_model_reads_a_card_row_as_its_fallback_with_the_card_id():
     assert render_row_text(row) == "[card card_0123456789abcdef] A 9:00 or B 12:00"
     assert render_row_text({**row, "type": "links"}) == "A 9:00 or B 12:00"
     assert row_class(row)["lane"] == 1  # Ouroboros's own words to the owner, not a host fact
+
+
+def test_a_card_is_a_standalone_message_for_unread_and_a_replace_is_not(tmp_path, wired):
+    """The row and the room's unread move in one store transaction (``log_chat(feed=True)``)."""
+    from ouroboros.projects_registry import create_project, get_project
+
+    ctx, _frames, _events = wired
+    project = create_project(tmp_path, "trips")
+    chat_id = int(project["chat_id"])
+
+    def revision() -> int:
+        return int(get_project(tmp_path, "trips")["visible_revision"])
+
+    before = revision()
+    card = _card(tmp_path, chat_id=chat_id)
+    _handle_send_card(_event(card), ctx)
+    assert revision() - before == 1 and [row["type"] for row in _rows(tmp_path)] == ["card"]
+    newer = write_card(tmp_path, chat_id=chat_id, task_id="task-1", title="Flights (booked)", fallback_text="Booked A",
+                       kind="components", body={"components": [{"type": "callout", "text": "Booked"}]},
+                       replace=card["card_id"])
+    _handle_send_card(_event(newer, replace=True), ctx)
+    assert revision() - before == 1, "a replaced body is a state signal, not a new unread message"
