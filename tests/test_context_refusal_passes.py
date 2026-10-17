@@ -34,6 +34,11 @@ def test_the_target_is_measured_on_this_conversation_or_stays_unknown():
     assert lmc._refusal_target(_ctx(), _fit(933_440, anchor=None)) is None  # a cold count sizes nothing
     stated = _ctx("This model's maximum context length is 400,000 tokens.")
     assert lmc._refusal_target(stated, _fit(390_000, accepted=None, reply=20_000)) == 10_000 + 50_000
+    # A local serving instance that refused before sending gives its own exact counts (#1018 lane).
+    local = SimpleNamespace(input_tokens=34_000, context_window_tokens=32_768)
+    assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192), local) == (
+        34_000 + 8_192 - 32_768 + 4_096)
+    assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192)) is None  # cold, numberless
     # A stated limit measures even the first refusal, before this model accepted anything here (cold E).
     assert lmc._refusal_target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) == 10_000 + 50_000
 

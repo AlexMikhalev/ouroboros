@@ -1389,14 +1389,16 @@ WHOLE_CATEGORY = 2**31 - 1  # an unknown target: the step takes everything its c
 CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 
 
-def _refusal_target(ctx: _RoundModelCallContext, fit: Any) -> Optional[int]:
+def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Optional[int]:
     """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
 
     A provider that states its limit L gives ``E + reply - L`` whatever E's basis (the limit is the
-    measurement; a cold E still names its excess). Without a stated limit, the anchored estimate E over the
-    largest input this model accepted here, A, gives ``E - A``; E at or below A contradicts the reading, and a
-    cold E compares with nothing: unknown. Both add the owner's return-after-fold eighth of the window (L33
-    2=A). The refused size is recorded, so the facts stop stating free room for this model.
+    measurement; a cold E still names its excess); a local serving instance that refused before sending
+    (``refused``: its exact ``input_tokens`` and ``context_window_tokens``) gives the same with its own
+    counts. Without a stated limit, the anchored estimate E over the largest input this model accepted
+    here, A, gives ``E - A``; E at or below A contradicts the reading, and a cold E compares with nothing:
+    unknown. All add the owner's return-after-fold eighth of the window (L33 2=A). The refused size is
+    recorded, so the facts state no optimistic room for this model again.
     """
     from ouroboros.capability_evidence import _parse_ctx_limit_number
     from ouroboros.context_anchor import record_refused_input
@@ -1405,11 +1407,15 @@ def _refusal_target(ctx: _RoundModelCallContext, fit: Any) -> Optional[int]:
     measurement = fit.measurement
     record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, measurement.estimated_input_tokens)
     stated = _parse_ctx_limit_number(str(ctx.accumulated_usage.get("_last_llm_provider_message") or ""))
+    estimate = measurement.estimated_input_tokens
+    exact_window, exact_input = (int(getattr(refused, key, 0) or 0) for key in ("context_window_tokens", "input_tokens"))
+    if exact_window and exact_input:
+        stated, estimate = exact_window, exact_input
     window = (stated or measurement.capacity_total_tokens or measurement.window_reading_tokens
               or measurement.accepted_input_tokens)
     slack = reclaim_low_water_margin(None, window) if window else 0
     if stated:
-        return max(0, measurement.estimated_input_tokens + measurement.reply_allowance_tokens - stated) + slack
+        return max(0, estimate + measurement.reply_allowance_tokens - stated) + slack
     if measurement.anchor_input_tokens is None:
         return None
     accepted = measurement.accepted_input_tokens
@@ -1436,7 +1442,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
     fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
     if fit is None:
         return None, cost, ctx.active_context_mode
-    target = _refusal_target(ctx, fit)
+    target = _refusal_target(ctx, fit, failed_capture)
     for steps in ((WAKE_DELIVERY_STEP,),) * bool(prepared) + REFUSAL_PASSES:
         if steps != (WAKE_DELIVERY_STEP,):
             key = (fit.measurement.round_id, "+".join(steps))  # once per round, never re-armed for a route
@@ -1469,7 +1475,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
             return _skipped("failed_candidate_not_comparable")
         failed_capture = latest
         fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True) or fit
-        target = _refusal_target(ctx, fit)
+        target = _refusal_target(ctx, fit, failed_capture)
     return None, cost, ctx.active_context_mode
 
 
