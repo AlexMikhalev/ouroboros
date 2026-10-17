@@ -1065,8 +1065,7 @@ def update_project(
         return None
     allowed = {
         "name", "working_dir", "last_active_at", "provenance", "clone_url", "trusted_at",
-        # Write-once legacy-activity fact seeded once per installation by the maintenance
-        # child's ``activity_backfill`` job; read by projects_summary's derivation.
+        # Retained legacy activity fact; current activity comes from dialogue rooms.
         "thread_activity_seen",
         # Durable pointer to the project's newest finalized task result
         # (stamped by record_task_finalization; read first by

@@ -66,8 +66,8 @@ def _origin_message(drive_root: pathlib.Path, client_message_id: str) -> Dict[st
         for entry in ds.iter_probes(drive_root, "chat", [("client_message_id", target)], newest_first=True):
             if entry.row.get("direction") == "in":
                 return entry.row
-        ds.require_imported(drive_root, "chat")
-    except ds.StoreMigrating:
+        ds.require_complete(drive_root, "chat")
+    except ds.StoreError:
         raise
     except Exception:
         log.debug("origin-message lookup failed for %s", client_message_id, exc_info=True)
@@ -146,12 +146,15 @@ def handle_routing_decision(
         return 400, {"ok": False, "error": "option_not_dispatchable",
                      "decision_id": decision_id, "action": action}
 
-    from ouroboros.store import StoreMigrating
+    from ouroboros.store import StoreError, StoreMigrating
 
     try:
         origin = _origin_message(drive_root, client_message_id)
     except StoreMigrating as exc:
         return 503, {"ok": False, "error": "history_importing", "decision_id": decision_id,
+                     "state": "open", "reason": str(exc)}
+    except StoreError as exc:
+        return 503, {"ok": False, "error": "history_unavailable", "decision_id": decision_id,
                      "state": "open", "reason": str(exc)}
     # VERBATIM contract: the dispatched message is the owner's exact ingress
     # bytes; strip() is only the emptiness CHECK, never a rewrite.

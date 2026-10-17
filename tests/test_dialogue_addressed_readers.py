@@ -110,6 +110,71 @@ def test_notice_import_does_not_block_current_store_and_late_receipts_are_found(
     assert not notice_receipts.recorded(tmp_path, 3, row["type"])
 
 
+@pytest.mark.parametrize("reader", ["owner", "routing", "words", "notices", "publication", "narrative"])
+def test_absence_readers_disclose_invalid_intervals_but_keep_positive_receipts(tmp_path, reader):
+    from ouroboros.terminal_projection import _already_in_chat
+
+    def result_ref(task_id):
+        return {"kind": "task_result", "task_id": task_id, "reader": "get_task_result"}
+
+    summary = {"task_id": "selected", "chat_id": 1, "type": "task_summary",
+               "summary_kind": "authored_root_summary", "summary_id": "task-narrative:selected",
+               "result_ref": result_ref("selected"), "source_coverage": {"task_result": result_ref("selected")},
+               "text": "The retained answer"}
+    for gapped in (False, True):
+        root = tmp_path / ("gapped" if gapped else "complete")
+        rows = [owner("selected"), summary, {"chat_id": 1, "direction": "system", "type": "legacy_memory_notice"}]
+        seed(root, live={"chat": rows + (["{broken\n"] if gapped else [])})
+        ds.ensure(root)
+        reads = {
+            "owner": lambda key: resolve_owner_message_source(root, build_owner_message_ref(
+                chat_id=1, client_message_id=key, ts=owner()["ts"], text=owner()["text"])),
+            "routing": lambda key: _origin_message(root, key),
+            "words": lambda key: owner_words._inbound_rows(root, {key: "steer_task"}),
+            "notices": lambda key: notice_receipts.recorded(root, 1 if key == "selected" else 22, "legacy_memory_notice"),
+            "publication": lambda key: _already_in_chat(root, {**summary, "task_id": key,
+                                                                "summary_id": f"task-narrative:{key}"}),
+            "narrative": lambda key: resolve_legacy_continuation_narrative(root, key, result_ref(key)),
+        }
+        if gapped and reader == "words":  # a full fold has no field in which to return its gaps
+            with pytest.raises(ds.StoreError, match="invalid intervals"):
+                reads[reader]("selected")
+        else:
+            assert reads[reader]("selected")
+        if gapped:
+            with pytest.raises(ds.StoreError, match="invalid intervals"):
+                reads[reader]("absent")
+        else:
+            assert not reads[reader]("absent")
+
+
+def test_invalid_import_keeps_the_routing_card_open_until_its_source_is_readable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros import project_dialogue as pd, routing_wait
+    from supervisor import workers
+
+    seed(tmp_path, live={"chat": ["{broken\n"]})
+    ds.ensure(tmp_path)
+    monkeypatch.setattr(pd, "_COMPACT_AT_BYTES", 1)
+    dispatched = []
+    monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put_nowait=dispatched.append))
+    monkeypatch.setattr(routing_wait, "wait_for_routing_annotation", lambda *args: {"status": "delivered"})
+    append_chat_annotation(tmp_path, "owner-one", action="route_decision", status="needs_manual_target",
+                           routing_token="route-one", options=[{"action": "steer_task", "task_id": "target"}])
+    before = latest_chat_annotations(tmp_path)
+    assert before["owner-one"]["status"] == "needs_manual_target"
+    request = {"request_id": "click-one", "decision_id": "routing:owner-one:route-one", "option_index": 0}
+    status, payload = handle_routing_decision(tmp_path, **request)
+    assert status == 503 and payload["error"] == "history_unavailable" and payload["state"] == "open"
+    assert "invalid intervals" in payload["reason"]
+    assert latest_chat_annotations(tmp_path) == before and dispatched == []
+    ds.append(tmp_path, "chat", owner())
+    status, payload = handle_routing_decision(tmp_path, **request)
+    assert status == 200 and payload["dispatched"] == "delivered"
+    assert [event["message"] for event in dispatched] == [owner()["text"]]
+    assert latest_chat_annotations(tmp_path)["owner-one"]["status"] == "delivered"
+
+
 @pytest.mark.parametrize("reader", ["owner", "routing", "words", "notices"])
 def test_named_reader_has_equal_sql_work_with_one_or_thirty_foreign_rooms(tmp_path, monkeypatch, reader):
     row = owner()
@@ -181,6 +246,19 @@ def test_quiz_last_inbound_keeps_older_valid_stamp_and_discloses_pending_import(
     facts = _quiz_host_facts(ctx, tmp_path, "asking", 1)
     assert "2026-10-17 00:00 UTC" in facts and "still importing" not in facts
     assert "your last message in this chat: unknown." in _quiz_host_facts(ctx, tmp_path, "asking", 22)
+
+
+def test_quiz_last_inbound_only_needs_coverage_after_the_known_owner_row(tmp_path):
+    from types import SimpleNamespace
+    from ouroboros.tools.core_artifacts import _quiz_host_facts
+
+    ctx = SimpleNamespace(task_metadata={})
+    seed(tmp_path, live={"chat": [owner(), "{broken\n"]})
+    facts = _quiz_host_facts(ctx, tmp_path, "asking", 1)
+    assert "your last message in this chat: unknown" in facts and "invalid intervals" in facts
+    ds.append(tmp_path, "chat", owner("later", ts="2026-10-17T01:00:00+00:00"))
+    facts = _quiz_host_facts(ctx, tmp_path, "asking", 1)
+    assert "2026-10-17 01:00 UTC" in facts and "invalid intervals" not in facts
 
 
 def test_routing_recent_text_rows_report_only_missing_parts_of_the_window(tmp_path, monkeypatch):
@@ -270,6 +348,8 @@ def test_mismatched_import_is_not_coverage_or_absence(tmp_path):
     assert ds.range_coverage(tmp_path, "chat") == {"imported": False, "pending": 0, "mismatch": 1, "gaps": 0}
     with pytest.raises(ds.StoreError, match="could not be imported"):
         ds.require_imported(tmp_path, "chat")
+    with pytest.raises(ds.StoreError, match="could not be imported"):
+        _origin_message(tmp_path, "owner-one")
     assert ds.range_coverage(tmp_path, "chat", lower=segment["base"] + segment["size"])["imported"]
 
 

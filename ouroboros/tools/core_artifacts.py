@@ -584,9 +584,11 @@ def _quiz_host_facts(ctx: ToolContext, canonical_root: pathlib.Path, task_id: st
             if last is not None:
                 break
             before = entry.seq
-        ds.require_imported(canonical_root, "chat", lower=entry.seq if entry else 0)
+        ds.require_complete(canonical_root, "chat", lower=entry.seq if entry else 0)
     except ds.StoreMigrating:
         last, coverage = None, " (history is still importing)"
+    except ds.StoreError as exc:
+        last, coverage = None, f" ({exc})"
     except Exception:
         last = None
     if last is None:

@@ -34,7 +34,7 @@ def recorded(root, chat_id, notice_type):
         if (row.get("direction") == "system" and row.get("type") == notice_type
                 and isinstance(row.get("chat_id"), int)):
             return True
-    ds.require_imported(root, "chat")
+    ds.require_complete(root, "chat")
     return False
 
 

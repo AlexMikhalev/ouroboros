@@ -392,7 +392,7 @@ def resolve_owner_message_source(drive_root: Any, ref: Dict[str, Any]) -> Option
     for entry in candidates:
         if ref_key in _entry_source_identities(entry.row):
             return dict(entry.row)
-    ds.require_imported(drive_root, "chat")
+    ds.require_complete(drive_root, "chat")
     return None
 
 
@@ -444,9 +444,10 @@ def _compact_annotations_locked(drive_root: Any, path: pathlib.Path) -> None:
         return
     from ouroboros import dialogue_store as ds
 
-    # Pending import cannot prove an annotation's source is absent. Leave the
+    # Incomplete history cannot prove an annotation's source is absent. Leave the
     # sidecar intact until its retained-message decisions can be made truthfully.
-    if not ds.range_coverage(drive_root, "chat")["imported"]:
+    coverage = ds.range_coverage(drive_root, "chat")
+    if not coverage["imported"] or coverage["gaps"]:
         return
     latest = _latest_annotations(path)
     kept_receipts = set(sorted(
@@ -1029,7 +1030,7 @@ def resolve_legacy_continuation_narrative(
             },
             "written_at": str(row.get("ts") or ""),
         }
-    ds.require_imported(drive_root, "chat")
+    ds.require_complete(drive_root, "chat")
     return None
 
 
