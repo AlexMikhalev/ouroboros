@@ -140,6 +140,52 @@ test('the mounted list holds its order while open, settles ended work and only n
     }
 });
 
+// A Continue or a helper asks: View question goes to the task that asked, never the work's first root.
+test('View question reaches the asking task of a work, not its first root', async () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let shade = null;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge online', group);
+        Object.assign(badge.dataset, { tone: 'wait', dots: 'one' });
+        const messages = node('div', 'chat-messages', page);
+        const reveals = [];
+        const asked = (taskId) => ({ ...asking('w-first', 'q-next'), episode: { task_id: 'c-next', live: true },
+            turn: [{ kind: 'question', task_id: taskId, quiz_id: 'q-next' }] });
+        let works = [asked('c-next')];
+        shade = createRoomWork({
+            page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { stick: true, cancel() {}, scroll() {} },
+            works: () => workState(works, room('waiting')), liveCardRecords: new Map(), pendingSubmissions: new Map(),
+            revealQuestion: async (...args) => { reveals.push(args); return true; },
+        });
+        const trigger = titleRow.children.find((child) => child.classList.contains('rw-trigger'));
+        const list = header.children.find((child) => child.classList.contains('rw-shade-anchor')).children
+            .find((child) => child.classList.contains('rw-surface')).children[0];
+        const ask = async () => {
+            trigger.click();
+            list.children[0].children.find((child) => child.classList.contains('rw-verb')).children[0].click();
+            await Promise.resolve();
+        };
+        await ask();
+        works = [asked('h-helper')];
+        await ask();
+        works = [asked('w-first')];
+        await ask();
+        assert.deepEqual(reveals.map((args) => args.slice(0, 2)),
+            [['c-next', 'q-next'], ['h-helper', 'q-next'], ['w-first', 'q-next']]);
+    } finally {
+        shade?.destroy();
+        restoreDom(prior);
+    }
+});
+
 // A progress card can be painted before the slow projection lists the work that answers the same send.
 test('a pending send keeps its slot until its work is listed; the work takes the same node, never a ghost', () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));

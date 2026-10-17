@@ -254,6 +254,13 @@ export function workControls(work) {
     return out;
 }
 
+/** The confirmed work whose live current episode is `taskId` in one body, else null. */
+export function workOfEpisode(data, taskId) {
+    const id = String(taskId || '');
+    return list(data?.works).find((work) => work?.confirmed !== false && work.episode?.live
+        && String(work.episode.task_id || '') === id) || null;
+}
+
 /** Every task a confirmed work's Resume control names in one body: where Activity may offer Resume. */
 export function resumeTargets(data) {
     return new Set(list(data?.works).filter((work) => work?.confirmed !== false)
@@ -314,9 +321,9 @@ export function openCardControls(anchor, record, work, { activity = null, stop, 
  * controls before any effect; `afterAction` re-reads the state once an effect settled.
  */
 export function openWorkControls(anchor, work, { cancelPending = false, canAct = () => true, stopOne = requestStop,
-    afterAction = null } = {}) {
+    afterAction = null, withResume = false } = {}) {
     const grouped = workControls(work);
-    const actions = workMenuActions(grouped, { cancelPending });
+    const actions = workMenuActions(grouped, { cancelPending, resume: withResume });
     if (!actions.length) return null;
     const stopAll = (targets, action) => requestStopAll(targets, action, { stopOne });
     return openTaskControlMenu(anchor, {

@@ -825,7 +825,8 @@ export function createRoomWork({
         const intent = ++navigationIntent;
         const anchor = captureVisibleTimelineAnchor();
         close({ restoreFocus: false });
-        const shown = await revealQuestion?.(row.id, row.question.quizId, { focus: 'question' });
+        // The task that asked (a Continue or a helper), never the work's first root.
+        const shown = await revealQuestion?.(row.question.taskId || row.id, row.question.quizId, { focus: 'question' });
         if (shown && !destroyed && intent === navigationIntent && !page.hidden && page.isConnected) showBack(anchor);
     }
 

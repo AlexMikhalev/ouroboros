@@ -71,3 +71,92 @@ def test_held_continue_with_three_helpers_is_one_working_row_with_stop_earlier_a
     assert [path for path, _ in transport.posts] == ["/api/tasks/p/cancel"], transport.posts
     assert transport.posts[0][1].get("cascade") is True, transport.posts
     assert transport.decision_posts() == []
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_activity_offers_the_held_work_its_own_stop_targets(engine, tmp_path):
+    """Dashboard → Activity reads the same work: Stop ends the Continue and its earlier attempt, each at its own
+    task, and Stop earlier attempt only the earlier one; the held Continue offers no Resume or Pause."""
+    import json
+    import os
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from threading import Thread
+
+    from playwright.sync_api import sync_playwright
+
+    from tests._work_projection_shared import work_fields
+    from tests.test_activity_outcomes_browser import HTML, WEB
+
+    owners, raw, stored, _held = CASES["held_continue"]
+    projection = work_fields(owners, raw, results=stored, fences=FENCES)
+    helpers = [row for row in owners if row.get("parent_task_id")]
+    queue = {"running": [{"id": row["activity_id"], "task": {"id": row["activity_id"], "parent_task_id": "p",
+                                                             "root_task_id": "p"}} for row in helpers],
+             "pending": [{"id": "c", "task": {"id": "c", "chat_id": 42, "title": "Continue: release", **raw["c"]}}]}
+    posts = []
+
+    def api(route):
+        request = route.request
+        path = request.url.split("/api/", 1)[1]
+        if request.method == "POST":
+            posts.append(path)
+            body = {"ok": True, "status": "accepted"}
+        elif path.startswith("tasks?"):
+            body = {"tasks": [], "queue": queue}
+        elif path == "state":
+            body = {"bg_consciousness_enabled": False, "supervisor_ready": True, "active_chat_activities": owners[:1],
+                    "active_chat_activities_complete": True, **projection}
+        elif path == "schedules":
+            body = {"tasks": []}
+        else:
+            body = {}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if self.path.startswith("/fixture"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(HTML.encode())
+            else:
+                super().do_GET()
+
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR") or tmp_path)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(WEB)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = getattr(playwright, engine).launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1100, "height": 760})
+                page.route("**/api/**", api)
+                page.goto(f"http://127.0.0.1:{server.server_port}/fixture")
+                page.wait_for_function("window.ready === true")
+                for action, expected in (("stop_now", ["tasks/c/cancel", "tasks/p/cancel"]),
+                                         ("stop_earlier", ["tasks/p/cancel"])):
+                    posts.clear()
+                    page.locator('[data-act="task-control"][data-id="c"]').click()
+                    menu = page.locator("body > .task-control-menu")
+                    menu.wait_for(state="visible")
+                    items = menu.locator("[data-task-control]").evaluate_all("els => els.map(e => e.dataset.taskControl)")
+                    page.screenshot(path=str(evidence / f"activity-held-work-{engine}-{action}.png"), animations="disabled")
+                    assert items == ["stop_earlier", "stop_now"], items
+                    menu.locator(f'[data-task-control="{action}"]').click()
+                    deadline = time.monotonic() + 5
+                    while len(posts) < len(expected) and time.monotonic() < deadline:
+                        page.wait_for_timeout(20)
+                    assert posts == expected, posts
+                    page.wait_for_timeout(200)
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

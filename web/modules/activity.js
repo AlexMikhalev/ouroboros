@@ -11,7 +11,7 @@ import { setInlineStatus } from './ui_helpers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { taskCancelPending } from './log_events.js';
 import { waitingModel } from './project_activity.js';
-import { pauseReasons, resumeTargets } from './work_status.js';
+import { openWorkControls, pauseReasons, resumeTargets, workOfEpisode } from './work_status.js';
 import { censusTaskFacts, censusTaskPhase, paintTaskPhase } from './task_phase_chip.js';
 import {
     ACTION_HURRY,
@@ -265,11 +265,14 @@ export function initActivity({ mount, ws } = {}) {
     // Known-outcome chips of the last queue render; paintTaskPhase writes them into
     // their slots once the markup is mounted. The words come from the translation seam.
     let phaseViews = [];
+    // The body the queue was last drawn from: a work's controls come from it, at their exact targets.
+    let lastCensus = null;
     const phaseSlot = (view) => `<span class="activity-phase" data-i18n-skip><span data-activity-phase="${
         phaseViews.push(view) - 1}"></span><span class="chat-live-phase-secondary" hidden></span></span>`;
 
     function renderQueue(queue, census) {
         if (!Array.isArray(queue?.running) || !Array.isArray(queue?.pending)) throw new Error('Queue unavailable');
+        lastCensus = census;
         const { running, pending } = queue;
         const activities = Array.isArray(census?.active_chat_activities) ? census.active_chat_activities : [];
         const phases = new Map(activities.map((a) => [String(a?.activity_id || ''), a?.phase]));
@@ -534,6 +537,11 @@ export function initActivity({ mount, ws } = {}) {
             } catch (exc) {
                 if (exc?.status !== 404) showToast(`Could not refresh task state: ${exc?.message || exc}`, 'error');
             }
+            // A work's current episode offers that work's controls: Stop reaches every episode root still
+            // running, Stop earlier attempt the earlier ones, each at the server's exact target.
+            const work = btn.dataset.root === '1' ? workOfEpisode(lastCensus, id) : null;
+            if (work && openWorkControls(btn, work, { cancelPending: taskCancelPending(stored), withResume: true,
+                afterAction: refresh })) return;
             openTaskControlMenu(btn, {
                 cancelPending: taskCancelPending(stored),
                 budgetPaused: btn.dataset.budgetPaused === '1',
