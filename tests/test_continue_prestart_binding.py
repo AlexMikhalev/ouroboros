@@ -18,6 +18,8 @@ import pytest
 
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_owner_continue import NONCE, _interrupted
+from tests._store_shared import delete_result
+from tests.worker_pool_support import affirm_ready
 
 DEADLINE = "2099-01-01T00:00:00+00:00"  # the one ``_interrupted`` gives A
 
@@ -38,7 +40,7 @@ def _binding(row):
 
 @pytest.mark.parametrize("replay", [False, True])
 def test_never_started_continue_keeps_folder_and_deadline_for_its_continue(tmp_path, monkeypatch, replay):
-    from ouroboros.task_results import load_task_result, task_result_path
+    from ouroboros.task_results import load_task_result
     from supervisor.continuation_admission import admit_continuation
 
     queue, _state, workers = _install_queue(tmp_path, monkeypatch)
@@ -53,17 +55,19 @@ def test_never_started_continue_keeps_folder_and_deadline_for_its_continue(tmp_p
     assert _binding(load_task_result(tmp_path, b)) == expected
     if replay:
         # A stop between the queue snapshot and B's result write: the same nonce recovers it.
-        task_result_path(tmp_path, b).unlink()
+        delete_result(tmp_path, b)
         recovered = admit_continuation("pred-1", action_nonce=NONCE)
         assert recovered["recovered"] is True and recovered["successor_task_id"] == b
         assert _binding(load_task_result(tmp_path, b)) == expected
 
-    sent = []
-    workers.WORKERS[0] = SimpleNamespace(
+    sent, alive = [], [True]
+    # A ready live worker takes the handoff, then dies before ever starting it.
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(
         wid=0, busy_task_id=None, reaping=False, in_q=SimpleNamespace(put=sent.append),
-        proc=SimpleNamespace(pid=None, exitcode=None, is_alive=lambda: False, join=lambda timeout=None: None))
+        proc=SimpleNamespace(pid=2147483101, exitcode=None, is_alive=lambda: alive[0], join=lambda timeout=None: None)))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == [b] and b in workers.RUNNING  # handed over, never started
+    alive[0] = False
     _shutdown(workers)
     stopped = load_task_result(tmp_path, b)
     assert stopped["status"] == "cancelled" and stopped["cancel_origin"]["source"] == "server_shutdown"

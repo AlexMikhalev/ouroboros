@@ -211,17 +211,18 @@ def bind_continuation(ctx: Any, drive: Any, run_id: str, *, actor: Dict[str, Any
     unknown run into an admitted one; ``facts`` is complete only when
     ``refusal_code`` is empty.
     """
+    from ouroboros.delegate_custody_current import run
+
     rid = str(run_id or "").strip()
     if custody.custody_log_unreadable(drive):
         return {}, REFUSAL_SOURCE_UNKNOWN, (
             f"The custody log cannot be read, so run {rid!r} cannot be proven this task's or settled.")
-    state = custody.replay(drive)
-    entry = state.get(rid)
+    entry = run(drive, rid)
     if entry is None:
         return {}, REFUSAL_SOURCE_UNKNOWN, (
             f"No durable custody record names run {rid!r} on this drive; a continuation binds to a "
             "run this task can prove it holds.")
-    line = _task_line(ctx, drive, state, entry)
+    line = _task_line(ctx, drive, {rid: entry}, entry)
     if not line:
         return {}, REFUSAL_SOURCE_NOT_OWNED, (
             f"Run {rid} belongs to task {entry.task_id or 'unknown'}"
@@ -326,6 +327,9 @@ def continuation_prompt(facts: Dict[str, Any], caller_text: str) -> str:
                 "do not redo or re-apply that work.")
     elif disposition == "rejected":
         tree = "Its captured changes were REJECTED: the tree you start from does NOT contain them."
+    elif disposition == "evidence_retained":
+        tree = ("It was an evidence-only investigation in a private copy: none of its changes are in the tree "
+                "you start from; they are retained as evidence.")
     elif disposition == "undisposed":
         tree = ("Its captured changes are NOT in the tree you start from: they wait for your supervisor's "
                 "decision, so do not assume them.")
@@ -365,6 +369,7 @@ def start_binding(ctx: Any, drive: Any, token: str, *, gateway: Any, actor: Dict
     never the canonical work order, which the old session (or the engine's
     evidence packet) already holds.
     """
+    from ouroboros.delegate_custody_current import runs as current_runs
     from ouroboros.delegate_evidence import record_start_blocked
     from ouroboros.delegate_shared import _fail
 
@@ -372,8 +377,8 @@ def start_binding(ctx: Any, drive: Any, token: str, *, gateway: Any, actor: Dict
         ctx, drive, token, actor=actor, route=route, authority=authority, target_root=target_root,
         canonical_work_order_fingerprint=canonical_work_order_fingerprint)
     adopted = None
-    if not code:
-        adopted, code, detail = _adopted_snapshot(custody.replay(drive)[token], authority)
+    if not code:  # the subscript keeps a missing row's KeyError
+        adopted, code, detail = _adopted_snapshot(current_runs(drive, "run_id=?", (token,))[token], authority)
     if not code and not engine_continues(gateway):
         code, detail = REFUSAL_ENGINE_UNSUPPORTED, (
             f"The serving Claudexor engine {getattr(gateway, 'engine_version', '') or '(unknown version)'} does "
@@ -382,7 +387,7 @@ def start_binding(ctx: Any, drive: Any, token: str, *, gateway: Any, actor: Dict
     if code:
         record_start_blocked(ctx, str(getattr(ctx, "task_id", "") or ""), code)
         return NO_CONTINUATION, _fail("delegate_start", code, detail, continue_from=token, definitely_unrun=True)
-    entry = custody.replay(drive)[token]
+    entry = current_runs(drive, "run_id=?", (token,))[token]
     preference = str(carrier or "")
     facts.update(workspace="same_snapshot" if adopted else "fresh", carrier_preference=preference or "auto")
     record = {"continuation_of": token}
@@ -414,8 +419,10 @@ def retry_matches_caller_text(record: Dict[str, Any], text: str) -> bool:
 
 def _handover_refusal(drive: Any, row: Dict[str, Any]) -> Dict[str, Any]:
     """Re-check the predecessor at the claim, under the snapshot's disposition lock."""
+    from ouroboros.delegate_custody_current import run
+
     rid, invocation = str(row.get("continuation_of") or ""), str(row.get("invocation_id") or "")
-    prior = custody.replay(drive).get(rid)
+    prior = run(drive, rid)
     if prior is None or not prior.settled:
         return {"reason": REFUSAL_SOURCE_NOT_TERMINAL, "detail": f"Run {rid} is no longer a settled run."}
     if prior.superseded_by:
@@ -440,9 +447,10 @@ def _handover_refusal(drive: Any, row: Dict[str, Any]) -> Dict[str, Any]:
 def snapshot_handover(drive: Any, row: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
     """Hold the snapshot's ONE disposition lock while the hand-over is re-checked
     and its START_REQUESTED row written; yields the refusal ({} = proceed)."""
+    from ouroboros.delegate_custody_current import run
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
-    prior = custody.replay(drive).get(str(row.get("continuation_of") or ""))
+    prior = run(drive, str(row.get("continuation_of") or ""))
     if prior is None:
         yield {"reason": REFUSAL_SOURCE_UNKNOWN, "detail": "The continued run has no custody record."}
         return

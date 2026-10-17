@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from ouroboros.repo_remotes import follow_former_official_home
 from ouroboros.workspace_copies import admitted_copy_metadata, same_directory, source_is_system_repo
 
 BODY_TRUE = "true"
@@ -216,7 +217,9 @@ def _git_fact(root: Path, body: _BodyIdentity, depth: int, seen: set) -> BodyFac
                 f"remote {name} → {target}: {sub.body} ({sub.detail})")
             continue
         normalized = normalize_remote_url(url)
-        if normalized and normalized == body.managed_url:
+        # Only the managed source follows a former official home; the install's origin keeps its own URL.
+        mapped = normalize_remote_url(follow_former_official_home(url))
+        if mapped and mapped == body.managed_url:
             return BodyFact(BODY_TRUE, "managed_remote",
                             f"remote {name} {url} is the install's configured managed_remote_url")
         if normalized and normalized == body.origin_url:
@@ -265,7 +268,9 @@ def body_fact(root: Any, *, system_repo: Any, manifest: Optional[dict] = None,
         origin = ""
     identity = _BodyIdentity(
         system=system,
-        managed_url=normalize_remote_url(str((manifest or {}).get("managed_remote_url") or "")),
+        # A former official home resolves like the updater resolves it (owner 2026-10-11 №3=A).
+        managed_url=normalize_remote_url(
+            follow_former_official_home(str((manifest or {}).get("managed_remote_url") or ""))),
         origin_url=normalize_remote_url(origin.strip()),
         data_dir=data_dir,
     )

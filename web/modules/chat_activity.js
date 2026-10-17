@@ -4,18 +4,17 @@
 import { executorIdentityMarkup, joinMetaParts } from './harness_presentation.js';
 import { effortChipMarkup } from './effort_chip.js';
 import { resultFilesItemHtml } from './result_files.js';
-import { taskSourceDownloadUrl } from './api_client.js';
+import { taskSourceDownloadUrl, apiFetch } from './api_client.js';
 import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
 import { createSystemMessageActions } from './ui_helpers.js';
 import { projectReference } from './project_reference.js';
 import { delegatedActivityBodyHtml, delegatedHeadline, delegatedLineView } from './delegated_activity.js';
-import { joinMarkdownHeadings, MARKDOWN_FENCED_CODE } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
-import { activityWaitPhase, pausePhaseLabel } from './task_phase_chip.js';
-import { apiFetch } from './api_client.js';
+import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, paintLiveDetail, taskActivityPresentation } from './task_phase_chip.js';
 import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
+import { hostRowDisplayText } from './host_notice_text.js';
 import {
-    accountedUpperBound,
+    joinMarkdownHeadings, MARKDOWN_FENCED_CODE, accountedUpperBound,
     accountedUpperBoundWithChildren,
     escapeHtmlAttr,
     escapeHtmlText as escapeHtml,
@@ -56,11 +55,11 @@ export function senderLabel(role, isProgress = false, systemType = '', opts = {}
         return opts.senderLabel || 'You';
     }
     if (role === 'system') {
-        if (systemType === 'task_summary') return '📋 Task Summary';
-        if (systemType === 'skill_review') return '📋 Skill Review';
-        return '📋 System';
+        if (systemType === 'task_summary') return 'Task Summary';
+        if (systemType === 'skill_review') return 'Skill Review';
+        return 'System';
     }
-    if (isProgress) return '💬 Thought';
+    if (isProgress) return 'Thought';
     // A self-initiated turn (a consciousness wake-up) signs its final bubble
     // through the same sender line the user bubble uses for its source.
     if (opts.initiator === 'consciousness') return 'Ouroboros · Consciousness';
@@ -100,7 +99,7 @@ export function evidenceLinkHtml(evidenceRef) {
 // retain their record link. Only typed host pause copy enters the translator.
 export function cardRowSummary(msg, phase, rawTs = '') {
     const text = String(msg.text ?? msg.content ?? '');
-    const lines = (msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
+    const lines = hostRowDisplayText(msg, msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
     const rowId = String(msg.card_row_id || '').trim() || `${String(msg.system_type || '').trim()}|${rawTs}`;
     return {
         phase, headline: lines[0].trim(), body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}`,
@@ -374,7 +373,7 @@ export function isNonTerminalMediaHistoryRow(msg) {
  * distinction for the replay passes and the pager's page-row count.
  */
 export function isReplayEvidenceRow(row) {
-    return ['quiz_answer', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
+    return ['quiz_answer', 'quiz_closed', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
 }
 
 export function isForegroundLiveCard(record) {
@@ -649,11 +648,8 @@ export function headerBudgetPresentation(data) {
 }
 
 /**
- * Render task money without conflating unknown/non-final values with a final
- * zero.  The returned strings are card metadata, not another cost authority.
- */
-/**
- * Project the producer's scoped carrier (#498) into card meta. The carrier
+ * Project the producer's scoped carrier (#498) into card meta: strings, not another cost
+ * authority, never conflating unknown/non-final values with a final zero. The carrier
  * answers the whole question in one fact — which scope the number describes,
  * whether a zero is EVIDENCED, whether anything in that scope is unpriced — so
  * a frame that has one never re-derives it from two half-matching fields.
@@ -671,14 +667,13 @@ export function costPresentationMeta(presentation) {
         return ['Cost unknown'];
     }
     const money = `$${Number(amount).toFixed(2)}`;
-    if (presentation.has_unpriced) {
-        // Mixed: this is only the tracked subtotal. The reason is stated in WORDS
-        // beside it — a title attribute is invisible on touch, to assistive
-        // technology, and in a copied line.
-        return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`, 'some steps have no price'];
-    }
+    if (presentation.has_unpriced) return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`];
     return [presentation.tracked_final ? money : `up to ${money}`];
 }
+
+/** Why a mixed subtotal reads `Tracked:`: said in the card's details, never a hover-only title. */
+export const costPresentationDetail = (presentation) => (costPresentationMeta(presentation)?.[0]?.startsWith('Tracked: ')
+    ? 'Cost: some steps have no price, so Tracked counts only the priced steps.' : '');
 
 export function taskCostMeta(payload = {}) {
     // Presence means a VALUE, exactly as in `resolveCostPair`: a browser
@@ -751,12 +746,14 @@ export function taskCostMeta(payload = {}) {
 export function taskCostProjection(payload = {}, rawTs = '') {
     const meta = taskCostMeta(payload);
     if (!meta.length) return null;
+    const detail = costPresentationDetail(payload.cost_presentation);
     const unavailable = payload.cost_accounting_status === 'unavailable' || payload.cost_presentation === null;
     const presentation = payload.cost_presentation;
     const legacyRollup = payload.cost_presentation === null && (
         payload.accounted_upper_bound_usd_with_children !== undefined || payload.cost_usd_with_children !== undefined);
     return {
         meta,
+        ...(detail ? { detail } : {}),
         ts: rawTimestampEpoch(rawTs),
         ...(presentation?.scope ? { scope: presentation.scope } : legacyRollup ? { scope: 'rollup' } : {}),
         // Only a SETTLED ledger value is final. "unavailable" is an honest
@@ -923,8 +920,8 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
  * caller that lands mid-flight is coalesced with every other forced caller
  * into ONE follow-up read that starts when the in-flight read settles — the
  * first forced caller receives that request, the others resolve to null once
- * the follow-up has applied or failed. `begin()` stays the ungated clock for
- * synthetic generation bumps. A gated request settles through `apply`/`fail`.
+ * the follow-up has applied or failed. Gated requests settle via `apply`/`fail` even if a callback throws.
+ * Only `fail` (a read failed, in any window) fans out `onUnavailable`; socket open/close `retire()` older bodies.
  */
 export function createStateSnapshotSequencer(onApply, now = () => Date.now(), onUnavailable = () => {}) {
     let requestedGeneration = 0;
@@ -947,6 +944,7 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
     };
     return {
         begin,
+        retire() { appliedGeneration = begin().generation; latest = null; },
         gate(force = false) {
             if (!inflight) return Promise.resolve(open());
             if (!force) return settled.promise.then(() => null);
@@ -972,7 +970,7 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
                 if (!generation || generation <= appliedGeneration) return false;
                 appliedGeneration = generation;
                 latest = null;
-                onUnavailable();
+                onUnavailable(request.requestedAt, generation);
                 return true;
             } finally { settle(request); }
         },
@@ -1066,67 +1064,60 @@ export function positiveTaskTerminalFact(row) {
 }
 
 /**
- * Whether an unkeyed live row ends the unscoped Main turn, by its typed kind. An
- * incident report, a note Ouroboros left for this moment and a skill's notice arrive
- * in the middle of a conversation and conclude nothing.
+ * Whether an unkeyed live row ends the unscoped Main turn: only a legacy model final does.
+ * Voice confers no finality (DESIGN), so a System row concludes nothing; one answering a
+ * submission names its `client_message_id`, and only that `Sending` settles.
  */
 export function unkeyedFrameEndsTurn(row) {
-    return !['terminal_incident', 'reminder', 'skill_notice'].includes(String(row?.system_type || ''));
+    return String(row?.role || '') !== 'system';
 }
 
 /**
- * One header reducer: offline > active managed work > pausing > direct turns
- * > pending submissions > queued work > access/answer wait > unknown > paused
- * > Project hold > idle. A queued task ranks below an unacknowledged submission;
- * neither admission nor a connected socket proves execution or readiness.
- * Idle says Starting until the supervisor confirms readiness. Multiple tasks
- * are counted independently, so one paused task never hides another working.
+ * One header producer: the word, its tone (live, queued, wait for the owner's own question, held, unknown, starting,
+ * offline, online) and its dots together; a call's operation, never its word, picks the tone. Precedence: offline >
+ * active managed work > pausing > direct turns > pending submissions > finalizing wrap-up (ended work in its post-task
+ * work) > access wait > queued > answer wait > unknown > paused > Project hold > idle, which says Starting until the
+ * supervisor confirms readiness: neither admission nor a connected socket proves execution. Tasks are counted
+ * independently, so one paused task never hides another working; `showDots` is the transcript's typing row.
  */
 export function computeDerivedChatStatus({
     isConnected = true,
     hasActiveLiveCard = false,
-    activeDirectCount = 0,
-    activeManagedCount = 0,
-    queuedManagedCount = 0,
-    pausingManagedCount = 0,
-    pausedManagedCount = 0,
+    activeDirectCount = 0, activeManagedCount = 0,
+    queuedManagedCount = 0, pausingManagedCount = 0,
+    pausedManagedCount = 0, finalizingCount = 0, hasFinalizingLiveCard = false,
     pausedCause = '',
-    waitingOwnerCount = 0,
-    unknownActivityCount = 0,
+    waitingOwnerCount = 0, unknownActivityCount = 0,
     waitingModelCount = 0,
     projectWaitLabel = '',
     pendingSubmissionsCount = 0,
     supervisorStarting = false,
+    modelActivity = null,
 } = {}) {
-    if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
-    if (hasActiveLiveCard) return { kind: 'thinking', text: 'Working...', showDots: false };
-    if (activeManagedCount > 0) return { kind: 'thinking', text: 'Working...', showDots: true };
-    // Sent work still finishing under the owner's Pause: settling, not working.
-    if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
-    if (activeDirectCount > 0) return { kind: 'thinking', text: 'Thinking...', showDots: true };
-    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
-    if (queuedManagedCount > 0) {
-        if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-        return { kind: 'thinking', text: 'Queued...', showDots: true };
-    }
-    if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-    if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
-    if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
-    // Mixed or unknown causes stay generic; paused work never claims Running.
-    if (pausedManagedCount > 0) return { kind: 'online', text: pausePhaseLabel('budget_paused', pausedCause), showDots: false };
-    if (projectWaitLabel) return { kind: 'online', text: projectWaitLabel, showDots: false };
-    if (supervisorStarting) return { kind: 'starting', text: 'Starting…', showDots: false };
-    return { kind: 'online', text: 'Online', showDots: false };
+    const view = (kind, text, tone, showDots = false) => ({ kind, text, tone, showDots, dots: tone === 'live' ? 'moving' : tone === 'queued' ? 'still' : 'one' });
+    if (!isConnected) return view('offline', 'Reconnecting…', 'offline');
+    const observed = modelActivity && view(modelActivity.waiting ? 'online' : 'thinking', modelActivity.text, ['unknown', 'queued'].includes(modelActivity.operation) ? modelActivity.operation : modelActivity.waiting ? 'held' : 'live', modelActivity.motion);
+    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || view('thinking', taskActivityPresentation({ phase: 'working' }).text, 'live', !hasActiveLiveCard);
+    if (pausingManagedCount > 0) return view('thinking', pausePhaseLabel('budget_pausing'), 'held', true); // settling under the owner's Pause
+    if (activeDirectCount > 0) return observed || view('thinking', taskActivityPresentation({ phase: 'working' }).text, 'live', true);
+    if (pendingSubmissionsCount > 0) return view('thinking', tr('task.chip.sending', 'Sending'), 'live', true);
+    if (finalizingCount > 0 || hasFinalizingLiveCard) return view('thinking', taskActivityPresentation({ phase: 'finalizing' }).text, 'live', true);
+    if (waitingModelCount > 0) return view('online', tr('task.chip.waiting_for_access', 'Waiting for access'), 'held');
+    if (queuedManagedCount > 0) return view('thinking', taskActivityPresentation({ phase: 'queued' }).text, 'queued', true);
+    if (waitingOwnerCount > 0) return view('online', tr('task.chip.waiting_for_answer', 'Waiting for your answer'), 'wait');
+    if (unknownActivityCount > 0) return view('online', tr('task.chip.activity_unconfirmed', 'Activity unconfirmed'), 'unknown');
+    if (pausedManagedCount > 0) return view('online', pausePhaseLabel('budget_paused', pausedCause), 'held'); // never claims Running
+    if (projectWaitLabel) return view('online', projectWaitLabel, 'held');
+    if (supervisorStarting) return view('starting', 'Starting…', 'starting');
+    return view('online', 'Online', 'online');
 }
 
-// The reducer's counted inputs: census activities not waiting on a model, and mounted unfinished
-// cards, where a managed root drives Working… and a direct turn keeps the census verdict (Thinking…);
-// a paused or pausing card (`task_phase_chip.syncParkedPhase`) is not working.
+// Count census activity and unfinished cards; parked/waiting rows retain their own state.
 export function chatStatusCounts(activities, records, isWaiting = () => false) {
     const counts = { activeDirectCount: 0, activeManagedCount: 0, queuedManagedCount: 0, pausingManagedCount: 0,
-        pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0,
+        pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0, finalizingCount: 0, hasFinalizingLiveCard: false,
         projectWaitLabel: '', waitingOwnerCount: 0, pausedCause: '' };
-    const pauseCauses = new Set();
+    const pauseCauses = new Set(), calls = new Map();
     for (const [id, entry] of activities) {
         // A Project verification hold is a static wait: never queued or working,
         // while its pause/pausing/unknown census phase still counts as itself.
@@ -1140,9 +1131,13 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
         else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
         else if (waitPhase === 'owner_wait') counts.waitingOwnerCount += 1;
         else if (projectHold) continue;
-        else if (String(entry?.kind || '') !== 'managed_task') counts.activeDirectCount += 1;
+        else if (String(entry?.kind || '') !== 'managed_task' && entry?.phase !== 'finalizing') counts.activeDirectCount += 1;
         else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
-        else counts.activeManagedCount += 1;
+        else counts[String(entry?.phase || '') === 'finalizing' ? 'finalizingCount' : 'activeManagedCount'] += 1;
+        if (!entry?._activityUnconfirmed && ['preparing', 'thinking', 'working'].includes(entry?.phase)
+            && !waitPhase && !projectHold) calls.set(id, modelActivityPresentation(
+                entry.phase === 'preparing' ? { phase: 'preparing' } : entry.model_activity)
+                || (entry.kind !== 'managed_task' ? taskActivityPresentation({ phase: entry.phase }) : null));
     }
     if (pauseCauses.size === 1) counts.pausedCause = [...pauseCauses][0];
     for (const record of records) {
@@ -1152,9 +1147,14 @@ export function chatStatusCounts(activities, records, isWaiting = () => false) {
             continue;
         }
         if (activities.get(record.groupId)?.project_admission_hold) continue;
+        if (record.cancelPendingPolicy && calls.has(record.groupId)) calls.set(record.groupId,
+            taskActivityPresentation({ phase: 'working', stopPolicy: record.cancelPendingPolicy }));
         if (record.modelWaiting) counts.waitingModelCount += 1;
-        else if (!record.direct && !record.parkedPhase) counts.hasActiveLiveCard = true;
+        else if ((record.finalizingHold || !record.direct) && !record.parkedPhase) counts[record.finalizingHold ? 'hasFinalizingLiveCard' : 'hasActiveLiveCard'] = true;
     }
+    const views = [...calls.values()];
+    if (views.length && views.length === counts.activeDirectCount + counts.activeManagedCount
+        && views.every(view => view && view.text === views[0]?.text)) counts.modelActivity = views[0];
     return counts;
 }
 
@@ -1213,8 +1213,8 @@ export function buildMessageKey(role, text, timestamp, opts = {}) {
 }
 
 export function reconnectBannerText(reason = '') {
-    if (reason === 'sha-change') return '♻️ Restart complete';
-    if (reason) return '♻️ Reconnected';
+    if (reason === 'sha-change') return 'Restart complete';
+    if (reason) return 'Reconnected';
     return '';
 }
 
@@ -1291,7 +1291,7 @@ export function routingAnnotationText(annotation) {
     }
     if (status === 'project_unavailable') return tr('routing.project_unavailable', 'Project is unavailable');
     const labels = {
-        mailbox_delivery: 'Delivered to task',
+        mailbox_delivery: 'Message saved for task',  // a recorded mailbox write, never a read receipt
         steer_task: 'Steered task',
         promote_chat_to_task: 'Started task',
         route_to_project: 'Routed to project',
@@ -1569,7 +1569,8 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
             record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',
         ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`),
     ]);
-    if (record.metaEl.innerHTML === html) return false;
+    const detailChanged = paintLiveDetail(record, 'liveCostDetail', String(record.costMeta?.detail || ''));
+    if (record.metaEl.innerHTML === html) return detailChanged && Boolean(record.metaEl.isConnected);
     record.metaEl.innerHTML = html;
     return Boolean(record.metaEl.isConnected);
 }

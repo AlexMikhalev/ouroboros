@@ -150,6 +150,8 @@ def _emit_swarm_fanout(
     }
     try:
         append_jsonl(ctx.drive_logs() / "events.jsonl", evt)
+        from ouroboros.swarm_rollup import load_swarm_rollup
+        load_swarm_rollup(ctx.drive_logs().parent, parent_task_id)
     except Exception:
         log.debug("Failed to emit swarm_fanout telemetry", exc_info=True)
 
@@ -721,6 +723,18 @@ def child_copies_serving_body(ctx, params) -> bool:
     return copies
 
 
+_EXECUTION_SPENT = ("⚠️ TASK_LIFETIME_EXHAUSTED (schedule_subagent): this task's execution budget is spent; "
+                    "no child was scheduled. Finalize with what you have.")
+
+
+def _inherited_execution_allowance(ctx: ToolContext) -> Any:
+    """#939: a child of an explicitly bounded task gets the parent's remaining execution
+    allowance as its own budget (its queue wait excluded), never a fresh one."""
+    from ouroboros.model_wait import explicit_execution_window_remaining
+
+    return explicit_execution_window_remaining(ctx)
+
+
 def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, **params: Any) -> str:
     allowed_params = schedule_subagent_param_names() | HIDDEN_LEGACY_SCHEDULE_PARAMS
     unsupported = sorted(str(key) for key in params if key not in allowed_params)
@@ -748,6 +762,9 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     memory_mode = fields["memory_mode"]
     may_mutate = fields["may_mutate"]
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
+    execution_left = _inherited_execution_allowance(ctx)
+    if execution_left is not None and execution_left <= 0:
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ERROR", _EXECUTION_SPENT, reason="task_lifetime_exhausted")
     try:
         configured_subagent, legacy_selection = select_subagent_snapshot(
             effective_runtime_subagent_settings(runtime_settings(settings_reader=_ctl().load_settings)),
@@ -925,6 +942,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     }
     owner_origin = governing_words_for_schedule(ctx)  # the owner's words that caused this tree, by value
     child_facts = {
+        **({"execution_timeout_sec": execution_left} if execution_left is not None else {}),
         "objective": objective,
         "expected_output": expected_output,
         "constraints": constraints,
@@ -985,7 +1003,8 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     except Exception:
         log.warning("Failed to persist requested task status for %s", tid, exc_info=True)
         try:
-            (status_drive_root / "task_results" / f"{tid}.json").unlink(missing_ok=True)
+            from ouroboros.task_store import delete_document
+            delete_document(status_drive_root, tid)
         except Exception:
             pass
         if child_drive is not None:

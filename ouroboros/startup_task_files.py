@@ -78,7 +78,7 @@ def recover_terminal_task_files(drive_root, protected):
                             and source.get("started_at") and not source.get("_is_direct_chat")
                             and not cancel_pending(root, task_id, strict=True)):
                         observed = effective_task_result(root, {**current, "child_drive_root": str(child_root)},
-                                                         materialize_artifacts=False)
+                                                         materialize_artifacts=False, _boot=True)
                         if observed.get("reason_code") == "orphaned_running_after_worker_restart":
                             write_task_result(root, task_id, "running", child_drive_root=str(child_root),
                                 budget_drive_root=str(root), started_at=source["started_at"],

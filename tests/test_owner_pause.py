@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests._budget_pause_exact_helpers import _fast_hold, _install_queue, _loop_ctx, _mock_pause_observation
+from tests.worker_pool_support import affirm_ready
 
 
 def _live_tree(tmp_path, workers):
@@ -280,8 +281,8 @@ def test_resume_observes_without_stop_and_the_fence_reopens_where_the_root_start
     # Actual assignment must hand the root its grant through the still-closed
     # fence; only consumption reopens ordinary tools and sends.
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda task: sent.append(dict(task))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda task: sent.append(dict(task)))))
     workers.assign_tasks()
     assert [task["id"] for task in sent] == ["solo"]
     assert owner_pause.read_fence(tmp_path, "solo")["state"] == owner_pause.FENCE_PAUSED

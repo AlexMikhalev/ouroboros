@@ -59,16 +59,9 @@ class TestBuildSh:
         assert "playwright install --only-shell chromium" in src, (
             "build.sh must call 'playwright install --only-shell chromium' on macOS"
         )
-        assert "Skipping bundled WebKit on macOS" in src, (
-            "build.sh must document the macOS WebKit packaging policy"
-        )
-        assert "Removing stale bundled WebKit payloads from macOS package tree" in src
         assert 'rglob(".local-browsers")' in src
         assert 'glob("webkit-*")' in src
         assert "shutil.rmtree" in src
-        assert "managed" in src and "Playwright cache" in src, (
-            "build.sh must leave WebKit available through the managed runtime cache"
-        )
         assert "playwright install webkit" not in src
         assert "pw.webkit.launch" not in src
 
@@ -653,7 +646,6 @@ class TestRepoBundleReleaseTagGuard:
     def test_dirty_tree_refusal_reports_the_offending_paths(self):
         src = _read("scripts/build_repo_bundle.py")
         assert '"status", "--porcelain"' in src
-        assert '"Commit or stash changes first so the embedded managed repo matches the packaged code.\\n"' in src
         assert "+ status" in src
 
 
@@ -1036,7 +1028,7 @@ def test_launcher_retains_cross_platform_runtime_hooks():
     assert "_prepare_windows_webview_runtime" in launcher_source
     assert "git_install_hint()" in launcher_source
     assert "create_kill_on_close_job" in launcher_source
-    assert "kill_process_on_port(port)" in launcher_source
+    assert "kill_process_on_port(int(companion_port))" in launcher_source
     assert "force_kill_pid(child.pid)" in launcher_source
 
 
@@ -1046,7 +1038,6 @@ def test_launcher_preserves_macos_git_setup_path():
     assert 'subprocess.Popen(["xcode-select", "--install"])' in launcher_source
     assert "Install Git (Xcode CLI Tools)" in launcher_source
     assert "Installing... A system dialog may appear." in launcher_source
-    assert '["lsof", "-nP", "-ti", f"tcp:{port}", "-sTCP:LISTEN"]' in launcher_source
 
 
 def test_cross_platform_build_scripts_are_present():
@@ -1148,7 +1139,7 @@ def test_ci_collects_independent_failures_without_relaxing_release_gates():
 def test_ci_setup_aware_failure_collection_guards_each_independent_lane():
     import yaml
     jobs = yaml.safe_load(_ci_workflow())["jobs"]
-    for job_name in ("quick-test", "full-test", "marker-guards", "docker-ui-smoke", "system-e2e-mock", "android-test"):
+    for job_name in ("quick-test", "full-test-runs", "marker-guards", "docker-ui-smoke", "system-e2e-mock", "android-test"):
         steps = jobs[job_name]["steps"]
         assert any("!cancelled()" in str(step.get("if", "")) for step in steps if "run" in step), job_name
     ui = {step.get("name"): step for step in _ui_browser_jobs()["ui-shard"]["steps"]}
@@ -1188,7 +1179,7 @@ def test_ci_failure_collection_guards_every_independent_step_and_rerun_uploads()
     jobs = yaml.safe_load(_ci_workflow())["jobs"]
     expected = {
         "quick-test": ["Verify generated Pages output", "Lint (deterministic F-rule gate — catches the NameError-under-except class)", "Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
-        "full-test": ["Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
+        "full-test-runs": ["Run browser-module tests (node --test — mirrored by the hermetic commit gate)", "Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)", "Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)", "Run tests (serial — real subprocess/port/global-state suites that flake under -n)", "Run tests (size-ratchet lane — blocking here, warning-only locally)", "Guard extracted transport imports stay out of core"],
         "marker-guards": ["Guard non-empty browser marker lanes", "Guard non-empty serial marker lane", "Guard non-empty skill_smoke marker lane", "Guard non-empty size_ratchet marker lane"],
         "docker-ui-smoke": ["Install UI smoke browser binaries", "Run Docker UI smoke", "Run Docker browser tools Chromium/WebKit smoke"],
         "system-e2e-mock": ["Run the keyless system E2E scenario lane (real isolated servers)", "Run the cancellation E-suite mock lane"],

@@ -33,6 +33,14 @@ from tests.test_host_service_api import _seed_presence_behavior
 from tests.test_presence_continuation import ANSWER, call, event, finish
 
 
+def _nominate_result():
+    """Main explicitly requests a root panel and selects its Presence output."""
+    return {"content": None, "tool_calls": [
+        call("task_acceptance_review", {"claim": ANSWER, "goal": "Prepare the status report"}, "review-request"),
+        call("presence_finish", {"outcome": "message", "message": ANSWER}, "select-report"),
+    ]}
+
+
 @pytest.fixture
 def policy_turn(tmp_path, monkeypatch):
     from ouroboros import review_custody
@@ -48,11 +56,32 @@ def policy_turn(tmp_path, monkeypatch):
     data.mkdir()
     repo.mkdir()
     binding = _seed_presence_behavior(data)
+    # This fixture used to rely on expected_output alone. A real nomination
+    # needs the same declared and selected capability as an installed Presence.
+    from ouroboros.presence_capabilities import (
+        PresenceSelection, PresenceState, PresenceToolTarget, load_presence_state,
+        presence_state_fingerprint, save_presence_state,
+    )
+    from ouroboros.presence_profile import parse_presence_profile, presence_request_fingerprint
+    from ouroboros.skill_loader import SkillReviewState, load_skill, save_review_state
+    skill_dir = data / "skills/external/community-helper"
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(skill_path.read_text().replace(
+        "  capability_requests:\n", "  capability_requests:\n    - id: review\n      kind: tool\n"
+        "      required: true\n      purpose: Request independent result review.\n"), encoding="utf-8")
+    loaded = load_skill(skill_dir, data)
+    save_review_state(data, loaded.name, SkillReviewState(status="pass", content_hash=loaded.content_hash))
+    profile = parse_presence_profile(loaded.manifest, skill_dir)
+    state = load_presence_state(data, loaded.name)
+    request = next(row for row in profile.capability_requests if row.request_id == "review")
+    save_presence_state(data, loaded.name, PresenceState((*state.selections, PresenceSelection(
+        presence_request_fingerprint(request), PresenceToolTarget("builtin", "task_acceptance_review")))),
+        expected_state_fingerprint=presence_state_fingerprint(state))
     admission = admit_presence_turn(drive_root=data, authenticated_transport_skill="telegram-bot",
                                    binding_id=binding, global_max_rounds=config.get_max_rounds())
     h = SimpleNamespace(data=data, repo=repo, admission=admission, script=[], calls=0, reviews=[], ctx=None,
-                        inputs=[], progress=[], contract=True, before_loop=lambda _ctx: None,
-                        release=threading.Event(), settled=threading.Event(), executions=PresenceTurnExecutions(),
+                        inputs=[], progress=[], contract=True, produced=False, before_loop=lambda _ctx: None,
+                        release=threading.Event(), dispatched=threading.Event(), settled=threading.Event(), executions=PresenceTurnExecutions(),
                         gate=PresenceTurnGate(1, state_root=data / "state"), running=[])
     slots = [ReviewSlot(slot_id="policy-reviewer", model="fixture/reviewer", effort="high", timeout_sec=30)]
     monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: slots)
@@ -91,6 +120,7 @@ def policy_turn(tmp_path, monkeypatch):
 
             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
             h.reviews.append(self.assignment.request)
+            h.dispatched.set()
             assert h.release.wait(30), "test did not release its reviewer"
             vocabulary = acceptance_evidence_ref_vocabulary(self.assignment.request.evidence)
             reference = next(key for key, kind in vocabulary.items() if kind in {"tool_record", "packet_section"})
@@ -128,9 +158,12 @@ def policy_turn(tmp_path, monkeypatch):
             if h.contract:
                 ctx.task_contract["expected_output"] = "A complete status report."
             write_task_result(data, task["id"], "running", task_contract=ctx.task_contract, root_task_id=task["id"])
+            if h.produced:
+                from ouroboros.artifacts import store_task_artifact_bytes
+                store_task_artifact_bytes(data, task["id"], "report.txt", ANSWER.encode())
             ctx.task_attempt, ctx.current_chat_id = 1, task["chat_id"]
             ctx.review_wait_callback = self.review_wait_callback
-            registry.override_handler("chat_history", lambda **_kw: "History read.")
+            registry.override_handler("chat_history", lambda _ctx, **_kw: "History read.")
             task["_skip_post_task_synthesis"] = True
             h.before_loop(ctx)
             with task_model_wait_scope(task=task, drive_root=data, event_queue=None, worker_slot_held=False) as waiter:
@@ -166,18 +199,20 @@ def policy_turn(tmp_path, monkeypatch):
     assert not h.executions.live()
 
 
-@pytest.mark.parametrize("mode,contract,reviewed", [
-    ("auto", False, False), ("auto", True, True),
-    ("required", False, False), ("required", True, True),
-    ("off", False, False), ("off", True, False),
-])
-def test_presence_eligibility_keeps_auto_required_and_off(policy_turn, monkeypatch, mode, contract, reviewed):
+@pytest.mark.parametrize("mode", ["auto", "required", "off"])
+@pytest.mark.parametrize("contract", [False, True])
+@pytest.mark.parametrize("material", ["none", "nomination", "registered_output"])
+def test_presence_eligibility_keeps_auto_required_and_off(policy_turn, monkeypatch, mode, contract, material):
     h = policy_turn
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", mode)
     h.contract = contract
-    h.script = [finish("nominate", message=ANSWER)]
-    if contract:
-        # The production one-shot verify-before-done reminder remains enabled.
+    h.produced = material == "registered_output"
+    nominated = material == "nomination"
+    reviewed = mode != "off" and (nominated or (mode == "required" and h.produced))
+    h.script = [_nominate_result() if nominated else finish("select-report", message=ANSWER)]
+    if nominated:
+        # A nomination must see its tool result; expected_output alone adds no
+        # inference round after removal of the "nothing attempted" re-loop.
         h.script.append(lambda _messages: finish("after-reminder", answer_sha256=h.ctx._delivery_candidate.content_sha256))
     if reviewed:
         h.script.append(lambda _messages: finish("select", answer_sha256=h.ctx._delivery_candidate.content_sha256))
@@ -185,11 +220,12 @@ def test_presence_eligibility_keeps_auto_required_and_off(policy_turn, monkeypat
     initial = execution.initial.result(timeout=30)
     if reviewed:
         assert initial.status == "continuing" and initial.text == ""
-        assert not execution.result.done() and h.calls == 2
+        assert not execution.result.done()
         h.release.set()
     final = execution.result.result(timeout=30)
     assert final.text == ANSWER and final.outcome == "message"
-    assert h.calls == 1 + int(contract) + int(reviewed) and len(h.reviews) == int(reviewed)
+    assert h.calls == 1 + int(nominated) + int(reviewed)
+    assert len(h.reviews) == int(reviewed)
     assert bool(load_task_result(h.data, final.task_id).get("presence_continuation")) is reviewed
     assert not h.script
 
@@ -197,8 +233,12 @@ def test_presence_eligibility_keeps_auto_required_and_off(policy_turn, monkeypat
 def test_default_inline_cap_is_not_reset_by_review_wait(policy_turn):
     h = policy_turn
     assert config.get_max_rounds() is None and h.admission.inline_max_rounds == 10
-    h.script = [{"content": None, "tool_calls": [call("chat_history", {}, f"read-{i}")]} for i in range(9)]
-    h.script += [finish("nominate", message=ANSWER), {"content": "Forced record without a delivery declaration."}]
+    h.script = [{"content": None, "tool_calls": [call("chat_history", {}, f"read-{i}")]} for i in range(8)]
+    # Round 9 nominates; round 10 consumes its result and selects completion.
+    # Co-batching that selection with a new tool cannot acknowledge its result.
+    h.script += [_nominate_result(),
+                 lambda _messages: finish("select", answer_sha256=h.ctx._delivery_candidate.content_sha256),
+                 {"content": "Forced record without a delivery declaration."}]
     execution = h.start()
     initial = execution.initial.result(timeout=30)
     assert initial.status == "continuing" and initial.text == "" and h.calls == 10
@@ -208,6 +248,8 @@ def test_default_inline_cap_is_not_reset_by_review_wait(policy_turn):
     assert h.calls == 11 and not h.script  # ten inline calls plus the existing single forced record
     assert h.usage["reason_code"] == "round_limit"
     assert len(h.reviews) == 1
+    reads = [row for row in h.trace["tool_calls"] if row["tool"] == "chat_history"]
+    assert len(reads) == 8 and all(row["status"] == "ok" and not row["is_error"] for row in reads)
 
 
 def _spend_review_cycles(h, ctx, count):
@@ -224,12 +266,13 @@ def test_last_default_review_cycle_still_allows_the_author_response(policy_turn)
     h = policy_turn
     assert review_max_cycles() == 2
     h.before_loop = lambda ctx: _spend_review_cycles(h, ctx, 1)
-    h.script = [finish("nominate", message=ANSWER),
+    h.script = [_nominate_result(),
                 lambda _messages: finish("after-reminder", answer_sha256=h.ctx._delivery_candidate.content_sha256),
                 lambda messages: finish("select", answer_sha256=h.ctx._delivery_candidate.content_sha256)]
     execution = h.start()
     initial = execution.initial.result(timeout=30)
     assert initial.status == "continuing" and h.calls == 2
+    assert h.dispatched.wait(30)  # lending the conversation can precede the physical paid stamp
     assert len(load_task_acceptance_review_state(h.data, initial.task_id)["claims_by_binding"]) == 2
     h.release.set()
     final = execution.result.result(timeout=30)
@@ -241,7 +284,7 @@ def test_last_default_review_cycle_still_allows_the_author_response(policy_turn)
 def test_spent_default_review_wallet_dispatches_and_lends_nothing(policy_turn):
     h = policy_turn
     h.before_loop = lambda ctx: _spend_review_cycles(h, ctx, 2)
-    h.script = [finish("nominate", message=ANSWER),
+    h.script = [_nominate_result(),
                 lambda _messages: finish("after-reminder", answer_sha256=h.ctx._delivery_candidate.content_sha256),
                 finish("stop", message=ANSWER, author_disposition="partial", action="stop",
                        rationale="Review wallet is exhausted; retain the unaccepted report.")]

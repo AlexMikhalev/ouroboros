@@ -20,10 +20,11 @@ from tests._usage_store_testing import ledger_rows
 
 
 @pytest.fixture
-def late(tmp_path, monkeypatch, fresh_sends):
-    # The model transport is synthetic; its budget quote must be offline too.
-    # Cold live catalogue I/O otherwise races the panel's 10s test wait. This
-    # synthetic tariff preserves real budget admission, reservation and settlement.
+def late(tmp_path, monkeypatch, fresh_sends, provider_catalog_offline):
+    # The model transport is synthetic; its budget quote and the reviewer
+    # window's catalogue metadata must be offline too. Cold live catalogue I/O
+    # otherwise races the panel's 10s test wait. This synthetic tariff preserves
+    # real budget admission, reservation and settlement.
     from ouroboros import pricing
     for name in ("_cached_pricing", "_pricing_fetched_at", "_pricing_retry_after"):
         monkeypatch.setattr(pricing, name, {})
@@ -120,6 +121,9 @@ def test_explicit_owner_runs_full_panel_on_delivered_root_and_retry(late, tmp_pa
     ctx.event_queue = queue.Queue()
     before = copy.deepcopy(load_task_result(f.root, f.tid))
     result = _request(f, ctx, _source(ctx, text='Review this delivered historical answer.'))
+    if mode == 'off':
+        assert result['reason'] == 'review_mode_off' and not late.calls
+        return
     assert result['status'] in {'pending', 'announced', 'published', 'settled'}, result
     def panel():
         return next((p for p in (load_task_result(f.root, f.tid).get('review_projection') or {}).get('panels', [])
@@ -138,6 +142,45 @@ def test_explicit_owner_runs_full_panel_on_delivered_root_and_retry(late, tmp_pa
     assert len(notices) == 1 and notices[0]['chat_id'] == 7
     again = _request(f, ctx, _source(ctx, text='Review this delivered historical answer.'))
     assert again['reason'] == 'existing_paid_operation' and len(late.calls) == 3
+
+
+def test_a_cold_reviewer_catalog_never_leaves_the_late_fixture(late, tmp_path, monkeypatch):
+    """The real explicit panel reaches the reviewer-window catalogue seam with a
+    cold catalogue and no cached response limit, yet sends no catalogue request."""
+    import requests
+    from ouroboros import capability_evidence
+    from ouroboros.llm import LLMClient
+
+    for name, cold in (("_SUPPORTED_PARAMS_CACHE", {}), ("_SUPPORTED_PARAMS_FETCHED", False),
+                       ("_CONTEXT_LENGTH_CACHE", {}), ("_CAPABILITIES_FETCH_OK", False)):
+        monkeypatch.setattr(LLMClient, name, cold)
+    # The window and response-limit evidence store is worker-wide (an earlier test
+    # may have filled it); this test reads and writes its own empty one.
+    monkeypatch.setattr(capability_evidence, "_store_path",
+                        lambda _root: tmp_path / "cold-evidence" / "capability_evidence.json")
+    seam, egress = [], []
+    installed = LLMClient._fetch_openrouter_capabilities  # whatever answers the seam now: the fixture's
+
+    def counted(cls):
+        seam.append(cls)
+        return installed()
+
+    def tripwire(url, *_args, **_kwargs):
+        egress.append(str(url))
+        raise requests.ConnectionError("this test is offline")
+
+    monkeypatch.setattr(LLMClient, "_fetch_openrouter_capabilities", classmethod(counted))
+    monkeypatch.setattr(requests, "get", tripwire)
+    f = delivered(tmp_path, monkeypatch)
+    ctx = _caller(f)
+    ctx.event_queue = queue.Queue()
+    result = _request(f, ctx, _source(ctx, text='Review this delivered historical answer.'))
+    assert result['status'] in {'pending', 'announced', 'published', 'settled'}, result
+    until(lambda: next((p for p in (load_task_result(f.root, f.tid).get('review_projection') or {}).get('panels', [])
+                        if p.get('late_settlement')), None))
+    assert len(late.calls) == 3
+    assert seam, "the real panel must reach the catalogue seam for this regression to mean anything"
+    assert not [url for url in egress if "/api/v1/models" in url], egress
 
 
 @pytest.mark.parametrize('first_callback', ['quorum', 'complete'])
@@ -316,6 +359,7 @@ def test_cap_only_amendment_prepares_and_buys_nothing_even_with_every_gate_open(
     from ouroboros.acceptance_history import historical_review_controls
     from ouroboros.acceptance_late import _receipt
     f = delivered(tmp_path, monkeypatch, retry=retry)
+    monkeypatch.setenv('OUROBOROS_TASK_REVIEW_MODE', 'off')
     ctx = _caller(f)
     ctx.event_queue = queue.Queue()
     target = load_task_result(f.root, f.tid)
@@ -338,6 +382,10 @@ def test_cap_only_amendment_prepares_and_buys_nothing_even_with_every_gate_open(
     assert [(a['new_cap_usd'], a['previous_cap']['usd']) for a in amendments] == [(9, 4)]
     assert not [e for e in list(ctx.event_queue.queue) if e.get('system_type') == 'acceptance_late_settlement']
     # A later explicit panel buys from the same original root under the amended cap.
+    refused = _request(f, ctx, _source(ctx, text='Now review that historical answer.'), action='review')
+    assert refused['reason'] == 'review_mode_off' and refused['dispatched'] is False
+    assert late.calls == []
+    monkeypatch.setenv('OUROBOROS_TASK_REVIEW_MODE', 'auto')
     review = _request(f, ctx, _source(ctx, text='Now review that historical answer.'), action='review')
     assert review['status'] in {'pending', 'announced', 'published', 'settled'}, review
     until(lambda: len(late.calls) == 3)
@@ -476,7 +524,8 @@ def test_terminal_http_stop_reaches_the_live_historical_operation(late, tmp_path
     app.state.drive_root = f.root
     with TestClient(app) as client:
         response = client.post(f'/api/tasks/{target}/cancel', json={})
-    assert response.status_code == 503, response.text  # still owned, never a false 404 or completed cancellation
+    assert response.status_code == 202, response.text  # still owned, never a false 404 or completed cancellation
+    assert response.json()['cancel_state'] == 'pending'
     assert cancel_pending(f.root, ctx.task_id if stopped == 'caller' else f.tid, strict=True)
     operation = next(op for op in review_operation._LIVE.values() if op.task_id == f.tid)
     until(lambda: operation.control() == 'cancelled')
@@ -490,15 +539,17 @@ def test_terminal_http_stop_reaches_the_live_historical_operation(late, tmp_path
 
 @pytest.mark.parametrize('failed_publish', ['', 'publication', 'outbox'])
 def test_immediate_complete_and_failed_publication_retry_keep_one_supplement(late, tmp_path, monkeypatch, failed_publish):
-    import time
     from ouroboros import review_operation, review_substrate, review_projection
     from supervisor.terminal_delivery import pending_deliveries
     f = delivered(tmp_path, monkeypatch, retry=True)
     ctx = _caller(f)
     ctx.event_queue = queue.Queue()
+    # Cold recovery has no caller context; use the same local event transport.
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda **_kw: ctx.event_queue)
     original_run = review_substrate.run_review_request
     def synchronous(request, **kwargs):
-        request.drain_deadline = time.monotonic() + 5
+        # No dispatch barrier: drain each slot to its own window, not a wall-clock guess.
+        request.drain_deadline = None
         result = original_run(request, **kwargs)
         assert all(actor['operation_state'] not in {'pending_dispatch', 'in_flight'} for actor in result.actors)
         return result
@@ -739,43 +790,6 @@ def test_handoff_failures_preserve_unknown_identity_without_resend(late, tmp_pat
         until(lambda: len(late.calls) == 3)
     else:
         assert second['reason'] == 'existing_paid_operation' and not late.calls, second
-
-
-@pytest.mark.parametrize('reader', ['author', 'paid_stamp'])
-def test_a_read_denied_by_a_concurrent_replace_never_refuses_the_owner_panel(late, tmp_path, monkeypatch, reader):
-    """Windows denies an open that meets another thread's atomic replace of the same
-    task result. One such instant at a strict preclaim read (the author's before
-    dispatch, or the paid stamp's on a reviewer racing the author's publication) is
-    not unreadable authority: the owner's panel still buys its three reviewers once."""
-    import pathlib
-    from ouroboros import review_dispatch, review_operation
-    f = delivered(tmp_path, monkeypatch, retry=True)
-    ctx = _caller(f)
-    inside, denied = set(), []
-    preclaim, read_text = review_dispatch.task_acceptance_preclaim_refusal, pathlib.Path.read_text
-
-    def observed_preclaim(admission):
-        if (threading.current_thread() is not threading.main_thread()) == (reader == 'paid_stamp'):
-            inside.add(threading.get_ident())
-        try:
-            return preclaim(admission)
-        finally:
-            inside.discard(threading.get_ident())
-
-    def denied_once(path, *args, **kwargs):
-        if threading.get_ident() in inside and path.parent.name == 'task_results' and not denied:
-            denied.append(path.name)
-            raise PermissionError(13, 'The process cannot access the file', str(path))
-        return read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(review_dispatch, 'task_acceptance_preclaim_refusal', observed_preclaim)
-    monkeypatch.setattr(pathlib.Path, 'read_text', denied_once)
-    result = _request(f, ctx, _source(ctx))
-    assert result['status'] in {'pending', 'announced', 'published', 'settled'}, result
-    until(lambda: len(late.calls) == 3)
-    until(lambda: not review_operation._LIVE)
-    claims = (load_task_result(f.root, f.accounting).get('task_acceptance_review_accounting') or {}).get('claims_by_binding') or {}
-    assert denied and len(late.calls) == 3 and len(claims) == 1, (denied, claims)
 
 
 @pytest.mark.parametrize('amount,explicit,expected', [(None, 'original_admission', None), (2.0, 'original_admission', 2.0), (None, '', 9.0)])

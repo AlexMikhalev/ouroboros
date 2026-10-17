@@ -8,8 +8,8 @@ so acceptance carries every row's own delivery, effort, credential pin and
 stable id (the catalog id) instead of an api-pinned projection. A malformed
 catalog refuses acceptance typed (DEGRADED) exactly as it refuses plan and skill
 review; a comma list without a catalog is an EMPTY pool and a typed refusal, not
-a default panel; child-task and ``off``-mode acceptance follow the pool rows'
-delivery (a child with at most one row, #1334).
+a default panel; child-task acceptance follows the pool rows' delivery (a child
+with at most one row, #1334) and an ``off``-mode root buys no new panel (#1731).
 """
 
 import json
@@ -184,28 +184,34 @@ def test_malformed_catalog_refuses_acceptance_typed(structured_env, tmp_path):
     assert result.actors == []
 
 
-def test_a_comma_list_without_a_catalog_is_an_empty_pool_and_a_typed_refusal(monkeypatch, tmp_path):
+def test_a_comma_list_without_a_catalog_is_an_empty_pool_reviewed_by_the_main_model_alone(monkeypatch, tmp_path):
     """PR-3: the lane-era comma list projects NO panel any more. With no catalog
-    (or no marked row) the pool is empty and acceptance refuses typed — nobody
-    is called, no default rows are invented. The benchmark classes that used to
-    ride the comma list carry explicit catalog rows instead."""
+    (or no marked row) the pool is empty and acceptance runs ONE seat, the Main model
+    reviewing alone (owner decision B) — never the comma list's models, never
+    invented default rows. The benchmark classes that used to ride the comma list
+    carry explicit catalog rows instead."""
     from ouroboros import loop as loop_mod
 
     for key in ("OUROBOROS_REVIEW_ROUTES", "OUROBOROS_SUBAGENTS"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OUROBOROS_MODEL", "openai/main-model")
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "openai/a,openai/b,openai/c")
     captured = _capture_panel(monkeypatch)
     result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(tmp_path))
-    assert captured == []
-    assert result.aggregate_signal == "DEGRADED" and result.degraded_reasons == ["no_review_slots"]
+    [(request, kwargs)] = captured
+    assert [(slot.slot_id, slot.model, slot.retrieves) for slot in kwargs["slots"]] == [
+        ("main", "openai/main-model", True)]
+    assert request.policy["min_successful_slots"] == 1
+    assert "no_review_slots" not in (getattr(result, "degraded_reasons", None) or [])
 
 
 def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp_path):
-    """Child-task and `off`-mode acceptance is advisory evidence (#1334): every
-    row keeps its configured delivery. An off-mode root's explicit call runs the
-    configured panel's breadth; a child reviews with at most ONE row, named when
-    several are configured and checked for membership by the host. A refusal is
-    typed and calls nobody."""
+    """Child-task acceptance is advisory evidence (#1334): every row keeps its
+    configured delivery. An off-mode root's explicit call buys no new panel
+    (#1731, Off means no result review): it collects paid feedback at $0 and is
+    refused typed. A child reviews with at most ONE row, named when several are
+    configured and checked for membership by the host. A refusal is typed and
+    calls nobody."""
     import ouroboros.review_substrate as rs
     from ouroboros import review_evidence as re_mod
     from ouroboros.tools.review import _handle_task_acceptance_review
@@ -225,10 +231,10 @@ def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp
         drive_root=str(tmp_path), task_id="root", root_task_id="root",
         task_metadata={"root_task_id": "root"}, task_contract={},
     )
-    # Off-mode root: the whole configured panel, retrieving rows with their work order.
-    json.loads(_handle_task_acceptance_review(root, claim="root done"))
-    (slot_ids, orders), = calls
-    assert slot_ids == ["t_api", "t_sess", "t_actor"] and set(orders) == {"t_sess", "t_actor"}
+    # Off-mode root: no new root-result panel; nobody is called.
+    payload = json.loads(_handle_task_acceptance_review(root, claim="root done"))
+    assert payload == {"status": "not_dispatched", "reason": "review_mode_off", "review_runs": []}
+    assert calls == []
 
     child = SimpleNamespace(
         drive_root=str(tmp_path), task_id="child", root_task_id="root",
@@ -238,18 +244,20 @@ def test_child_and_off_acceptance_follow_the_configured_rows(structured_env, tmp
     assert payload["status"] == "not_dispatched" and payload["reason"] == "reviewer_selection_required"
     assert [row["slot_id"] for row in payload["reviewer_rows"]] == ["t_api", "t_sess", "t_actor"]
     payload = json.loads(_handle_task_acceptance_review(child, claim="child done", reviewer_slot_id="nope"))
-    assert payload["reason"] == "reviewer_slot_unknown" and len(calls) == 1
+    assert payload["reason"] == "reviewer_slot_unknown" and len(calls) == 0
     _handle_task_acceptance_review(child, claim="child done", reviewer_slot_id="t_actor")
     assert calls[-1][0] == ["t_actor"] and set(calls[-1][1]) == {"t_actor"}
+    _handle_task_acceptance_review(child, claim="child done", reviewer_slot_id="t_api")
+    assert calls[-1][0] == ["t_api"] and set(calls[-1][1]) == set()  # an API row gets no work order
 
     # A single pool row needs no name.
     structured_env.setenv("OUROBOROS_SUBAGENTS", json.dumps(_roster(_POOL_ROWS[1])))
     _handle_task_acceptance_review(child, claim="child done")
-    assert calls[-1][0] == ["t_sess"]
+    assert calls[-1][0] == ["t_sess"] and set(calls[-1][1]) == {"t_sess"}  # a retrieving row keeps its work order
 
     # Malformed catalog: the same typed refusal, never a default panel.
     structured_env.setenv("OUROBOROS_SUBAGENTS", "{broken")
-    payload = json.loads(_handle_task_acceptance_review(root, claim="root done"))
+    payload = json.loads(_handle_task_acceptance_review(child, claim="child done"))
     assert payload["status"] == "not_dispatched" and "invalid review pool configuration" in payload["error"]
     assert len(calls) == 3
 
@@ -343,7 +351,8 @@ _CLEAN_VERDICT = {
 
 _ROW_API = _row("t_api", "openai/fake-reviewer", delivery="packet")
 _ROW_NATIVE = _row("t_actor", "openai/fake-reviewer")
-_ROW_SESSION = _row("t_sess", "fake-review=fake-small", kind="agent_session")
+# The source/wallet fixture promises the original Ask shape explicitly.
+_ROW_SESSION = _row("t_sess", "fake-review=fake-small", kind="agent_session", access="readonly")
 
 
 def _offline_env(monkeypatch, *rows):

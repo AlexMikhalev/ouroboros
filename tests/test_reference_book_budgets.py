@@ -215,7 +215,7 @@ def test_the_mode_step_reads_events_only_for_a_binding_pull_request_and_fails_cl
     assert output.read_text(encoding="utf-8").splitlines() == ["mode=approved", "mode=warn", "mode=block"]
 
 
-@pytest.mark.parametrize("job", ["quick-test", "full-test"])
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
 def test_both_ci_jobs_feed_the_size_lane_the_decided_mode(job):
     import yaml
 

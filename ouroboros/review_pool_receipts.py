@@ -205,11 +205,19 @@ def document_as_read(settings_path: Any, running: Mapping[str, Any]) -> Mapping[
     (``review_pool_migration.environment_overridable_keys``). The process environment itself cannot witness
     that — ``config.apply_settings_to_env`` projects the effective catalog back into it before the boot
     reports, and the projection carries only the live settings keys, so a lane value a refused migration
-    kept in the document is absent from it (VD3-06). The document on disk is the one witness of both."""
+    kept in the document is absent from it (VD3-06). The document on disk is the one witness of both. A
+    document with no review settings of its own is read like no file: its factory catalog is minted over
+    the configuration that runs (``review_pool_migration.apply_at_read_seam(merged=True)``)."""
     from ouroboros.config import normalize_settings_raw
 
     raw = _document_on_disk(settings_path)
-    return running if raw is None else normalize_settings_raw(raw)
+    return running if raw is None or _never_configured(raw) else normalize_settings_raw(raw)
+
+
+def _never_configured(document: Mapping[str, Any]) -> bool:
+    from ouroboros.review_pool_migration import TRIGGER_NEVER_CONFIGURED, migration_trigger
+
+    return migration_trigger(document) == TRIGGER_NEVER_CONFIGURED
 
 
 def _deciding_outcomes(on_disk: Optional[Mapping[str, Any]], document: Mapping[str, Any]) -> Tuple[Any, ...]:
@@ -247,7 +255,7 @@ def persist_boot_receipts(data_dir: Any, settings_path: Any, running: Mapping[st
     their receipts would tell the owner that rows run which never ran. Never raises."""
     try:
         on_disk = _document_on_disk(settings_path)
-        owed = _deciding_outcomes(on_disk, running if on_disk is None else on_disk)
+        owed = _deciding_outcomes(on_disk, running if on_disk is None or _never_configured(on_disk) else on_disk)
     except Exception:
         log.warning("review pool migration receipts for the boot under %s could not be chosen", data_dir, exc_info=True)
         return {}

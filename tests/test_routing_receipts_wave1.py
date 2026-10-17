@@ -187,6 +187,47 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
     )
 
 
+def test_an_unconfirmed_act_is_kept_by_its_exact_ids_and_a_settled_one_is_not(tmp_path):
+    """A steer whose receipt the wait did not see may still land, or already has: the turn
+    keeps its exact identity, so a later acting round reports the recorded outcome
+    (``loop_model_call._append_routing_receipts``), and the text says so instead of inviting
+    a second delivery. A refused act is settled and kept nowhere."""
+    from ouroboros.tools.control import _steer_task
+
+    ctx = _tool_ctx(tmp_path, metadata={}, unconfirmed_routing_acts=[])
+    out = _steer_task(ctx, "t-target", "keep the PR small")
+    assert out.startswith("⚠️ STEER_UNCONFIRMED: mailbox delivery to task t-target was not durably confirmed")
+    assert "Do not report the message as delivered." in out
+    assert "[ROUTING_RECEIPTS]" in out and "second delivery" in out
+    [event] = ctx.pending_events
+    assert ctx.unconfirmed_routing_acts == [{
+        "action": "steer_task", "client_message_id": event["client_message_id"],
+        "routing_token": event["routing_token"], "target": "t-target"}]
+    notices, emitted = [], []
+    live = _live_tool_ctx(tmp_path, _supervisor_ctx(tmp_path, notices), emitted, metadata={})
+    live.unconfirmed_routing_acts = []
+    assert _steer_task(live, "t-gone", "pick the smaller PR").startswith("⚠️ STEER_REJECTED")
+    assert live.unconfirmed_routing_acts == []
+
+
+def test_a_resumed_turn_keeps_its_own_unconfirmed_acts(tmp_path):
+    """A cold continuation (an owner wait across a restart) restores the exact ids, so the
+    resumed turn still reports a late outcome; a state saved before the key restores none."""
+    import json
+
+    from ouroboros.owner_wait import continuation_state, restore_continuation_state
+
+    act = {"action": "steer_task", "client_message_id": "agent-steer:tok", "routing_token": "tok", "target": "t-1"}
+    state = json.loads(json.dumps(continuation_state(
+        types.SimpleNamespace(task_id="turn-1", unconfirmed_routing_acts=[act]), [], {}, {}, 1, [], set())))
+    restored = types.SimpleNamespace(unconfirmed_routing_acts=[])
+    restore_continuation_state(types.SimpleNamespace(_ctx=restored), state, [], {}, {}, set())
+    assert restored.unconfirmed_routing_acts == [act]
+    state.pop("unconfirmed_routing_acts")
+    restore_continuation_state(types.SimpleNamespace(_ctx=restored), state, [], {}, {}, set())
+    assert restored.unconfirmed_routing_acts == []
+
+
 # --- (c) a routing refusal is a recorded failure, not a successful call -------
 
 def _produced_refusals(tmp_path, monkeypatch):
@@ -202,7 +243,7 @@ def _produced_refusals(tmp_path, monkeypatch):
         control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "crash_storm",
     )
     produced["pool_disabled"] = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", predecessor_task_id="",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
     )
     monkeypatch.setattr(
         control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "",
@@ -216,7 +257,7 @@ def _produced_refusals(tmp_path, monkeypatch):
             control_events, "_wait_for_promotion_admission", lambda *_a, _r=admission, **_k: dict(_r),
         )
         produced[key] = _promote_chat_to_task(
-            _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+            _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
             predecessor_task_id="",
         )
 
@@ -229,7 +270,7 @@ def _produced_refusals(tmp_path, monkeypatch):
         )
         produced[key] = _route_to_project(
             _tool_ctx(tmp_path), project_id="dinosaurs", message="continue there",
-            predecessor_task_id="",
+            title="Project work", predecessor_task_id="",
         )
 
     for key, receipt in (
@@ -323,7 +364,7 @@ def test_an_admitted_promote_names_the_destination_admission_returned(tmp_path, 
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", predecessor_task_id="",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", predecessor_task_id="",
     )
 
     assert out.startswith("OK: task")
@@ -342,7 +383,7 @@ def test_a_promote_admitted_into_no_project_claims_none(tmp_path, monkeypatch):
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
         predecessor_task_id="",
     )
 
@@ -362,7 +403,7 @@ def test_an_unconfirmed_promote_names_what_was_requested_as_a_request(tmp_path, 
     )
 
     out = _promote_chat_to_task(
-        _tool_ctx(tmp_path), "Audit the issue", project_name="Dinosaurs",
+        _tool_ctx(tmp_path), "Audit the issue", title="Issue audit", project_name="Dinosaurs",
         predecessor_task_id="",
     )
 

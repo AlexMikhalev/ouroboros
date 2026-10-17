@@ -139,33 +139,42 @@ def check_delegation_admission(
 
 
 def durable_direct_child_count(
-    drive_root: Any, parent_task_id: Any, *, exclude_task_id: Any = "",
+    drive_root: Any, parent_task_id: Any, *, exclude_task_id: Any = "", propagate_contention: bool = False,
 ) -> int | None:
-    """Count the parent's already admitted direct children from task-result SSOT."""
+    """Count admitted direct children; unavailable authority stays unknown.
+
+    An unsent scheduler with its own retry owner may propagate positive store
+    contention. Other readers keep None, and hard/unknown failures never retry.
+    """
     parent = str(parent_task_id or "").strip()
     excluded = str(exclude_task_id or "").strip()
     if not parent or not str(drive_root or "").strip():
         return None
     try:
-        from ouroboros.task_results import STATUS_REJECTED_DUPLICATE, STATUS_REQUESTED, list_task_results
+        from ouroboros.task_results import STATUS_REJECTED_DUPLICATE, STATUS_REQUESTED
+        from ouroboros.task_store import documents_by_ids, task_facts
 
-        rows = list_task_results(drive_root, strict=True)
-    except Exception:
+        # One indexed SELECT of the parent's subagent rows (typed columns, no body); only a
+        # failed child's admission fact lives in its body, so those bodies alone are read.
+        facts = task_facts(drive_root, where="parent_task_id=? AND delegation_role='subagent'", params=(parent,))
+        failed = [task_id for task_id, row in facts.items() if row["status"] == "failed"]
+        admitted = {task_id for task_id, document in documents_by_ids(drive_root, failed).items()
+                    if isinstance(document.get("delegation_admission"), dict)
+                    and str(document["delegation_admission"].get("status") or "") == "accepted"}
+    except Exception as exc:
+        from ouroboros.store import StoreBusy
+
+        if (propagate_contention and isinstance(exc, StoreBusy) and exc.reason == "contention"
+                and getattr(exc, "rollback_confirmed", None) is not False):
+            raise
         return None
+    if any(not row["status"] for row in facts.values()):
+        return None  # a row the strict reader could not bind: the count is not proven
     return sum(
-        1 for row in rows
-        if isinstance(row, dict)
-        and str(row.get("parent_task_id") or "").strip() == parent
-        and str(row.get("delegation_role") or "") == "subagent"
-        and str(row.get("status") or "") not in {STATUS_REQUESTED, STATUS_REJECTED_DUPLICATE}
-        and not (
-            str(row.get("status") or "") == "failed"
-            and (
-                not isinstance(row.get("delegation_admission"), dict)
-                or str(row["delegation_admission"].get("status") or "") != "accepted"
-            )
-        )
-        and str(row.get("id") or row.get("task_id") or "").strip() != excluded
+        1 for task_id, row in facts.items()
+        if row["status"] not in {STATUS_REQUESTED, STATUS_REJECTED_DUPLICATE}
+        and (row["status"] != "failed" or task_id in admitted)
+        and task_id != excluded
     )
 
 
@@ -329,14 +338,20 @@ def stamp_depth_provenance(
 def schedule_delegation_refusal(
     parent_contract: Dict[str, Any], status_root: Any, parent_task_id: Any,
 ) -> str:
-    """Return the typed direct-child rights refusal, or an empty string."""
+    """Return the typed direct-child rights refusal, or an empty string.
+
+    An unknown count (a busy store included) refuses nothing here: the host's interlocked
+    re-check reads it again, defers contention and refuses only a hard unknown.
+    """
 
     budget = parent_contract.get("delegation_budget") if isinstance(parent_contract, dict) else {}
     decision = check_delegation_admission(
         budget if isinstance(budget, dict) else {},
         direct_child_count=durable_direct_child_count(status_root, parent_task_id),
     )
-    if decision.ok:
+    # An unknown count (a busy store included) is not decided here: the host's
+    # interlocked re-check reads it again and defers contention or refuses.
+    if decision.ok or decision.reason_code == "delegation_rights_child_count_unknown":
         return ""
     return f"⚠️ TOOL_ERROR (schedule_subagent): {decision.reason_code}: {decision.detail}"
 

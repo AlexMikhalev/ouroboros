@@ -193,11 +193,7 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
         assert release.wait(10)
 
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", consolidate)
-    for name in (
-        "_record_task_facts", "_run_reflection",
-        "_update_improvement_backlog", "_apply_reflection_memory_actions",
-    ):
-        monkeypatch.setattr(pipeline, name, lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline, "_record_task_facts", lambda *a, **kw: None)
     monkeypatch.setattr(post_task_evolution, "maybe_promote", lambda *a, **kw: None)
     env = SimpleNamespace(repo_dir=tmp_path / "repo", drive_root=tmp_path)
     mind = _mind()
@@ -210,7 +206,7 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
                 {"type": "task_done", "task_id": task["id"], "chat_id": task["chat_id"]},
             ]
             pipeline._dispatch_root_post_task(
-                env, task, "done", self._event_queue, pending, {}, {}, {}, tmp_path / "logs",
+                env, task, "done", self._event_queue, pending, {}, {}, tmp_path / "logs",
                 budget_drive_root="", split_drive=False,
                 project_scoped=bool(task.get("project_id")), project_task=False,
                 parent_env=None, parent_task=None,

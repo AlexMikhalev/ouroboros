@@ -730,7 +730,7 @@ def test_review_blocked_retry_note_owes_outcome_not_procedure():
 
 
 def test_self_consistency_listed_as_critical_in_severity_rules():
-    """self_consistency (Ouroboros Body Layer item 15) must be treated as conditionally critical, not always advisory."""
+    """self_consistency (Ouroboros Body Layer item 14) must be treated as conditionally critical, not always advisory."""
     import pathlib
     checklists_path = pathlib.Path(__file__).parent.parent / "docs" / "CHECKLISTS.md"
     content = checklists_path.read_text(encoding="utf-8")
@@ -745,8 +745,8 @@ def test_self_consistency_listed_as_critical_in_severity_rules():
                 f"Found old 'items 11-13 are advisory' rule — self_consistency "
                 f"must now be conditionally critical:\n  {line}"
             )
-    # Must say item 15 (self_consistency) is conditionally critical
-    assert "item 15 (self_consistency) is conditionally critical" in content.lower()
+    # Must say item 14 (self_consistency) is conditionally critical
+    assert "item 14 (self_consistency) is conditionally critical" in content.lower()
     # v4.33.0: the old "README test counts" example was folded into the
     # broader Critical surface whitelist. Narrative / prose / commentary
     # mismatches outside the whitelist must be explicitly advisory.
@@ -768,7 +768,9 @@ def test_development_compliance_checklist_expanded():
         "PascalCase",
         "Gateway",
         "LLMClient",
-        "[:N]",
+        "record/view contract",
+        "retain exact sources",
+        "required resident core",
         "ToolEntry",
     ]
     for term in required_terms:

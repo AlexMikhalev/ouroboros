@@ -7,7 +7,6 @@ keeps it — an undelivered owner directive must survive any ambiguity.
 
 from __future__ import annotations
 
-import json
 
 from ouroboros.owner_mailbox import (
     _ack_path,
@@ -16,13 +15,14 @@ from ouroboros.owner_mailbox import (
     write_owner_message,
 )
 from ouroboros.task_result_schema import stamp_task_result_schema
+from tests._store_shared import seed_result
 
 
 def _settle(root, task_id, status="completed"):
     results = root / "task_results"
     results.mkdir(parents=True, exist_ok=True)
     row = stamp_task_result_schema({"task_id": task_id, "status": status})
-    (results / f"{task_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    seed_result(root, task_id, row)
 
 
 def test_settled_task_mailbox_swept_others_kept(tmp_path):

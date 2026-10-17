@@ -230,11 +230,11 @@ def test_the_physical_floor_block_appears_exactly_when_a_step_past_f1_ran_or_the
     assert note(mv.FULL_VIEW) == "" and note(only_facts) == ""
     for step in mf.LADDER[2:]:
         text = note(mv.FloorLevel((("F1", ("a",)), (step, ("x", "y")))))
-        assert text.startswith("### Physical floor\nThis window (500000 tokens, Max) does not hold"), step
+        assert text.startswith("### Physical floor\nThis Max view retains memory cuts for the window (500000 tokens)."), step
         assert "1 task fact lines" in text and "memory_read reads each" in text
     lowered = note(mv.FULL_VIEW, mode="low", lowered_from="max")
-    assert lowered == ("### Physical floor\nThis window (500000 tokens) cannot hold Max with even the shortest view "
-                       "of my memory; this task started in Low.")
+    assert lowered == ("### Physical floor\nThe window this view was cut for (500000 tokens) cannot hold Max with even "
+                       "the shortest view of my memory; this task runs in Low.")
     meta = ("compact_context", "list_available_tools", "enable_tools")  # the schemas an owner's Nano sends
     nano = note(mv.FloorLevel((("F7", ("x",)),)), mode="nano", tool_names=meta)
     assert nano.endswith("\n(memory_read is reachable through enable_tools)")
@@ -319,15 +319,15 @@ def test_an_owner_target_takes_only_its_steps_and_names_the_mode_budget():
     assert [name for name, _n in level.steps] == list(mf.MODE_TARGET_STEPS) == ["F1", "F1b", "F3", "F5", "F4"]
     assert level.by_budget == sum(count for _name, count in level.steps)
     text = mf.floor_note(level, window_tokens=1_050_000, mode="low", target_tokens=250_000)
-    assert text.startswith("### Physical floor\nThe Low mode budget (250000 tokens) does not hold") and "window" not in \
-        text.split("\n")[1].split(" does ")[0]
+    assert text.startswith("### Physical floor\nThis Low view retains memory cuts for the Low mode budget (250000 tokens).")
+    assert "window" not in text.split("\n")[1].split(". Shown")[0]
     # The working margins alone take what the budget takes, never my replies; the window minus the reserve
     # takes them too (and, last, people's words).
     windowed = mf.fit_memory_view(snapshot, {"margin": 0, "physical": 10**9, "budget": None})
     assert "F2" not in dict(windowed.steps) and windowed.steps and windowed.by_budget == 0
     assert "F2" in dict(mf.fit_memory_view(snapshot, {"margin": 0, "physical": 0, "budget": None}).steps)
     both = mv.FloorLevel(windowed.addressed, by_budget=1)
-    assert "This window (1050000 tokens, Low) and the Low mode budget (250000 tokens) do not hold" in mf.floor_note(
+    assert "This Low view retains memory cuts for the window (1050000 tokens) and the Low mode budget (250000 tokens)." in mf.floor_note(
         both, window_tokens=1_050_000, mode="low", target_tokens=250_000)
 
 
@@ -364,16 +364,16 @@ def test_the_floor_runs_on_a_captured_view(tmp_path):
     assert mv.snapshot_from_json(mv.snapshot_json(snapshot)) == snapshot  # the new facts survive the core's JSON
 
 
-def test_an_owner_target_takes_the_whole_first_block_into_its_rooms_line_and_the_window_alone_keeps_it(tmp_path):
-    """The first block an integrator reads whole is retold memory like the rest: an owner's Low or Nano target takes
-    it with its room's later records into the room's one line (F3), with no step or boundary of its own; without a
-    shortage it stays whole. A child's F3 element is its pointers, as before."""
+def test_an_owner_target_takes_whole_retold_rooms_into_one_line_and_the_window_alone_keeps_them(tmp_path):
+    """Every unfolded retold record is whole in the story, whatever its block: an owner's Low or Nano target takes
+    a room's records into the room's one line (F3), with no step or boundary of its own; without a shortage they
+    stay whole. A child's F3 elements are the same whole records: no block is privileged for anyone."""
     rooms = shared.world(tmp_path)
-    alpha = str(rooms["alpha"])
+    alpha, beta = str(rooms["alpha"]), str(rooms["beta"])
     task = {"id": "turn0001", "chat_id": 1}
     snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
     f3 = {ident: (whole, short) for step, ident, whole, short in mf.floor_elements(snapshot) if step == "F3"}
-    assert "\n  Alpha began." in f3[alpha][0] and "Alpha began." not in f3[alpha][1]
+    assert "\n  Alpha began." in f3[alpha][0] and "\n  Alpha worked." in f3[alpha][0] and "Alpha began." not in f3[alpha][1]
     assert f"legacy-b00-r{alpha}, legacy-b01-r{alpha}; memory_read(node_id=<id>) reads each" in f3[alpha][1]
     assert mf.fit_memory_view(snapshot, NONE) == mv.FULL_VIEW and "  Alpha began." in mv.render_story(snapshot)
     level = mf.fit_memory_view(snapshot, {"margin": 10**9, "physical": 10**9, "budget": 0})
@@ -384,11 +384,13 @@ def test_an_owner_target_takes_the_whole_first_block_into_its_rooms_line_and_the
     assert "Alpha began." not in story and "Main talk." not in story and f3[alpha][1] in story.split("\n")
     # A record whose room line is not shorter than its words stays whole (the floor's one rule for every element).
     assert "777" not in taken and "777" not in f3 and "\n  A transport line." in story
-    assert "(not lived; read by id)" in mv.render_story(snapshot, mv.FloorLevel((("F3", (*taken, "777")),)))
+    assert beta not in taken and beta not in f3 and "\n  Beta asked." in story
+    assert "(not lived; whole where the window holds it, else read by id)" in story
+    every = mv.render_story(snapshot, mv.FloorLevel((("F3", (*taken, "777", beta)),)))
+    assert "(not lived; read by id)" in every and "A transport line." not in every
     kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent"}
     child = mv.capture_memory_view(tmp_path, kid, mv.view_spec_for_task(kid, tmp_path))
-    pointers = {ident: whole for step, ident, whole, _short in mf.floor_elements(child) if step == "F3"}
-    assert "Alpha began." not in pointers[alpha] and f"memory_read(node_id='legacy-b00-r{alpha}')" in pointers[alpha]
+    assert [e[:3] for e in mf.floor_elements(child) if e[0] == "F3"] == [e[:3] for e in mf.floor_elements(snapshot) if e[0] == "F3"]
 
 
 def _numbers(name):

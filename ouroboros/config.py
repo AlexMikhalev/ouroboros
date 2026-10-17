@@ -1,11 +1,6 @@
-"""
-Ouroboros — Shared configuration (single source of truth).
-
-Paths, the settings-file lifecycle (locked load/normalize/save plus environment
-projection) and mode-aware write authority. The vocabularies it reads through —
-shipped defaults, closed scales, model slots, reviewer routes, numeric limits —
-live in sibling leaves and are re-exported here, so ``ouroboros.config`` remains
-the one import surface for settings knowledge.
+"""Shared configuration: paths, locked settings lifecycle and mode-aware writes.
+Defaults, scales, model slots, routes and limits live in sibling leaves and are
+re-exported here: one import surface for settings knowledge.
 """
 
 from __future__ import annotations
@@ -34,13 +29,12 @@ from ouroboros.settings_defaults import (
     OPENROUTER_DEFAULTS,  # noqa: F401
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
-    PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS, REVIEW_POOL_MIGRATED_SETTING_KEYS, REVIEW_POOL_MIGRATION_CLASS_LINE,  # noqa: F401
     retired_setting_keys_notice,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
-    SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
+    SAVED_CHOICE_SETTINGS, SETTINGS_KEYS_NOT_EXPORTED_TO_ENV, unauthored_saved_choices,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
     _DISK_AUTHORED_SETTINGS,  # noqa: F401
     settings_env_keys,  # noqa: F401
@@ -80,7 +74,6 @@ from ouroboros.model_slots import (
     parse_fallback_chain,  # noqa: F401
 )
 from ouroboros.review_model_routes import (
-    _DIRECT_PROVIDER_REVIEW_RUNS,  # noqa: F401
     _exclusive_direct_remote_provider_env,  # noqa: F401
     adaptive_quorum,  # noqa: F401
     get_review_enforcement,  # noqa: F401
@@ -94,18 +87,12 @@ from ouroboros.runtime_limits import (
     EXTENSION_STREAM_CHUNK_BYTES,  # noqa: F401
     EXTENSION_CHILD_CLEANUP_GRACE_SEC, LAUNCHER_STOP_GRACE_SEC, SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,  # noqa: F401
     NESTED_SETTLEMENT_MARGIN_SEC,  # noqa: F401
-    NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
-    NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
-    TCP_KEEPALIVE_IDLE_SEC,  # noqa: F401
-    TCP_KEEPALIVE_INTERVAL_SEC,  # noqa: F401
-    TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
+    NETWORK_WAIT_NOTE_INTERVAL_SEC, NETWORK_WAIT_BACKOFF_START_SEC, NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
+    TCP_KEEPALIVE_IDLE_SEC, TCP_KEEPALIVE_INTERVAL_SEC, TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
-    WS_RELAY_BURST,  # noqa: F401
-    WS_RELAY_REFILL_PER_SEC,  # noqa: F401
-    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC,  # noqa: F401
-    CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
-    CLAUDEXOR_STOP_EXIT_WAIT_SEC,  # noqa: F401
+    WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC,  # noqa: F401
+    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC,  # noqa: F401
+    CLAUDEXOR_STOP_EXIT_WAIT_SEC, BODY_MAINTENANCE_INTERVAL_SEC,  # noqa: F401
     DELEGATE_WAIT_CEILING_SEC,  # noqa: F401
     DELEGATE_WAIT_WINDOW_MAX_SEC, OPERATION_WINDOW_FALLBACK_SEC,  # noqa: F401
     MAX_ACTIVE_SUBAGENTS_HARD_CAP, MAX_SUBAGENT_DEPTH_HARD_CAP,  # noqa: F401
@@ -114,15 +101,13 @@ from ouroboros.runtime_limits import (
     _clamped_number_setting,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
-    get_bg_wakeup_max_sec,  # noqa: F401
-    get_bg_wakeup_min_sec,  # noqa: F401
+    get_bg_wakeup_max_sec, get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
     get_consciousness_autonomy,  # noqa: F401
     get_consciousness_daily_usd,  # noqa: F401
     get_consciousness_max_tasks,  # noqa: F401
-    get_delegate_wait_max_sec,  # noqa: F401
-    get_delegate_wait_sec,  # noqa: F401
+    get_delegate_wait_max_sec, get_delegate_wait_sec,  # noqa: F401
     get_finalization_grace_sec,  # noqa: F401
     get_direct_turn_stop_wait_sec,  # noqa: F401
     get_llm_transport_read_timeout_sec,  # noqa: F401
@@ -130,7 +115,6 @@ from ouroboros.runtime_limits import (
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
     get_onboarding_snapshot_timeout_sec,  # noqa: F401
-    get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
@@ -139,25 +123,32 @@ from ouroboros.runtime_limits import (
     get_safety_call_timeout_sec,  # noqa: F401
     get_settings_document_lock_timeout_sec,  # noqa: F401
     get_safety_max_tokens,  # noqa: F401
-    get_search_code_wall_sec,  # noqa: F401
-    get_supervisor_liveness_deadline_sec,  # noqa: F401
+    get_search_code_wall_sec, get_supervisor_liveness_deadline_sec,  # noqa: F401
     get_task_abs_ceiling_sec, get_max_rounds, operation_window_sec,  # noqa: F401
-    get_task_idle_timeout_sec,  # noqa: F401
-    get_vision_caption_timeout_sec,  # noqa: F401
-    get_update_letter_timeout_sec,  # noqa: F401
-    get_ui_translation_timeout_sec,  # noqa: F401
-    get_websearch_timeout_sec,  # noqa: F401
+    explicit_execution_timeout_sec, _CURRENT_TASK_CEILING,  # noqa: F401
+    resolve_task_execution_timeout_sec as _resolve_task_execution_timeout_sec,
+    get_task_idle_timeout_sec, get_vision_caption_timeout_sec,  # noqa: F401
+    get_update_letter_timeout_sec, get_ui_translation_timeout_sec, get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
 
-# Paths
-#
-# The resolve_*() trio is the per-call form of the constants below (same env
-# precedence). The constants freeze the env of the moment this module was first
-# imported; a writer that must follow isolation applied AFTER its import (an
-# isolated test or a spawned child whose OUROBOROS_* env landed late) resolves
-# per call through these instead of caching a root at import time (the
-# hermeticity class of issue #455).
+# Physical safety budgets, not test-value judgments or kernel-enforced quotas.
+TEST_WORKER_PEAK_RSS_BYTES = 1024**3  # Provisional 1 GiB; loaded P0 observed 690 MiB/worker.
+TEST_MEMORY_RESERVE_FRACTION = 0.10  # Keep physical headroom for the OS and other work.
+TEST_PROCESS_SAMPLE_SEC = 1.0  # Poll latency; allocations between samples can exceed the bound.
+TEST_PROCESS_TOKEN_SCAN_SEC = 5.0  # Detached members are found by token this often; the scan reads every environment.
+
+
+def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:
+    """The leaf's bound arithmetic with this facade's (patchable) configured ceiling."""
+    if global_ceiling is _CURRENT_TASK_CEILING:
+        global_ceiling = get_task_abs_ceiling_sec()
+    return _resolve_task_execution_timeout_sec(task, global_ceiling=global_ceiling)
+
+
+# Paths. resolve_*() is the per-call form of the constants below, which freeze the env at first
+# import: a writer that must follow isolation applied AFTER its import (an isolated test, a child
+# whose OUROBOROS_* env landed late) resolves per call (the hermeticity class of issue #455).
 
 
 def resolve_app_root() -> pathlib.Path:
@@ -172,13 +163,25 @@ def resolve_data_dir() -> pathlib.Path:
     return pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", resolve_app_root() / "data"))
 
 
+def resolve_port_file(data_dir=None, *, hosting_data_dir=None) -> pathlib.Path:
+    """The main-server port file of ``data_dir`` (default: the hosting root). ``OUROBOROS_PORT_FILE``
+    relocates only the root this process hosts (``hosting_data_dir``, default ``resolve_data_dir()``),
+    so an inspected foreign root (a task drive, another installation) keeps its ``state/server_port``."""
+    hosting = pathlib.Path(hosting_data_dir if hosting_data_dir is not None else resolve_data_dir())
+    root = hosting if data_dir is None else pathlib.Path(data_dir)
+    override = os.environ.get("OUROBOROS_PORT_FILE", "").strip()
+    if override and (root == hosting or os.path.realpath(root) == os.path.realpath(hosting)):
+        return pathlib.Path(override)
+    return root / "state" / "server_port"
+
+
 HOME = pathlib.Path.home()
 APP_ROOT = resolve_app_root()
 REPO_DIR = resolve_repo_dir()
 DATA_DIR = resolve_data_dir()
 SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))
 PID_FILE = pathlib.Path(os.environ.get("OUROBOROS_PID_FILE", APP_ROOT / "ouroboros.pid"))
-PORT_FILE = pathlib.Path(os.environ.get("OUROBOROS_PORT_FILE", DATA_DIR / "state" / "server_port"))
+PORT_FILE = resolve_port_file(DATA_DIR)
 
 # Settings pin + write guards: SSOT settings_integrity; re-exported for config.X imports.
 from ouroboros import settings_integrity as _settings_integrity  # noqa: E402
@@ -229,6 +232,7 @@ CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION: str = "3.3.0"
 # Engine floor for the delegated ``workspaceRoot`` field (#362 stable-target routes).
 CLAUDEXOR_DELEGATED_WORKSPACE_ROOT_MIN_VERSION: str = "3.8.1"
 CLAUDEXOR_MODEL_TURN_STATE_MIN_VERSION: str = "3.10.4"  # active-turn request field (`llm_claudexor.py` docstring)
+CLAUDEXOR_EPHEMERAL_SCOPE_MIN_VERSION: str = "3.3.7"  # `scope.ephemeral` for host-minted roots (`delegate_registration_policy`)
 
 
 # Boot-time runtime-mode baseline. Pinning the owner-selected mode after settings load stops an
@@ -242,9 +246,7 @@ BOOT_RUNTIME_MODE_ENV_KEY = "OUROBOROS_BOOT_RUNTIME_MODE"
 def _resolve_baseline_from_env() -> Optional[str]:
     """Return the parent-pinned runtime-mode baseline inherited via env."""
     raw = os.environ.get(BOOT_RUNTIME_MODE_ENV_KEY, "")
-    if not raw:
-        return None
-    return normalize_runtime_mode(raw)
+    return normalize_runtime_mode(raw) if raw else None
 
 
 def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
@@ -253,13 +255,8 @@ def initialize_runtime_mode_baseline(mode: Optional[str] = None) -> None:
     global _BOOT_RUNTIME_MODE
     if _BOOT_RUNTIME_MODE is not None:
         return
-    if mode is None:
-        # Prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state.
-        inherited = _resolve_baseline_from_env()
-        if inherited is not None:
-            mode = inherited
-        else:
-            mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
+    if mode is None:  # prefer the parent-exported BOOT key; RUNTIME_MODE is mutable app state
+        mode = _resolve_baseline_from_env() or os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
     _BOOT_RUNTIME_MODE = normalize_runtime_mode(mode)
     # Propagate the pin to subprocesses.
     os.environ[BOOT_RUNTIME_MODE_ENV_KEY] = _BOOT_RUNTIME_MODE
@@ -346,13 +343,15 @@ def get_allow_mutative_subagents(write_surface: str = "", *, source_is_system_re
             or (surface == "self_worktree" and not source_is_system_repo))
 
 
+def _work_root(key: str, leaf: str) -> str:
+    """A work root: the saved setting, else the environment (``runtime_setting``), else ``~/Ouroboros/<leaf>``."""
+    raw = str(runtime_setting(key, "") or SETTINGS_DEFAULTS.get(key, "")).strip()
+    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", leaf))
+
+
 def get_subagent_worktree_root() -> str:
     """Filesystem root for acting self_worktree checkouts (outside repo/ and data/)."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "subagent_worktrees"))
+    return _work_root("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "subagent_worktrees")
 
 
 def get_subagent_projects_root() -> str:
@@ -360,11 +359,7 @@ def get_subagent_projects_root() -> str:
 
     Outside repo/ and data/. Unlike self_worktree checkouts, genesis projects are
     durable deliverables and are never age-pruned by the GC retention sweep."""
-    raw = str(
-        runtime_setting("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "projects"))
+    return _work_root("OUROBOROS_SUBAGENT_PROJECTS_ROOT", "projects")
 
 
 def get_deliverables_root() -> str:
@@ -372,11 +367,7 @@ def get_deliverables_root() -> str:
     instead of cluttering the home root. Sibling of the genesis projects root under ~/Ouroboros,
     outside data/, and never GC-pruned. An explicit placement (Desktop/..., Downloads/..., or any
     path WITH a directory) is always honored as given. Override with OUROBOROS_DELIVERABLES_ROOT."""
-    raw = str(
-        runtime_setting("OUROBOROS_DELIVERABLES_ROOT", "")
-        or SETTINGS_DEFAULTS.get("OUROBOROS_DELIVERABLES_ROOT", "")
-    ).strip()
-    return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "Deliverables"))
+    return _work_root("OUROBOROS_DELIVERABLES_ROOT", "Deliverables")
 
 
 def get_task_review_mode() -> str:
@@ -489,14 +480,14 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """Normalize settings writes under existing ratchets. Only the actual writer
-    names authored_keys; a defaults merge preserves absent disk-owned intent,
-    forwarded environment choices and install-time provenance. The review-pool receipts THIS
-    write owes land before it replaces the pre-image (``review_pool_receipts.persist_write_receipts``)."""
+    """Normalize settings writes under existing ratchets. Only the actual writer names authored_keys; a defaults
+    merge preserves absent disk-owned intent, forwarded environment choices (an absent ``SAVED_CHOICE_SETTINGS``
+    key stays absent) and install-time provenance."""
     from ouroboros.review_pool_receipts import persist_write_receipts
-    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)
+    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)  # the review-pool receipts THIS write owes, before the pre-image goes
     authored = set(authored_keys or ())
-    prepared = {k: v for k, v in settings.items() if not (
+    unauthored = unauthored_saved_choices(settings, _settings_integrity.read_settings_json_verified(SETTINGS_PATH), authored)
+    prepared = {k: v for k, v in settings.items() if k not in unauthored and not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
         and not (
             k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW"
@@ -825,6 +816,7 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     compatibility migration is persisted only while that lock is held; the write contains
     the raw mapping plus the normalized pair, never a defaults-merged settings document."""
     from ouroboros.review_pool_migration import apply_at_read_seam, environment_overridable_keys
+    from ouroboros.server_runtime import MODEL_SLOT_KEYS, authored_model_slots, propose_unauthored_model_slots
     loaded: dict = {}
     try:
         raw = _settings_integrity.read_settings_json_verified(SETTINGS_PATH)
@@ -844,10 +836,13 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
+    env_authored, echo = set(), _settings_integrity.projected_proposals(environ := _settings_integrity.read_environ())
     for key in SETTINGS_DEFAULTS:
-        raw_env = os.environ.get(key)
+        raw_env = environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
+        if raw_env == echo.get(key) or (key in loaded and (key in MODEL_SLOT_KEYS or key in SAVED_CHOICE_SETTINGS)):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot or choice (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -856,9 +851,10 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
         if key in loaded and key not in env_wins and settings.get(key) not in {None, ""}:
             continue
         settings[key] = _coerce_setting_value(key, raw_env)
-    if not isinstance(raw, dict):
-        # No document went through the read seam: the never-configured install (§1.5) takes its factory rows here.
-        apply_at_read_seam(settings)
+        env_authored.add(key)
+    # Unauthored model slots follow the configured access; a never-configured install (§1.5) mints its factory catalog here.
+    propose_unauthored_model_slots(settings, authored_model_slots(loaded) | env_authored)
+    apply_at_read_seam(settings, merged=True)
     return settings
 
 
@@ -868,14 +864,14 @@ def save_settings(
     allow_elevation: bool = False,
     onboarding_safety_default: bool = False,
 ) -> None:
-    """Persist settings and enforce owner-only mode ratchets.
+    """Persist a view; only an owner writer's authored_keys authors a first saved-choice key.
 
-    Elevation above the boot baseline is refused after initialization (``allow_elevation`` is then
-    inert to agent-reachable subprocesses; production entry points must call
-    ``initialize_runtime_mode_baseline`` before agent code). Context-mode lowering likewise
-    requires the explicit owner path outside Cyber Pro; the retired auto-Low key is an inert false tombstone.
-    ``onboarding_safety_default`` is a NARROW boolean authorizing exactly one transition —
-    a FRESH install (no settings file yet) authoring ``OUROBOROS_SAFETY_MODE="light"``."""
+    Existing SAVED_CHOICE_SETTINGS survive; changed values alone are not authorship.
+    Elevation after initialization is refused (``allow_elevation`` then inert); production calls
+    ``initialize_runtime_mode_baseline`` before agent code. Outside Cyber Pro, context lowering
+    needs the owner path; the retired auto-Low flag stays false.
+    ``onboarding_safety_default`` allows only a fresh install (no settings file) to choose
+    ``OUROBOROS_SAFETY_MODE="light"``."""
     _guard_live_settings_write()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd = _acquire_settings_lock()
@@ -966,13 +962,14 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
         # "settings.json over env" clobber). Silence stays silent. ONE fail-closed exception: env may not author
         # the explicit-false owner-Low provenance claim, which would switch the BIBLE P3 scope gate off.
         unauthored = {k for k in _DISK_AUTHORED_SETTINGS if not _settings_file_value(k, "")}
+        before = dict(environ)
         for k in env_keys:
             val = settings.get(k)
             if k in unauthored and not owner_declared_low(
                     environ.get(k) if k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW" else ""):
                 continue
-            if k == "OUROBOROS_RETURN_REASONING" and val == "":
-                environ[k] = ""
+            if k in {"OUROBOROS_RETURN_REASONING", "OUROBOROS_MODEL_FALLBACKS"} and val == "":
+                environ[k] = ""  # a blank that means something (no reasoning, no fallback chain) stays present
                 continue
             if val is None or val == "":
                 environ.pop(k, None)
@@ -982,6 +979,7 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
                 elif isinstance(val, (dict, list)):
                     val = json.dumps(val, ensure_ascii=False, separators=(",", ":"))
                 environ[k] = str(val)
+        _settings_integrity.note_proposal_projection(environ, before)
         if not environ.get("OUROBOROS_REVIEW_ENFORCEMENT"):
             environ["OUROBOROS_REVIEW_ENFORCEMENT"] = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_ENFORCEMENT"])
         if not environ.get("OUROBOROS_TASK_REVIEW_MODE"):
@@ -991,7 +989,8 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
 # PID lock: platform_layer uses OS-released locks on Unix and Windows.
 
 def acquire_pid_lock() -> bool:
-    APP_ROOT.mkdir(parents=True, exist_ok=True)
+    for root in (APP_ROOT, PID_FILE.parent):  # an overridden PID_FILE may live elsewhere (a data volume)
+        root.mkdir(parents=True, exist_ok=True)
     return _compat_pid_lock_acquire(str(PID_FILE))
 
 

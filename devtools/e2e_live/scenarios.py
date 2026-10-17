@@ -1,6 +1,6 @@
 """The scenario table of the live E2E stand: ``{id, prompt, settings_overrides, acceptance}``.
 
-Every acceptance is a CALLABLE over durable artifacts (task_results rows, the lane clone's
+Every acceptance is a CALLABLE over durable artifacts (task store rows, the lane clone's
 git history, the task-drive ledgers, /proc) — never a keyword judgement of model prose
 (BIBLE P5). The prompts are what a paid model sees; the ``stub_script`` of each row is the
 $0 rehearsal of the same flow against the loopback stub model (``--stub``).
@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from devtools.benchmarks.common.server_runner import _api, _api_status
 from devtools.e2e_live.ui_probe import GuardedUI
+from ouroboros.event_token_totals import event_token_totals
 
 SM1_NEW_ACCENT = "#2f7de1"
 SM1_COMMIT_MESSAGE = "ui: e2e_live SM1 accent token change (reviewed commit)"
@@ -378,14 +379,14 @@ class LaneContext:
             lambda: [row for row in oracle.events(event_type) if predicate(row)] or None, timeout) or []
 
     def check_paid_tokens(self, task_ids: list[str]) -> None:
-        """NOT fail-open: a 0/0 llm_usage row is the crashed-subprocess / silent-403 signature."""
+        """Require positive disclosed usage; unknown native-session tokens do not prove success."""
         ids = set(task_ids)
         rows = self.wait_events(self.oracle, "llm_usage",
                                 lambda row: str(row.get("task_id") or "") in ids or str(row.get("root_task_id") or "") in ids)
-        prompt_tokens = sum(int(row.get("prompt_tokens") or 0) for row in rows)
-        self.check("prompt_tokens_positive", prompt_tokens > 0,
-                   llm_usage_rows=len(rows), prompt_tokens=prompt_tokens,
-                   completion_tokens=sum(int(row.get("completion_tokens") or 0) for row in rows))
+        evidence = event_token_totals(rows)
+        self.check("prompt_tokens_positive", evidence["prompt_tokens"]["known_total"] > 0,
+                   llm_usage_rows=len(rows), prompt_tokens=evidence["prompt_tokens"]["total"],
+                   completion_tokens=evidence["completion_tokens"]["total"], token_evidence=evidence)
 
     @property
     def ui(self) -> GuardedUI | None:
@@ -726,14 +727,15 @@ def sw1_roster(child_model: str, template: dict | None = None) -> str:
 
 
 def _find_root_task(ctx: LaneContext, marker: str) -> str:
-    results_dir = ctx.data_root / "task_results"
-    for path in sorted(results_dir.glob("*.json")) if results_dir.is_dir() else []:
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(row, dict) and not row.get("parent_task_id") and marker in json.dumps(row):
-            return str(row.get("task_id") or path.stem)
+    from ouroboros.store import StoreError
+    from ouroboros.task_store import list_documents
+    try:
+        rows = list_documents(ctx.data_root)
+    except StoreError:
+        return ""
+    for row in rows:
+        if not row.get("parent_task_id") and marker in json.dumps(row):
+            return str(row.get("task_id") or "")
     return ""
 
 
@@ -752,7 +754,13 @@ def run_sw1(ctx: LaneContext) -> None:
     if not parent_id:
         return
     stored = ctx.wait_task(parent_id)
-    ctx.check("plan_review_engaged", isinstance(stored.get("plan_review_state"), dict))
+    # The planning organ's record: the Swarm root wrote a plan and one ask reached a reviewer.
+    record = stored.get("plan_record") if isinstance(stored.get("plan_record"), dict) else {}
+    asks = [a for a in (record.get("asks") or []) if isinstance(a, dict)]
+    ctx.check("plan_record_engaged", bool(record.get("revisions")) and bool(asks),
+              revisions=len(record.get("revisions") or []), asks=len(asks))
+    ctx.check("plan_ask_dispatched", any(p.get("dispatched") for ask in asks for p in ask.get("participants") or []),
+              participants=[f"{p.get('seat_id')}:{p.get('status')}" for ask in asks for p in ask.get("participants") or []])
     # The quiescent path, not the forced one: every child result absorbed before the final.
     ctx.check("clean_finalization", str(stored.get("reason_code") or "") != "children_unabsorbed",
               parent_reason_code=str(stored.get("reason_code") or ""))
@@ -814,13 +822,14 @@ def sw1_stub_script(_clone: pathlib.Path) -> dict:
 
     return {
         "agent": [
+            # One write+ask on the planning organ (the retired spec form is refused at $0 and would hold the Swarm gate).
             {"tool": "plan_task", "arguments": {
                 "goal": "Survey the repository with two parallel scouts.",
                 "plan": "Schedule two scouts, wait for both, summarize.",
-                "spec": {"deliverables": ["Two scout results summarized."],
-                         "acceptance_claims": ["Both scouts completed and were absorbed."],
-                         # Required on every submitted spec (owner 9=A); a survey changes no file.
-                         "affected_paths": []}}},
+                "done_when": [{"id": "c1", "claim": "Both scouts completed and were absorbed.",
+                               "support": "both scout results are quoted in the summary"}],
+                "affected_paths": [],  # a survey changes no file
+                "ask": "council"}},
             scout("A", "list the top-level directories"),
             scout("B", "list the test modules under tests/system_e2e"),
             wait_step,

@@ -39,7 +39,7 @@ def test_direct_completion_requires_a_durable_main_origin(tmp_path, monkeypatch,
     bind_task_to_project(tmp_path, "turn-one", project["id"], project["chat_id"], origin=origin)
     rows = []
     monkeypatch.setattr("supervisor.terminal_delivery.enqueue_terminal_delivery",
-                        lambda root, event: rows.append(event) or True)
+                        lambda root, event, **_transport: rows.append(event) or True)
     event = {}
     task = {"id": "turn-one", "chat_id": project["chat_id"], "project_id": project["id"]}
     result = {"status": "completed", "result": "# The complete answer\n\nEvidence remains intact.",
@@ -154,5 +154,6 @@ def test_agent_producers_publish_one_main_receipt_and_none_for_project_origins(t
 def test_handoff_is_a_main_only_history_row(tmp_path):
     from ouroboros.project_dialogue import room_membership
     row = {"type": "project_handoff", "task_id": "root"}
-    assert room_membership(1, {22}, [], {"root": 22})(1, row)
-    assert not room_membership(22, {22}, [], {"root": 22})(1, row)
+    rooms = lambda task_id, parent="", root="": 22 if task_id == "root" else 0  # noqa: E731
+    assert room_membership(1, {22}, [], rooms)(1, row)
+    assert not room_membership(22, {22}, [], rooms)(1, row)

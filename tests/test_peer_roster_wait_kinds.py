@@ -11,10 +11,12 @@ the paginated ``live_roots`` JSON must agree.
 
 from __future__ import annotations
 
+from tests._shared import write_queue_document
+
 import types
 
 from ouroboros.task_results import STATUS_RUNNING, write_task_result
-from ouroboros.utils import atomic_write_json, utc_now_iso
+from ouroboros.utils import utc_now_iso
 
 _PAUSED_AT = 1790409600.0  # 2026-09-26T08:00:00+00:00
 _PAUSED_ISO = "2026-09-26T08:00:00+00:00"
@@ -22,7 +24,7 @@ _WAKE_AT = "2026-09-26T09:30:00+00:00"
 
 
 def _snapshot(root, running=(), pending=()):
-    atomic_write_json(root / "state" / "queue_snapshot.json", {
+    write_queue_document(root / "state" / "queue_snapshot.json", {
         "ts": utc_now_iso(),
         "running": [{"id": task_id, "attempt": 1, "task": {"id": task_id, "title": task_id, "_attempt": 1}}
                     for task_id in running],

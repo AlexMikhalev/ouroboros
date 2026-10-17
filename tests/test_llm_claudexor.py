@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from copy import deepcopy
 import gzip
 import hashlib
@@ -541,7 +542,40 @@ def test_upload_proof_refines_terminal_without_resending_or_inventing_usage(setu
     assert ledger(root)[-1]["state"] == ("released" if proven else "unresolved")
     classified = classify_llm_exception(error)
     assert classified.retry_same_request is proven
+    # The kind decides the free wait (12.10: a proven non-delivery read as provider_error).
+    assert classified.kind == ("transport_unavailable" if proven else "provider_outcome_unknown")
+    assert error.physical_attempt_capture.route_is_loopback is False  # the daemon is no model server
     assert len(gateway.accepted_operations) == len(gateway.creates) == 1
+
+
+@pytest.mark.parametrize("code, basis, cause, kind", [
+    ("transport_not_delivered", "incomplete_upload", "EPIPE", "transport_unavailable"),
+    ("transport_not_delivered", "connect_failure", "UND_ERR_CONNECT_TIMEOUT", "transport_unavailable"),
+    ("auth_unavailable", "", "", "auth_error"),
+    ("model_source_unavailable", "", "", "bad_request"),
+])
+def test_engine_not_started_receipt_is_classified_by_its_typed_code(setup, code, basis, cause, kind):
+    """The 12.10 receipt verbatim waits as a free outage; a typed engine precondition
+    refusal before dispatch never waits as one (it would hold the task for hours)."""
+    from ouroboros.loop_llm_call import classify_llm_exception
+
+    root, gateway, client = setup
+    context = ({"errorCode": cause, "stage": "fetch", "generationStarted": False,
+                "requestDelivery": {"basis": basis, "state": "not_delivered", "bodyBytes": 4_910_776,
+                                    "handedOffBytes": 3_997_696, "responseReceived": False}} if basis else {})
+    message = ("The complete Codex request was not delivered; generation did not start." if basis
+               else "Controlled engine refusal")
+    value = result(outcome="failed", problem={"code": code, "message": message, "retryable": bool(basis),
+                                              "context": context})
+    gateway.results = [value]
+    gateway.dispatch = ["not_started"]
+    with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
+        client.chat([{"role": "user", "content": "hi"}], MODEL)
+    assert raised.value.physical_attempt_capture.state == "released"
+    assert [row["state"] for row in ledger(root)] == ["released"]
+    classified = classify_llm_exception(raised.value)
+    assert classified.kind == kind
+    assert classified.retry_same_request is (kind == "transport_unavailable")
 
 
 def test_typed_subject_refusal_suppresses_next_auto_preference(setup):
@@ -845,12 +879,14 @@ def test_operation_observer_has_recovery_identity_without_provider_content(setup
         call = getattr(client, method)([], **kwargs)
         if method == "chat_async":
             asyncio.run(call)
-    assert [value["operation_id"] for value in events] == ["", "op-0"]
+    assert [value["operation_id"] for value in events] == ["", "op-0", "op-0"]
+    assert [value["model_activity"]["phase"] for value in events] == ["preparing", "response_ready", "response_received"]
     assert events[0]["invocation_id"] == events[1]["invocation_id"]
     assert events[1]["request_ref"] == REF
     assert events[1]["request_manifest_ref"]["path"]
     assert events[1]["request_manifest_ref"]["sha256"]
-    assert set(events[1]) == {"operation_id", "invocation_id", "request_ref", "request_manifest_ref"}
+    assert set(events[1]) == {"operation_id", "invocation_id", "request_ref", "request_manifest_ref", "model_activity"}
+    assert set(events[1]["model_activity"]) == {"operation_id", "invocation_id", "phase"}
     assert "model_operation_observer" not in gateway.uploads[0][0]
     assert retained(root, "request") == gateway.uploads[0][0]
 
@@ -1070,38 +1106,40 @@ def test_caller_control_before_create_proves_no_dispatch(setup):
 @pytest.mark.parametrize("phase", ["upload", "ack"])
 def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     name = "upload_model_request" if phase == "upload" else "acknowledge_model_result"
     original = getattr(gateway, name)
     original_close = gateway.close
 
     def blocked(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
-        assert not closed.is_set()
+        entered.set_result(None)
+        release.wait()
+        assert not closed.done()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     setattr(gateway, name, blocked)
     gateway.close = close
 
     async def run():
         task = asyncio.create_task(client.chat_async([], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            # Witness the I/O owner directly, without another executor waiter or
+            # a two-second performance requirement on request preparation.
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()  # also unblock the owner if the scenario fails
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.closed == 1
     if phase == "upload":
         assert not gateway.creates and ledger(root)[-1]["state"] == "released"
@@ -1112,36 +1150,36 @@ def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase)
 
 def test_async_cancellation_leaves_io_owner_to_cancel_and_close(setup):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     gateway.pending = True
     original = gateway.get_model_operation
     original_close = gateway.close
 
     def read(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
+        entered.set_result(None)
+        release.wait()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     gateway.get_model_operation, gateway.close = read, close
 
     async def run():
         task = asyncio.create_task(client.chat_async([{"role": "user", "content": "hi"}], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
 

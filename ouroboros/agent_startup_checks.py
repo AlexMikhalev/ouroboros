@@ -9,7 +9,6 @@ import os
 import pathlib
 import re
 import subprocess
-import time
 from typing import Any, Dict, Tuple
 
 from ouroboros.evolution_checkpoints import (
@@ -27,6 +26,7 @@ from ouroboros.utils import (
     utc_now_iso,
 )
 from ouroboros.config import runtime_setting
+from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
 
@@ -124,11 +124,13 @@ def task_result_authority_projection(
     if receipts:
         authority["verification_receipts"] = copy.deepcopy(receipts)
     if isinstance(authority.get("plan_review_state"), dict):
-        from ouroboros.tools.plan_review_artifacts import authority_state
+        from ouroboros.tools.plan_review_artifacts import projected_authority_state
 
-        authority["plan_review_state"] = authority_state(
+        authority["plan_review_state"], gap = projected_authority_state(
             drive_root, str(row.get("task_id") or row.get("id") or ""), authority["plan_review_state"],
-        )
+            promotion=row.get("child_ref_promotion"))
+        # Beside the recorded state, never inside it: every projection keeps this small field whole.
+        authority.update({"plan_review_source_gap": gap} if gap else {})
     return authority
 
 
@@ -167,7 +169,7 @@ def _automatic_predecessor_authority_projection(
     rides as a typed preview beside the named pull source (the same
     whole-or-pointer rule main_context_authority already applies to Main).
     Digest facts are observed at binding; the complete canonical authority
-    stays in task_results/<id>.json, pullable whole via the named source.
+    stays in the current task store, pullable whole via the named source.
     """
 
     from ouroboros.contracts.task_contract import bounded_continuation_envelope
@@ -213,11 +215,9 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
         }
 
     origin_ref = task.get("origin_message_ref")
+    owner_source = {"kind": "owner_message", "human_label": "originating owner message", "ref": origin_ref}
     if origin_ref not in (None, {}) and not isinstance(origin_ref, dict):
-        return _unavailable(
-            {"kind": "owner_message", "human_label": "originating owner message", "ref": origin_ref},
-            "named owner source reference is not an object",
-        )
+        return _unavailable(owner_source, "named owner source reference is not an object")
     if isinstance(origin_ref, dict) and origin_ref:
         from ouroboros.project_dialogue import (
             _text_sha256,
@@ -226,25 +226,17 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
         )
 
         if not owner_message_ref_is_valid(origin_ref):
-            return _unavailable(
-                {"kind": "owner_message", "human_label": "originating owner message", "ref": origin_ref},
-                "named owner source reference has an invalid host identity shape",
-            )
+            return _unavailable(owner_source, "named owner source reference has an invalid host identity shape")
 
         origin_text = task.get("origin_message_text")
         if isinstance(origin_text, str) and origin_text:
             if _text_sha256(origin_text) != str(origin_ref.get("text_sha256") or ""):
-                return _unavailable(
-                    {"kind": "owner_message", "human_label": "originating owner message", "ref": origin_ref},
-                    "retained origin text does not match its ingress checksum",
-                )
+                return _unavailable(owner_source, "retained origin text does not match its ingress checksum")
         else:
             matching = resolve_owner_message_source(root, origin_ref)
             if matching is None:
                 return _unavailable(
-                    {"kind": "owner_message", "human_label": "originating owner message", "ref": origin_ref},
-                    "named canonical owner row is not readable and no retention-proof text is stored",
-                )
+                    owner_source, "named canonical owner row is not readable and no retention-proof text is stored")
             task["origin_message_text"] = str(matching.get("text") or "")
 
     predecessor = task.get("predecessor_authority_source")
@@ -263,7 +255,8 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
             load_effective_task_result(root, predecessor_id, materialize_artifacts=False)
             if predecessor_id else None
         )
-        if not isinstance(predecessor_row, dict):
+        # A missing file reads back as ``{}``: an empty row is no predecessor either.
+        if not isinstance(predecessor_row, dict) or not predecessor_row:
             return _unavailable(predecessor, "named predecessor task result is missing or unreadable")
         # The pull pointer is written LAST: a projected row field named
         # ``source`` must not clobber the authority route the pull flow and
@@ -284,12 +277,15 @@ def validate_task_authority_sources(env: Any, task: Dict[str, Any]) -> Dict[str,
             })
 
     current_id = str(task.get("id") or "").strip()
-    current_path = root / "task_results" / f"{current_id}.json"
-    if current_id and current_path.exists():
+    if current_id:
         try:
+            from ouroboros import plan_record
             from ouroboros.task_results import load_plan_review_state
+            from ouroboros.task_store import exists
 
-            load_plan_review_state(root, current_id)
+            if exists(root, current_id):
+                load_plan_review_state(root, current_id)
+                plan_record.load_plan_record(root, current_id)
         except Exception as exc:
             return _unavailable(
                 {"kind": "plan_review_state", "task_id": current_id,
@@ -344,24 +340,14 @@ def _is_release_tag(tag: str) -> bool:
 
 
 def check_uncommitted_changes(env: Any) -> Tuple[dict, int]:
-    """Warn on dirty worker boot; rescue/reset is supervisor-owned, never worker-owned."""
-    try:
-        lock_path = env.repo_path(".git/index.lock")
-        if lock_path.exists():
-            try:
-                # Age gate (mirrors supervisor.git_ops._stale_git_lock_paths):
-                # an unconditional unlink could yank index.lock from under a
-                # LIVE supervisor git operation during worker boot, corrupting
-                # the index. Only locks orphaned by dead processes are stale.
-                age_sec = time.time() - lock_path.stat().st_mtime
-                if age_sec >= 15.0:
-                    lock_path.unlink()
-                    log.warning("Removed stale git index.lock (age %.0fs)", age_sec)
-            except OSError:
-                pass
+    """Warn on dirty worker boot; rescue/reset is supervisor-owned, never worker-owned.
 
+    A read only: it takes no optional index lock and removes none, since a lock's
+    age says nothing about whether its writer is still running.
+    """
+    try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "--no-optional-locks", "status", "--porcelain"],
             cwd=str(env.repo_dir),
             capture_output=True, text=True, timeout=10, check=True
         )
@@ -550,7 +536,7 @@ def check_review_continuations(env: Any) -> Tuple[dict, int]:
             # One row read per continuation (TZ-1 A): a startup check never walks the store.
             try:
                 return str((load_task_result(env.drive_root, task_id) or {}).get("status") or "")
-            except (OSError, ValueError):
+            except (OSError, ValueError, StoreError):
                 return ""
 
         rows = []
@@ -1068,19 +1054,6 @@ def verify_restart(env: Any, git_sha: str) -> None:
         tx_history.append(dict(tx))
         campaign["transaction_history"] = tx_history[-50:]
 
-    def _close_post_task_backlog(campaign: Dict[str, Any]) -> None:
-        backlog_id = str(campaign.get("post_task_backlog_id") or "").strip()
-        if not backlog_id:
-            return
-        try:
-            from ouroboros.improvement_backlog import close_backlog_items
-
-            drive_root = getattr(env, "drive_root", None) or env.drive_path("memory").parent
-            close_backlog_items(drive_root, ids=[backlog_id])
-        except Exception:
-            log.debug("Post-task backlog close-on-absorb failed", exc_info=True)
-        campaign.pop("post_task_backlog_id", None)
-
     def _commit_reachable(commit_sha: str, observed_sha: str) -> bool:
         if commit_sha and observed_sha and commit_sha == observed_sha:
             return True
@@ -1217,7 +1190,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                             campaign["last_boot_reconcile_gen"] = gen
                         campaign["updated_at"] = utc_now_iso()
                         return campaign
-                # Capture before the absorbed branch pops it via _close_post_task_backlog.
+                # Capture before the absorbed branch pops the campaign's link.
                 outcome_snapshot["backlog_id"] = str(campaign.get("post_task_backlog_id") or "")
                 if not commit_sha or bool(tx.get("restart_verified")):
                     # Nothing to reconcile this generation — record it so a later
@@ -1291,7 +1264,9 @@ def verify_restart(env: Any, git_sha: str) -> None:
                         tx["absorbed_counted"] = True
                     _append_unique_transaction(campaign, tx)
                     campaign.pop("active_transaction", None)
-                    _close_post_task_backlog(campaign)
+                    # Absorption is evidence, not proof an authored intention is met: the
+                    # backlog note stays its author's; the link lives on in the ledger row.
+                    campaign.pop("post_task_backlog_id", None)
                     from supervisor.evolution_lifecycle import _clear_objective_repeat_count
                     _clear_objective_repeat_count(campaign, tx)  # BUG3: absorb clears this fp
                     campaign["progress_notes"] = (
@@ -1389,7 +1364,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 return False
             prior_gen = str(campaign.get("last_boot_reconcile_gen") or "")
             gen = _boot_reconcile_generation()
-            # Captured before the absorbed branch pops it via _close_post_task_backlog.
+            # Captured before the absorbed branch pops the campaign's link.
             backlog_id_before_close = str(campaign.get("post_task_backlog_id") or "")
             commit_sha = str(tx.get("commit_sha") or "").strip()
             authority_error = _restart_authority_error(
@@ -1461,11 +1436,9 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 tx["cycle_outcome"] = "absorbed"
                 _append_unique_transaction(campaign, tx)
                 campaign.pop("active_transaction", None)
-                # Close-on-commit (Phase 2 C): only NOW — when the reviewed self-mod
-                # commit is restart-verified and absorbed — mark the promoted backlog
-                # item done. Doing this earlier (at commit_sha time) could close an
-                # item whose commit later fails restart verification.
-                _close_post_task_backlog(campaign)
+                # Absorption is evidence, not proof an authored intention is met: the
+                # backlog note stays its author's; the link lives on in the ledger row.
+                campaign.pop("post_task_backlog_id", None)
                 from supervisor.evolution_lifecycle import _clear_objective_repeat_count
                 _clear_objective_repeat_count(campaign, tx)  # BUG3: absorb clears this fp
                 campaign["progress_notes"] = (
@@ -1476,9 +1449,7 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 tx["restart_no_commit"] = True
                 _append_unique_transaction(campaign, tx)
                 campaign.pop("active_transaction", None)
-                # This cycle absorbed no reviewed commit, so the promoted item was
-                # NOT addressed: clear the stale link WITHOUT closing it, so a later
-                # unrelated absorbed commit cannot close the wrong backlog item.
+                # This cycle absorbed no reviewed commit: the link has no outcome to ride.
                 campaign.pop("post_task_backlog_id", None)
                 from supervisor.evolution_lifecycle import _bump_objective_repeat_count
                 _bump_objective_repeat_count(campaign, tx)  # BUG3: verified-but-no-absorb counts

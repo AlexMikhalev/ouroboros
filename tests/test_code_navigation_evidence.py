@@ -414,8 +414,11 @@ def test_missing_parser_rechecks_call_fact_hash_after_inventory(project, monkeyp
     assert mutated
     assert "ast.Call.func" not in body(result), result
     assert not body(result), result
-    assert "QUERY_CODE_TRUNCATED" in result, result
-    assert "file changed since inventory; Python call facts not used" in result, result
+    if mode == "callees":
+        assert "QUERY_CODE_TRUNCATED" in result, result
+        assert "file changed since inventory; Python call facts not used" in result, result
+    else:  # callers start from paths and parse the bytes they read: a comment is no call, nothing is stale
+        assert "QUERY_CODE_TRUNCATED" not in result and "python ast local calls" in result, result
 
 
 @pytest.mark.parametrize("parser", [True, False])

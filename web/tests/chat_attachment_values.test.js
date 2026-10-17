@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { attachmentCaption, attachmentTail, attachmentViews, composerText } from '../modules/chat_attachments.js';
 import { uploadView } from './helpers/attachment_views.js';
+import { NodeStub, countPropertyWrites, fixture } from './chat_decision_fixture.js';
 
 const composed = { composed: true };
 
@@ -74,4 +75,34 @@ test('attachment views keep their closed shape and refuse a foreign URL', () => 
     assert.equal(ok.available && ok.kind === 'image' && ok.url.startsWith('/api/files/download?upload='), true);
     assert.deepEqual([foreign.available, foreign.kind, foreign.url], [false, 'file', '']);
     assert.deepEqual([weird.name, weird.kind], ['c d', 'file']);
+});
+
+test('a file the host could not attach is named right under the owner\'s words, and only while that is true', () => {
+    const fx = fixture();
+    try {
+        const bubble = new NodeStub('div');
+        bubble.dataset.clientMessageId = 'cm-files';
+        bubble.append(...['message', 'msg-pending', 'msg-time'].map((name) => Object.assign(new NodeStub('div'), { className: name })));
+        const row = (ordinal, label, status) => ({ ordinal, label, status, ...(status === 'rejected' ? { reason: 'source_missing' } : {}) });
+        const steered = { action: 'steer_task', status: 'delivered', target: 't1', target_label: 'Fix CI',
+            attachment_manifest: [row(0, 'a.png', 'staged'), row(1, 'b.pdf', 'rejected')] };
+        assert.equal(fx.decision.renderRoutingDecision(bubble, steered), true);
+        const note = bubble.querySelector('.msg-attachment-outcome');
+        assert.equal(note.textContent, 'Not attached to the task: b.pdf');
+        // One place whatever landed first; its own node, so the Main fold of the receipt line never hides it.
+        assert.deepEqual(bubble.children.map((node) => node.className),
+            ['message', 'msg-attachment-outcome', 'msg-pending', 'msg-routing-annotation', 'msg-time']);
+        const writes = countPropertyWrites(note, 'textContent');
+        assert.equal(fx.decision.renderRoutingDecision(bubble, steered), false);
+        assert.equal(writes(), 0);
+        // Only the manifest changed (the receipt line did not): still repainted.
+        assert.equal(fx.decision.renderRoutingDecision(bubble, {
+            ...steered, attachment_manifest: [row(0, 'a.png', 'rejected'), row(1, '', 'rejected')] }), true);
+        assert.equal(note.textContent, 'Not attached to the task: a.png, #2');
+        // Everything attached: nothing to say, as on a clean delivery.
+        const clean = { ...steered, attachment_manifest: [row(0, 'a.png', 'staged')] };
+        assert.equal(fx.decision.renderRoutingDecision(bubble, clean), true);
+        assert.equal(bubble.querySelector('.msg-attachment-outcome'), null);
+        assert.equal(fx.decision.renderRoutingDecision(bubble, clean), false);
+    } finally { fx.restore(); }
 });

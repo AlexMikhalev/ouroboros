@@ -34,7 +34,6 @@ import logging
 import os
 import pathlib
 import sqlite3
-import threading
 import time
 import uuid
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -46,9 +45,14 @@ from ouroboros._usage_money import (
 from ouroboros._usage_rows import (
     BINDING_KEYS, REVIEW_ATTRIBUTION_KEYS, _BINDING_CAPS, BindingIndex, Bucket, row_ts_epoch, summary_delta,
 )
+from ouroboros import store as _core
+from ouroboros.store import (
+    TIER_ENFORCED, TIER_NAME, busy as _busy, file_identity as _identity, fsync_directory as _fsync_directory,
+    process_lock as _process_lock,
+)
 from ouroboros.usage_ledger import (
-    LEDGER_REL, LOCK_REL, QUARANTINE_REL, USAGE_LOCK_TIMEOUT_SEC, UsageAccountingError, UsageLedgerCorrupt,
-    UsageLockUnavailable,
+    LEDGER_REL, LOCK_REL, QUARANTINE_REL, USAGE_LOCK_TIMEOUT_SEC, UsageAccountingError, UsageExportInProgress,
+    UsageLedgerCorrupt, UsageLockUnavailable,
     _named_lock, _number, is_one_shot_kind, late_receipt_eligible, validate_row_fields, validate_transition,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -58,14 +62,19 @@ log = logging.getLogger(__name__)
 STORE_REL = pathlib.Path("state/usage.sqlite")
 IMPORT_LOCK_NAME = "usage_import.lock"
 SCHEMA_VERSION = 1
-TIER_ENFORCED, TIER_NAME = "enforced", "name"
 # The database header's application id names the lock protocol every process
 # must use, so a process selects it BEFORE opening (``meta.lock_tier`` is the
-# same fact, recorded by the import that chose it).
+# same fact, recorded by the import that chose it). The connection, tier and
+# transaction core is ``ouroboros.store``, shared with the current-facts store.
 _APPLICATION_ID = {TIER_ENFORCED: 0x4F555345, TIER_NAME: 0x4F55534E}
 _OPEN_STATES = ("reserved", "dispatched", "unresolved")
 _OPEN_PREDICATE = ("(state IN ('reserved','dispatched','unresolved') "
                    "OR (state='settled' AND settle_reason='abandoned'))")
+# ``Txn.task_attempt_page``: newest first by the immutable, unique ``seq_first`` (``seq`` moves on every write).
+_TASK_PAGE_SQL = ("SELECT attempt_id, state, settle_reason, model, provider, ts_reserved, ts_dispatched, "
+                  "ts_final, ts_last FROM attempts INDEXED BY attempts_task "
+                  "WHERE task_id=? AND category=? AND seq_first<? ORDER BY seq_first DESC LIMIT ?")
+_TASK_CURSOR_SQL = "SELECT seq_first FROM attempts WHERE attempt_id=? AND task_id=? AND category=?"
 
 _SCHEMA = f"""
 CREATE TABLE attempts (
@@ -320,11 +329,6 @@ def _derived(row: Dict[str, Any], previous: Optional[Dict[str, Any]], revision: 
     }
 
 
-def _busy(exc: BaseException) -> bool:
-    code = getattr(exc, "sqlite_errorcode", None)
-    return code in {5, 6} or "locked" in str(exc).lower()
-
-
 class Txn:
     """One store transaction: reads, the cash view the admission rules use
     (``summary``/``exceeds_limit``, the historical writer-view API) and writes.
@@ -351,6 +355,24 @@ class Txn:
         if root_task_id is None:
             return self.attempts(_OPEN_PREDICATE)
         return self.attempts(f"{_OPEN_PREDICATE} AND root_task_id=?", (str(root_task_id),))
+
+    def task_attempt_page(self, task_id: str, category: str, *, after: str = "",
+                          limit: int) -> Optional[List[Dict[str, Any]]]:
+        """Lifecycle facts of one task's attempts in one category, newest first, ``limit`` rows older than ``after``.
+
+        ``after`` must name an attempt of this task and category (else ``None``): its first
+        record is the cursor, so older rows stay reachable while newer ones join a fresh list.
+        The task index addresses only this task (``INDEXED BY`` refuses a plan that scans the
+        ledger); ordering still sorts the task's matching rows before the bounded page returns.
+        No money, usage or payload fields."""
+        before = 2 ** 63 - 1
+        if after:
+            cursor = self.conn.execute(_TASK_CURSOR_SQL, (str(after), str(task_id), str(category))).fetchone()
+            if cursor is None:
+                return None
+            before = cursor["seq_first"]
+        return [dict(record) for record in self.conn.execute(_TASK_PAGE_SQL, (
+            str(task_id), str(category), before, int(limit)))]
 
     def bucket(self, scope: str, key: str = "") -> Bucket:
         address = (scope, str(key))
@@ -409,6 +431,13 @@ class Txn:
     def meta(self, key: str) -> Any:
         record = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return None if record is None else json.loads(record["value"])
+
+    def set_meta(self, key: str, value: Any) -> None:
+        """``None`` removes the key (the export mark, once the export is abandoned)."""
+        if value is None:
+            self.conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        else:
+            self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, _json(value)))
 
     def marker(self) -> list:
         """``[epoch, seq]``: continues the journal's ``[compaction_epoch, seq]``."""
@@ -563,69 +592,38 @@ class Txn:
             raise UsageAccountingError(f"conflicting settled-row identity: {attempt_id}")
         return self.attempt(attempt_id)
 
-    def commit(self) -> None:
+    def commit(self, *, wait_sec: Optional[float] = None) -> None:
         if not self.committed:
+            if wait_sec is not None:
+                self.conn.execute(f"PRAGMA busy_timeout = {max(0, int(wait_sec * 1000))}")
             _commit(self.conn)
             self.committed = True
 
 
-# ---- connection, lock tiers, holds -------------------------------------------
+# ---- connection, lock tiers, holds (the SQLite core is ouroboros.store) ------
 _READY: Dict[str, Tuple[tuple, str]] = {}  # store path -> (file identity, lock tier)
-_PROCESS_LOCKS: Dict[str, threading.RLock] = {}
-_PROCESS_LOCKS_GUARD = threading.Lock()
-
-
-def _process_lock(path: pathlib.Path) -> threading.RLock:
-    with _PROCESS_LOCKS_GUARD:
-        return _PROCESS_LOCKS.setdefault(str(path), threading.RLock())
-
-
-def _identity(path: pathlib.Path) -> Optional[tuple]:
-    try:
-        info = os.stat(path)
-    except FileNotFoundError:
-        return None
-    return info.st_ino, info.st_dev
 
 
 def _header_tier(path: pathlib.Path) -> Optional[str]:
-    try:
-        with open(path, "rb") as handle:
-            header = handle.read(100)
-    except FileNotFoundError:
-        return None
-    if len(header) < 100 or not header.startswith(b"SQLite format 3\x00"):
-        return None
-    application_id = int.from_bytes(header[68:72], "big")
-    return next((tier for tier, value in _APPLICATION_ID.items() if value == application_id), None)
+    return _core.header_tier(path, _APPLICATION_ID)
 
 
 def _connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0) -> sqlite3.Connection:
-    """A connection with the tier's lock protocol. ``wait_sec`` is SQLite's busy
-    wait for the enforced tier (the name tier never waits inside SQLite: its
-    one lock is the name protocol the caller already holds). No statement runs
-    here: the first one may wait on a commit and belongs to the caller's
-    contention handling."""
-    query = "mode=rwc" if create else "mode=rw"
-    if tier == TIER_NAME:
-        query += "&vfs=" + ("win32-none" if os.name == "nt" else "unix-none")
+    """The shared connection with the money error vocabulary (``ouroboros.store.connect``)."""
     try:
-        conn = sqlite3.connect(f"{path.as_uri()}?{query}", uri=True, isolation_level=None,
-                               timeout=max(0.0, wait_sec) if tier == TIER_ENFORCED else 0.0)
+        return _core.connect(path, tier, create=create, wait_sec=wait_sec)
     except sqlite3.Error as exc:
         raise UsageAccountingError(f"usage store unavailable: {path}: {exc}") from exc
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def _commit(conn: sqlite3.Connection) -> None:
     try:
-        conn.execute("COMMIT")
+        _core.commit(conn)
     except sqlite3.OperationalError as exc:
-        with contextlib.suppress(sqlite3.Error):
-            conn.execute("ROLLBACK")
         if _busy(exc):
-            raise UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention") from exc
+            error = UsageLockUnavailable(f"usage store commit did not complete: {exc}", reason="contention")
+            error.rollback_confirmed = getattr(exc, "rollback_confirmed", False)
+            raise error from exc
         raise UsageAccountingError(f"usage store commit failed: {exc}") from exc
 
 
@@ -650,7 +648,7 @@ def store_tier(root: pathlib.Path, *, wait_sec: float, migrate: bool = True) -> 
                 raise UsageLockUnavailable("usage store not migrated yet", reason="contention")
             migrate_from_journal(root)
         identity, tier = _identity(path), _header_tier(path)
-        if identity is None or tier is None or (_import_status(path, tier, wait_sec) or {}).get("status") != "completed":
+        if identity is None or tier is None or (_stored_meta(path, tier, wait_sec).get("import") or {}).get("status") != "completed":
             raise UsageLedgerCorrupt(f"usage store unreadable or without a completed import: {path}")
         _READY[str(path)] = (identity, tier)
         return tier
@@ -658,30 +656,41 @@ def store_tier(root: pathlib.Path, *, wait_sec: float, migrate: bool = True) -> 
         lock.release()
 
 
-def _import_status(path: pathlib.Path, tier: str, wait_sec: float) -> Optional[Dict[str, Any]]:
+def _stored_meta(path: pathlib.Path, tier: str, wait_sec: float) -> Dict[str, Any]:
+    """``meta.import`` and ``meta.export`` of a store file (``{}`` for one that cannot be read)."""
     with contextlib.ExitStack() as stack:
         if tier == TIER_NAME:
             stack.enter_context(_named_lock(path.parent.parent, LOCK_REL.name, timeout_sec=wait_sec, stale_sec=90.0))
         conn = _connect(path, tier, wait_sec=wait_sec)
         stack.callback(conn.close)
         try:
-            record = conn.execute("SELECT value FROM meta WHERE key='import'").fetchone()
+            records = conn.execute("SELECT key, value FROM meta WHERE key IN ('import', 'export')").fetchall()
         except sqlite3.OperationalError as exc:
             if _busy(exc):
                 raise UsageLockUnavailable(f"usage store busy: {exc}", reason="contention") from exc
-            return None
+            return {}
         except sqlite3.DatabaseError:
-            return None
-        return None if record is None else json.loads(record["value"])
+            return {}
+        return {record["key"]: json.loads(record["value"]) for record in records}
+
+
+def _sha256_file(path: pathlib.Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
 
 
 @contextlib.contextmanager
 def hold(root: pathlib.Path | str, *, timeout_sec: float = USAGE_LOCK_TIMEOUT_SEC,
-         write: bool = True, migrate: bool = True) -> Iterator[Txn]:
+         write: bool = True, migrate: bool = True, exporting: bool = False) -> Iterator[Txn]:
     """One store transaction within ``timeout_sec`` of waiting, else
     ``UsageLockUnavailable(reason="contention")``. A write takes the write lock
     at BEGIN (``BEGIN IMMEDIATE``); its COMMIT waits for readers to drain. This
-    is the primitive the money acquisitions slice (``_usage_wait``)."""
+    is the primitive the money acquisitions slice (``_usage_wait``). A store
+    carrying an export mark refuses every write typed (``UsageExportInProgress``)
+    inside the transaction it would have made; only the export itself and its
+    abandonment write under ``exporting=True``."""
     root = pathlib.Path(root)
     tier = store_tier(root, wait_sec=timeout_sec, migrate=migrate)
     with contextlib.ExitStack() as stack:
@@ -689,29 +698,16 @@ def hold(root: pathlib.Path | str, *, timeout_sec: float = USAGE_LOCK_TIMEOUT_SE
             stack.enter_context(_named_lock(root, LOCK_REL.name, timeout_sec=timeout_sec, stale_sec=90.0))
         conn = _connect(root / STORE_REL, tier, wait_sec=timeout_sec)
         stack.callback(conn.close)
-        try:
-            conn.execute("PRAGMA synchronous = FULL")
-            conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
-            if not write:  # take the read lock now: a read's only wait is here
-                conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
-        except sqlite3.Error as exc:
-            with contextlib.suppress(sqlite3.Error):
-                conn.execute("ROLLBACK")
-            raise _typed(exc) from exc
-        if tier == TIER_ENFORCED:  # a COMMIT waits for readers to drain
-            conn.execute(f"PRAGMA busy_timeout = {int(USAGE_LOCK_TIMEOUT_SEC * 1000)}")
         txn = Txn(conn, root, write=write)
-        try:
-            yield txn
-        except BaseException as exc:
-            if not txn.committed:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("ROLLBACK")
-            if isinstance(exc, sqlite3.Error):
-                raise _typed(exc) from exc
-            raise
-        if not txn.committed:
-            txn.commit()
+        try:  # the enforced tier's COMMIT waits for readers to drain
+            with _core.transaction(conn, write=write, finish=txn.commit,
+                                   commit_wait_sec=USAGE_LOCK_TIMEOUT_SEC if tier == TIER_ENFORCED else None):
+                if write and not exporting and txn.meta("export") is not None:
+                    raise UsageExportInProgress(f"usage store is being exported for a switch; money writes are "
+                                                f"refused until it completes or is abandoned: {root / STORE_REL}")
+                yield txn
+        except sqlite3.Error as exc:
+            raise _typed(exc) from exc
 
 
 def _typed(exc: sqlite3.Error) -> UsageAccountingError:
@@ -719,7 +715,10 @@ def _typed(exc: sqlite3.Error) -> UsageAccountingError:
     (the waits' business), a damaged file is ``UsageLedgerCorrupt`` (unknown,
     never zero), anything else an ``UsageAccountingError``."""
     if isinstance(exc, sqlite3.OperationalError) and _busy(exc):
-        return UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        error = UsageLockUnavailable(f"usage store busy: {exc}", reason="contention")
+        if hasattr(exc, "rollback_confirmed"):
+            error.rollback_confirmed = exc.rollback_confirmed
+        return error
     if isinstance(exc, sqlite3.DatabaseError) and not isinstance(
             exc, (sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.ProgrammingError)):
         return UsageLedgerCorrupt(f"usage store unreadable: {exc}")
@@ -789,7 +788,7 @@ def migrate_from_journal(root: pathlib.Path | str) -> Dict[str, Any]:
                     stale.unlink()  # an unfinished import never published: redone from scratch
             if _identity(path) is not None:
                 tier = _header_tier(path)
-                status = _import_status(path, tier, USAGE_LOCK_TIMEOUT_SEC) if tier else None
+                status = _stored_meta(path, tier, USAGE_LOCK_TIMEOUT_SEC).get("import") if tier else None
                 if not status or status.get("status") != "completed":
                     raise UsageLedgerCorrupt(f"usage store unreadable or without a completed import: {path}")
                 report = {"status": "already_completed", **_retire_journal(root, status)}
@@ -926,76 +925,207 @@ def _retire_journal(root: pathlib.Path, status: Dict[str, Any]) -> Dict[str, Any
     return {"journal": "changed_after_import", "journal_size": size, "imported_size": imported}
 
 
-def _fsync_directory(directory: pathlib.Path) -> None:
-    if os.name == "nt":
-        return
-    try:
-        fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+def _export_rows(txn: Txn, provenance: Dict[str, Any]) -> Tuple[list, int, int]:
+    """The journal rows an older release accepts, from the frozen store."""
+    from ouroboros import usage_journal as journal
+
+    records = txn.conn.execute("SELECT * FROM attempts ORDER BY seq_first, seq").fetchall()
+    aggregates = [_decode(record) for record in sorted(records, key=lambda record: record["seq"])
+                  if record["kind"] == "usage_baseline_group"]
+    attempts = [(_decode(record), record["ts_reserved"], record["ts_dispatched"]) for record in records
+                if record["kind"] != "usage_baseline_group"]
+    bindings = {record["key"]: json.loads(record["binding"], parse_float=LiteralFloat) for record in
+                txn.conn.execute("SELECT key, binding FROM bindings WHERE scope='root'")}
+    rows = journal.export_rows(provenance.get("header"), aggregates, attempts, bindings)
+    journal._validate_records(rows)
+    return rows, len(attempts), len(aggregates)
 
 
-def export_journal(root: pathlib.Path | str) -> Dict[str, Any]:
+def _retired_for(root: pathlib.Path, journal_sha256: Optional[str]) -> Optional[Tuple[pathlib.Path, Dict[str, Any]]]:
+    """The newest retired store (``usage.sqlite.exported-*``) whose export mark planned the
+    journal with ``journal_sha256``: proof the journal beside the absent store is that
+    export's own. ``None`` otherwise (an older switch's copy proves nothing)."""
+    path = root / STORE_REL
+    if journal_sha256 is None:
+        return None
+    try:
+        names = sorted((name for name in os.listdir(path.parent) if name.startswith(path.name + ".exported-")), reverse=True)
+    except OSError:
+        return None
+    for name in names:
+        retired = path.with_name(name)
+        tier = _header_tier(retired)
+        mark = _stored_meta(retired, tier, USAGE_LOCK_TIMEOUT_SEC).get("export") if tier else None
+        if mark and (mark.get("journal") or {}).get("sha256") == journal_sha256:
+            return retired, mark
+    return None
+
+
+def export_refusal(root: pathlib.Path | str, *, resume: bool = False) -> str:
+    """Why ``export_journal`` would refuse now; ``""`` when it can run (or, ``resume``, complete
+    an interrupted run whose rename already landed). A kept journal must be absent, the one the
+    import kept unchanged (the import's recorded digest) or this export's own: the mark's digest,
+    or a partial write of this export once the mark shows the kept one already set aside
+    (``_own_partial``); sizes prove nothing."""
+    root = pathlib.Path(root)
+    path, kept = root / STORE_REL, root / LEDGER_REL
+    kept_sha = _sha256_file(kept)
+    if _identity(path) is None:
+        if kept_sha is None:
+            return f"no usage store to export: {path}"
+        if resume and _retired_for(root, kept_sha):
+            return ""
+        return f"refusing to overwrite an existing journal without a store: {kept}"
+    if kept_sha is None:
+        return ""
+    tier = _header_tier(path)
+    if tier is None:
+        return f"usage store unreadable: {path}"
+    stored = _stored_meta(path, tier, USAGE_LOCK_TIMEOUT_SEC)
+    mark = stored.get("export") or {}
+    if kept_sha in {((stored.get("import") or {}).get("source") or {}).get("sha256"), (mark.get("journal") or {}).get("sha256")}:
+        return ""
+    if mark and _own_partial(root, mark):
+        return ""
+    return f"the money journal changed after the import; move it aside to export: {kept}"
+
+
+def _own_partial(root: pathlib.Path, mark: Dict[str, Any]) -> bool:
+    """Whether a kept journal that matches neither digest is this export's own interrupted write:
+    the mark recorded no journal to set aside, or the one it named is already aside."""
+    return not mark.get("pre_export_as") or (root / LEDGER_REL).with_name(mark["pre_export_as"]).exists()
+
+
+def export_journal(root: pathlib.Path | str, *, resume: bool = False) -> Dict[str, Any]:
     """Write ``state/usage_attempts.jsonl`` from the store as a journal an older
     release accepts (``usage_journal.export_rows``), then retire the store.
 
     Offline, with the server stopped: the step before checking out an older
-    release (a git revert alone is not a data rollback). Holds the store's
-    write lock throughout; refuses to overwrite an existing journal; restores
-    the legacy-import watermark the store recorded; aligns the state.json
-    freshness marker with the journal's own ``[epoch, seq]`` (the store's
-    marker is higher, and an older release refuses a lower one); finally
-    renames the store aside (``usage.sqlite.exported-<UTC>``) so a later
-    upgrade imports the journal again, including what the older release adds."""
+    release (a git revert alone is not a data rollback). The barrier is the
+    export mark: ``meta.export`` (the planned journal's size, sha256 and marker,
+    the retired and pre-export names, the ``state.json`` marker it replaces) is
+    committed under the store's write lock BEFORE the journal is written, and
+    from that commit every money write is refused typed (``hold``), so no late
+    writer commits into the authority being exported. Then the files: the journal
+    the import kept is set aside (``usage_attempts.jsonl.pre-export-<UTC>``), the
+    journal is written, the legacy-import watermark the store recorded is
+    restored, the ``state.json`` freshness marker is aligned with the journal's
+    own ``[epoch, seq]``, the store is renamed ``usage.sqlite.exported-<UTC>`` so
+    a later upgrade imports the journal again, including what the older release
+    adds. Every step is idempotent through the mark: an interrupted run resumes
+    (its own journal is recognised by the mark's digest, never by size) and, for
+    the switch seam (``resume=True``), a store already renamed completes from the
+    retired copy's mark. A journal that changed after the import, or one without
+    a store, is never overwritten."""
     from ouroboros import usage_journal as journal
     from ouroboros.utils import atomic_write_json
 
     root = pathlib.Path(root)
-    path = root / STORE_REL
-    kept = root / LEDGER_REL
-    if kept.exists() and _identity(path) is None:
-        raise UsageAccountingError(f"refusing to overwrite an existing journal: {kept}")
-    with hold(root, migrate=False) as txn:
+    path, kept = root / STORE_REL, root / LEDGER_REL
+    refusal = export_refusal(root, resume=resume)
+    if refusal:
+        raise UsageAccountingError(refusal)
+    if _identity(path) is None:  # the rename already landed: complete from the retired copy's mark
+        retired, mark = _retired_for(root, _sha256_file(kept))
+        return {"status": "exported", **_export_result(mark, retired.name)}
+    with hold(root, migrate=False, exporting=True) as txn:  # BEGIN IMMEDIATE: the last write this store takes
         provenance = txn.meta("import") or {}
-        if kept.exists():
-            if kept.stat().st_size != (provenance.get("source") or {}).get("size"):
-                raise UsageAccountingError(f"refusing to overwrite a journal that changed after the import: {kept}; "
-                                           "move it aside to export (its rows after the import are not in the store)")
-            # The journal the import kept in place: set aside, never lost.
-            os.replace(kept, kept.with_name(f"{kept.name}.pre-export-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
-        records = txn.conn.execute("SELECT * FROM attempts ORDER BY seq_first, seq").fetchall()
-        aggregates = [_decode(record) for record in sorted(records, key=lambda record: record["seq"])
-                      if record["kind"] == "usage_baseline_group"]
-        attempts = [(_decode(record), record["ts_reserved"], record["ts_dispatched"]) for record in records
-                    if record["kind"] != "usage_baseline_group"]
-        bindings = {record["key"]: json.loads(record["binding"], parse_float=LiteralFloat) for record in
-                    txn.conn.execute("SELECT key, binding FROM bindings WHERE scope='root'")}
-        rows = journal.export_rows(provenance.get("header"), aggregates, attempts, bindings)
-        journal._validate_records(rows)
+        rows, attempts, aggregates = _export_rows(txn, provenance)
+        payload = journal.journal_bytes(rows)
+        mark = txn.meta("export")
+        if mark is None:
+            state = _state_document(root)
+            mark = {"status": "writing", "started_at": utc_now_iso(),
+                    "journal": {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(), "rows": len(rows)},
+                    "marker": journal.journal_marker(rows), "attempts": attempts, "aggregates": aggregates,
+                    "pre_export_as": f"{kept.name}.pre-export-{_core.utc_stamp()}" if kept.exists() else None,
+                    "store_retired_as": f"{path.name}.exported-{_core.utc_stamp()}", "legacy": provenance.get("legacy"),
+                    "state_marker_before": (state or {}).get("usage_ledger_high_water_seq") if isinstance(state, dict) else None}
+            txn.set_meta("export", mark)
+        elif hashlib.sha256(payload).hexdigest() != mark["journal"]["sha256"]:
+            raise UsageLedgerCorrupt(f"the frozen usage store no longer reproduces its export mark: {path}")
+    kept_sha = _sha256_file(kept)
+    if kept_sha is not None and kept_sha != mark["journal"]["sha256"]:
+        if not _own_partial(root, mark):  # the import kept it, unchanged: set aside, never lost
+            os.replace(kept, kept.with_name(mark["pre_export_as"]))
+        kept_sha = None  # else this export's own interrupted write: rewritten whole below
+    if kept_sha is None:
         written = journal.write_journal(root, rows)
-    marker = journal.journal_marker(rows)
-    legacy = provenance.get("legacy")
-    if legacy and journal.completed_legacy_watermark(root) is None:
-        atomic_write_json(root / journal.IMPORT_REL, legacy, trailing_newline=True, fsync=True)
-    state_path = root / "state" / "state.json"
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        state = None
+        if written["sha256"] != mark["journal"]["sha256"]:
+            raise UsageLedgerCorrupt(f"the exported journal does not match its mark: {kept}")
+    if mark.get("legacy") and journal.completed_legacy_watermark(root) is None:
+        atomic_write_json(root / journal.IMPORT_REL, mark["legacy"], trailing_newline=True, fsync=True)
+    state = _state_document(root)
     if isinstance(state, dict) and "usage_ledger_high_water_seq" in state:
-        atomic_write_json(state_path, {**state, "usage_ledger_high_water_seq": marker}, fsync=True)
-    retired = path.with_name(f"{path.name}.exported-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+        atomic_write_json(root / "state" / "state.json", {**state, "usage_ledger_high_water_seq": mark["marker"]}, fsync=True)
+    retired = path.with_name(mark["store_retired_as"])
     os.replace(path, retired)
     _fsync_directory(path.parent)
     forget(root)
-    return {"status": "exported", "journal": written, "marker": marker, "store_retired_as": retired.name,
-            "attempts": len(attempts), "aggregates": len(aggregates)}
+    return {"status": "exported", **_export_result(mark, retired.name)}
+
+
+def _export_result(mark: Dict[str, Any], retired_name: str) -> Dict[str, Any]:
+    return {"journal": {"path": None, **mark["journal"]}, "marker": mark["marker"], "store_retired_as": retired_name,
+            "pre_export_as": mark.get("pre_export_as"), "attempts": mark["attempts"], "aggregates": mark["aggregates"]}
+
+
+def _state_document(root: pathlib.Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads((root / "state" / "state.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def abandon_export(root: pathlib.Path | str, *, retired_as: Optional[str] = None) -> Dict[str, Any]:
+    """Undo an interrupted export, idempotent and resumable at every step: the store back
+    under its name from the retired copy (``retired_as`` from the switch receipt, else the
+    newest copy whose mark planned the journal on disk), the journal the import kept back by
+    ONE atomic replace over this export's own (no window without a journal), the
+    ``state.json`` marker the export lowered put back, the mark cleared LAST so a death
+    in between resumes here. Returns what moved (``{}`` when nothing of this export's is found)."""
+    from ouroboros.utils import atomic_write_json
+
+    root = pathlib.Path(root)
+    path, kept = root / STORE_REL, root / LEDGER_REL
+    moved: Dict[str, Any] = {}
+    if _identity(path) is None:
+        kept_sha = _sha256_file(kept)
+        found = None
+        if retired_as and path.with_name(retired_as).exists():
+            found = (path.with_name(retired_as), None)
+        elif kept_sha is not None:
+            found = _retired_for(root, kept_sha)
+        if found is None:
+            return {}
+        os.replace(found[0], path)
+        _fsync_directory(path.parent)
+        forget(root)
+        moved["store"] = "restored"
+    tier = _header_tier(path)
+    mark = _stored_meta(path, tier, USAGE_LOCK_TIMEOUT_SEC).get("export") if tier else None
+    if mark is None:
+        return moved
+    kept_sha = _sha256_file(kept)
+    pre_export = kept.with_name(mark["pre_export_as"]) if mark.get("pre_export_as") else None
+    if kept_sha is None or kept_sha == mark["journal"]["sha256"] or _own_partial(root, mark):  # absent or this export's own
+        if pre_export is not None and pre_export.exists():
+            os.replace(pre_export, kept)  # the kept one comes back over the own, one rename, no window without a journal
+            moved["journal"] = "restored"
+        elif kept_sha is not None and pre_export is None:
+            kept.unlink()  # the import kept none: nothing to put back
+            moved["journal"] = "removed"
+        _fsync_directory(kept.parent)
+    state = _state_document(root)
+    if isinstance(state, dict) and state.get("usage_ledger_high_water_seq") == mark["marker"] \
+            and mark.get("state_marker_before") is not None:
+        atomic_write_json(root / "state" / "state.json", {**state, "usage_ledger_high_water_seq": mark["state_marker_before"]},
+                          fsync=True)
+        moved["state_marker"] = "restored"
+    with hold(root, migrate=False, exporting=True) as txn:
+        txn.set_meta("export", None)  # the mark LAST: the store takes writes again
+    moved["mark"] = "cleared"
+    return moved
 
 
 def forget(root: pathlib.Path | str) -> None:

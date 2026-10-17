@@ -474,14 +474,12 @@ def test_legacy_heavy_read_vocabulary_does_not_leak_into_new_projection(
 
 def test_clb_operator_adapters_transport_canonical_actor_without_active_heavy():
     patch_root = REPO / "devtools/benchmarks/continual_learning/operator_patches"
-    host_patch = (patch_root / "_launcher.v6560.patch").read_text(encoding="utf-8")
     docker_patch = (patch_root / "clb_env_campaign_overrides.v6745.patch").read_text(
         encoding="utf-8"
     )
     official_patch = (patch_root / "adapter_official_submission.v681.patch").read_text(
         encoding="utf-8"
     )
-    assert "Canonical benchmark actor bytes are authored by run_clb.py" in host_patch
     assert '"OUROBOROS_SUBAGENTS"):' in docker_patch
     assert "OUROBOROS_SUBAGENTS=os.environ.get" in official_patch
     assert "OUROBOROS_MODEL_HEAVY" not in official_patch
@@ -704,6 +702,9 @@ def test_osworld_cu_bridge_validates_declared_and_target_actor(tmp_path, monkeyp
 
     model = "openai/gpt-5.5"
     exact = _fixed_actor_settings(model)
+    # The benchmark's own declared mode (#1731, O4); its refusal is pinned by
+    # test_g1_benchmark_result_contracts::test_bridge_preflight_checks_executing_review_mode.
+    exact["OUROBOROS_TASK_REVIEW_MODE"] = "required"
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps(exact), encoding="utf-8")
     monkeypatch.setattr(

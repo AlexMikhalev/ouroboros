@@ -2,7 +2,7 @@
 
 import { createWS } from './modules/ws.js';
 import { apiFetch, fetchJson } from './modules/api_client.js';
-import { loadVersion, initMatrixRain } from './modules/utils.js';
+import { loadVersion } from './modules/utils.js';
 import { bindScrollFade } from './modules/scroll_fade.js';
 import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
@@ -12,7 +12,7 @@ import {
     summarizeProjectActivities,
 } from './modules/project_activity.js';
 import { initFiles } from './modules/files.js';
-import { getNotifier } from './modules/notifications.js';
+import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
 import { apiClient } from './modules/api_client.js';
 import { openNewProjectDialog, openProjectRowMenu } from './modules/project_create.js';
@@ -27,6 +27,7 @@ import { initUpdates } from './modules/updates.js';
 import { initActivity } from './modules/activity.js';
 import { initUpdateStatus } from './modules/update_status.js';
 import { initDashboard } from './modules/dashboard.js';
+import { initStorage } from './modules/storage.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
@@ -238,7 +239,10 @@ const stateSnapshots = createStateSnapshotSequencer((data, requestedAt, generati
         data.project_chat_ids ?? (data.projects ? undefined : Array.from(state.projectChatIds)), projectActivityIndex);
     applyTaskBindings(data.task_bindings || {});
     hydrateOpenChatsFromState(data, requestedAt, generation);
-}, undefined, markProjectActivityUnknown);
+}, undefined, (requestedAt) => {
+    markProjectActivityUnknown();
+    hydrateOpenChatsFromState(null, requestedAt);
+});
 
 const ctx = {
     ws,
@@ -271,26 +275,28 @@ getNotifier().attach({
 });
 getNotifier().configure({
     showToast,
-    onActivate: (target) => {
-        // A notification leads to its message: no document stays open over it,
-        // in Main or in any room, whichever chat it names.
-        mainChat?.closeTransient?.();
-        for (const inst of projectInstances.values()) inst.closeTransient?.();
-        const chatId = Number(target?.chatId);
-        const project = Array.isArray(lastProjectRows)
-            ? lastProjectRows.find((row) => Number(row?.chat_id) === chatId)
-            : null;
-        if (project) {
-            void openProjectPanel(project, {
-                openOnly: true,
-                taskId: String(target?.taskId || ''),
-                quizId: String(target?.quizId || ''),
-            });
-            return;
-        }
-        void showPage('chat');
-    },
+    onActivate: createNotificationActivation({
+        resolveProject: async (chatId) => {
+            const data = await fetchJson(`/api/projects?chat_id=${encodeURIComponent(chatId)}`);
+            return data?.projects?.length === 1 ? data.projects[0] : null;
+        },
+        openProject: (project, options) => {
+            closeNotificationReaders();
+            return openProjectPanel(project, options);
+        },
+        unavailable: () => showToast('This notification’s destination is unavailable.'),
+        openMain: () => {
+            closeNotificationReaders();
+            return showPage('chat');
+        },
+    }),
 });
+
+function closeNotificationReaders() {
+    // A resolved notification leads to its message, with no document over it.
+    mainChat?.closeTransient?.();
+    for (const inst of projectInstances.values()) inst.closeTransient?.();
+}
 
 mainChat = initChat(ctx);
 initFiles(ctx);
@@ -411,8 +417,11 @@ async function openProjectPanel(project, { closeDrawer = true, openOnly = false,
         if (closeDrawer) navState.mobileDrawerOpen = false;
         syncNavigationState();
         // Reopened at the newest message; after the panel is shown, so the column
-        // has real geometry. A question opened from Main is revealed below instead.
-        if (!(taskId && quizId)) void inst.showLatest?.();
+        // has real geometry. An unread room lands on the message that arrived last
+        // (DESIGN "Project unread dot"). A question opened from Main is revealed below instead.
+        const unread = Math.max(0, Number(freshProjectRow(project).visible_revision) || 0)
+            > Math.max(0, Number(state.projectSeenRevision?.[project.id]) || 0);
+        if (!(taskId && quizId)) void inst.showLatest?.({ arrive: unread });
         // ACK only the exact revision whose history was fetched and painted. chat.js
         // owns the paint receipt; an already-painted instance skips the forced
         // refetch — the server clamps the ACK, so no repaint is needed.
@@ -512,7 +521,7 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
     const all = projects || [];
     // Isolation fan-out SSOT: recognize EVERY registered project chat_id (incl.
     // file-less / no-activity / beyond the sidebar summary cap), matching the
-    // backend registered_project_chat_ids, so chat.js::isMyThread never treats a
+    // backend reserved_project_chat_ids, so chat.js::isMyThread never treats a
     // project frame as a main-thread frame on the live WS path. Prefer the
     // COMPLETE /api/state `project_chat_ids` (uncapped); fall back to the (capped)
     // projects array only if that field is absent. Sidebar visibility is a
@@ -918,13 +927,15 @@ ws.on('ui_i18n_updated', () => { refreshDictionary(); });
 
 ws.on('open', () => {
     activitySocketDisconnected = false;
-    stateSnapshots.fail(stateSnapshots.begin());
+    stateSnapshots.retire();
+    markProjectActivityUnknown();
     refreshProjectsNav(true); // the in-flight read predates the socket: one coalesced post-open read
     pendingBootRead().then(refreshDictionary); // every open, the first too: a frame sent before this subscription was missed (behind the boot read, whose older answer must not land last)
 });
 ws.on('close', () => {
     activitySocketDisconnected = true;
-    stateSnapshots.fail(stateSnapshots.begin());
+    stateSnapshots.retire();
+    markProjectActivityUnknown();
 });
 // A backend-created project (e.g. the agent's promote_chat_to_task tool) pushes
 // this so the live WS fan-out learns the new project chat_id immediately, instead
@@ -944,18 +955,18 @@ const disposeEvolution = initEvolution({ ...ctx, mount: document.getElementById(
 initUpdates({ ...ctx, mount: document.getElementById('dashboard-panel-updates') });
 initActivity({ ...ctx, mount: document.getElementById('dashboard-panel-activity') });
 initCosts({ ...ctx, mount: document.getElementById('dashboard-panel-costs') });
+const disposeStorage = initStorage({ ...ctx, mount: document.getElementById('dashboard-panel-storage') });
 initSkills(ctx);
 initWidgets(ctx);
 initUpdateStatus(ctx);
 
 initOnboardingOverlay();
 
-const disposeMatrixRain = initMatrixRain();
 const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     disposeEvolution();
-    disposeMatrixRain();
+    disposeStorage?.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
 });
 loadVersion();

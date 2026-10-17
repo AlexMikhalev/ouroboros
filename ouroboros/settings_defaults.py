@@ -13,8 +13,6 @@ FINALIZATION_GRACE_DEFAULT_SEC = 120
 # Owner finalization outer cap starts at the stop request; grace starts at control delivery
 # (the loop's mailbox drain). No summary by this cap -> honest custody cancel.
 OWNER_STOP_OUTER_CAP_SEC = 600
-# Cadence for intrinsic self-pacing checkpoints when a task has NO deadline_at (headless benchmark runs). Advisory only — surfaces elapsed/rounds/cost for self-pacing; 0 disables.
-PACING_INTERVAL_DEFAULT_SEC = 600
 # Supervisor-loop liveness deadline (WS3, v6.34.0): a watchdog thread flags the main supervisor loop STALLED if it has not ticked within this many seconds (healthy tick ~0.5s, real wedges only). 0 disables.
 SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC = 90
 
@@ -31,7 +29,7 @@ CLAUDEXOR_ADMISSION_POLL_SEC = 0.15
 OPENROUTER_DEFAULTS = {
     "main": "google/gemini-3.8-flash",
     "heavy": "",
-    "light": "openai/gpt-5.6-luna",
+    "light": "openai/gpt-6-luna",
     "vision": "",
     "consciousness": "",
     "fallback": "openai/gpt-5.6-luna",
@@ -45,12 +43,12 @@ OPENROUTER_DEFAULTS = {
 OPENROUTER_REVIEW_DEFAULTS = {
     "triad": (
         "google/gemini-3.8-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-opus-5.5",
     ),
+    # Scope and advisory are the retired lanes' values as they shipped, read only by the
+    # retired-key tolerance; the factory pool is the triad (``factory_review_rows``).
     "scope": ("openai/gpt-5.6-terra",),
-    # Routed catalog id (the retired Claude-SDK spelling migrated same-model);
-    # without provider credentials the advisory gate records an audited bypass.
     "advisory": "anthropic/claude-sonnet-5",
 }
 
@@ -83,6 +81,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
+    # Main interface at / and /static: "" builtin, "none", or a trusted directory (server_web.select_ui).
+    "OUROBOROS_UI_DIR": "",
     "OUROBOROS_DESKTOP_KEEP_RUNNING": "false",  # desktop window close keeps running (launcher_background.py)
     "OUROBOROS_MODEL": OPENROUTER_DEFAULTS["main"],
     # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
@@ -175,7 +175,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PER_CALL_TIMEOUT_CEILING_SEC": 1800,
     "OUROBOROS_FINALIZATION_GRACE_SEC": FINALIZATION_GRACE_DEFAULT_SEC,
     "OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC": SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
-    "OUROBOROS_PACING_INTERVAL_SEC": PACING_INTERVAL_DEFAULT_SEC,
     "OUROBOROS_TOOL_TIMEOUT_SEC": 600,
     "OUROBOROS_VISION_CAPTION_TIMEOUT_SEC": 90,
     # Consciousness: MIN/MAX bound the wake-up interval the MODEL picks (set_next_wakeup); autonomy is what a
@@ -231,10 +230,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_ONBOARDING_COMPLETED_AT": "",
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
-    # Native tool-round reviewer episode transcript CEILING (chars); the effective
-    # bound is derived from the reviewer window (review_native_episode.py); a
-    # surface's declared mandatory reading may lift it up to the window. No round cap.
-    "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
     "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true",
@@ -386,8 +381,14 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # window deletes it rather than carrying the ghost another minor.
     "OUROBOROS_SOFT_TIMEOUT_SEC",
     "OUROBOROS_HARD_TIMEOUT_SEC",
-    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
+    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # execution retains deadline and ledger limits
+    # Serialized characters are diagnostic, never a native-review admission limit.
+    # Retire every stored value without inferring whether it was owner-selected.
+    "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS",
     "OUROBOROS_BG_MAX_ROUNDS",  # a wake is an ordinary Main turn: the per-task cost cap (+ any OUROBOROS_MAX_ROUNDS) bounds it
+    # #1748 (owner 11 Oct: facts, no advice): the periodic [PACING] note it timed is gone; elapsed time,
+    # rounds and cost ride every round's facts line, so no cadence is left to set.
+    "OUROBOROS_PACING_INTERVAL_SEC",
     # The effort range: evolution tasks and consciousness wakes start at its top (EFFORT_RANGE_RETIRED_SETTING_KEYS).
     "OUROBOROS_EFFORT_EVOLUTION", "OUROBOROS_EFFORT_CONSCIOUSNESS",
     # Review pool (PR-3): the review lanes and their surface keys. MIGRATED, not dropped:
@@ -530,7 +531,24 @@ SETTINGS_KEYS_NOT_EXPORTED_TO_ENV = frozenset({
     # which no owner authored — back over that environment, so the operator's LAN-reachable server silently became
     # loopback at the first self-restart. A default standing in for an absent key is not a decision.
     "OUROBOROS_SERVER_HOST",
+    # Read once per server generation (server_web.ServedUI.apply). An exported copy outlives the choice it
+    # copied: the desktop launcher keeps its environment across Restart, so clearing a saved directory or
+    # `none` would come back from that stale copy. The environment stays an operator's input for an ABSENT key.
+    "OUROBOROS_UI_DIR",
 }) | ENDPOINT_AUTHORED_SETTINGS  # disk-only in BOTH directions (never read from env, never exported to it)
+
+# A SAVED value of these keys, blank included, is the owner's choice and wins over the environment; an
+# ABSENT key leaves the choice to the environment (a deployment's OUROBOROS_UI_DIR=none). A merged write
+# carries every key the read produced, so it must not author an absent key with the value the environment
+# or the default gave it: one unrelated Settings save would otherwise freeze the operator's choice on disk.
+SAVED_CHOICE_SETTINGS = frozenset({"OUROBOROS_UI_DIR"})
+
+
+def unauthored_saved_choices(prepared, stored, authored=()) -> frozenset:
+    """Only the writer's explicit authorship can create a saved choice. Merged reads may contain defaults
+    or environment values; equality with either is not evidence of intent. Existing saved values survive."""
+    stored = stored if isinstance(stored, dict) else {}
+    return frozenset(key for key in SAVED_CHOICE_SETTINGS - set(authored) if key in prepared and key not in stored)
 
 
 def settings_env_keys() -> list:

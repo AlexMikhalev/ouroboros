@@ -9,7 +9,6 @@ stay exactly as they were.
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -20,6 +19,7 @@ from ouroboros import local_custody_repair as repair
 from ouroboros import platform_layer
 from ouroboros.task_results import load_task_result, write_task_result
 from tests._budget_pause_exact_helpers import _install_queue
+from tests._store_shared import result_signature
 
 pytestmark = pytest.mark.serial
 
@@ -44,8 +44,9 @@ def _claim(tmp_path, task_id, pid, birth, *, holder=None, attempt=1):
 
 
 def _witnesses(tmp_path):
-    path = tmp_path / "state" / "obligations" / f"{repair.WITNESS_SET}.json"
-    return json.loads(path.read_text()) if path.exists() else {}
+    from ouroboros import obligations
+
+    return obligations.members(tmp_path, repair.WITNESS_SET)
 
 
 def test_a_positively_dead_owner_is_retired_only_by_the_addressed_action(tmp_path, monkeypatch):
@@ -56,10 +57,10 @@ def test_a_positively_dead_owner_is_retired_only_by_the_addressed_action(tmp_pat
     pid, birth = _dead_process_identity()
     write_task_result(tmp_path, "helper", "cancelled", root_task_id="root")
     _claim(tmp_path, "helper", pid, birth)
-    before = (tmp_path / "task_results" / "helper.json").read_bytes()
+    before = result_signature(tmp_path, "helper")
     passive = conflicting_writers(queue, "root")
     assert [b["kind"] for b in passive] == ["tool_handoff"], "the passive census still holds it"
-    assert (tmp_path / "task_results" / "helper.json").read_bytes() == before, "passive reads write nothing"
+    assert result_signature(tmp_path, "helper") == before, "passive reads write nothing"
 
     assert [b for b in action_writers(queue, "root") if b["kind"] == "tool_handoff"] == []
     retired = load_task_result(tmp_path, "helper")["retired_tool_invocations"]["op-helper"]
@@ -157,8 +158,8 @@ def test_a_closed_receiver_whose_retirement_write_failed_keeps_a_witness_the_nex
                 ua.execute_physical_attempt(ua.AttemptRequest(model="m", provider="t", reservation_usd=.2),
                                             lambda: (_ for _ in ()).throw(RuntimeError("response unknown")))
     money = ua.read_usage_records(tmp_path, final_only=True)
-    real_update = model_wait.update_json_locked
-    monkeypatch.setattr(model_wait, "update_json_locked",
+    real_update = model_wait.put_handoffs
+    monkeypatch.setattr(model_wait, "put_handoffs",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk")))
     owner.close()  # a closed receiver on a live host; its retirement write fails
     witness = next(iter(_witnesses(tmp_path).values()))
@@ -168,7 +169,7 @@ def test_a_closed_receiver_whose_retirement_write_failed_keeps_a_witness_the_nex
     assert any(b["kind"] == "model_handoff" for b in conflicting_writers(queue, "root"))
     assert _witnesses(tmp_path), "a passive census discharges nothing"
 
-    monkeypatch.setattr(model_wait, "update_json_locked", real_update)
+    monkeypatch.setattr(model_wait, "put_handoffs", real_update)
     assert not any(b["kind"] == "model_handoff" for b in action_writers(queue, "root"))
     assert _witnesses(tmp_path) == {}, "discharged only by the writer that landed"
     assert owner.answer_consumer_id in load_task_result(tmp_path, "root")["retired_model_consumers"]
@@ -209,13 +210,13 @@ def test_independent_effects_survive_the_repair(tmp_path, monkeypatch):
 
 def test_confirmed_worker_death_whose_write_failed_retains_its_death_witness(tmp_path, monkeypatch):
     write_task_result(tmp_path, "root", "running", root_task_id="root")
-    import ouroboros.utils as utils
+    from ouroboros import task_store
 
-    real = utils.update_json_locked
-    monkeypatch.setattr(utils, "update_json_locked", lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk")))
+    real = task_store.patch_document  # the retirement's store write; the witness row's own write stays real
+    monkeypatch.setattr(task_store, "patch_document", lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk")))
     assert repair.retire_ended_owner(tmp_path, "root", "root", pid=99999, birth="b", attempt=1,
                                      producer="worker_death") is False
-    monkeypatch.setattr(utils, "update_json_locked", real)
+    monkeypatch.setattr(task_store, "patch_document", real)
     witness = next(iter(_witnesses(tmp_path).values()))
     assert witness["local_owner"] == {"pid": 99999, "process_birth": "b", "task_attempt": 1}
     assert witness["producer"] == "worker_death"
@@ -280,5 +281,5 @@ def test_a_malformed_neighbor_claim_does_not_erase_or_prevent_exact_retirement(t
     blockers = action_writers(queue, "root")
     row = load_task_result(tmp_path, "root")
     assert "op-root" in row.get("retired_tool_invocations", {})
-    assert row["launch_handoffs"] == {"malformed": "unreadable"}
+    assert row.get("launch_handoffs", {}) == {"malformed": "unreadable"}
     assert "tree_census_unreadable" in [b["kind"] for b in blockers], "the malformed independent claim stays held"

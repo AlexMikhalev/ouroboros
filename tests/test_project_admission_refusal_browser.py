@@ -395,7 +395,8 @@ def test_never_admitted_project_refusal_stays_an_origin_receipt(
                 refused_after = load_task_result(data_dir, seed["refused"], strict=True)
                 record("custody_duty", {"settled": settled, "live_sends": live, "late_legacy": late_legacy,
                                         "refused_after": refused_after})
-                assert settled == 1 and live == [f"project-completion:{LEGACY_AT_DUTY}"], (settled, live)
+                # Main debt settles only on the sender's strict receipt; this live send is lost.
+                assert settled == 0 and live == [f"project-completion:{LEGACY_AT_DUTY}"], (settled, live)
                 assert not refused_after.get("canonical_terminal_projection_ready")
                 assert not refused_after.get("canonical_terminal_projection")
                 published.append(LEGACY_AT_DUTY)

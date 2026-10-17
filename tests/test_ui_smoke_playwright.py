@@ -948,9 +948,9 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         }) + "\n",
         encoding="utf-8",
     )
-    task_results = data_dir / "task_results"
-    task_results.mkdir(parents=True, exist_ok=True)
-    (task_results / "named-act.json").write_text(json.dumps({
+    from tests._store_shared import seed_result  # the server reads its store, not later files
+
+    seed_result(data_dir, "named-act", {
         "_schema_version": 1,
         "task_id": "named-act",
         "status": "completed",
@@ -958,7 +958,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
         "cost_usd": 0.42,
         "cost_accounting_status": "available",
         "cost_final": True,
-    }) + "\n", encoding="utf-8")
+    })
     try:
         with sync_playwright() as pw:
             browser_type = getattr(pw, browser_engine)
@@ -2734,7 +2734,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
 
 @pytest.mark.ui_browser
 def test_ui_smoke_v639_skip_review_button(direct_server_with_data):
-    # C1: the owner-only "⚠️ Skip review" action is offered for the owner's OWN (external)
+    # C1: the owner-only "Skip review" action is offered for the owner's OWN (external)
     # skill and hash-verified official-hub payloads that still need review, and NEVER for
     # native/ClawHub/unverified marketplace payloads.
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
@@ -2890,15 +2890,11 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
     settings_path = data_dir / "settings.json"
-    evidence_dir = pathlib.Path(
-        os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(data_dir.parent))
-    )
+    evidence_dir = pathlib.Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(data_dir.parent)))
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     def saved_depth():
-        return json.loads(settings_path.read_text(encoding="utf-8")).get(
-            "OUROBOROS_MAX_SUBAGENT_DEPTH", "<absent>"
-        )
+        return json.loads(settings_path.read_text(encoding="utf-8")).get("OUROBOROS_MAX_SUBAGENT_DEPTH", "<absent>")
 
     try:
         with sync_playwright() as pw:
@@ -2908,20 +2904,16 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
                 def open_settings_advanced():
                     """Reload the whole app the way an owner would, then reopen the field."""
                     page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                    page.wait_for_selector('[data-nav-page="settings"]', timeout=30_000)
                     page.click('[data-nav-page="settings"]')
                     page.wait_for_selector("#s-subagent-depth", state="attached", timeout=30_000)
-                    # D-10: subagent depth bounds the AGENTS, so it moved out of
-                    # Advanced -> Runtime Limits into Agents -> Delegation.
+                    # D-10: depth bounds the agents, so it lives in Agents -> Delegation.
                     page.click('[data-settings-tab="agents"]')
                     depth = page.locator("#s-subagent-depth")
                     depth.wait_for(state="visible", timeout=30_000)
                     # Saving is blocked until the settings load succeeds; waiting on the real
                     # enablement avoids racing the first fetch.
-                    page.wait_for_function(
-                        "() => document.querySelector('#btn-save-settings')?.disabled === false",
-                        timeout=30_000,
-                    )
+                    page.wait_for_function("() => document.querySelector('#btn-save-settings')?.disabled === false",
+                                           timeout=30_000)
                     depth.scroll_into_view_if_needed()
                     return depth
 
@@ -2930,60 +2922,61 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
                     page.dispatch_event("#s-subagent-depth", "input")
                     page.dispatch_event("#s-subagent-depth", "change")
 
-                def save_and_wait():
-                    page.click("#btn-save-settings")
-                    page.wait_for_function(
-                        "() => (document.querySelector('#settings-status')?.textContent || '')"
-                        ".includes('Settings saved')",
-                        timeout=30_000,
-                    )
+                def shot(name):
+                    page.screenshot(path=str(evidence_dir / f"v679-depth-{name}.png"))
+
+                def save_and_wait(phrase="Settings saved"):
+                    with page.expect_response(lambda r: r.url.endswith("/api/settings")
+                                              and r.request.method == "POST", timeout=30_000) as answer:
+                        page.click("#btn-save-settings")
+                    assert bool(answer.value.json().get("no_changes")) is (phrase == "No changes detected")
+                    # This click showed "Saving…" before posting, so the status is its own.
+                    page.wait_for_function("p => document.querySelector('#settings-status')?.textContent"
+                                           ".startsWith(p)", arg=phrase, timeout=30_000)
+                    return answer.value.request.post_data_json["OUROBOROS_MAX_SUBAGENT_DEPTH"]
 
                 depth = open_settings_advanced()
                 # The control must admit 0 at all: a min of 1 would make it unreachable.
-                assert depth.get_attribute("min") == "0"
-                assert depth.get_attribute("max") == "10"
+                assert (depth.get_attribute("min"), depth.get_attribute("max")) == ("0", "10")
                 assert depth.is_enabled()
                 assert depth.input_value() == "3"  # unset -> visible fallback
-                page.screenshot(path=str(evidence_dir / "v679-depth-01-initial-unset.png"))
+                shot("01-initial-unset")
 
                 # 0 is a valid value for the control, not a validation error.
                 type_depth("0")
-                assert page.evaluate(
-                    "() => document.querySelector('#s-subagent-depth').validity.valid"
-                ) is True
-                assert page.evaluate(
-                    "() => document.querySelector('#s-subagent-depth').validationMessage"
-                ) == ""
-                page.screenshot(path=str(evidence_dir / "v679-depth-02-typed-zero.png"))
+                assert depth.evaluate("e => [e.validity.valid, e.validationMessage]") == [True, ""]
+                shot("02-typed-zero")
 
-                save_and_wait()
+                assert save_and_wait() == 0
                 assert page.locator("#s-subagent-depth").input_value() == "0"
                 assert saved_depth() == 0
-                page.screenshot(path=str(evidence_dir / "v679-depth-03-saved-zero.png"))
+                shot("03-saved-zero")
 
                 # The round trip is the point: a reload must not rewrite 0 back to 3.
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "0"
                 assert saved_depth() == 0
-                page.screenshot(path=str(evidence_dir / "v679-depth-04-reload-zero.png"))
+                shot("04-reload-zero")
 
                 # Neighbouring state: an ordinary positive value still round-trips.
                 type_depth("3")
-                save_and_wait()
+                assert save_and_wait() == 3
                 assert saved_depth() == 3
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "3"
-                page.screenshot(path=str(evidence_dir / "v679-depth-05-reload-three.png"))
+                shot("05-reload-three")
 
                 # Neighbouring state: empty is not a value — it falls back to 3 rather than
-                # persisting an unparsable setting.
+                # persisting an unparsable setting. That is the saved 3, so Save is a no-op.
                 type_depth("")
-                page.screenshot(path=str(evidence_dir / "v679-depth-06-empty-typed.png"))
-                save_and_wait()
+                shot("06-empty-typed")
+                before = settings_path.read_bytes()
+                assert save_and_wait("No changes detected") == 3
+                assert json.loads(settings_path.read_bytes()) == json.loads(before)
                 assert saved_depth() == 3
                 open_settings_advanced()
                 assert page.locator("#s-subagent-depth").input_value() == "3"
-                page.screenshot(path=str(evidence_dir / "v679-depth-07-reload-after-empty.png"))
+                shot("07-reload-after-empty")
             finally:
                 browser.close()
     except PlaywrightError as exc:
@@ -3038,11 +3031,9 @@ def test_ui_owner_context_mode_and_reviewer_row_save(direct_server_with_data):
                 assert toggle.get_attribute("data-context-mode") == "low"
                 page.screenshot(path=str(evidence_dir / "context-mode-low-before.png"))
 
+                toggle.locator(".chat-capsule-head").click()  # the capsule opens into its modes
                 toggle.locator('.chat-seg[data-mode="max"]').click()
-                page.wait_for_function(
-                    "() => document.querySelector('#chat-context-mode')?.dataset.contextMode === 'max'",
-                    timeout=30_000,
-                )
+                page.wait_for_selector('#chat-context-mode[data-context-mode="max"]', timeout=30_000)
                 assert page.locator(".confirm-dialog:not([hidden])").count() == 0
                 page.screenshot(path=str(evidence_dir / "context-mode-max-after.png"))
                 persisted = json.loads(settings_path.read_text(encoding="utf-8"))

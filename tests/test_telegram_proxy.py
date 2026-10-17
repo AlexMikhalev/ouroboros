@@ -319,7 +319,7 @@ def test_upgrade_keeps_token_grant_and_local_proxy(
     installed = native / "telegram"
     shutil.copytree(_ROOT, installed)
     manifest = (installed / "SKILL.md").read_text(encoding="utf-8")
-    manifest = manifest.replace("version: 1.2.11", "version: 1.2.10")
+    manifest = manifest.replace("version: 1.2.14", "version: 1.2.13")
     (installed / "SKILL.md").write_text(manifest, encoding="utf-8")
     (installed / ".seed-origin").write_text("seeded_from=test\n", encoding="utf-8")
     settings = {"TELEGRAM_BOT_TOKEN": _TOKEN, **({"TELEGRAM_PROXY": _PROXY} if owner_set_proxy else {})}
@@ -341,7 +341,7 @@ def test_upgrade_keeps_token_grant_and_local_proxy(
     assert _per_skill_version_resync(_ROOT.parent, native, log, drive_root=drive) == 1
     new = load_skill(installed, drive)
     grants = load_skill_grants(drive, "telegram")
-    assert new.manifest.version == "1.2.11" and new.content_hash != old.content_hash
+    assert new.manifest.version == "1.2.14" and new.content_hash != old.content_hash
     assert grants["content_hash"] == new.content_hash
     assert local_settings.read_bytes() == settings_before
     assert grants["granted_keys"] == ["TELEGRAM_BOT_TOKEN"]

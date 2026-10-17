@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import time
 import uuid
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_FIXTURE = REPO_ROOT / 'tests/fixtures/claudexor_o6_legacy'
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -83,13 +85,12 @@ def isolate():
     return root
 
 
-def owner_result(drive, task_id, **fields):
-    """A synthetic owner's durable result, read by the real retirement sweep."""
-    from ouroboros.utils import write_text_atomic
+def owner_result(drive, task_id, status, **fields):
+    """A synthetic owner's durable result, written through the production writer the real
+    retirement sweep reads (the current store; its first write publishes this fresh root)."""
+    from ouroboros.task_results import write_task_result
 
-    path = drive / 'task_results' / f'{task_id}.json'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(path, json.dumps({'_schema_version': 1, 'task_id': task_id, **fields}))
+    write_task_result(drive, task_id, status, **fields)
 
 
 def owner_context(drive, task_id):
@@ -172,9 +173,49 @@ def capacity(manager):
     return {'engine_version': pin.version, 'probe_launch': probe.get('launch'), 'memory': memory}
 
 
+def seed_legacy_fixture(daemon_dir):
+    """Copy sealed old-writer bytes; the smoke never implements a journal codec."""
+    fixture = json.loads((LEGACY_FIXTURE / 'fixture.json').read_text(encoding='utf-8'))
+    expected, entry = fixture['expected'], fixture['journal']
+    require(expected['runId'] != expected['jobId'], 'fixture_native_id_is_job_id')
+    data = (LEGACY_FIXTURE / entry['path']).read_bytes()
+    require(len(data) == entry['size_bytes'] and hashlib.sha256(data).hexdigest() == entry['sha256'],
+            'legacy_fixture_bytes_changed')
+    require(not (daemon_dir / 'engine.sqlite').exists() and not (daemon_dir / 'journal').exists(),
+            'legacy_fixture_requires_fresh_store')
+    target = daemon_dir / entry['path']
+    for directory in (daemon_dir, daemon_dir / 'journal', target.parent):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+    target.write_bytes(data)
+    target.chmod(0o600)
+    return fixture
+
+
+def retained_legacy_run(gateway, daemon_dir, fixture):
+    """Public native-ID read, distinct from the job-ID alias, plus preserved input."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    expected = fixture['expected']
+    summary = gateway.get_run(expected['runId']).get('summary') or {}
+    observed = {key: summary.get(key) for key in expected}
+    require(observed == expected, 'legacy_native_run_changed', observed=observed, expected=expected)
+    try:
+        gateway.get_run('run-o6-not-present')
+    except ClaudexorUnavailable as exc:
+        require(exc.status_code == 404, 'unknown_native_run_wrong_status', status=exc.status_code)
+    else:
+        raise SmokeFailure('unknown_native_run_found', 'An absent native run id returned a record.')
+    archived = daemon_dir / 'journal-legacy' / Path(fixture['journal']['path']).relative_to('journal')
+    require((daemon_dir / 'engine.sqlite').is_file(), 'legacy_import_not_published')
+    require(archived.is_file() and hashlib.sha256(archived.read_bytes()).hexdigest() == fixture['journal']['sha256'],
+            'legacy_source_not_preserved')
+    return observed
+
+
 def lifecycle(seconds):
     from ouroboros import delegate_custody as custody
-    from ouroboros.claudexor_daemon import ensure_owned_gateway, get_owned_daemon
+    from ouroboros.claudexor_daemon import ensure_owned_gateway, get_owned_daemon, owned_config_dir
     from ouroboros.claudexor_runtime import managed_runtime_root
     from ouroboros.config import DATA_DIR
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
@@ -184,6 +225,8 @@ def lifecycle(seconds):
     # The repository fetcher and the production installer verify the same pin.
     subprocess.run([sys.executable, str(REPO_ROOT / 'scripts/fetch_claudexor_runtime.py'),
                     '--output-dir', str(managed_runtime_root() / 'cache')], check=True)
+    daemon_dir = owned_config_dir() / 'daemon'
+    legacy = seed_legacy_fixture(daemon_dir)
     manager = get_owned_daemon()
     children, gateway = [], None
     try:
@@ -191,6 +234,7 @@ def lifecycle(seconds):
         require(manager._proc is not None, 'owned_child_not_started')
         children.append(manager._proc)
         facts = capacity(manager)
+        facts['legacy_native_run_after_import'] = retained_legacy_run(gateway, daemon_dir, legacy)
         first = owner_context(DATA_DIR, 'lifecycle-cancel-owner')
         a = start(first, 'fake-hang', seconds)
         require(a.project_owned and not a.project_persistent, 'fixture_project_not_owned')
@@ -214,6 +258,7 @@ def lifecycle(seconds):
         gateway = ensure_owned_gateway()
         require(manager._proc is not None and manager._proc.pid != victim.pid, 'host_did_not_respawn')
         children.append(manager._proc)
+        facts['legacy_native_run_after_restart'] = retained_legacy_run(gateway, daemon_dir, legacy)
         settle(second, gateway, b, seconds, 'interrupted')
         b2 = start(second, 'fake-implement', seconds, b.run_id)
         settle(second, gateway, b2, seconds, 'succeeded')
@@ -230,10 +275,8 @@ def lifecycle(seconds):
         try:
             gateway.start_run(request, idempotency_key=str(uuid.uuid4()))
         except ClaudexorUnavailable as exc:
-            # 3.22.0 resolves project scope before predecessor history; either
-            # addressed 404 proves the post-retirement continuation refused.
-            require(exc.status_code == 404 and exc.code in {
-                'project_not_registered', 'continuation_predecessor_unknown'},
+            # Project retirement is checked before predecessor history.
+            require(exc.status_code == 404 and exc.code == 'project_not_registered',
                     'unexpected_retirement_refusal', refusal_code=exc.code, status=exc.status_code)
             facts['retired_continuation_refusal'] = exc.code
         else:

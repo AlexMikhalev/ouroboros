@@ -311,8 +311,9 @@ def test_the_child_gets_a_dedicated_process_group(tmp_path, monkeypatch):
     assert {key for key in kwargs["env"] if not key.startswith(CONTAINMENT_ENV_PREFIX)} <= {
         "PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
         "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE", "PYTHONPATH",
-        "OUROBOROS_DATA_DIR", "OUROBOROS_REPO_DIR", "OUROBOROS_SETTINGS_PATH",
+        "OUROBOROS_DATA_DIR", "OUROBOROS_REPO_DIR", "OUROBOROS_SETTINGS_PATH", "OUROBOROS_PARENT_PID",
     }, kwargs["env"]
+    assert kwargs["env"]["OUROBOROS_PARENT_PID"] == str(os.getpid())
 
 
 def test_an_oversized_child_report_is_refused_and_the_child_killed(tmp_path, monkeypatch):

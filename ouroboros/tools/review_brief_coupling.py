@@ -5,14 +5,14 @@ episode) reads the repository with its own tools, so the commit gate asks it
 BOTH questions in one brief: ``## Part 1 — The change`` (the same preamble,
 calibration, anti-pattern guard, checklist, governance tiers, intent, history
 and staged change every packet seat is given) and ``## Part 2 — Coupling
-questions`` (the whole-repository reviewer's role frame, the eight coupling
+questions`` (the whole-repository reviewer's role frame, the coupling
 questions, the required-source manifest the seat is OWED, the repository index
 it navigates with, and the coupling history of this subject), closed by
 ``## Answer format`` — contract B (``triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT``).
 A ``coupling_only`` seat receives the same brief and is told to answer Part 2
 alone. The transport decides only how the seat reads what the brief does not
 carry: an ``api_chat`` row runs a bounded native inspection episode, an
-``agent_session`` row a delegated read-only session.
+``agent_session`` row a delegated session with its configured technical rights.
 
 The brief carries
 
@@ -26,13 +26,12 @@ The brief carries
 * the governance tiers from the ONE SSOT every review surface asks
   (``governance_context``): the rules this change activates inline, the map as
   navigation the reviewer reads on demand;
-* the staged change itself — inlined when the whole first send lands under the
-  seat's own bound, and otherwise stored as ONE exact durable source the reviewer
+* the staged change itself — inlined when the whole first send meets the
+  seat's layout hint, and otherwise stored as ONE exact durable source the reviewer
   pages by address.
 
-No size terminal lives here. The builder never refuses a diff for its size, and
-a brief a window cannot hold at all is the native executor's typed row refusal
-(``native_bound_below_first_send``), never a downgraded finding.
+No size terminal lives here. Native serialized size guides initial layout only;
+it never refuses the brief or predicts a provider overflow.
 """
 
 from __future__ import annotations
@@ -52,6 +51,7 @@ from ouroboros.tools.review_helpers import (
     build_goal_section,
     build_rebuttal_section,
     build_scope_section,
+    format_prompt_code_block,
     format_review_history_entry,
     load_checklist_section,
     review_history_with_obligations,
@@ -75,7 +75,7 @@ COUPLING_CHECKLIST_SECTION = "Coupling questions"
 SESSION_INLINE_DIFF_CEILING_CHARS = 400_000
 
 # Chars per estimated token — the `utils.estimate_tokens` heuristic inverted, so
-# the episode's char bound and the governance tiers' token budget meet on one
+# the initial layout hint and the governance tiers' token budget meet on one
 # scale (the same conversion the deep self-review row uses).
 _CHARS_PER_ESTIMATED_TOKEN = 4
 
@@ -99,15 +99,19 @@ class BriefIntent:
     object instead of parallel arguments a caller can silently mis-order.
     ``owner_words`` is the host-attested section of the owner's words that
     caused the work (``owner_words_text``); ``coupling_history`` is this
-    subject's prior ``per_question.coupling`` rounds.
+    subject's prior ``per_question.coupling`` rounds; ``preflight_execution`` the
+    wave's frozen test execution exhibit text (``preflight_receipts``) and
+    ``diff_pulse`` the subject's growth since its contribution base.
     """
 
     goal: str = ""
     scope: str = ""
     review_rebuttal: str = ""
-    review_history: Optional[list] = None
+    review_history: Optional[list | dict] = None
     coupling_history: Optional[list] = None
     owner_words: str = ""
+    preflight_execution: str = ""
+    diff_pulse: str = ""
 
 
 @dataclass(frozen=True)
@@ -159,20 +163,16 @@ class BriefInputs:
 
 
 # ---------------------------------------------------------------------------
-# The seat's bounds: what the first send must land under, and the window share
-# the governance tiers are taken against.
+# Initial layout: inline versus paged delivery and the governance tiers' share.
 # ---------------------------------------------------------------------------
 
 
 def first_send_bound(brief: BriefInputs) -> int:
-    """The seat's SEND bound in chars — the one resolver the episode applies.
+    """Initial layout hint in chars, never native dispatch authority.
 
-    ``review_native_transcript_bound`` derives it from the reviewer's window,
-    the seat's output reserve and the owner transcript ceiling; a route with no
-    evidenced window resolves the ceiling, which is the one bound that holds for
-    every route (a delegated harness included). The governance tiers take their
-    inline share against this same number, converted to tokens, so the brief's
-    rules and the brief's diff are sized by one fact.
+    ``review_native_transcript_bound`` derives it from the reviewer's window
+    and output reserve, using a sizing fallback for an unknown window. The
+    governance tiers take their inline share against the same hint.
     """
     from ouroboros.review_native_episode import review_native_transcript_bound
     from ouroboros.reviewer_window import window_scaled_reserves
@@ -188,13 +188,15 @@ def first_send_bound(brief: BriefInputs) -> int:
     return review_native_transcript_bound(brief.model, output_reserve=output_reserve, **binding)
 
 
-def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str) -> int:
+def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str,
+                      required_ref: Optional[Dict[str, Any]] = None) -> int:
     """The wire size of this seat's first send, measured the way it is priced.
 
     A native row is measured by the same builder the paid ledger reserves
-    against (``native_first_send_chars``: work order, message objects and the
-    inspection schemas that ride every call), so the fit decision and the money
-    admission cannot disagree. A route whose schemas cannot be projected here is
+    against (``native_first_send_chars``: work order, message objects with the
+    declared manifest reference ``required_ref``, and the inspection schemas that
+    ride every call). This canonical serialization is a layout measure, not
+    physical token usage. A route whose schemas cannot be projected here is
     measured as the brief plus this build's send overhead rather than left
     unmeasured.
     """
@@ -208,7 +210,8 @@ def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: st
         return native_first_send_chars(
             str(repo_dir), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
             slot_id=brief.slot_id, session_task=brief_text,
-            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id)
+            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id,
+            required_sources_ref=required_ref)
     except (OSError, ValueError, RuntimeError):
         return len(brief_text) + _NATIVE_SEND_OVERHEAD_ESTIMATE_CHARS
 
@@ -309,8 +312,8 @@ def _paged_diff_pointer(brief: BriefInputs, body: str, source: Dict[str, Any]) -
         )
     return (
         f"The COMPLETE {noun} is stored as one exact source instead of being "
-        "inlined here: the whole first send would not have fit this reviewer's "
-        f"window. It is complete and untruncated — {len(body):,} chars, "
+        "inlined here: the whole first send exceeds the initial inline sizing "
+        f"hint. It is complete and untruncated — {len(body):,} chars, "
         f"sha256 `{source.get('sha256', 'unavailable')}`.\n"
         f"{address}\n"
         "It is the complete change evidence: every added and removed line of this "
@@ -355,7 +358,7 @@ def _retrieval_slot(brief: BriefInputs, reason: str) -> str:
     subject = brief.managed_subject
     lead = (
         "(not inlined — retrieve the staged change in this repository root yourself, "
-        "with `git diff --cached` when your read-only mode permits commands and by "
+        "with `git diff --cached` when your access permits commands and by "
         f"reading the files when it does not. Host disclosure: {reason})"
     )
     if subject is not None:
@@ -458,8 +461,12 @@ def build_coupling_history_section(coupling_history: Optional[list], history_sec
             parts.append("Advisory findings:")
             for finding in advisory_findings:
                 parts.append(f"- {format_review_history_entry(finding)}")
-        if not critical_findings and not advisory_findings:
+        if entry.get("summary") or not critical_findings and not advisory_findings:
             parts.append(str(entry.get("summary") or "(no summary)"))
+        details = {key: value for key, value in entry.items()
+                   if key not in {"critical_findings", "advisory_findings", "summary"}}
+        if details:
+            parts.append(format_prompt_code_block(json.dumps(details, ensure_ascii=False, indent=2, default=str), "json"))
         rounds.append("\n".join(parts))
     section = (
         "### Prior coupling rounds (your previous Part-2 answers for this subject)\n\n"
@@ -527,11 +534,12 @@ def build_retrieving_brief(
 
         checklist_section = _load_checklist_section(layer)
     intent = brief.intent
-    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words)
+    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words,
+                                      intent.preflight_execution, intent.diff_pulse)
     scope_section = build_scope_section(intent.scope)
     rebuttal_section = build_rebuttal_section(intent.review_rebuttal)
     history_section = review_history_with_obligations(intent.review_history, drive_root=brief.drive_root,
-                                                      repo_root=repo_dir)
+                                                      repo_root=repo_dir, task_id=brief.task_id)
     coupling_history_section = build_coupling_history_section(intent.coupling_history, history_section)
 
     bound = first_send_bound(brief)
@@ -603,11 +611,10 @@ def build_retrieving_brief(
         delivery.update(diff_delivery="retrieved_by_reviewer", diff_reason=unavailable)
     else:
         diff_slot = _diff_slot(brief, header, body, "")
-        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0])
-        # The first-send size the inlined diff must stay under: a native episode
-        # must land BEFORE its landing notice (or the host would open the review
-        # by announcing that the window is nearly full); a delegated session has
-        # no host-enforced transcript and takes the conservative inline ceiling.
+        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0],
+                                     required_ref if required_rows is not None else None)
+        # Choose inline versus paged delivery using the initial layout hint;
+        # a delegated session keeps its own conservative inline ceiling.
         from ouroboros.review_native_episode import native_landing_at
 
         ceiling = SESSION_INLINE_DIFF_CEILING_CHARS if brief.delegated else native_landing_at(bound)
@@ -625,13 +632,13 @@ def build_retrieving_brief(
                 diff_slot = _diff_slot(brief, header, body, _paged_diff_pointer(brief, body, source))
                 delivery.update(diff_delivery="paged", diff_source=source)
             else:
-                # An unreachable store is disclosed, never a refusal: the diff
-                # stays inline and the episode's own bound decides the send.
+                # An unreachable store is disclosed; the complete diff stays inline.
                 delivery.update(diff_paging="unavailable",
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)
     if delivery.get("diff_delivery") == "paged":
-        delivery["first_send_chars"] = _first_send_chars(repo_dir, brief, task_text)
+        delivery["first_send_chars"] = _first_send_chars(
+            repo_dir, brief, task_text, required_ref if required_rows is not None else None)
 
     manifest: Dict[str, Any] = {
         "delivery": AGENTIC_RETRIEVAL_DELIVERY,

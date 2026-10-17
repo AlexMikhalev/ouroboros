@@ -15,7 +15,6 @@ import logging
 import os
 from hashlib import sha256
 
-from ouroboros.config import apply_settings_to_env, load_settings, save_settings
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import append_jsonl, run_cmd, utc_now_iso, write_text
 
@@ -194,14 +193,14 @@ def self_change_tool_entries() -> list:
                 "restart, after the running generation's readers have stopped."),
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string"},
-                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart."},
+                "adopt_commit": {"type": "string", "description": "Exact reviewed candidate commit SHA to adopt at this restart; it needs a full green test run of that commit on record (commit it with full_tests=true)."},
             }, "required": ["reason"]},
         }, _request_restart),
     ]
 
 
 def _set_tool_timeout(ctx: ToolContext, seconds: int) -> str:
-    """Persist timeout while pinning owner-only runtime mode to the live env."""
+    """Persist the tool timeout, one field under the settings lock, and apply it at once."""
     try:
         timeout_sec = int(seconds)
     except (TypeError, ValueError):
@@ -209,11 +208,19 @@ def _set_tool_timeout(ctx: ToolContext, seconds: int) -> str:
     if timeout_sec < 1:
         return "⚠️ TOOL_ARG_ERROR (set_tool_timeout): seconds must be >= 1"
 
-    settings = load_settings()
-    settings["OUROBOROS_TOOL_TIMEOUT_SEC"] = timeout_sec
-    settings["OUROBOROS_RUNTIME_MODE"] = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced")
-    save_settings(settings)
-    apply_settings_to_env(settings)
+    # Only this field is written: the runtime mode and every other saved value stay as they are on
+    # disk (an owner's pending next-boot mode included), so the agent cannot change its Access or
+    # lower a ratcheted mode here, and the process environment takes the field alone.
+    from ouroboros.gateway.owner_settings import (
+        _owner_update_settings,
+        fields_on_saved_document,
+        settings_document_mutation,
+    )
+
+    key = "OUROBOROS_TOOL_TIMEOUT_SEC"
+    with settings_document_mutation():
+        _owner_update_settings(fields_on_saved_document({key: timeout_sec}))
+        os.environ[key] = str(timeout_sec)  # under the same lock as the commit
     return f"OK: OUROBOROS_TOOL_TIMEOUT_SEC set to {timeout_sec}s and applied immediately."
 
 
@@ -629,9 +636,9 @@ def _consciousness_status_facts(ctx: ToolContext) -> str:
                                       "source": "owner settings, not the state file"}
     facts["notes"] = [
         "stored_next_wake_at is the last time the clock persisted and fires only while enabled; the running "
-        "clock keeps it no sooner than MIN after boot, and an event can pull it earlier.",
-        "Not in this read (held in the supervisor's memory): a pending early-wake reason, the last wake "
-        "outcome and error, failure backoff, the allowance window and a live wake task."]
+        "clock keeps it no sooner than MIN after boot, and no event moves it.",
+        "Not in this read (held in the supervisor's memory): the last wake outcome and error, failure "
+        "backoff, the allowance window and a live wake task."]
     return json.dumps(facts, ensure_ascii=False, indent=2)
 
 
@@ -820,6 +827,14 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
     from ouroboros.task_results import resolve_task_lineage
 
     action, answer, selector = request.get("action"), request.get("answer"), request.get("answer_sha256")
+    # Strict tool schemas make a model fill the field it did not choose with "": an empty
+    # selector beside an answer (or an empty answer beside a selector) names nothing.
+    if isinstance(selector, str) and not selector.strip() and answer is not None:
+        selector = None
+        request = {**request, "answer_sha256": None}
+    elif isinstance(answer, str) and not answer.strip() and isinstance(selector, str) and selector.strip():
+        answer = None
+        request = {**request, "answer": None}
     error = ""
     if action not in {"finish", "stop"}:
         error = "action must be finish or stop"
@@ -829,7 +844,7 @@ def stage_completion_request(ctx: ToolContext, request: dict, *, source: str = "
         error = "select exactly one of answer and answer_sha256"
     elif not reply_later and answer is not None and (not isinstance(answer, str) or (not allow_empty and not answer.strip())):
         error = "answer must be complete nonempty text"
-    elif selector is not None and (not isinstance(selector, str) or not selector):
+    elif selector is not None and (not isinstance(selector, str) or not selector.strip()):
         error = "answer_sha256 must name an offered answer"
     elif request.get("pending_review") not in {None, "wait", "finish"}:
         error = "pending_review must be wait or finish"

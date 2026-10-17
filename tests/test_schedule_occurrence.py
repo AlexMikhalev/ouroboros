@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import delete_result, unreadable_result
 
 
 @pytest.fixture
@@ -333,7 +334,7 @@ def test_dispatch_barrier_restore_and_settlement(q, monkeypatch):
     row = _rows(q)["s1"]
     assert "occurrence" not in row or row["occurrence"]["task_id"] != task["id"]
     assert row["last_task_id"] == task["id"] and row["next_run_at"] > "2026"
-    (q.root / "task_results" / f"{task['id']}.json").write_text("{", encoding="utf-8")
+    unreadable_result(monkeypatch, task["id"])
     assert occurrences.restore_allowed(task) is False  # unreadable is unknown, never revived
 
 
@@ -399,16 +400,16 @@ def test_recreated_cron_row_without_last_task_id_still_waits_for_live_root(q):
         q.queue.RUNNING.pop(task["id"], None)
 
 
-def test_an_unreadable_or_missing_receipt_holds_instead_of_replaying(q):
+def test_an_unreadable_or_missing_receipt_holds_instead_of_replaying(q, monkeypatch):
     _row(q, intent={"kind": "system_repo"}, cron=True)
     q.queue.check_scheduled_tasks()
     [task] = q.pending
     q.pending.clear()
-    receipt = q.root / "task_results" / f"{task['id']}.json"
-    receipt.write_text("{", encoding="utf-8")
+    unreadable = unreadable_result(monkeypatch, task["id"])
     q.queue.check_scheduled_tasks()
     assert q.pending == [] and _rows(q)["s1"]["hold"]["reason"] == "occurrence_result_unreadable"
-    receipt.unlink()
+    unreadable["on"] = False
+    delete_result(q.root, task['id'])
     q.queue.check_scheduled_tasks()
     assert q.pending == [] and _rows(q)["s1"]["hold"]["reason"] == "occurrence_evidence_missing"
 

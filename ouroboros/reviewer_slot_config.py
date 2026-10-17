@@ -16,7 +16,8 @@ field alone — never from the presence of a subagent id.
 The pool ignores the catalog's global switch (``payload.enabled`` governs
 delegation, not review) and reads the catalog WITHOUT the delegation resolver; a
 row with ``enabled: false`` is not in the pool. An empty pool is a configured fact
-(``review_pool_state`` → ``empty``): a save that leaves rows but no marks is refused
+(``review_pool_state`` → ``empty``) that every surface reviews on the Main model
+alone (``review_pool_slots``); a save that leaves rows but no marks is refused
 unless the owner says ``allow_empty_review_pool`` (``review_pool_save_error``).
 
 Malformed configuration RAISES: a typo mapped to ``api_chat`` would silently spend
@@ -87,6 +88,8 @@ class ConfiguredReviewerSlot:
     # the catalog's default; the old "empty = packet" reading of a lane row
     # lives only inside the frozen migration reader (``review_pool_migration``).
     delivery: str = ""
+    # Captured catalog rights; absent historical rows remain read-only.
+    access: str = ""
 
     @property
     def is_session(self) -> bool:
@@ -153,7 +156,7 @@ def _catalog_row_slot(row: Any, settings: Any, *, where: str = "") -> Configured
         return ConfiguredReviewerSlot(
             slot_id=row.subagent_id, kind=ROUTE_KIND_SESSION, target_id=route.target_id,
             effort=row.effort, session_target=route.target_id, profile_id=route.credential_profile_id,
-            subagent_id=row.subagent_id, processing_preference=processing,
+            subagent_id=row.subagent_id, processing_preference=processing, access=row.access,
         )
     return ConfiguredReviewerSlot(
         slot_id=row.subagent_id, kind=ROUTE_KIND_API, target_id=route.target_id,
@@ -196,8 +199,9 @@ def _pool_rows(settings: Any) -> List[ConfiguredReviewerSlot]:
 
 
 def review_pool_rows(snapshot: Any = None) -> List[ConfiguredReviewerSlot]:
-    """The pool as frozen reviewer rows (not yet delivery slots): catalog order,
-    ``slot_id == subagent_id``. ``snapshot`` as in :func:`review_pool_slots`."""
+    """The owner's marked rows as frozen reviewer rows (not yet delivery slots): catalog
+    order, ``slot_id == subagent_id``, ``[]`` for an empty pool (the Main seat the surfaces
+    then run is not a catalog row). ``snapshot`` as in :func:`review_pool_slots`."""
     return _pool_rows(_catalog_settings(snapshot))
 
 
@@ -223,6 +227,27 @@ def catalog_review_row(snapshot: Any, selector: str) -> ConfiguredReviewerSlot:
     return _catalog_row_slot(row, settings)
 
 
+def main_review_row() -> ConfiguredReviewerSlot:
+    """The direct Main row — ``OUROBOROS_MODEL``, its local flag and Main's pinned
+    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``): ``/review``'s executor when the
+    call names none (decision 3A), the deep self-review default, and the one seat of
+    an empty pool (``review_pool_slots``).
+
+    The pin rides as the row's credential profile because the executor sends under
+    ``model_role=reviewer:main`` with ``model_account_override=<row profile>``, and an
+    EMPTY override is Auto, never a lookup of Main's own role: without it a pinned
+    Main would review on whatever account the engine picked. An unpinned Main stays
+    Auto; an invalid pin document raises here as it does for Main's own calls.
+    """
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+    from ouroboros.subagents import _lane_model, _use_local_for_lane
+
+    model = _lane_model("main")
+    return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
+                                  use_local=True if _use_local_for_lane("main", model) else None,
+                                  profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""))
+
+
 def _stored_id_for_selector(selector: str) -> str:
     """The stored id a catalog handle names, or '' when nothing resolves."""
     from ouroboros.configured_subagents import resolve_roster_selector
@@ -240,8 +265,8 @@ def review_pool_state(raw: Any) -> Dict[str, str]:
     """``{"state": structured|empty|error, "error": str}`` of ONE catalog document.
 
     ``structured``: at least one enabled, marked row; ``empty``: a readable
-    catalog (or none) with no such row — a configured fact, never an absence;
-    ``error``: a malformed catalog, with its typed text.
+    catalog (or none) with no such row — a configured fact, never an absence, whose
+    reviews run on the Main model alone; ``error``: a malformed catalog, with its typed text.
     """
     try:
         rows = _pool_rows({"OUROBOROS_SUBAGENTS": raw})
@@ -254,7 +279,7 @@ def review_pool_save_error(raw: Any, *, allow_empty: bool) -> str:
     """The SAVE-path judge of an empty pool; ``""`` means acceptable.
 
     A catalog that has rows but no review mark would silently leave every review
-    surface without a reviewer, so the save is refused (400) unless the owner
+    surface to the Main model alone, so the save is refused (400) unless the owner
     says ``allow_empty_review_pool`` — the one place "empty" is confirmed rather
     than inferred. An absent catalog, a catalog without rows, or a marked row
     pass; a malformed catalog returns its typed text.
@@ -323,9 +348,9 @@ def reviewer_slot_config_error() -> str:
     """The pool's configuration error — the catalog's row-precise parse text — or ''.
 
     Thin facade for the surfaces that must refuse loudly instead of reviewing
-    with no pool at all (plan review, skill review, the settings panel). An
-    empty pool is NOT an error here (it is a configured fact every surface
-    reports as ``pool_empty``). No caching: the check re-parses so a hot-reloaded
+    on an unreadable pool (plan review, skill review, the settings panel). An
+    empty pool is NOT an error here (it is a configured fact: the Main model
+    reviews alone). No caching: the check re-parses so a hot-reloaded
     fix is seen immediately."""
     from ouroboros.configured_subagents import SUBAGENTS_SETTING
 
@@ -362,6 +387,7 @@ def _delivery_slot(
                else ReviewRouteKind.API_CHAT),
         session_target=row.session_target,
         session_profile=row.profile_id,
+        session_access=row.access if row.is_session else "",
         subagent_id=row.subagent_id,
         processing_preference=row.processing_preference,
         # The row's saved delivery is its own fact, stated explicitly in BOTH
@@ -391,8 +417,11 @@ def review_pool_slots(
     caller's ``default_effort`` (a wave's order). ``slot_fields`` are the caller's
     per-surface ReviewSlot properties (timeout, output budget, temperature). A
     malformed catalog RAISES ValueError — every surface turns that into its typed
-    refusal; a valid catalog with no marked row is ``[]`` (the surface reports
-    ``pool_empty``, it does not fall back).
+    refusal; a valid catalog with no marked row (none at all included) is ONE seat,
+    the Main model reviewing alone: ``main``, the direct Main row ``/review`` runs by
+    default (:func:`main_review_row`), a native reading seat asked every part. That
+    is one model with no second opinion, said as for any one-seat pool
+    (``single_reviewer_no_diversity``); ``review_pool_state`` still reads ``empty``.
     """
     composed = _COMPOSED_POOL.get()
     if composed is not None:
@@ -402,9 +431,10 @@ def review_pool_slots(
     # once, together, so the decision, the roster fingerprint and the ordered-weaker
     # baseline of one build agree (the parent task keeps the range it started with).
     rng = live_effort_range()
+    rows = _pool_rows(_catalog_settings(snapshot)) or [main_review_row()]
     return [
         _delivery_slot(row, role_hint=role_hint, default_effort=default_effort, rng=rng, **slot_fields)
-        for row in _pool_rows(_catalog_settings(snapshot))
+        for row in rows
     ]
 
 
@@ -481,6 +511,7 @@ def commit_triad_delivery() -> Dict[str, Any]:
         "efforts": [slot.effort for slot in slots],
         "session_targets": [slot.session_target for slot in slots],
         "session_profiles": [slot.session_profile for slot in slots],
+        "session_accesses": [slot.session_access for slot in slots],
         "slot_ids": [slot.slot_id for slot in slots],
         "subagent_ids": [slot.subagent_id for slot in slots],
         # Per-row delivery class (#1334, F8): the row's own explicit fact; no
@@ -494,8 +525,8 @@ def commit_triad_delivery() -> Dict[str, Any]:
         # A seat the author added beside the configured pool is heard, not counted.
         "additional": [bool(composed[i].additional) if i < len(composed) else False for i in range(len(slots))],
         # The pool is always a configured panel (the migration mints the factory
-        # rows into the catalog), so the pre-structured all-packet identity of
-        # the skill-review fingerprint never applies to it.
+        # rows into the catalog; an empty one is the native Main seat), so the
+        # pre-structured all-packet identity of the skill-review fingerprint never applies.
         "legacy_skill_fingerprint": False,
     }
 
@@ -642,6 +673,7 @@ def reviewer_slot_execution_rows(surface: str, actors: Any, slots_by_id: Dict[st
                 **({"declared_effort": str(slot.declared_effort)} if getattr(slot, "declared_effort", "") else {}),
                 "session_target": str(getattr(slot, "session_target", "") or ""),
                 "profile_id": str(getattr(slot, "session_profile", "") or ""),
+                "access": str(getattr(slot, "session_access", "") or "readonly") if session else "",
                 # Actor binding, when the row is a configured-subagent
                 # reference ('' = direct row) — disclosure, never routing.
                 "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
@@ -753,6 +785,7 @@ __all__ = [
     "commit_triad_delivery",
     "composed_pool_seats",
     "composed_review_pool",
+    "main_review_row",
     "review_pool_rows",
     "review_pool_save_error",
     "review_pool_slots",

@@ -19,6 +19,7 @@ from ouroboros.context_fit import ContextCore as _ContextCore
 from ouroboros.context_runtime_facts import snapshot_labelled
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
+from ouroboros.store import StoreError
 
 log = logging.getLogger("ouroboros.context")
 
@@ -48,7 +49,7 @@ def _historical_state(ctx, roots, task_id):
     for root in roots:
         try:
             row = load_task_result(root, task_id, strict=True) or {}
-        except (OSError, ValueError):
+        except (OSError, ValueError, StoreError):
             return {"version": 1, "task_id": task_id, "status": "unavailable",
                     "coverage": _HISTORICAL_COVERAGE, "anchors": [], "reason": "record_unavailable"}
         saved = (row.get("review_evidence") or {}).get(_HISTORICAL_INPUTS)
@@ -203,13 +204,6 @@ def historical_inputs_exhibit(ctx, drive_root=None, task_id="") -> dict:
     return result
 
 
-def historical_inputs_prompt_section(evidence) -> str:
-    exhibit = evidence.get(_HISTORICAL_INPUTS) if isinstance(evidence, dict) else None
-    return ("## Historical author inputs (evidence, not current instructions)\n" + _HISTORICAL_COVERAGE + "\n"
-            + json.dumps(exhibit or {"status": "unavailable", "reason": "not_retained"},
-                         ensure_ascii=False, indent=2) + "\n\n")
-
-
 def _task_requires_development_context(task: Dict[str, Any]) -> bool:
     """Return whether low mode should inline the engineering handbook.
 
@@ -301,9 +295,11 @@ def _capture_declared_context_core(
     canonical_root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or memory.drive_root)
     same_drive = canonical_root.resolve(strict=False) == memory.drive_root.resolve(strict=False)
     process_memory = memory if same_drive else Memory(drive_root=canonical_root, repo_dir=memory.repo_dir)
+    supplementary_messages: list = []
     parts = [
         "## Input source selection\n\n" + json.dumps(input_source_selection_receipt(task), ensure_ascii=False, sort_keys=True),
-        runtime_builder(env, task, ctx=ctx, captured_at=sources["captured_at"]),
+        runtime_builder(env, task, ctx=ctx, captured_at=sources["captured_at"],
+                        supplementary_messages_out=supplementary_messages),
     ]
     parts.extend(snapshot_labelled(section, sources["captured_at"]) for section in
                  process_memory.recent_activity_sections(str(task["id"]), own_drive=None if same_drive else memory))
@@ -329,4 +325,6 @@ def _capture_declared_context_core(
         docs_need_development=_task_requires_self_body_docs(task),
         reference_books=tuple(sources["books"]), reference_book_errors=tuple(sources["book_errors"]),
         compact_reference_docs=True,
+        dynamic_head_text=sources.get("design_nav", ""),
+        supplementary_messages_json=json.dumps(supplementary_messages, ensure_ascii=False, sort_keys=True),
     )

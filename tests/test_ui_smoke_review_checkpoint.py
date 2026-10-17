@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from tests._store_shared import seed_result
+
 pytest_plugins = ("tests.test_ui_smoke_playwright",)
 
 from tests.test_ui_smoke_playwright import _open_review_checkpoint
@@ -120,8 +122,6 @@ def test_ui_smoke_review_truth_is_visible_in_chat_and_logs(direct_server_with_da
         "task_id": "review-no-summary",
         "content": "Terminal review must survive without a task summary.",
     }) + "\n", encoding="utf-8")
-    task_results = data_dir / "task_results"
-    task_results.mkdir(parents=True, exist_ok=True)
     plan_state = {
         "schema_version": 2,
         "current_attempt": {"fingerprint": "f" * 64, "status": "open"},
@@ -155,7 +155,8 @@ def test_ui_smoke_review_truth_is_visible_in_chat_and_logs(direct_server_with_da
         }],
         "waves_omitted": 0,
     }
-    (task_results / "review-no-summary.json").write_text(json.dumps({
+    # The running server reads results from its store (#1733), never a file written after boot.
+    seed_result(data_dir, "review-no-summary", {
         "_schema_version": 1,
         "task_id": "review-no-summary",
         "status": "completed",
@@ -163,7 +164,7 @@ def test_ui_smoke_review_truth_is_visible_in_chat_and_logs(direct_server_with_da
         "outcome_axes": axes,
         "review_projection": projection,
         "plan_review_state": plan_state,
-    }) + "\n", encoding="utf-8")
+    })
 
     try:
         with sync_playwright() as pw:
@@ -268,10 +269,9 @@ def test_ui_smoke_action_only_author_finish_keeps_the_reviewer_fail(direct_serve
         "ts": "2026-09-26T10:00:00+00:00", "direction": "system", "type": "task_summary", "task_id": task_id,
         "chat_id": 1, "status": "completed", "text": "", "tool_calls": 0, "rounds": 1,
         "outcome_axes": axes, "review_projection": projection}) + "\n", encoding="utf-8")
-    (data_dir / "task_results").mkdir(parents=True, exist_ok=True)
-    (data_dir / "task_results" / f"{task_id}.json").write_text(json.dumps({
+    seed_result(data_dir, task_id, {
         "_schema_version": 1, "task_id": task_id, "status": "completed", "reason_code": "final_message",
-        "result": run.result, "outcome_axes": axes, "review_projection": projection}) + "\n", encoding="utf-8")
+        "result": run.result, "outcome_axes": axes, "review_projection": projection})
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)

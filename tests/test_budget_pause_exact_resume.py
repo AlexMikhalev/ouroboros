@@ -18,6 +18,7 @@ import pytest
 from tests._budget_pause_exact_helpers import (
     _install_queue, _loop_ctx, _parked, _pause, _running_row, _supervisor_ctx,
 )
+from tests.worker_pool_support import affirm_ready
 
 
 # --------------------------------------------------------------------------- supervisor: park
@@ -309,8 +310,8 @@ def test_grant_is_revoked_when_money_vanishes_before_dispatch(tmp_path, monkeypa
     assert task["_budget_pause_resume"]["grant_generation"] == 1
     monkeypatch.setattr(state, "budget_remaining", lambda _st, **_k: 0.0)
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(t)))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(t))))
     workers.assign_tasks()
     assert sent == []
     assert task.get("_budget_pause", {}).get("exact_continuation") is True
@@ -330,8 +331,8 @@ def test_granted_task_dispatches_with_original_started_at_and_paused_carrier(tmp
     task, row = _parked(tmp_path, monkeypatch, task_id="dispatch-1")
     assert queue.resume_budget_paused_task("dispatch-1")["ok"] is True
     sent = []
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t)))))
     workers.assign_tasks()
     assert [t["id"] for t in sent] == ["dispatch-1"]
     meta = workers.RUNNING["dispatch-1"]
@@ -632,16 +633,6 @@ def test_activity_rows_show_a_held_budget_row_as_paused_not_queued():
     assert "|| heldRow(t)" in source  # consulted by the pending-row pause predicate
 
 
-def test_runbook_does_not_promise_a_managed_outage_window_the_runtime_has_no_rail_for():
-    """F8: with no deadline and an unlimited absolute ceiling, a managed task's
-    transport-outage episode has NO window of its own — the 6h operation-window
-    fallback belongs to other operations. The runbook names the optional rails an
-    operator can set instead of promising a timeout that does not exist."""
-    source = _repo_file("devtools", "benchmarks", "continual_learning", "RUNBOOK.md")
-    assert "6h operation window from episode entry" not in source
-    assert "OUROBOROS_TASK_ABS_CEILING_SEC" in source and "idle reaper" in source
-
-
 # --------------------------------------------------------------------------- consumption publication holds
 
 def _granted_loop(tmp_path, monkeypatch, task_id):
@@ -738,12 +729,13 @@ def test_paused_row_survives_a_snapshot_with_an_invalid_timestamp_while_ordinary
     workers.PENDING.append({"id": "ts-ordinary", "type": "task", "chat_id": 0, "_attempt": 1, "text": "x"})
     queue.persist_queue_snapshot(reason="test")
     workers.PENDING[:] = []
-    snap = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())
+    alive = queue.QUEUE_SNAPSHOT_PATH.with_name("queue.alive")
+    snap = json.loads(alive.read_text(encoding="utf-8"))
     if stamp:
         snap["ts"] = stamp
     else:
         snap.pop("ts", None)
-    queue.QUEUE_SNAPSHOT_PATH.write_text(json.dumps(snap))
+    alive.write_text(json.dumps(snap), encoding="utf-8")
     assert queue.restore_pending_from_snapshot() == 1
     assert [task["id"] for task in workers.PENDING] == ["ts-paused"]
     assert workers.PENDING[0]["_budget_pause"]["exact_continuation"] is True  # retained, not woken

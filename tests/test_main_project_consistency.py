@@ -13,6 +13,7 @@ from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import queue, workers
 from tests.test_project_hold_recovery import resume_after_app_stop, worker
 from tests.test_swarm_host_admission import host  # noqa: F401
+from tests._store_shared import unreadable_result
 
 pytestmark = pytest.mark.serial
 
@@ -357,7 +358,7 @@ def test_host_producer_row_recovers_once_after_bindings_fault(host, monkeypatch,
     assert not sent and host.pending[0]["_project_admission_restore_hold"]
     assert host.pending[0]["_queue_seq"] > 0 and host.pending[0]["queued_at"]  # order survives the hold
     if veto == "unreadable":
-        (host.root / "task_results" / f"{tid}.json").write_text("{torn", encoding="utf-8")
+        unreadable_result(monkeypatch, tid)
     elif veto == "possible":
         write_task_result(host.root, tid, "scheduled", admitted_dispatch="possible")
     elif veto == "legacy":

@@ -18,6 +18,9 @@ from ouroboros.deep_self_review import deep_review_route, run_deep_self_review
 from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions
 from tests.test_deep_review_slot import _DEEP_SLOT_ID, _ScriptedLLM, _tool_call
+from tests._review_substrate_shared import user_text as _user_text
+
+pytestmark = pytest.mark.usefixtures("provider_catalog_offline")
 
 _BIBLE = "# BIBLE\n\n## Principle 0: Agency\n\nOuroboros is a becoming personality.\n" * 3
 _REPORT = "Read: BIBLE.md in full; memory inline.\n\n# Deep self-review\n\nCRITICAL: loop.py finalization race.\n"
@@ -29,7 +32,9 @@ def _bare_row(target: str = "openai/fake-deep", **fields) -> ConfiguredReviewerS
 
 
 @pytest.fixture()
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    from ouroboros.tools import review_helpers
+
     root = tmp_path / "repo"
     (root / "docs").mkdir(parents=True)
     (root / "BIBLE.md").write_text(_BIBLE, encoding="utf-8")
@@ -38,6 +43,7 @@ def repo(tmp_path):
     (root / "docs" / "CHECKLISTS.md").write_text("# Checks\n\n## Change Review Checklist\n\ny\n", encoding="utf-8")
     (root / "ouroboros").mkdir()
     (root / "ouroboros" / "loop.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(review_helpers, "REPO_ROOT", root)
     return root
 
 
@@ -74,7 +80,7 @@ def test_a_bare_api_row_runs_the_native_inspection_episode(repo, drive, monkeypa
     assert "execution_status" not in usage
     # The first send is the retrieving task (tools to read WITH), never a pack.
     first = llm.calls[0]
-    task = next(m["content"] for m in first["messages"] if m["role"] == "user")
+    task = _user_text(next(m["content"] for m in first["messages"] if m["role"] == "user"))
     assert "delivered IN FULL below" in task and "read_file" in task
     assert "## FILE: drive/memory/identity.md\nI am Ouroboros.\n" in task
     # The map arrives as navigation with the read instruction, never whole.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import pathlib
 from types import SimpleNamespace
 
+import pytest
+
 import ouroboros.skill_lifecycle_queue as lifecycle_queue
 from ouroboros.skill_loader import (
     SkillReviewState,
@@ -237,6 +239,23 @@ def test_review_result_message_allows_warnings_status(monkeypatch):
     assert _review_result_message(outcome).startswith(
         "Review executable with findings (warnings):"
     )
+
+
+@pytest.mark.parametrize("access", ["advanced", "cyber_pro"], indirect=True)
+@pytest.mark.parametrize("status", ["pending", "blockers"])
+def test_review_result_message_keeps_cyber_permission_apart_from_the_critic_outcome(monkeypatch, access, status):
+    """The chat summary never calls a pending or blocked review "executable" because Cyber Pro may run it."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    outcome = SkillReviewOutcome(skill_name="alpha", status=status,
+                                 findings=[{"item": "bug_hunting", "verdict": "FAIL", "reason": "unsafe path"}])
+    message = _review_result_message(outcome)
+    if access == "cyber_pro":
+        expected = {"pending": "Review pending (pending)", "blockers": "Review found blockers (blockers)"}[status]
+        assert message.startswith(expected) and "Review executable" not in message
+        assert message.endswith(" | Cyber Pro: execution is Ouroboros's decision, not a review result")
+    else:
+        assert message.startswith({"pending": "Review pending", "blockers": "Review blocked: blocker findings"}[status])
+        assert "Cyber Pro" not in message
 
 
 def test_review_result_message_includes_auto_granted_keys(monkeypatch):
@@ -987,10 +1006,10 @@ def test_cancel_and_timeout_each_write_one_idempotent_terminal_row(tmp_path):
     from ouroboros.utils import atomic_write_json
     atomic_write_json(review_job_state_path(drive_root, "beta"), beta_job)
     _mark_review_job_timeout(
-        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline",
+        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline", job_id="timeout-job",
     )
     _mark_review_job_timeout(
-        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline",
+        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline", job_id="timeout-job",
     )
 
     for skill, expected_status, expected_job in (
@@ -1117,11 +1136,25 @@ def test_leftover_pending_job_file_does_not_block_a_new_review(tmp_path, monkeyp
     assert events == ["skill_review_started", "skill_review_completed"]
 
 
-def test_duplicate_review_points_at_the_live_job_and_persists_nothing(tmp_path, monkeypatch):
+@pytest.fixture
+def access(request):
+    from ouroboros import config
+
+    config.reset_runtime_mode_baseline_for_tests()
+    config.initialize_runtime_mode_baseline(request.param)
+    yield request.param
+    config.reset_runtime_mode_baseline_for_tests()
+
+
+@pytest.mark.parametrize("access", ["advanced", "cyber_pro"], indirect=True)
+@pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
+@pytest.mark.parametrize("prior", ["missing", "clean", "author", "stale"])
+def test_duplicate_review_points_at_the_live_job_and_persists_nothing(tmp_path, monkeypatch, access, enforcement, prior):
     """A second request for the same skill and bytes answers with the live job.
 
     It is a pointer, not an attempt: the job file still belongs to the live
-    review and no pending row, event or chat summary is written for it.
+    review and no pending row, event or chat summary is written for it. Its
+    executable fact is the current payload's, independent of this pending invocation.
     """
     import json
     import threading
@@ -1131,6 +1164,22 @@ def test_duplicate_review_points_at_the_live_job_and_persists_nothing(tmp_path, 
     drive_root, repo_dir, skills_root, outcome = _passing_review_fixture(tmp_path, monkeypatch)
     started, release = threading.Event(), threading.Event()
     first = {}
+
+    from ouroboros.skill_loader import SkillReviewState, save_review_state
+    from ouroboros.review_records import build_author_disposition
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    current_hash = outcome("alpha").content_hash
+    if prior != "missing":
+        author = build_author_disposition(
+            disposition="accepted", rationale="Current bytes were checked; retained critic evidence stands.",
+            subject_hash=current_hash, reviewer_signal="blockers", enforcement="advisory",
+        ) if prior == "author" else None
+        save_review_state(drive_root, "alpha", SkillReviewState(
+            status="blockers" if prior == "author" else "clean",
+            content_hash=current_hash if prior == "clean" else "older-payload",
+            author_disposition=author,
+        ))
 
     def slow_review(_ctx, skill_name):
         started.set()
@@ -1165,7 +1214,10 @@ def test_duplicate_review_points_at_the_live_job_and_persists_nothing(tmp_path, 
     assert "error" not in first and first["payload"]["status"] == "clean"
     assert live["status"] == "running"
     assert duplicate["status"] == "pending"
-    assert duplicate["executable_review"] is False
+    executable = access == "cyber_pro" or prior == "clean" or (prior == "author" and enforcement == "advisory")
+    assert duplicate["executable_review"] is duplicate["review_gate"]["executable_review"] is executable
+    if access != "cyber_pro" and prior == "author" and enforcement == "advisory":
+        assert duplicate["review_gate"]["blocking_reason"] == "author_accepted_advisory"
     assert duplicate["job_id"] == live["job_id"]
     assert duplicate["job_status"] == "running"
     assert "review already running" in duplicate["error"]

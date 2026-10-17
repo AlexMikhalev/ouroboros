@@ -25,7 +25,7 @@ _LOCK = threading.Lock()
 
 def notice_fields(current: dict, root: Any, task_id: str, episode_id: str, reason: str) -> dict:
     """Called inside the result writer, only for a newly confirmed pause episode."""
-    if not episode_id or reason not in {"budget", "owner"}:
+    if not episode_id or reason not in {"budget", "owner", "authority"}:
         return {}
     identity = f"pause:{task_id}:{episode_id}"
     pending = dict(current.get("pause_notices") or {})
@@ -35,8 +35,8 @@ def notice_fields(current: dict, root: Any, task_id: str, episode_id: str, reaso
 
 def _acknowledge(root: pathlib.Path, task_id: str, identity: str, notice: dict) -> None:
     """Drop one recorded notice from the task; the last one retires its membership."""
-    from ouroboros.obligations import update_result
-    from ouroboros.task_results import require_writable_task_result_schema, task_result_path
+    from ouroboros.task_results import require_writable_task_result_schema
+    from ouroboros.task_store import patch_document
 
     def update(current: dict):
         require_writable_task_result_schema(current)
@@ -49,23 +49,7 @@ def _acknowledge(root: pathlib.Path, task_id: str, identity: str, notice: dict) 
             updated.pop("pause_notices")
         return updated
 
-    update_result(task_result_path(root, task_id), update, strict_existing_dict=True)
-
-
-def _retire_if_nothing_owed(root: pathlib.Path, task_id: str) -> None:
-    """A crash between the membership and the result write leaves an extra
-    candidate. Retire it under the result lock, so a pause confirmed meanwhile
-    (membership published, result not replaced yet) keeps its membership."""
-    from ouroboros import obligations
-    from ouroboros.task_results import task_result_path
-    from ouroboros.utils import update_json_locked
-
-    def check(current: dict):
-        if not (current or {}).get("pause_notices"):
-            obligations.remove(root, "pause_notices", task_id)
-        return None  # the result itself is never rewritten here
-
-    update_json_locked(task_result_path(root, task_id, create=False), check)
+    patch_document(root, task_id, update)
 
 
 def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
@@ -94,8 +78,7 @@ def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
             try:
                 result = load_task_result(root, task_id, strict=True)
                 if not result or not result.get("pause_notices"):
-                    _retire_if_nothing_owed(root, task_id)
-                    continue
+                    continue  # the membership is the document's own flag: nothing owed, nothing to retire
                 event = address_task_event({task_id: {"task": result}}, root, {"task_id": task_id})
                 chat_id = message_bus.notification_chat_route(event.get("chat_id"))
                 if chat_id is None:
@@ -109,9 +92,12 @@ def reconcile_pause_notices(drive_root: Any, *, stop_requested=None) -> None:
                     # Read per notice: a failed send whose row DID land (a live
                     # transport error after the append) is seen on the next pass.
                     if receipt not in obligations.members(root, "pause_notice_receipts"):
-                        cause = "the owner's Pause" if notice.get("reason") == "owner" else "its budget limit"
-                        text = (f"The task paused because of {cause}. "
-                                "Its work is retained. Use Resume on the task when available.")
+                        cause = {"owner": "the owner's Pause", "authority": (
+                            "a technical fault: its billing or control authority could not be read, which says "
+                            "nothing about money left")}.get(str(notice.get("reason")), "its budget limit")
+                        resume = ("Fix the cause, then use Resume on the task when available"
+                                  if notice.get("reason") == "authority" else "Use Resume on the task when available")
+                        text = f"The task paused because of {cause}. Its work is retained. {resume}."
                         message_bus.send_with_budget(
                             chat_id, text, task_id=task_id, role="system", system_type="task_pause_notice",
                             narration=False, require_write=True, ensure_record_boundary=True,

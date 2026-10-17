@@ -15,6 +15,7 @@ in ``events.jsonl`` written after the sender returns.
 from __future__ import annotations
 
 import copy
+import functools
 import contextvars
 import logging
 import pathlib
@@ -145,3 +146,69 @@ def emit_finalization_timing(event, drive_root):
         })
     except Exception:
         logging.getLogger(__name__).debug("Finalization timing could not be recorded", exc_info=True)
+
+
+def emit_post_answer_timing(usage, drive_logs, task, delivery_id):
+    """One best-effort row for the packaging that ran AFTER the answer left (owner 1A(1)).
+
+    The live copy's snapshot was frozen at its enqueue, so the sender's row cannot
+    hold the later ``result_store`` span. This correlated row (same task and
+    delivery id, ``basis: post_answer_store``) carries every span the worker
+    observed up to the store's end; readers keep the two rows apart by basis.
+    """
+    timing = (usage or {}).get("_finalization_timing")
+    phases = (timing or {}).get("phases") if isinstance(timing, dict) else None
+    if drive_logs is None or not isinstance(phases, dict) or "result_store" not in phases:
+        return
+    try:
+        from ouroboros.utils import append_jsonl
+
+        store = phases["result_store"]
+        append_jsonl(pathlib.Path(drive_logs) / "events.jsonl", {
+            **{key: value for key, value in timing.items() if not key.startswith("_")},
+            "type": "task_finalization_timing", "ts": store.get("finished_at") or utc_now_iso(),
+            "task_id": task.get("id"), "task_attempt": task.get("_attempt"),
+            "delivery_id": delivery_id, "basis": "post_answer_store",
+            "total_sec": store.get("finished_sec"),
+        })
+    except Exception:
+        logging.getLogger(__name__).debug("Post-answer finalization timing could not be recorded", exc_info=True)
+
+
+_FINALIZATION_CHILDREN = contextvars.ContextVar("finalization_children", default=None)
+
+
+@contextmanager
+def finalization_child_scope():
+    """One child projection per root during a synchronous finalization pass.
+
+    End before model waits or later finalization passes: children may advance.
+    Nested reducers reuse the pass, with artifact-materialization modes separate.
+    """
+    if _FINALIZATION_CHILDREN.get() is not None:
+        yield
+        return
+    token = _FINALIZATION_CHILDREN.set({})
+    try:
+        yield
+    finally:
+        _FINALIZATION_CHILDREN.reset(token)
+
+
+def cached_finalization_children(function):
+    @functools.wraps(function)
+    def children(drive_root, **kwargs):
+        cache = _FINALIZATION_CHILDREN.get()
+        if cache is None:
+            return function(drive_root, **kwargs)
+        parent, root = (str(kwargs.get(key) or "").strip() for key in ("parent_task_id", "root_task_id"))
+        materialize = kwargs.get("materialize_artifacts", True)
+        key = (str(pathlib.Path(drive_root).resolve()), parent, root, materialize)
+        if key not in cache:
+            cache[key] = function(drive_root, parent_task_id=parent, root_task_id=root,
+                                  scope="subtree", materialize_artifacts=materialize)
+        direct = str(kwargs.get("scope") or "subtree").strip().lower() == "direct"
+        excluded = str(kwargs.get("exclude_task_id") or "").strip()
+        return copy.deepcopy([row for row in cache[key] if row.get("task_id") != excluded
+                              and (not direct or bool(parent) and row.get("parent_task_id") == parent)])
+    return children

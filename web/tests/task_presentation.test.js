@@ -86,7 +86,7 @@ test('typed terminal status drives an error phase on live and replay cards', () 
     assert.equal(taskDoneIsTerminal(failed), true);
     assert.match(
         chatSource,
-        /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(record\)\);/,
+        /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(liveCardRecords\.get\(taskId\)\)\);/,
     );
     assert.match(chatSource, /appendTaskSummaryToLiveCard\(msg\) \|\| changed;/);
 });
@@ -117,7 +117,7 @@ test('interrupted task_done remains retryable and cannot finish a root card', ()
         phase: 'working', headline: 'Working',
     });
     assert.match(chatSource, /if \(eventType === 'task_done' && summary\.terminal\)/);
-    assert.match(chatSource, /if \(!taskDoneIsTerminal\(terminalRecord\)\) continue;/);
+    assert.match(chatSource, /if \(!taskDoneIsTerminal\(terminalRecord\)\) return;/);
     assert.equal(taskDoneIsTerminal({
         status: 'completed',
         root_phase_checkpoint: { post_task_synthesis: 'running' },
@@ -377,9 +377,10 @@ test('history replay keeps open summaries live and terminal fallbacks factual', 
         dataset: { phase: 'error' },
     } }), 'error');
     assert.equal(replayTerminalPhase({}), 'done');
+    // One replay-conclusion site finishes a child's and a root's card alike (A5 fold).
     assert.equal(
-        [...chatSource.matchAll(/finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(record\)\);/g)].length,
-        2,
+        [...chatSource.matchAll(/finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(liveCardRecords\.get\(taskId\)\)\);/g)].length,
+        1,
     );
     assert.doesNotMatch(
         chatSource,

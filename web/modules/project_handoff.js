@@ -3,6 +3,39 @@ import { projectReference } from './project_reference.js';
 import { activeModelWaits, mergeModelWaits } from './model_wait.js';
 import { isTerminalTaskDetail } from './log_events.js';
 import { censusTaskPhase, paintTaskPhase } from './task_phase_chip.js';
+import { formatMsgTime, selectionInside } from './chat_activity.js';
+
+// A press that travelled farther than this is a drag, even when it selected nothing.
+const PRESS_SLOP = 6;
+const CONTROL = 'a[href], button, input, select, textarea, summary, label, [contenteditable="true"], [role="button"], [tabindex]';
+const PATH = ['pointermove', 'pointerup', 'pointercancel'];
+
+// An entry's free area: the entry itself, or a part of it that is neither a control nor text.
+function isFreeArea(target, entry) {
+    const control = target?.closest?.(CONTROL);
+    if (control && control !== entry && entry.contains(control)) return false;
+    return target === entry || ![...(target?.childNodes || [])].some(node => node.nodeType === 3 && node.nodeValue.trim());
+}
+
+/**
+ * Whether a pointer click lands on an entry's free area, the one place that stands in for
+ * its Project reference (DESIGN "Project work entries"). Text (title, chips, time) stays
+ * reading — selectable, and a double click selects a word — and a control keeps its own
+ * press. A drag, a selection in the entry that this press made or changed, a repeated or
+ * modified click never navigates; a repeat cannot undo the first click, so only the first
+ * one counts. `press` is the pointerdown, armed only on free area: where, the farthest its
+ * pointer has since travelled from there, and the selection it found.
+ */
+export function isFreePress(event, entry, press, selection) {
+    const target = event?.target;
+    if (!entry || !target || !press || press.entry !== entry || event.defaultPrevented || event.button !== 0
+        || event.detail !== 1 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    if (!isFreeArea(target, entry)) return false;
+    // The farthest point decides, not where the pointer came back to; an unmeasured path is no press.
+    if (!(Math.max(press.travel, Math.hypot(event.clientX - press.x, event.clientY - press.y)) <= PRESS_SLOP)) return false;
+    // A click inside an older selection keeps it; only a selection this press made is the reader's.
+    return !selectionInside(entry, selection) || String(selection) === press.selected;
+}
 
 // The gateway's typed receipt word (ouroboros/project_handoff.py RECEIPT_STATES).
 // The binding is committed under every word; only these two prove that the Main
@@ -34,15 +67,60 @@ export function handoffPhase(activity, detail, connected = true) {
 // evicted anchor hands over instead of dropping the transfer from the feed.
 // A creation entry retains its own identity and subject. Matching transfers
 // fold it visually; they never turn creation into a transfer or lend it status.
-export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
+export function createProjectHandoffs({ feed, fetchDetail, mutate, attachCopy }) {
     const rows = new Map();  // Converted task, transfer receipt, or creation entry.
     let connected = true, destroyed = false, complete = false;
     let activities = new Map();
     const inFeed = node => feed.contains(node);
+    // One listener pair on the feed serves every entry, so a remount or an evicted
+    // node leaves nothing behind; the press goes to the reference the entry holds NOW.
+    // Only a pointer pressed on free area arms it. Until that pointer lifts, the document
+    // follows it wherever it goes and keeps one number, the farthest it got; its cancel,
+    // a second pointer or destroy disarms the press.
+    let press = null, tracing = false;
+    const entryOf = target => {
+        const entry = target?.closest?.('.project-handoff');
+        return entry && inFeed(entry) ? entry : null;
+    };
+    const onPath = event => {
+        if (!press || event.pointerId !== press.id) return;
+        if (event.type === 'pointercancel') press = null;
+        else press.travel = Math.max(press.travel, Math.hypot(event.clientX - press.x, event.clientY - press.y));
+        if (event.type !== 'pointermove') trace(false);
+    };
+    function trace(on) {
+        if (tracing === on) return;
+        tracing = on;
+        for (const type of PATH) feed.ownerDocument[on ? 'addEventListener' : 'removeEventListener'](type, onPath, true);
+    }
+    const onPointerDown = event => {
+        const entry = tracing && event.pointerId !== press.id ? null : entryOf(event.target);
+        press = entry && event.button === 0 && isFreeArea(event.target, entry) ? { entry, id: event.pointerId,
+            x: event.clientX, y: event.clientY, travel: 0, selected: String(globalThis.getSelection?.() || '') } : null;
+        trace(Boolean(press));
+    };
+    const onClick = event => {
+        const entry = entryOf(event.target), start = press;
+        press = null;
+        trace(false);
+        if (!destroyed && isFreePress(event, entry, start, globalThis.getSelection?.())) {
+            entry.querySelector('[data-intent="open-project"]')?.click();
+        }
+    };
+    feed.addEventListener('pointerdown', onPointerDown);
+    feed.addEventListener('click', onClick);
     const current = row => !destroyed && inFeed(row.node) && rows.get(row.key) === row;
     const visibleAnchor = id => [...rows.values()].find(row => row.id === id && inFeed(row.node));
     const matching = (taskId, projectId) => [...rows.values()].find(row =>
         row.projectId === projectId && row.subjects.has(taskId) && inFeed(row.node));
+    function stampTime(row, ts) {
+        const time = formatMsgTime(ts);
+        if (!time) return;
+        row.ts = ts;
+        row.time.textContent = time.short;
+        row.time.title = time.full;
+        row.time.hidden = false;
+    }
     function paint(row) {
         const activity = activities.get(row.taskId);
         // Keep already observed result facts when connectivity or a partial
@@ -70,6 +148,11 @@ export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
         shadow.node.hidden = true;
         under.shadows.push(shadow, ...shadow.shadows.splice(0));
         for (const taskId of shadow.subjects) under.subjects.add(taskId);
+        // The receipt owns the transfer time. Conversion supplies no invented
+        // date while its durable row is still in flight; ordering stays intact.
+        if (shadow.kind === 'receipt') for (const row of rows.values()) {
+            if (row.id === shadow.id && row.kind === 'card') stampTime(row, shadow.ts);
+        }
         if (shadow.kind === 'receipt' && under.node.dataset.receipt) {
             delete under.node.dataset.receipt;
             under.node.classList.remove('project-handoff--unsaved');
@@ -157,18 +240,17 @@ export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
             if (current(row) && row.taskId !== taskId) resolve(row);
         });
     }
-    function mount(node, { taskId, projectId, projectName, title, handoffId, kind = 'receipt', receipt = '' }) {
+    function mount(node, { taskId, projectId, projectName, title, handoffId, kind = 'receipt', receipt = '', ts = '' }) {
         if (!taskId || !projectId || destroyed) return node;
         const id = kind === 'started' ? `started:${projectId}` : handoffId || `legacy:${JSON.stringify([taskId, projectId])}`;
         sweep();
         const anchor = visibleAnchor(id);
-        if (anchor && anchor.node === node) { anchor.subjects.add(taskId); return node; }
+        if (anchor && anchor.node === node) { anchor.subjects.add(taskId); stampTime(anchor, ts); return node; }
         node.dataset.projectId = projectId;
         node.dataset.taskId = taskId;
         if (kind !== 'started') node.dataset.handoffId = id;
         node.dataset.systemType = kind === 'started' ? 'project_started' : 'project_handoff';
         node.classList.add('project-handoff');
-        const body = node.querySelector('.message') || node;
         const line = document.createElement('div');
         line.className = 'project-handoff-heading';
         const status = document.createElement('span');
@@ -182,7 +264,15 @@ export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
         const phases = document.createElement('div');
         phases.className = 'project-handoff-phase';
         phases.append(status, secondary);
-        line.append(phases, name);
+        line.append(name, phases);
+        const reference = projectReference({ id: projectId, name: projectName }, { layout: 'inline', taskId });
+        // The destination row: the reference fills it beside the recorded time and Copy.
+        const footer = document.createElement('div');
+        footer.className = 'project-handoff-footer';
+        const time = document.createElement('div');
+        time.className = 'msg-time';
+        time.hidden = true;
+        footer.append(reference, time);
         // A converted card whose receipt is not durable is an honest live chip,
         // never a claim that Main history holds this transfer (it will not
         // survive a reload as an anchor; the binding and the pointer do).
@@ -190,9 +280,14 @@ export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
             node.dataset.receipt = receipt;
             node.classList.add('project-handoff--unsaved');
         }
-        body.replaceChildren(line, projectReference({ id: projectId, name: projectName }, { layout: 'inline', taskId }));
+        // One composition for conversion, creation and replay, independent of
+        // the old task-card or message shell. Copy keeps the shared chat control.
+        node.replaceChildren(line, footer);
+        const copy = attachCopy?.(node, `${name.textContent}\n${reference.querySelector('.chat-live-project-name').textContent}`);
+        if (copy) footer.append(copy);
         const row = { key: kind === 'card' ? `card:${taskId}` : id, id, node, status, secondary, kind, taskId, projectId,
-            subjects: new Set([taskId]), followed: new Set([taskId]), shadows: [], detail: null, pending: false, checked: false, epoch: 0 };
+            time, ts: '', subjects: new Set([taskId]), followed: new Set([taskId]), shadows: [], detail: null, pending: false, checked: false, epoch: 0 };
+        stampTime(row, ts || (kind === 'card' ? anchor?.ts : ''));
         if (kind === 'receipt' && anchor) {
             // Duplicate delivery is not evidence that a differently named
             // execution supersedes its subject: one receipt, the rest shadowed.
@@ -246,6 +341,14 @@ export function createProjectHandoffs({ feed, fetchDetail, mutate }) {
             }
             if (rows.size) mutate(() => { for (const row of rows.values()) paint(row); });
         },
-        destroy() { destroyed = true; rows.clear(); activities.clear(); },
+        destroy() {
+            destroyed = true;
+            press = null;
+            trace(false);
+            feed.removeEventListener('pointerdown', onPointerDown);
+            feed.removeEventListener('click', onClick);
+            rows.clear();
+            activities.clear();
+        },
     };
 }

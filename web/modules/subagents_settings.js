@@ -110,7 +110,7 @@ function rowParseError(row, index) {
     if (row.route.credential_profile_id != null && typeof row.route.credential_profile_id !== 'string') return `${at} account pin must be a string`;
     const routeKind = row.route.kind.trim().toLowerCase();
     if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(routeKind)) return `${at} has unsupported route kind`;
-    if (row.access !== undefined && !['workspace_write', 'full'].includes(row.access)) return `${at} access must be workspace_write or full`;
+    if (row.access !== undefined && !['readonly', 'workspace_write', 'full'].includes(row.access)) return `${at} access must be readonly, workspace_write or full`;
     if (row.access !== undefined && routeKind !== ROUTE_KIND_AGENT_SESSION) return `${at} access requires an Agent session`;
     if (!routeSupportsAccount({ ...row.route, kind: routeKind })
         && String(row.route.credential_profile_id || '').trim()) return `${at} has an account pin on an API route`;
@@ -176,8 +176,8 @@ function rowErrors(row, index, ids, rows = null, inherited = '') {
     }
     ids.add(id);
     const route = row?.route || {};
-    if (row?.access !== undefined && !['workspace_write', 'full'].includes(row.access)) {
-        errors.push('access must be Working files or Full system access.');
+    if (row?.access !== undefined && !['readonly', 'workspace_write', 'full'].includes(row.access)) {
+        errors.push('access must be Read only, Working files or Full system access.');
     } else if (row?.access !== undefined && route.kind !== ROUTE_KIND_AGENT_SESSION) {
         errors.push('can select access only with an Agent session.');
     }
@@ -226,6 +226,33 @@ function listLevelErrors(setting) {
 /** The rows that review: marked Reviewer and switched on, in catalog order. */
 export function reviewPoolRows(setting) {
     return (setting?.items || []).filter((row) => row?.review_eligible === true && row?.enabled !== false);
+}
+
+/** Pool rows running an earlier pool row's engine (`sameEngineAs`), grouped under the row they copy. */
+export function reviewPoolCopies(setting, inherited = '') {
+    const items = setting?.items || [];
+    const pool = reviewPoolRows(setting);
+    const groups = new Map();
+    pool.forEach((row, index) => {
+        const first = pool[sameEngineAs(pool, index, inherited)];
+        if (first) groups.set(first, [...(groups.get(first) || []), row]);
+    });
+    return [...groups].map(([kept, copies]) => ({ keep: items.indexOf(kept), copies: copies.map((row) => items.indexOf(row)) }));
+}
+
+const subagentList = (indices) => `Subagents ${indices.slice(0, -1).map((index) => index + 1).join(', ')} and ${indices.at(-1) + 1}`;
+
+/** The offer under a pool of copies: what they cost, and what keeping one per model changes. */
+export function reviewCopiesText(groups, poolSize) {
+    if (!groups.length) return '';
+    const after = poolSize - groups.reduce((sum, group) => sum + group.copies.length, 0);
+    const named = groups.map((group) => subagentList([group.keep, ...group.copies])).join('; ');
+    const cost = groups.length === 1
+        ? `are copies of one model: each review pays for ${groups[0].copies.length + 1} runs of it`
+        : 'are copies of one model per group: each review pays for every copy';
+    const kept = after === 1 ? 'a single answer decides each review, so one flaky answer can block or pass it'
+        : `${after} answers decide each review instead of ${poolSize}`;
+    return `${named} ${cost} and gets no second opinion. With one ${groups.length === 1 ? '' : 'of each '}kept, ${kept}.`;
 }
 
 /** `subagent_runtime.PACKET_ONLY_POOL_WARNING`, the save warning of a pool no row of which reads the repository. */
@@ -348,9 +375,10 @@ function reviewPoolSummary(state) {
     const items = state.setting?.items || [];
     const pool = reviewPoolRows(state.setting).length;
     const marked = items.filter((row) => row?.review_eligible === true).length;
-    let empty = '';
-    if (items.length && !marked) empty = 'No row is marked Reviewer, so reviews will not run and will report “not performed”.';
-    else if (marked && !pool) empty = 'Every row marked Reviewer is switched off, so reviews will not run and will report “not performed”.';
+    // An empty pool, no rows at all included, reviews on the main model alone (`review_pool_slots`).
+    const why = marked ? 'Every row marked Reviewer is switched off' : 'No row is marked Reviewer';
+    const empty = state.loaded && !pool ? `${why}, so the main model reviews alone: one model, no second opinion.` : '';
+    const groups = state.loaded ? reviewPoolCopies(state.setting, state.processingPreference) : [];
     const payload = state.reviewPool || {};
     const migration = migrationNote(payload.migration);
     let note = payload.load_error || '';
@@ -361,6 +389,7 @@ function reviewPoolSummary(state) {
         // Said when it matters: Delegation off leaves review on for the marked rows.
         stays: marked && !state.setting?.enabled ? 'Delegation is off; rows marked Reviewer still review.' : '',
         empty, confirm: Boolean(items.length && !pool), note, history: migration.history,
+        copies: reviewCopiesText(groups, pool),
     };
 }
 
@@ -369,14 +398,18 @@ function reviewPoolSummary(state) {
 const INTENT = {
     draft: { label: 'Unsaved changes', tone: 'neutral' },
     generated: { label: 'Generated draft', tone: 'neutral' },
+    automatic: { label: 'Automatic', tone: 'neutral' },
     saved: { label: 'Saved', tone: 'ok' },
 };
 
 function editorIntent(state, hasPageDirtyIndicator) {
-    // Settings already names the dirty draft in its Save bar; keep this slot empty
-    // there. The wizard has no page indicator and still needs the editor's word.
-    if (state.dirty && hasPageDirtyIndicator) return { label: '', title: '', tone: 'neutral' };
-    const intent = INTENT[state.dirty ? 'draft' : state.baseline] || INTENT.saved;
+    // Nothing loaded claims no intent. Settings already names the dirty draft in its Save bar; keep
+    // this slot empty there. The wizard has no page indicator and still needs the editor's word.
+    if (!state.loaded || (state.dirty && hasPageDirtyIndicator)) return { label: '', title: '', tone: 'neutral' };
+    // The read says what is unsaved: an undecided candidate, or its own catalog following Main (`automatic`).
+    const word = state.dirty ? 'draft'
+        : state.source === 'undecided' ? 'generated' : state.automatic ? 'automatic' : state.baseline;
+    const intent = INTENT[word] || INTENT.saved;
     return { ...intent, title: intent.label };
 }
 
@@ -504,6 +537,7 @@ function verifiedAccountSnapshot(state) {
 const ACCESS_CHOICES = [
     { value: 'full', label: 'Full system access' },
     { value: 'workspace_write', label: 'Working files' },
+    { value: 'readonly', label: 'Read only' },
 ];
 const ACCESS_HELP = 'Full system access (the default) can reach outside the working folder. The selected agent must support it. Explicit task restrictions still apply.';
 
@@ -611,6 +645,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.setting,
         state.saveAttempted,
         state.baseline,
+        state.automatic,
         state.source,
         diagnosticsText(state.diagnostics),
         state.statusError,
@@ -658,6 +693,7 @@ export function createAvailableSubagentsEditor({
         dirty: false,
         saveAttempted: false,
         baseline: baseline === 'generated' ? 'generated' : 'saved',
+        automatic: false,
         statusError: '',
         catalogKnown: false,
         accountsKnown: false,
@@ -727,6 +763,10 @@ export function createAvailableSubagentsEditor({
         if (emptyText) emptyText.textContent = summary.empty;
         const confirm = container.querySelector('[data-review-pool-confirm]');
         if (confirm) confirm.hidden = !summary.confirm;
+        const copies = container.querySelector('[data-review-pool-copies]');
+        if (copies) copies.hidden = !summary.copies;
+        const copiesText = container.querySelector('[data-review-pool-copies-text]');
+        if (copiesText) copiesText.textContent = summary.copies;
         const note = container.querySelector('[data-review-pool-note]');
         if (note) Object.assign(note, { textContent: summary.note, hidden: !summary.note });
         const history = container.querySelector('[data-review-pool-history]');
@@ -1007,12 +1047,16 @@ export function createAvailableSubagentsEditor({
             <div class="available-subagents-list">
                 ${state.loaded
                     ? state.setting.items.map((row, index) => availableSubagentRowMarkup(row, state, index)).join('')
-                        || '<div class="available-subagents-empty">No subagents configured. Add one, or leave the list empty to make no actors available.</div>'
+                        || '<div class="available-subagents-empty">No subagents configured, so the main model is the one agent. Add one to choose others.</div>'
                     : '<div class="available-subagents-empty">The saved configuration could not be loaded, so this editor will not replace it.</div>'}
             </div>
             <div class="available-subagents-review-empty" data-review-pool-empty data-tone="warn" ${pool.empty ? '' : 'hidden'}>
                 <span data-review-pool-empty-text>${escapeHtml(pool.empty)}</span>
                 <label class="local-toggle ui-field-inline" data-review-pool-confirm ${pool.confirm ? '' : 'hidden'}><input class="ui-checkbox" type="checkbox" data-review-pool-allow-empty ${state.allowEmptyReviewPool ? 'checked' : ''}> Save without reviewers</label>
+            </div>
+            <div class="available-subagents-review-copies" data-review-pool-copies data-tone="warn" ${pool.copies ? '' : 'hidden'}>
+                <span data-review-pool-copies-text>${escapeHtml(pool.copies)}</span>
+                <button type="button" class="btn btn-default" data-review-pool-keep-one>Keep one per model</button>
             </div>
             <div data-subagents-validation class="available-subagents-diagnostics" data-tone="error" ${errors.length ? '' : 'hidden'}>${escapeHtml(errors[0] || '')}</div>`;
         container.querySelector('[data-subagents-enabled]')?.addEventListener('change', (event) => {
@@ -1024,6 +1068,14 @@ export function createAvailableSubagentsEditor({
             state.signature = availableSubagentsRenderSignature(state);
             renderValidation();
             onChange(buildAvailableSubagentsSetting(state.setting));
+        });
+        // The owner's click edits the draft only: the copies leave it, the first row of each model stays.
+        container.querySelector('[data-review-pool-keep-one]')?.addEventListener('click', () => {
+            const copies = new Set(reviewPoolCopies(state.setting, state.processingPreference).flatMap((group) => group.copies));
+            if (!copies.size) return;
+            state.setting.items = state.setting.items.filter((_row, index) => !copies.has(index));
+            markDirty({ structural: true });
+            paint();
         });
         container.querySelector('[data-subagent-add]')?.addEventListener('click', () => {
             if (state.setting.items.length >= MAX_AVAILABLE_SUBAGENTS) return;
@@ -1046,7 +1098,7 @@ export function createAvailableSubagentsEditor({
         revealNewRow(row, row?.querySelector?.('[data-subagent-field="recommended_use"]'));
     }
 
-    function load(value, { source = '', diagnostics = [], allowOmission = false } = {}) {
+    function load(value, { source = '', diagnostics = [], allowOmission = false, automatic = false } = {}) {
         // Invalidate a preview launched for the previous settings document.
         // A late response must never overwrite a freshly loaded configured row.
         state.previewGeneration += 1;
@@ -1065,6 +1117,7 @@ export function createAvailableSubagentsEditor({
         state.reviewCosts = new Map();
         state.allowEmptyReviewPool = false;
         state.source = String(source || '');
+        state.automatic = automatic === true;
         state.diagnostics = diagnostics;
         state.dirty = false;
         state.saveAttempted = false;
@@ -1225,7 +1278,8 @@ export function createAvailableSubagentsEditor({
         setPreviewFailure,
         validate: validationErrors,
         noteSaveAttempt,
-        collect: () => availableSubagentsSavePayload(state),
+        // An untouched generated draft is no owner choice: Save leaves it unsaved (only an edit here authors it).
+        collect: () => (state.source === 'undecided' && !state.dirty ? {} : availableSubagentsSavePayload(state)),
         /** Adopt GET /api/review-pool for the catalog loaded last. */
         setReviewPool(payload) {
             state.reviewPool = payload && typeof payload === 'object' ? payload : null;
@@ -1381,6 +1435,7 @@ export function applySubagentsSettings(settings) {
         source: settingsSource(settings),
         diagnostics: meta.diagnostics || meta.diagnostic || [],
         allowOmission: !availableSubagentsHasExplicitDraft(settings),
+        automatic: meta.automatic === true,
     });
 }
 

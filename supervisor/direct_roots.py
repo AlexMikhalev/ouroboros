@@ -2,12 +2,13 @@
 
 Pooled roots reach a worker through ``state/queue_snapshot.json``; direct-chat
 turns live only in the server process's actor registry, so the main loop
-writes this small projection beside the snapshot (owner decision 6C).  Actor
+collects this projection for generation publication beside the snapshot. Actor
 locks are only ever tried (``acquire(blocking=False)``): a turn mid-admission
 is skipped and the fragment says so through ONE aggregate ``incomplete`` fact
 rather than blocking the loop or fabricating a row.  Queue init takes the
 roster over and clears it in the same step, so a stale process's turns never
-outlive it and snapshot restore still learns which direct roots the stop caught.
+outlive it, and snapshot restore learns which direct roots the stop caught,
+including the durable ones of an ended process that the roster never listed.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ def direct_turn_facts(turn: Dict[str, Any]) -> Dict[str, Any]:
     return facts
 
 
-def publish_direct_roots(drive_root: Any) -> Dict[str, Any]:
-    """Write the current direct-root rows; never raises, never blocks on an actor."""
+def collect_direct_roots() -> Dict[str, Any]:
+    """Collect the current direct-root rows; never raises, never blocks on an actor."""
     rows = []
     incomplete = False
     try:
@@ -81,12 +82,7 @@ def publish_direct_roots(drive_root: Any) -> Dict[str, Any]:
     except Exception:
         log.debug("direct roots projection failed", exc_info=True)
         incomplete = True
-    payload = {"ts": utc_now_iso(), "roots": rows, "incomplete": incomplete}
-    try:
-        atomic_write_json(_fragment_path(drive_root), payload)
-    except Exception:
-        log.debug("direct roots fragment write failed", exc_info=True)
-    return payload
+    return {"roots": rows, "incomplete": incomplete}
 
 
 def clear_direct_roots(drive_root: Any) -> None:
@@ -123,57 +119,57 @@ def take_direct_roots(drive_root: Any) -> Dict[str, Any]:
     return {"task_ids": task_ids, "incomplete": incomplete}
 
 
-def adopt_orphaned_direct_results(drive_root: Any, taken: Dict[str, Any]) -> Dict[str, Any]:
-    """Backstop the roster with durable rows when a hard crash orphaned a turn.
+def owner_process_ended(drive_root: Any, result: Dict[str, Any]) -> bool:
+    """Whether a durable direct row's own server process has positively ended.
 
-    The roster fragment is rewritten by the main loop's tick; a machine that
-    died mid-turn can therefore leave ``state/direct_roots.json`` not naming a
-    live direct turn whose durable result still says ``running``.  The pooled
-    rows have a boot sweep of their own (snapshot restore fences surviving
-    RUNNING rows); direct rows had none — the row outlived every registry that
-    named it.  This closes that class at the same seam the roster already
-    feeds: durable results with direct execution ownership and a ``running``
-    status, named by neither the taken roster nor the queue snapshot (a live
-    turn of THIS process is skipped too, so the event never names live work),
-    adopted into the restore list so ``_fence_snapshot_running_rows`` settles
-    them through the one intent-then-custody path every other interrupted row
-    takes.  The handover the roster already made is preserved untouched and
-    extended, never replaced; a failed sweep returns exactly what the roster
-    said, keeping any unadopted row UNSETTLED (unknown), never a fabricated
-    terminal. Never raises.
+    A direct turn runs only inside the server process that holds the data root's
+    admission until it exits (``server_entrypoint.admit_data_root``), and its
+    execution owner names that process generation (``execution_owner_record``).
+    While THIS process holds the admission, a bound direct owner stamped by
+    another generation names a turn whose process is gone. Nothing weaker is
+    this fact: absence from the roster or registry, row age, a worker boot, or
+    an in-process supervisor revival (the same generation, so the same stamp).
+    An unstamped legacy row, an owner bound elsewhere and any positive live
+    observation stay unknown.
+    """
+    from ouroboros.process_custody import current_custody_session_id
+    from ouroboros.server_entrypoint import admission_held
+    from ouroboros.task_status import task_execution_observation
+
+    owner = result.get("execution_owner") if isinstance(result.get("execution_owner"), dict) else {}
+    stamp = str(owner.get("process") or "")
+    if not stamp or stamp == current_custody_session_id() or not admission_held(pathlib.Path(drive_root)):
+        return False
+    observed = task_execution_observation(drive_root, result)
+    return (observed["kind"], observed["state"], observed["reason"]) == ("direct", "unknown", "live_execution_unobserved")
+
+
+def adopt_orphaned_direct_results(drive_root: Any, taken: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the direct turns a crash left durable but unlisted to the roster's handover.
+
+    The roster is a projection: a machine that died mid-turn may never have
+    rewritten it, so it can miss a turn whose durable result still says
+    ``running``. Queue init adds every such row whose own process positively
+    ended (``owner_process_ended``) to the ids the roster handed over, and
+    snapshot restore treats it as any direct root the stop caught: saved work
+    and pauses wait for Resume, the rest is fenced for the one cancellation
+    custody, which keeps an answer the host already holds. The roster's ids stay
+    first and untouched; a failed read adds nothing, leaving every row exactly
+    as unknown as it was. Never raises.
     """
     from ouroboros.task_results import STATUS_RUNNING, list_task_results
-    from supervisor.active_activity import get_direct_activity_registry
 
     handed_over = [str(task_id) for task_id in taken.get("task_ids") or [] if str(task_id)]
-    known = set(handed_over)
-    # An in-process supervisor revival re-runs queue init while direct turns of
-    # THIS process are alive: their rows belong to the live registry, not to the
-    # crash-orphan class, and must not be named as adopted orphans.
-    live_direct = {str(row.get("activity_id") or "") for row in get_direct_activity_registry().snapshot()}
-    snapshot_ids: set = set()
-    adopted: list = []
+    known, adopted = set(handed_over), []
     try:
-        snap = read_json_dict(pathlib.Path(drive_root) / "state" / "queue_snapshot.json")
-        if isinstance(snap, dict):
-            for section in ("pending", "running"):
-                entries = snap.get(section)
-                if isinstance(entries, list):
-                    snapshot_ids.update(
-                        str((row.get("task") or {}).get("id") or row.get("id") or "")
-                        for row in entries if isinstance(row, dict)
-                    )
         for row in list_task_results(drive_root, statuses=[STATUS_RUNNING]):
             task_id = str(row.get("task_id") or "")
-            owner = row.get("execution_owner")
-            if (not task_id or task_id in known or task_id in snapshot_ids or task_id in live_direct
-                    or not isinstance(owner, dict) or str(owner.get("kind") or "") != "direct"):
-                continue
-            known.add(task_id)
-            adopted.append(task_id)
+            if task_id and task_id not in known and owner_process_ended(drive_root, row):
+                known.add(task_id)
+                adopted.append(task_id)
     except Exception:
         log.debug("direct-result adoption sweep failed", exc_info=True)
-        return {"task_ids": handed_over, "incomplete": bool(taken.get("incomplete"))}
+        adopted = []
     if adopted:
         try:
             append_jsonl(

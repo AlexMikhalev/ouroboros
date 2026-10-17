@@ -36,6 +36,9 @@ _INGRESS_LOCK = threading.Lock()
 _UNDISPATCHED: "set[Tuple[int, str]]" = set()
 # Positive call-entry evidence, separate from acceptance and never persisted.
 _DISPATCH_ENTERED: set[tuple] = set()
+# A callback that raised after entry is ambiguous, not a completed handoff.
+# The quiz owner uses this narrow same-process witness to repair its durable ACK.
+_DISPATCH_COMPLETED: set[tuple] = set()
 
 
 def _dispatch_key(row: dict) -> tuple:
@@ -44,6 +47,10 @@ def _dispatch_key(row: dict) -> tuple:
 
 def dispatch_entered(row: dict) -> bool:
     return accepted_here(row) and _dispatch_key(row) in _DISPATCH_ENTERED
+
+
+def dispatch_completed(row: dict) -> bool:
+    return accepted_here(row) and _dispatch_key(row) in _DISPATCH_COMPLETED
 
 
 def _enter_dispatch(row: dict) -> None:
@@ -103,7 +110,7 @@ def _take_undispatched(key: Tuple[int, str]) -> bool:
 #
 # Every web send and named skill delivery asks this before it may write, so the answer comes from a
 # process-local index over the retained chat chain, never a replay of it (DEVELOPMENT 03 "Projection
-# over replay"; the ``delegate_custody_memo`` fingerprint rules): the first lookup folds the whole
+# over replay"): the first lookup folds the whole
 # chain once — the cold cost each host process pays — and later ones fold only the bytes appended
 # since. The warm check is constant: the live file's identity, size and two short anchors of its
 # folded prefix. A rotation keeps the folded file's identity under its archive name, so its
@@ -331,6 +338,7 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
     """
     from ouroboros.project_dialogue import build_owner_message_ref
     from ouroboros.chat_uploads import attachment_placeholder
+    from ouroboros.owner_quiz import late_answer_ref
     from supervisor import message_bus
 
     chat_id = int(message["chat_id"])
@@ -342,6 +350,7 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
     if not logged:
         raise ValueError("message is empty")
     refs = stored_refs((message.get("task_metadata") or {}).get("chat_attachments"))
+    late_answer = late_answer_ref((message.get("task_metadata") or {}).get("late_answer"))
     placeholder = not text.strip() and not str(message.get("image_caption") or "").strip()
     with _INGRESS_LOCK:
         row = accepted_chat_message(drive_root, chat_id, message_id)
@@ -350,6 +359,9 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
                 raise ValueError("client_message_id is already bound to another source")
             if not same_message(row, logged, refs):  # text AND ordered attachment content
                 raise ValueError("client_message_id was already used for a different message")
+            saved_answer = late_answer_ref(row.get("late_answer"))
+            if saved_answer:
+                message["task_metadata"] = {**(message.get("task_metadata") or {}), "late_answer": saved_answer}
             if not _take_undispatched((chat_id, message_id)):
                 return row, True
             # Proven never dispatched: this retry's identical copies feed it; the echo shows the row's refs.
@@ -363,7 +375,8 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
                 sender_label=str(message.get("sender_label") or ""),
                 transport=message.get("transport"), drive_root=drive_root, require_write=True,
                 ensure_record_boundary=True,  # parseable acceptance record
-                message_meta={"attachments": refs, "text_placeholder": placeholder},
+                message_meta={"attachments": refs, "text_placeholder": placeholder,
+                              **({"late_answer": late_answer} if late_answer else {})},
             ))
         finally:
             # Once this write is attempted (or a proven-undispatched row is handed over), failure can
@@ -376,6 +389,7 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
         # Dispatch only schedules/queues; slow work must not hold the ingress lock.
         _enter_dispatch(row)
         (dispatch or bridge.enqueue_local_message)(text, **message, accepted_source_ref=ref, accepted_source_row=row, received_at=ts)
+        _DISPATCH_COMPLETED.add(_dispatch_key(row))
         return row, False
 
 

@@ -1,8 +1,8 @@
 """Historical premises use existing consumers, with only transports scripted.
 
 The fixtures start at the immutable source/exhibit boundary. Producer-selection
-tests separately prove which author inputs enter that boundary. Native and
-reflection tests inspect the NEXT model input after the real read_file result;
+tests separately prove which author inputs enter that boundary. Native tests
+inspect the NEXT model input after the real read_file result;
 the offline session physically reads its advertised file. None is evidence of
 a real provider, subscription harness, or model comprehension.
 """
@@ -24,6 +24,7 @@ from ouroboros.review_source_closure import retain_review_request_sources
 from ouroboros.review_substrate import ReviewRequest, run_review_request
 from tests.test_acceptance_delivery import _CLEAN_VERDICT, _EpisodeLLM, _fake_session, _tool_call
 from tests.test_acceptance_source_first import _SOURCE_PATH, _prepared_request
+from tests._review_substrate_shared import user_text as _user_text
 from tests import test_main_authored_context as context_fixtures
 
 main_loop = context_fixtures.main_loop
@@ -98,7 +99,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
         def _reply(self, kwargs):
             self.calls.append(copy.deepcopy(kwargs))
             if len(self.calls) == 1:
-                prompt = json.dumps(kwargs["messages"], ensure_ascii=False)
+                prompt = "\n".join(_user_text(row["content"]) for row in kwargs["messages"])
                 assert _OLD not in prompt and _TODAY not in prompt
                 binding = _historical_binding(request)
                 assert binding["retained_path"] in prompt
@@ -106,7 +107,7 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
                 shutil.rmtree(author)
                 calls = [_tool_call("read_file", binding["read"]["arguments"], "history")]
                 if paged:
-                    packet_path = _SOURCE_PATH.search(kwargs["messages"][-1]["content"]).group(1)
+                    packet_path = _SOURCE_PATH.search(_user_text(kwargs["messages"][-1]["content"])).group(1)
                     calls.append(_tool_call("read_file", {"root": "artifact_store", "path": packet_path}, "packet"))
                 reply = {"tool_calls": calls}
             else:
@@ -138,47 +139,6 @@ def test_native_historical_read_reaches_next_model_input_after_author_cleanup(tm
     registry, _ctx, _schemas = inspection_registry(str(workspace), reader_root, request.task_id)
     reread = registry.execute_result("read_file", binding["read"]["arguments"])
     assert reread.status == "ok" and _OLD in reread.text and _TODAY not in reread.text
-
-
-def test_reflection_historical_read_reaches_next_model_input(tmp_path, monkeypatch):
-    from ouroboros import consolidator, reflection
-    from ouroboros.tools.registry import ToolContext
-
-    monkeypatch.setattr(consolidator, "_consolidation_route", lambda: ("test/model", False))
-    task_id = "history-reflection"
-    exhibit, raw, _foreign = _historical_source(tmp_path, task_id)
-    ref = exhibit["anchors"][0]["source_ref"]
-    inputs = {"version": 1, "task_id": task_id, "run_origin": {"owner_ingress": True},
-              "owner_requirements_and_decisions": [{"source": "initial_user", "content": "Revise the list."}]}
-    evidence = {"task_id": task_id, "task_inputs": inputs, "historical_author_inputs": exhibit}
-    task = {"id": task_id, "type": "task", "text": "Revise the list.", "drive_root": str(tmp_path)}
-    context = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=task_id)
-    (tmp_path / "current-author-input.json").write_text(_TODAY, encoding="utf-8")
-    observed = []
-
-    class Reader:
-        def chat(self, *, messages, **kwargs):
-            observed.append(copy.deepcopy(messages))
-            if len(observed) == 1:
-                prompt = json.dumps(messages, ensure_ascii=False)
-                assert _OLD not in prompt and _TODAY not in prompt
-                assert _PREVIEW in prompt
-                assert ref["sha256"] in prompt
-                assert any(line.startswith("## ") and "historical" in line.lower()
-                           for row in messages if isinstance(row.get("content"), str)
-                           for line in row["content"].splitlines())
-                return {"tool_calls": [_tool_call("read_file", ref["read"]["arguments"], "history")]}, {}
-            tool_rows = [row["content"] for row in messages if row.get("role") == "tool"]
-            assert len(tool_rows) == 1 and _OLD in tool_rows[0] and _TODAY not in tool_rows[0]
-            return {"content": "The source preserves the executive audience as historical evidence."}, {}
-
-    entry = reflection.generate_reflection(task, {"tool_calls": []}, "short trace", Reader(), {},
-                                            evidence, knowledge_context=context)
-    assert len(observed) == 2
-    assert entry["reflection"].startswith("The source preserves")
-    assert read_actor_source_bytes(tmp_path, task_id, ref) == raw
-    assert "historical_author_inputs" not in inputs
-    assert _OLD not in json.dumps(inputs)
 
 
 def test_offline_session_physically_reads_advertised_historical_source(tmp_path, monkeypatch):
@@ -283,14 +243,13 @@ def test_terminal_history_keeps_historical_inputs_outside_owner_corpus_after_cop
     assert not (task_artifact_dir_path(f.root, f.tid) / foreign["path"]).exists()
 
 
-def test_direct_author_loop_live_packet_terminal_package_and_reflection_share_source(main_loop, monkeypatch):
-    """Actual author capture → live evidence → terminal writer → reflection reader.
+def test_direct_author_loop_live_packet_and_terminal_package_share_source(main_loop, monkeypatch):
+    """Actual author capture → live evidence → terminal writer, one retained source.
 
-    The post-task dispatcher selects the real reflection stage directly, keeping
-    unrelated memory consolidation/promotion out of this focused consumer test.
-    Only the author and reflection model transports return scripted responses.
+    The post-task dispatcher is only recorded: it receives no review evidence of its
+    own (no stage reads it). Only the author model transport returns scripted responses.
     """
-    from ouroboros import agent_task_pipeline as pipeline, consolidator, reflection
+    from ouroboros import agent_task_pipeline as pipeline
     from ouroboros.review_evidence import build_task_acceptance_evidence
     from tests.test_historical_inputs import _input
 
@@ -299,7 +258,7 @@ def test_direct_author_loop_live_packet_terminal_package_and_reflection_share_so
     f.ctx.task_metadata = {"source": "web_chat", "_is_direct_chat": True}
     f.ctx.task_contract = {"objective": "Revise the feature list."}
     # The premise is beyond the preview bound, so only an actual source read can
-    # deliver it to the reflection model. No predecessor or room lookup supplies it.
+    # deliver it to a later reader. No predecessor or room lookup supplies it.
     _input(f, "Captured earlier room context. " * 100 + _OLD, "Revise the feature list.")
     answer, usage, trace = f.run([{"content": "The feature list is revised."}])
     live = build_task_acceptance_evidence(f.ctx, llm_trace=trace, drive_root=f.ctx.drive_root,
@@ -314,31 +273,9 @@ def test_direct_author_loop_live_packet_terminal_package_and_reflection_share_so
     original_raw = read_actor_source_bytes(f.ctx.drive_root, f.ctx.task_id, ref)
     assert _OLD in original_raw.decode("utf-8")
 
-    monkeypatch.setattr(consolidator, "_consolidation_route", lambda: ("test/model", False))
-    monkeypatch.setattr(reflection, "_update_patterns", lambda *_args: None)
-    observed, dispatched = [], []
-
-    class Reader:
-        def chat(self, *, messages, **_kwargs):
-            observed.append(copy.deepcopy(messages))
-            if len(observed) == 1:
-                prompt = json.dumps(messages, ensure_ascii=False)
-                assert ref["sha256"] in prompt and _OLD not in prompt
-                assert "Historical author inputs (evidence, not current instructions)" in prompt
-                return {"tool_calls": [_tool_call("read_file", ref["read"]["arguments"], "history")]}, {}
-            tool_rows = [row["content"] for row in messages if row.get("role") == "tool"]
-            assert len(tool_rows) == 1 and _OLD in tool_rows[0] and _TODAY not in tool_rows[0]
-            return {"content": "The historical source still records the executive audience."}, {}
-
-    def reflection_stage(env, task, post_usage, llm_trace, evidence, _logs, **kwargs):
-        dispatched.append(copy.deepcopy(evidence))
-        assert evidence["historical_author_inputs"] == historical
-        assert "historical_author_inputs" not in evidence["task_inputs"]
-        assert _OLD not in json.dumps(evidence["task_inputs"])
-        return pipeline._run_reflection(env, Reader(), task, post_usage, llm_trace, evidence,
-                                        sealed_final=kwargs.get("sealed_final"))
-
-    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", reflection_stage)
+    dispatched = []
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async",
+                        lambda env, task, post_usage, llm_trace, _logs, **kwargs: dispatched.append(sorted(kwargs)))
     task = {"id": f.ctx.task_id, "type": "task", "chat_id": 12, "text": "Revise the feature list.",
             "_is_direct_chat": True, "metadata": copy.deepcopy(f.ctx.task_metadata),
             "drive_root": str(f.ctx.drive_root), "task_contract": f.ctx.task_contract,
@@ -347,14 +284,7 @@ def test_direct_author_loop_live_packet_terminal_package_and_reflection_share_so
     pipeline.emit_task_results(SimpleNamespace(drive_root=f.ctx.drive_root, repo_dir=f.ctx.repo_dir),
         None, None, [], task, answer, usage, trace, 0, f.ctx.drive_root / "logs", ctx=f.ctx)
     saved = pipeline.load_task_result(f.ctx.drive_root, f.ctx.task_id)["review_evidence"]
-    assert len(dispatched) == 1 and len(observed) == 2
+    assert len(dispatched) == 1 and "review_evidence" not in dispatched[0]
     assert saved["historical_author_inputs"] == historical
     assert "historical_author_inputs" not in saved["task_inputs"]
     assert read_actor_source_bytes(f.ctx.drive_root, f.ctx.task_id, ref) == original_raw
-    rows = [json.loads(line) for line in (f.ctx.drive_root / "logs/task_reflections.jsonl")
-            .read_text(encoding="utf-8").splitlines()]
-    pointer = rows[-1]
-    assert pointer["type"] == "project_reflection_pointer" and not pointer.get("write_failed")
-    stored = [json.loads(line) for line in Path(pointer["reflection_path"])
-              .read_text(encoding="utf-8").splitlines()]
-    assert stored[-1]["reflection"] == "The historical source still records the executive audience."

@@ -25,6 +25,9 @@ from typing import Mapping
 
 SETTINGS_INTEGRITY_ENV = "OUROBOROS_SETTINGS_SHA256"
 _TASK_SETTINGS = contextvars.ContextVar("ouroboros_task_settings", default=None)
+# The environment ``config.load_settings`` overlays on the keys its document leaves unset: the process's own,
+# unless a read binds another (``settings_read_environ``: a skill read, an extension child's).
+_READ_ENVIRON = contextvars.ContextVar("ouroboros_settings_read_environ", default=None)
 # Only capture/projection holds this lock, never a task's execution lifetime.
 SETTINGS_ENV_LOCK = threading.RLock()
 
@@ -48,7 +51,94 @@ def _projected_keys() -> set[str]:
     from ouroboros.model_slots import _LEGACY_SLOT_RENAMES
 
     return (set(settings_env_keys()) | set(RETIRED_COMMA_LIST_SETTING_KEYS)
-            | {old for old, _new in _LEGACY_SLOT_RENAMES})
+            | {old for old, _new in _LEGACY_SLOT_RENAMES} | {PROJECTED_PROPOSALS_ENV, PROJECTED_SETTINGS_ENV})
+
+
+# The values this process tree projected (``config.apply_settings_to_env``) for the keys whose absence takes a
+# proposal — the model slots and the never-configured factory catalog — handed down with the environment: a read
+# of a key the document does not set tells this tree's own echo from an operator's variable, so an absent slot
+# keeps following the configured access and an absent catalog its factory (owner 2A).
+PROJECTED_PROPOSALS_ENV = "OUROBOROS_PROJECTED_PROPOSALS"
+
+
+def projected_proposals(environ: Mapping) -> dict:
+    """``{key: value}`` this process tree last projected into ``environ`` for a proposal key."""
+    try:
+        echo = json.loads(environ.get(PROJECTED_PROPOSALS_ENV) or "{}")
+    except ValueError:
+        return {}
+    return echo if isinstance(echo, dict) else {}
+
+
+# The digest of every settings value this process tree's projection left in the environment as its own, handed
+# down beside the echo. The loader never reads it; a skill read does (``skill_environ``), so a value this tree mirrored
+# from an earlier document, in this process or one it inherited from, never passes for an operator's variable there.
+PROJECTED_SETTINGS_ENV = "OUROBOROS_PROJECTED_SETTINGS"
+
+
+def _value_digest(value: str) -> str:
+    # 64 bits tell our own value of a key from an operator's, and keep the inherited variable small.
+    return hashlib.sha256(str(value).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def projected_settings(environ: Mapping) -> dict:
+    """``{key: digest}`` of the values this process tree last projected into ``environ`` from its settings."""
+    try:
+        record = json.loads(environ.get(PROJECTED_SETTINGS_ENV) or "{}")
+    except ValueError:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def operator_variables(environ: Mapping, keys) -> dict:
+    """``{key: value}`` of an operator's own variables in ``environ`` for proposal ``keys``: present, not blank and not
+    this tree's projection — what the loader lets stand in for a key the document does not set."""
+    echo = projected_proposals(environ)
+    return {key: environ[key] for key in keys if environ.get(key) and environ[key] != echo.get(key)}
+
+
+def note_proposal_projection(environ, before: Mapping) -> None:
+    """Record the proposal-key values a projection left in ``environ`` (``before``: their values before it),
+    except where it kept or respelled an operator's own variable (``operator_variables`` of ``before``): our echo
+    must never turn the operator's choice into a proposal the next read replaces.
+
+    Every other projected value is ours by digest (``PROJECTED_SETTINGS_ENV``) when this projection wrote it, when
+    it is what the settings document itself sets (a launcher or an earlier release may have mirrored it there with
+    no record), or when an earlier projection's record already held it; any other variable stays the operator's."""
+    from ouroboros.configured_subagents import SUBAGENTS_SETTING
+    from ouroboros.server_runtime import MODEL_SLOT_KEYS
+    from ouroboros.settings_defaults import settings_env_keys
+
+    keys = (*MODEL_SLOT_KEYS, SUBAGENTS_SETTING)
+    echo, operator = projected_proposals(environ), operator_variables(before, keys)
+    for key in keys:
+        after = environ.get(key)
+        if after is None or key in operator or (after == before.get(key) and after != echo.get(key)):
+            echo.pop(key, None)
+        else:
+            echo[key] = after
+    environ[PROJECTED_PROPOSALS_ENV] = json.dumps(echo, sort_keys=True)
+    ours, document, record = projected_settings(before), _document_keys(), {}
+    for key in settings_env_keys():
+        value = environ.get(key)
+        if value is None:
+            continue
+        digest = _value_digest(value)
+        if key in document or value != before.get(key) or ours.get(key) == digest:
+            record[key] = digest
+    environ[PROJECTED_SETTINGS_ENV] = json.dumps(record, sort_keys=True)
+
+
+def _document_keys() -> set:
+    """The keys the settings document on disk sets to a value, as every reader normalizes it; none when unreadable."""
+    from ouroboros import config
+
+    try:
+        raw = read_settings_json_verified(config.SETTINGS_PATH)
+        document = config.normalize_settings_raw(raw) if isinstance(raw, dict) else {}
+    except Exception:
+        return set()
+    return {key for key, value in document.items() if value not in (None, "")}
 
 
 @contextlib.contextmanager
@@ -104,6 +194,52 @@ def live_effort_range() -> dict[str, str]:
     from ouroboros.settings_scales import effort_range
 
     return effort_range(config.load_settings())
+
+
+def read_environ() -> Mapping:
+    """The environment ``config.load_settings`` overlays now: the process's, or the one a read binds."""
+    environ = _READ_ENVIRON.get()
+    return os.environ if environ is None else environ
+
+
+@contextlib.contextmanager
+def settings_read_environ(environ: Mapping):
+    """Bind the environment the settings loader overlays for reads in this context only."""
+    token = _READ_ENVIRON.set(environ)
+    try:
+        yield
+    finally:
+        _READ_ENVIRON.reset(token)
+
+
+def skill_environ() -> dict:
+    """The environment a skill read lets stand in for a key its document leaves unset: the task's own (or, outside
+    a task, this process's) without the values this process tree mirrored there from its settings document
+    (``projected_settings``) — the operator's own variables only."""
+    snapshot = _TASK_SETTINGS.get()
+    if snapshot is None:
+        with SETTINGS_ENV_LOCK:
+            source = dict(os.environ)
+    else:
+        source = dict(snapshot.environ)
+    ours = projected_settings(source)
+    return {key: value for key, value in source.items() if key not in ours or ours[key] != _value_digest(value)}
+
+
+def skill_settings(settings_reader=None) -> dict:
+    """What a skill reads: the settings document as it reads now, in a task or not (owner choice A, #1122).
+
+    The one reader behind a skill's ``PluginAPI.get_settings``, its scripts' and companions' environment and the
+    funded-credential disclosure of its handlers; grants and the manifest allowlist filter it afterwards, and the
+    task's own model, account and review reads keep its snapshot (``runtime_settings``). The loader lets the
+    environment stand in for a key the document leaves unset, and a long-lived process still holds what earlier
+    projections mirrored there — this task's start, an earlier task's, the server's it inherited — so a key the owner
+    cleared or deleted since would come back. The read overlays ``skill_environ`` instead: our mirrored values never
+    stand in, an operator's own variable still does. Nothing here touches the process environment."""
+    from ouroboros import config
+
+    with settings_read_environ(skill_environ()):
+        return dict((settings_reader or config.load_settings)() or {})
 
 
 def runtime_settings(*, settings_reader=None) -> dict:

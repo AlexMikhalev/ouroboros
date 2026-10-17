@@ -52,6 +52,12 @@ _TERMINAL_TOKENS = (
 # constant from the sticky set; "dynamic" is a variable or expression that can
 # carry one, which counts because the reducer, not the caller, decides.
 TERMINAL_WRITERS = {
+    # Advances only derived fan-out facts; the locked projector preserves the
+    # CURRENT status, including a concurrently completed terminal result.
+    ('ouroboros/swarm_rollup.py::load_swarm_rollup', 'row["status"]'): 'dynamic',
+    # Selects an already retained actor account; its locked projector preserves
+    # CURRENT lifecycle, including terminal state, and compares the prior pointer.
+    ('ouroboros/review_history_view.py::publish_review_history_view', '"running"'): 'dynamic',
     # Create-only pooled control admission seeds running/scheduled authority;
     # an existing row is returned unchanged, including any terminal status.
     ('supervisor/queue.py::ensure_control_task_result', 'status'): 'dynamic',
@@ -88,10 +94,10 @@ TERMINAL_WRITERS = {
     ('ouroboros/mutation_attribution.py::capture_mutation_baseline', 'status'): 'dynamic',
     ('ouroboros/mutation_attribution.py::record_terminal_mutation_candidates', 'status'): 'dynamic',
     ('ouroboros/post_task_checkpoint.py::set_root_post_task_checkpoint', 'str(existing.get("status") or task.get("status") or STATUS_COMPLETED)'): 'terminal',
-    # Presence recovery asks the owner only after a transport retry has found
-    # an existing, unresolved turn. This field projection preserves the exact
-    # stored status; it cannot terminalize or regenerate the lost attempt.
-    ('ouroboros/presence_runner.py::_write_unresolved_notice', 'str(stored["status"])'): 'dynamic',
+    # Presence recovery records an observation of an existing unresolved turn.
+    # Its field projector preserves CURRENT status, even after a late terminal;
+    # the receipt cannot terminalize or regenerate the lost attempt.
+    ('ouroboros/presence_recovery.py::record_unresolved_turn', 'str(stored["status"])'): 'dynamic',
     # Same terminal status under the locked projector; this records only the
     # deterministic successor link after a positive first-round no-effect proof.
     ('ouroboros/presence_runner.py::_retry_target', 'STATUS_FAILED'): 'terminal',
@@ -101,6 +107,12 @@ TERMINAL_WRITERS = {
     # primitive's required placeholder.
     ('ouroboros/terminal_projection.py::_prepare', 'stored["status"]'): 'dynamic',
     ('ouroboros/terminal_projection.py::_append_project', 'stored["status"]'): 'dynamic',
+    # Main publication retention, retry claims and durable-chat acknowledgement
+    # update readiness/receipt fields under the result lock. Each projector
+    # returns CURRENT status unchanged; none originates a lifecycle transition.
+    ('ouroboros/terminal_projection.py::retain_main_delivery', 'stored["status"]'): 'dynamic',
+    ('ouroboros/terminal_projection.py::claim_main_delivery', 'stored["status"]'): 'dynamic',
+    ('ouroboros/terminal_projection.py::acknowledge_main_delivery', 'stored["status"]'): 'dynamic',
     ('ouroboros/terminal_projection.py::append_terminal_projection', 'status'): 'dynamic',
     ('ouroboros/terminal_projection.py::clear_terminal_projection_obligation', 'str(expected.get("status") or "completed")'): 'terminal',
     ('ouroboros/project_naming.py::spawn_turn_namer._work', 'status'): 'dynamic',
@@ -116,6 +128,11 @@ TERMINAL_WRITERS = {
     # projector; a changed attempt basis aborts, and they never originate a transition.
     ('ouroboros/task_custody.py::_write_custody_fields', 'str(observed.get("status") or "")'): 'dynamic',
     ('ouroboros/tools/control_delegation.py::record_depth_limit_refusal', 'STATUS_FAILED'): 'terminal',
+    # Recovery of a dead attempt whose answer the host already holds (owed/delivered/unreadable
+    # registry evidence): the attempt is finalized from the outbox's bytes as failed /
+    # infra_failed / finalization_incomplete instead of re-running the prompt (both the
+    # timeout reaper's retry admission and dead-worker recovery route through it).
+    ('ouroboros/working_checkpoint.py::adopt_registered_answer', 'STATUS_FAILED'): 'terminal',
     ('supervisor/cancel_publication.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/events_project_routing.py::_persist_promote_rejection', 'STATUS_FAILED'): 'terminal',
     # The promoter's force_plan transfer is a locked field projection like its
@@ -130,6 +147,8 @@ TERMINAL_WRITERS = {
     ('supervisor/events_task_done.py::_refresh_terminal_task_cost', 'current["status"]'): 'dynamic',
     ('supervisor/queue_snapshot.py::restore_pending_from_snapshot', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/queue_snapshot.py::_refuse_restore_invalid_fences', 'STATUS_CANCELLED'): 'terminal',
+    # Explicit calendar expiry retains pending custody until the result and delivery are durable.
+    ('supervisor/queue_timeouts.py::_settle_pending_deadline', '"failed"'): 'terminal',
     # Positive never-admitted refusal; exact receipt readback precedes resource cleanup.
     ('supervisor/task_admission.py::persist_never_admitted_refusal', 'STATUS_FAILED'): 'terminal',
     # Accepted pending restore refusal; retain custody for retry until its terminal is durable.
@@ -352,8 +371,8 @@ def test_c7_the_one_terminal_write_primitive_is_still_one():
     assert source.count("def write_task_result(") == 1
     assert callable(task_results.write_task_result)
     body = _function_source(REPO / "ouroboros" / "task_results.py", "write_task_result")
-    assert "update_json_locked" in body, "the write holds the per-file lock"
-    assert "_is_status_regression" in body, "the reducer is inside the lock, not at callers"
+    assert "patch_document" in body, "the write is one store write transaction"
+    assert "_is_status_regression" in body, "the reducer is inside the transaction, not at callers"
 
 
 # ---------------------------------------------------------------------------

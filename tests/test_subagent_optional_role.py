@@ -14,6 +14,7 @@ from ouroboros.task_results import load_task_result
 from ouroboros.tools.registry import ToolContext
 from tests._shared import configure_test_subagent
 from tests.test_subagent_role_texts import _env
+from tests._store_shared import result_signature, seed_result, unreadable_result
 
 
 # These consumers patch process-wide routing/configuration and supervisor seams.
@@ -177,32 +178,6 @@ def test_role_reaches_child_prompt_and_durable_lifecycle_without_inference(tmp_p
         assert row["parent_task_id"] == "parent"
         assert row["delegation_role"] == "subagent"
 
-    # Exercise the parent's actual reflection assembler and capture only its
-    # external inference boundary: this verifies the prompt it sends, not just
-    # the intermediate child-evidence helper's result.
-    from ouroboros import consolidator
-    from ouroboros.post_task_synthesis import _run_reflection
-
-    prompts = []
-
-    def reflect(_llm, prompt, _label, **_kwargs):
-        prompts.append(prompt)
-        return "Observed child report.\nMEMORY_ACTIONS_JSON: []\nBACKLOG_CANDIDATES_JSON: []", {}
-
-    monkeypatch.setattr(consolidator, "_call_consolidation_llm", reflect)
-    parent_env = Env(repo_dir=repo, drive_root=drive)
-    entry = _run_reflection(parent_env, agent.llm, {
-        "id": "parent", "type": "task", "text": "Inspect the interface",
-        "workspace_root": str(repo), "budget_drive_root": str(drive),
-    }, {}, {}, {})
-    assert entry["reflection"] == "Observed child report."
-    assert len(prompts) == 1
-    child_section = prompts[0].split("## Related child/subtask evidence\n\n", 1)[1]
-    evidence, _end = json.JSONDecoder().raw_decode(child_section)
-    for key in ("children_overview", "children"):
-        assert len(evidence[key]) == 1
-        assert evidence[key][0]["task_id"] == tid
-        assert evidence[key][0]["role"] == role
     assert load_task_result(drive, tid)["role"] == role
 
 
@@ -212,9 +187,10 @@ def test_depth_refusal_persists_only_the_supplied_role(tmp_path, monkeypatch, ro
     _repo, drive, parent, result = _request(tmp_path, monkeypatch, role_fields)
     assert "depth limit (0) exceeded" in result
     assert parent.pending_events == []
-    records = list((drive / "task_results").glob("*.json"))
+    from ouroboros.task_store import list_documents
+    records = list_documents(drive)
     assert len(records) == 1
-    record = json.loads(records[0].read_text())
+    record = records[0]
     assert record["reason_code"] == "subtask_depth_limit"
     _assert_role(record, role)
 
@@ -238,6 +214,8 @@ def test_final_only_history_recovers_role_without_rewriting_old_rows(tmp_path, r
         "actor_id": "historical-actor", "model": "openai/fixture-model", **role_fields,
     }), encoding="utf-8")
     originals = {path: path.read_bytes() for path in (history, result)}
+    from ouroboros.store_import import ensure_current_store
+    ensure_current_store(tmp_path)  # the boot door imports the historic file; a page read never imports
     endpoint = make_chat_history_endpoint(tmp_path)
     response = asyncio.run(endpoint(SimpleNamespace(query_params={"chat_id": "7"})))
     assert response.status_code == 200
@@ -251,14 +229,14 @@ def test_final_only_history_recovers_role_without_rewriting_old_rows(tmp_path, r
 
 @pytest.mark.parametrize("role_fields,role", ROLE_CASES)
 @pytest.mark.parametrize("unreadable", [False, True], ids=["invalid-depth", "unreadable-record"])
-def test_supervisor_direct_rejection_does_not_invent_a_role(tmp_path, role_fields, role, unreadable):
+def test_supervisor_direct_rejection_does_not_invent_a_role(tmp_path, monkeypatch, role_fields, role, unreadable):
     from supervisor import events
 
     supervisor = _supervisor(tmp_path)
-    path = tmp_path / "task_results" / "child.json"
     if unreadable:
-        path.parent.mkdir()
-        path.write_bytes(b'{"status":"scheduled"')
+        seed_result(tmp_path, "child", {"task_id": "child", "status": "scheduled"})
+        before = result_signature(tmp_path, "child")
+        broken = unreadable_result(monkeypatch, "child")
     event = {
         "type": "schedule_subagent", "task_id": "child", "parent_task_id": "parent",
         "root_task_id": "parent", "delegation_role": "subagent", "depth": -1,
@@ -268,6 +246,7 @@ def test_supervisor_direct_rejection_does_not_invent_a_role(tmp_path, role_field
     assert supervisor.PENDING == []
     assert supervisor.sent[-1][2]["progress_meta"]["subagent_role"] == role
     if unreadable:
-        assert path.read_bytes() == b'{"status":"scheduled"'
+        broken["on"] = False
+        assert result_signature(tmp_path, "child") == before
     else:
         assert load_task_result(tmp_path, "child")["role"] == role

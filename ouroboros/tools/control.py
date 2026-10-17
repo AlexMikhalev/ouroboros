@@ -141,7 +141,7 @@ _ROOT_EFFORT_PARAM = {"type": "string", "enum": list(EFFORT_SCALE), "description
 
 
 _SCHEDULE_SUBAGENT_DESCRIPTION = (
-    "Schedule a live child of Ouroboros; returns task_id. Default READ-ONLY children inspect "
+    "Schedule a live child of Ouroboros; returns task_id. Default native READ-ONLY children inspect "
     "local repo/data/history and web/browser. Each returns findings; apart from knowledge notes, memory marks "
     "and chronicle drafts in its own name, it cannot write local state, commit, enable tools, or run "
     "shell/review/runtime/skills. write_surface selects a MUTATIVE (acting) child; you alone commit "
@@ -154,7 +154,10 @@ _SCHEDULE_SUBAGENT_DESCRIPTION = (
     "tree, inherited by descendants; integrate_subagent_patch verifies their combined files. "
     "genesis gives EACH child a separate empty Git repo under the durable projects root, for a new "
     "game/site/app/Ouroboros or independent best-of-N builds; the project directory IS the deliverable, "
-    "never integrated into this repo. Harness-delegated work uses a private snapshot and integrate_delegated_patch. "
+    "never integrated into this repo. Acting harness work uses a private snapshot and integrate_delegated_patch. "
+    "A non-acting Agent session keeps configured access in an evidence-only private checking copy; "
+    "access='readonly' selects read-only session execution. Its captured changes are retained as evidence, "
+    "not product patches: do not call integrate_delegated_patch to apply or reject them. "
     "Runtime data, including installed skill payloads, is never a write_surface. For skill mutation, "
     "call delegate_start(subagent_id=..., prompt=..., root='skill_payload', bucket=..., skill_name=...) "
     "yourself; children cannot open payload delegation and may only design/review it read-only. "
@@ -188,7 +191,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["finish", "stop"]}, "answer": {"type": "string", "description": "The complete answer, including a short correction."},
                 "answer_sha256": {"type": "string", "description": "Exact offered retained or whole held response hash."},
-                "rationale": {"type": "string", "description": "For stop, what remains unfinished."}, "acceptance_subject": {"type": "object", "properties": {"owner_source_sha256": {"type": "string"},
+                "rationale": {"type": "string", "description": "For stop, what remains unfinished; the owner reads it as the stop's cause on the task row. Optional for finish. Over an exposed local acceptance-preparation failure, state the caveat here for author_finish; without it, the host retains the preparation-failure cause, not a validation rejection."}, "acceptance_subject": {"type": "object", "properties": {"owner_source_sha256": {"type": "string"},
                     "effective_criteria": {"type": "string"}, "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
                 }, "required": ["owner_source_sha256"]},
                 "pending_review": {"type": "string", "enum": ["wait", "finish"], "default": "wait"},
@@ -213,7 +216,7 @@ def get_tools() -> List[ToolEntry]:
                 "type": "object",
                 "properties": {
                     "objective": {"type": "string", "description": "What the task must accomplish."},
-                    "title": {"type": "string", "description": "Human-readable task name, <=80 chars; also used as the Project name if the owner later converts the task.", "default": ""},
+                    "title": {"type": "string", "description": "Short task name the owner sees on its card and on the Main receipt, <=80 chars; also the Project name if the owner converts the task. The objective is not shown in its place."},
                     "project_name": {"type": "string", "description": "Display name of a NEW Project for the NEW task; its filesystem id is derived. Use ensure_project_scope to move THIS task instead.", "default": ""},
                     "expected_output": {"type": "string", "description": "What done looks like.", "default": ""},
                     "project_id": {"type": "string", "description": "Optional EXISTING project scope (filesystem-clean id).", "default": ""},
@@ -224,7 +227,7 @@ def get_tools() -> List[ToolEntry]:
                     "predecessor_task_id": {"type": "string", "description": "Required: empty for fresh work, or one settled result id from the host manifest/recent_tasks/get_task_result. Any settled status/project; lists are hints. Name the root for a helper's result. Live roots and pending promotes refuse."},
                     "reasoning_effort": _ROOT_EFFORT_PARAM,
                 },
-                "required": ["objective", "predecessor_task_id"],
+                "required": ["objective", "title", "predecessor_task_id"],
             },
         }, _promote_chat_to_task),
         ToolEntry("ensure_project_scope", {
@@ -268,6 +271,7 @@ def get_tools() -> List[ToolEntry]:
             "parameters": {"type": "object", "properties": {
                 "project_id": {"type": "string", "default": "", "description": "Target project id (filesystem-clean; see list_projects), or empty to emit typed needs_manual_target."},
                 "message": {"type": "string", "description": "The owner message / work to route into the project."},
+                "title": {"type": "string", "description": "Short task name the owner sees on the new root's card, <=80 chars. Required when an existing project is targeted; no title is needed for the manual picker (blank or invalid target), which starts no task."},
                 "reason": {"type": "string", "default": "", "description": "Optional short why-this-project note (provenance)."},
                 "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the id of a settled result (any settled status; any project, the host list is a hint; a helper's result is continued with its root named) to continue it. A live root or a pending promote is refused."},
                 "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional, ONLY with project_id='': the task/project ids you consider plausible, in preference order. The typed picker shows them first; ids not in the host-built option list are ignored."},
@@ -308,7 +312,7 @@ def get_tools() -> List[ToolEntry]:
         # cancel_task + peek_task + discard_child_result are registered by ouroboros/tools/join_ledger.py.
         ToolEntry("request_deep_self_review", {
             "name": "request_deep_self_review",
-            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution: review_change(subject=system, surface=system) with one seat — the enabled catalog row you name in `reviewer` (review pool member or not), else the Main model. An API row runs a bounded read-only inspection episode, an agent-session row reads the repository itself; both receive the core memory whitelist inline byte-exact (memory is never receipt-checked). The report goes to chat and memory/deep_review.md, with the surface=system review record linked.",
+            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution: review_change(subject=system, surface=system) with one seat — the enabled catalog row you name in `reviewer` (review pool member or not), else the Main model. An API row runs a bounded read-only inspection episode, an agent-session row uses its configured access (writable sessions run in a private checking copy and retain evidence without applying changes); both receive the core memory whitelist inline byte-exact (memory is never receipt-checked). The report goes to chat and memory/deep_review.md, with the surface=system review record linked.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "Why you want a review (context for the reviewer)"},
                 "reviewer": {"type": "string", "description": "One enabled catalog row by id or handle; empty = the Main model"},
@@ -398,9 +402,10 @@ def get_tools() -> List[ToolEntry]:
                 "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one "
                 "starts, clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX. A wake-up calling this sets its own "
                 "next one; a wake-up already pending keeps its time; with consciousness off it is stored for later. "
-                "The alarm still adjusts it: a failed wake-up doubles the interval (up to MAX), a pending event "
-                "brings the next wake-up forward, a skipped one retries after MIN (an exhausted allowance waits for "
-                "its reset), and no wake-up starts sooner than MIN after the last wake-up, boot or skip."),
+                "The alarm still adjusts it: a failed wake-up doubles the interval (up to MAX), a skipped one "
+                "retries after MIN (an exhausted allowance waits for its reset), and no wake-up starts sooner than "
+                "MIN after the last wake-up, boot or skip. Events never bring a wake-up forward; the next one "
+                "observes them."),
             "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
         }, _set_next_wakeup),
         ToolEntry("switch_model", {
@@ -437,7 +442,7 @@ def get_tools() -> List[ToolEntry]:
         }, _wait_for_task, timeout_sec=7200),
         ToolEntry("wait_tasks", {
             "name": "wait_tasks",
-            "description": "Wait for MULTIPLE subtasks at once and return a compact structural projection per child (task_id, status, accounted_upper_bound_usd, cost_final, child_result_sha256, outcome_axes, result, trace_summary, capability_delta when the child has something to disclose, duplicate_of) — the right tool to ABSORB a batch of independent children you scheduled in one burst. The full per-child envelope stays on disk in task_results/<task_id>.json (child_result_sha256 pins the exact result you saw; get_task_result returns the full result text plus trace/outcome summaries). With mode=any_terminal it returns as soon as the FIRST child finishes (handle it, then call again for the rest) instead of blocking serially. The JSON also includes live_child_status (running/scheduled/terminal per child) and may early_return (before all terminal) on a child tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon so you can steer, review, or override mid-flight, or on an unread message in your own mailbox (reason=owner_mailbox_pending); the ordinary loop then handles delivery and acknowledgement. An id no surface of this tree ever minted (no task result, no queue row, no tree-ledger row) is flagged unknown_task_id — 'not yet registered or never scheduled' — and unknown_task_ids + a compact children_roster of your ACTUAL direct children are attached so you can repair the wait set instead of re-polling phantoms.",
+            "description": "Wait for MULTIPLE subtasks at once and return a compact structural projection per child (task_id, status, accounted_upper_bound_usd, cost_final, child_result_sha256, outcome_axes, result, trace_summary, capability_delta when the child has something to disclose, duplicate_of) — the right tool to ABSORB a batch of independent children you scheduled in one burst. The full per-child envelope stays in the task store (child_result_sha256 pins the exact result you saw; get_task_result returns the full result text plus trace/outcome summaries). With mode=any_terminal it returns as soon as the FIRST child finishes (handle it, then call again for the rest) instead of blocking serially. The JSON also includes live_child_status (running/scheduled/terminal per child) and may early_return (before all terminal) on a child tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon so you can steer, review, or override mid-flight, or on an unread message in your own mailbox (reason=owner_mailbox_pending); the ordinary loop then handles delivery and acknowledgement. An id no surface of this tree ever minted (no task result, no queue row, no tree-ledger row) is flagged unknown_task_id — 'not yet registered or never scheduled' — and unknown_task_ids + a compact children_roster of your ACTUAL direct children are attached so you can repair the wait set instead of re-polling phantoms.",
             "parameters": {"type": "object", "required": ["task_ids"], "properties": {
                 "task_ids": {"type": "array", "items": {"type": "string"}, "description": "Task IDs returned by schedule_subagent."},
                 "known_result_sha256_by_task": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional task_id to previously obtained child_result_sha256 map. Matching children omit only result/trace and return result_unchanged plus a full-read reference. Missing or different hashes return the usual complete body/trace. Current status/cost/outcome/capability facts remain; wait timing is unchanged."},

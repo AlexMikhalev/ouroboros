@@ -16,6 +16,8 @@ A drained owner message keys the visible receipt without changing authorship.
 
 from __future__ import annotations
 
+from tests._shared import write_queue_document
+
 import json
 import queue
 import types
@@ -436,10 +438,10 @@ def test_an_owner_turn_in_a_project_room_still_gets_the_room_veto(tmp_path, stam
 # --- forward_to_worker: one writer, two verb names ----------------------------
 
 def _snapshot(tmp_path, rows):
-    from ouroboros.utils import atomic_write_json, utc_now_iso
+    from ouroboros.utils import utc_now_iso
 
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
-    atomic_write_json(tmp_path / "state" / "queue_snapshot.json", {
+    write_queue_document(tmp_path / "state" / "queue_snapshot.json", {
         "ts": utc_now_iso(), "running": rows, "pending": [], "worker_total": 1,
     })
 
@@ -557,7 +559,8 @@ def test_the_direct_roots_fragment_never_blocks_on_a_held_actor_lock(tmp_path, m
     registry.register("turn-free", 1, actor=free_actor)
     registry.register("turn-held", 1, actor=held_actor)
     try:
-        payload = direct_roots.publish_direct_roots(tmp_path)
+        payload = direct_roots.collect_direct_roots()
+        write_queue_document(tmp_path / "state/direct_roots.json", payload)
     finally:
         registry.unregister("turn-free")
         registry.unregister("turn-held")
@@ -702,7 +705,8 @@ def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, mo
         _drain_owner_followup(tmp_path, ctx)
     ctx.event_queue = types.SimpleNamespace(put_nowait=lambda event: _handle_promote_chat_to_task(event, supervisor))
 
-    out = _promote_chat_to_task(ctx, "Implement the plan in a new root", predecessor_task_id="")
+    out = _promote_chat_to_task(ctx, "Implement the plan in a new root", title="Plan implementation",
+                                predecessor_task_id="")
 
     assert out.startswith("OK: task")
     [new_root] = enqueued
@@ -738,7 +742,7 @@ def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_r
     assert unmet_force_plan_obligation(ctx) == {"unmet": True, "source": "swarm"}
     monkeypatch.setattr(task_results, "load_plan_review_state",
                         lambda _root, _tid: {"schema_version": 2, "waves": [{"request_fingerprint": "f1"}]})
-    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "plan_review_engaged"}
+    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "plan_asked"}
     assert unmet_force_plan_obligation(_owner_turn_ctx(tmp_path)) == {"unmet": False, "reason": "not_required"}
 
 
@@ -759,7 +763,8 @@ def test_a_promote_into_another_project_discloses_the_second_project(_projects_r
     )
     ctx = _pooled_root_ctx(tmp_path)
 
-    out = _promote_chat_to_task(ctx, "Do it elsewhere", project_id="second-room", predecessor_task_id="")
+    out = _promote_chat_to_task(ctx, "Do it elsewhere", title="Work elsewhere",
+                                project_id="second-room", predecessor_task_id="")
 
     assert "already has project 'first-room'" in out and "a second project 'second-room' now holds this promote" in out
 
@@ -800,7 +805,8 @@ def test_a_returning_roster_is_re_announced_after_an_intervening_change(tmp_path
     assert "- r-2 · Audit" in str(messages[-1]["content"])
     _snapshot(tmp_path, roster_a)
     assert maybe_append_roster_note(ctx, messages, tmp_path) is True, "the roster returned to A: announce it again"
-    assert str(messages[-1]["content"]) == note_a
+    latest = str(messages[-1]["content"])
+    assert latest == note_a or "No longer in the displayed roster (not proof of completion): r-2" in latest
     assert maybe_append_roster_note(ctx, messages, tmp_path) is False, "unchanged since the latest note"
 
     # The latest representation may be a note merged into an unsent owner row

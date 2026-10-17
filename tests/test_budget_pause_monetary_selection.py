@@ -28,6 +28,7 @@ retires only the sleep timing; its own readiness never starts or spends under F.
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -211,7 +212,7 @@ def test_stop_and_unpublished_or_unknown_selection_authority_admit_nothing(tmp_p
     assert stopped == {"ok": False, "error": "cancel_intent_active"}, stopped
     assert _reserve(tmp_path, CHILD) == FENCED
 
-    (tmp_path / "state" / "queue_snapshot.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "state" / "queue_dispatch.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(UsageAccountingError, match="root budget fence authority unavailable"):
         _reserve(tmp_path, CHILD)
 
@@ -489,7 +490,8 @@ def test_a_warm_park_before_the_cold_notification_keeps_the_selection(tmp_path, 
     worker.proc = SimpleNamespace(pid=77, is_alive=lambda: True)
     cold_started = meta["sleep_parked_at"]
     checkpoint = {"wait_id": "warm-after-cold", "task_attempt": meta["attempt"],
-                  "source_ref": {"x": 1}, "reason": "sleep", "sleep": {"senders": [ROOT]}}
+                  "source_ref": {"x": 1}, "reason": "sleep", "sleep": {"senders": [ROOT]},
+                  "budget_paused_sec": child_ctx._budget_paused_sec, "sleep_started_at": time.time()}
     handle_owner_wait({"task_id": CHILD, "wait_id": checkpoint["wait_id"], "task_attempt": meta["attempt"],
                        "worker_id": worker.wid, "pid": 77, "phase": "park", "checkpoint": checkpoint}, workers)
     warm = {"command": [(c.get("phase"), c.get("reason")) for c in sent if c.get("type") == "owner_wait"],

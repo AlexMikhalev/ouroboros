@@ -526,10 +526,10 @@ def capture_review_diff(ctx: Any, repo_dir, *, unified: int = 3) -> str:
 _SESSION_SUBJECT_RETRIEVE = (
     "## Subject (session delivery)\n"
     "The review subject is the STAGED diff of the repository you are running "
-    "in. Retrieve it yourself with whatever your read-only tools allow: if you "
+    "in. Retrieve it yourself with whatever your tools allow: if you "
     "can run commands, `git diff --cached` (and `git diff --cached --name-only` "
-    "for the file list); if your read-only mode withholds command execution — it "
-    "commonly does — read the touched files directly and compare them against "
+    "for the file list); if command execution is withheld — a read-only session "
+    "commonly withholds it — read the touched files directly and compare them against "
     "`.git`. Read the touched files as needed either way."
 )
 
@@ -936,6 +936,32 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
         else:
             _git_bytes(spec.root, ["worktree", "remove", "--force", str(checkout)])
             shutil.rmtree(checkout_root, ignore_errors=True)
+
+
+def round_checkout_repo(ctx: Any, retry_key: str, task_id: str) -> pathlib.Path:
+    """Where ``isolated_checkout`` keeps the checkout of this task's round, retained or not."""
+    from ouroboros.tool_access_paths import canonical_data_root
+
+    return canonical_data_root(ctx) / "state" / CHECKOUT_SUBDIR / checkout_token(retry_key, task_id=task_id) / "repo"
+
+
+@contextlib.contextmanager
+def gate_reading_checkout(ctx: Any, *, retry_key: str, receptive: bool,
+                          retain: Callable[[], Mapping[str, Any]]) -> Iterator[Optional[FrozenSubject]]:
+    """The commit gate's subject frozen in this round's isolated checkout when its author
+    may leave the wave (``review_pause.receptive_author``): every retrieving seat, native
+    and read-only included, then reads immutable bytes through the gate's own capture.
+    A rejoin reads the checkout its wave retained, receptive or not, so the attempt keys
+    stay exact; otherwise ``None`` keeps the live gate read of a synchronous author.
+    A setup failure raises before any seat reads; the caller discloses it."""
+    task_id = str(getattr(ctx, "task_id", "") or "")
+    token = checkout_token(retry_key, task_id=task_id)
+    if not receptive and not round_checkout_repo(ctx, retry_key, task_id).is_dir():
+        yield None
+        return
+    spec = ReviewSubjectSpec(root_kind=ROOT_KIND_SYSTEM, root=str(ctx.repo_dir), kind=SUBJECT_KIND_INDEX, layer="body")
+    with isolated_checkout(ctx, spec, retain=retain, token=lambda _identity: token) as frozen:
+        yield frozen
 
 
 def _retained_checkout_at(checkout: pathlib.Path, tree_sha: str) -> bool:

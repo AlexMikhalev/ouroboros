@@ -34,7 +34,7 @@ from .lib.telegram_state import (
 )
 from .lib import telegram_i18n, telegram_inbound, telegram_quiz
 from .lib.telegram_health import _collect_health, _build_menu_tasks
-from .lib.telegram_notifier import _make_notifier
+from .lib.telegram_notifier import _make_notifier, _notify_enabled, _completion_text
 from .lib.miniapp_registration import _read_status, register as register_miniapp
 from .scripts.telegram_settings import (
     TelegramSettingsError,
@@ -1049,19 +1049,19 @@ def _make_outbound(api):
             if _child_row_held_for_root(api, event):
                 return
 
-            # Generic (non-subagent) progress telemetry → dropped by default; the
-            # typing indicator already signals "working". Opt in via the toggle.
-            if event.get("is_progress") and not _mirror_progress_enabled(local_settings):
+            # Progress telemetry and a root's own card rows → dropped by default (a child's row waits above,
+            # then goes as before); the typing indicator already signals "working". Opt in via the toggle.
+            if (event.get("is_progress") or (event.get("card_row") and event.get("delegation_role") != "subagent")) and not _mirror_progress_enabled(local_settings):
                 return
 
-            # Routing receipts ride the outbound bus as typed annotations with
-            # suppress_bubble (no text). The only one worth a Telegram push is
-            # the actionable refusal: a numbered destination list (#198). The
-            # owner replies with a number in plain words — the LLM router reads
-            # this list from history and dispatches the choice (P5 LLM-first,
-            # no keyword gate) — or taps the picker card in the web UI.
+            # Routing receipts are typed annotations (suppress_bubble, no text). A landed act stays silent except for a
+            # file it could not attach (no message line here to carry it); an actionable refusal is a numbered list (#198)
+            # the owner answers in plain words (the LLM router reads it from history, P5) or on the web picker card.
             if str(event.get("annotation_type") or "") == "routing_ack":
                 if str(event.get("status") or "") != "needs_manual_target":
+                    names = [str(row.get("label") or "file") for row in event.get("attachment_manifest") or [] if isinstance(row, dict) and row.get("status") == "rejected"]
+                    if names:
+                        await client.send_message(chat_id, _LOCALIZED_TEXTS[lang].format("attachments_not_attached", names=", ".join(names)), parse_mode="")
                     return
                 raw_options = event.get("options") if isinstance(event.get("options"), list) else []
                 from ouroboros.project_dialogue import routing_option_label
@@ -1080,12 +1080,21 @@ def _make_outbound(api):
                 return
 
             text = str(event.get("text") or "").strip()
+            completion_summary = event.get("role") == "system" and event.get("system_type") == "project_completion_summary"
+            if completion_summary:
+                notice = event.get("completion_notice")
+                if not _notify_enabled(local_settings, "TELEGRAM_NOTIFY_TASKS"):
+                    # Preserved intermediate output is content, not the optional status line.
+                    # Unrecoverable legacy metadata must not erase unknown content.
+                    text = str(notice.get("salvage") or "") if isinstance(notice, dict) else text
+                elif isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str):
+                    text = _completion_text(event, str(event.get("task_id") or ""), lang)
             if not text:
                 return
             # Honor the host's markdown hint: plain text (markdown=False) is sent
             # verbatim so literal *, _, `, [] aren't mis-parsed as Telegram
             # formatting; an absent/True hint renders markdown→HTML as before.
-            parse_mode = "" if event.get("markdown") is False else "HTML"
+            parse_mode = "" if completion_summary or event.get("markdown") is False else "HTML"
 
             # A host receipt must neither replace nor become the tracked agent reply.
             silent_on = _is_silent_mode_enabled(local_settings) and event.get("role") != "system"
@@ -1356,7 +1365,7 @@ def _make_quiz(api):
                     "message_id": int(message_id or 0), "options": labels,
                     "text": settled_text,
                 })
-                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client)
+                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client, published=event)
         except Exception as exc:
             api.log("error", f"Telegram quiz error: {exc}")
     return handle
@@ -1469,11 +1478,11 @@ def register(api):
                          "placeholder": "on"},
                         {"name": "TELEGRAM_NOTIFY_TASKS", "label": "Notify on task completion", "type": "select",
                          "options": [
-                             {"value": "off", "label": "Off — non-clean finishes only"},
-                             {"value": "on", "label": "On — ✅ Task done · cost · rounds"},
+                             {"value": "off", "label": "Off — no extra completion messages"},
+                             {"value": "on", "label": "On — completion messages"},
                          ],
-                         "help": "A task that ends with warnings, fails or is cancelled always sends one short "
-                                 "line, because Telegram has no task card. On adds the clean finishes.",
+                         "help": "Off also suppresses extra failure and cancellation notices. Replies, files and "
+                                 "questions still arrive; task details retain all outcomes and review evidence.",
                          "placeholder": "off"},
                         {"name": "TELEGRAM_NOTIFY_BUDGET", "label": "Notify on budget thresholds", "type": "select",
                          "options": [

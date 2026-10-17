@@ -58,6 +58,12 @@ def test_the_collector_forwards_only_anchor_rows_and_their_metadata_and_no_money
     assert not allowed & content
     assert not {name for name in allowed if "cost" in name or name.endswith("_usd")}  # ACCOUNTING_RULE
     assert set(rc.CORRELATION_IDS) <= allowed  # every join key ships
+    assert {"record_contract_version", "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
+            "session_id", "review_wave_id", "review_slot_id", "logged_at"} <= allowed
+    # Filtering preserves values (including null); it must never coerce null to
+    # zero or stamp a historical row with the current writer's contract version.
+    assert '. = filter(row)' in transform["source"]
+    assert '.record_contract_version =' not in transform["source"]
     for row in rc.ANCHOR_ROWS:
         assert set(row.natural_key) <= allowed, row.type
 

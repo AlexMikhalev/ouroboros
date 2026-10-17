@@ -499,8 +499,11 @@ def test_late_settle_raises_revision_and_a_stale_snapshot_never_overwrites(tmp_p
     assert [json.loads(line)["revision"] for line in lines] == [1, 2]
     assert rl.revise_record(tmp_path, "rl-absent", lambda p: p) is None
     noted = rl.note_author_decision(tmp_path, record.record_id, {"disposition": "accepted", "rationale": "ok"})
-    assert noted["revision"] == 3 and noted["author_decision"] == {
+    decision = dict(noted["author_decision"])
+    source = decision.pop("source_ref")
+    assert noted["revision"] == 3 and decision == {
         "disposition": "accepted", "rationale": "ok", "reused_record_id": record.record_id}
+    assert json.loads(rl.read_source(tmp_path, "task-1", source))["decision"] == decision
 
 
 def test_tests_evidence_lands_only_on_the_record_of_the_tested_tree(tmp_path):
@@ -643,68 +646,45 @@ def test_free_refusal_before_dispatch_is_a_not_dispatched_record(candidate, monk
     assert _attempt_rows(ctx)[-1].block_reason == "review_cycles_exhausted"
 
 
-def test_w2_an_empty_pool_record_names_pool_empty_as_its_dispatch_refusal(candidate, monkeypatch):  # noqa: F811
-    """The wave exits at assembly on an empty pool (``_prepare_unified_review`` →
-    ``pool_empty``, nothing dispatched); the record is NOT_DISPATCHED and names that
-    cause itself, so a reader of the ledger sees the configured fact, not a bare
-    "nothing dispatched" (under blocking the gate's block is recorded beside it)."""
-    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_SENTENCE
-
-    ctx = candidate
-
-    def reviewer(_ctx, message, **kw):
-        ctx._last_review_block_reason = "pool_empty"
-        ctx._last_review_structured = {"rows": [], "started_ts": "2026-10-08T00:00:00+00:00"}
-        return f"⚠️ REVIEW_BLOCKED: review NOT_PERFORMED — {REVIEW_POOL_EMPTY_SENTENCE}", CouplingOutcome(), "pool_empty", []
-
-    _wire(ctx, monkeypatch, reviewer)
-    result = _cycle(ctx)
-    assert result["status"] == "blocked" and result["block_reason"] == "pool_empty" and result["review_record_id"]
-    record = rl.load_record(rl.ledger_root(ctx), result["review_record_id"])
-    assert record["verdict"]["aggregate"] == "NOT_DISPATCHED" and record["verdict"]["reason"] == "dispatch_refusal"
-    assert record["dispatch_refusal"] == {"kind": "pool_empty", "message": REVIEW_POOL_EMPTY_SENTENCE}
-    assert record["rows"] == [] and record["panel"]["seats"] == 0 and record["cost"] == {"usd": 0.0, "unknown": False}
-    assert "gate_block:pool_empty" in record["verdict"]["degraded_reasons"]
-    assert _attempt_rows(ctx)[-1].block_reason == "pool_empty"
-
-
-def test_w2_the_real_cycle_on_an_unmarked_catalog_records_pool_empty_and_hands_the_author_the_decision(candidate, monkeypatch):  # noqa: F811
-    """V17: one real ``_run_reviewed_stage_cycle`` under advisory enforcement over a catalog
-    with no row marked Reviewer — nothing of the review path is stubbed (the tests preflight
-    aside), so the empty pool is met where it really is, at assembly. The ledger record is
-    NOT_DISPATCHED with ``pool_empty`` as its dispatch refusal, the attempt row carries the
-    same code, nothing was paid, and the author gets the typed outcome to decide on: the
-    reviewed status with the pool-empty sentence, no block, and a review reference that
-    names the record (never a silent PASS and never a provider-key complaint)."""
-    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_SENTENCE
+def test_w2_the_real_cycle_on_an_unmarked_catalog_reviews_on_the_main_seat_alone(candidate, monkeypatch):  # noqa: F811
+    """V17, owner decision B: one real ``_run_reviewed_stage_cycle`` under advisory enforcement
+    over a catalog with no row marked Reviewer — only the paid fan-out is answered here and the
+    tests preflight skipped — reviews on ONE seat, the Main model alone: the fan-out is asked
+    for Main's model only, the ledger record's one row is seat ``main`` asked both parts, it is
+    a dispatched wave (no dispatch refusal, never the retired ``pool_empty``), and the gate
+    records the single reviewer's lost diversity."""
+    from ouroboros.tools import review as review_mod
+    from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS
     from tests.review_pool_rosters import FACTORY_MODELS, pool_roster, pool_seat, set_review_pool
 
     ctx = candidate
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    monkeypatch.setenv("OUROBOROS_MODEL", "openai/main-model")
     set_review_pool(monkeypatch, pool_roster(pool_seat("helper", FACTORY_MODELS[0], marked=False)))
     git._reset_commit_review_state(ctx)
     monkeypatch.setattr(git, "_run_review_preflight_tests", lambda *a, **kw: None)
+    coupling = [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": "checked the consumers; clean"}
+                for item in sorted(SCOPE_REQUIRED_ITEMS)]
+    seated = []
 
+    def fan_out(*_args, **kwargs):
+        seated.append(list(kwargs.get("models") or []))
+        return json.dumps({"results": [{
+            "model": "openai/main-model", "slot_id": "main", "verdict": "PASS",
+            "text": json.dumps({"change": [], "change_clean": True, "coupling": coupling}),
+            "tokens_in": 0, "tokens_out": 0, "cost_estimate": 0.0}]})
+
+    monkeypatch.setattr(review_mod, "_handle_multi_model_review", fan_out)
     result = _cycle(ctx)
 
-    assert result["status"] == "reviewed" and ctx._last_review_block_reason == "pool_empty"
-    head, payload = result["message"].split("\n", 1)
-    assert "Review outcome returned before commit" in head and "no commit, tag or push occurred" in head
-    outcome = json.loads(payload)
-    assert outcome["review_outcome"]["blocked"] is False
-    assert outcome["review_outcome"]["block_reason"] == "pool_empty"
-    said = " ".join(f["reason"] for f in outcome["review_outcome"]["advisory_findings"])
-    assert REVIEW_POOL_EMPTY_SENTENCE in said and "OPENROUTER_API_KEY" not in said
-    record_id = outcome["review_reference"]["review_record_id"]
-    record = rl.load_record(rl.ledger_root(ctx), record_id)
-    assert record["verdict"]["aggregate"] == "NOT_DISPATCHED" and record["verdict"]["reason"] == "dispatch_refusal"
-    assert record["dispatch_refusal"] == {"kind": "pool_empty", "message": REVIEW_POOL_EMPTY_SENTENCE}
-    assert record["rows"] == [] and record["panel"]["seats"] == 0 and record["cost"] == {"usd": 0.0, "unknown": False}
-    # Advisory did not block, so the record carries no gate block (the blocking test above
-    # does): the configured refusal itself is the record's fact.
-    assert record["verdict"]["degraded_reasons"] == []
+    assert seated == [["openai/main-model"]], "the Main seat is the one reviewer"
+    assert getattr(ctx, "_last_review_block_reason", "") != "pool_empty"
+    assert "single_reviewer_no_diversity" in ctx._review_degraded_reasons
     row = _attempt_rows(ctx)[-1]
-    assert (row.status, row.block_reason, row.review_record_id) == ("reviewed", "pool_empty", record_id)
+    record = rl.load_record(rl.ledger_root(ctx), row.review_record_id)
+    assert [(seat["seat_id"], list(seat["parts"])) for seat in record["rows"]] == [("main", list(BOTH))]
+    assert record["panel"]["seats"] == 1 and not record.get("dispatch_refusal")
+    assert record["verdict"]["aggregate"] != "NOT_DISPATCHED", (result, record["verdict"])
 
 
 def _advisory_push_setup(ctx, monkeypatch):
@@ -760,7 +740,7 @@ def test_pending_custody_record_settles_in_place_on_the_exact_retry(candidate, m
     assert len(calls) == 2, second
     settled = rl.load_record(rl.ledger_root(ctx), record_id)
     assert settled["state"] == "settled" and settled["revision"] == 2 and settled["verdict"]["aggregate"] == "PASS", second
-    assert f"review_record_id: {record_id}" in second
+    assert record_id in second, "the returned outcome names the record it settled"
     assert [r["record_id"] for r in rl.recent_records(rl.ledger_root(ctx), ctx.task_id, 5)] == [record_id]
     assert rl.recent_records(rl.ledger_root(ctx), ctx.task_id, 5)[0]["revision"] == 2
 
@@ -1007,7 +987,7 @@ def test_tests_fact_is_passed_only_for_a_candidate_bound_proof(candidate, monkey
     ctx._preflight_tests_passed = True  # the runner's flag from an EARLIER candidate survives in the process
     ctx._preflight_test_proof = None
     assert facts() == {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}
-    monkeypatch.setattr(commit_admission, "preflight_test_proof_matches", lambda ctx, repo: True)
+    monkeypatch.setattr(commit_admission, "preflight_test_proof_matches", lambda ctx, repo, **_: True)
     assert facts() == {"policy": "run", "result": "passed", "proof": "candidate_bound"}
     ctx._preflight_tests_passed = False
     assert facts() == {"policy": "NOT_RUN", "result": "unknown"}

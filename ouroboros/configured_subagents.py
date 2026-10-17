@@ -34,7 +34,8 @@ REVIEW_DELIVERIES = (REVIEW_DELIVERY_NATIVE, REVIEW_DELIVERY_PACKET)
 MINTED_FROM_REVIEW_LANE = "review_lane"
 MINTED_FROM_FACTORY_DEFAULT = "factory_default"
 MINTED_FROM_VALUES = (MINTED_FROM_REVIEW_LANE, MINTED_FROM_FACTORY_DEFAULT)
-SESSION_ACCESS_PROFILES = ("workspace_write", "full")
+SESSION_ACCESS_PROFILES = ("workspace_write", "full")  # profiles with technical write access
+SESSION_ACCESS_CHOICES = ("readonly", *SESSION_ACCESS_PROFILES)
 SESSION_ACCESS_LOWERING = ("readonly", "workspace_write")
 # Removal marker, not a runtime gate: the singleton/Heavy reader is intentionally
 # one compatibility window rather than a permanent second configuration system.
@@ -239,8 +240,8 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
         )
         _validate_session_target(route, where)
         access = row.get("access", "full") if route.is_session else ""
-        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_PROFILES):
-            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be workspace_write or full")
+        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_CHOICES):
+            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be readonly, workspace_write or full")
         if "access" in row and not route.is_session:
             raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access is meaningful only for agent_session")
         effort = _effort(row.get("effort"), where)
@@ -339,6 +340,14 @@ def serialize_configured_subagents(config: ConfiguredSubagents) -> str:
 def normalize_configured_subagents(raw: Any) -> tuple[ConfiguredSubagents, str]:
     config = parse_configured_subagents(raw)
     return config, serialize_configured_subagents(config)
+
+
+def canonical_subagents(raw: Any) -> str:
+    """A catalog's canonical text, posted object and stored text alike; ``""`` when nothing valid is there."""
+    try:
+        return normalize_configured_subagents(raw)[1]
+    except ValueError:
+        return ""
 
 
 def configured_subagents_fingerprint(config: ConfiguredSubagents) -> str:
@@ -477,12 +486,8 @@ def roster_save_error(raw: Any, stored_settings: Mapping[str, Any], body: Mappin
         return ""
     try:
         config = parse_configured_subagents(raw)
-        try:
-            stored = serialize_configured_subagents(
-                parse_configured_subagents(stored_settings.get(SUBAGENTS_SETTING)))
-        except ValueError:
-            stored = ""  # nothing valid is stored: this save authors the roster
-        if serialize_configured_subagents(config) != stored:
+        # Nothing valid stored ("") means this save authors the roster.
+        if serialize_configured_subagents(config) != canonical_subagents(stored_settings.get(SUBAGENTS_SETTING)):
             validate_unique_engines(config, {**stored_settings, **body})
     except ValueError as exc:
         return str(exc)
@@ -637,7 +642,8 @@ def resolve_configured_subagents(
     _append_legacy_model_rows(items, settings, include_ids={"legacy-heavy"})
     if default_candidate is not None:
         _append_candidate_rows(items, default_candidate.items)
-    _append_legacy_model_rows(items, settings, include_ids={"fast-scout"})
+    if items:  # the Light stand-in joins another actor, never in place of a Main without access
+        _append_legacy_model_rows(items, settings, include_ids={"fast-scout"})
     if items:
         return ConfiguredSubagentsResolution(
             make_configured_subagents(
@@ -657,7 +663,7 @@ def resolve_settings_subagent_candidate(
 
     This is presentation-time candidate construction, not runtime enablement:
     ``SOURCE_UNDECIDED`` remains unsaved and invisible to new-ID dispatch until
-    an explicit Settings save or onboarding completion materializes it.
+    an Agents edit saved in Settings or onboarding completion materializes it.
     """
     default_candidate = None
     diagnostics: list[dict[str, Any]] = []
@@ -707,7 +713,9 @@ def _append_legacy_model_rows(
 ) -> None:
     from ouroboros.provider_models import model_has_credentials_in_settings
 
-    seen = {(row.route.kind, row.route.target_id, row.route.credential_profile_id) for row in items}
+    # A legacy row is an unpinned stand-in for its model: a row already running that model,
+    # in whatever binding (a compiled role row carries its role's pin), covers it.
+    seen = {(row.route.kind, row.route.target_id) for row in items}
     heavy = _legacy_model_target(settings, "HEAVY", "OUROBOROS_MODEL_HEAVY")
     light_key = "OUROBOROS_MODEL_LIGHT"
     light_slot = "LIGHT"
@@ -720,7 +728,7 @@ def _append_legacy_model_rows(
     ):
         if include_ids is not None and row_id not in include_ids:
             continue
-        identity = (ROUTE_KIND_API_MODEL, model, "")
+        identity = (ROUTE_KIND_API_MODEL, model)
         if (
             not model
             or identity in seen
@@ -748,16 +756,13 @@ def _append_candidate_rows(
     items: list[ConfiguredSubagent],
     candidates: Sequence[ConfiguredSubagent],
 ) -> None:
-    """Merge compiler defaults after preserved legacy intent, by route identity."""
-    seen = {(row.route.kind, row.route.target_id, row.route.credential_profile_id) for row in items}
+    """Merge compiler defaults after preserved legacy intent, each as compiled (its whole
+    binding; the compiler already made them distinct). A model a preserved legacy row runs
+    stays that row's, as for ``_append_legacy_model_rows``."""
+    legacy = {(row.route.kind, row.route.target_id) for row in items}
     used_ids = {row.subagent_id for row in items}
     for candidate in candidates:
-        identity = (
-            candidate.route.kind,
-            candidate.route.target_id,
-            candidate.route.credential_profile_id,
-        )
-        if identity in seen:
+        if (candidate.route.kind, candidate.route.target_id) in legacy:
             continue
         row_id = candidate.subagent_id
         suffix = 2
@@ -770,11 +775,11 @@ def _append_candidate_rows(
                 recommended_use=candidate.recommended_use,
                 route=candidate.route,
                 effort=candidate.effort,
+                processing_preference=candidate.processing_preference,
                 access=candidate.access,
                 enabled=candidate.enabled,
             )
         )
-        seen.add(identity)
         used_ids.add(row_id)
 
 
@@ -814,7 +819,7 @@ __all__ = [
     "REVIEW_DELIVERY_NATIVE",
     "REVIEW_DELIVERY_PACKET",
     "SCOUT_RECOMMENDATION",
-    "SESSION_ACCESS_PROFILES",
+    "SESSION_ACCESS_PROFILES", "SESSION_ACCESS_CHOICES",
     "SESSION_ACCESS_LOWERING",
     "SOURCE_CONFIGURED",
     "SOURCE_INVALID",
@@ -823,6 +828,7 @@ __all__ = [
     "SOURCE_UNDECIDED",
     "SUBAGENTS_RECEIPT_KEY",
     "SUBAGENTS_SETTING",
+    "canonical_subagents",
     "configured_subagents_dict",
     "configured_subagents_fingerprint",
     "engine_handle",

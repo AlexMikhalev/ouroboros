@@ -480,18 +480,25 @@ def test_not_dispatched_error_remains_retryable_for_same_cycle(tmp_path):
 
 @pytest.mark.parametrize("physical_state", ["reserved", "released"])
 def test_pre_dispatch_capture_state_remains_retryable_for_same_cycle(
-    tmp_path, physical_state,
+    tmp_path, monkeypatch, physical_state,
 ):
     """Explicit pre-dispatch capture facts must not become sticky replay rows."""
+    import time
     from types import SimpleNamespace
 
-    from ouroboros.review_custody import run_custodied_review_slots
+    from ouroboros.review_custody import (
+        _ACTIVE, _ACTIVE_LOCK, _attempt_key, run_custodied_review_slots,
+    )
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.review_substrate import ReviewActorRecord, ReviewRequest, ReviewSlot
     from ouroboros.usage_accounting import UsageScope
 
     calls = []
     ctx = SimpleNamespace()
+    # Classification and retry are this case's contract; the late cases pin
+    # expiry. Worker start/publication latency is not a classification change.
+    clock_start = time.monotonic()
+    monkeypatch.setattr("ouroboros.review_custody.monotonic_now", lambda _slot: clock_start)
     request = ReviewRequest(
         surface="plan_review", goal="review", task_id=f"retryable-{physical_state}",
         retry_key=f"plan_review:retryable-{physical_state}:1",
@@ -522,6 +529,16 @@ def test_pre_dispatch_capture_state_remains_retryable_for_same_cycle(
         run_slot=run_slot, error_actor=error_actor,
     )
     first = run_custodied_review_slots(**args)
+    # Publication precedes leaving custody; the retry must follow that handoff.
+    key = _attempt_key(request, slot)
+    deadline = time.monotonic() + 1.0
+    while True:
+        with _ACTIVE_LOCK:
+            settled = key not in _ACTIVE
+        if settled:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
     second = run_custodied_review_slots(**args)
 
     assert [actor.operation_state for actor in first] == ["settled"]
@@ -530,7 +547,7 @@ def test_pre_dispatch_capture_state_remains_retryable_for_same_cycle(
     assert not getattr(ctx, "_review_settled_attempts", {})
 
 
-def test_late_pre_dispatch_capture_state_remains_retryable_for_same_cycle(tmp_path):
+def test_late_pre_dispatch_capture_state_remains_retryable_for_same_cycle(tmp_path, monkeypatch):
     """A late worker release must not become a sticky replay row either."""
     import threading
     import time
@@ -551,6 +568,15 @@ def test_late_pre_dispatch_capture_state_remains_retryable_for_same_cycle(tmp_pa
     release_late = threading.Event()
     late_finished = threading.Event()
     ctx = SimpleNamespace()
+    clock_start = time.monotonic()
+
+    def logical_now(_slot):
+        # Expire the first attempt only once its worker is blocked. Keep the
+        # retry inside its own unchanged 10ms logical window: wall-clock worker
+        # startup/publication latency is not the retryability contract here.
+        return clock_start + (1.0 if late_started.is_set() else 0.0)
+
+    monkeypatch.setattr("ouroboros.review_custody.monotonic_now", logical_now)
     request = ReviewRequest(
         surface="plan_review", goal="review", task_id="late-retryable-release",
         retry_key="plan_review:late-retryable-release:1",

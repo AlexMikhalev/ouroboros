@@ -69,7 +69,20 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
     # Everything reversible is behind us (checkout landed, no-resume
     # intent durable): from here the restart always follows, and every
     # unconfirmed stop is a critical diagnostic, never a deferral.
-    stopped_task_ids = _stop_owned_work(ctx)
+    try:
+        stopped_task_ids = _stop_owned_work(ctx)
+    except Exception:
+        # The stop may not veto. Continuing this generation instead would leave the durable
+        # flags above live under it (reviews and pauses read them as a stop, follow-ups as a
+        # restart in progress): the restart follows, and the next start reconciles the rest.
+        log.critical("Owner restart: stopping owned work raised; the restart proceeds and the next "
+                     "generation reconciles the remainder", exc_info=True)
+        stopped_task_ids = []  # unknown: the notice claims no stopped task
+    except BaseException:
+        from supervisor.queue import reopen_queue_returns
+
+        reopen_queue_returns("owner_restart")  # no exit follows here: this generation keeps admitting
+        raise
     try:
         if reply is not None:
             # Say only what happened: with nothing owned the stop sentence
@@ -178,7 +191,7 @@ def _stop_owned_work(ctx: Any) -> list:
         if confirmed is False:
             log.critical("Owner restart: worker shutdown is unconfirmed; the restart proceeds and "
                          "the next generation reconciles the remainder")
-    try:
+    try:  # attach only; no replay_pending: a Restart re-POSTs nothing, the next generation's sweep does
         reconcile_orphaned_runs(DATA_DIR, running_task_ids=set(), gateway_factory=read_owned_gateway)
     except Exception:
         log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
@@ -203,13 +216,15 @@ def _prepare_owner_restart_returns(ctx: Any) -> tuple:
 
     try:
         from ouroboros.owner_wait import prepare_owner_wait_handoffs
+        from supervisor.queue import name_queue_returns
         from supervisor.restart_retention import prepare_restart_returns
         from supervisor.workers import direct_chat_turns
 
         _LAST_RETURN_TX["id"] = ""
         transaction_id = uuid.uuid4().hex
-        owner_waits = prepare_owner_wait_handoffs(DATA_DIR, _question_waits(ctx.RUNNING), transaction_id)
-        returning = prepare_restart_returns(DATA_DIR, dict(ctx.RUNNING or {}), list(ctx.PENDING or []),
+        owner_waits = prepare_owner_wait_handoffs(DATA_DIR, ctx.RUNNING, transaction_id, include_sleep=False)
+        returning = prepare_restart_returns(DATA_DIR, dict(ctx.RUNNING or {}),
+                                            name_queue_returns(ctx.PENDING or [], "owner_restart"),
                                             transaction_id=transaction_id, direct=direct_chat_turns(),
                                             owner_wait_ids=owner_waits)
         _LAST_RETURN_TX["id"] = transaction_id
@@ -217,22 +232,6 @@ def _prepare_owner_restart_returns(ctx: Any) -> tuple:
     except Exception:
         log.warning("Owner restart: saved work returns were not prepared; the next boot holds them", exc_info=True)
         return set(), set()
-
-
-def _question_waits(running: Any) -> dict:
-    """Only question/review waits ride this Restart's transaction; a warm sleep or a warm
-    owner-Pause park keeps its own retention (an exact pause only Resume releases, §9)."""
-    from ouroboros.task_results import load_task_result
-
-    chosen = {}
-    for task_id, meta in dict(running or {}).items():
-        try:
-            wait = (load_task_result(DATA_DIR, task_id, strict=True) or {}).get("owner_wait") or {}
-        except Exception:
-            continue  # unreadable: the ordinary stop path keeps whatever custody it has
-        if wait.get("reason") in {"owner", "review"}:
-            chosen[task_id] = meta
-    return chosen
 
 
 def arm_owner_restart_transaction() -> str:
@@ -318,23 +317,21 @@ def _stop_owned_daemon_for_new_pin() -> None:
 def _next_generation_pin():
     """The engine pin the NEXT generation selects.
 
-    Ordinarily the landed checkout's own tracked pin file. When this restart carries
-    a bound body adoption whose switch changes that file, the next generation boots
-    the candidate commit: its pin is read from that commit
+    Ordinarily the landed checkout's own tracked pin file. When a store switch intent is
+    recorded, the restart exit's seam moves the checkout to the intent's target after this
+    cleanup: that target's pin is the answer (``store_switch.next_engine_pin``). When this
+    restart carries a bound body adoption whose switch changes that file, the next
+    generation boots the candidate commit: its pin is read from that commit
     (``body_adoption.bound_candidate_file``), through the same validating parser.
     """
-    import tempfile
-
-    from ouroboros import body_adoption
+    from ouroboros import body_adoption, config, store_switch
     from ouroboros.claudexor_runtime import _PIN_FILENAME, load_runtime_pin
 
+    intent = store_switch.read_switch_intent(DATA_DIR)
+    if intent is not None:
+        return store_switch.next_engine_pin(config.REPO_DIR, intent["target_sha"])
     raw = body_adoption.bound_candidate_file(DATA_DIR, "ouroboros/" + _PIN_FILENAME)
-    if raw is None:
-        return load_runtime_pin()
-    with tempfile.TemporaryDirectory(prefix="ouroboros-next-pin-") as scratch:
-        pin_file = pathlib.Path(scratch) / _PIN_FILENAME
-        pin_file.write_bytes(raw)
-        return load_runtime_pin(pin_file)
+    return load_runtime_pin() if raw is None else load_runtime_pin(data=raw)
 
 
 def _live_running_task_ids(ctx: Any) -> list:
@@ -425,6 +422,32 @@ def _safe_restart_serialized(safe_restart_fn, *, reason: str, unsynced_policy: s
         return safe_restart_fn(reason=reason, unsynced_policy=unsynced_policy)
     finally:
         release_update_lock(lock_fh)
+
+
+def _noticed_bootstrap(safe_restart_fn):
+    """Bootstrap's ``safe_restart``: a failure after it RAN (a refused checkout step, dependency
+    sync, the import test) is also told in the owner's chat as the message's headline line; the
+    whole message, Git's output included, stays in the returned value, the log and supervisor.jsonl.
+    A reset blocked to protect local changes is told as kept files, not as a failure.
+    ``_safe_restart_serialized``'s deliberate deferrals never call it and stay silent."""
+    def run(**kwargs):
+        ok, msg = safe_restart_fn(**kwargs)
+        if not ok:
+            headline = (str(msg).splitlines() or ["no detail"])[0]
+            kept = headline.partition(": ")[2]  # after "Failed checkout <branch>"
+            text = (f"Startup kept the current files: {kept}" if kept.startswith("Reset blocked (")
+                    else f"Startup bootstrap failed: {headline}")
+            try:
+                from supervisor.message_bus import notification_chat_route, send_with_budget
+                from supervisor.state import load_state
+
+                owner_chat = notification_chat_route(load_state().get("owner_chat_id"))
+                if owner_chat is not None:
+                    send_with_budget(owner_chat, text, role="system", system_type="startup_notice")
+            except Exception:
+                log.warning("Bootstrap failure notice was not delivered", exc_info=True)
+        return ok, msg
+    return run
 
 
 def _shutdown_task_cleanup_args(restart_requested: bool) -> tuple[str, str]:

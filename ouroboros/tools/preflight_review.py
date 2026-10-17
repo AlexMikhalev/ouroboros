@@ -24,13 +24,14 @@ def _handle_preflight_review(
     review_rebuttal: str = "", paths: Optional[List[str]] = None, deterministic_only: bool = False,
     source: str = "",
 ) -> str:
-    from ouroboros.tools.commit_gate import preflight_reviewer_error, release_diagnostics
+    from ouroboros.tools.commit_gate import commit_preflight_choice_error, release_diagnostics
 
     if deterministic_only:
         return json.dumps(release_diagnostics(ctx, paths, source), ensure_ascii=False, indent=2)
     reviewer = str(reviewer or "").strip()
-    error = (preflight_reviewer_error(reviewer) if reviewer
-             else "reviewer is required: name one enabled catalog row by id or handle")
+    error = (commit_preflight_choice_error(reviewer, skipped=False, continuation=False, ctx=ctx,
+                                          goal=goal or commit_message, scope=scope, review_rebuttal=review_rebuttal)
+             if reviewer else "reviewer is required: name one enabled catalog row by id or handle")
     if error:
         return argument_refusal(ctx, "TOOL_ARG_ERROR (preflight_review)", [error], effect="No reviewer was dispatched.")
     from ouroboros.tools.review_change import _handle_review_change
@@ -50,8 +51,8 @@ def _next_step(projection: Dict[str, Any]) -> str:
         return ("Cyber Pro: whether and how to commit is your judgment; findings, missing evidence and pending "
                 "operations stay recorded, and this is not a PASS." + carried)
     return ("When the edits are complete, run commit_reviewed(commit_message='...'): the deterministic checks, "
-            "the tests and the review panel decide; preflight_reviewer='<enabled row>' optionally buys one "
-            "early look first." + carried)
+            "the tests and the review panel run (Blocking gates; Advisory returns the outcome before any commit); "
+            "preflight_reviewer='<enabled row>' optionally buys one early look first." + carried)
 
 
 def _handle_review_status(

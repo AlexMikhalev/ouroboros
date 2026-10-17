@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from ouroboros import consolidator, context, knowledge as store
+from ouroboros import context, knowledge as store
 from ouroboros.artifacts import read_actor_source_bytes
 from ouroboros.memory import Memory
 from ouroboros.presence_context import build_presence_context_section
@@ -44,8 +44,11 @@ def previous_bytes(root, task_id, ref):
 
 
 def read_previous(registry, ref):
+    from ouroboros.tools.core_file_tools import delivered_source_prefix
+
     reply = registry.execute(ref["read"]["tool"], ref["read"]["arguments"])
-    return json.loads(reply.split("\n", 1)[1])[ref["field"]].encode("utf-8")
+    source = delivered_source_prefix(registry._ctx.last_read_view, reply, len(reply))  # numbered display
+    return json.loads(source)[ref["field"]].encode("utf-8")
 
 
 def setup(tmp_path, scope="global", fork=False):
@@ -256,8 +259,8 @@ def test_malformed_whole_yaml_remains_readable_visible_and_not_mutated_by_lifecy
     assert address.path.read_bytes() == raw
 
 
-def test_ordinary_overwrites_and_nominations_cannot_author_or_remove_lifecycle(tmp_path):
-    ctx, registry, address, original = setup(tmp_path)
+def test_ordinary_overwrites_and_edits_cannot_author_or_remove_lifecycle(tmp_path):
+    _, registry, address, original = setup(tmp_path)
     for field in ("archive: null", "archive: {at: now, reason: old}"):
         reply = registry.execute("knowledge_write", {"topic": TOPIC,
             "content": f"---\n{field}\n---\nOops", "expected_revision": original.revision})
@@ -272,14 +275,13 @@ def test_ordinary_overwrites_and_nominations_cannot_author_or_remove_lifecycle(t
     receipt(registry.execute("knowledge_write", {"topic": TOPIC, "content": "New body.",
                                                    "expected_revision": archived.revision}))
     archived = store.read_knowledge_note(address)
-    entries = [{"topic": TOPIC, "scope": "global", "expected_revision": archived.revision,
-                "edits": [{"old_text": "New body.", "new_text": "Nominated correction.", "basis": "Read source."}],
-                "summary": "NOMINATED SUMMARY"}]
-    outcomes = consolidator._write_knowledge_entries(address.shelf, entries, context=ctx)
-    assert outcomes[0]["ok"], outcomes
+    # An anchored edit with a revised summary keeps the lifecycle field too.
+    receipt(registry.execute("knowledge_write", {"topic": TOPIC, "mode": "edit", "old_str": "New body.",
+                                                   "content": "Edited correction.", "summary": "EDITED SUMMARY",
+                                                   "expected_revision": archived.revision}))
     assert store.read_knowledge_note(address).state == "archived"
-    assert "NOMINATED SUMMARY" not in registry.execute("knowledge_list", {})
-    assert "NOMINATED SUMMARY" in registry.execute("knowledge_list", {"view": "archived"})
+    assert "EDITED SUMMARY" not in registry.execute("knowledge_list", {})
+    assert "EDITED SUMMARY" in registry.execute("knowledge_list", {"view": "archived"})
 
 
 @pytest.mark.parametrize("mode", ["archive", "restore"])

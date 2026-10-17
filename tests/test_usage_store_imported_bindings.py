@@ -7,8 +7,8 @@ authority question the journal-era binding tests asked
 journals compacted once or twice, carriage stripped, unknown or foreign,
 amendments, Continue), each with the data root as it was just before the
 question (journal, task results, queue snapshot), the budget environment, the
-arguments and the shipped answer. Here each question is asked again of a fresh
-root holding the same files: the store's one-time import reads that journal
+arguments and the shipped answer. Here each question is asked again of a private
+copy of its imported starting state: the store's one-time import reads that journal
 (aggregates with their weight, ``BindingIndex`` carriage included) and must
 answer the same. Provenance: ``record_binding_checkpoints.py`` beside the
 fixture.
@@ -98,9 +98,40 @@ def test_the_fixture_covers_every_question_kind():
     assert any("original_root_binding" in journal for journal in journals), "carriage is replayed"
 
 
+@pytest.fixture(scope="session")
+def imported_binding_seeds():
+    # Immutable file bytes only. No connection, mutable root or query result is
+    # shared; even read-looking questions may pin a previously absent binding.
+    return {}
+
+
+def _materialize_imported_seed(root, checkpoint, seeds):
+    from ouroboros import usage_store
+
+    # The fixture has 184 file states and 185 (files, environment) states.
+    # Keep the environment in the key: defaults can affect an import.
+    key = (tuple(sorted(checkpoint["files"].items())), tuple(sorted(checkpoint["env"].items())))
+    if key not in seeds:
+        _materialize(root, checkpoint)
+        usage_store.migrate_from_journal(root)
+        usage_store.forget(root)
+        snapshot = tuple((path.relative_to(root), path.read_bytes())
+                         for path in sorted(root.rglob("*")) if path.is_file())
+        # These golden states contain no root paths. Fail explicitly if a future
+        # fixture/import changes that, rather than copying an address into another case.
+        addresses = (str(root).encode("utf-8"), json.dumps(str(root))[1:-1].encode("utf-8"))
+        assert not any(address in body for _path, body in snapshot for address in addresses)
+        seeds[key] = snapshot
+    else:
+        for name, body in seeds[key]:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+
+
 @pytest.mark.parametrize("checkpoint", _CHECKPOINTS,
                          ids=[f"{index:03d}-{checkpoint['function']}" for index, checkpoint in enumerate(_CHECKPOINTS)])
-def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monkeypatch):
+def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monkeypatch, imported_binding_seeds):
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_admission as admission
     from ouroboros import usage_store
@@ -108,10 +139,6 @@ def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monk
 
     root = tmp_path / "data"
     (root / "state").mkdir(parents=True)
-    for name, blob in checkpoint["files"].items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DOC["blobs"][blob].replace("<ROOT>", str(root)), encoding="utf-8")
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     for key, value in checkpoint["env"].items():
@@ -119,6 +146,7 @@ def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monk
             monkeypatch.delenv(key, raising=False)
         else:
             monkeypatch.setenv(key, value)
+    _materialize_imported_seed(root, checkpoint, imported_binding_seeds)
     args, kwargs = _decode(checkpoint["args"], root), _decode(checkpoint["kwargs"], root)
     name = checkpoint["function"]
     try:
@@ -154,19 +182,23 @@ def test_an_imported_journal_gives_the_shipped_answer(checkpoint, tmp_path, monk
 
 
 def _materialize(root, checkpoint):
+    from ouroboros.store_import import ensure_current_store
+
     for name, blob in checkpoint["files"].items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_DOC["blobs"][blob].replace("<ROOT>", str(root)), encoding="utf-8")
+    ensure_current_store(root)  # the boot door imports the journal era's files; a read never does
 
 
 @pytest.mark.serial
 def test_continue_refuses_when_the_default_cap_cannot_be_pinned(tmp_path, monkeypatch):
     """An unpinned choice is no choice: the Continue of an open old root (its
-    imported block disagrees on the cap) is refused, typed, while the result
-    lock is held elsewhere, and the same nonce admits and pins once it is free."""
-    from ouroboros import utils
+    imported block disagrees on the cap) is refused, typed, while the store's
+    write lock is held elsewhere, and the same nonce admits and pins once it is free."""
+    from ouroboros.store import StoreBusy
     from ouroboros.task_results import load_task_result
+    from supervisor import continuation_admission
     from supervisor.continuation_admission import admit_continuation
     from tests._budget_pause_exact_helpers import _install_queue
     from tests.test_owner_continue import NONCE
@@ -179,15 +211,15 @@ def test_continue_refuses_when_the_default_cap_cannot_be_pinned(tmp_path, monkey
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", "20")
     _queue, _state, workers = _install_queue(root, monkeypatch)
-    update = utils.update_json_locked
+    patch = continuation_admission.patch_document
 
     def locked_out(*_args, **_kwargs):
-        raise TimeoutError("result lock held elsewhere")
+        raise StoreBusy("store write lock held elsewhere")
 
-    monkeypatch.setattr(utils, "update_json_locked", locked_out)
+    monkeypatch.setattr(continuation_admission, "patch_document", locked_out)
     assert admit_continuation("P", action_nonce=NONCE) == {"ok": False, "error": "billing_authority_unavailable"}
     assert not workers.PENDING and not load_task_result(root, "P").get("billing_group")
-    monkeypatch.setattr(utils, "update_json_locked", update)
+    monkeypatch.setattr(continuation_admission, "patch_document", patch)
     accepted = admit_continuation("P", action_nonce=NONCE)
     assert accepted["ok"] and load_task_result(root, "P")["billing_group"]["billing_group_limit_source"] == "legacy_default"
 

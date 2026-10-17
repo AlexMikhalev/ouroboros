@@ -15,6 +15,7 @@ from tests.test_project_hold_recovery import worker
 from tests.test_restart_saved_work import _ack, _stop_and_boot
 from tests.test_swarm_host_admission import host  # noqa: F401
 from tests.test_working_recovery_admission import _running
+from tests._store_shared import read_result, seed_result
 
 pytestmark = pytest.mark.serial
 
@@ -99,13 +100,10 @@ def test_real_stop_restores_a_dispatched_receiver_without_its_first_checkpoint(
 def test_a_relay_never_guesses_missing_prior_dispatch_or_replaces_a_newer_source(
     host, tmp_path, monkeypatch, damage,  # noqa: F811
 ):
-    from ouroboros.task_results import task_result_path
 
     prior, original = _first_receiver(host, tmp_path, monkeypatch, False, "project")
-    import json
 
-    path = task_result_path(host.root, "held")
-    stored = json.loads(path.read_bytes())
+    stored = read_result(host.root, "held")
     if damage == "missing_mark":
         stored.pop("admitted_dispatch_attempt")
     elif damage == "later_mark":
@@ -116,7 +114,7 @@ def test_a_relay_never_guesses_missing_prior_dispatch_or_replaces_a_newer_source
         prior["_working_recovery"]["source_ref"]["sha256"] = "0" * 64
     else:
         wc.checkpoint_path(host.root, "held", 2, create=True).write_text("{")
-    path.write_text(json.dumps(stored))
+    seed_result(host.root, "held", stored)
     next_task = {**prior, "_attempt": 3}
     assert not wc.attach_recovery(host.root, next_task, source_task_id="held", from_attempt=2,
                                   cause="worker_crash", prior_task=prior)

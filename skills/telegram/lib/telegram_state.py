@@ -215,14 +215,13 @@ def _child_row_held_for_root(api, event: Dict[str, Any]) -> bool:
     root = str(event.get("root_task_id") or event.get("parent_task_id") or "").strip()
     if not root:
         return False
-    from ouroboros.task_results import task_result_path
+    from ouroboros.task_results import load_task_result
     from ouroboros.task_status import FINAL_STATUSES
 
     try:
-        path = task_result_path(_data_dir(api), root, create=False)
-    except ValueError:
+        stored = load_task_result(_data_dir(api), root)
+    except Exception:
         return False
-    stored = _read_json_file(path)
     status = str(stored.get("status") or "").strip().lower() if isinstance(stored, dict) else ""
     return status not in FINAL_STATUSES
 

@@ -71,8 +71,11 @@ network-bound runs inside it.
   matches it in its WHERE, and zero rows updated leaves the settlement
   authoritative.
 - `Txn.record_recovery` updates only custody metadata and the row revision; money
-  and late-receipt rights stay unchanged. Definitive terminal/gone observations
-  suppress HTTP probes; retained receipts still settle.
+  and late-receipt rights stay unchanged. The abandoned-usage duty selects (through
+  `Txn.attempts`) only open rows it can act on: no imported aggregate, review custody
+  or abandoned non-Claudexor row, and no abandoned row whose terminal/gone outcome is
+  recorded; such a row stays at unknown price and is not polled, while its ONE late
+  receipt stays open to an explicit writer.
 - `Txn.record_evidence` merges only physical-failure and opaque provider-binding
   evidence under a revision check. These additive `extra` fields require no
   column/index migration on an existing database. The original physical failure,
@@ -93,16 +96,25 @@ maintenance takes recovery candidates from the open-set index and projection
 candidates from `Txn.dirty_owners()`. After an addressed projection succeeds or
 is equal, `ack_dirty_owner(owner_id, revision)` removes only that revision; a
 new receipt, failure, missing result or live ownership keeps the debt. A
-missing result is one `stat` before the ownership read: its exact revision
-stays, so a result that lands after the last receipt (child copyback, a body
-restored from quarantine) is projected on a later pass without a new receipt.
+batched task-store query finds missing results before ownership reads. Their
+exact revisions stay, so a result landing after the last receipt (child
+copyback or quarantine restore) is projected later without a new receipt.
 
 ## 5. Lock tiers
 
 One configuration per installation, decided by the import with
 `platform_layer.kernel_file_locks_enforced` on the lock directory, recorded in
 `meta.lock_tier` and in the database header's `application_id`, so every
-process chooses the protocol before it opens the file.
+process chooses the protocol before it opens the file. On POSIX closing any
+descriptor of a SQLite file releases every lock the process holds on it, an
+open transaction's on another thread included. So `store.connect` counts its
+connections per inode, and every raw read in a process that may hold a store
+(the header probe, the Files panel, the read tools, artifact capture:
+`store.open_for_read`, `iter_file_bytes`, `read_file_bytes`, `copy_file_bytes`)
+borrows one shared descriptor per inode that closes only when no counted
+connection has the file open, as SQLite's unix VFS defers its own closes. The connection, tier,
+file-identity and transaction core is `ouroboros/store.py`, shared with the
+current-facts store; `usage_store` keeps the money error vocabulary over it.
 
 - `enforced`: SQLite's own file locks. `usage_store.hold` is the acquisition
   primitive the existing waits slice (`_usage_wait`): sends retry it in short
@@ -177,9 +189,28 @@ the legacy-import watermark, aligns the `state.json` marker with the journal's
 own, and renames the store `usage.sqlite.exported-<UTC>`. A later upgrade
 imports that journal again, including what the older release added. The
 journal the import kept is set aside as `usage_attempts.jsonl.pre-export-<UTC>`;
-a journal that changed after the import, or one without a store, is never
-overwritten: move it aside by hand to export (the rows an older release added
-after the import are not in the store).
+a journal that changed after the import (its sha256 is neither the imported nor
+the exported one), or one without a store, is never overwritten: move it aside
+by hand to export (the rows an older release added after the import are not in
+the store).
+
+The export is one plan committed before any file moves. Under the write lock it
+computes the journal bytes and commits an export mark (`meta.export`: the
+journal's size, sha256 and row count, the names it will retire and set aside,
+the `state.json` marker it replaces) in the store itself. While that mark
+stands every write hold is refused typed (`UsageExportInProgress`; reads still
+serve), so a late writer cannot land a row the journal does not carry. Only then does it set the
+kept journal aside, write the new one, align the marker and rename the store.
+An interrupted export is resumed from the mark (the journal bytes are
+recomputed and must match the recorded digest; a partial own journal is told
+from a foreign one by the mark's set-aside record, never by size; a retired
+store is recognised by the digest in its own mark) or abandoned by the in-app switch
+(`usage_store.abandon_export`): the store comes back first, then the journal,
+then the marker, and the mark is cleared last, so a crash inside the
+abandonment resumes it instead of leaving two authorities. Residual: a process
+that was not holding the lock when the export began sees the store gone only
+on its next access, where the import path brings the exported journal back in
+— the quiescence census the switch runs first is what keeps that path cold.
 
 ## 8. Explicit history audit
 
@@ -260,10 +291,11 @@ restart in another process; that cross-process race remains.
 
 An exact price received before a later read, close, rejection or cancellation
 error settles money without proving
-that the response completed. The existing `stream_incomplete` fact keeps Main's
-unknown-response policy, Presence's configured bounded transport-death retry,
-revoked-control no-resend and diagnostic response outcomes independent of the
-monetary capture state. Timeout, local-route, Stop and deadline exclusions
+that the response completed. The existing `stream_incomplete` fact keeps running
+turns' shared unknown-response recovery (Presence included), revoked-control
+no-resend and diagnostic response outcomes independent of monetary capture state.
+The low-level opt-in transport-death repeat API and old records remain a
+compatibility surface, not production Presence policy. Timeout, local-route, Stop and deadline exclusions
 remain in their existing consumers. Diagnostic events carry `stream_incomplete`
 beside monetary custody state; typed terminal local rejection keeps its existing
 provider-error policy. Async first-generation binding runs in a joined worker;
@@ -287,6 +319,6 @@ operator's separate authorization; installation alone changes no old money.
   name lock is per host).
 - Result-only edits do not dirty money: ordinary receipts maintain projection debt;
   a result-only accounting repair belongs to explicit repair/import.
-- An owner whose result never appears stays in `dirty_owners` and costs one
-  `stat` per maintenance pass; absence is never acknowledged, so only a
-  projection (or that explicit repair) retires it.
+- An owner whose result never appears stays in `dirty_owners` and is re-checked
+  by the pass's one batched presence query; absence is never acknowledged, so only
+  a projection (or that explicit repair) retires it.

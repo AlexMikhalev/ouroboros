@@ -949,7 +949,10 @@ def test_large_pending_questions_fit_and_are_retrievable_with_complete_refusal(
     read_args = {key: value for key, value in delivery["read_next"].items() if key != "tool"}
     view = _read_file(ctx, **read_args)
     delivered = _truncate_tool_result(view, "read_file", read_args)
-    assert raw.decode("utf-8") in delivered  # the readonly nanny can read the entire source
+    from ouroboros.tools.core_file_tools import delivered_source_prefix
+
+    # The readonly nanny can read the entire source; line numbers are display, not source.
+    assert delivered == view and delivered_source_prefix(ctx.last_read_view, view, len(view)) == raw.decode("utf-8")
     assert stub.closed == 1 and stub.answers == []
 
 

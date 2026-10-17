@@ -1,4 +1,6 @@
 """list_skills through the registered tool, the loop's result handling and a captured SDK request; no network."""
+from tests._tool_result_delivery_shared import measured_fit
+
 import json
 
 import httpx
@@ -40,14 +42,15 @@ def _seed(registry, name, *, bucket="external", root=None,
     return folder
 
 
-def _call(registry, args):
+def _call(registry, args, *, fit_candidate=None):
     """One registered call through the loop's result handling (persistence included)."""
     typed = registry.execute_result("list_skills", args)
     messages, trace = [], {"tool_calls": []}
     process_tool_results([{"fn_name": "list_skills", "tool_call_id": "catalogue-call",
         "result": typed.text, "tool_result": typed, "is_error": typed.status == "error",
         "tool_args": args, "args_for_log": args, "result_meta": {"status": typed.status}}],
-        messages, trace, emit_progress=lambda _message, **_kw: None, tools=registry)
+        messages, trace, emit_progress=lambda _message, **_kw: None, tools=registry,
+        fit_candidate=fit_candidate)
     return messages[0]["content"], trace["tool_calls"][0], typed
 
 
@@ -81,9 +84,16 @@ def _consumer(registry, args):
     return json.loads(content), typed
 
 
+def _source(registry, shown):
+    """The source characters of a numbered read_file display, by the reader's own map."""
+    from ouroboros.tools.core_file_tools import delivered_source_prefix
+
+    return delivered_source_prefix(registry._ctx.last_read_view, shown, len(shown))
+
+
 def _read(registry, call):
     assert call["tool"] == "read_file"
-    return registry.execute("read_file", call["arguments"])
+    return _source(registry, registry.execute("read_file", call["arguments"]))
 
 
 def test_index_pages_whole_records_with_previews_to_every_name(registry):
@@ -162,7 +172,8 @@ def test_oversized_metadata_and_tool_names_fit_the_first_record(registry, monkey
         "token_effect": len(cost) - 160, "tools": 2,
         **{f"tools[{i}]": len(name) - 80 for i, name in enumerate(names[:6])},
     }
-    content, trace, named = _call(registry, {"name": "toolkit"})
+    content, trace, named = _call(registry, {"name": "toolkit"},
+                                  fit_candidate=measured_fit(window=16_000, reserve=4_000))
     assert named.status == "ok" and trace["result_partial"] is True
     ref = json.loads(content.split("FULL_RESULT_SOURCE_JSON=", 1)[1].splitlines()[0])
     from ouroboros.artifacts import read_actor_source_bytes
@@ -252,7 +263,7 @@ def test_native_and_user_repo_pointers_read_through_registry(
         "root": "skill_payload", "bucket": bucket, "skill_name": "playbook", "path": "SKILL.md"}}
     assert "EXACT_PLAYBOOK_BODY" not in typed.text
     read = registry.execute_result(call["tool"], call["arguments"])
-    assert read.status == "ok" and manifest in read.text
+    assert read.status == "ok" and _source(registry, read.text) == manifest
 
     # A parent may hand this exact pointer to a read-only child. Its existing
     # file access works, while catalogue discovery and mutation remain refused.
@@ -261,7 +272,7 @@ def test_native_and_user_repo_pointers_read_through_registry(
     refused = registry.execute_result("list_skills", {"name": "playbook"})
     assert refused.status != "ok" and "LOCAL_READONLY_SUBAGENT_BLOCKED" in refused.text
     child_read = registry.execute_result(call["tool"], call["arguments"])
-    assert child_read.status == "ok" and manifest in child_read.text
+    assert child_read.status == "ok" and _source(registry, child_read.text) == manifest
     write = registry.execute_result("write_file", {**call["arguments"], "content": "changed"})
     assert write.status != "ok" and (folder / "SKILL.md").read_text() == manifest
 
@@ -354,7 +365,8 @@ def test_oversized_named_detail_rides_the_generic_result_source(registry):
     compact = _consumer(registry, {})[0]["skills"][0]
     assert compact["when_to_use"] == trigger[:160]
     assert compact["omitted"]["when_to_use"] == len(trigger) - 160
-    content, trace_row, typed = _call(registry, {"name": "long"})
+    content, trace_row, typed = _call(registry, {"name": "long"},
+                                      fit_candidate=measured_fit(window=16_000, reserve=4_000))
     assert typed.status == "ok" and len(typed.text) > tool_result_limit("list_skills")
     assert trace_row["result_partial"] is True and trace_row["result_source_status"] == "ready"
     ref = json.loads(content.split("FULL_RESULT_SOURCE_JSON=", 1)[1].splitlines()[0])

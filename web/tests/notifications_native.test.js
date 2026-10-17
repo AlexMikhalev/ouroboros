@@ -309,7 +309,7 @@ test('A submitted, B refused: B falls back and loses its token, A keeps its own'
     assert.match(status.textContent, /last alert could not be handed to the system/);
     assert.equal(fx.notifier.activateNative(tokenB), false, 'the fallback owns B now');
     assert.equal(fx.notifier.activateNative(tokenA), true);
-    assert.deepEqual(fx.activated, [{ chatId: 3, taskId: 'tA' }]);
+    assert.deepEqual(fx.activated, [{ chatId: 3, taskId: 'tA', isMain: true }]);
     fx.notifier.destroy();
 });
 

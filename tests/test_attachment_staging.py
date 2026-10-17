@@ -11,6 +11,7 @@ Parallel-safe: every test isolates state under tmp_path; no shared global state.
 from __future__ import annotations
 
 import base64
+import json
 import pathlib
 import queue
 
@@ -613,7 +614,7 @@ class TestDesktopChatFullSetStaging:
         monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
         notices = []
         monkeypatch.setattr(
-            workers, "send_with_budget", lambda _chat_id, text, **_kwargs: notices.append(text),
+            workers, "send_with_budget", lambda _chat_id, text, **kwargs: notices.append((text, kwargs)),
         )
         import ouroboros.projects_registry as projects_registry
 
@@ -639,8 +640,38 @@ class TestDesktopChatFullSetStaging:
 
         assert agent.task is None
         assert bindings == []
-        assert notices and "source_missing" in notices[-1]
+        # One short typed mark in owner words (no mind will read this message); the
+        # model's block, its paths and reason codes never reach the chat.
+        assert notices == [("Not started: the attachments could not be staged (1 file)",
+                            {"role": "system", "system_type": "task_not_started"})]
         assert not (drive / "task_results" / "artifacts").exists()
+        rows = [json.loads(line) for line in (drive / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
+        diagnostic = [row for row in rows if row.get("type") == "attachments_rejected"]
+        assert len(diagnostic) == 1 and diagnostic[0]["started"] is False
+        assert [(r["label"], r["reason"]) for r in diagnostic[0]["rejected"]] == [("missing.txt", "source_missing")]
+
+    def test_partially_rejected_turn_starts_and_the_mind_tells_the_owner(self, tmp_path, monkeypatch):
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        monkeypatch.setattr(workers, "get_event_q", lambda: queue.Queue())
+        notices = []
+        monkeypatch.setattr(workers, "send_with_budget", lambda _chat_id, text, **_kwargs: notices.append(text))
+        good = tmp_path / "good.txt"
+        good.write_text("ok", encoding="utf-8")
+        agent = _FakeChatAgent()
+
+        workers._run_chat_task(agent, 1, "use both", task_metadata={"chat_attachment_uploads": [
+            {"path": str(good), "label": "good.txt"},
+            {"path": str(tmp_path / "missing.txt"), "label": "missing.txt"},
+        ]})
+
+        assert agent.task is not None  # the turn runs with the rest
+        assert "rejected (reason=source_missing" in agent.task["text"]  # and knows what is missing
+        assert notices == []  # the host writes no sentence the mind can write
+        rows = [json.loads(line) for line in (drive / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [row["started"] for row in rows if row.get("type") == "attachments_rejected"] == [True]
 
 
 class TestChatAttachmentUploads:

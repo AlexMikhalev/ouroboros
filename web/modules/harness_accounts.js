@@ -388,9 +388,8 @@ export function daemonStatusLine(payload, { checking = false, reads = null } = {
     return withEngineFacts(daemonBaseStatusLine(payload, { checking, reads }), payload);
 }
 
-// The engine's last stop and measured heap ride on whichever line the banner
-// finally shows: a refused facet read must not hide them (it is exactly when
-// the daemon misbehaves that they matter).
+// Engine observations ride on whichever line the banner finally shows;
+// a refused account/quota facet never hides the separate process facts.
 function withEngineFacts(line, payload) {
     const facts = engineFactsPhrase(payload);
     if (!line || !facts || line.text.includes(facts)) return line;
@@ -421,6 +420,37 @@ function engineFactsPhrase(payload) {
         } else {
             facts.push(`Heap limit ${gib(memory.heapLimitBytes)} GiB; use unknown`);
         }
+    }
+    if (daemon.servingMode === 'recovery_only') facts.push('Recovery only; product work is not admitted');
+    const value = (number, unit = '') => measured(number) ? `${number}${unit}` : 'unknown';
+    const loop = daemon.loop;
+    if (loop) {
+        const busy = measured(loop.utilization) && loop.utilization <= 1
+            ? `${Math.round(loop.utilization * 100)}%` : 'unknown';
+        facts.push(`Loop: p99 ${value(loop.delay?.p99Ms, ' ms')}, max ${value(loop.delay?.maxMs, ' ms')}, busy ${busy} (${value(loop.windowMs, ' ms')} window)`);
+    }
+    const store = daemon.store;
+    if (store) {
+        const wal = measured(store.wal_bytes) ? `${(store.wal_bytes / 2 ** 20).toFixed(1)} MiB` : 'unknown';
+        facts.push(`Store: integrity ${store.integrity || 'unknown'}, flusher ${store.flusher?.state || 'unknown'}, flush lag ${value(store.flush_lag_ms, ' ms')}, WAL ${wal}, obligations ${value(store.obligations_open)}`);
+        const migration = store.migration;
+        if (migration) {
+            const bytes = (number) => measured(number) ? (number / 2 ** 20).toFixed(1) : '?';
+            facts.push(`Import ${migration.phase || 'unknown'}: ${value(migration.completedPartitions)}/${value(migration.totalPartitions)} partitions, ${bytes(migration.processedBytes)}/${bytes(migration.totalBytes)} MiB${migration.currentPartition ? ` (${migration.currentPartition})` : ''}`);
+        }
+    }
+    const admission = daemon.admission;
+    if (admission) facts.push(`Jobs: model ${value(admission.active?.model)} active / ${value(admission.queued?.model)} queued; other ${value(admission.active?.non_model)} active / ${value(admission.queued?.non_model)} queued`);
+    const caps = daemon.capacity;
+    if (caps) {
+        const cap = (key, sourceKey) => {
+            const raw = caps[key];
+            const limit = raw === 'unlimited' ? 'unlimited'
+                : Number.isSafeInteger(raw) && raw > 0 ? String(raw) : 'unknown';
+            const source = caps.sources?.[sourceKey];
+            return `${limit} (${source && source !== 'unknown' ? source : 'source unknown'})`;
+        };
+        facts.push(`Effective caps: total ${cap('maxConcurrent', 'max_concurrent')}, model ${cap('maxConcurrentModelOperations', 'max_concurrent_model_operations')}, other ${cap('maxConcurrentNonModelJobs', 'max_concurrent_non_model_jobs')}`);
     }
     return facts.join(' · ');
 }
@@ -486,9 +516,11 @@ function daemonBaseStatusLine(payload, { checking = false, reads = null } = {}) 
             facetReads[facet] === READ_FAILED || facetReads[facet] === READ_TRANSPORT);
         if (refused.length) {
             const names = joinSubjects(refused.map((facet) => FACET_SUBJECT[facet] || facet));
-            return { tone: 'warn', text: `Claudexor is running, but ${names} were not read${daemon.last_error ? `: ${daemon.last_error}` : ''}. What those cover is unknown.` };
+            const detail = [...new Set(refused.map((facet) => payload?.facets?.[facet]?.error).filter(Boolean))].join('; ') || daemon.last_error;
+            return { tone: 'warn', text: `Claudexor is running, but ${names} were not read${detail ? `: ${detail}` : ''}. What those cover is unknown.` };
         }
-        return { tone: 'ok', text: `Claudexor ready (engine ${daemon.engine_version || '?'}) · home ${payload.config_dir || ''}` };
+        const recovering = daemon.servingMode === 'recovery_only';
+        return { tone: recovering ? 'warn' : 'ok', text: `Claudexor ${recovering ? 'running' : 'ready'} (engine ${daemon.engine_version || '?'}) · home ${payload.config_dir || ''}` };
     }
     if (status === 'not_provisioned') {
         if (runtimeState === 'ready') {

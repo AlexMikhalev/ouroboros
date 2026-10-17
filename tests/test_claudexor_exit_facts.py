@@ -139,3 +139,117 @@ def test_saved_window_is_bounded_and_malformed_rows_are_fail_soft(tmp_path):
     partial = facts.memory_facts({'memory': {'heapUsedBytes': 0, 'heapLimitBytes': True}})
     assert partial['heapUsedBytes'] == 0 and partial['heapLimitBytes'] is None
     assert partial['atAdmission'] is None and partial['nodeHeapArgs'] is None
+
+
+def runtime_status():
+    return {
+        'memory': memory(), 'servingMode': 'normal',
+        'loop': {'windowMs': 10004, 'windowEndedAt': '2026-10-11T01:02:03Z', 'utilization': 0.25,
+                 'delay': {'resolutionMs': 1, 'samples': 92, 'p50Ms': 1.2, 'p99Ms': 3.4, 'maxMs': 9},
+                 'gc': {'count': 2, 'totalMs': 3.2, 'maxMs': 2}},
+        'store': {'flush_lag_ms': 7, 'wal_bytes': 2**20, 'interval_ms': 200, 'busy_waits': 0,
+                  'obligations_open': 0, 'last_barrier_at': '2026-10-11T01:02:02Z', 'integrity': 'ok',
+                  'flusher': {'state': 'up', 'interval_ms': 200, 'flush_lag_ms': 7, 'generation': 4,
+                              'acknowledged_generation': 3, 'pending_registrations': 1, 'pending_waiters': 0,
+                              'last_barrier_at': '2026-10-11T01:02:02Z'}, 'migration': None},
+        'capacity': {'maxConcurrent': 'unlimited', 'maxConcurrentModelOperations': 8,
+                     'maxConcurrentNonModelJobs': 'unlimited',
+                     'sources': {'max_concurrent': 'default', 'max_concurrent_model_operations': 'config',
+                                 'max_concurrent_non_model_jobs': 'environment'}},
+        'admission': {'active': {'model': 1, 'non_model': 24}, 'queued': {'model': 0, 'non_model': 3}},
+    }
+
+
+def test_status_and_capacity_record_share_observed_runtime_facts(tmp_path, status_env):
+    manager, gateway, _, calls = status_env
+    gateway.response = runtime_status()
+    result = manager.status_dict()
+    assert result['servingMode'] == 'normal'
+    for field in ('loop', 'store', 'capacity', 'admission'):
+        assert result[field] == gateway.response[field]
+    assert len(calls) == 1  # The same read supplies memory, SQL, loop and admission.
+    row, = rows(tmp_path)
+    assert row['type'] == 'claudexor_engine_capacity' and row['generation'] and row['ts']
+    assert row['loop']['delay']['samples'] == 92
+    assert row['store']['obligations_open'] == 0
+    assert row['capacity']['maxConcurrent'] == 'unlimited'
+    assert row['admission']['active']['non_model'] == 24
+
+
+def test_recovery_progress_is_live_while_generation_record_stays_historical(tmp_path, status_env):
+    manager, gateway, _, calls = status_env
+    gateway.response = runtime_status()
+    gateway.response.update(servingMode='recovery_only', loop=None)
+    gateway.response['store'] = {key: None for key in gateway.response['store']}
+    progress = {'phase': 'verifying', 'completedPartitions': 2, 'totalPartitions': 3,
+                'currentPartition': 'project-fixture', 'processedBytes': 1024, 'totalBytes': 2048}
+    gateway.response['store']['migration'] = progress
+    recovering = manager.status_dict()
+    assert recovering['state'] == 'running' and recovering['servingMode'] == 'recovery_only'
+    assert recovering['loop'] is None
+    assert recovering['store']['migration'] == progress
+    assert recovering['store']['obligations_open'] is None and recovering['store']['integrity'] is None
+    gateway.response = runtime_status()
+    normal = manager.status_dict()
+    assert normal['servingMode'] == 'normal' and normal['store']['migration'] is None
+    assert normal['store']['integrity'] == 'ok'
+    row, = rows(tmp_path)
+    assert row['servingMode'] == 'recovery_only' and row['store']['migration'] == progress
+    assert len(calls) == 2  # No poller or repeated durable metrics writer.
+
+
+def test_unknown_metrics_and_caps_do_not_become_zero_or_unlimited(status_env):
+    manager, gateway, _, _ = status_env
+    gateway.response = {
+        'servingMode': 'new_unknown_mode',
+        'loop': {'windowMs': -1, 'utilization': 2, 'delay': {'samples': True, 'p99Ms': float('nan')}},
+        'store': {'integrity': 'unverified', 'obligations_open': False,
+                  'flush_lag_ms': float('inf'), 'flusher': {'state': 'missing'}},
+        'capacity': {'maxConcurrent': 24},
+        'admission': {'active': {'model': 0, 'non_model': False}},
+    }
+    result = manager.status_dict()
+    assert result['servingMode'] is None
+    assert result['loop']['windowMs'] is None and result['loop']['utilization'] is None
+    assert result['loop']['delay']['samples'] is None and result['loop']['delay']['p99Ms'] is None
+    assert result['store']['obligations_open'] is None and result['store']['flush_lag_ms'] is None
+    assert result['store']['integrity'] is None and result['store']['flusher']['state'] is None
+    assert result['capacity'] == {'maxConcurrent': 24, 'maxConcurrentNonModelJobs': None,
+                                  'maxConcurrentModelOperations': None, 'sources': None}
+    assert result['admission'] == {'active': {'model': 0, 'non_model': None}, 'queued': None}
+    for value in (None, 0, -1, 1.5, True, '24', 2**53):
+        gateway.response['capacity']['maxConcurrent'] = value
+        assert manager.status_dict()['capacity']['maxConcurrent'] is None
+
+
+def test_failed_or_changed_generation_read_never_reuses_old_runtime_facts(tmp_path, status_env):
+    manager, gateway, descriptor, calls = status_env
+    gateway.response = runtime_status()
+    assert manager.status_dict()['store']['integrity'] == 'ok'
+    gateway.error = transport.ClaudexorUnavailable('daemon_busy', 'not read', status_code=503)
+    failed = manager.status_dict()
+    for field in ('loop', 'store', 'capacity', 'admission', 'servingMode'):
+        assert failed[field] is None
+    assert len(calls) == 2 and len(rows(tmp_path)) == 1
+    gateway.error = None
+    original = gateway.daemon_status
+
+    def changing(self, **kwargs):
+        result = original(self, **kwargs)
+        descriptor.write_text('{"replaced":true}', encoding='utf-8')
+        return result
+
+    gateway.daemon_status = changing
+    changed = manager.status_dict()
+    assert changed['memory'] is None and changed['store'] is None and changed['capacity'] is None
+    assert len(rows(tmp_path)) == 1
+
+
+def test_old_engine_and_offline_runtime_facts_stay_unknown(tmp_path, status_env, monkeypatch):
+    manager, gateway, _, calls = status_env
+    gateway.response = {'memory': memory()}
+    old = manager.status_dict()
+    assert old['memory'] == memory()
+    assert all(old[field] is None for field in ('loop', 'store', 'capacity', 'admission', 'servingMode'))
+    monkeypatch.setattr(manager, '_classify_liveness', lambda: (None, 'stale', ''))
+    assert manager.status_dict()['store'] is None and len(calls) == 1

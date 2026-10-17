@@ -37,6 +37,7 @@ class BootstrapContext:
     hidden_run: Callable[..., Any]
     save_settings: Callable[[dict], None]
     log: Any
+    deps_timeout_sec: float = 240.0  # a new runtime venv installs the whole lock at once (runtime_venv)
 
 
 def checkout_sha(repo_dir: pathlib.Path) -> str:
@@ -445,6 +446,20 @@ def ensure_managed_repo(context: BootstrapContext) -> str:
     if not context.repo_dir.exists():
         return _install_managed_repo(context, manifest, reason="missing")
     if not (context.repo_dir / ".git").exists():
+        from ouroboros.platform_layer import is_mount_point
+
+        try:
+            mounted = is_mount_point(context.repo_dir)
+        except OSError as exc:
+            raise RuntimeError(f"Cannot determine whether {context.repo_dir} is a mount point; "
+                               f"nothing was moved: {exc}") from exc
+        if mounted:
+            # Archiving renames the directory away, which a mount point refuses
+            # halfway through a cross-device copy: refuse before touching it.
+            raise RuntimeError(
+                f"{context.repo_dir} is a mount point without a checkout; nothing was moved. "
+                "Mount the volume at its parent directory so the first bootstrap can create "
+                "the repository inside it (docs/DEPLOYMENT.md).")
         return _install_managed_repo(context, manifest, reason="legacy-no-git")
     if not _repo_manifest_matches(context.repo_dir, manifest):
         _ensure_managed_remote(context, context.repo_dir, manifest)
@@ -495,7 +510,7 @@ def install_deps(context: BootstrapContext) -> bool:
             [context.embedded_python, "-m", "pip", "install",
              *pip_install_target_args(context.embedded_python), "-r", str(requirements)],
             env=embedded_python_env(context.data_dir),
-            timeout=240,
+            timeout=context.deps_timeout_sec,
             capture_output=True,
         )
     except Exception as exc:
@@ -1069,15 +1084,17 @@ def bootstrap_repo(context: BootstrapContext) -> bool:
         memory_dir.mkdir(parents=True, exist_ok=True)
         world_path = memory_dir / "WORLD.md"
         if not world_path.exists():
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(context.repo_dir)
+            # Roots ride the environment and the path argv (a quote in it cannot break the
+            # program text); the one-argument call also suits an older seed's profiler.
+            env = {**os.environ, "PYTHONPATH": str(context.repo_dir),
+                   "OUROBOROS_REPO_DIR": str(context.repo_dir), "OUROBOROS_DATA_DIR": str(context.data_dir)}
             context.hidden_run(
                 [
                     context.embedded_python,
                     "-c",
-                    f"import sys; sys.path.insert(0, '{context.repo_dir}'); "
-                    f"from ouroboros.world_profiler import generate_world_profile; "
-                    f"generate_world_profile('{world_path}')",
+                    "import sys; from ouroboros.world_profiler import generate_world_profile; "
+                    "generate_world_profile(sys.argv[1])",
+                    str(world_path),
                 ],
                 env=embedded_python_env(context.data_dir, env),
                 timeout=30,
@@ -1204,12 +1221,28 @@ def parse_launch_options(argv):
     parser.add_argument("--host-update", type=pathlib.Path,
                         help="External host Python installer; also supports read-only --check.")
     parser.add_argument("--seed-bundle", type=pathlib.Path, help="Keep immutable seed provenance when relaunching from source; presentation is unchanged.")
+    parser.add_argument("--runtime-venv", type=pathlib.Path,
+                        help="Absolute path of a persistent venv the body and its dependencies run in.")
     # Desktop launchers may supply platform arguments (for example Finder's
     # process serial number). Retain their previously ignored behavior.
     options, _ = parser.parse_known_args(argv)
     if options.host_update is not None and not options.no_ui:
         parser.error("--host-update requires --no-ui")
     return options
+
+
+def source_handoff_argv(argv) -> list[str]:
+    """The argv a relaunch hands to the checkout's own launcher.
+
+    ``--runtime-venv`` was consumed here: the relaunch interpreter IS that venv, and
+    an older rollback launcher must not receive an option it never knew."""
+    handoff, items = [], iter(argv)
+    for item in items:
+        if item == "--runtime-venv":
+            next(items, None)  # its value
+        elif not str(item).startswith("--runtime-venv="):
+            handoff.append(item)
+    return handoff
 
 
 def automatic_launch_allowed(intent: str, data_dir: pathlib.Path, log: Any) -> bool:

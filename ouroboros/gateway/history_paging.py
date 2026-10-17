@@ -22,6 +22,7 @@ from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
 from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
+from ouroboros.project_dialogue import ORIGIN_ADDRESSED_NOTICE_TYPES
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
@@ -64,11 +65,12 @@ class HistoryCursorError(ValueError):
 
 
 def room_view_fingerprint(thread_id, project_ids, source_refs, bindings):
-    """Fingerprint the existing room lens, without introducing membership state."""
+    """Fingerprint the existing room lens, without introducing membership state.
+
+    Every room hashes every binding: a task's resolved room outranks the room its
+    rows were written to, so a conversion anywhere can move rows out of this room."""
     project = thread_id in project_ids
-    relevant = {key: value for key, value in bindings.items()
-                if not project or value == thread_id}
-    value = [thread_id, project, [] if project else sorted(project_ids), relevant,
+    value = [thread_id, project, [] if project else sorted(project_ids), dict(bindings),
              sorted(source_refs, key=lambda row: json.dumps(row, sort_keys=True))]
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -385,9 +387,11 @@ def deferred_before(source, entries, candidates, messages, before):
 
 def _card_content(row, kind, child=lambda _row: False):
     """Task-card content: a host placement, or a child's own words (``child``: by the
-    lineage its task result recovers). What a child delivers stands alone."""
+    lineage its task result recovers). What a child delivers stands alone, and so does
+    a routing notice: its task_id names the task it refused, never its speaker."""
     return row.get("card_row") in CARD_ROW_PLACEMENTS or (
-        kind not in _STANDALONE_KINDS and (is_task_card_message(row) or child(row)))
+        kind not in _STANDALONE_KINDS and kind not in ORIGIN_ADDRESSED_NOTICE_TYPES
+        and (is_task_card_message(row) or child(row)))
 
 
 def _feed_message(row):
@@ -419,7 +423,7 @@ def _stored_message(row_matches_thread, stored_chat_id, child):
     def message(entry):
         kind = str(entry.get("type") or "")
         return (str(entry.get("direction") or "").lower() in ("out", "system")
-                and kind not in ("routing_options", "quiz_answer", "task_summary", "skill_review")
+                and kind not in ("routing_options", "quiz_answer", "quiz_closed", "task_summary", "skill_review")
                 and not is_a2a_chat_id(entry.get("chat_id", 1))
                 and (str(entry.get("text") or "").strip() not in ("", "\u200b") or kind in _STANDALONE_KINDS)
                 and row_matches_thread(stored_chat_id(entry.get("chat_id"), 1), entry)
@@ -519,12 +523,12 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
 def replay_evidence_rows(messages, evidence):
     """Carry cross-page evidence only when this page has no equivalent fact."""
     visible = {row.get("history_id") for row in messages if row.get("history_id")}
-    answered = {(row.get("task_id"), row["quiz"].get("quiz_id")) for row in messages
-                if row.get("msg_type") == "quiz" and row["quiz"].get("state") == "answered"}
+    settled = {(row.get("task_id"), row["quiz"].get("quiz_id"), row["quiz"].get("state")) for row in messages
+               if row.get("msg_type") == "quiz" and row["quiz"].get("state") in {"answered", "closed"}}
     terminals = {row["task_id"]: row["historical_terminal"] for row in messages
                  if row.get("task_id") and row.get("historical_terminal")}
     return [row for row in evidence if row.get("history_id") not in visible
-            and not (row.get("system_type") == "quiz_answer"
-                     and (row.get("task_id"), row["quiz"].get("quiz_id")) in answered)
+            and not (row.get("system_type") in {"quiz_answer", "quiz_closed"}
+                     and (row.get("task_id"), row["quiz"].get("quiz_id"), row["quiz"].get("state")) in settled)
             and not (row.get("historical_terminal")
                      and terminals.get(row.get("task_id")) == row["historical_terminal"])]

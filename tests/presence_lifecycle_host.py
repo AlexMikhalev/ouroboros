@@ -20,9 +20,9 @@ def shutdown_fixture_processes(root, generation):
     tracker_pid = tracker._pid
     server = forkserver._forkserver
     server_pid = server._forkserver_pid
-    # A stopped author can settle review during shutdown and enqueue a late
-    # notice, lazily starting the real supervisor event-bus manager. This small
-    # Host fixture has no server lifespan to close that bus for it.
+    # Cleanup cases explicitly attach the real supervisor event bus before
+    # accepting work. This small Host fixture has no server lifespan to close
+    # that owned bus for it; producers never create one while delivering.
     shutdown_event_q()
     remaining = [child.pid for child in active_children()]
     assert not remaining, f"fixture multiprocessing children remain: {remaining}"
@@ -79,7 +79,7 @@ def seed(data):
     return binding
 
 
-def main(root, generation, mode, scenario="incoming"):
+def main(root, generation, mode, scenario="incoming", with_event_bus=False):
     import pytest
     import uvicorn
     from starlette.background import BackgroundTask
@@ -97,6 +97,15 @@ def main(root, generation, mode, scenario="incoming"):
     assert Path(os.environ["HOME"]).resolve() == (root / "home").resolve()
     patch = pytest.MonkeyPatch()
     h = install_bootstrap_harness(patch, root / "data", repo=ROOT, enforcement=mode)
+    event_bus_children = []
+    if with_event_bus:
+        from multiprocessing import active_children
+        from supervisor.workers import get_event_q
+
+        bus = get_event_q()
+        bus.put({"fixture_bus_ready": True})
+        assert bus.get(timeout=5) == {"fixture_bus_ready": True}
+        event_bus_children = [child.pid for child in active_children()]
     patch.setenv("OUROBOROS_PRESENCE_MAX_ACTIVE", "1")
     binding = seed(h.data)
     reconciled = reconcile_orphaned_running_tasks(h.data)
@@ -200,14 +209,8 @@ def main(root, generation, mode, scenario="incoming"):
 
     async def panic(_request):
         from ouroboros.server_control import execute_panic_stop, PanicIngress
-        from ouroboros import platform_layer
-        # Panic's installation-wide port sweep is deliberately excluded. All other
-        # owners see only this isolated child's roots; its real hard exit remains.
-        def own_port_only(requested):
-            assert requested == port
-        patch.setattr(platform_layer, "kill_process_on_port", own_port_only)
         ingress = PanicIngress(lambda: execute_panic_stop(None, lambda: None, data_dir=h.data,
-            panic_exit_code=73, log=logging.getLogger("isolated-panic"), bound_port=port))
+            panic_exit_code=73, log=logging.getLogger("isolated-panic")))
         assert ingress.request("/panic", source="web")
         return JSONResponse({"requested": True})
 
@@ -229,7 +232,8 @@ def main(root, generation, mode, scenario="incoming"):
         # The real direct-server transfer replaces this image while the author
         # and review are still parked. Do not release either before exec.
         patch.setenv("OUROBOROS_SERVER_REEXEC_ARGV_JSON", json.dumps([
-            "-m", "tests.presence_lifecycle_host", str(root), str(generation + 1), mode, scenario]))
+            "-m", "tests.presence_lifecycle_host", str(root), str(generation + 1), mode, scenario,
+            *(["--fixture-event-bus"] if with_event_bus else [])]))
         return JSONResponse({"restarting": True}, background=BackgroundTask(
             restart_current_process, "127.0.0.1", port, repo_dir=ROOT,
             log=logging.getLogger("isolated-restart"), owner_initiated=True))
@@ -275,7 +279,8 @@ def main(root, generation, mode, scenario="incoming"):
     from ouroboros.utils import atomic_write_json
     atomic_write_json(root / f"ready-{generation}.json", {
         "url": f"http://127.0.0.1:{port}", "binding": binding, "pid": os.getpid(),
-        "controller": controller_identity(), "reconciled": reconciled})
+        "controller": controller_identity(), "reconciled": reconciled,
+        "event_bus_children": event_bus_children})
     try:
         server.run(sockets=[sock])
     finally:
@@ -291,4 +296,5 @@ def main(root, generation, mode, scenario="incoming"):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "incoming")
+    main(Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "incoming",
+         with_event_bus="--fixture-event-bus" in sys.argv[5:])

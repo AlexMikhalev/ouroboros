@@ -135,7 +135,7 @@ def test_merge_readback_retires_only_exact_prior_claims(tmp_path, monkeypatch, i
     result = registry.execute_result("pr_merge", args)
     assert result.meta["operation_outcome"] == "unknown"
     row = load_task_result(tmp_path, "root")
-    assert not row["launch_handoffs"]
+    assert not row.get("launch_handoffs", {})
     assert any(item['kind'] == 'merge_operation' for item in retained_tool_custody(tmp_path, 'root', row))
     from ouroboros.model_sleep import cold_blockers
     from supervisor.continuation_admission import conflicting_writers
@@ -144,7 +144,7 @@ def test_merge_readback_retires_only_exact_prior_claims(tmp_path, monkeypatch, i
         "independent": {"tool": "pr_merge", "task_id": "root", "state": "claimed"}})
     fake.pr.update(state="MERGED", mergeCommit={"oid": MERGE})
     assert registry.execute_result("pr_merge", args).meta["operation_outcome"] == "completed"
-    assert set(load_task_result(tmp_path, "root")["launch_handoffs"]) == {"independent"}
+    assert set(load_task_result(tmp_path, "root").get("launch_handoffs", {})) == {"independent"}
     assert [item['kind'] for item in retained_tool_custody(
         tmp_path, 'root', load_task_result(tmp_path, 'root'))] == ['tool_handoff']
     assert sum(c[:2] == ["pr", "merge"] for c in fake.calls) == 1

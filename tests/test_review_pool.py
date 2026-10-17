@@ -8,7 +8,8 @@ stored ``subagent_id``), its own delivery (an api row's ``delivery`` field, a
 session always retrieves — F8: never inferred from an actor id) and its own
 effort (row, then a compound slug, then the pool default). A malformed catalog
 is a typed refusal on every reader; a catalog with no marked row is an EMPTY
-pool, a loud configured fact — never a shipped default panel (F4/F5).
+pool, a configured fact every surface reviews on the Main model alone — never a
+shipped default panel (F4/F5).
 """
 
 from __future__ import annotations
@@ -158,7 +159,88 @@ def test_a_malformed_catalog_raises_on_every_pool_reader_never_a_default_panel(c
             reader()
     assert "not valid JSON" in rsc.reviewer_slot_config_error()
     clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("x", "m/x", marked=False)))
-    assert rsc.review_pool_slots() == [] and rsc.reviewer_slot_config_error() == ""  # empty is not an error
+    # Empty is not an error: it reviews on the Main seat alone.
+    assert [s.slot_id for s in rsc.review_pool_slots()] == ["main"] and rsc.reviewer_slot_config_error() == ""
+
+
+# --- an empty pool: the Main model reviews alone (owner decision B) ------------------------
+
+
+@pytest.mark.parametrize("catalog", ["unmarked", "switched_off", "no_rows", "absent"])
+def test_an_empty_valid_pool_is_one_main_seat_that_reads_and_answers_both_parts(clean_env, catalog):
+    """No enabled marked row (rows unmarked, the marked row switched off, no rows, no
+    catalog) is ONE seat on every pool reader: ``main``, the direct Main row on Main's own
+    model, a native reading seat asked both parts and carrying the caller's slot properties.
+    The catalog's own facts stay: ``review_pool_state`` is ``empty``, ``review_pool_rows`` is
+    empty, and nothing is an error."""
+    from ouroboros.review_ledger import PARTS, seat_parts
+    from ouroboros.tools.review_admission import seat_vectors
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    raw = {"unmarked": _roster(_row("helper", "m/helper", marked=False)),
+           "switched_off": _roster(_row("off", "m/off", enabled=False)),
+           "no_rows": _roster(), "absent": None}[catalog]
+    if raw is not None:
+        clean_env.setenv(SUBAGENTS_SETTING, raw)
+
+    [seat] = rsc.review_pool_slots(role_hint="plan reviewer", timeout_sec=7)
+    assert (seat.slot_id, seat.subagent_id, seat.model) == ("main", "", "openai/gpt-5.6-sol")
+    assert (seat.route, seat.native_retrieval, seat.retrieves) == (ReviewRouteKind.API_CHAT, True, True)
+    assert (seat.role_hint, seat.timeout_sec) == ("plan reviewer", 7)
+    assert seat.effort == rsc.row_effort(rsc.main_review_row()) and seat_parts(seat) == PARTS
+    plan = seat_vectors(rsc.commit_triad_delivery())  # the commit gate's and skill review's reader
+    assert (plan["models"], plan["slot_ids"], plan["retrieves"], plan["parts"]) == (
+        ["openai/gpt-5.6-sol"], ["main"], [True], [PARTS])
+    assert rsc.review_pool_state(raw) == {"state": "empty", "error": ""}
+    assert rsc.review_pool_rows() == [] and rsc.reviewer_slot_config_error() == ""
+
+
+def test_a_marked_pool_a_composed_wave_and_a_malformed_catalog_never_take_the_main_seat(clean_env):
+    """The other directions: one enabled marked row is the whole pool (Main does not join
+    it); a composed wave's seats replace the pool exactly, an empty one included; a malformed
+    catalog still refuses on every reader instead of falling back to Main."""
+    from ouroboros.review_substrate import ReviewSlot
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("critic", "openai/gpt-5.6-terra"),
+                                                _row("helper", "m/helper", marked=False)))
+    assert [s.slot_id for s in rsc.review_pool_slots()] == ["critic"]
+    assert rsc.commit_triad_delivery()["slot_ids"] == ["critic"]
+
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("helper", "m/helper", marked=False)))
+    named = ReviewSlot(slot_id="named-by-author", model="m/extra", route=ReviewRouteKind.API_CHAT,
+                       native_retrieval_override=True)
+    with rsc.composed_review_pool((rsc.PoolSeat(named, ("change", "coupling")),)):
+        assert [s.slot_id for s in rsc.review_pool_slots()] == ["named-by-author"]
+    with rsc.composed_review_pool(()):
+        assert rsc.review_pool_slots() == []
+
+    clean_env.setenv(SUBAGENTS_SETTING, "{broken")
+    for reader in (rsc.review_pool_slots, rsc.commit_triad_delivery):
+        with pytest.raises(ValueError, match="not valid JSON"):
+            reader()
+
+
+def test_the_surfaces_read_the_main_seat_from_the_one_builder(clean_env):
+    """Plan review and the author's ``review_change`` wave read that same one seat: the wave
+    seats it as the whole pool (both parts, counted, no composed override), and a call naming
+    only a row outside the pool is still refused — Main is the pool, not an added critic. The
+    ``/review`` row and the empty pool's seat are one function, re-exported where it lived."""
+    from ouroboros import deep_self_review
+    from ouroboros.tools import plan_review_runtime
+    from ouroboros.tools.review_change import ReviewChangeArgumentError, compose_panel, parse_request
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("scout", "openai/scout-model", marked=False)))
+    [plan_seat] = plan_review_runtime.plan_review_slots()
+    assert (plan_seat.slot_id, plan_seat.max_tokens) == ("main", plan_review_runtime.PLAN_REVIEW_MAX_TOKENS)
+    panel = compose_panel(parse_request({"root": "system_repo", "subject": "index"}), adds_only=True)
+    assert [(slot.slot_id, parts, extra) for slot, parts, extra in panel.seats] == [("main", ("change", "coupling"), False)]
+    assert panel.override is False and panel.facts["composition"] == "full_pool"
+    with pytest.raises(ReviewChangeArgumentError, match="no seat for the change question"):
+        compose_panel(parse_request({"root": "system_repo", "subject": "index", "reviewers": ["scout"]}),
+                      adds_only=False)
+    assert deep_self_review.main_review_row is rsc.main_review_row
 
 
 def test_triad_delivery_slots_is_the_pool_under_its_historical_name(clean_env):

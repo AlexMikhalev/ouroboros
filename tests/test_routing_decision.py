@@ -642,7 +642,7 @@ def test_decision_turn_is_shown_the_existing_receipt_for_the_same_message(tmp_pa
 
     append_chat_annotation(
         tmp_path, "cm-dup", action="promote_chat_to_task", target="c405c824",
-        target_label="MLConf deck", status="dispatched", routing_token="tok-dup",
+        target_label="MLConf deck", status="scheduled", routing_token="tok-dup",
     )
 
     metadata = _decision_turn_metadata(_decision_ctx(tmp_path), 1, "cm-dup", {})
@@ -651,10 +651,24 @@ def test_decision_turn_is_shown_the_existing_receipt_for_the_same_message(tmp_pa
     assert receipt["action"] == "promote_chat_to_task"
     assert receipt["target"] == "c405c824"
     assert receipt["target_label"] == "MLConf deck"
-    assert receipt["status"] == "dispatched"
     assert receipt["ts"]
     # Disclosure only: the model keeps every action it had.
     assert "promote_chat_to_task" in metadata["routing_contract"]["valid_actions"]
+    # The admission is the positive authority, read as the promote's own waiter reads it: the
+    # annotation alone, or another attempt's admission, is not a scheduled task.
+    assert receipt["status"] == "unconfirmed"
+    _admit(tmp_path, "c405c824", "tok-other")
+    assert _decision_turn_metadata(_decision_ctx(tmp_path), 1, "cm-dup", {})[
+        "routing_contract"]["message_routing_receipt"]["status"] == "unconfirmed"
+    _admit(tmp_path, "c405c824", "tok-dup")
+    assert _decision_turn_metadata(_decision_ctx(tmp_path), 1, "cm-dup", {})[
+        "routing_contract"]["message_routing_receipt"]["status"] == "scheduled"
+
+
+def _admit(root, task_id, token, status="scheduled"):
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(root, task_id, "scheduled", promotion_admission={"status": status, "routing_token": token})
 
 
 def test_decision_turn_without_a_receipt_carries_no_such_key(tmp_path):
@@ -694,18 +708,19 @@ def test_decision_turn_reads_every_recorded_act_on_the_same_message_as_facts(tmp
 
     assert contract["message_routing_receipt"]["target"] == "root-b"  # the latest act, as before
     assert [(act["action"], act["target"], act["status"]) for act in contract["message_routing_acts"]] == [
-        ("promote_chat_to_task", "root-a", "dispatched"), ("steer_task", "root-b", "delivered")]
+        ("promote_chat_to_task", "root-a", "unconfirmed"), ("steer_task", "root-b", "delivered")]
     assert "not a ban" in contract["message_routing_acts_note"]
     assert set(contract["valid_actions"]) >= {"promote_chat_to_task", "steer_task"}
     single = _decision_turn_metadata(_decision_ctx(tmp_path), 1, "cm-other", {})["routing_contract"]
     assert "message_routing_acts" not in single and single["message_routing_receipt"]["target"] == "root-c"
 
 
-def _boundary(tmp_path, metadata, messages, *, delivery=None):
+def _boundary(tmp_path, metadata, messages, *, delivery=None, own=None):
     from types import SimpleNamespace
 
     return SimpleNamespace(tools=SimpleNamespace(_ctx=SimpleNamespace(
-        task_metadata=metadata, last_owner_delivery=delivery)), messages=messages, drive_root=tmp_path)
+        task_metadata=metadata, last_owner_delivery=delivery, unconfirmed_routing_acts=own or [])),
+        messages=messages, drive_root=tmp_path)
 
 
 def test_routing_acts_taken_during_the_turn_reach_its_next_model_boundary_as_append_only_facts(tmp_path):
@@ -734,13 +749,18 @@ def test_routing_acts_taken_during_the_turn_reach_its_next_model_boundary_as_app
     acts = [line for line in note.splitlines() if line.startswith("- ")]
     assert [line.split(":", 1)[0] for line in acts] == [
         "- promote_chat_to_task → Deck (root-a)", "- steer_task → Build (root-b)"]
-    assert "root-c" not in note and "Not listed: an act recorded under its own agent-steer id" in note
+    assert "root-c" not in note and "Not listed: another turn's act under its own agent-steer id" in note
     assert _append_routing_receipts(ctx) is False  # unchanged receipts: no second row
-    # The rail later records the promote's outcome: a new row; the sent one stays as it was.
+    # The rail records a scheduled annotation: alone it is not the admission, so the new row
+    # still reads unconfirmed; the admission landing is the next row. Sent rows stay as they were.
     append_chat_annotation(tmp_path, "cm-1", action="promote_chat_to_task", target="root-a",
                            target_label="Deck", status="scheduled", routing_token="tok-1")
     assert _append_routing_receipts(ctx) is True and messages[2]["content"] == note
-    assert "scheduled" in messages[3]["content"] and "dispatched" not in messages[3]["content"]
+    assert "- promote_chat_to_task → Deck (root-a): unconfirmed, recorded" in messages[3]["content"]
+    _admit(tmp_path, "root-a", "tok-1")
+    assert _append_routing_receipts(ctx) is True and messages[2]["content"] == note
+    assert [line.split(", recorded")[0] for line in messages[4]["content"].splitlines() if line.startswith("- ")] == [
+        "- steer_task → Build (root-b): delivered", "- promote_chat_to_task → Deck (root-a): scheduled"]
     # An owner message relayed into the turn mid-run brings its own receipts.
     append_chat_annotation(tmp_path, "cm-2", action="steer_task", target="root-d", status="delivered",
                            routing_token="tok-4")
@@ -748,3 +768,33 @@ def test_routing_acts_taken_during_the_turn_reach_its_next_model_boundary_as_app
     assert _append_routing_receipts(relayed) is True and "root-d" in messages[-1]["content"]
     child = _boundary(tmp_path, {**metadata, "delegation_role": "subagent"}, [])
     assert _append_routing_receipts(child) is False
+
+
+def test_the_turns_own_unconfirmed_acts_report_their_recorded_outcome_once(tmp_path):
+    """An act whose wait ended unconfirmed may still land: the turn kept its exact ids, so the
+    next acting round reads that receipt even where no owner message carries it (its own
+    agent-steer id, a wake's promote that writes no annotation at all) and says it once. Still
+    unconfirmed says nothing new; another attempt's admission confirms nothing; another turn's
+    agent-steer row stays unlisted."""
+    from ouroboros.loop_model_call import _append_routing_receipts
+
+    own = [{"action": "steer_task", "client_message_id": "agent-steer:tok-s", "routing_token": "tok-s",
+            "target": "root-s"},
+           {"action": "promote_chat_to_task", "client_message_id": "", "routing_token": "tok-p", "target": "wake-root"}]
+    messages = [{"role": "system", "content": "s"}]
+    ctx = _boundary(tmp_path, {"routing_contract": {"llm_first": True}}, messages, own=own)
+    append_chat_annotation(tmp_path, "agent-steer:tok-x", action="steer_task", target="root-x",
+                           status="delivered", routing_token="tok-x")  # another turn's act
+    _admit(tmp_path, "wake-root", "tok-other")
+    assert _append_routing_receipts(ctx) is False and len(messages) == 1
+    append_chat_annotation(tmp_path, "agent-steer:tok-s", action="steer_task", target="root-s", status="rejected",
+                           routing_token="tok-s", reason="target_not_steerable",
+                           attachment_manifest=[{"ordinal": 0, "label": "a.png", "status": "rejected"}])
+    assert _append_routing_receipts(ctx) is True
+    acts = [line.split(", recorded")[0] for line in messages[-1]["content"].splitlines() if line.startswith("- ")]
+    assert acts == ["- steer_task → root-s: rejected (target_not_steerable), 1 file(s) not attached"]
+    assert "root-x" not in messages[-1]["content"]
+    assert _append_routing_receipts(ctx) is False  # said once
+    _admit(tmp_path, "wake-root", "tok-p")
+    assert _append_routing_receipts(ctx) is True
+    assert "- promote_chat_to_task → wake-root: scheduled" in messages[-1]["content"]

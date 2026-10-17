@@ -13,6 +13,7 @@ from ouroboros import usage_accounting as usage
 from supervisor import events_task_done as done
 from supervisor import queue
 from tests._usage_store_testing import ledger_rows
+from tests._store_shared import delete_result, result_signature, unreadable_result
 
 
 @pytest.fixture
@@ -112,15 +113,14 @@ def test_task_and_root_are_refreshed_and_acknowledged(env):
 
 
 @pytest.mark.parametrize("condition", ["missing", "unreadable", "live", "synthesis"])
-def test_ineligible_result_keeps_debt(env, condition):
+def test_ineligible_result_keeps_debt(env, monkeypatch, condition):
     task(env)
     attempt(env)
     before = dirty(env)
-    path = task_results.task_result_path(env.root, "root")
     if condition == "missing":
-        path.unlink()
+        delete_result(env.root, "root")
     elif condition == "unreadable":
-        path.write_text("{", encoding="utf-8")
+        unreadable_result(monkeypatch, "root")
     elif condition == "live":
         env.live.add("root")
     else:
@@ -138,7 +138,7 @@ def test_missing_authority_reports_once_and_later_projects_same_debt(env, monkey
     task(env)
     attempt(env)
     before = dirty(env)
-    original = task_results.task_result_path(env.root, "root").read_bytes()
+    original = result_signature(env.root, "root")
     load = TaskOwnershipRead.load
 
     def unavailable(self, tid):
@@ -149,7 +149,7 @@ def test_missing_authority_reports_once_and_later_projects_same_debt(env, monkey
         for _ in range(3):
             maintenance._reconcile_abandoned_usage(env.root)
     assert dirty(env) == before
-    assert task_results.task_result_path(env.root, "root").read_bytes() == original
+    assert result_signature(env.root, "root") == original
     warnings = [r for r in caplog.records if r.name == duty.__name__ and r.levelno >= logging.WARNING]
     assert len(warnings) == 1 and warnings[0].exc_info is not None
 
@@ -228,13 +228,13 @@ def test_real_ownership_predicate_still_fences_projection_and_recovery(env, monk
             task(env, **{review_operation.OPERATIONS_FIELD: {"operation": link}})
     assert queue.task_has_live_ownership("root")
     ledger = ledger_rows(env.root)
-    original = task_results.task_result_path(env.root, "root").read_bytes()
+    original = result_signature(env.root, "root")
     maintenance._reconcile_abandoned_usage(env.root)
     assert ledger_rows(env.root) == ledger
-    assert task_results.task_result_path(env.root, "root").read_bytes() == original
+    assert result_signature(env.root, "root") == original
     usage.settle_attempt(reservation, cost_usd=0.4, cost_final=True)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert task_results.task_result_path(env.root, "root").read_bytes() == original
+    assert result_signature(env.root, "root") == original
 
 
 def test_a_live_review_link_changed_elsewhere_is_checked_before_new_money(env, monkeypatch):
@@ -248,7 +248,7 @@ def test_a_live_review_link_changed_elsewhere_is_checked_before_new_money(env, m
     link = {"control_only": True, "subject_task_id": "subject", "controller": primary["controller"], "source_ref": primary["source_ref"]}
     task(env, **{review_operation.OPERATIONS_FIELD: {"operation": link}})
     warm(env)
-    before = task_results.task_result_path(env.root, "root").read_bytes()
+    before = result_signature(env.root, "root")
     monkeypatch.setattr(queue, "task_has_live_ownership", queue_transitions.task_has_live_ownership)
     monkeypatch.setattr(queue, "RUNNING", {})
     monkeypatch.setattr(queue, "PENDING", [])
@@ -262,7 +262,7 @@ def test_a_live_review_link_changed_elsewhere_is_checked_before_new_money(env, m
     maintenance._reconcile_abandoned_usage(env.root)
     attempt(env, cost=0.1)
     maintenance._reconcile_abandoned_usage(env.root)
-    assert task_results.task_result_path(env.root, "root").read_bytes() == before
+    assert result_signature(env.root, "root") == before
     assert dirty(env)
 
 

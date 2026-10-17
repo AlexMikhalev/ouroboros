@@ -15,7 +15,7 @@ import pathlib
 import time
 from typing import Any, Dict, List, Optional
 
-from ouroboros.delegate_registration_policy import review_owned_source
+from ouroboros.delegate_registration_policy import independent_review_without_apply, review_owned_source
 
 log = logging.getLogger(__name__)
 
@@ -75,33 +75,27 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
             from ouroboros import delegate_custody as custody
 
             mine = str(task_id or "")
-            # The memo silently falls back to a lenient read that skips an
-            # unreadable segment; probe the chain first so hidden custody is
-            # UNKNOWN, never "no open runs" (Astra run-a882315dbcd7 #2).
-            if custody.custody_log_unreadable(pathlib.Path(root)):
-                raise OSError("custody_log_unreadable")
-            from ouroboros.delegate_custody_memo import custody_rows_with_integrity
+            # ONE store read feeds both projections: a START_REQUESTED that becomes
+            # STARTED between two reads must land in one of them (Astra 6fe5 #1).
+            # The store answers or raises; a raise is UNKNOWN custody, never "no
+            # open runs" (Astra run-a882315dbcd7 #2).
+            from ouroboros.delegate_custody_current import task_snapshot
 
-            # ONE snapshot feeds both projections: a START_REQUESTED that becomes
-            # STARTED between two reads must land in one of them (Astra 6fe5 #1),
-            # and its integrity is judged on that same read. An unparseable custody
-            # line naming this task may hide its request.
-            rows_read, malformed = custody_rows_with_integrity(pathlib.Path(root), mine)
-            snapshot = list(rows_read)
-            if malformed is None or malformed:
-                raise OSError(f"custody_rows_incomplete:{'unknown' if malformed is None else malformed}")
-            runs = [run for run in custody.replay(pathlib.Path(root), rows=snapshot).values()
-                    if str(getattr(run, "task_id", "") or "") == mine and not getattr(run, "settled", True)]
+            view = task_snapshot(pathlib.Path(root), mine)
+            runs = [run for run in view["runs"].values() if not getattr(run, "settled", True)]
+            pending = view["pending"]
             # A START_REQUESTED whose response was lost has no run id yet but may
             # be a live remote writer: unknown custody, never absence (#3).
-            from ouroboros.delegate_pending import pending_invocations
-
-            pending = [row for row in pending_invocations(pathlib.Path(root), rows=snapshot)
-                       if str(row.get("task_id") or "") == mine]
+            # Every projected row also carries the custody facts a purpose-bound
+            # reader may filter on: the registering ``source`` and whether the
+            # row is an independent review without candidate-apply possibility
+            # (``delegate_registration_policy``). The census itself never filters.
             pending_rows = [{"run_id": "", "invocation_id": str(row.get("invocation_id") or ""),
                              "route": str(row.get("route") or ""),
                              "cost_coverage": "unproven_preterminal", "stop_policy": "reconcile_first",
                              "review_owned": review_owned_source(row.get("source")),
+                             "source": str(row.get("source") or ""),
+                             "independent_review": independent_review_without_apply(row),
                              "state": EXTERNAL_STOP_UNKNOWN, "stop_outcome": "pending_invocation_unbound",
                              "detail": ""} for row in pending]
         except Exception as exc:
@@ -120,14 +114,32 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
 
     def _row(run: Any, **fields: Any) -> Dict[str, Any]:
         return {"run_id": str(getattr(run, "run_id", "") or ""),
+                "invocation_id": str(getattr(run, "invocation_id", "") or ""),
+                "terminal_state": str(getattr(run, "terminal_state", "") or ""),
+                "terminal_source": getattr(run, "terminal_source", {}) or {},
+                "interaction_source": getattr(run, "interaction_source", {}) or {},
+                "pending_interaction_ids": getattr(run, "pending_interaction_ids", []) or [],
+                "output_complete": bool(getattr(run, "output_complete", False)),
+                "patch_captured": bool(getattr(run, "patch_captured", False)),
+                "ledger_recorded": bool(getattr(run, "ledger_recorded", False)),
                 "route": str(getattr(run, "route", "") or getattr(run, "route_id", "") or ""),
                 "cost_coverage": "unproven_preterminal", "stop_policy": "observe_only",
                 "review_owned": review_owned_source(getattr(run, "source", "")),
+                "source": str(getattr(run, "source", "") or ""),
+                "independent_review": independent_review_without_apply(run),
                 "state": EXTERNAL_RUNNING, "stop_outcome": "", "detail": "", **fields}
 
     if stop_policy == STOP_POLICY_OBSERVE:
-        return {"runs": [_row(run) for run in runs] + pending_rows, "observed_at": time.time(),
-                "custody_read": "ok", "coverage_basis": "observed_without_stop_request"}
+        observed = {"runs": [_row(run) for run in runs] + pending_rows, "observed_at": time.time(),
+                    "custody_read": "ok", "coverage_basis": "observed_without_stop_request"}
+        try:
+            from ouroboros.sleep_custody import observe_return
+            body = observe_return(root, str(task_id), observed)
+            if body:
+                observed["body_custody"] = body
+        except Exception:
+            log.debug("Cold-return body observation unavailable", exc_info=True)
+        return observed
     stopping = [run for run in runs
                 if stop_policy == STOP_POLICY_ALL or not review_owned_source(getattr(run, "source", ""))]
     # The owner's exception: an already-started critic finishes the same check

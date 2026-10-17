@@ -136,8 +136,12 @@ _MODEL_DEFAULTS = {
     "anthropic": {key: value for key, value in ANTHROPIC_DIRECT_DEFAULTS.items() if key != "heavy"},
     # No defaults: model names are server-specific; user must fill all slots.
     "openai-compatible": {"main": "", "light": "", "vision": "", "fallback": ""},
+    # Several direct providers and no router: the owner chooses Main; no provider is guessed.
+    "direct-multi": {"main": "", "light": "", "vision": "", "fallback": ""},
 }
-_MODEL_DEFAULTS["local"] = dict(_MODEL_DEFAULTS["openrouter"])
+# Local-only: Light follows the local Main and Fallbacks is no chain (the boot proposal,
+# server_runtime.provider_slot_proposals); Main keeps the shipped id as the local label.
+_MODEL_DEFAULTS["local"] = {**_MODEL_DEFAULTS["openrouter"], "light": "", "fallback": ""}
 for _profile_defaults in _MODEL_DEFAULTS.values():
     _profile_defaults.setdefault("consciousness", "")
     _profile_defaults.setdefault("vision", "")
@@ -186,7 +190,7 @@ _PROFILE_SPECS = {
 
 _MODEL_SLOTS = _rows(("slot", "stateKey", "settingKey", "inputId", "label", "note", "settingsInputId", "settingsToggleId"), (
     ("main", "mainModel", "OUROBOROS_MODEL", "main-model", "Main Model", "Primary reasoning and long-form work.", "s-model", "s-local-main"),
-    ("light", "lightModel", "OUROBOROS_MODEL_LIGHT", "light-model", "Light Model", "Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main.", "s-model-light", "s-local-light"),
+    ("light", "lightModel", "OUROBOROS_MODEL_LIGHT", "light-model", "Light Model", "Fast summaries, lightweight internal work and the default Fast scout. Empty uses Main.", "s-model-light", "s-local-light"),
     ("vision", "visionModel", "OUROBOROS_MODEL_VISION", "vision-model", "Vision Model", "Caption and VLM lane. Empty uses Main.", "s-model-vision", ""),
     ("consciousness", "consciousnessModel", "OUROBOROS_MODEL_CONSCIOUSNESS", "consciousness-model", "Consciousness Model", "High-horizon background consciousness. Empty uses Main.", "s-model-consciousness", "s-local-consciousness"),
     ("fallback", "fallbackModel", "OUROBOROS_MODEL_FALLBACKS", "fallback-model", "Fallback Model", "Fallback and resilience path.", "s-model-fallback", "s-local-fallback"),
@@ -194,14 +198,14 @@ _MODEL_SLOTS = _rows(("slot", "stateKey", "settingKey", "inputId", "label", "not
 
 _REVIEW_MODES = _rows(("value", "label", "tone", "className", "copy"), (
     ("advisory", "Advisory", "Flexible", "advisory", "Review still runs. After feedback, Ouroboros can fix, reject or finish; raw reviewer findings remain visible."),
-    ("blocking", "Blocking", "Strict", "blocking", "Slower and more expensive, but much safer. Critical review findings stop commits, which dramatically reduces the chance of gradual code degradation."),
+    ("blocking", "Blocking", "Strict", "blocking", "Outside Cyber Pro Access, unresolved critical review findings block commits. Cyber Pro keeps the findings as evidence for Ouroboros's decision."),
 ))
 
 _RUNTIME_MODES = _rows(("value", "label", "tone", "className", "copy"), (
     ("light", "Light", "Safest", "light", "Self-modification of the main repo is disabled. Best for trying Ouroboros out without repo self-modification."),
     ("advanced", "Advanced", "Default", "advanced", "Self-modification of the evolutionary layer is allowed (current behaviour). Protected core/contract/release files stay guarded by Advanced mode."),
     ("pro", "Pro", "Power", "pro", "Direct protected-surface mode. Protected core/contract/release edits are allowed on disk, but commits still require the normal review gate."),
-    ("cyber_pro", "Cyber Pro", "Maximum power", "cyber-pro", "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review scope and Blocking or Advisory enforcement remain owner-controlled."),
+    ("cyber_pro", "Cyber Pro", "Maximum power", "cyber-pro", "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review still runs and the Blocking or Advisory choice is kept, but review findings do not block actions in Cyber Pro: they are evidence for Ouroboros, which decides."),
 ))
 
 _LOCAL_ROUTING_MODES = _rows(("value", "buttonLabel", "label", "flags"), (
@@ -278,7 +282,7 @@ _SUBSCRIPTION_FIELDS = _rows(("id", "payloadKey", "label", "note"), (
     ("skip-subscription-presets", SKIP_SUBSCRIPTION_PRESETS_FIELD, "Finish without agent defaults", "Completes onboarding without moving reviewers and subagents onto the connected subscriptions. Everything stays editable in Settings afterwards."),
 ))
 
-_MODEL_SUGGESTIONS = list(dict.fromkeys(("google/gemini-3.8-flash", "x-ai/grok-4.6", "openai/gpt-5.6-terra", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai::gpt-5.6-terra", "openai::gpt-5.6-sol", "openai::gpt-5.6-luna", "anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic::claude-sonnet-5", "anthropic::claude-opus-5", "anthropic::claude-opus-4-6", "deepseek/deepseek-v4-pro", "deepseek::deepseek-v4-pro", "deepseek::deepseek-v4-flash", "zai::glm-5.3", "zai::glm-5.3-flash", "openai-compatible::meta-llama/compatible", "cloudru::zai-org/GLM-4.7", "minimax::MiniMax-M3", "minimax::MiniMax-M2.7")))
+_MODEL_SUGGESTIONS = list(dict.fromkeys(("google/gemini-3.8-flash", "x-ai/grok-4.6", "openai/gpt-6.1-sol", "openai/gpt-6-luna", "anthropic/claude-opus-5.5", "openai/gpt-5.6-terra", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai::gpt-5.6-terra", "openai::gpt-5.6-sol", "openai::gpt-5.6-luna", "anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic::claude-sonnet-5", "anthropic::claude-opus-5", "anthropic::claude-opus-4-6", "deepseek/deepseek-v4-pro", "deepseek::deepseek-v4-pro", "deepseek::deepseek-v4-flash", "zai::glm-5.3", "zai::glm-5.3-flash", "openai-compatible::meta-llama/compatible", "cloudru::zai-org/GLM-4.7", "minimax::MiniMax-M3", "minimax::MiniMax-M2.7")))
 
 
 def _string(value: Any) -> str:

@@ -1,21 +1,29 @@
-"""Task pacing SSOT: time milestones, intrinsic pacing and review-budget inputs.
+"""Task pacing SSOT: threshold crossings, the finalization reserve and review-budget inputs.
 
-Owns milestone notes, the finalization reserve, budget snapshots and improvement-pass
-gates driven by ``task_contract.budget_profile`` (``improvement_policy`` fixed | adaptive).
+Owns the time/cost threshold notices, the finalization reserve, budget snapshots and
+improvement-pass gates driven by ``task_contract.budget_profile`` (``improvement_policy``
+fixed | adaptive).
 
 Design contract:
-- Pacing notes fire only on milestone triggers, never per round (prompt-cache
-  friendly), their wording is TASK-NEUTRAL, and note identification is by the
-  checkpoint metadata — never a regex strip of transcript text.
+- A threshold notice states the crossing once per threshold (owner 13 Oct: keep the
+  one-time fact, drop the advice), rides the round about to be sent (never a paid
+  round of its own), its wording is TASK-NEUTRAL and carries no strategy, and note
+  identification is by the checkpoint metadata — never a regex strip of transcript text.
+- Money crossings have two independent axes: the tree's known spend against its
+  in-task ceiling or hard tree cap, and the shared wallet's current known headroom
+  against what remained when this execution started (#1129) — so other tasks'
+  spending moves the wallet crossing, and this task's spend is never presented as
+  the wallet's.
 - The gates are ADVISORY inputs to the host's review machinery; the model's own
   finalization stays P5 judgment. Forced-finalization escape hatches bypass the
   obligation gate unconditionally — a deadline never hangs on review passes.
 - ``loop.py`` keeps only transport (message append + checkpoint emit); every
   threshold, text, and time computation lives here.
-- Time, cost and intrinsic notes carry ``resource_facts`` (``with_resource_facts``):
-  per-tool call/error counts, producer-reported durations, own/tree/delegated ledger
-  buckets and the unreserved global remainder. Only tool name, error flag and reported
-  duration are read; no argv, stdout or sleep/poll classification selects behaviour.
+- Threshold notices carry ``resource_facts`` (``with_resource_facts``): per-tool
+  call/error counts, producer-reported durations, own/tree/delegated ledger buckets and
+  the unreserved global remainder. Only tool name, error flag and reported duration are
+  read; no argv, stdout or sleep/poll classification selects behaviour. The every-round
+  carrier is the facts line (``loop_messages``), not these notices.
 """
 
 from __future__ import annotations
@@ -31,9 +39,8 @@ from ouroboros.config import (
     get_acceptance_reserve_pct,
     get_acceptance_review_est_sec,
     get_finalization_grace_sec,
-    get_pacing_interval_sec,
 )
-from ouroboros.contracts.task_contract import answer_protocol_active, normalize_budget_profile
+from ouroboros.contracts.task_contract import normalize_budget_profile
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.review_cycles import get_acceptance_max_improvement_passes
 
@@ -51,39 +58,12 @@ from ouroboros.review_cycles import get_acceptance_max_improvement_passes
 # (`task_acceptance_review_timing`) and nothing decides on them.
 _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC = 200.0
 
-# Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
-# decision 2=B: NO absolute round cap — reminders only, sized to the measured
-# burn). A harness-dispatched child whose OWN metered rounds (or dollars) since
-# its last delegated-run activity cross either threshold hears the reminder,
-# re-armed per further threshold-width of rounds; a well-behaved custodian never
-# does. Here and not in prompt text, so the prompt states measurements and the
-# policy has one home (this module is the pacing-threshold SSOT).
-NANNY_REMINDER_ROUNDS = 8
-NANNY_REMINDER_USD = 2.0
-# Early FIRST reminder for a harness-dispatched task that has made NO delegate
-# verb call at all (owner-approved 2026-08-15): cheap children finish in 4-8
-# rounds under the dollar threshold and never heard the reminder — live E2E
-# showed 4 children with 0 delegate_start calls doing all research natively.
-# The first firing comes at this round count regardless of dollars; after any
-# delegate activity, and for every re-arm after the first firing, the ordinary
-# dual-axis thresholds above apply unchanged. Same SSOT home as its siblings.
-NANNY_FIRST_REMINDER_ROUNDS = 3
 log = logging.getLogger(__name__)
-
-
-def _protocol_marker_phrases(ctx: Any) -> bool:
-    """v6.60.0: the `FINAL ANSWER:` marker PHRASES in pacing notes are protocol-gated
-    (contract ``answer_protocol="final_answer_line"``); the milestones themselves
-    fire regardless. One SSOT gate shared with the loop nudges/context instruction."""
-    try:
-        return answer_protocol_active(ctx)
-    except Exception:
-        return False
 
 
 @dataclass(frozen=True)
 class PacingNote:
-    """One milestone note: the user-turn text + its checkpoint event payload."""
+    """One threshold notice: the user-turn text + its checkpoint event payload."""
 
     text: str
     checkpoint: Dict[str, Any]
@@ -91,10 +71,8 @@ class PacingNote:
 
 @dataclass(frozen=True)
 class BudgetSnapshot:
-    """The task's time-budget facts at one moment (all seconds).
-
-    ``has_deadline=False`` disables the time axis entirely: gates then bound
-    improvement passes by COUNT only (default 1 = the historical behavior)."""
+    """Time-budget facts in seconds: the narrower explicit calendar deadline or execution
+    budget. ``has_deadline=False`` (neither) leaves only pass-COUNT gates (default 1)."""
 
     has_deadline: bool
     total_sec: float = 0.0
@@ -165,35 +143,25 @@ def _reserve_sec(total_sec: float, profile: Dict[str, Any]) -> float:
 
 
 def effective_finalization_reserve_sec(ctx: Any) -> float:
-    """The EMIT window before a real deadline (v6.55.0): the plain finalization
-    grace — the time needed to emit one best-effort answer / let a network tool
-    return cleanly. Consumed by the local deadline-finalize trigger and the
-    network-tool deadline clamp.
-
-    This is deliberately the small GRACE window, NOT the percentage reserve
-    (``BudgetSnapshot.reserve_sec`` = max(grace, pct×total)). The pct reserve is
-    an acceptance-REVIEW gate concept (don't START a review you cannot finish);
-    applying it to the finalize trigger amputated the tail of every long task —
-    a 6h ProgramBench task force-finalized ~54 min early on the 15% profile
-    (adversarial review r1). The finalize path fires just before the kill, so it
-    needs only the emit window; the review gates keep the pct reserve via the
-    snapshot. Restores the pre-sprint deadline-local behavior (monotonicity)."""
+    """The EMIT window before a real deadline (v6.55.0): the plain finalization grace to
+    emit one best-effort answer or let a network tool return; read by the local
+    deadline-finalize trigger and the network-tool clamp. NOT the percentage reserve
+    (``BudgetSnapshot.reserve_sec`` = max(grace, pct×total)): that is a review-admission
+    gate (don't START a review you cannot finish), and applying it here force-finalized
+    a 6h task ~54 min early on the 15% profile (adversarial review r1)."""
     return float(get_finalization_grace_sec())
 
 
 def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None) -> BudgetSnapshot:
-    """Snapshot the task's time budget from task_metadata deadline facts."""
+    """Snapshot the task's time budget from its explicit calendar/execution facts."""
     return _budget_snapshot(ctx, profile=profile, latch=True)
 
 
 def observe_budget_snapshot(ctx: Any, *, profile: Dict[str, Any]) -> BudgetSnapshot:
-    """The same snapshot WITHOUT the fallback-anchor latch (owner R49).
-
-    A metadata-poor task (no ``created_at``/``started_at`` and no anchor latched
-    yet) has no usable window facts a read-only observer could obtain without
-    WRITING one, so it is reported as having no deadline axis — which its one
-    caller, ``delegate_supervision._time_fact``, reports as ``not_set``.
-    ``profile`` is required: an observer never falls back to the emitting resolver."""
+    """The same snapshot WITHOUT the fallback-anchor latch (owner R49): a metadata-poor
+    task has no calendar axis a read-only observer could get without WRITING an anchor
+    (``delegate_supervision._time_fact`` reports ``not_set``). ``profile`` is required:
+    an observer never falls back to the emitting resolver."""
     return _budget_snapshot(ctx, profile=profile, latch=False)
 
 
@@ -203,15 +171,24 @@ def _budget_snapshot(
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return BudgetSnapshot(has_deadline=False)
+    from ouroboros.config import resolve_task_execution_timeout_sec
+    from ouroboros.model_wait import explicit_execution_window_remaining
+
+    execution = None  # #939: an explicit execution budget is a time axis on the shared clock
+    left = explicit_execution_window_remaining(ctx)
+    total = resolve_task_execution_timeout_sec(meta) if left is not None else None
+    if total is not None and left is not None:
+        execution = BudgetSnapshot(True, total, max(0.0, total - left), left, _reserve_sec(
+            total, profile if profile is not None else resolve_budget_profile(ctx)))
     deadline = parse_deadline_ts(meta.get("deadline_at"))
     if deadline is None:
-        return BudgetSnapshot(has_deadline=False)
+        return execution or BudgetSnapshot(has_deadline=False)
     created = parse_deadline_ts(meta.get("created_at") or meta.get("started_at"))
     if created is None:
         created = getattr(ctx, "_time_budget_started_at", None)
         if created is None:
             if not latch:
-                return BudgetSnapshot(has_deadline=False)
+                return execution or BudgetSnapshot(has_deadline=False)
             # Latch the fallback anchor exactly like the note path does (fable-5
             # cumulative review F4): without the latch every metadata-poor
             # snapshot re-anchors total to "now" and the pct reserve silently
@@ -226,13 +203,14 @@ def _budget_snapshot(
     elapsed = max(0.0, (now - created).total_seconds())
     remaining = (deadline - now).total_seconds()
     reserve = _reserve_sec(total, profile if profile is not None else resolve_budget_profile(ctx))
-    return BudgetSnapshot(
-        has_deadline=True,
-        total_sec=total,
-        elapsed_sec=elapsed,
-        remaining_sec=remaining,
-        reserve_sec=reserve,
-    )
+    calendar = BudgetSnapshot(has_deadline=True, total_sec=total, elapsed_sec=elapsed,
+                              remaining_sec=remaining, reserve_sec=reserve)
+    if execution is None:
+        return calendar
+    # The earlier cutoff owns remaining time; either bound's proportional reserve can
+    # still close review/author admission first, so both gates survive.
+    nearest = execution if execution.remaining_sec < calendar.remaining_sec else calendar
+    return replace(nearest, reserve_sec=nearest.remaining_sec - min(execution.spendable_sec, calendar.spendable_sec))
 
 
 def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
@@ -303,13 +281,13 @@ def improvement_pass_allowed(
 
 
 # ---------------------------------------------------------------------------
-# Milestone note content (moved from loop.py; loop keeps only transport).
+# Threshold notice content (moved from loop.py; loop keeps only transport).
 
 _TIME_BUDGET_THRESHOLDS = ((0.50, "50%"), (0.25, "25%"), (0.10, "10%"))
 
-# Cost axis (v6.56.0): thresholds are module constants like the time axis —
-# deliberately NOT settings keys (owner decision; the per-task knob is the
-# contract's budget_profile.cost_hard_stop_pct, not a global).
+# Cost axes (v6.56.0; the wallet axis #1129): thresholds are module constants like
+# the time axis — deliberately NOT settings keys (owner decision; the per-task knob
+# is the contract's budget_profile.cost_hard_stop_pct, not a global).
 _COST_BUDGET_THRESHOLDS = ((0.50, "50%"), (0.25, "25%"), (0.10, "10%"))
 _COST_WRAPUP_SPENT_FRACTION = 0.80
 # Disclosed bases: no default in-task stop (owner 2026-10-07, #1128: no share of the
@@ -730,7 +708,7 @@ def in_task_cost_ceiling_disclosure(ctx: Any, budget_remaining_usd: Optional[flo
 
 
 def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> str:
-    """The one live tree-spend line the checkpoint and the pacing note share.
+    """The one live tree-spend phrase, rendered by the per-round facts line.
 
     Known (settled) spend decides; open holds ride beside it, never added in.
     Names the BINDING bound: the in-task ceiling when one is active (that is
@@ -1039,7 +1017,7 @@ def _cost_checkpoint(
     spend_basis: str,
     **extra: Any,
 ) -> Dict[str, Any]:
-    """The cost checkpoint payload, with ONE meaning per key name.
+    """The tree-axis cost checkpoint payload, with ONE meaning per key name.
 
     ``task_cost_usd`` has meant THIS task's own accumulated cost since v6.56.0
     and still does — ``loop.py``'s ``_acceptance_loop_rails`` publishes the same
@@ -1049,7 +1027,7 @@ def _cost_checkpoint(
     every historical log reader would have been quietly re-pointed. The deciding
     number now rides its own honest name instead, and both are always present so
     no reader has to infer which axis a value came from (``spend_basis`` says
-    which one the crossing used)."""
+    which one the crossing used; ``budget_axis`` which bound it was measured on)."""
     return {
         "checkpoint_kind": kind,
         **extra,
@@ -1063,135 +1041,196 @@ def _cost_checkpoint(
     }
 
 
+def _crossing(ctx: Any, seen_attr: str, fraction_remaining: float) -> Optional[str]:
+    """Latch every crossed threshold and return the tightest NEW one (coarse→fine)."""
+    seen = getattr(ctx, seen_attr, None)
+    if not isinstance(seen, set):
+        seen = set()
+        setattr(ctx, seen_attr, seen)
+    crossed = [label for value, label in _COST_BUDGET_THRESHOLDS if fraction_remaining <= value]
+    unseen = [label for label in crossed if label not in seen]
+    seen.update(crossed)
+    return unseen[-1] if unseen else None
+
+
 def build_cost_budget_note(
     ctx: Any,
     *,
-    start_remaining_usd: Optional[float],
     cost_ceiling_usd: Optional[float],
     task_cost: Optional[float],
     tree_cost_usd: Optional[float] = None,
     root_cap_usd: Optional[float] = None,
+    whole_work_group: bool = False,
 ) -> Optional[PacingNote]:
-    """Cost milestone note at 50/25/10% of the in-task cost budget remaining,
-    plus a one-shot wrap-up note at ~80% spent. Fires only on crossings (never
-    per round — prompt-cache friendly), latched on ctx like the time axis.
+    """The tree axis: one notice per crossing of 50/25/10% remaining, and once at ~80% spent.
 
-    The reference base is the hard-stop ceiling when one exists, else the
-    budget remaining at task start (the informational base for
-    ``cost_hard_stop_pct=0`` runs). ``start_remaining_usd`` None (no finite
-    budget) keeps the axis silent. ADVISORY only — the hard stop itself lives
-    in the loop's budget gate, not here (P5).
-
-    ``tree_cost_usd`` (v6.91) is the root subtree's KNOWN (settled) spend,
-    subagents included — when known it is the DECIDING spend, because the
-    ledger fence counts the tree, not this task's own calls (waves died at tree
-    $84-94 while own showed $41-49); open holds are not spending (#1487).
-    ``task_cost`` (own accumulated cost) stays the diagnostic line. Unknown tree
-    spend falls back to own cost — never coerced to $0, and never SILENTLY
-    substituted: under a ``root_cap_usd`` the fallback is a lower bound and the
-    note says so (basis vocabulary in ``resolve_deciding_spend``)."""
-    base = cost_ceiling_usd if cost_ceiling_usd is not None else start_remaining_usd
+    The bound is the active in-task cost ceiling, else the hard tree cap (both are
+    stops of THIS tree); with neither the axis is silent — the shared wallet has its
+    own axis (``build_wallet_budget_note``), so this task's spend is never measured
+    against the wallet. Latched on ctx; the stop itself lives in the loop's budget
+    gate, not here (P5). ``tree_cost_usd`` is the root subtree's KNOWN (settled)
+    spend, subagents included — when known it is the DECIDING spend, because the
+    ledger fence counts the tree (#1487: open holds are not spending). Unknown tree
+    spend falls back to own cost, disclosed as a lower bound under a cap, never $0.
+    ``whole_work_group``: a Continue's successor, whose spend and effective cap are the
+    whole-work group's (the narrower of its root and group allowances)."""
+    base = cost_ceiling_usd if cost_ceiling_usd is not None else root_cap_usd
     deciding, spend_basis = resolve_deciding_spend(
         tree_cost_usd=tree_cost_usd, task_cost_usd=task_cost, root_cap_usd=root_cap_usd,
     )
     if base is None or base <= 0 or deciding is None:
         return None
-    tree_basis = spend_basis == SPEND_BASIS_TREE
+    cap_kind = "whole-work allowance (the narrower of root and group caps)" if whole_work_group else "hard tree cap"
+    axis = ("in_task_cost_ceiling" if cost_ceiling_usd is not None
+            else "whole_work_allowance" if whole_work_group else "hard_tree_cap")
+    base_kind = "in-task cost ceiling" if cost_ceiling_usd is not None else cap_kind
+    if cost_ceiling_usd is not None and root_cap_usd is not None:
+        base_kind += f" (${float(root_cap_usd):.2f} {cap_kind})"
     spent_fraction = max(0.0, float(deciding)) / base
-    fraction_remaining = max(0.0, 1.0 - spent_fraction)
-    seen = getattr(ctx, "_cost_budget_milestones_seen", None)
-    if not isinstance(seen, set):
-        seen = set()
-        ctx._cost_budget_milestones_seen = seen
-    crossed = [(value, label) for value, label in _COST_BUDGET_THRESHOLDS if fraction_remaining <= value]
-    unseen_crossed = [(value, label) for value, label in crossed if label not in seen]
-    hard_stop = cost_ceiling_usd is not None
-    base_kind = "unreserved in-task cost ceiling" if hard_stop else "unreserved start-of-task budget snapshot (no in-task cost stop)"
-    if tree_basis:
+    if spend_basis == SPEND_BASIS_TREE:
         own_text = f"; own calls ~${task_cost:.2f}" if task_cost is not None else ""
-        spent_line = (
-            f"Spent this task tree: ~${deciding:.2f} "
-            f"(known spend, subagents included; open holds not counted{own_text})"
-        )
+        spent_line = (f"Spent this task tree: ~${deciding:.2f} "
+                      f"(known spend, subagents included; open holds not counted{own_text})")
     elif spend_basis == SPEND_BASIS_OWN_TREE_UNKNOWN:
-        spent_line = (
-            f"Spent this task: ~${deciding:.2f} (OWN calls only — the tree's known "
-            "total is unavailable right now, so subagent spend is NOT included; treat "
-            "this as a lower bound against the tree cap)"
-        )
+        spent_line = (f"Spent this task: ~${deciding:.2f} (OWN calls only — the tree's known total is "
+                      "unavailable right now, so subagent spend is NOT included; a lower bound against the tree cap)")
     else:
         spent_line = f"Spent this task: ~${deciding:.2f}"
-    if unseen_crossed:
-        selected_label = unseen_crossed[-1][1]  # thresholds are coarse→fine
-        for _value, label in crossed:
-            seen.add(label)
-        _late = spent_fraction >= _COST_WRAPUP_SPENT_FRACTION
-        if _late:
-            # The tightest milestones already carry the convergence call; a
-            # separate wrap-up note right after would be pure duplication.
-            ctx._cost_wrapup_seen = True
-        # v6.74.4: a fast-spending workspace task can hit its FIRST cost note
-        # already past the wrap-up fraction — that suppressed the wrap-up (the
-        # only cost text with the tree sentence), so the late milestone itself
-        # must carry it (commit triad r2, sol advisory).
-        _tree_tail = (
-            _TREE_FLUSH_SENTENCE if _late and _workspace_delivery(ctx) else ""
-        )
-        text = (
-            f"[COST BUDGET — {selected_label} remaining crossed]\n"
-            f"{spent_line} | Remaining: ~${max(0.0, base - deciding):.2f} "
-            f"of ~${base:.2f} ({base_kind})\n"
-            "Use this as planning context, not as a command to stop. Prefer the shortest path "
-            "to a verifiable result; if a passing artifact or service already exists, prefer "
-            "preserving and verifying it over speculative improvements." + _tree_tail
-        )
-        checkpoint = _cost_checkpoint(
-            "cost_budget_milestone", deciding=deciding, task_cost=task_cost,
-            base=base, hard_stop=hard_stop, spend_basis=spend_basis,
-            milestone=selected_label,
-        )
-        return PacingNote(text=text, checkpoint=checkpoint)
-    if spent_fraction >= _COST_WRAPUP_SPENT_FRACTION and not getattr(ctx, "_cost_wrapup_seen", False):
+    late = spent_fraction >= _COST_WRAPUP_SPENT_FRACTION
+    # A workspace task can meet its FIRST note already past ~80% spent (v6.74.4), so a
+    # late notice carries the delivery fact itself.
+    delivery = _WORKSPACE_DELIVERY_FACT if late and _workspace_delivery(ctx) else ""
+    label = _crossing(ctx, "_cost_budget_milestones_seen", max(0.0, 1.0 - spent_fraction))
+    checkpoint = dict(deciding=deciding, task_cost=task_cost, base=base, hard_stop=True,
+                      spend_basis=spend_basis, budget_axis=axis)
+    if label is not None:
+        if late:
+            ctx._cost_wrapup_seen = True  # the late crossing already states the ~80% fact
+        text = (f"[COST BUDGET — {label} remaining crossed]\n"
+                f"{spent_line} | Remaining: ~${max(0.0, base - deciding):.2f} of ~${base:.2f} {base_kind}, "
+                "unreserved." + delivery)
+        return PacingNote(text=text, checkpoint=_cost_checkpoint("cost_budget_milestone", milestone=label, **checkpoint))
+    if late and not getattr(ctx, "_cost_wrapup_seen", False):
         ctx._cost_wrapup_seen = True
-        # v6.60.0: the marker PHRASE is protocol-gated (the milestone itself is not).
-        _marker_tail = (
-            " If the task expects a short answer, record your current best "
-            "with a `FINAL ANSWER:` line so it stays salvageable."
-            if _protocol_marker_phrases(ctx) else ""
-        )
-        _tree_tail = _TREE_FLUSH_SENTENCE if _workspace_delivery(ctx) else ""
-        if tree_basis:
-            _tree_amount = f"tree known spend ~${deciding:.2f} of ~${base:.2f}"
+        if spend_basis == SPEND_BASIS_TREE:
+            amount = f"tree known spend ~${deciding:.2f} of ~${base:.2f}"
         elif spend_basis == SPEND_BASIS_OWN_TREE_UNKNOWN:
-            _tree_amount = (
-                f"~${deciding:.2f} of ~${base:.2f}, counting OWN calls only — the "
-                "tree's known total is unavailable right now, so this is a lower bound"
-            )
+            amount = (f"~${deciding:.2f} of ~${base:.2f}, counting OWN calls only — the tree's known total "
+                      "is unavailable right now, so this is a lower bound")
         else:
-            _tree_amount = f"~${deciding:.2f} of ~${base:.2f}"
-        text = (
-            f"[COST BUDGET — wrap-up]\n"
-            f"~{spent_fraction * 100:.0f}% of the {base_kind} is spent "
-            f"({_tree_amount}).\n"
-            "Start converging: prefer completing and verifying the current best path over "
-            "opening new ones." + _tree_tail + _marker_tail
-        )
-        checkpoint = _cost_checkpoint(
-            "cost_budget_wrapup", deciding=deciding, task_cost=task_cost,
-            base=base, hard_stop=hard_stop, spend_basis=spend_basis,
-        )
-        return PacingNote(text=text, checkpoint=checkpoint)
+            amount = f"~${deciding:.2f} of ~${base:.2f}"
+        text = (f"[COST BUDGET — {_COST_WRAPUP_SPENT_FRACTION:.0%} spent crossed]\n"
+                f"~{spent_fraction * 100:.0f}% of the {base_kind} is spent ({amount})." + delivery)
+        return PacingNote(text=text, checkpoint=_cost_checkpoint("cost_budget_wrapup", **checkpoint))
     return None
 
 
-# v6.74.4: one commit-neutral tree sentence shared by every pacing axis that
-# can end a workspace task (time flush, cost wrap-up) — commit-neutral because
-# it reaches acting self_worktree subagents, where git commits are blocked and
-# a moved HEAD fails patch capture closed.
-_TREE_FLUSH_SENTENCE = (
-    " Your working tree ships as-is: leave it in a verified, building "
-    "state — revert unverified edits rather than leaving them in the tree."
-)
+def shared_wallet_observation() -> Dict[str, Any]:
+    """One read of the shared wallet's known headroom, typed known / no limit / unknown.
+
+    The same projection the wrap-up rail reads (``loop_budget._wrapup_global_remaining``),
+    kept with its status instead of collapsing "no limit" and "unreadable" into one
+    ``None``. Never a reservation: other tasks draw on the same pool."""
+    from ouroboros.usage_accounting import current_usage_scope, usage_projection
+
+    observed_at = utc_now().isoformat().replace("+00:00", "Z")
+    scope = current_usage_scope()
+    if scope is None or not scope.task_id:
+        return {"status": "unknown", "reason": "no usage scope", "observed_at": observed_at}
+    try:
+        projection = usage_projection(scope.drive_root, global_limit_usd=scope.global_limit_usd, include_roots=False)
+    except Exception:
+        log.debug("Shared wallet observation unavailable", exc_info=True)
+        return {"status": "unknown", "reason": "ledger unreadable", "observed_at": observed_at}
+    if projection.get("integrity_degraded"):
+        return {"status": "unknown", "reason": "ledger integrity degraded", "observed_at": observed_at}
+    if projection.get("limit_usd") is None:
+        return {"status": "no_global_limit", "observed_at": observed_at}
+    return {"status": "known", "remaining_usd": float(projection.get("remaining_known_usd") or 0.0),
+            "limit_usd": float(projection["limit_usd"]), "observed_at": observed_at}
+
+
+def round_money_observation(usage: Dict[str, Any], round_idx: int, *, tree_reader: Any) -> Dict[str, Any]:
+    """Share one wallet/tree reading between this round's notices and facts (#1129).
+
+    A changed facts reprepare clears the cache after a wait or route/view change;
+    an unchanged row reuses it. A failed tree read is ``None``.
+    """
+    cached = usage.get("_round_money_observation")
+    if isinstance(cached, dict) and cached.get("round") == round_idx:
+        return cached
+    try:
+        tree = tree_reader()
+    except Exception:
+        log.debug("Tree accounting unavailable for this round", exc_info=True)
+        tree = None
+    observation = {"round": round_idx, "wallet": shared_wallet_observation(),
+                   "tree": _tree_observation(tree) if isinstance(tree, dict) else None}
+    usage["_round_money_observation"] = observation
+    return observation
+
+
+def _tree_observation(tree: Dict[str, Any]) -> Dict[str, Any]:
+    """The tree reading's facts the round renders: spend, holds, the effective cap, the
+    snapshot age and, for a Continue's whole-work group (``usage_admission.task_money_snapshot``),
+    its room, which axis binds and both axes' known spend and caps."""
+    fields = ("settled_usd", "accounted_usd", "root_limit_usd", "remaining_known_usd", "age_sec",
+              "integrity_degraded", "accounting_basis", "binding_axis")
+    kept = {key: tree.get(key) for key in fields if key in tree}
+    for axis in ("root_axis", "group_axis"):
+        if isinstance(tree.get(axis), dict):
+            kept[axis] = {key: tree[axis].get(key) for key in ("settled_usd", "limit_usd")}
+    return kept
+
+
+def build_wallet_budget_note(
+    ctx: Any,
+    *,
+    baseline_usd: Optional[float],
+    wallet: Optional[Dict[str, Any]],
+    task_cost: Optional[float] = None,
+) -> Optional[PacingNote]:
+    """The shared-wallet axis (#1129): the wallet's CURRENT known headroom against what
+    remained when this execution started, at the same 50/25/10% and ~80% thresholds.
+
+    Every task's spending moves it, so a neighbour draining the pool crosses it while
+    this task spends nothing; this task's own cost rides beside it as a diagnostic,
+    never as the wallet's spend. Unknown or unlimited wallets and a non-positive
+    baseline keep the axis silent; latched on ctx apart from the tree axis."""
+    if baseline_usd is None or float(baseline_usd) <= 0 or not isinstance(wallet, dict):
+        return None
+    if wallet.get("status") != "known":
+        return None
+    baseline, remaining = float(baseline_usd), max(0.0, float(wallet["remaining_usd"]))
+    fraction_remaining = min(1.0, remaining / baseline)
+    own = f" This task's own recorded cost: ~${float(task_cost):.2f}." if task_cost is not None else ""
+    facts = (f"Shared wallet: ~${remaining:.2f} known headroom left of the ~${baseline:.2f} that remained when "
+             f"this execution started (limit ${float(wallet.get('limit_usd') or 0.0):.2f}; observed "
+             f"{wallet.get('observed_at') or 'at an unknown time'}). It is unreserved and shared: other tasks' "
+             "spending moves it too." + own)
+    checkpoint = {"budget_axis": "shared_wallet", "wallet_remaining_known_usd": round(remaining, 4),
+                  "wallet_baseline_usd": round(baseline, 4), "wallet_limit_usd": wallet.get("limit_usd"),
+                  "observed_at": wallet.get("observed_at"), "hard_stop": True,
+                  "task_cost_usd": round(float(task_cost), 4) if task_cost is not None else None}
+    label = _crossing(ctx, "_wallet_budget_milestones_seen", fraction_remaining)
+    late = 1.0 - fraction_remaining >= _COST_WRAPUP_SPENT_FRACTION
+    if label is not None:
+        if late:
+            ctx._wallet_wrapup_seen = True
+        return PacingNote(text=f"[COST BUDGET — shared wallet {label} remaining crossed]\n{facts}",
+                          checkpoint={"checkpoint_kind": "cost_budget_milestone", "milestone": label, **checkpoint})
+    if late and not getattr(ctx, "_wallet_wrapup_seen", False):
+        ctx._wallet_wrapup_seen = True
+        return PacingNote(text=f"[COST BUDGET — shared wallet {_COST_WRAPUP_SPENT_FRACTION:.0%} spent crossed]\n{facts}",
+                          checkpoint={"checkpoint_kind": "cost_budget_wrapup", **checkpoint})
+    return None
+
+
+# v6.74.4: one commit-neutral delivery fact shared by every axis that can end a
+# workspace task (time, cost) — commit-neutral because it reaches acting
+# self_worktree subagents, where git commits are blocked and a moved HEAD fails
+# patch capture closed.
+_WORKSPACE_DELIVERY_FACT = " Workspace delivery: the working tree is delivered as it stands when the task ends."
 
 
 def _workspace_delivery(ctx: Any) -> bool:
@@ -1348,44 +1387,28 @@ def _acceptance_rails_line_inner(
     return "; ".join(parts)
 
 
-def build_time_budget_note(
-    ctx: Any,
-    *,
-    round_idx: int = 0,
-    accumulated_usage: Optional[Dict[str, Any]] = None,
-    tree_cost_provider: Optional[Any] = None,
-) -> Optional[PacingNote]:
-    """Deadline-aware milestone note at 50/25/10% remaining, never per-round.
+def build_time_budget_note(ctx: Any) -> Optional[PacingNote]:
+    """One notice per crossing of 50/25/10% remaining on the nearer explicit time bound.
 
-    With no deadline_at (headless/benchmark runs), falls back to intrinsic
-    self-pacing. Both are ADVISORY — the model judges when to finalize; neither
-    is a deterministic stop gate (P5). Milestone state rides ctx attributes so a
-    note fires at most once per threshold."""
+    The bound is an explicit calendar ``deadline_at`` or API/CLI execution budget
+    (``build_budget_snapshot``); without either there is no time axis and no
+    notice (the facts line carries elapsed time every round). Each threshold is
+    latched once on ctx; finalization stays the model's judgment and the host's
+    own bound rails (P5)."""
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return None
-    created = parse_deadline_ts(meta.get("created_at") or meta.get("started_at"))
-    if created is None:
-        created = getattr(ctx, "_time_budget_started_at", None)
-        if created is None:
-            created = utc_now()
-            ctx._time_budget_started_at = created
-    now = utc_now()
-    deadline = parse_deadline_ts(meta.get("deadline_at"))
-    if deadline is None:
-        return build_intrinsic_pacing_note(
-            ctx, created=created, now=now, round_idx=round_idx, accumulated_usage=accumulated_usage,
-            tree_cost_provider=tree_cost_provider,
-        )
-    total = max(1.0, (deadline - created).total_seconds())
-    remaining = (deadline - now).total_seconds()
+    snapshot = build_budget_snapshot(ctx)
+    if not snapshot.has_deadline:
+        return None
+    total, remaining = max(1.0, snapshot.total_sec), snapshot.remaining_sec
     fraction_remaining = 0.0 if remaining <= 0 else remaining / total
     seen = getattr(ctx, "_time_budget_milestones_seen", None)
     if not isinstance(seen, set):
         seen = set()
         ctx._time_budget_milestones_seen = seen
-    # Fire the TIGHTEST crossed milestone, not the coarsest: a task starting
-    # already past 50% remaining must announce the real urgency immediately.
+    # The TIGHTEST crossed threshold, not the coarsest: a task starting already
+    # past 50% remaining is told where it actually stands.
     crossed = [(value, label) for value, label in _TIME_BUDGET_THRESHOLDS if fraction_remaining <= value]
     unseen_crossed = [(value, label) for value, label in crossed if label not in seen]
     if not unseen_crossed:
@@ -1393,35 +1416,19 @@ def build_time_budget_note(
     selected_label = unseen_crossed[-1][1]  # thresholds are coarse→fine
     for _value, label in crossed:
         seen.add(label)
-    elapsed = max(0.0, (now - created).total_seconds())
-    remaining_clamped = max(0.0, remaining)
-    deadline_text = deadline.isoformat().replace("+00:00", "Z")
-    # M4 deadline-flush at the tightest milestone: prompt for a salvageable,
-    # grounded deliverable before the hard cutoff. Prompt-only; forced
-    # finalization is untouched.
-    _marker_flush = (
-        " If the task expects a short answer, ALSO end your response with a single line, "
-        "exactly: FINAL ANSWER: <answer> — so a salvageable answer is captured before the cutoff."
-        if _protocol_marker_phrases(ctx) else ""
-    )
-    # v6.74.4 (time axis of the freeze directive): for workspace deliverables
-    # the tree ships as-is, so the flush must also protect the TREE state.
-    _tree_flush = _TREE_FLUSH_SENTENCE if _workspace_delivery(ctx) else ""
-    flush_clause = (
-        " You are near the hard cutoff: WRITE your best current deliverable now "
-        "(write_file/edit_text) and run ONE cheap verify_and_record on it, so a "
-        "salvageable, grounded result is in place before the deadline."
-        + _tree_flush + _marker_flush
-        if selected_label == "10%" else ""
-    )
+    elapsed, remaining_clamped = snapshot.elapsed_sec, max(0.0, remaining)
+    deadline = parse_deadline_ts(meta.get("deadline_at"))
+    deadline_text = deadline.isoformat().replace("+00:00", "Z") if deadline is not None else ""
+    from ouroboros.config import explicit_execution_timeout_sec
+    time_axis = "; ".join(part for part in (f"Deadline: {deadline_text}" if deadline_text else "", (
+        "Execution budget: queue and confirmed pauses excluded" if explicit_execution_timeout_sec(meta) else "")) if part)
+    grace = effective_finalization_reserve_sec(ctx)
     text = (
         f"[TIME BUDGET — {selected_label} remaining crossed]\n"
-        f"Elapsed: ~{elapsed/60:.1f} min | Remaining: ~{remaining_clamped/60:.1f} min | "
-        f"Deadline: {deadline_text}\n"
-        "Use this as planning context, not as a command to stop. If a passing artifact "
-        "or service already exists, prefer preserving and verifying it over speculative "
-        "improvements. If not, focus on the shortest path to a verifiable result."
-        + flush_clause
+        f"Elapsed: ~{elapsed/60:.1f} min | Remaining: ~{remaining_clamped/60:.1f} min | {time_axis}\n"
+        f"Host finalization: one tool-less final answer is requested when ~{grace/60:.1f} min remain "
+        "on the nearer explicit bound."
+        + (_WORKSPACE_DELIVERY_FACT if selected_label == "10%" and _workspace_delivery(ctx) else "")
     )
     return PacingNote(text=text, checkpoint={
         "checkpoint_kind": "time_budget_milestone",
@@ -1430,85 +1437,6 @@ def build_time_budget_note(
         "remaining_sec": round(remaining_clamped, 3),
         "deadline_at": deadline_text,
     })
-
-
-def build_intrinsic_pacing_note(
-    ctx: Any,
-    *,
-    created,
-    now,
-    round_idx: int,
-    accumulated_usage: Optional[Dict[str, Any]],
-    tree_cost_provider: Optional[Any] = None,
-) -> Optional[PacingNote]:
-    """No deadline: surface the agent's OWN elapsed / rounds / cost periodically.
-
-    ADVISORY only — awareness so the one mind can choose to wrap up; deliberately
-    no deterministic time/round/cost stop (finalization stays P5 judgment).
-
-    ``tree_cost_provider`` (v6.91): a zero-arg callable returning the root
-    subtree's accounting snapshot (``{"settled_usd", "accounted_usd",
-    "root_limit_usd"}`` or None). Called ONLY when the note actually fires (a rare, already
-    cache-breaking surface — never per round), so a fresh ledger read at most
-    once per pacing interval keeps the number honest after long child waits.
-    Unknown stays "unknown", never $0."""
-    interval = get_pacing_interval_sec()
-    if interval <= 0:
-        return None
-    elapsed = max(0.0, (now - created).total_seconds())
-    bucket = int(elapsed // interval)
-    if bucket <= 0:
-        return None
-    last_bucket = getattr(ctx, "_pacing_bucket_seen", 0)
-    if bucket <= last_bucket:
-        return None
-    ctx._pacing_bucket_seen = bucket
-    raw_cost = (accumulated_usage or {}).get("cost")
-    cost = float(raw_cost) if raw_cost is not None else None
-    cost_text = f"~${cost:.2f}" if cost is not None else "unknown"
-    tree_line = ""
-    tree_known: Optional[float] = None
-    tree_accounted: Optional[float] = None
-    tree_cap: Optional[float] = None
-    if callable(tree_cost_provider):
-        try:
-            tree_info = tree_cost_provider()
-        except Exception:
-            tree_info = None
-        rendered = tree_spend_line(tree_info, getattr(ctx, "_cost_ceiling", None))
-        if rendered:
-            tree_known = float(tree_info["settled_usd"])
-            tree_accounted = float(tree_info.get("accounted_usd") or tree_known)
-            raw_cap = tree_info.get("root_limit_usd")
-            tree_cap = float(raw_cap) if raw_cap is not None else None
-            tree_line = f" | {rendered}"
-    _marker_tail = (
-        " If you have a current best short answer, record it with a `FINAL ANSWER:` line "
-        "before continuing so it remains salvageable if later work stalls."
-        if _protocol_marker_phrases(ctx) else ""
-    )
-    text = (
-        f"[PACING — ~{elapsed/60:.0f} min elapsed]\n"
-        f"Rounds so far: {round_idx} | Elapsed: ~{elapsed/60:.1f} min | Cost so far: {cost_text}"
-        f"{tree_line}\n"
-        "Planning context, not a command to stop. Periodically confirm you are still on the "
-        "shortest path to a verifiable result; if a passing artifact or service already exists, "
-        "prefer preserving and verifying it over speculative improvements." + _marker_tail
-    )
-    checkpoint = {
-        "checkpoint_kind": "intrinsic_pacing",
-        "elapsed_sec": round(elapsed, 3),
-        "rounds": int(round_idx),
-        "cost": round(cost, 4) if cost is not None else None,
-    }
-    if tree_known is not None:
-        checkpoint["tree_known_usd"] = round(tree_known, 4)
-        checkpoint["tree_accounted_usd"] = round(tree_accounted, 4)
-        checkpoint["tree_cap_usd"] = round(tree_cap, 4) if tree_cap is not None else None
-    ceiling = getattr(ctx, "_cost_ceiling", None)
-    if isinstance(ceiling, CostCeiling):
-        checkpoint["cost_ceiling"] = cost_ceiling_disclosure(ceiling)
-    return PacingNote(text=text, checkpoint=checkpoint)
 
 
 def record_tool_activity(ctx: Any, result: Dict[str, Any]) -> None:
@@ -1537,11 +1465,11 @@ def record_tool_activity(ctx: Any, result: Dict[str, Any]) -> None:
 
 
 def with_resource_facts(note: PacingNote, ctx: Any, usage: Optional[Dict[str, Any]]) -> PacingNote:
-    """Enrich an already-triggered advisory note from existing observation owners.
+    """Enrich an already-triggered threshold notice from existing observation owners.
 
     No new cadence, model call, admission decision or persistent store. Tool
     counters are incremental; money uses the ledger's existing cached readers
-    only when an ordinary time/cost/intrinsic note fires. The two spend subsets
+    only when a time/cost threshold notice fires. The two spend subsets
     overlap and unknown, estimated and open cash keep their separate fields.
     """
     from ouroboros.usage_accounting import current_usage_scope, usage_breakdown, usage_projection

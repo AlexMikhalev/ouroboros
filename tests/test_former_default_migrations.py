@@ -1,9 +1,12 @@
-"""Saved model ids are not rewritten as "retired"; only our own former defaults migrate.
+"""Saved model ids are not rewritten — not as "retired", not as one of our former defaults.
 
 A deleted table used to rewrite saved ids (gpt-5.4, gemini previews) in place, claiming
-a retirement no provider catalog showed. These tests pin that a saved id stays as
-written on every install class, and name the kept exceptions: a value equal to one of
-Ouroboros's own former shipped defaults for that slot still migrates.
+a retirement no provider catalog showed; a later table rewrote a saved value equal to one
+of Ouroboros's own former defaults, which equality cannot tell from the owner's choice
+(owner decision 2A). These tests pin that an active slot keeps its saved id on every
+install class — only its spelling moves onto the one exclusive provider's prefix — and
+name the kept exceptions: the retired Heavy and scope-review keys, which no route reads,
+still classify our former defaults.
 """
 import json
 
@@ -96,23 +99,34 @@ def test_a_saved_heavy_id_that_was_never_our_default_stays_the_owner_actor(model
 @pytest.mark.parametrize("document,key,migrated", [
     pytest.param({"OPENAI_API_KEY": "sk-openai", "OUROBOROS_SCOPE_REVIEW_MODEL": "openai::gpt-5.4"},
                  "OUROBOROS_SCOPE_REVIEW_MODEL", "openai::gpt-5.6-terra", id="direct-scope-review-legacy-default"),
-    pytest.param({"OPENAI_API_KEY": "sk-openai", "OUROBOROS_MODEL": "google/gemini-3.1-flash-lite"},
-                 "OUROBOROS_MODEL", "openai::gpt-5.6-terra", id="former-main-default-on-direct-openai"),
-    pytest.param({"ANTHROPIC_API_KEY": "sk-ant", "OUROBOROS_MODEL_LIGHT": "google/gemini-3.1-flash-lite"},
-                 "OUROBOROS_MODEL_LIGHT", "anthropic::claude-sonnet-5", id="former-light-default-on-direct-anthropic"),
     pytest.param({"OPENROUTER_API_KEY": "sk-or", "OUROBOROS_SCOPE_REVIEW_MODEL": "openai/gpt-5.5"},
                  "OUROBOROS_SCOPE_REVIEW_MODEL", "openai/gpt-5.6-terra", id="scope-review-prior-default"),
     pytest.param({"OUROBOROS_MODEL_HEAVY": "google/gemini-3.1-flash-lite"},
                  "OUROBOROS_MODEL_HEAVY", "", id="former-code-default-in-heavy"),
 ])
-def test_our_own_former_defaults_still_migrate(document, key, migrated):
-    """The named exceptions to "a saved id stays as written": a value equal to one of OUR
-    former shipped defaults for that slot (never a claim that an external model retired)
-    still migrates, because equality cannot tell it from the owner's choice."""
+def test_only_the_retired_keys_still_classify_our_former_defaults(document, key, migrated):
+    """The named exceptions: retired keys no route reads (a stale scope-review value, the
+    Heavy actor seed) still classify a value equal to one of OUR former shipped defaults."""
     normalized, _changed, changed_keys = apply_runtime_provider_defaults(dict(document))
 
     assert normalized[key] == migrated
     assert key in changed_keys
+
+
+@pytest.mark.parametrize("document,key", [
+    pytest.param({"OPENAI_API_KEY": "sk-openai", "OUROBOROS_MODEL": "google/gemini-3.1-flash-lite"},
+                 "OUROBOROS_MODEL", id="former-main-default-on-direct-openai"),
+    pytest.param({"ANTHROPIC_API_KEY": "sk-ant", "OUROBOROS_MODEL_LIGHT": "google/gemini-3.1-flash-lite"},
+                 "OUROBOROS_MODEL_LIGHT", id="former-light-default-on-direct-anthropic"),
+])
+def test_a_saved_former_default_in_an_active_slot_survives(document, key):
+    """Owner decision 2A: a saved active slot equal to a former default stays as written —
+    on a direct-only install an unreachable router id is honestly unavailable, never
+    silently another provider."""
+    normalized, _changed, changed_keys = apply_runtime_provider_defaults(dict(document))
+
+    assert normalized[key] == document[key]
+    assert key not in changed_keys
 
 
 _DIRECT_PROVIDER_CREDENTIALS = {
@@ -130,12 +144,10 @@ _OUR_FORMER_GEMINI_DEFAULT = "google/gemini-3.1-flash-lite"
 
 
 @pytest.mark.parametrize("provider", sorted(_DIRECT_PROVIDER_CREDENTIALS))
-def test_our_former_gemini_default_migrates_on_every_direct_provider(provider):
-    """A stored copy of our former Main/Code/Light default cannot be reached on a direct-only
-    install and migrates to that provider's slot defaults; in Fallbacks, where it never
-    shipped, it is the owner's choice and stays."""
-    from ouroboros.provider_models import DIRECT_PROVIDER_DEFAULTS
-
+def test_our_former_gemini_default_stays_in_active_slots_on_every_direct_provider(provider):
+    """A stored copy of our former Main/Code/Light default on a direct-only install is a saved
+    value: it stays (unreachable, so honestly unavailable) in every active slot, while the
+    retired Heavy key still drops it rather than seeding an actor."""
     former = _OUR_FORMER_GEMINI_DEFAULT
     normalized, _changed, changed_keys = apply_runtime_provider_defaults({
         **_DIRECT_PROVIDER_CREDENTIALS[provider],
@@ -145,15 +157,15 @@ def test_our_former_gemini_default_migrates_on_every_direct_provider(provider):
         "OUROBOROS_MODEL_FALLBACKS": former,
     })
 
-    assert normalized["OUROBOROS_MODEL"] == DIRECT_PROVIDER_DEFAULTS[provider]["main"]
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == DIRECT_PROVIDER_DEFAULTS[provider]["light"]
+    assert [normalized[key] for key in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT", "OUROBOROS_MODEL_FALLBACKS")] == [
+        former] * 3
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == former
-    assert {"OUROBOROS_MODEL", "OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT"} <= set(changed_keys)
-    assert "OUROBOROS_MODEL_FALLBACKS" not in changed_keys
+    assert changed_keys == ["OUROBOROS_MODEL_HEAVY"]
 
 
-def test_a_local_only_install_still_clears_our_former_gemini_light_default():
+def test_a_local_only_install_keeps_a_saved_former_gemini_light():
+    """Only an UNAUTHORED Light on a local-only install is proposed blank (the loader); a
+    saved one stays as written. The retired Heavy key still drops our former default."""
     former = _OUR_FORMER_GEMINI_DEFAULT
     normalized, _changed, changed_keys = apply_runtime_provider_defaults({
         **_LOCAL_ONLY,
@@ -162,26 +174,22 @@ def test_a_local_only_install_still_clears_our_former_gemini_light_default():
         "OUROBOROS_MODEL_FALLBACKS": former,
     })
 
-    assert normalized["OUROBOROS_MODEL_LIGHT"] == ""
+    assert (normalized["OUROBOROS_MODEL_LIGHT"], normalized["OUROBOROS_MODEL_FALLBACKS"]) == (former, former)
     assert normalized["OUROBOROS_MODEL_HEAVY"] == ""
-    assert normalized["OUROBOROS_MODEL_FALLBACKS"] == former
-    assert {"OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT"} <= set(changed_keys)
-    assert "OUROBOROS_MODEL_FALLBACKS" not in changed_keys
+    assert changed_keys == ["OUROBOROS_MODEL_HEAVY"]
 
 
 @pytest.mark.parametrize("stored", ["openai::gpt-5.4", "openai/gpt-5.4"])
-def test_our_former_openai_direct_main_default_migrates(stored):
-    """`openai::gpt-5.4` was our first direct OpenAI Main/Code default (4.44.0 to 4.50.0-rc.9);
-    the slash spelling reaches the same direct identity through syntax normalization."""
-    from ouroboros.provider_models import DIRECT_PROVIDER_DEFAULTS
-
+def test_our_former_openai_direct_main_default_stays_and_only_its_spelling_moves(stored):
+    """`openai::gpt-5.4` was our first direct OpenAI Main/Code default (4.44.0 to 4.50.0-rc.9):
+    a saved copy stays; the slash spelling reaches the same direct identity by syntax alone."""
     normalized, _changed, changed_keys = apply_runtime_provider_defaults({
         "OPENAI_API_KEY": "sk-openai",
         "OUROBOROS_MODEL": stored,
     })
 
-    assert normalized["OUROBOROS_MODEL"] == DIRECT_PROVIDER_DEFAULTS["openai"]["main"]
-    assert "OUROBOROS_MODEL" in changed_keys
+    assert normalized["OUROBOROS_MODEL"] == "openai::gpt-5.4"
+    assert ("OUROBOROS_MODEL" in changed_keys) is (stored != "openai::gpt-5.4")
 
 
 def test_our_former_openai_code_default_leaves_heavy_without_becoming_an_actor():

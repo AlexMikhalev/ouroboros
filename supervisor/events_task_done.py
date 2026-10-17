@@ -625,10 +625,9 @@ def _finish_task_done_dispatch(
 
     _events()._maybe_notify_provider_death(ctx, task_id, task, final_task_result, task_done_event)
     try:
-        results_dir = pathlib.Path(ctx.DRIVE_ROOT) / "task_results"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        result_file = results_dir / f"{task_id}.json"
-        if not result_file.exists():
+        from ouroboros.task_store import exists
+
+        if not exists(ctx.DRIVE_ROOT, str(task_id or "")):
             write_task_result(
                 ctx.DRIVE_ROOT,
                 str(task_id or ""),
@@ -786,6 +785,9 @@ def _resolve_lifecycle_fault(
         "ts": utc_now_iso(),
         "type": "task_done",
         "task_id": task_id,
+        # #1578: the lineage this writer already holds, never reconstructed from history.
+        **{key: str(stored.get(key) or task_row.get(key) or evt.get(key)) for key in ("root_task_id", "parent_task_id")
+           if stored.get(key) or task_row.get(key) or evt.get(key)},
         "task_type": task_type,
         "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
@@ -808,6 +810,7 @@ def _resolve_lifecycle_fault(
     except Exception:
         log.debug("lifecycle-fault cost projection failed for %s", task_id, exc_info=True)
     try:
+        task_done_event["logged_at"] = utc_now_iso()  # the append observation; ts keeps completion time
         append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", task_done_event)
     except Exception:
         log.warning("Failed to log lifecycle-fault task_done to events.jsonl", exc_info=True)
@@ -925,32 +928,6 @@ def _task_done_durable_fault(evt: Dict[str, Any], ctx: Any, task_id: Any) -> boo
         return True
 
 
-def _notify_consciousness_of_root_done(ctx: Any, task: Dict[str, Any], task_metadata: Any,
-                                       final_task_result: Any, task_done_event: Dict[str, Any]) -> None:
-    """A ROOT finishing (any outcome) is a reason for an early consciousness wake —
-    except the owner's own direct turn (В13: an owner message never wakes it, and
-    neither does that turn ending), a wake-up's own finish or a root consciousness
-    started (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
-    metadata = task_metadata if isinstance(task_metadata, dict) else {}
-    if "subagent" in (str(task.get("delegation_role") or ""), str(metadata.get("delegation_role") or "")):
-        return  # the cancel path has already popped the RUNNING row; the event's metadata still says
-    if bool(task_done_event.get("_is_direct_chat")) or bool(task.get("_is_direct_chat")):
-        return
-    from ouroboros.consciousness_authority import is_consciousness_origin
-
-    result_metadata = final_task_result.get("metadata") if isinstance(final_task_result, dict) else None
-    if is_consciousness_origin(result_metadata) or is_consciousness_origin(task_metadata):
-        return
-    consciousness = getattr(ctx, "consciousness", None)
-    if consciousness is None:
-        return
-    try:
-        consciousness.notify(
-            f"task_finished:{task_done_event.get('task_id') or ''}:{task_done_event.get('status') or ''}")
-    except Exception:
-        log.debug("consciousness notify on task_done failed", exc_info=True)
-
-
 def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = evt.get("task_id")
     wid = evt.get("worker_id")
@@ -1065,10 +1042,14 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     )
     eff_cost = terminal_cost.get("accounted_upper_bound_usd")
     eff_rounds = terminal_cost.get("total_rounds")
+    known_result = final_task_result if isinstance(final_task_result, dict) else {}
     task_done_event = {
         "ts": evt.get("ts", utc_now_iso()),
         "type": "task_done",
         "task_id": task_id,
+        # #1578: the lineage this writer already holds, never reconstructed from history.
+        **{key: str(known_result.get(key) or (task or {}).get(key) or evt.get(key)) for key in (
+            "root_task_id", "parent_task_id") if known_result.get(key) or (task or {}).get(key) or evt.get(key)},
         "task_type": task_type,
         "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
@@ -1109,6 +1090,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     if isinstance(model_execution, dict):
         task_done_event["model_execution"] = model_execution
     try:
+        task_done_event["logged_at"] = utc_now_iso()  # the append observation; ts keeps completion time
         append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", task_done_event)
     except Exception:
         log.warning("Failed to log task_done to events.jsonl", exc_info=True)
@@ -1134,8 +1116,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         final_task_result=final_task_result,
         task_done_event=task_done_event,
     )
-    _notify_consciousness_of_root_done(ctx, task, task_metadata, final_task_result, task_done_event)
-
     # v6.91 tree-quiescence coop checkpoint: MUST run after the dispatch
     # bookkeeping above removed this terminal child from RUNNING, or the
     # finishing child still counts live and "zero live members" is never true.

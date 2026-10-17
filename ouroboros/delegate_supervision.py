@@ -116,8 +116,12 @@ def _save_state(ctx: Any, state: dict[str, Any]) -> None:
 
 
 def _emit(ctx: Any, kind: str, payload: dict[str, Any]) -> bool:
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    # #1578: the lineage this context already knows; an unknown id stays absent.
+    lineage = {key: str(metadata.get(key) or getattr(ctx, key, "") or "") for key in ("root_task_id", "parent_task_id")}
     return custody.emit(custody.custody_root(ctx), kind, {
-        "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
+        "task_id": str(getattr(ctx, "task_id", "") or ""), **{k: v for k, v in lineage.items() if v}, **payload,
     })
 
 
@@ -730,6 +734,24 @@ def _pending_payload(ctx: Any, state: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _record_terminal_acknowledged(ctx: Any, state: dict[str, Any], pending: dict[str, Any],
+                                  wake_id: str, attempt: str) -> None:
+    """The custody-native half of an accepted TERMINAL wake (#1573).
+
+    Called only after the supervision acknowledgement landed, i.e. after the exact
+    wake (or its verified source envelope) was appended to this attempt's
+    transcript, and only for the run's own terminal payload. It proves that append in
+    ``attempt`` — not a physical send, a read or permanent transcript retention. A
+    row that fails to land only lets the own-run notice repeat (the safe direction).
+    """
+    payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
+    run_id = str(state.get("run_id") or "")
+    if run_id and str(payload.get("status") or "") == "terminal" and str(payload.get("run_id") or "") == run_id:
+        _emit(ctx, custody.TERMINAL_ACKNOWLEDGED, {
+            "run_id": run_id, "wake_id": wake_id, "attempt_key": attempt,
+        })
+
+
 def acknowledge_pending_wake(ctx: Any, delivered: Any = None) -> bool:
     """Ack only after the exact wake or its verified source handle was delivered."""
 
@@ -802,6 +824,7 @@ def acknowledge_pending_wake(ctx: Any, delivered: Any = None) -> bool:
         ),
     }):
         return False
+    _record_terminal_acknowledged(ctx, state, pending, expected, attempt)
     interaction_ids = frozenset(
         str(item) for item in (pending.get("interaction_ids") or []) if str(item)
     )
@@ -812,6 +835,11 @@ def acknowledge_pending_wake(ctx: Any, delivered: Any = None) -> bool:
         _REPORTED_INTERACTIONS[run_id] = frozenset(
             set(_REPORTED_INTERACTIONS.get(run_id, frozenset())) | set(interaction_ids)
         )
+        # Unlike the latest-run checkpoint, this map survives alternating A/B
+        # waits and travels with the transcript through a cold continuation.
+        seen = dict(getattr(ctx, "_sleep_interaction_seen", None) or {})
+        seen[run_id] = sorted(set(seen.get(run_id) or ()) | (set(interaction_ids) & _interaction_ids(payload)))
+        ctx._sleep_interaction_seen = seen
     prior_mailbox_ids = (
         state.get("mailbox_acknowledged_ids") or []
         if str(state.get("mailbox_acknowledged_attempt_key") or "") == attempt
@@ -996,8 +1024,9 @@ def supervised_wait(
     real event consumes it, and it never repeats. Renewal runs on a fixed three-second
     tick with no backoff and no durable outage latch. A read that delivered no daemon
     answer is a quiet renewal: ``observation_read_timeout`` is our own read bound
-    expiring, ``daemon_unreachable`` is a socket that carried nothing; only the latter
-    opens an outage episode (one owner line, plus one line when a read is answered again).
+    expiring, ``daemon_unreachable`` a socket that carried nothing, an engine busy code a
+    GET the daemon could not serve; only ``daemon_unreachable`` opens an outage episode
+    (one owner line, plus one line when a read is answered again).
     """
 
     reason_text = str(checkpoint_reason or "").strip()
@@ -1078,14 +1107,18 @@ def supervised_wait(
     outage_since = ""
     outage_stamp = ""
     # The loop's own transport, only when it built the observing wait.
-    gateway = _loop_gateway() if owns_transport else None
-    live_input = _leaf_live_input(ctx, run_id, gateway)
+    from ouroboros.tools.delegate_terminal_evidence import retained_terminal_result
+    retained = retained_terminal_result(ctx, run_id) if owns_transport else None
+    gateway = _loop_gateway() if owns_transport and retained is None else None
+    live_input = _leaf_live_input(ctx, run_id, gateway) if retained is None else "unknown"
     try:
         while True:
             # A control already present does not wait behind another HTTP read.
             observed = not _control_wakes(ctx)
             if not observed:
                 raw = json.dumps({"status": "no_progress", "run_id": str(run_id)})
+            elif retained is not None:
+                raw, retained = json.dumps(retained), None
             else:
                 if owns_transport and gateway is None:
                     gateway = _loop_gateway()
@@ -1093,15 +1126,19 @@ def supervised_wait(
                                 **({"gateway": gateway} if gateway is not None else {}))
             payload = _payload(raw)
             answered = str(payload.get("status") or "") not in _NO_DAEMON_ANSWER_STATUSES
+            # A typed 503 the engine itself sent to the read reached the daemon over an intact
+            # transport: rebuilding it would re-handshake into the same refusal and wake the
+            # model, and it is no outage either. Only a read nothing answered is a dead socket.
+            reached = answered or payload.get("answered") is True
             if observed:
                 _record_observation(state, payload, answered)
-            if not answered:
+            if not reached:
                 gateway = _drop_gateway(gateway)
             unreachable = (
                 payload.get("status") == "observation_pending"
-                and payload.get("reason") == _DAEMON_UNREACHABLE
+                and payload.get("reason") == _DAEMON_UNREACHABLE and not reached
             )
-            if observed and outage_since and answered:
+            if observed and outage_since and reached:
                 # The first read the daemon ANSWERED closes the episode. A refusal
                 # that never reached it (descriptor gone, token unreadable, engine
                 # too old) used to satisfy this and told the owner the daemon was

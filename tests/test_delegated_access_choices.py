@@ -43,6 +43,7 @@ def test_schedule_snapshot_reaches_actor_first_post(full_run, monkeypatch, lower
     from ouroboros.tools.registry import ToolContext
     from ouroboros.contracts.task_constraint import normalize_task_constraint
     from ouroboros.subagent_bootstrap import bootstrap_before_context
+    from ouroboros.task_results import write_task_result
     from supervisor.task_dispatch import build_scheduled_task_payload
     from supervisor.events_subagent_admission import _resolve_subagent_constraint
 
@@ -52,6 +53,8 @@ def test_schedule_snapshot_reaches_actor_first_post(full_run, monkeypatch, lower
     monkeypatch.setattr(control, 'load_settings', lambda: settings)
     monkeypatch.setenv('OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS', 'true')
     parent = ToolContext(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root, task_id='parent')
+    # Scheduling runs under a persisted parent; access selection cannot invent its billing root.
+    write_task_result(ctx.drive_root, 'parent', 'running', root_task_id='parent')
     parent.pending_events = []
     result = control._schedule_task(
         parent, subagent_id='coder', objective='Inspect the source and make the assigned edit.',
@@ -96,7 +99,8 @@ def test_lowering_and_legacy_snapshots_never_widen():
     readonly = runtime.validate_subagent_snapshot(lower, access='readonly')
     assert runtime.validate_subagent_snapshot(readonly, access='inherit') == readonly
     assert runtime.validate_subagent_snapshot(readonly, access='workspace_write')['access'] == 'readonly'
-    assert delegated_run_shape(False, 'full').access == 'readonly'
+    # An explicit read-only lowering stays read-only whatever the assignment (#1609).
+    assert delegated_run_shape(False, readonly['access']).access == 'readonly'
     legacy = {key: value for key, value in lower.items() if key != 'access'}
     assert runtime.validate_subagent_snapshot(legacy).get('access', 'workspace_write') == 'workspace_write'
     assert runtime.validate_subagent_snapshot(legacy, access='inherit') == legacy

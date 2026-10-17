@@ -12,12 +12,12 @@ two shapes:
   host's read-only tools (the runtime root is its readable data plane) while
   BIBLE.md, the standing disclosures and memory whitelist reach it inline;
   repository reads and inline delivery remain distinct coverage evidence;
-* an ``agent_session`` row is a delegated read-only session — the same task,
+* an ``agent_session`` row uses its configured rights in a private checking copy
+  (or explicit read-only session) — the same task,
   reads not host-observed (disclosed as ``unobserved``).
 
 Both deliveries ride the shared review executor seam: the product
-is free markdown (``triad_review`` shape ``report``), a bound landing before
-the final answer delivers the collected draft marked INCOMPLETE, and the host
+is free markdown (``triad_review`` shape ``report``), and the host
 prepends a provenance header naming the delivery, model, rounds, receipts,
 coverage and completeness so consecutive reports stay comparable. A mandatory
 read left partial, missing or unobserved is recorded as a ``capability_delta``
@@ -50,6 +50,7 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
     ROUTE_KIND_API,
     ROUTE_KIND_SESSION,
     ConfiguredReviewerSlot,
+    main_review_row,  # the direct Main row lives with the pool it also serves when empty
     row_effort,
 )
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
@@ -87,7 +88,7 @@ known error patterns from patterns.md that remain unfixed, and ideas how to impr
 # inline. No second tool read is needed for those exact delivered documents.
 _RETRIEVING_METHOD = """
 
-How to work: inspect the repository yourself with read-only tools. `BIBLE.md`
+How to work: inspect the repository yourself with your own tools. `BIBLE.md`
 ({bible_chars:,} chars) and the standing disclosures are delivered IN FULL below:
 use them as your reference without a redundant tool read. Every finding is checked
 against the constitution. The governance sections that follow are the rules delivered to you in
@@ -207,32 +208,12 @@ def _session_route_reason(row: ConfiguredReviewerSlot) -> str:
         return f"agent_service_unavailable: {type(exc).__name__}: {exc}"
     try:
         unavailable, _reset_at = route_health(
-            gateway, route.route_id, delegated_run_shape(False), route_model=route.model,
+            gateway, route.route_id, delegated_run_shape(False, row.access or "readonly"), route_model=route.model,
             pinned_profile=str(row.profile_id or getattr(route, "profile_id", "") or ""),
         )
     finally:
         gateway.close()
     return str(unavailable or "")
-
-
-def main_review_row() -> ConfiguredReviewerSlot:
-    """The direct Main row — ``OUROBOROS_MODEL``, its local flag and Main's pinned
-    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``): ``/review``'s executor when the
-    call names none (decision 3A) and the deep self-review default.
-
-    The pin rides as the row's credential profile because the executor sends under
-    ``model_role=reviewer:main`` with ``model_account_override=<row profile>``, and an
-    EMPTY override is Auto, never a lookup of Main's own role: without it a pinned
-    Main would review on whatever account the engine picked. An unpinned Main stays
-    Auto; an invalid pin document raises here as it does for Main's own calls.
-    """
-    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
-    from ouroboros.subagents import _lane_model, _use_local_for_lane
-
-    model = _lane_model("main")
-    return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
-                                  use_local=True if _use_local_for_lane("main", model) else None,
-                                  profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""))
 
 
 def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str, Optional[str]]:
@@ -453,10 +434,29 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
             "rounds": usage.get("native_rounds", 0), "tool_calls": usage.get("native_tool_calls", 0),
             "receipts": len(usage.get("native_tool_receipts") or []),
             "end_reason": usage.get("native_end_reason", ""),
-            "transcript": f"{usage.get('native_transcript_chars', 0)}/{usage.get('native_transcript_bound', 0)}",
-            "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
             "coverage_basis": usage.get("deep_review_coverage_basis", "legacy_lines"),
         })
+        context = usage.get("native_context") or {}
+        serialized = context.get("serialized_chars", usage.get("native_transcript_chars"))
+        facts["serialized_chars_diagnostic"] = serialized if serialized is not None else "unknown"
+        # Older reports retain their actual bound/landing facts; absence is not 0.
+        bound = usage.get("native_transcript_bound")
+        if type(bound) is int and bound > 0:
+            facts["transcript"] = f"{serialized if serialized is not None else 'unknown'}/{bound}"
+        if "native_landing_notified" in usage or "native_landing_sent" in usage:
+            facts["landing"] = f"{usage.get('native_landing_notified', 'unknown')}/{usage.get('native_landing_sent', 'unknown')}"
+        if context:
+            facts["context_view_revision"] = context.get("view_revision") or "unknown"
+            window = context.get("window") or {}
+            facts["window_tokens"] = window.get("window_tokens") or "unknown"
+            for key in ("status", "stale", "observed_at", "model", "asserted_window_tokens", "model_route"):
+                facts[f"window_{key}"] = window.get(key) if window.get(key) is not None else "unknown"
+            previous = context.get("previous_request") or {}
+            facts["previous_prompt_tokens"] = previous.get("prompt_tokens") if previous.get("prompt_tokens") is not None else "unknown"
+            for key, value in previous.items():
+                if key != "prompt_tokens":
+                    facts[f"previous_request_{key}"] = value if value is not None else "unknown"
+            facts["output_allowance_tokens"] = context.get("output_allowance_tokens") if context.get("output_allowance_tokens") is not None else "unknown"
     else:
         facts["attestation"] = "unobserved"
     facts.update(extra or {})
@@ -510,9 +510,12 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
     always inline. Exact matching required sources record that delivery, so
     the reviewer need not reread a document it already received in full."""
     from ouroboros.tools.governance_context import governance_context
+    from ouroboros.tools.review_helpers import REPO_ROOT
     from ouroboros.tools.scope_required_sources import source_text_identity, with_inline_sources
 
-    bible = load_governance_doc(repo_dir, "BIBLE.md", on_missing="silent")
+    # Match inspection_registry: system_repo is installed governance; repo_dir
+    # is the review subject, read through active_workspace/default paths.
+    bible = load_governance_doc(REPO_ROOT, "BIBLE.md", on_missing="silent")
     if not bible.strip():
         raise RuntimeError("BIBLE.md is missing at the repository root — a deep self-review has no constitution to check against")
     # The memory whitelist, inlined byte-exact, and the typed memory fact every
@@ -543,7 +546,7 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
     memory = {"inlined": sum(1 for d in dispositions.values() if d == "inlined"),
               "total": len(_MEMORY_WHITELIST), "dispositions": dispositions}
     governance = governance_context(
-        repo_dir, surface="deep_self_review", touched_paths=(),
+        REPO_ROOT, surface="deep_self_review", touched_paths=(), subject_root=repo_dir,
         usable_window_tokens=usable_window_tokens, delivery="retrieving",
         checklist_section_text="")
     sources = required_sources if required_sources is not None else [
@@ -607,6 +610,7 @@ def _run_retrieving_review(
     required_sources: Optional[list] = None,
     required_sources_ref: Optional[dict] = None,
     ask: Optional[SystemReviewAsk] = None,
+    usage_ctx: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """The row's delivery (native episode or delegated session): hand-built
     request, slot and assignment; the product is the
@@ -624,12 +628,10 @@ def _run_retrieving_review(
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     sendable = str(model or row.target_id)
-    # The governance tiers take their inline share against the window this row
-    # is sent in: the transcript bound derived from the row's window, its
-    # output reserve and the owner ceiling (chars), on the
-    # `utils.estimate_tokens` scale the tiering budgets with (4 chars a token).
-    # A session row's harness model carries no evidenced window, so it resolves
-    # the owner ceiling — the one bound that holds for every route.
+    # Governance tiers use a layout hint derived from the route's window and
+    # output reserve, converted to the tier builder's 4-chars/token scale.
+    # Unknown windows use sizing fallback only; the hint never admits or stops
+    # a native episode, whose source remains readable through its tools.
     ask = ask or SystemReviewAsk()
     task_text, task_facts = _retrieving_task(
         repo_dir, drive_root, required_sources=required_sources, required_sources_ref=required_sources_ref,
@@ -675,10 +677,15 @@ def _run_retrieving_review(
         use_local=row.use_local if row.use_local is not None else review_model_uses_local(sendable),
         route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
         session_target=row.session_target, session_profile=row.profile_id,
+        session_access=row.access if row.is_session else "",
         subagent_id=row.subagent_id,
     )
+    from ouroboros.review_checking import wave_checking_source
+    from ouroboros.observability import new_call_id
+
+    request.checking_source = wave_checking_source(repo_dir, [slot], data_root=drive_root)
     assignment = ReviewAssignment(
-        request=request, slot=slot, call_id=f"deep_self_review:{task_id or 'manual'}",
+        request=request, slot=slot, call_id=new_call_id("deep_self_review"),
         call_type="deep_self_review", custody_root=pathlib.Path(drive_root),
     )
     if row.is_session:
@@ -696,8 +703,9 @@ def _run_retrieving_review(
         f"Deep self-review via {delivery} on {sendable}: {_memory_line(task_facts['memory'])}, "
         f"BIBLE.md ({task_facts['bible_chars']:,} chars) delivered inline; window {window:.0f}s..."
     )
+    prompt_ref: Dict[str, Any] = {}
     try:
-        persist_call(
+        prompt_ref = persist_call(
             pathlib.Path(drive_root), task_id=task_id or "deep_self_review",
             call_id=f"{assignment.call_id}_prompt", call_type="deep_self_review_prompt",
             payload={"request": asdict(request), "slot": asdict(slot), **executor.prompt_payload()},
@@ -718,6 +726,9 @@ def _run_retrieving_review(
         # to the agent's budget rail like every other budget refusal.
         custody = {**executor.failure_custody(), "deep_review_memory": memory}
         _record_execution(slot, custody, status="error", error=f"{type(exc).__name__}: {exc}")
+        from ouroboros.triad_review import emit_review_execution_error
+
+        emit_review_execution_error(usage_ctx, assignment, exc, usage=custody, prompt_ref=prompt_ref)  # #1578
         from ouroboros.llm_claudexor import propagate_model_error
         propagate_model_error(exc)
         if isinstance(exc, BudgetExceeded):
@@ -740,6 +751,9 @@ def _run_retrieving_review(
         # An empty product is an ERROR row in «Выполняется как» — never
         # recorded as a responded review.
         _record_execution(slot, usage, status="error", error="empty response")
+        from ouroboros.triad_review import emit_review_execution_error
+
+        emit_review_execution_error(usage_ctx, assignment, "empty response", usage=usage, prompt_ref=prompt_ref)
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
     if delivery == "native_tool_rounds":
@@ -822,6 +836,7 @@ def run_deep_self_review(
     required_sources: Optional[list] = None,
     required_sources_ref: Optional[dict] = None,
     ask: Optional[SystemReviewAsk] = None,
+    usage_ctx: Any = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Execute the deep self-review on ``slot`` (default: the direct Main row).
 
@@ -841,6 +856,7 @@ def run_deep_self_review(
     ``required_sources`` and its exact source handle may come from the caller's
     immutable review assembler. Without one, coverage names only the
     constitution actually delivered inline, never an inferred whole-tree scope.
+    A failed delivery also writes its one ``review_model_error`` (``usage_ctx`` lineage).
     """
     try:
         row = slot or main_review_row()
@@ -858,6 +874,7 @@ def run_deep_self_review(
             repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
             model=row.target_id if row.is_session else str(model or row.target_id),
             required_sources=required_sources, required_sources_ref=required_sources_ref, ask=ask,
+            usage_ctx=usage_ctx,
         )
     except BudgetExceeded:
         # The paid ledger's refusal is BUDGET vocabulary, not a review error:

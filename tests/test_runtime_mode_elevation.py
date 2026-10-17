@@ -219,7 +219,7 @@ def test_data_read_supports_line_ranges(tmp_path):
     result = _data_read(ctx, "skills/external/demo/notes.txt", start_line=2, max_lines=2)
 
     assert "lines 2–3 of 4" in result
-    assert "two\nthree\n" in result
+    assert "     2\ttwo\n     3\tthree\n" in result
     assert "one" not in result
 
 
@@ -702,7 +702,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert data["status"] == "saved"
     assert data.get("agent_task_running") is True
     warnings = data.get("warnings") or []
-    assert any("keeps the configuration it started with" in w for w in warnings), warnings
+    assert any("keeps the models, reviewers and subagents it started with" in w for w in warnings), warnings
     assert any("next task" in w for w in warnings), warnings
 
     # No running task -> no warning noise.
@@ -711,7 +711,7 @@ def test_settings_save_warns_when_an_agent_task_is_running(isolated_settings, mo
     assert resp2.status_code == 200, resp2.text
     data2 = resp2.json()
     assert "agent_task_running" not in data2
-    assert not any("keeps the configuration" in w for w in (data2.get("warnings") or []))
+    assert not any("An agent task is running" in w for w in (data2.get("warnings") or []))
 
 
 def test_started_predicate_is_read_only_and_never_constructs_the_agent(monkeypatch):
@@ -897,6 +897,9 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
 
     # (module, function) -> why it may write settings.json without the prologue
     exempt = {
+        ("ouroboros/utils.py", "atomic_write_json"):
+            "generic atomic serializer: the settings filename selects indentation only; "
+            "semantic settings writers enforce the prologue before calling this primitive.",
         ("ouroboros/context_mode_compat.py", "normalize_and_persist_context_mode_compat"):
             "one-window startup migration: while the settings lock is held, atomically rewrites "
             "the raw document with only its context compatibility pair changed, in serializer "
@@ -1581,15 +1584,14 @@ def test_save_settings_uses_boot_baseline_when_pinned(isolated_settings):
         save_settings({"OUROBOROS_RUNTIME_MODE": "pro"})
 
 
-def test_set_tool_timeout_sanitizes_corrupted_disk_to_env(isolated_settings, monkeypatch):
-    """End-to-end regression for the iteration-1 GPT/Gemini finding:
-    even if a subprocess managed to write ``pro`` directly to
-    settings.json (bypassing both ``_data_write`` and the chokepoint),
-    a follow-up ``_set_tool_timeout`` call must NOT propagate the
-    elevation into ``os.environ``. ``_set_tool_timeout`` now anchors
-    ``OUROBOROS_RUNTIME_MODE`` to the live env value before saving, so
-    the corrupted disk gets restored, not propagated."""
-    from ouroboros.config import initialize_runtime_mode_baseline
+def test_set_tool_timeout_neither_propagates_nor_rewrites_the_saved_mode(isolated_settings, monkeypatch):
+    """End-to-end regression for the iteration-1 GPT/Gemini finding: even if a subprocess
+    managed to write ``pro`` directly to settings.json (bypassing both ``_data_write`` and the
+    chokepoint), a follow-up ``_set_tool_timeout`` call must NOT propagate the elevation into
+    ``os.environ`` or the running Access. The tool lands its one field and nothing else, so it
+    projects no runtime mode at all; nor does it rewrite the saved mode, which it cannot tell
+    from an owner's pending next-boot choice (the owner endpoint writes exactly these bytes)."""
+    from ouroboros.config import get_runtime_mode, initialize_runtime_mode_baseline
     from ouroboros.tools import control as control_mod
 
     # Owner started the run in light.
@@ -1597,7 +1599,7 @@ def test_set_tool_timeout_sanitizes_corrupted_disk_to_env(isolated_settings, mon
     initialize_runtime_mode_baseline("light")
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
 
-    # Adversary corrupts disk directly to "pro".
+    # A direct write (or the owner's pending choice) puts "pro" on disk.
     _seed_disk(isolated_settings, {"OUROBOROS_RUNTIME_MODE": "pro"})
 
     # Agent calls set_tool_timeout (innocent-looking, POLICY_SKIP).
@@ -1605,20 +1607,12 @@ def test_set_tool_timeout_sanitizes_corrupted_disk_to_env(isolated_settings, mon
     result = control_mod._set_tool_timeout(ctx, 60)
     assert "OK:" in result, result
 
-    # Disk should now be restored to "light" (the live env value),
-    # NOT "pro" (the corrupted disk read).
     on_disk = json.loads(isolated_settings.read_text(encoding="utf-8"))
-    assert on_disk["OUROBOROS_RUNTIME_MODE"] == "light", (
-        "set_tool_timeout propagated corrupted disk back to disk "
-        "instead of restoring from env."
-    )
-
-    # And the live env must still be light (apply_settings_to_env was
-    # called with the sanitised dict).
+    assert on_disk == {"OUROBOROS_RUNTIME_MODE": "pro", "OUROBOROS_TOOL_TIMEOUT_SEC": 60}, (
+        "set_tool_timeout authored more than its field")
     assert os.environ.get("OUROBOROS_RUNTIME_MODE") == "light", (
-        "set_tool_timeout propagated corrupted disk into os.environ — "
-        "elevation chain succeeded."
-    )
+        "set_tool_timeout propagated the saved mode into os.environ — elevation chain succeeded.")
+    assert get_runtime_mode() == "light"
 
 
 # ---------------------------------------------------------------------------

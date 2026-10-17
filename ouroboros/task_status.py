@@ -15,6 +15,7 @@ from contextlib import nullcontext
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ouroboros.observability import timed_phase
+from ouroboros.finalization_timing import cached_finalization_children
 from ouroboros.headless import (
     ARTIFACT_STATUS_FAILED,
     ARTIFACT_STATUS_FINALIZING,
@@ -34,7 +35,7 @@ from ouroboros.post_task_checkpoint import (
     _TERMINAL_ACCOUNTING_SCRUB_FIELDS,
     project_replica_task_result_fields,
 )
-from ouroboros.task_result_facts import selected_task_results
+from ouroboros.task_store import select_lineage
 from ouroboros.task_results import (
     STATUS_CANCEL_REQUESTED,
     STATUS_CANCELLED,
@@ -49,7 +50,8 @@ from ouroboros.task_results import (
     load_task_result,
     validate_task_id,
 )
-from ouroboros.utils import iter_jsonl_objects, read_json_dict
+from ouroboros.queue_observation import load_queue_document, queue_stamp
+from ouroboros.utils import iter_jsonl_objects
 
 log = logging.getLogger(__name__)
 
@@ -223,17 +225,11 @@ def _project_child_result_disposition(
 
 
 def _load_queue_snapshot(drive_root: pathlib.Path) -> Dict[str, Any]:
-    path = pathlib.Path(drive_root) / "state" / "queue_snapshot.json"
-    if not path.exists():
-        return {"_snapshot_missing": True}
-    data = read_json_dict(path)
-    if not isinstance(data, dict):
-        return {"_snapshot_invalid": True}
-    return data
+    return load_queue_document(drive_root)
 
 
 # GR7-1a freshness bound for the live-ownership twin. The supervisor persists
-# the snapshot on every main-loop pass (nominally 0.5s apart), so a snapshot
+# queue.alive on every main-loop pass (nominally 0.5s apart), so a stamp
 # this old means the writer is gone or badly wedged — the twin can no longer
 # trust it to prove a DEAD worker. Sized well above 2× the nominal tick to
 # absorb ordinary loop hitches (task_done processing, git ops) without turning
@@ -241,18 +237,19 @@ def _load_queue_snapshot(drive_root: pathlib.Path) -> Dict[str, Any]:
 _SNAPSHOT_OWNERSHIP_FRESH_SEC = 10.0
 
 
-def queue_snapshot_observation(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+def queue_snapshot_observation(snapshot: Dict[str, Any], *, boot: bool = False) -> Dict[str, Any]:
     """Date the existing queue observation, without asserting current capacity.
 
     Context, scheduling receipts and cancellation observations share the same
     freshness bound as live ownership. Counts belong to the captured snapshot;
     even a fresh observation is not a reservation or a continuously live view.
     """
-    observation = {"source": "state/queue_snapshot.json", "ts": snapshot.get("ts"),
+    stamp = queue_stamp(snapshot, boot=boot)
+    observation = {"source": "state/queue_snapshot.json", "ts": stamp.get("ts"),
                    "age_sec": None, "freshness": "unknown", "fresh": False}
     if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
         return observation
-    raw = str(snapshot.get("ts") or "").strip().replace("Z", "+00:00")
+    raw = str(stamp.get("ts") or "").strip().replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(raw)
         stamped = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
@@ -273,11 +270,18 @@ def execution_owner_record(drive_root: Any, task: Dict[str, Any], kind: str) -> 
     """Bind the actual execution class to its existing task-result attempt.
 
     Assignment replaces this fact when an inline turn resumes in the pool; it
-    is ownership provenance, never a process-death or replay authorization.
+    is ownership provenance, never a process-death or replay authorization. A
+    direct turn lives only inside the server process that runs it, so its record
+    also names that process generation (``direct_roots.owner_process_ended``).
     """
-    return {"kind": kind, "data_root": str(pathlib.Path(drive_root).resolve()),
-            "task_id": str(task.get("id") or task.get("task_id") or ""),
-            "task_attempt": int(task.get("_attempt") or task.get("task_attempt") or 0)}
+    record = {"kind": kind, "data_root": str(pathlib.Path(drive_root).resolve()),
+              "task_id": str(task.get("id") or task.get("task_id") or ""),
+              "task_attempt": int(task.get("_attempt") or task.get("task_attempt") or 0)}
+    if kind == "direct":
+        from ouroboros.process_custody import current_custody_session_id
+
+        record["process"] = current_custody_session_id()
+    return record
 
 
 def task_execution_observation(
@@ -335,7 +339,7 @@ def task_execution_observation(
             return {**observation, "kind": "direct", "state": "active", "source": "local_direct", "reason": "local_execution"}
     except Exception:
         pass  # absence of a positive witness is never a negative observation
-    fragment = read_json_dict(root / "state" / "direct_roots.json") or {}
+    fragment = load_queue_document(root, "direct_roots.json")
     # Both existing supervisor fragments use the same 10s ownership freshness
     # (peer_roster._projection_observation); retain the distinct source name.
     direct_seen = {**queue_snapshot_observation(fragment), "source": "state/direct_roots.json"}
@@ -403,7 +407,7 @@ def observe_cancellation_target(
 ) -> Dict[str, Any]:
     """Read separate source facts about the resolved target, never cancel authority.
 
-    The result file, queue snapshot and custody rows are separate observations;
+    The stored result, queue snapshot and custody rows are separate observations;
     their own timestamps/freshness survive. A failed liveness probe is UNKNOWN,
     never the fail-open ownership hint used to admit an actual cancellation.
     """
@@ -516,6 +520,7 @@ def _is_stale_orphan_running_task(
     result: Dict[str, Any],
     events_index: Optional[_EventsTailIndex] = None,
     queue_snapshot: Optional[Dict[str, Any]] = None,
+    *, boot: bool = False,
 ) -> bool:
     observation = task_execution_observation(
         drive_root, {**result, "task_id": task_id}, queue_snapshot=queue_snapshot,
@@ -562,9 +567,7 @@ def _is_stale_orphan_running_task(
             queue_snapshot if isinstance(queue_snapshot, dict)
             else _load_queue_snapshot(pathlib.Path(drive_root))
         )
-        if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
-            return False
-        if _snapshot_is_stale(snapshot):
+        if not queue_snapshot_observation(snapshot, boot=boot)["fresh"]:
             return False
     except Exception:
         return False
@@ -691,21 +694,20 @@ def load_effective_task_result(
 def reconcile_orphaned_running_tasks(
     drive_root: Any, *, exclude_task_ids: frozenset[str] = frozenset(),
     expired_quizzes: Optional[List[Any]] = None,
-    write_guard: Optional[Callable[[str], Any]] = None,
+    write_guard: Optional[Callable[[str], Any]] = None, boot: bool = True,
 ) -> int:
-    """Durably finalize on-disk RUNNING task results the effective-status
+    """Durably finalize stored RUNNING task results the effective-status
     projection already considers terminal.
 
     A task whose worker crashed / was SIGKILLed / manually stopped can leave
-    ``task_results/<id>.json`` at ``running`` forever (a misleading zombie). The
+    a task-store record at ``running`` forever (a misleading zombie). The
     read-time ``effective_task_result`` already projects such an orphan to a
     terminal status, but never persists it, so a headless/no-UI run that never
     re-reads the result keeps the stale ``running`` on disk.
 
-    This sweep persists that projection and inherits ALL of its liveness gates:
-    the grace window, the worker-boot-after-task evidence, and the refusal to
-    reconcile when the queue snapshot is missing. It decides and persists on the
-    status-only (``materialize_artifacts=False``) projection, so no child file is
+    Boot accepts legacy snapshot timestamps; periodic callers pass ``boot=False``.
+    Grace, worker-boot-after-task and readable/fresh snapshot gates still apply.
+    The status-only (``materialize_artifacts=False``) projection means no child file is
     listed or copied here: the child store stays served read-only from its drive
     and reaches the canonical store through ``task_custody.settle_child_drive``
     before that drive can go. The write is fenced by the row's attempt basis and
@@ -748,7 +750,7 @@ def reconcile_orphaned_running_tasks(
             log.debug("Orphan reconcile skipped %s: cancel authority unreadable", task_id, exc_info=True)
             continue
         try:
-            effective = effective_task_result(root, row, materialize_artifacts=False)
+            effective = effective_task_result(root, row, materialize_artifacts=False, _boot=boot)
         except Exception:
             continue
         eff_status = str(effective.get("status") or "").strip().lower()
@@ -845,6 +847,7 @@ def effective_task_result(
     materialize_artifacts: bool = True,
     _seen: frozenset[str] = frozenset(),
     _events_index: Optional[_EventsTailIndex] = None,
+    _boot: bool = False,
 ) -> Dict[str, Any]:
     """Merge parent result, child-drive result, and active queue state.
 
@@ -880,17 +883,24 @@ def effective_task_result(
                 retry_result,
                 materialize_artifacts=materialize_artifacts,
                 _seen=frozenset(set(_seen) | {task_id}),
-                _events_index=_events_index,
+                _events_index=_events_index, _boot=_boot,
             )
             if effective_retry:
                 merged_retry = dict(effective_retry)
                 lineage = list(merged_retry.get("retry_lineage") or [])
+                # #1573: the successor's answer must not hide retained outputs THIS
+                # physical row published; each receipt keeps its own physical read call.
+                audit = result.get("delegate_terminal_reconciliation")
+                published = [dict(row) for row in ((audit.get("terminal_runs") if isinstance(audit, dict)
+                                                    else None) or [])
+                             if isinstance(row, dict) and isinstance(row.get("staged_output"), dict)]
                 lineage.insert(0, {
                     "task_id": task_id,
                     "status": result.get("status"),
                     "outcome_axes": normalize_outcome_axes(result),
                     "reason_code": result.get("reason_code"),
                     "retry_task_id": retry_id,
+                    **({"terminal_runs": published} if published else {}),
                 })
                 merged_retry["retry_lineage"] = lineage
                 merged_retry.setdefault("original_task_id", task_id)
@@ -1031,7 +1041,7 @@ def effective_task_result(
                     )
             elif _is_stale_orphan_running_task(
                 pathlib.Path(drive_root), task_id, merged, _events_index,
-                queue_snapshot=queue_snapshot,
+                queue_snapshot=queue_snapshot, boot=_boot,
             ):
                 terminal_projection = "pooled_worker_restart"
                 orphan_reason = (
@@ -1201,6 +1211,7 @@ def wait_for_effective_tasks(
     return out
 
 
+@cached_finalization_children
 @timed_phase("child_lookup")
 def find_child_tasks(
     drive_root: pathlib.Path,
@@ -1211,42 +1222,29 @@ def find_child_tasks(
     scope: str = "subtree",
     materialize_artifacts: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Collect a task's subagent children.
+    """Project matching subagents, including retry lineage and live queue rows.
 
-    ``scope`` selects the matching semantics (structural, never prose-parsed — P5):
-
-    - ``"subtree"`` (default): a row matches if it is a DIRECT child
-      (``parent_task_id == parent``) OR any subagent of the same tree
-      (``root_task_id == root``). This is the whole-subtree view UI/API surfaces
-      (`gateway/tasks.py`, `gateway/logs.py`) render as descendant cards.
-    - ``"direct"``: ONLY direct children (``parent_task_id == parent``); the
-      root-subtree fallback is skipped. This is what per-node absorption/handoff
-      wants — a LEAF task must see only its OWN children (none), not its parent
-      and siblings. The v6.56 root-fallback made a childless grandchild receive a
-      false ``children_unabsorbed`` reminder about its parent/sibling.
+    Subtree includes direct children OR members of the named root; direct scope
+    includes only children of parent_task_id. A leaf must not absorb siblings.
     """
     parent = str(parent_task_id or "").strip()
     root = str(root_task_id or "").strip()
     excluded = str(exclude_task_id or "").strip()
     direct_only = str(scope or "subtree").strip().lower() == "direct"
 
-    def _raw_row_may_match(item: Dict[str, Any]) -> bool:
-        # Prefilter on the RAW disk row before paying for the effective
-        # projection (child-drive result, queue, store listing and disposition
-        # reads) for UNRELATED tasks. The lineage fields the filter needs are
-        # already on the raw row. Two classes must still be projected despite not matching
-        # raw: a row with a retry pointer (the retry chain projects the
-        # RETRY's lineage, which may match where the raw row does not), and a
-        # lineage-less row is safe to skip — a LIVE one is re-discovered by
-        # the queue overlay below with the snapshot's lineage.
-        if str(item.get("superseded_by") or item.get("retry_task_id") or "").strip():
-            return True
-        if str(item.get("delegation_role") or "") != "subagent":
-            return False
-        if parent and str(item.get("parent_task_id") or "") == parent:
-            return True
-        return bool(not direct_only and root and str(item.get("root_task_id") or "") == root)
-
+    # One queue read serves the overlay below and seeds the store's lineage closure: a queued item
+    # naming the parent or root may carry its parent/role only in the queue. The store returns this
+    # lineage alone (``select_lineage``) in ``task_id`` order, so the retry projection and the
+    # last-row-wins fold below are deterministic. Lineage-less live rows reappear in the overlay.
+    snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+    queued = [(status, item, item["task"] if isinstance(item.get("task"), dict) else {})
+              for group, status in (("pending", STATUS_SCHEDULED), ("running", STATUS_RUNNING))
+              for item in snapshot.get(group) or [] if isinstance(item, dict)]
+    members = {identity for _status, item, task in queued
+               if (parent and str(task.get("parent_task_id") or "").strip() == parent)
+               or (not direct_only and root and str(task.get("root_task_id") or "").strip() == root)
+               for identity in (item.get("id") or item.get("task_id"), item.get("id") or task.get("id"))}
+    selected = select_lineage(pathlib.Path(drive_root), parent, root, direct_only=direct_only, queue_members=members)
     events_index = _EventsTailIndex(pathlib.Path(drive_root))
     rows: Dict[str, Dict[str, Any]] = {}
     for row in (
@@ -1255,7 +1253,7 @@ def find_child_tasks(
             materialize_artifacts=materialize_artifacts,
             _events_index=events_index,
         )
-        for item in selected_task_results(pathlib.Path(drive_root), _raw_row_may_match)
+        for item in selected
     ):
         tid = str(row.get("task_id") or "")
         if not tid or tid == excluded:
@@ -1267,56 +1265,37 @@ def find_child_tasks(
         elif not direct_only and root and str(row.get("root_task_id") or "") == root:
             rows[tid] = row
 
-    snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
-    for group, status in (("pending", STATUS_SCHEDULED), ("running", STATUS_RUNNING)):
-        for item in snapshot.get(group) or []:
-            if not isinstance(item, dict):
-                continue
-            task = item.get("task") if isinstance(item.get("task"), dict) else {}
-            tid = str(item.get("id") or task.get("id") or "")
-            if not tid or tid == excluded:
-                continue
-            if str(task.get("delegation_role") or "") != "subagent":
-                continue
-            if parent and str(task.get("parent_task_id") or "") == parent:
-                row = dict(task)
-            elif not direct_only and root and str(task.get("root_task_id") or "") == root:
-                row = dict(task)
-            else:
-                continue
-            row.setdefault("task_id", tid)
-            row["status"] = status
-            existing = rows.get(tid, {})
-            if not existing:
-                # The raw prefilter skips a disk row with no lineage of its own;
-                # the queue snapshot re-identifies it as a child here, but its
-                # thin queue row lacks the disk row's cost, result, artifacts and
-                # ts. Materialize the disk row now (bounded — this runs only for
-                # the handful of actual queue children) so a live lineage-less
-                # child keeps its content, not just its id.
-                disk = load_effective_task_result(
-                    pathlib.Path(drive_root), tid, materialize_artifacts=materialize_artifacts
-                )
-                if disk:
-                    combined = dict(disk)
-                    for key, value in row.items():
-                        if key == "status":
-                            combined["status"] = _merge_queue_status(
-                                str(disk.get("status") or ""), str(value or ""), row,
-                            )
-                        elif not combined.get(key) and value:
-                            combined[key] = value
-                    rows[tid] = combined
-                else:
-                    rows[tid] = row
-                continue
-            combined = dict(existing)
-            for key, value in row.items():
-                if key == "status":
-                    combined["status"] = _merge_queue_status(str(existing.get("status") or ""), str(value or ""), row)
-                elif not combined.get(key) and value:
-                    combined[key] = value
-            rows[tid] = combined
+    for status, item, task in queued:
+        tid = str(item.get("id") or task.get("id") or "")
+        if not tid or tid == excluded:
+            continue
+        if str(task.get("delegation_role") or "") != "subagent":
+            continue
+        if parent and str(task.get("parent_task_id") or "") == parent:
+            row = dict(task)
+        elif not direct_only and root and str(task.get("root_task_id") or "") == root:
+            row = dict(task)
+        else:
+            continue
+        row.setdefault("task_id", tid)
+        row["status"] = status
+        existing = rows.get(tid, {})
+        if not existing:
+            # Queue lineage can recover a row skipped by the prefilter;
+            # retain its disk cost, result and artifacts as well.
+            existing = load_effective_task_result(
+                pathlib.Path(drive_root), tid, materialize_artifacts=materialize_artifacts
+            )
+        if not existing:
+            rows[tid] = row
+            continue
+        combined = dict(existing)
+        for key, value in row.items():
+            if key == "status":
+                combined["status"] = _merge_queue_status(str(existing.get("status") or ""), str(value or ""), row)
+            elif not combined.get(key) and value:
+                combined[key] = value
+        rows[tid] = combined
     return sorted(rows.values(), key=lambda item: (str(item.get("ts") or ""), str(item.get("task_id") or "")))
 
 

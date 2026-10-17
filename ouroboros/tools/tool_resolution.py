@@ -81,11 +81,12 @@ def system_repo_dir_for(ctx: Any) -> pathlib.Path:
 
 
 _PATH_NORMALIZED_TOOLS = frozenset({"read_file", "write_file", "edit_text", "apply_patch", "edit_batch", "list_files", "search_code", "query_code"})
-_TOP_LEVEL_PATH_WRITE_TOOLS = frozenset({"write_file", "edit_text"})
 _ROOT_SELECTED_READ_TOOLS = frozenset({"read_file", "list_files", "search_code"})
 
 
 _ROOT_ARG_REPO_WRITE_TOOLS = frozenset({"write_file", "edit_text", "apply_patch", "edit_batch"})
+# Every editor retains the same explicit wrong-root redirect before a write.
+_TOP_LEVEL_PATH_WRITE_TOOLS = _ROOT_ARG_REPO_WRITE_TOOLS
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ class _DispatchPathNormalization:
     """Exact dispatch note plus any explicit root required before dispatch."""
 
     text: str = ""
-    required_root: Literal["active_workspace"] | None = None
+    required_root: Literal["active_workspace", "mixed"] | None = None
 
 
 def _payload_write_paths(name: str, args: Dict[str, Any]) -> List[str]:
@@ -132,6 +133,46 @@ def _payload_write_paths(name: str, args: Dict[str, Any]) -> List[str]:
     return [p for p in paths if str(p or "").strip()]
 
 
+def body_relative_path(ctx: Any, item: Any, *, own_body_copy: bool) -> str | None:
+    """Repo-relative identity of a bound target that lands on Ouroboros's body.
+
+    A target physically inside the serving repository is the body. An admitted
+    copy of the body (``own_body_copy``: the existing ``workspace_copies``
+    provenance) is the body too for targets in its own repo lanes; a foreign
+    project's copy stays foreign. ``None`` for every other target.
+    """
+    target = getattr(item, "target_path", None)
+    if target is None:
+        return None
+    bases = [system_repo_dir_for(ctx)]
+    if own_body_copy and item.root in {"active_workspace", "system_repo"} \
+            and item.source in {"active_workspace", "system_repo"}:
+        bases.append(pathlib.Path(item.base_path))
+    physical = pathlib.Path(target).resolve(strict=False)
+    for base in bases:
+        try:
+            return physical.relative_to(pathlib.Path(base).resolve(strict=False)).as_posix()
+        except ValueError:
+            continue
+    return None
+
+
+def protected_repo_write_paths(ctx: Any, name: str, args: Dict[str, Any],
+                               binding: Any, *, workspace_mode: bool,
+                               acting_system_worktree: bool) -> list[str]:
+    """Only members of a mixed binding that land on the body reach the protected gate."""
+    if binding is not None:
+        return [rel for item in _binding_items(binding)
+                if (rel := body_relative_path(ctx, item, own_body_copy=acting_system_worktree)) is not None]
+    root = str(args.get("root") or "active_workspace")
+    if (workspace_mode and not acting_system_worktree) or root not in {"active_workspace", "system_repo"}:
+        return []
+    from ouroboros.tool_access import canonical_repo_relative_path
+
+    return [canonical_repo_relative_path(ctx, root, path)
+            for path in _payload_write_paths(name, args)]
+
+
 def _root_containing_absolute_path(ctx: Any, name: str, text: str) -> str:
     """Owner 7A: the root that physically contains an absolute path given WITHOUT
     a root — among the roots THIS profile may use for the tool's operation plus
@@ -162,6 +203,19 @@ def _root_containing_absolute_path(ctx: Any, name: str, text: str) -> str:
     return max(holders, key=lambda item: len(str(item[1])), default=("", None))[0]
 
 
+def inferred_file_root(ctx: Any, name: str, root: str | None, paths: list[str]) -> tuple[str, str]:
+    """Use the existing physical root selector for an omitted file root."""
+    if root:
+        return root, ""
+    selected = {
+        _root_containing_absolute_path(ctx, name, path) or "active_workspace"
+        for path in paths
+    }
+    if len(selected) > 1:
+        return "", "⚠️ TOOL_ARG_ERROR: paths infer different roots; pass an explicit common root or use separate calls."
+    return next(iter(selected), "active_workspace"), ""
+
+
 def _normalize_dispatch_path_args_result(
     ctx: Any,
     name: str,
@@ -179,7 +233,7 @@ def _normalize_dispatch_path_args_result(
     (read_file/list_files/search_code) are auto-routed to
     ``root='active_workspace'`` with a visible note appended AFTER the result
     (trailing, so first-line failure classification is never masked),
-    and writes (write_file/edit_text) return an actionable
+    and all file editors return an actionable
     ROOT_REQUIRED_ACTIVE_WORKSPACE redirect instead of a generic access denial.
     The destination root still passes every downstream gate (profile access
     decision, protected-path guards, subagent filters) — only the label is
@@ -191,6 +245,19 @@ def _normalize_dispatch_path_args_result(
     if name not in _PATH_NORMALIZED_TOOLS:
         return _DispatchPathNormalization()
     root_arg = str(args.get("root") or "")
+    if not root_arg and name in _ROOT_ARG_REPO_WRITE_TOOLS:
+        paths = _payload_write_paths(name, args)
+        selected = {
+            _root_containing_absolute_path(ctx, name, path) or "active_workspace"
+            for path in paths
+        }
+        if len(selected) > 1:
+            return _DispatchPathNormalization(
+                text="⚠️ TOOL_ARG_ERROR: paths infer different roots; pass an explicit common root or use separate calls.",
+                required_root="mixed",
+            )
+        if selected and next(iter(selected)) != "active_workspace":
+            args["root"] = root_arg = next(iter(selected))
     if not root_arg and name in _ROOT_SELECTED_READ_TOOLS:
         selected = _root_containing_absolute_path(ctx, name, str(args.get("path") or ""))
         if selected and selected != "active_workspace":
@@ -246,10 +313,14 @@ def _normalize_dispatch_path_args_result(
     for _key in ("path", "dir"):
         if isinstance(args.get(_key), str) and args[_key]:
             candidates.append(args[_key])
-    if isinstance(args.get("files"), list):
-        for _f in args["files"]:
+    for entries in (args.get("files"), args.get("edits")):
+        for _f in entries if isinstance(entries, list) else []:
             if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
                 candidates.append(_f["path"])
+    if name == "apply_patch" and isinstance(args.get("patch"), str):
+        from ouroboros.tools.edit_ops import patch_target_paths
+
+        candidates.extend(patch_target_paths(args["patch"]))
     hits = [text for text in candidates if _under_workspace(text)]
     if not hits:
         return _DispatchPathNormalization()
@@ -478,18 +549,14 @@ def _build_builtin_target_binding(ctx: Any, name: str, args: dict[str, Any]) -> 
             skill_name=str(args.get("skill_name") or ""),
         )
     root = str(args.get("root") or "active_workspace")
-    if name in {"edit_batch", "apply_patch"} and root not in {"active_workspace", "system_repo"}:
-        # The repo-only handler owns this typed argument refusal. Resolving an
-        # unsupported payload first would ask for selectors it cannot accept.
-        return None
     bucket = str(args.get("bucket") or "")
     skill_name = str(args.get("skill_name") or "")
 
-    def _one(path: str) -> Any:
+    def _one(path: str, selected_operation: str = operation) -> Any:
         return _registry().build_resolved_resource_binding(
             ctx,
             root=root,
-            operation=operation,
+            operation=selected_operation,
             path=path or ".",
             bucket=bucket,
             skill_name=skill_name,
@@ -502,9 +569,10 @@ def _build_builtin_target_binding(ctx: Any, name: str, args: dict[str, Any]) -> 
             if isinstance(item, dict)
         )
     if name == "apply_patch":
-        from ouroboros.tools.edit_ops import patch_target_paths
+        from ouroboros.tools.edit_ops import _parse_patch
 
-        return tuple(_one(path) for path in patch_target_paths(str(args.get("patch") or "")))
+        ops, error = _parse_patch(str(args.get("patch") or ""))
+        return tuple(_one(op.path, "edit" if op.kind == "update" else "write") for op in ops) if not error else ()
     if name == "edit_batch":
         return tuple(
             _one(str(item.get("path") or ""))
@@ -522,7 +590,7 @@ def _binding_items(binding: Any) -> tuple[Any, ...]:
 
 def _binding_set_targets_system_repo(ctx: Any, binding: Any) -> bool:
     items = _binding_items(binding)
-    return bool(items) and all(_registry().binding_targets_system_repo(ctx, item) for item in items)
+    return bool(items) and any(_registry().binding_targets_system_repo(ctx, item) for item in items)
 
 
 def _user_files_binding_reaches_repo(ctx: Any, binding: Any) -> bool:
@@ -549,7 +617,7 @@ def _user_files_binding_reaches_repo(ctx: Any, binding: Any) -> bool:
 def _binding_set_is_light_restricted(ctx: Any, binding: Any) -> bool:
     """Whether light mode must treat this file/VCS target as internal state."""
     items = _binding_items(binding)
-    return bool(items) and all(
+    return bool(items) and any(
         _registry().binding_targets_system_repo(ctx, item)
         or (item.root == "runtime_data" and item.source == "runtime_data")
         for item in items
@@ -622,7 +690,7 @@ def _binding_error_text(name: str, root: str, exc: Exception) -> str | ToolResul
         "read_file", "list_files", "search_code",
     }:
         return f"⚠️ USER_FILES_PATH_BLOCKED: {detail}"
-    if root == "skill_payload" and name in {"write_file", "edit_text"}:
+    if root == "skill_payload" and name in {"write_file", "edit_text", "edit_batch", "apply_patch"}:
         return f"⚠️ SKILL_PAYLOAD_ARG_ERROR: {detail}"
     prefixes = {
         "read_file": "READ_FILE_ERROR",
@@ -631,6 +699,8 @@ def _binding_error_text(name: str, root: str, exc: Exception) -> str | ToolResul
         "query_code": "TOOL_ARG_ERROR (query_code)",
         "write_file": "WRITE_FILE_ERROR",
         "edit_text": "EDIT_TEXT_ERROR",
+        "edit_batch": "EDIT_BATCH_ERROR",
+        "apply_patch": "APPLY_PATCH_ERROR",
         "vcs_status": "GIT_ERROR",
         "vcs_diff": "GIT_ERROR",
         "vcs_pull_ff": "PULL_ERROR",

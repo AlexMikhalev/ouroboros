@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.triad_review import extract_json_array
 from ouroboros.tools.review_helpers import emit_review_usage
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
 
 log = logging.getLogger(__name__)
 
@@ -273,9 +274,6 @@ def _has_billable_usage(usage: Any) -> bool:
     )
 
 
-PLAN_REVIEW_CONTROL_PREFIX = "PLAN_REVIEW_CONTROL_JSON: "
-
-
 def quorum_input_token_limit(models: Any, slot_limits: Any) -> int:
     """Assembly budget for ONE shared prompt fanned across mixed-window slots: the largest cap that
     still leaves a review QUORUM callable, i.e. the quorum-th largest per-slot cap.
@@ -344,18 +342,6 @@ def per_slot_input_token_limits(
     return limits
 
 
-COUPLING_QUESTION_IDS = (
-    "intent_alignment",
-    "forgotten_touchpoints",
-    "cross_surface_consistency",
-    "regression_surface",
-    "prompt_doc_sync",
-    "architecture_fit",
-    "cross_module_bugs",
-    "implicit_contracts",
-)
-
-
 def build_coupling_part(
     *,
     coupling_checklist: str,
@@ -365,7 +351,7 @@ def build_coupling_part(
     layer: str = "body",
 ) -> str:
     """``## Part 2 — Coupling questions`` of the two-part brief: the whole-repository
-    reviewer's role frame (the former scope reviewer's), the eight coupling
+    reviewer's role frame (the former scope reviewer's), the coupling
     questions, the required-source manifest the seat is OWED, the repository
     index it navigates with, and the coupling history of this subject. No
     preamble, calibration, anti-pattern guard, intent, diff or answer format
@@ -384,15 +370,15 @@ def build_coupling_part(
 
 ### Your role in this part
 
-You are the whole-repository reviewer, and you REACH the repository with your own
-read-only tools. Part 1 covers the change itself line by line; this part covers
+You are the whole-repository reviewer: REACH the subject through your available
+tools, using the assigned checking copy if your seat can write. Part 1 covers the change; this part covers
 what the change is COUPLED to: cross-module contracts, forgotten touchpoints,
 hidden regressions, prompt/doc sync, architecture fit, and end-to-end intent
 completeness. For each finding name the exact file, symbol, test, prompt, doc,
 config, or sibling flow that proves it. Vague concerns without a concrete artifact
 reference are advisory, not critical.
 
-### The eight coupling questions
+### The coupling questions
 
 Answer EVERY question below with one entry in the "coupling" block of your answer;
 the "item" field carries the identifier verbatim (case-sensitive, no substitutions).
@@ -400,15 +386,15 @@ A missing entry means the question was not reviewed.
 
 {questions}
 
-- For FAIL: concrete artifact (file/symbol/line/contract) + what is wrong + how to fix;
+- For FAIL: file:line (or the exact artifact) + the invariant it violates + how to fix;
   one FAIL entry per distinct root cause, never a compressed summary.
-- For PASS: 1–2 sentences stating WHY it passes, naming a concrete artifact or code
-  path you checked. A bare "PASS" or a single-word reason is a reviewer failure.
+- For PASS: one line — a pointer to what you checked, `see Part 1 <item>` for a defect
+  you already report there (one root defect is one FAIL across both parts), or
+  `N/A — <reason>` when the change does not reach the question.
 - Do not return duplicate PASS entries, and never PASS a question that also has a
   FAIL — the concrete FAIL is authoritative.
 - Severity: critical requires a concrete current artifact and a required change to
-  this diff; otherwise advisory. Coupling affects only unchanged code outside the
-  diff. {body_note}
+  this diff; otherwise advisory. {body_note}
 - If an open obligation in the coupling history below already names an
   `obligation_id` for a root cause, reuse that exact id; never invent a new id for
   the same root cause.

@@ -456,7 +456,7 @@ class Memory:
             try:
                 from ouroboros.world_profiler import generate_world_profile
 
-                generate_world_profile(str(self.world_path()))
+                generate_world_profile(str(self.world_path()), str(self.repo_dir or ""), str(self.drive_root))
             except Exception:
                 log.debug("Failed to generate WORLD.md during memory bootstrap", exc_info=True)
         for path in (self.journal_path(), self.identity_journal_path()):
@@ -719,33 +719,15 @@ class Memory:
     def _read_jsonl_entries(
         self,
         log_name: str,
-        max_entries: Optional[int] = None,
         exclude_a2a: bool = False,
     ) -> List[Dict[str, Any]]:
         path = self.logs_path(log_name)
         try:
-            def _rows(source, cap):
-                return [e for e in iter_jsonl_objects(source, max_entries=cap)
-                        if not (exclude_a2a and is_a2a_chat_id(e.get("chat_id")))]
-
-            entries = _rows(path, max_entries)
-            if max_entries is not None and len(entries) < max_entries:
-                # Rotation-aware backfill (CPL4-C2..C4): newest archive segments
-                # top a freshly rotated tail back up; unbounded reads keep
-                # live-file-only semantics (their consumers own their chains).
-                from ouroboros.utils import jsonl_archive_segments
-
-                for segment in reversed(jsonl_archive_segments(path)):
-                    if len(entries) >= max_entries:
-                        break
-                    entries = _rows(segment, max_entries - len(entries)) + entries
-            return entries
+            return [e for e in iter_jsonl_objects(path)
+                    if not (exclude_a2a and is_a2a_chat_id(e.get("chat_id")))]
         except Exception:
             log.warning("Failed to read JSONL entries from %s", log_name, exc_info=True)
             return []
-
-    def read_jsonl_tail(self, log_name: str, max_entries: int = 100) -> List[Dict[str, Any]]:
-        return self._read_jsonl_entries(log_name, max_entries=max_entries)
 
     def read_task_recent(
         self, log_name: str, task_id: str, want: int, *, iter_objects=None, list_archives=None,

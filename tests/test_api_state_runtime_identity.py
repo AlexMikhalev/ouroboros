@@ -102,7 +102,8 @@ def test_source_mode_state_gap_is_filled_from_the_checkout(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("stamped", [False, True])
-def test_api_state_serves_the_honest_identity(tmp_path, monkeypatch, stamped):
+@pytest.mark.parametrize("detached", [False, True])
+def test_api_state_serves_the_honest_identity(tmp_path, monkeypatch, stamped, detached):
     from ouroboros.gateway.state import api_state
     import ouroboros.config as config
     from supervisor import queue, state, workers
@@ -113,7 +114,10 @@ def test_api_state_serves_the_honest_identity(tmp_path, monkeypatch, stamped):
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     usage_store.migrate_from_journal(root)
-    monkeypatch.setattr(config, "REPO_DIR", _plain_checkout(tmp_path / "repo"))
+    repo = _plain_checkout(tmp_path / "repo")
+    if detached:
+        (repo / ".git" / "HEAD").write_text(SHA + "\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REPO_DIR", repo)
     monkeypatch.setattr(state, "TOTAL_BUDGET_LIMIT", 0.0)
     monkeypatch.setattr(state, "load_state", lambda: (
         {"current_branch": "managed-branch", "current_sha": OTHER}
@@ -139,5 +143,14 @@ def test_api_state_serves_the_honest_identity(tmp_path, monkeypatch, stamped):
         assert payload["branch"] == "managed-branch"
         assert payload["sha"] == OTHER[:8]
     else:
-        assert payload["branch"] == "ouroboros"
+        assert payload["branch"] == (None if detached else "ouroboros")
         assert payload["sha"] == SHA[:8]
+    # The published schema must accept what the real state endpoint sends,
+    # not invent a branch merely to satisfy a string-only consumer.
+    import jsonschema
+    from ouroboros.gateway.schema import contract_document
+
+    schema = contract_document()["schemas"]["StateResponse"]["properties"]["branch"]
+    jsonschema.validate(payload["branch"], schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(123, schema)

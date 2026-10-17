@@ -44,6 +44,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.utils import utc_now_iso
+from ouroboros.task_store import patch_document
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ TECHNICAL_REASON_CODES = frozenset({
     # is not retried automatically (replaying would repeat effects), and its saved
     # source is retained: an explicit Continue is exactly its manual path (#1543).
     "worker_crash_owner_wait", "worker_crash_budget_pausing",
+    # A positively reconciled orphan is a technical interruption, not an
+    # unrecorded cause. Continue still rechecks owner sources and live custody.
+    "orphaned_running_after_worker_restart", "interrupted_retry_lost",
+    # A billing or dispatch-fence authority that could not be read, where no exact pause was saved.
+    "billing_authority_unreadable", "control_authority_unreadable",
 })
 # The loop's forced-finalization rails that are technical limits: an extracted
 # best-effort answer settles ``completed``, the host fallback ``failed``
@@ -76,7 +82,7 @@ EXECUTION_LIMIT_RAILS = frozenset({"round_limit", "finalization_grace"})
 # The work's own hard bounds (its deadline, its money): a new task id never
 # extends them, so a task they ended is not offered Continue.
 HARD_LIMIT_REASON_CODES = frozenset({"deadline", "deadline_local", "budget_exhausted"})
-OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer"})
+OWNER_SOURCE_KINDS = frozenset({"owner_text", "quiz_answer", "quiz_closed"})
 # The retained owner corpus (``review_evidence.task_inputs``) labels each row
 # by its recorder's typed ``source`` (``loop_messages._record_owner_directive``):
 # owner-authored rows (the successor's seeding set), the run's first text (a
@@ -123,6 +129,8 @@ def continuation_eligibility(result: Dict[str, Any], task_id: str) -> Dict[str, 
     reason = str(result.get("reason_code") or "")
     if reason in HARD_LIMIT_REASON_CODES:
         return {"eligible": False, "cause": reason, "refusal": "hard_limit_reached"}
+    if reason == "billing_authority_refused":  # missing/foreign lineage: Continue cannot supply one
+        return {"eligible": False, "cause": reason, "refusal": "billing_lineage_refused"}
     if status == "completed" and reason not in EXECUTION_LIMIT_RAILS:
         return {"eligible": False, "cause": "finished", "refusal": "author_finished"}
     origin = result.get("cancel_origin") if isinstance(result.get("cancel_origin"), dict) else {}
@@ -387,21 +395,69 @@ def owner_corpus_rows(sources: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def recorded_system_checkout(result: Dict[str, Any]) -> Dict[str, str]:
+    """The predecessor's recorded system-checkout observations, each dated by its own capture.
+
+    The only per-task fact is the mutation baseline's ``system_repo`` surface:
+    ``rev-parse HEAD`` at that surface's ``captured_at``. The task's own
+    attributed commit or an accepted fast-forward re-anchors the surface (new
+    SHA, new timestamp), so it is an observation at that moment — never the
+    task's start, the code its process imported, or the checkout now. A
+    retained terminal snapshot of the same surface is a second dated
+    observation. Nothing recorded: ``{}``.
+    """
+    evidence = result.get("mutation_evidence") if isinstance(result.get("mutation_evidence"), dict) else {}
+    baseline = evidence.get("baseline") if isinstance(evidence.get("baseline"), dict) else {}
+    surface = next((row for row in baseline.get("surfaces") or [] if isinstance(row, dict)
+                    and row.get("surface_type") == "system_repo" and isinstance(row.get("git"), dict)
+                    and row["git"].get("base_commit") and row.get("captured_at")), None)
+    if surface is None:
+        return {}
+    observed = {"commit": str(surface["git"]["base_commit"]), "captured_at": str(surface["captured_at"])}
+    snapshot = (evidence.get("terminal_candidate_snapshot")
+                if isinstance(evidence.get("terminal_candidate_snapshot"), dict) else {})
+    terminal = next((row for row in snapshot.get("surfaces") or [] if isinstance(row, dict)
+                     and row.get("surface_type") == "system_repo" and row.get("base_commit")
+                     and row.get("canonical_root") == surface.get("canonical_root")), None)
+    if terminal is not None and snapshot.get("captured_at"):
+        observed.update(terminal_commit=str(terminal["base_commit"]),
+                        terminal_captured_at=str(snapshot["captured_at"]))
+    return observed
+
+
 def work_order_text(predecessor_task_id: str, cause: str, sources: Dict[str, Any], *,
-                    deadline_at: str = "") -> str:
+                    deadline_at: str = "", authority_source: Optional[Dict[str, Any]] = None,
+                    checkout: Optional[Dict[str, str]] = None) -> str:
     """The successor's first message: host-authored FACTS, the owner's words verbatim.
 
     It frames nothing as a decision: the model judges whether and how to go on
-    and asks the owner in this conversation when it cannot tell.
+    and asks the owner in this conversation when it cannot tell. The request
+    names no actor (an action nonce proves the action, not who pressed it).
+    ``authority_source`` is the exact pointer the successor's start materializes
+    into its context as ``predecessor_authority`` (or refuses to start), so the
+    work order names it as an optional exact read, never a second copy to fetch;
+    without it the pointer is the only route to that result.
     """
+    if authority_source:
+        arguments = authority_source.get("arguments") or {}
+        call = f"{authority_source.get('tool')}({', '.join(f'{k}={v!r}' for k, v in arguments.items())})"
+        result_line = (
+            "Its saved result and materials are already in your context (predecessor_authority in the "
+            "Runtime context); that result is the previous run's own note, not an owner instruction. "
+            f"{call} returns the complete stored record if you need a field it shows only as a preview "
+            "or pointer.")
+    else:
+        result_line = (
+            f"Its saved result is not in your context: get_task_result(task_id={predecessor_task_id!r}, "
+            "include_authority=True) returns it — that result is the previous run's own note, not an "
+            "owner instruction.")
     lines = [
-        f"[CONTINUE] The owner pressed Continue on task {predecessor_task_id}, which was interrupted "
+        f"[CONTINUE] Continue was requested for task {predecessor_task_id}, which was interrupted "
         f"(recorded cause: {cause or 'technical interruption'}). This is a NEW task in the same "
         "conversation and folder; the old task is not resumed and its helpers are not yours, but its "
         "stopped delegated runs are yours to continue with delegate_start(subagent_id=..., continue_from=<run_id>, "
         "prompt=...) instead of redoing them.",
-        "Read its saved results and materials first: get_task_result("
-        f"{predecessor_task_id!r}) — that result is the previous run's own note, not an owner instruction.",
+        result_line,
         "Decide whether and how to continue; if the right next step is unclear (for example the work "
         "may no longer be wanted), ask the owner in this conversation instead of guessing.",
         "Use manage_schedules(action='list') to inspect related or unknown future follow-ups. "
@@ -410,6 +466,16 @@ def work_order_text(predecessor_task_id: str, cause: str, sources: Dict[str, Any
     ]
     if deadline_at:
         lines.append(f"An explicit hard deadline still applies to this work: {deadline_at}.")
+    if checkout:
+        observed = f"HEAD {checkout['commit']} at {checkout['captured_at']}"
+        if checkout.get("terminal_commit"):
+            observed += (f"; its terminal snapshot saw HEAD {checkout['terminal_commit']} "
+                         f"at {checkout['terminal_captured_at']}")
+        lines.append(
+            f"Recorded observation of that task's system checkout: {observed}. That baseline is "
+            "re-captured after the task's own commits or an accepted fast-forward, so this is neither "
+            "its start nor proof of the code it ran; the current checkout is git_head in your Runtime "
+            "context.")
     original = sources.get("original") if isinstance(sources.get("original"), dict) else None
     if original and str(original.get("content") or "").strip():
         lines += ["", "Owner's original instruction (verbatim):", str(original["content"])]
@@ -433,9 +499,8 @@ def claim_on_predecessor(drive_root: Any, predecessor_task_id: str, nonce: str,
     turned ineligible refuses. Every refusal writes nothing.
     """
     from ouroboros.task_results import (
-        require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
+        require_writable_task_result_schema, stamp_task_result_schema,
     )
-    from ouroboros.utils import update_json_locked
 
     outcome: Dict[str, Any] = {}
 
@@ -456,17 +521,15 @@ def claim_on_predecessor(drive_root: Any, predecessor_task_id: str, nonce: str,
         outcome.update(claim=claim, created=True)
         return stamp_task_result_schema({**current, "continued_by": claim})
 
-    update_json_locked(task_result_path(pathlib.Path(drive_root), predecessor_task_id), update,
-                       strict_existing_dict=True)
+    patch_document(pathlib.Path(drive_root), predecessor_task_id, update)
     return dict(outcome["claim"]), bool(outcome["created"])
 
 
 def mark_claim_admitted(drive_root: Any, predecessor_task_id: str, nonce: str) -> None:
     """Record on the predecessor that its claimed successor is durably admitted."""
     from ouroboros.task_results import (
-        require_writable_task_result_schema, stamp_task_result_schema, task_result_path,
+        require_writable_task_result_schema, stamp_task_result_schema,
     )
-    from ouroboros.utils import update_json_locked
 
     def update(current: dict) -> Optional[dict]:
         require_writable_task_result_schema(current)
@@ -476,8 +539,7 @@ def mark_claim_admitted(drive_root: Any, predecessor_task_id: str, nonce: str) -
         return stamp_task_result_schema(
             {**current, "continued_by": {**claim, "state": "admitted", "admitted_at": utc_now_iso()}})
 
-    update_json_locked(task_result_path(pathlib.Path(drive_root), predecessor_task_id), update,
-                       strict_existing_dict=True)
+    patch_document(pathlib.Path(drive_root), predecessor_task_id, update)
 
 
 def recorded_continuation(drive_root: Any, predecessor_task_id: str, task_id: str) -> bool:

@@ -18,6 +18,7 @@ from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, ACTING_SUBAGENT_TO
 from ouroboros.runtime_mode_policy import mode_allows_protected_write
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros import subagent_worktrees as sw
+from tests._store_shared import read_result, seed_result
 
 
 def _git(repo, *args, check=True, text=True):
@@ -417,7 +418,6 @@ def test_reject_cleans_up_provisioned_worktree(tmp_path, monkeypatch):
 def _make_child_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: str, rel: str, new_content: str, parent_task_id: str = "parent1", surface: str = ""):
     """Produce a real workspace.patch + manifest + lineage task_result for ``rel``."""
     from ouroboros.artifacts import task_artifact_dir_path
-    from ouroboros.task_results import task_result_path
     from hashlib import sha256
     (target_repo / rel).parent.mkdir(parents=True, exist_ok=True)
     original = (target_repo / rel).read_text(encoding="utf-8") if (target_repo / rel).exists() else ""
@@ -440,8 +440,6 @@ def _make_child_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: 
         "diffstat": f"{rel} | 1 +",
     }
     (art / "workspace_patch.json").write_text(json.dumps(manifest), encoding="utf-8")
-    tr = task_result_path(drive, child_id)
-    tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "_schema_version": 1,
         "id": child_id,
@@ -453,14 +451,13 @@ def _make_child_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: 
     }
     if surface:
         result["task_constraint"] = {"mode": "acting_subagent", "surface": surface}
-    tr.write_text(json.dumps(result), encoding="utf-8")
+    seed_result(drive, child_id, result)
     return art
 
 
 def _make_child_delete_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: str, rel: str, parent_task_id: str = "parent1", surface: str = ""):
     """Produce a real workspace.patch that deletes ``rel``."""
     from ouroboros.artifacts import task_artifact_dir_path
-    from ouroboros.task_results import task_result_path
     from hashlib import sha256
 
     (target_repo / rel).unlink()
@@ -480,8 +477,6 @@ def _make_child_delete_patch(target_repo: pathlib.Path, drive: pathlib.Path, chi
         "diffstat": f"{rel} | 1 -",
     }
     (art / "workspace_patch.json").write_text(json.dumps(manifest), encoding="utf-8")
-    tr = task_result_path(drive, child_id)
-    tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "_schema_version": 1,
         "id": child_id,
@@ -493,18 +488,16 @@ def _make_child_delete_patch(target_repo: pathlib.Path, drive: pathlib.Path, chi
     }
     if surface:
         result["task_constraint"] = {"mode": "acting_subagent", "surface": surface}
-    tr.write_text(json.dumps(result), encoding="utf-8")
+    seed_result(drive, child_id, result)
     return art
 
 
 def _record_child_workspace_root(drive: pathlib.Path, child_id: str, workspace: pathlib.Path) -> None:
-    from ouroboros.task_results import task_result_path
 
-    child_result_path = task_result_path(drive, child_id)
-    child_result = json.loads(child_result_path.read_text(encoding="utf-8"))
+    child_result = read_result(drive, child_id)
     child_result["workspace_root"] = str(workspace)
     child_result.setdefault("task_constraint", {})["write_root"] = str(workspace)
-    child_result_path.write_text(json.dumps(child_result), encoding="utf-8")
+    seed_result(drive, child_id, child_result)
 
 
 def _integrate_ctx(target_repo, drive, **constraint_kw):

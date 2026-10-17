@@ -52,14 +52,14 @@ test('the typed flag on my own echo says Input saved once, and Sending... stays'
     const f = fixture();
     try {
         await f.send('please look at the logs');
-        assert.equal(f.status(), 'Sending...');
+        assert.equal(f.status(), 'Sending');
         f.echo({ content: 'please look at the logs', sender_session_id: ME, client_message_id: 'cm-1', ingress_accepted: true });
         const [note] = f.notes('cm-1');
         assert.equal(note?.textContent, 'Input saved');
         assert.equal(note.className, 'msg-pending', 'the quiet delivery-note style, no new chrome');
         const kids = f.bubble('cm-1').children;
         assert.equal(kids.indexOf(note), kids.findIndex((node) => node.classList.contains('msg-time')) - 1, 'above the time');
-        assert.equal(f.status(), 'Sending...', 'a saved row is not a started turn');
+        assert.equal(f.status(), 'Sending', 'a saved row is not a started turn');
         f.echo({ content: 'please look at the logs', sender_session_id: ME, client_message_id: 'cm-1', ingress_accepted: true });
         assert.equal(f.notes('cm-1').length, 1, 'a repeated echo keeps one note');
         assert.equal(f.messages.children.filter((node) => node.classList.contains('user')).length, 1);
@@ -353,6 +353,34 @@ const until = async (check, why) => {
     for (let i = 0; i < 200 && !check(); i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(check(), why);
 };
+
+test('an initialization refusal names one kept send in its own room; a nameless refusal names the room', async () => {
+    const tab = keptTab();
+    try {
+        const room = tab.open();
+        await room.send('first');
+        await room.send('second');
+        const counts = () => ['cm-1', 'cm-2'].map((id) => room.actions(id).length);
+        const notice = (chat_id, client_message_id = '') => room.fire('chat', {
+            type: 'chat', role: 'system', system_type: 'initialization_notice', chat_id, client_message_id,
+            content: 'Still starting. Send again when ready.',
+        });
+        assert.deepEqual(counts(), [0, 0]);
+        notice(1, 'cm-1');
+        notice(1);
+        notice(7, 'other-message');
+        assert.deepEqual(counts(), [0, 0], 'a foreign room or unknown id changes neither send');
+        notice(7, 'cm-1');
+        assert.deepEqual(counts(), [2, 0], 'the chat consumer scopes doubt to the named submission');
+        assert.deepEqual(room.actions('cm-1').map((node) => node.textContent), ['Send again', 'Discard']);
+        room.press('cm-1', 'Send again');
+        assert.deepEqual(room.sent[2], room.sent[0], 'retry keeps the original frame and id');
+        assert.deepEqual(counts(), [0, 0]);
+        notice(7);
+        assert.deepEqual(counts(), [2, 2], 'the legacy nameless refusal still doubts the whole room');
+        assert.equal(room.sent.length, 3, 'a notice never resends by itself');
+    } finally { tab.close(); }
+});
 
 test('a sent attachment message outlives a reload and a room teardown: Send again with the same id', async () => {
     const tab = keptTab();

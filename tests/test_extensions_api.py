@@ -1626,7 +1626,11 @@ def test_api_skill_grants_rejects_blocking_blocker_review(tmp_path, monkeypatch)
         )
         resp = client.post("/api/skills/grant_blocked/grants", json={"items": ["OPENROUTER_API_KEY"]})
         assert resp.status_code == 409
-        assert "fresh executable review" in resp.json()["error"]
+        error = resp.json()["error"]
+        # Blocking enforcement admits no author acceptance: the reviewer verdict is the only authority.
+        assert error == ("key and permission grants need the review gate to permit the current bytes: "
+                         "a current executable reviewer verdict")
+        assert resp.json()["review_gate"]["blocking_reason"] == "blocker_findings_under_blocking_enforcement"
     finally:
         _stop_patches(patches)
 

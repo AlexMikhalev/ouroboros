@@ -27,7 +27,7 @@ serializer, plane, or scheduler is minted here.
 
 from __future__ import annotations
 
-import gzip
+import contextlib
 import hashlib
 import json
 import logging
@@ -115,6 +115,27 @@ def build_model_send_seal(
     }
 
 
+EXPOSURE_ATOMS_BASIS = "source_atoms_v1_pre_redaction"
+
+
+def _exposure_atoms_manifest(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Hash/count identities of the prepared messages; empty when the candidate has none."""
+    messages = candidate.get("messages") if isinstance(candidate, dict) else None
+    if not isinstance(messages, list) or not messages:
+        return {}
+    from ouroboros.context_compaction import _source_atoms
+
+    try:
+        atoms = _source_atoms([m for m in messages if isinstance(m, dict)])
+    except Exception:  # exposure evidence is additive: never fail the send record over it
+        log.debug("exposure atoms unavailable for the prepared candidate", exc_info=True)
+        return {}
+    if not atoms:
+        return {}
+    return {"exposure_atoms": {str(key): int(count) for key, count in atoms.items()},
+            "exposure_atoms_basis": EXPOSURE_ATOMS_BASIS}
+
+
 def persist_physical_candidate(
     drive_root: pathlib.Path,
     *,
@@ -135,6 +156,12 @@ def persist_physical_candidate(
     accounting row it lands on names its attempt as seam-sealed — the join key
     the reverse reconciliation sweep enforces. ``observability.py`` keeps the
     compatibility export so existing callers use this same implementation.
+
+    ``exposure_atoms`` records the content identities (``context_compaction._source_atoms``:
+    sha256 of each call/result/text atom with its count) of the exact prepared bytes,
+    computed BEFORE redaction and custody projection. The context view's exposure check
+    reads these hashes instead of the redacted blob, so a unit whose result carries a
+    redacted secret still counts as sent; the manifest never stores the raw text.
     """
     from ouroboros.anthropic_native_custody import physical_custody_projection
     from ouroboros.observability import persist_call
@@ -153,6 +180,7 @@ def persist_physical_candidate(
             "candidate_raw_digest_basis": "canonical_json_v1_pre_redaction",
             "redacted_projection_digest_basis": "observability_json_v1_post_default_redaction_cas",
             "anthropic_native_custody_projected": custody_projected,
+            **_exposure_atoms_manifest(candidate),
             **dict(candidate_facts),
         },
         finalize_manifest=lambda redacted: {
@@ -248,15 +276,19 @@ def _reconstruct_blob_bytes(candidate: Dict[str, Any]) -> bytes:
 
 def _read_blob_bytes(manifest: Any) -> Tuple[Optional[bytes], bool]:
     """(raw CAS bytes, cas_digest_intact) read back from the durable record."""
+    from ouroboros.evidence_packs import blob_bytes, read_loose_gzip
+
     ref = manifest.get("full_payload_ref") if isinstance(manifest, dict) else None
-    try:
-        path = pathlib.Path(str((ref or {}).get("path") or ""))
-        with gzip.open(path, "rb") as handle:
-            raw = handle.read()
+    path = pathlib.Path(str((ref or {}).get("path") or ""))
+    raw = None
+    with contextlib.suppress(Exception):
+        raw = read_loose_gzip(path)
+    if raw is not None and hashlib.sha256(raw).hexdigest() == str((ref or {}).get("sha256") or ""):
+        return raw, True
+    try:  # a missing or damaged loose blob: the pack of the root the ref names
+        return blob_bytes(path.parents[2], ref), True
     except Exception:
-        return None, False
-    intact = hashlib.sha256(raw).hexdigest() == str((ref or {}).get("sha256") or "")
-    return raw, intact
+        return raw, False
 
 
 def _first_divergent_offset(left: bytes, right: bytes) -> int:
@@ -595,15 +627,18 @@ def _retained_attempt_ids(root: pathlib.Path, wanted: set) -> Optional[set]:
                 return 0.0
         return sorted((path for path in paths if path.is_file()), key=mtime, reverse=True)
 
+    import lzma
+
     files = newest_first((root / "state").glob("usage_attempts.jsonl*"))
     archive = root / "archive" / "usage_ledger"
-    if archive.is_dir():
-        files += newest_first(archive.iterdir())
+    if archive.is_dir():  # segments stay readable once packed to ``.jsonl.xz``; their size sidecars are not journals
+        files += newest_first(path for path in archive.iterdir() if path.suffix != ".json")
     needles = {attempt_id.encode("utf-8"): attempt_id for attempt_id in wanted}
     found: set = set()
     try:
         for path in files:
-            with open(path, "rb") as handle:
+            opener = lzma.open if path.suffix == ".xz" else open
+            with opener(path, "rb") as handle:
                 for line in handle:
                     if not any(needle in line for needle in needles):
                         continue
@@ -616,7 +651,7 @@ def _retained_attempt_ids(root: pathlib.Path, wanted: set) -> Optional[set]:
                         found.add(attempt_id)
                         if len(found) == len(wanted):
                             return found
-    except OSError:
+    except (OSError, EOFError, lzma.LZMAError):  # damaged or truncated: unknown, never absence
         log.debug("model_send reconciliation: retained evidence unreadable", exc_info=True)
         return None
     return found

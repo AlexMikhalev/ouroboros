@@ -84,6 +84,8 @@ EXEMPT = {
     "answered_option", "claimed_option",
     # internal wait/transport outcomes that never reach an owner surface
     "client_message_id_missing", "event_serialization_failed", "handler_returned_no_outcome",
+    # StoreBusy's acquisition cause; the same unsent owner retries it off-lock.
+    "contention",
 }
 
 
@@ -172,9 +174,9 @@ def test_origin_addressed_notice_rows_stay_in_the_owners_chat(notice_type):
     """R12: the refused task id is bound to the project it never started in, so
     binding lineage would move the notice out of Main into that project on
     reload. The notice is addressed to the chat the OWNER wrote in."""
-    bindings = {"refused-task": 77}
-    main = room_membership(1, {77}, [], bindings)
-    project = room_membership(77, {77}, [], bindings)
+    rooms = lambda task_id, parent="", root="": 77 if "refused-task" in (task_id, parent, root) else 0  # noqa: E731
+    main = room_membership(1, {77}, [], rooms)
+    project = room_membership(77, {77}, [], rooms)
     notice = {"direction": "system", "type": notice_type, "task_id": "refused-task", "chat_id": 1}
 
     assert main(1, notice) is True

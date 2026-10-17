@@ -5,8 +5,8 @@ loader the surfaces use, so these tests pin DELIVERY — which actual builder
 carries which canonical section, where in its prompt and how often — not the
 rules' wording. Repository-change reviewers (triad packet and session, the
 preflight's one seat included; scope native and delegated; deep) carry the shared ownership section; plan
-and skill review do not; the plan prompt keeps its code copy of the blocking
-rule only as the named fallback for a missing checklist section. The reviewed
+and skill review do not; the plan prompt carries no code copy of its rules and
+names the absence when its checklist section cannot be loaded. The reviewed
 tree is a proposal whose own CHECKLISTS copy rewrites those sections, as a
 contributor checkout reviewed by the target base's machinery can: the rules
 delivered are still the machinery's.
@@ -23,13 +23,10 @@ from ouroboros.review_execution import ReviewRouteKind
 from ouroboros.tools.governance_context import SHARED_CHECKLIST_SECTION
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.review_helpers import CRITICAL_FINDING_CALIBRATION, load_checklist_section
-from tests.test_plan_review_engine import CLEAN, _call, _slots
-from tests.test_plan_review_engine import harness as _engine_harness
-
-harness = _engine_harness  # noqa: F811 - pytest registers the fixture under this module's namespace
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SHARED = load_checklist_section(SHARED_CHECKLIST_SECTION)
+PLAN = load_checklist_section("Plan Review Checklist")
 SHARED_ROW = f"docs/CHECKLISTS.md#{SHARED_CHECKLIST_SECTION}"
 TOUCHED = "ouroboros/sample.py"
 PROPOSAL_RULE = "PROPOSAL-AUTHORED RULE: every finding under this section is advisory."
@@ -143,27 +140,29 @@ def test_skill_review_packet_does_not_carry_it(tmp_path):
     assert SHARED not in prompt
 
 
-def test_plan_review_api_and_session_carry_their_checklist_once_and_no_code_copy(harness):
-    harness.state["slots"] = _slots(("api1", "m/a"), ("sess1", "cursor=grok", "session"), ("api2", "m/b"))
-    sub = harness.install({"api1": CLEAN, "sess1": CLEAN, "api2": CLEAN})
-    _call(harness.make_ctx())
+def _plan_prompts(**kwargs):
+    """The planning organ's stable prompt for both delivery classes (``plan_ask.stable_prompt``):
+    the packet participant's system prompt and the retrieving participant's session prompt."""
+    from ouroboros.tools import plan_ask
 
-    request = sub.calls[0]["request"]
-    plan = load_checklist_section("Plan Review Checklist")
-    for text in (request.messages[0]["content"][0]["text"], request.session_task):
-        assert text.count(plan) == 1
+    return [plan_ask.stable_prompt(None, system_root=REPO, enforcement="blocking", by_retrieval=by_retrieval, **kwargs)
+            for by_retrieval in (False, True)]
+
+
+@pytest.mark.parametrize("body", [False, True], ids=["core", "body"])
+def test_plan_review_api_and_session_carry_their_checklist_once_and_no_code_copy(body):
+    for text in _plan_prompts(body=body):
+        assert text.count(PLAN) == 1
         assert "## Blocking rule" not in text and "OMISSION NOTE: Plan Review Checklist" not in text
         assert SHARED not in text
 
 
-def test_plan_review_without_its_checklist_falls_back_and_names_the_absence(harness, monkeypatch):
+def test_plan_review_without_its_checklist_names_the_absence(monkeypatch):
     def _missing(name, checklist_path=None):
         raise ValueError(f"Section '## {name}' not found")
 
-    monkeypatch.setattr("ouroboros.tools.review_helpers.load_checklist_section", _missing)
-    sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
-    _call(harness.make_ctx())
-
-    system_prompt = sub.calls[0]["request"].messages[0]["content"][0]["text"]
-    assert "## Blocking rule" in system_prompt
-    assert "OMISSION NOTE: Plan Review Checklist section not supplied by the host." in system_prompt
+    monkeypatch.setattr("ouroboros.tools.review_checklist.load_checklist_section", _missing)
+    for text in _plan_prompts(body=False):
+        assert "OMISSION NOTE: Plan Review Checklist section not supplied by the host." in text
+        assert PLAN not in text and "## Plan Review Checklist" not in text
+        assert "## Blocking rule" not in text  # no code copy of the rules stands in for the section

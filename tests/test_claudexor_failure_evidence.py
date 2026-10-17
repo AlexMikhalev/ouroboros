@@ -82,10 +82,21 @@ def test_lost_create_and_gateway_replacement_reuse_frozen_capture(setup, monkeyp
         tool_context=SimpleNamespace(task_id="task-one", is_direct_chat=False), control_reason=lambda: None))
     monkeypatch.setattr(transport.config, "NETWORK_WAIT_BACKOFF_START_SEC", 0.001)
     monkeypatch.setattr(transport.config, "NETWORK_WAIT_BACKOFF_MAX_SEC", 0.001)
-    manifests = []
+    manifests, request_writes = [], []
+    persist_call = transport.persist_call
+
+    def persist(*args, **kwargs):
+        receipt = persist_call(*args, **kwargs)
+        if kwargs["call_type"] == "llm_claudexor_request":
+            request_writes.append(json.loads(
+                Path(receipt["manifest_ref"]["path"]).read_text(encoding="utf-8")))
+        return receipt
+
+    monkeypatch.setattr(transport, "persist_call", persist)
 
     def observe(receipt):
-        manifests.append(json.loads(Path(receipt["request_manifest_ref"]["path"]).read_text()))
+        manifests.append(json.loads(
+            Path(receipt["request_manifest_ref"]["path"]).read_text(encoding="utf-8")))
 
     answer, usage = call(client, asynchronous, model_operation_observer=observe)
     assert answer == result()["message"]
@@ -93,7 +104,13 @@ def test_lost_create_and_gateway_replacement_reuse_frozen_capture(setup, monkeyp
     expected = {key: True for key, enabled in (
         ("capture_failure_evidence", failure), ("capture_effort_evidence", effort)) if enabled}
     assert gateway.capture_requests == [expected] * 2
-    assert len(manifests) == 3  # Before lost create, before rejoin, then accepted custody.
+    # Phase observations may repeat a checkpoint, but cannot rewrite or rewind custody.
+    versions = [item for index, item in enumerate(manifests)
+                if index == 0 or item != manifests[index - 1]]
+    assert [item.get("operation_id") for item in versions] == [None, "op-0"]
+    assert [item.get("operation_id") for item in request_writes] == [None, "op-0"]
+    assert len({item["invocation_id"] for item in manifests}) == 1
+    assert len({item["full_payload_ref"]["sha256"] for item in manifests}) == 1
     assert all(item["capture_failure_evidence"] is failure and
                item["capture_effort_evidence"] is effort for item in manifests)
     assert len(gateway.uploads) == 1 and not replacement.uploads

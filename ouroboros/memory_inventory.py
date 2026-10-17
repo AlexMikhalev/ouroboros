@@ -19,7 +19,9 @@ them a second time:
 - A **period** (a block of the old memory) is folded when every unit of it is.
 - A **story record's period and place** (``record_period``) are read from its room's own rows:
   a page's covers, a retold record's rows (without rows, its block's recorded period, labelled),
-  a part's union over its members. The aggregate a part records is historical and not shown.
+  a part's union over its members, an account's union over its sources (several rooms: their
+  rows' span, which is not every event between and seals no row). The aggregate a part
+  records is historical and not shown.
 - The **standing facts** every reader prints are counted here once: the story's pages and parts
   (``story_counts``) and one room's open rows by lane, their size and times, its unsealed notes,
   its pages and the last row they cover (``room_facts``).
@@ -97,10 +99,12 @@ def row_meta(row: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 class MembershipFacts(NamedTuple):
-    """The registry facts room membership reads, taken once per call."""
+    """The registry facts room membership reads, taken once per call; ``rooms`` is
+    the room rule over the ``bindings`` snapshot the fingerprint names."""
     project_chat_ids: FrozenSet[int]
     bindings: Dict[str, int]
     projects_by_source_key: Dict[Tuple[Any, ...], FrozenSet[int]]
+    rooms: Any
 
     def fingerprint(self) -> str:
         payload = json.dumps([sorted(self.project_chat_ids), sorted(self.bindings.items()),
@@ -112,7 +116,7 @@ class MembershipFacts(NamedTuple):
 def membership_facts(root: Any) -> MembershipFacts:
     """Reserved Project rooms, task bindings and the bound owner messages, as ``iter_room_rows`` reads them."""
     from ouroboros.project_dialogue import _source_ref_identity  # D15->D17 is lazy-only
-    from ouroboros.projects_registry import all_task_bindings, list_reserved_projects, project_task_bindings
+    from ouroboros.projects_registry import all_task_bindings, list_reserved_projects, project_task_bindings, RoomResolver
 
     projects = frozenset(int(project["chat_id"]) for project in list_reserved_projects(root))
     by_key: Dict[Tuple[Any, ...], set] = {}
@@ -126,7 +130,7 @@ def membership_facts(root: Any) -> MembershipFacts:
         if key is not None:
             by_key.setdefault(key, set()).add(chat)
     return MembershipFacts(projects, dict(all_task_bindings(root)),
-                           {key: frozenset(chats) for key, chats in by_key.items()})
+                           {key: frozenset(chats) for key, chats in by_key.items()}, RoomResolver(root))
 
 
 def rooms_of_row(meta: Mapping[str, Any], facts: MembershipFacts) -> FrozenSet[str]:
@@ -144,12 +148,12 @@ def rooms_of_row(meta: Mapping[str, Any], facts: MembershipFacts) -> FrozenSet[s
     if is_a2a_chat_id(chat):
         return frozenset()
     kind = meta.get("type")
-    bound = 0 if kind in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(facts.bindings, meta)
+    bound = 0 if kind in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(facts.rooms, meta)
     pinned = kind in MAIN_PINNED_ROW_TYPES
     projects = facts.project_chat_ids
     rooms = set()
-    if not pinned:
-        rooms.update(room for room in (bound, chat) if room in projects)
+    if not pinned:  # the resolved room is authoritative over the stored address (``room_membership``)
+        rooms.update(room for room in ((bound,) if bound else (chat,)) if room in projects)
         for key in meta.get("source_keys") or ():
             rooms.update(facts.projects_by_source_key.get(tuple(key), ()))
     if MAIN_ROOM not in projects and chat != HIDDEN_CHAT_ID and chat not in projects and (pinned or not bound):
@@ -402,6 +406,22 @@ _RETELLING_CHARS: Dict[str, Dict[str, int]] = {}
 _UNITS: Dict[str, Tuple[Tuple[Any, ...], List[LegacyUnit]]] = {}
 
 
+FALLBACK_REFUSAL_PREFIX = "fallback_refusal:"
+
+
+def fallback_refusals(scan: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Read per-unit receipts over the old whole map; a null key clears its receipt.
+
+    The journal's top-level scan deltas already provide per-unit replacement;
+    old authority stays readable without rewriting its accumulated maps.
+    """
+    old = scan.get("fallback_refusals")
+    found = dict(old) if isinstance(old, dict) else {}
+    found.update((name[len(FALLBACK_REFUSAL_PREFIX):], value) for name, value in scan.items()
+                 if name.startswith(FALLBACK_REFUSAL_PREFIX))
+    return {key: receipt for key, receipt in found.items() if isinstance(receipt, dict)}
+
+
 def _exact_range(pointer: Mapping[str, Any]) -> Optional[Tuple[int, int]]:
     raw = (pointer.get("covers") or {}).get("raw_range") or {}
     span = raw.get("pos")
@@ -489,8 +509,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
     if cached is not None and cached[0] == key:
         return list(cached[1])
     pointers = store.legacy_pointer_rows()
-    refusals = store.scan_state().get("fallback_refusals")
-    refusals = refusals if isinstance(refusals, dict) else {}
+    refusals = fallback_refusals(store.scan_state())
     chars = _retelling_chars(store, {pointer["node_id"] for pointer in pointers}) if pointers else {}
     ranges = {pointer["node_id"]: (str(pointer["room_id"]), span) for pointer in pointers
               if (span := _exact_range(pointer)) is not None}
@@ -538,18 +557,26 @@ class Period(NamedTuple):
         return {"block": " (block period)", "mixed": " (partly block period)"}.get(self.source, "") if self.span else ""
 
 
-def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mapping[str, LegacyUnit]) -> Period:
+def record_period(store: ChronicleStore, record: Mapping[str, Any], units: Mapping[str, LegacyUnit], *,
+                  records: Optional[Mapping[str, Any]] = None) -> Period:
     """The period and place of a page, part or retold record, from its room's own rows, never the journal's aggregate.
 
     A page: its own covers. A retold record: its unit's rows (``units``: the ready legacy map of one reader);
     without rows, its block's recorded period and position, labelled ``block``. A part: the union over its
     members, recursively, so a room that takes the tail of a block is dated and ordered by its own rows; the
-    ``covers.ts_span`` the part recorded (its members' block aggregate) is not read.
+    ``covers.ts_span`` the part recorded (its members' block aggregate) is not read. An account: the union
+    over its sources the same way, whatever their rooms (a missing source adds nothing and leaves it incomplete).
+    A reader may supply its complete source-record snapshot to avoid reopening the index for every member.
     """
     covers = record.get("covers") if isinstance(record.get("covers"), Mapping) else {}
-    if record.get("kind") == "part":
-        members = [record_period(store, member, units) for member_id in covers.get("member_ids") or ()
-                   if (member := store.get(str(member_id))) is not None]
+    if record.get("kind") in ("part", "account"):
+        ids = covers.get("member_ids") if record.get("kind") == "part" else [
+            (ref.get("id") if isinstance(ref, Mapping) else ref) for ref in record.get("sources") or ()]
+        get = records.get if records is not None else store.get
+        members = [record_period(store, member, units, records=records) for member_id in ids or ()
+                   if (member := get(str(member_id))) is not None]
+        if len(members) != len(ids or ()):
+            members.append(Period(None, -1, "rows"))  # a source not in this chronicle: an incomplete period
         spans = [period.span for period in members if period.span]
         sources = {period.source for period in members if period.span}
         span = source_time_span([span[key] for span in spans for key in ("start", "end") if span.get(key)],
@@ -749,7 +776,7 @@ def shortage_from_trace(trace: Any) -> Optional[ShortageFact]:
 # any mark, a global one too. The import's legacy sections, gaps and activation receipt
 # are standing inventory (the view's pointers), and a mark's view only changes how much of an
 # observed mark is shown.
-CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark", "mark_release")
+CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark", "mark_release", "account", "selection")
 
 
 def _read_call(record_id: Any) -> str:
@@ -777,8 +804,12 @@ def _change_line(record: Mapping[str, Any], released: Optional[Mapping[str, Any]
     scoped = record if kind == "mark" else released if isinstance(released, Mapping) else {}
     where = "global" if scoped.get("scope") == "global" else f"in room {record.get('room_id')}"
     rows, members = covers.get("count", len(covers.get("rows") or ())), len(covers.get("member_ids") or ())
+    sources, replaced = len(record.get("sources") or ()), len(record.get("replaces") or ())
     what = {"page": f"seals {rows} row{'' if rows == 1 else 's'}",
             "part": f"folds {members} record{'' if members == 1 else 's'}",
+            "account": f"is based on {sources} source{'' if sources == 1 else 's'} (nothing sealed or folded)",
+            "selection": (f"shows the account in the common view in place of {replaced} record{'' if replaced == 1 else 's'}"
+                          if record.get("shown") else "withdraws the account from the common view"),
             "decision": "accepts the draft" if record.get("accepted") else "rejects the draft",
             "correction": "corrects its target", "mark_release": "releases its target mark"}.get(kind, "")
     target = record.get("target_id")

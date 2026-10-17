@@ -14,6 +14,8 @@ from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
+from ouroboros.task_store import patch_document
+from ouroboros.store import StoreError
 
 
 def _observed_at(value: Any) -> datetime:
@@ -72,7 +74,7 @@ def transport_queue_observation(root: Path, task_id: str, event: Any) -> dict:
             return {"status": "unavailable", "reason": "transport_has_not_reported_queue"}
         return {"status": "available", **receipt, "snapshot": validate_transport_queue(
             snapshot, event.conversation_key, event.source_event_id)}
-    except (OSError, ValueError, TypeError, KeyError):
+    except (OSError, ValueError, TypeError, KeyError, StoreError):
         # An unreadable latest snapshot never resurrects an older queue as current.
         return {"status": "unavailable", "reason": "transport_queue_source_unreadable"}
 
@@ -80,8 +82,8 @@ def transport_queue_observation(root: Path, task_id: str, event: Any) -> dict:
 def record_transport_queue(root: Path, task_id: str, binding_id: str, snapshot: Any) -> dict:
     """Write full observation before its pointer, preserving task/output/receipt fields."""
     from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
-    from ouroboros.task_results import load_task_result, require_writable_task_result_schema, task_result_path
-    from ouroboros.utils import update_json_locked, utc_now_iso
+    from ouroboros.task_results import load_task_result, require_writable_task_result_schema
+    from ouroboros.utils import utc_now_iso
 
     stored = load_task_result(root, task_id, strict=True) or {}
     presence = (stored.get("metadata") or {}).get("presence") or {}
@@ -119,7 +121,7 @@ def record_transport_queue(root: Path, task_id: str, binding_id: str, snapshot: 
                 return current
         return {**current, "presence_transport_queue": pointer}
 
-    update_json_locked(task_result_path(root, task_id), update, strict_existing_dict=True)
+    patch_document(root, task_id, update)
     if answer["status"] == "recorded":
         readback = (load_task_result(root, task_id, strict=True) or {}).get("presence_transport_queue") or {}
         # Another newer observation may have won after the lock was released.

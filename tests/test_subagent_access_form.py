@@ -7,6 +7,7 @@ import pytest
 from ouroboros.subagent_runtime import SubagentSelectionError, select_subagent_snapshot
 from ouroboros.tools import control
 from ouroboros.tools.registry import ToolRegistry
+from tests._store_shared import read_result
 
 
 def _settings():
@@ -64,8 +65,7 @@ def test_api_all_fields_form_queues_without_changing_write_surface(registry, acc
     assert event["task_constraint"]["mode"] == (
         "local_readonly_subagent" if surface == "read_only" else "acting_subagent")
     assert "access" not in event["configured_subagent"]
-    saved = json.loads((registry._ctx.drive_root / "task_results" / f"{event['task_id']}.json")
-                       .read_text(encoding="utf-8"))
+    saved = read_result(registry._ctx.drive_root, event["task_id"])
     assert saved["configured_subagent"] == event["configured_subagent"]
     assert saved["task_constraint"] == event["task_constraint"]
 

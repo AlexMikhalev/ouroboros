@@ -7,6 +7,7 @@ import pytest
 
 from ouroboros import obligations as o, startup_migrations as migrations
 from ouroboros import server_maintenance as maintenance, task_results as results
+from tests._store_shared import seed_result, unavailable_store, unreadable_result
 
 
 def test_bad_cancel_row_is_a_gap_while_good_row_migrates(tmp_path, monkeypatch):
@@ -24,35 +25,32 @@ def test_bad_cancel_row_is_a_gap_while_good_row_migrates(tmp_path, monkeypatch):
     assert cancel_intents.active_intent(tmp_path, "good")
     assert results.load_task_result(tmp_path, "good", strict=True)["_schema_version"] == 1
     assert o.members(tmp_path, "unknowns")["task:bad"]["reason"] == "cancel_latch_migration_failed"
-    assert migrations.watermarks(tmp_path)["obligations_generation"] == migrations.OBLIGATIONS_GENERATION
+    assert migrations.watermarks(tmp_path)["cancel_latches_generation"] == migrations.SCHEMA_GENERATION
     monkeypatch.setattr(cancel_intents, "request_cancel", request)
     migrations.prepare_startup_state(tmp_path, rebuild=True)
     assert cancel_intents.active_intent(tmp_path, "bad")
     assert not o.members(tmp_path, "unknowns")
 
 
-@pytest.mark.parametrize("prior_sets", [False, True])
-def test_unreadable_import_leaves_boot_available_and_explicit_repair_fails(tmp_path, monkeypatch, prior_sets):
-    import server
-    from pathlib import Path
-    if prior_sets:
-        migrations.prepare_startup_state(tmp_path)
-        migrations.stamp(tmp_path, obligations_generation=None)
-    original = Path.iterdir
-    def unreadable(path):
-        if path == tmp_path / "task_results":
-            raise PermissionError("directory unreadable")
-        return original(path)
-    monkeypatch.setattr(Path, "iterdir", unreadable)
+def test_unreadable_import_leaves_boot_available_and_explicit_repair_fails(tmp_path, monkeypatch):
+    """The importer cannot read the result files: boot continues with an unavailable store
+    (every door answers typed), no store generation is stamped, and the explicit repair fails."""
+    from ouroboros import store, store_switch, store_import
+    def unreadable(root):
+        raise PermissionError("directory unreadable")
+    monkeypatch.setattr(store_import, "_read_results", unreadable)
     assert migrations.prepare_startup_state(tmp_path, strict=False)["status"] == "unavailable"
-    assert "strict=False" in inspect.getsource(server.lifespan)
-    with pytest.raises(o.ObligationsUnavailable):
+    assert "strict=False" in inspect.getsource(store_switch._run)  # the boot door's import owner
+    with store.importing(tmp_path), pytest.raises(o.ObligationsUnavailable):  # the boot door keeps its window open
         o.members(tmp_path, "nonterminal")
-    assert migrations.watermarks(tmp_path).get("obligations_generation") is None
+    assert not store.generation_stamped(tmp_path) and not store.store_path(tmp_path).exists()
     rows = [json.loads(line) for line in (tmp_path / "logs/supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["type"] == "startup_migration" and rows[-1]["phase"] == "failed"
     with pytest.raises(PermissionError):
         migrations.prepare_startup_state(tmp_path, rebuild=True)
+    monkeypatch.undo()
+    assert migrations.prepare_startup_state(tmp_path)["imported"]
+    assert o.members(tmp_path, "nonterminal") == {}
 
 
 def test_migration_diagnostic_failure_does_not_close_boot(tmp_path, monkeypatch):
@@ -66,43 +64,40 @@ def test_migration_diagnostic_failure_does_not_close_boot(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("kind", ["delegate_run_started", "delegate_run_settled"])
-def test_custody_append_can_write_results_without_lock_nesting(tmp_path, monkeypatch, kind):
+def test_custody_append_can_write_results_and_rows(tmp_path, monkeypatch, kind):
+    """The chain append of a custody event holds no store transaction: a result write and an
+    owner-held row published from inside it land, and the event's own rows follow."""
     from ouroboros import delegate_custody as custody
-    from ouroboros.delegate_custody_current import current_reads
+    from ouroboros import delegate_custody_current as current
     migrations.prepare_startup_state(tmp_path)
     assert custody.emit(tmp_path, custody.STARTED, {"run_id": "run", "task_id": "task"})
-    locked, held = o.locked, []
-    @contextmanager
-    def checked(root):
-        assert not held, "obligations lock nested across append/result write"
-        with locked(root):
-            held.append(True)
-            try:
-                yield
-            finally:
-                held.pop()
-    monkeypatch.setattr(o, "locked", checked)
-    def append(_path, _row):
-        assert "run:run" in o.members(tmp_path, "custody_open")
+    def append(_path, _row, **_kwargs):
+        assert "run" in current.runs(tmp_path, "state=?", (current.HELD,)) or kind == custody.SETTLED
         results.write_task_result(tmp_path, "other", "running")
         o.add(tmp_path, "custody_open", "invocation:other", {"request": {"invocation_id": "other"}})
         return True
-    monkeypatch.setattr(custody, "append_jsonl", append)
+    monkeypatch.setattr(current, "append_jsonl", append)
     assert custody.emit(tmp_path, kind, {"run_id": "run", "task_id": "task", "state": "succeeded"})
     assert "other" in o.members(tmp_path, "nonterminal")
     assert "invocation:other" in o.members(tmp_path, "custody_open")
-    with current_reads(tmp_path):
-        assert bool(custody.open_runs(tmp_path)) == (kind == custody.STARTED)
+    assert bool(custody.open_runs(tmp_path)) == (kind == custody.STARTED)
     if kind == custody.SETTLED:
         assert "run" in o.members(tmp_path, "delegated_runs")["task"]["closed_runs"]
 
 
-def test_explicit_rebuild_replaces_corrupt_sets(tmp_path):
+def test_explicit_rebuild_replaces_custody_rows_from_the_chain(tmp_path):
+    """The explicit repair refolds the custody rows from the retained event chain: a run row
+    and a pending invocation no event supports are replaced, a derived set is untouched."""
+    from ouroboros import delegate_custody as custody, store
     migrations.prepare_startup_state(tmp_path)
-    for name in ("nonterminal", "custody_open"):
-        o.path(tmp_path, name).write_text("broken", encoding="utf-8")
+    results.write_task_result(tmp_path, "task", "running")
+    o.add(tmp_path, "custody_open", "invocation:ghost", {"request": {"invocation_id": "ghost"}})
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.put_custody("ghost", {"run_id": "ghost", "task_id": "task"}, state="held")
     migrations.prepare_startup_state(tmp_path, rebuild=True)
-    assert o.members(tmp_path, "nonterminal") == o.members(tmp_path, "custody_open") == {}
+    assert o.members(tmp_path, "custody_open") == {}
+    assert custody.replay(tmp_path) == {}
+    assert set(o.members(tmp_path, "nonterminal")) == {"task"}
 
 
 @pytest.mark.parametrize("settled", [False, True])
@@ -131,7 +126,9 @@ def test_custody_nested_receipts_survive_fresh_current_read(tmp_path, settled):
 
 @pytest.mark.parametrize("writer_first", [True, False])
 def test_custody_ack_serializes_with_result_membership(tmp_path, monkeypatch, writer_first):
-    from ouroboros import delegate_custody as custody, delegate_terminal, platform_layer
+    """The acknowledgement reads the result row and retires the closing receipts in ONE store
+    transaction: a debt the result shows (``delegated_runs_unreconciled``) is never removed."""
+    from ouroboros import delegate_custody as custody, delegate_terminal, store
     from ouroboros.delegate_custody_current import snapshot
     migrations.prepare_startup_state(tmp_path)
     results.write_task_result(tmp_path, "task", "completed")
@@ -140,24 +137,26 @@ def test_custody_ack_serializes_with_result_membership(tmp_path, monkeypatch, wr
     observed = snapshot(tmp_path)
     if writer_first:
         results.write_task_result(tmp_path, "task", "completed", delegated_runs_unreconciled=["new"])
-    acquire = platform_layer.acquire_exclusive_file_lock
-    acquisitions = []
-    def track(path, **kwargs):
-        acquisitions.append(path.name)
-        return acquire(path, **kwargs)
-    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", track)
+    opened = []
+    real_open = store.open_store
+    @contextmanager
+    def tracked(root, **kwargs):
+        with real_open(root, **kwargs) as txn:
+            opened.append(kwargs.get("write"))
+            yield txn
+    monkeypatch.setattr(store, "open_store", tracked)
     delegate_terminal._ack_current_receipts(tmp_path, "task", observed)
-    assert acquisitions[0] == "task.json.lock", "result lock must precede obligations retirement"
+    assert opened == [True], "one write transaction covers the row read and the retirement"
+    monkeypatch.undo()
     if not writer_first:
         assert "task" not in o.members(tmp_path, "delegated_runs")
         results.write_task_result(tmp_path, "task", "completed", delegated_runs_unreconciled=["new"])
     assert "task" in o.members(tmp_path, "delegated_runs")
 
 
-@pytest.mark.parametrize("set_name", ["pending_drives", "unknowns"])
-def test_unavailable_recovery_set_does_not_escape_a_boot_door(tmp_path, monkeypatch, set_name):
+def test_unavailable_recovery_sets_do_not_escape_a_boot_door(tmp_path, monkeypatch):
     migrations.prepare_startup_state(tmp_path)
-    o.path(tmp_path, set_name).write_text("broken", encoding="utf-8")
+    unavailable_store(monkeypatch)
     monkeypatch.setattr(maintenance, "_startup_live_task_ids", lambda *a, **kw: set())
     report = maintenance._run_startup_task_recovery(tmp_path, tmp_path, skip_live_data=False, prior_worker_pids=set())
     assert "*" in report["unresolved"] and report["errors"]
@@ -203,7 +202,7 @@ def test_prunes_wait_off_ready_path_and_tree_debt_clears_after_recovery(tmp_path
 @pytest.mark.parametrize("gap", [None, "unreadable", "coarse"])
 def test_deferred_prunes_keep_live_tree_and_retry_recovery_gaps(tmp_path, monkeypatch, gap):
     import os
-    from ouroboros import owner_mailbox, utils
+    from ouroboros import owner_mailbox
     migrations.prepare_startup_state(tmp_path)
     monkeypatch.setattr(maintenance, "DATA_DIR", tmp_path)
     for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_SOURCE_PRUNES_OWED", "_STARTUP_TREES_OWED",
@@ -220,8 +219,7 @@ def test_deferred_prunes_keep_live_tree_and_retry_recovery_gaps(tmp_path, monkey
     service.parent.mkdir(parents=True)
     service.write_text("retained service output", encoding="utf-8")
     os.utime(service, (1, 1))
-    if gap == "unreadable":
-        (tmp_path / "task_results/running.json").write_text("broken", encoding="utf-8")
+    unreadable = unreadable_result(monkeypatch, "running") if gap == "unreadable" else {"on": False}
     maintenance._startup_prune_sweeps(preserve_task_sources=bool(gap),
         recovery_report={"errors": ["ownership unknown"]} if gap == "coarse" else {"unresolved": ["running"]})
     maintenance._run_deferred_startup_prunes()
@@ -230,7 +228,8 @@ def test_deferred_prunes_keep_live_tree_and_retry_recovery_gaps(tmp_path, monkey
         assert owner_mailbox._mailbox_path(tmp_path, "settled").exists()
         assert maintenance._STARTUP_TREES_OWED == maintenance._STARTUP_SOURCE_PRUNES_OWED == [True]
         assert maintenance._STARTUP_PRUNES_OWED == [False]
-        utils.atomic_write_json(tmp_path / "task_results/running.json", running)
+        unreadable["on"] = False
+        assert results.load_task_result(tmp_path, "running", strict=True) == running
         maintenance._STARTUP_RECOVERY_GAPS[0] = False
         maintenance._run_deferred_startup_prunes()
     assert not (tmp_path / "task_trees/settled").exists() and not service.exists()
@@ -272,14 +271,13 @@ def test_periodic_sweep_retries_source_only_debt_until_success(tmp_path, monkeyp
 
 def test_tree_exclusions_follow_only_addressed_links_and_own_child_results(tmp_path, monkeypatch):
     from ouroboros.startup_task_files import startup_tree_exclusions
-    from ouroboros.utils import atomic_write_json
     migrations.prepare_startup_state(tmp_path)
     fields = ("parent_task_id", "root_task_id", "retry_task_id", "superseded_by", "original_task_id", "timeout_retry_from")
     results.write_task_result(tmp_path, "running", "running", metadata={field: field for field in fields})
     for tid in (*fields, "child", "unrelated"):
-        atomic_write_json(tmp_path / f"task_results/{tid}.json", {"_schema_version": 1, "task_id": tid, "status": "completed"})
+        seed_result(tmp_path, tid, {"_schema_version": 1, "task_id": tid, "status": "completed"})
     child = tmp_path / "task_drives/running"
-    atomic_write_json(child / "task_results/child.json", {"_schema_version": 1, "task_id": "child", "status": "completed"})
+    seed_result(child, "child", {"_schema_version": 1, "task_id": "child", "status": "completed"})
     read, listing, seen = results.load_task_result, results.list_task_results, []
     def addressed(root, task_id, **kwargs):
         if root == tmp_path:
@@ -292,45 +290,3 @@ def test_tree_exclusions_follow_only_addressed_links_and_own_child_results(tmp_p
     monkeypatch.setattr(results, "list_task_results", own_results)
     expected = {"running", "child", *fields}
     assert startup_tree_exclusions(tmp_path) == set(seen) == expected
-
-
-def test_unchanged_result_memberships_take_no_obligations_lock(tmp_path, monkeypatch):
-    migrations.prepare_startup_state(tmp_path)
-    results.write_task_result(tmp_path, "task", "running")
-    locked, calls = o.locked, []
-    @contextmanager
-    def counted(root):
-        calls.append(root)
-        with locked(root):
-            yield
-    monkeypatch.setattr(o, "locked", counted)
-    results.write_task_result(tmp_path, "task", "running", progress_note="next step")
-    assert calls == []
-    results.write_task_result(tmp_path, "task", "completed", result="saved answer")
-    assert len(calls) == 2  # one pre-publication acquisition, one post-publication acquisition
-
-
-def test_foreign_body_sha_replaces_result_sets_and_matching_sha_reads_no_history(tmp_path, monkeypatch):
-    from ouroboros.utils import atomic_write_json
-    from ouroboros import delegate_custody as custody
-    migrations.prepare_startup_state(tmp_path)
-    results.write_task_result(tmp_path, "became-done", "running")
-    results.write_task_result(tmp_path, "became-running", "completed")
-    custody.emit(tmp_path, custody.STARTED, {"run_id": "run", "task_id": "receipt-only"})
-    custody.emit(tmp_path, custody.SETTLED, {"run_id": "run", "task_id": "receipt-only"})
-    o.add(tmp_path, "upgrade_notices", "7:legacy_memory_notice", {"recorded": True})
-    migrations.stamp(tmp_path, observed_state_sha="aware-checkout")
-    atomic_write_json(tmp_path / "state/state.json", {"current_sha": "forward-checkout-by-7.5-body"})
-    for tid, status in (("became-done", "completed"), ("became-running", "running")):
-        atomic_write_json(tmp_path / f"task_results/{tid}.json", {
-            "_schema_version": 1, "task_id": tid, "status": status,
-            **({"canonical_terminal_projection_origin": "terminal_transition"} if status == "completed" else {}),
-        })
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: pytest.fail("version subprocess"))
-    assert migrations.prepare_startup_state(tmp_path)["imported"]
-    assert set(o.members(tmp_path, "nonterminal")) == set(o.members(tmp_path, "pending_drives")) == {"became-running"}
-    assert set(o.members(tmp_path, "terminal_projection")) == set(o.members(tmp_path, "synthesis")) == {"became-done"}
-    assert "run" in o.members(tmp_path, "delegated_runs")["receipt-only"]["closed_runs"]
-    assert o.members(tmp_path, "upgrade_notices")["7:legacy_memory_notice"]["recorded"]
-    monkeypatch.setattr(migrations, "_result_records", lambda *a: pytest.fail("matching SHA enumerated history"))
-    assert not migrations.prepare_startup_state(tmp_path)["imported"]

@@ -215,7 +215,6 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     """
     target = str(evt.get("target_task_id") or "").strip()
     message = str(evt.get("message") or "")
-    raw_chat_id = evt.get("chat_id")
     try:
         chat_id = int(evt.get("chat_id") or 0)
     except (TypeError, ValueError):
@@ -478,20 +477,10 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         if fence_generation_changed:
             ctx.persist_queue_snapshot(reason="acceptance_fence_owner_message")
         log.info("steer_task: delivered to task %s (chat %s) on drive %s", target, chat_id, drive)
+        # A landed act publishes no row: the receipt on the owner's message keeps
+        # the staging manifest, the target's mailbox and the caller's tool result
+        # keep the model's [ATTACHMENTS] block (DESIGN "Chat authorship and System rows").
         _steer_receipt(
             ctx, evt, target, target_label=target_label, status="delivered",
             detail=attachment_report, attachment_manifest=staged_manifest if uploads else None,
         )
-        if attachment_report:
-            from supervisor.message_bus import notification_chat_route
-
-            notice_chat = notification_chat_route(raw_chat_id)
-            if notice_chat is not None:
-                try:
-                    ctx.send_with_budget(
-                        notice_chat,
-                        f"📎 Attachment staging report for {target_label or 'Task'}:\n"
-                        f"{attachment_report}",
-                        role="system", system_type="attachment_notice")
-                except Exception:
-                    log.debug("steer_task attachment report notice failed", exc_info=True)

@@ -31,20 +31,21 @@ passport). The collector follows it:
 
 ## What it forwards
 
-Only the passport's anchor rows (the `anchors` list), and of them only metadata: identifiers, types,
-statuses, durations, token counts. The `allowed` list drops everything else, including the
-content-bearing fields the passport names (`args`, `result_preview`, `task`, `outcome_axes`,
-`artifact_bundle`, `error`, `traceback`, ...). Extend it only with fields the passport lists for the row
-types you need; a field it does not list may change without notice. A `task_received` row keeps its type,
-time and `task_id`, taken from `task.id`; the rest of `task` is content. Each row also gets `log` (events,
-tools or supervisor) and `child_drive` (true for a row read from a subagent's or forked-memory task's own
-drive). If you add the drives' `tools.jsonl`, drop duplicate tools rows by `(invocation_id, type)`.
-The example is a starting point, not a delivery guarantee: a collector that is stopped past retention or
-past `ignore_older_secs` misses rows.
+The `anchors` list selects passport rows; `allowed` keeps only metadata: identifiers, types,
+statuses, durations and tokens. Content (`args`, `result_preview`, `task`, `outcome_axes`,
+`artifact_bundle`, `error`, `traceback`, ...) is dropped. Extend it only with passport fields for
+that row type; unlisted fields can change without notice. `task_received` uses top-level `task_id`,
+falling back to legacy `task.id`; the rest of `task` is content. Rows gain `log` (events/tools/supervisor)
+and `child_drive` (subagent/forked drive). If adding child `tools.jsonl`, deduplicate by
+`(invocation_id, type)`. A collector stopped past retention or `ignore_older_secs` misses rows.
 
-Money fields are left out on purpose. Spend comes only from Ouroboros's accounting views
-(`GET /api/cost-breakdown`, `GET /api/state` `accounting`); `llm_usage.cost` is often null and is a
-projection, so a sum of shipped rows is wrong.
+Money is excluded: spend comes from `GET /api/cost-breakdown` or `GET /api/state` `accounting`,
+never summed `llm_usage.cost` projections, which can be null.
+
+The collector preserves `record_contract_version: 2` and independently nullable token counts.
+Update destination schemas/aggregations per the
+[migration guide](../../architecture/11-frozen-contracts-v1.md#114-recent-abi-retirements).
+Historical zeros stay ambiguous; counting both `llm_round` and `llm_usage` duplicates main-loop usage.
 
 ## Run it
 

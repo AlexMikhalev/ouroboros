@@ -2,11 +2,10 @@
 
 The command/service shell is real. No daemon/container or provider is contacted.
 """
-import json
 import os
 import pathlib
+import shlex
 import subprocess
-import sys
 
 import pytest
 
@@ -24,13 +23,21 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
     ctx = make_ctx(serving, data, 'docker-env')
     body_candidate.prepare(ctx)
     candidate = pathlib.Path(ctx.repo_dir)
-    mount = tmp_path / 'mount'
-    mount.symlink_to(candidate.parent, target_is_directory=True)
+    # A Docker workspace is POSIX even when its host fixture runs on Windows.
+    mount = pathlib.PurePosixPath('/workspace')
     ctx.executor_ref = {'type': 'docker_exec', 'container_name': 'fixture',
         'workspace_host_path': str(candidate.parent), 'workspace_backend_path': str(mount)}
     expected = str(mount / (candidate.name + '.env') / 'data')
-    script = 'import os,json; print(json.dumps(dict(os.environ)), flush=True)'
-    real_popen, real_run = subprocess.Popen, subprocess.run
+
+    def host_cwd(backend_cwd):
+        relative = pathlib.PurePosixPath(backend_cwd).relative_to(mount)
+        return candidate.parent.joinpath(*relative.parts)
+    # Observe with a shell builtin: MSYS rewrites HOME when it launches native
+    # Windows Python, a hop absent from the real Docker/container path.
+    probe = ['sh', '-c', 'export -p']
+    def exported_env(stdout):
+        return dict(word.split('=', 1) for word in shlex.split(stdout) if '=' in word)
+    real_popen = subprocess.Popen
     commands = []
 
     def transport(cmd, **kwargs):
@@ -45,36 +52,37 @@ def test_docker_candidate_uses_mapped_clean_environment(tmp_path, monkeypatch, c
                 backend_env[cmd[index + 1]] = host_env[cmd[index + 1]]
         kwargs['env'] = backend_env
         if '--workdir' in cmd:
-            kwargs['cwd'] = cmd[cmd.index('--workdir') + 1]
+            kwargs['cwd'] = str(host_cwd(cmd[cmd.index('--workdir') + 1]))
         commands.append((cmd, kwargs))
         return real_popen(['sh', '-c', cmd[-1]], **kwargs)
 
     monkeypatch.setattr(executor.subprocess, 'Popen', transport)
     if consumer == 'command':
-        result = executor.execute(ctx, [sys.executable, '-c', script], candidate, 10)
+        result = executor.execute(ctx, probe, candidate, 10)
         assert result.returncode == 0 and result.operation_outcome == 'completed', result
-        env = json.loads(result.stdout)
+        env = exported_env(result.stdout)
     else:
         # Execute the real service command expansion synchronously, preserving the
         # actual start_service branch and inert-env transport without orphan processes.
         original = executor._docker_service_start_shell
         captured = {}
+        real_submit = executor._submit_service_command
         def service_shell(record, log_path, aliases=None, **kwargs):
             shell = original(record, log_path, aliases, **kwargs)
             # The same generated exec payload is inside the detached launch shell.
-            import shlex
             payload = shlex.split(shell)[shlex.split(shell).index('-c') + 1]
-            return f'cd {__import__("shlex").quote(record.backend_cwd)} && {payload}'
+            return f'cd {shlex.quote(str(host_cwd(record.backend_cwd)))} && {payload}'
         def submit(cmd, **kwargs):
-            result = real_run(cmd, **kwargs)
+            result = real_submit(cmd, **kwargs)
             assert result.returncode == 0, result.stderr
-            captured['env'] = json.loads(result.stdout)
-            return subprocess.CompletedProcess(cmd, 0, '12345\n', '')
+            captured['env'] = exported_env(result.stdout)
+            result.stdout = '12345\n'  # only the fixture backend PID; keep the real confirmation owner
+            return result
         monkeypatch.setattr(executor, '_docker_service_start_shell', service_shell)
         monkeypatch.setattr(executor, '_submit_service_command', submit)
         monkeypatch.setattr(executor, '_service_state', lambda record: 'exited')
         monkeypatch.setattr(executor, '_service_payload', lambda record, **kwargs: {'state': 'exited'})
-        executor.start_service(ctx, name='env', cmd=[sys.executable, '-c', script], host_cwd=candidate,
+        executor.start_service(ctx, name='env', cmd=probe, host_cwd=candidate,
                                cwd_root='system_repo', readiness={}, outputs=[], before_outputs={}, env={})
         env = captured['env']
     assert env['OUROBOROS_DATA_DIR'] == expected

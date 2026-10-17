@@ -204,35 +204,32 @@ def _recent_root_results(ctx: Any, project_id: str = "") -> tuple:
     offered (owner decision batch 3, answer 6b=A): a swarm wave's children are the
     newest results of ANY kind, so they evicted the owner's own roots from this
     window - which is how a root the same actor had just read stopped being
-    offerable. The facts are already memoized, so both the filter and the count
-    cost no extra read. The count runs over the WHOLE candidate list, not inside
-    the capped loop: children older than the last shown root are skipped just the
-    same, and counting them only until the cap reported zero while folding them
-    into the cap's own number.
+    offerable. The typed columns answer both the filter and the count without a
+    body read. The count runs over the WHOLE candidate list, not inside the capped
+    loop: children older than the last shown root are skipped just the same, and
+    counting them only until the cap reported zero while folding them into the
+    cap's own number.
     """
-    from ouroboros.task_result_facts import raw_result_facts
     from ouroboros.runtime_limits import get_routing_manifest_result_rows
-    from ouroboros.task_results import load_task_result, task_results_dir
+    from ouroboros.store import StoreError
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_store import task_facts
 
     results_error = ""
     try:
-        facts, unreadable = raw_result_facts(task_results_dir(ctx.DRIVE_ROOT, create=False))
-    except OSError as exc:
-        facts, unreadable = {}, ["result_directory_unreadable"]
-        results_error = f"result_directory_unreadable: {exc}"
-    ordered = sorted(
-        facts, key=lambda name: facts[name]["ts"] or facts[name]["updated_at"], reverse=True,
-    )
-    pool = [name for name in ordered if not project_id or facts[name]["project_id"] == project_id]
-    children = sum(
-        1 for name in pool if not facts[name]["schema_refusal"] and _is_child_result(facts[name])
-    )
+        facts = task_facts(ctx.DRIVE_ROOT, **({"where": "project_id=?", "params": (project_id,)} if project_id else {}))
+        unreadable = False
+    except StoreError as exc:
+        facts, unreadable = {}, True
+        results_error = f"result_store_unreadable: {exc}"
+    pool = sorted(facts, key=lambda task_id: facts[task_id]["ts"] or facts[task_id]["updated_at"], reverse=True)
+    children = sum(1 for task_id in pool if _is_child_result(facts[task_id]))
     cap = get_routing_manifest_result_rows()
     finals: list = []
-    for name in pool:
-        if facts[name]["schema_refusal"] or _is_child_result(facts[name]):
+    for task_id in pool:
+        if _is_child_result(facts[task_id]):
             continue
-        row = load_task_result(ctx.DRIVE_ROOT, pathlib.Path(name).stem)
+        row = load_task_result(ctx.DRIVE_ROOT, task_id)
         if row is not None:
             finals.append(_task_result_ground_truth(row))
         if len(finals) == cap:
@@ -299,31 +296,19 @@ def _latest_project_task_result(ctx: Any, project_id: str) -> Optional[Dict[str,
     last-result pointer: the hint offers roots only, ``_is_child_result``) WITHOUT replaying the whole
     store (DEVELOPMENT "Projection over replay"). The registry row's durable
     ``last_task_result_id`` pointer (stamped at project-task finalization) is
-    read FIRST — one direct file fetch, immune to how many newer foreign
-    results exist. Only when the pointer is absent or stale (missing/
-    unparseable/foreign file) does the fallback run: the bounded newest-64
-    mtime scan, then — for pre-pointer projects only — a disclosed full scan
-    of the store (the lazy self-heal for rows finalized before the pointer
-    existed; with zero matching results nothing is written back, so it repeats
-    per lookup until a matching result exists). The order is TOTAL: newest
-    mtime first with the file name as the stable tie-break, and — because
-    results finalized within one clock tick share an mtime — the first match's
-    whole equal-mtime group is read to its end (across the 64-entry window,
-    which bounds the SEARCH, not the group) and the durable ``ts`` decides
-    inside it (``updated_at`` when ``ts`` is absent, the task id last). A file
-    whose stat or JSON could not be read is answered around best-effort for
-    the call but blocks the pointer write-back (it might be the newer result).
-    Only the ABSENT-pointer case
-    writes the pointer back: a non-empty pointer that failed to resolve is
-    usually a split-drive result in flight (finalization stamps the pointer
-    before the canonical copy-back lands), so overwriting it from the scan
-    would permanently regress it to an older result — serve the scan hit and
-    let the pointer resolve itself. The steady state needs no
-    ouroboros/context_budget.py threshold enrollment (that table guards
-    recurring full-store replays)."""
+    read FIRST — one indexed row read, immune to how many newer foreign
+    results exist. Only when the pointer is absent or stale (missing/foreign
+    row) does the fallback run: the project's root rows newest first by the
+    durable ``ts`` (``updated_at`` when ``ts`` is absent, the task id last), read
+    in that order until the first that is not a promote's emitted stub. Only the
+    ABSENT-pointer case writes the pointer back: a non-empty pointer that failed
+    to resolve is usually a split-drive result in flight (finalization stamps
+    the pointer before the canonical copy-back lands), so overwriting it from
+    the scan would permanently regress it to an older result — serve the scan
+    hit and let the pointer resolve itself."""
     from ouroboros.projects_registry import get_project, update_project
-    from ouroboros.task_results import load_task_result, task_results_dir
-    from ouroboros.utils import read_json_dict
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_store import ROOT_RESULT_WHERE, newest_ids
 
     try:
         pointer = str((get_project(ctx.DRIVE_ROOT, project_id) or {}).get(
@@ -341,54 +326,14 @@ def _latest_project_task_result(ctx: Any, project_id: str) -> Optional[Dict[str,
             "falling back to the bounded scan", project_id, pointer,
         )
 
-    def _stamp(path: Any) -> Optional[float]:
-        try:
-            return path.stat().st_mtime
-        except OSError:
-            return None  # unreadable stat: ordered last, member of no tie group
-
-    def _order(item: Dict[str, Any]) -> tuple:
-        # Inside an equal-mtime group the DURABLE `ts` decides (`updated_at`
-        # stands in when `ts` is absent); the task id is the deterministic last
-        # resort for equal keys (a stable choice, not a semantic one).
-        return (str(item.get("ts") or item.get("updated_at") or ""), str(item.get("task_id") or item.get("id") or ""))
-
-    stamped = [(_stamp(path), path) for path in task_results_dir(ctx.DRIVE_ROOT, create=False).glob("*.json")]
-    # A file whose stat or JSON cannot be read might be this project's newer
-    # result: the scan still answers best-effort for THIS call, but such
-    # uncertainty must never be frozen into the durable pointer.
-    uncertain = any(mtime is None for mtime, _ in stamped)
-    # Newest first; unreadable last; the name keeps equal mtimes contiguous
-    # and the whole order deterministic.
-    stamped.sort(key=lambda item: (item[0] is None, -(item[0] or 0.0), item[1].name))
     row = None
-    for index, (mtime, path) in enumerate(stamped):
-        if index == 64:
-            log.info(
-                "project last-task-result: %r missed the bounded scan; running the "
-                "full-store self-heal scan (%d files)", project_id, len(stamped),
-            )
-        candidate = read_json_dict(path)
-        if candidate is None:
-            uncertain = True
-            continue
-        if str(candidate.get("project_id") or "") != project_id or _not_a_root_result(candidate):
+    for task_id in newest_ids(ctx.DRIVE_ROOT, where=f"project_id=? AND {ROOT_RESULT_WHERE}", params=(project_id,)):
+        candidate = load_task_result(ctx.DRIVE_ROOT, task_id)
+        if candidate is None or _not_a_root_result(candidate):
             continue
         row = candidate
-        # The match's whole equal-mtime group is read to its end — across the
-        # 64-entry window too, which bounds the SEARCH and never cuts a group
-        # whose order the mtime cannot settle.
-        for tied_mtime, tied in stamped[index + 1:]:
-            if mtime is None or tied_mtime != mtime:
-                break
-            other = read_json_dict(tied)
-            if other is None:
-                uncertain = True
-            elif (str(other.get("project_id") or "") == project_id and not _not_a_root_result(other)
-                  and _order(other) > _order(row)):
-                row = other
         break
-    if row is not None and not pointer and not uncertain:
+    if row is not None and not pointer:
         try:
             update_project(ctx.DRIVE_ROOT, project_id, last_task_result_id=str(
                 row.get("task_id") or row.get("id") or ""))
@@ -587,30 +532,21 @@ def _message_routing_receipt(ctx: Any, client_message_id: str) -> Dict[str, Any]
 
     Read from the annotation the routing rail already writes, so no new store and no
     new reader: the decision turn simply sees what was already decided for the same
-    message. Fail-soft - a missing or torn annotations file leaves the turn exactly
-    as it was.
+    message (a promote's or route's status from its admission, as every reader shows
+    it: ``routing_wait.routing_act_fields``). Fail-soft - a missing or torn
+    annotations file leaves the turn exactly as it was.
     """
     if not client_message_id:
         return {}
     try:
         from ouroboros.project_dialogue import latest_chat_annotations
+        from ouroboros.routing_wait import routing_act_fields
 
         row = latest_chat_annotations(ctx.DRIVE_ROOT).get(str(client_message_id)) or {}
+        return routing_act_fields(pathlib.Path(ctx.DRIVE_ROOT), str(client_message_id), row) if row else {}
     except Exception:
         log.debug("message routing receipt lookup failed", exc_info=True)
         return {}
-    return _receipt_fields(row) if row else {}
-
-
-def _receipt_fields(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "action": str(row.get("action") or ""),
-        "target": str(row.get("target") or ""),
-        "target_label": str(row.get("target_label") or ""),
-        "status": str(row.get("status") or ""),
-        "ts": str(row.get("ts") or ""),
-        "project_id": str(row.get("project_id") or ""),
-    }
 
 
 def _message_routing_acts(ctx: Any, client_message_id: str) -> list:
@@ -622,14 +558,16 @@ def _message_routing_acts(ctx: Any, client_message_id: str) -> list:
     """
     try:
         from ouroboros.project_dialogue import _ANNOTATIONS_NAME, _latest_annotations_by_token
+        from ouroboros.routing_wait import routing_act_fields
 
+        root = pathlib.Path(ctx.DRIVE_ROOT)
         rows = [row for (message_id, _token), row in _latest_annotations_by_token(
-            pathlib.Path(ctx.DRIVE_ROOT) / "logs" / _ANNOTATIONS_NAME).items()
-            if message_id == str(client_message_id)]
+            root / "logs" / _ANNOTATIONS_NAME).items() if message_id == str(client_message_id)]
+        return [routing_act_fields(root, str(client_message_id), row)
+                for row in sorted(rows, key=lambda row: str(row.get("ts") or ""))]
     except Exception:
         log.debug("message routing acts lookup failed", exc_info=True)
         return []
-    return [_receipt_fields(row) for row in sorted(rows, key=lambda row: str(row.get("ts") or ""))]
 
 
 def _scoped_task_metadata(project_id: str, task_metadata: Any) -> Any:

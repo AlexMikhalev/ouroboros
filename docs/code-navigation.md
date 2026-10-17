@@ -120,10 +120,17 @@ files again. Page order is deterministic for unchanged inputs, but edits between
 requests can move, add or remove rows; an offset is not an immutable snapshot.
 
 Inventory operations enumerate visible files, including nested Git repositories
-under their own ignore rules. `structural` uses its separate bounded filesystem
-walk and reports that method. Architecture reads its pinned carriers. These
-operations do not promise identical file universes, and `search_code` has its own
-enumeration and transport rules.
+under their own ignore rules. References/callers start from admitted paths, parse
+token-matched current sources, and extract only matched-file facts for selector
+ordering after collecting rows, on the same deadline. Other outline/impact
+operations retain their eager preparation and cold cost. `structural` has its own
+bounded walk; architecture reads pinned carriers; their universes can differ.
+`search_code` has separate enumeration: long matches show a first-match window
+per matched reader line, with an exact `read_file(start_line, start_char)` range
+or a named translation gap. Translatable window rows use the reader's
+Unicode/universal-newline line model, not ripgrep's LF lines: one rg event may
+produce several rows, each charged to the result cap. Empty reader lines use the
+whole-line form. Short-line output and native delivery limits stay unchanged.
 
 Replies state the actual method, scope and relevant coverage limits: skipped or
 oversized files, missing grammars, partial syntax trees, and applicable file,
@@ -145,9 +152,9 @@ tree-sitter and Python AST import columns count UTF-8 bytes. Each slice uses the
 line model of its anchor: tree-sitter rows and literal matches count LF only, so
 a form feed or other Unicode line separator stays inside the raw line, while
 Python AST lines also end at a bare CR. Python AST local-call
-fallback supplies line anchors without inventing columns. It rechecks the hash
-against the current source read; a mismatch omits stale calls and visibly marks
-the result incomplete.
+fallback supplies line anchors without invented columns. Path-first callers parse
+the current read; inventory-backed callees recheck its hash, omitting stale calls
+and marking the result incomplete.
 
 Import specifier extraction is exercised for Python, JS/TS, Go, Java and Rust;
 other grammar shapes are marked unverified. Literal `require()` / `import()`
@@ -188,5 +195,8 @@ or time limits, skipped or excluded files, syntax errors) are named as a coverag
 empty or short owner list is not reported as absence. Module-path and dotted
 lookups read only the manifest. The existing import-text and
 relative-import helpers remain available to their architecture/review consumers.
-A restricted or partial resource view does not overwrite the shared inventory
-cache. Retention and reset behavior are recorded in [PERSISTENCE](PERSISTENCE.md).
+Restricted/scoped and path-only views never overwrite the shared inventory cache.
+A bounded full-source refresh keeps unvisited prior facts only in that disposable
+cache, never in current returned rows. Reuse checks current path/hash; a complete
+refresh removes deleted files. This avoids needless reparsing, not a new freshness
+guarantee. Retention/reset: [PERSISTENCE](PERSISTENCE.md).

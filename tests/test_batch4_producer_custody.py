@@ -149,7 +149,11 @@ def test_docker_popen_no_start_is_positive_no_effect(tmp_path, monkeypatch, serv
     if service:
         args["name"] = "writer"
     result = registry.execute_result("start_service" if service else "run_command", args)
-    assert result.meta.get("operation_outcome") == "completed_no_effect", result
+    if service:
+        assert result.meta["process_not_started"] is True
+        assert "operation_outcome" not in result.meta  # a replacement may have retired its old instance
+    else:
+        assert result.meta.get("operation_outcome") == "completed_no_effect", result
     assert [kind for kind, _ in calls] == ["start"]
     assert not list(_owned(tmp_path))
     _consumers(tmp_path, registry, queue, workers, False)
@@ -183,12 +187,12 @@ def test_joined_git_error_does_not_survive_corrected_retry(tmp_path, monkeypatch
     monkeypatch.setattr(git, "run_cmd", unknown)
     result = registry.execute_result("vcs_diff", {"root": "active_workspace"})
     assert result.code == "GIT_ERROR" and not result.meta.get("operation_outcome")
-    claim = load_task_result(tmp_path, "root")["launch_handoffs"]
+    claim = load_task_result(tmp_path, "root").get("launch_handoffs", {})
     assert claim == {}
     monkeypatch.setattr(git, "run_cmd", lambda *_a, **_kw: "")
     registry.execute_result("vcs_diff", {"root": "active_workspace", "head": "HEAD"})
     registry.execute_result("vcs_diff", {"root": "active_workspace"})
-    assert load_task_result(tmp_path, "root")["launch_handoffs"] == claim
+    assert load_task_result(tmp_path, "root").get("launch_handoffs", {}) == claim
     _consumers(tmp_path, registry, queue, workers, False)
 
 
@@ -288,7 +292,7 @@ def test_backend_cleanup_requires_receipt_even_with_zero_cli_exit(monkeypatch, r
         subprocess.CompletedProcess(argv, 0, receipt, ""))
     assert executor._cleanup_docker_exec_timeout("simulated", "/tmp/owned.pid") is bool(receipt)
     record = {"container_name": "simulated", "backend_pidfile": "/tmp/owned.pid"}
-    assert executor._dispatch_docker_record_cleanup(record) is bool(receipt)
+    assert executor._kill_docker_record(record) is bool(receipt)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Exercises backend receipt script through local sh")

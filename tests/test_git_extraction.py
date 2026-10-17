@@ -113,7 +113,7 @@ def test_git_catalog_schema_bytes_and_handler_owners_are_stable():
     ).encode()
     # Informed Advisory commit aliases plus explicit local vcs_diff base/head.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "e20b653778ee12e2e41d0f6baee598e28165260483038540a4143686abdfe7dd"  # FIX6a 1: `reviewers`/`reason` compose the commit panel by review_change's rule (decision 1A); FIX3 T1 before it: `scope` described by the panel's coupling questions
+        "22f469c65906acb299e21d2f79cbb11e7ee7a3fdbe91ba772b7b08374968f9b6"  # #1741: nonblocking outcomes return before Git; continuation in Advisory or Cyber Pro. FIX6a 1: `reviewers`/`reason` compose the commit panel by review_change's rule (decision 1A); FIX3 T1 before it: `scope` described by the panel's coupling questions
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

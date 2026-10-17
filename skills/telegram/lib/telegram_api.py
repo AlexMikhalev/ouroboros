@@ -890,6 +890,7 @@ _MENU_TEXTS_EN = {
     "metrics_budget_status": "• **Budget Status:**\n  Spent: `${spent_usd}`\n  Limit: `${total_budget}`\n  Remaining: `${rem}`\n\n• **System Environment:**\n  Branch: `{branch}`\n  BG Thoughts: `{bg_status}`",
     "file_too_large_notice": "{filename} is saved in Ouroboros. This file exceeds the Telegram upload limit and cannot be mirrored here.",
     "file_open_app_hint": "Open the app to download it.",
+    "attachments_not_attached": "Not attached to the task: {names}",
     "btn_open_app": "Open Ouroboros",
     "budget_unbounded": "unbounded",
     "bg_active_label": "ACTIVE",

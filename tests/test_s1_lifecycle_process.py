@@ -240,7 +240,8 @@ def _worker_owner(server, task_id):
                 if r.get("task_id") == task_id and r.get("state") == "dispatched"
                 and r.get("local_answer_owner_pid") and r.get("local_answer_owner_birth")]
     rows = wait_for(sent, "physical worker receiver identity")
-    pids = {r["pid"] for r in read_json(server.data_root / "state/worker_pids.json").get("workers", [])}
+    from tests._shared import live_worker_pids
+    pids = live_worker_pids(server.data_root)
     live = [r for r in rows if int(r["local_answer_owner_pid"]) in pids]
     assert len(live) == 1, live
     row = live[0]

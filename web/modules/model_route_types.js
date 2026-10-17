@@ -59,3 +59,37 @@
  * @property {true} ok
  * @property {ResponseLimit} ack
  */
+
+/**
+ * `POST /api/owner/capability-ack`: `max_output_tokens` present records the route's maximum response
+ * (0 removes it); otherwise `window_tokens` (> 0) records its context window. A sent `route_fp` must match.
+ * @typedef {Object} CapabilityAckRequest
+ * @property {string} provider
+ * @property {string} model
+ * @property {string=} base_url
+ * @property {Object=} options
+ * @property {Object=} headers
+ * @property {string=} route_fp
+ * @property {number=} max_output_tokens
+ * @property {number=} window_tokens
+ * @property {string=} note
+ */
+
+/**
+ * An owner-asserted context window for one route.
+ * @typedef {Object} ContextWindowAck
+ * @property {string} route_fp
+ * @property {number} window_tokens
+ * @property {string} owner
+ * @property {string} ts
+ * @property {string} note
+ * @property {Object} route
+ * @property {Object=} binding_evidence
+ */
+
+/**
+ * `POST /api/owner/capability-ack` with `window_tokens`.
+ * @typedef {Object} ContextWindowAckResponse
+ * @property {true} ok
+ * @property {ContextWindowAck} ack
+ */

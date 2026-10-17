@@ -23,6 +23,7 @@ export function renderPageHeader({
     tabsHtml = '',
     variant = '',
     className = '',
+    toolbarClass = '',
     showMobileNav = true,
 } = {}) {
     const variantClass = variant ? `app-page-header-${escapeHtml(variant)}` : '';
@@ -34,7 +35,7 @@ export function renderPageHeader({
         ? `<p class="app-page-description">${escapeHtml(description)}</p>`
         : '';
     const toolbar = (toolbarHtml || actionsHtml)
-        ? `<div class="app-page-toolbar app-page-actions">${toolbarHtml || actionsHtml}</div>`
+        ? `<div class="${classAttr(['app-page-toolbar', 'app-page-actions', escapeHtml(toolbarClass)])}">${toolbarHtml || actionsHtml}</div>`
         : '';
     const trailing = trailingHtml
         ? `<div class="app-page-trailing">${trailingHtml}</div>`

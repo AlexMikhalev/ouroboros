@@ -72,6 +72,30 @@ def _bounded(text: Any, cap: int) -> str:
     return t[:cap] + f"\n…[truncated {len(t) - cap} of {len(t)} chars]"
 
 
+def _publish_verification(ctx: ToolContext, text: str, receipt: dict, *, compared: bool, detail: str = "") -> str:
+    """Publish the recorded criterion verdict beside the call's own outcome (#1585).
+
+    Only after the receipt is durable. The check ran (or timed out): ``status`` is the
+    receipt's pass/fail and exit, signal and timeout stay on the process-facts channel.
+    ``matched`` is published only where a comparison was evaluated (``compared``): never
+    for a timeout, a check with no ``expected``, or bytes_equal without a byte verdict.
+    New receipts store null in these cases; historical records stay unchanged. The
+    ``detail`` then names the refused operand, missing file or cmp failure. The call's generic
+    classification is the legacy adapter's, so a handled FAIL is still a completed call.
+    """
+    from ouroboros.tools.tool_result import LegacyTextResultAdapter, _publish_tool_result, _replace_tool_result
+
+    fact = {key: receipt[key] for key in ("status", "contract_kind", "expected_match", "check_rendering",
+                                          "criterion_id", "criterion_source") if receipt.get(key)}
+    fact.update(check=_bounded(receipt.get("check"), 200), receipt_ts=receipt["ts"])
+    if compared:
+        fact["matched"] = bool(receipt["matched"])
+    if detail:
+        fact["detail"] = _bounded(detail, 300)
+    typed = LegacyTextResultAdapter.from_text("verify_and_record", text)
+    return _publish_tool_result(ctx, _replace_tool_result(typed, meta_updates={"verification": fact}))
+
+
 def _receipt_custody_failure(kind: str, detail: str = "") -> str:
     suffix = f" Observed result: {detail}" if detail else ""
     return (
@@ -305,18 +329,21 @@ def _bytes_equal_confinement_block(
 
 def _compare_files_bytes_equal(
     ctx: ToolContext, artifact_paths: List[str], work_dir: pathlib.Path, *, use_executor: bool
-) -> tuple[bool, str]:
+) -> tuple[bool | None, str]:
     """v6.60.0 expected_match="bytes_equal": byte-for-byte comparison of exactly TWO
     files (artifact_paths[0] vs [1]) — the golden-file/migration-parity shape a weaker
     substring check silently under-verifies. Runs on the SAME surface as the check
     (executor `cmp` in-container when the cwd is executor-mapped, host chunked read
     otherwise). Both operands are CONFINED first (see _bytes_equal_confinement_block).
     Returns (equal, detail); detail carries a BOUNDED hexdump around the first
-    divergence so the receipt shows WHERE the bytes differ, never whole files."""
+    divergence so the receipt shows WHERE the bytes differ, never whole files.
+    ``equal`` is None when no byte verdict was reached (a refused operand, a missing
+    file, cmp without an exit status or outside its 0/1 verdicts): still a FAIL, never
+    a claim that the bytes differ (#1585)."""
     a_raw, b_raw = str(artifact_paths[0]).strip(), str(artifact_paths[1]).strip()
     refusal = _bytes_equal_confinement_block(ctx, a_raw, b_raw, use_executor=use_executor)
     if refusal:
-        return False, refusal
+        return None, refusal
     if use_executor:
         from ouroboros.workspace_executor import execute as _executor_execute
 
@@ -328,15 +355,16 @@ def _compare_files_bytes_equal(
         try:
             rc = int(rc_raw)
         except (TypeError, ValueError):
-            return False, f"bytes_equal: executor cmp returned no exit status for {a_raw} vs {b_raw}"
+            return None, f"bytes_equal: executor cmp returned no exit status for {a_raw} vs {b_raw}"
         out = redact_process_data((res.stdout or "") + ("\n" + res.stderr if res.stderr else "")).strip()
         if rc == 0:
             return True, f"bytes_equal: {a_raw} == {b_raw} (executor cmp)"
-        if rc > 1:
+        if rc != 1:
             # cmp semantics: 0=equal, 1=differ, >1=trouble (missing file, missing cmp
-            # binary =127). Still a FAIL, but the receipt names the INFRA cause instead
-            # of misattributing a tooling absence as byte divergence (triad r3).
-            return False, (
+            # binary =127; a signal-killed cmp is no verdict either). Still a FAIL, but the
+            # receipt names the INFRA cause instead of misattributing a tooling absence as
+            # byte divergence (triad r3).
+            return None, (
                 f"bytes_equal infra error (cmp exit {rc}, not a byte verdict) "
                 f"({a_raw} vs {b_raw}): {out[:400] or 'no output'}"
             )
@@ -349,7 +377,7 @@ def _compare_files_bytes_equal(
     a_path, b_path = _resolve(a_raw), _resolve(b_raw)
     for label, path in ((a_raw, a_path), (b_raw, b_path)):
         if not path.is_file():
-            return False, f"bytes_equal: file not found: {label}"
+            return None, f"bytes_equal: file not found: {label}"
     a_size, b_size = a_path.stat().st_size, b_path.stat().st_size
     offset = 0
     first_diff = -1
@@ -768,16 +796,16 @@ def _verify_and_record(
             )
             # Same renderer as the completed-run receipt below, so it carries the same
             # stamp: a timeout red must be reconcilable by the later green of that argv.
-            receipt.update({"status": "fail", "returncode": None, "matched": False, "check": shlex.join(argv), "check_rendering": CHECK_RENDERING_SHLEX_JOIN, "summary": f"check timed out after {timeout}s"})
+            receipt.update({"status": "fail", "returncode": None, "matched": None, "check": shlex.join(argv), "check_rendering": CHECK_RENDERING_SHLEX_JOIN, "summary": f"check timed out after {timeout}s"})
             receipt.update({k: v for k, v in _facts.items() if k in _RECEIPT_PROCESS_KEYS})
             if not append_verification_receipt(drive_root, task_id, redact_process_data(receipt)):
                 return _receipt_custody_failure(
                     kind, f"check timed out after {timeout}s",
                 )
-            return (
+            return _publish_verification(ctx, (
                 f"verify_and_record [{kind}] FAIL: check timed out after {timeout}s. "
                 f"root={binding.root}, cwd={binding.target_path}. Receipt recorded."
-            )
+            ), receipt, compared=False, detail=receipt["summary"])
         # Full output captured in-handler BEFORE any transport truncation.
         out = (res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")
         rc = res.returncode
@@ -799,17 +827,16 @@ def _verify_and_record(
         else:
             matched = (not expected_s) or _expected_matches(out, expected_s, match_mode)
         passed = (rc == 0) and matched
+        compared = matched is not None if match_mode == "bytes_equal" else bool(expected_s)
         # `shlex.join`, never `" ".join` (v6.78.0): this text is the verification's
         # IDENTITY downstream (`_outcome_receipts.receipt_canonical_identity`), and a
         # space-join is not injective — argv `["echo","a b"]` and `["echo","a","b"]`
         # rendered identically, so a green on one could clear a red on the other.
         # `shlex.join` is the exact inverse of the lexer that identity re-tokenizes with
         # (`shell_parse.shell_tokens`), so the stored text round-trips back to this argv.
-        # The rendering is STAMPED beside the text (round 8): changing the renderer without
-        # recording which one ran re-opened the very collision above ACROSS versions — an
-        # old space-joined `echo a b` and a new `shlex.join` of a different argv read the
-        # same. The stamp makes the two incomparable instead of falsely equal.
-        receipt.update({"status": "pass" if passed else "fail", "returncode": rc, "matched": bool(matched), "check": shlex.join(argv), "check_rendering": CHECK_RENDERING_SHLEX_JOIN, "summary": _bounded(out, _RECEIPT_OUTPUT_CAP)})
+        # The rendering stamp makes old/new spellings incomparable: changing only
+        # the renderer reopens the collision across versions.
+        receipt.update({"status": "pass" if passed else "fail", "returncode": rc, "matched": bool(matched) if compared else None, "check": shlex.join(argv), "check_rendering": CHECK_RENDERING_SHLEX_JOIN, "summary": _bounded(out, _RECEIPT_OUTPUT_CAP)})
         # D6/D7 disclosure keys (node-runtime sprint stream B), now copied from
         # the one publication above — see _RECEIPT_PROCESS_KEYS for which keys
         # and why. Disclosure-only: receipt IDENTITY (`check` text) and
@@ -838,11 +865,11 @@ def _verify_and_record(
             ) + f"\n\n{_bounded(out, _TOOL_OUTPUT_CAP)}"
         verdict = "PASS" if passed else "FAIL"
         exp_note = f" expected={expected_s!r}" if expected_s else ""
-        return (
+        return _publish_verification(ctx, (
             f"verify_and_record [{kind}] {verdict}: exit={rc}{exp_note}; "
             f"root={binding.root}, cwd={binding.target_path}. Host-attested receipt recorded.\n\n"
             f"{_bounded(out, _TOOL_OUTPUT_CAP)}"
-        )
+        ), receipt, compared=compared, detail=_cmp_detail if match_mode == "bytes_equal" else "")
 
     if kind == "artifact_observation":
         paths = [str(p) for p in (artifact_paths or []) if str(p or "").strip()]
@@ -910,7 +937,8 @@ def get_tools() -> List[ToolEntry]:
                     "default": "",
                     "description": (
                         "For run-kind checks, omit for active_workspace; use system_repo[/subdir] "
-                        "for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."
+                        "for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill. "
+                        "Docker backend aliases inside active_workspace are accepted."
                     ),
                 },
                 "bucket": {

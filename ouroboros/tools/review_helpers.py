@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
+import copy
 import json
 import logging
 import os
@@ -40,17 +41,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Shared review prompt budget. estimate_tokens under-counts real tokens, so the
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
-
-# The empty review pool is a configured fact, the one the ``## Review`` context block
-# states as ``pool_empty`` and the settings panel promises as "reviews will not run and
-# will report not performed": the commit gate says the same, typed ``pool_empty``, and
-# never blames a provider key for it.
-REVIEW_POOL_EMPTY_REASON = "pool_empty"
-REVIEW_POOL_EMPTY_SENTENCE = (
-    "the review pool is empty (pool_empty): no enabled catalog row is marked Reviewer, so no review "
-    "wave ran and the review is NOT_PERFORMED. Mark a row as Reviewer in Settings → Agents (or run "
-    "the wizard), then retry the commit."
-)
 
 
 def review_enforcement_blocks(enforcement: str | None = None) -> bool:
@@ -208,20 +198,21 @@ def emit_review_usage(
     prompt_chars: int = 0,
     extra: dict | None = None,
 ) -> None:
-    """Emit a normalized llm_usage event for every review surface."""
+    """Emit a normalized llm_usage event for every review surface.
+
+    #1578: each token counter is the reported value, a reported 0, or null; an
+    agent session that disclosed none stays unknown, never zero. A session's
+    ``claudexor`` receipt (run, requested/delegated route, observed attempt) rides
+    the row; an extraction call reports its own usage, never the session's.
+    """
     try:
+        from ouroboros.event_usage import event_token_counts
         from ouroboros.pricing import infer_api_key_type, infer_model_category, infer_provider_from_model
 
         usage_data = dict(usage or {})
-        prompt_tokens = int(usage_data.get("prompt_tokens", usage_data.get("input_tokens", 0)) or 0)
-        completion_tokens = int(usage_data.get("completion_tokens", usage_data.get("output_tokens", 0)) or 0)
-        cached_tokens = int(usage_data.get("cached_tokens", usage_data.get("cache_read_input_tokens", 0)) or 0)
-        cache_write_tokens = int(
-            usage_data.get("cache_write_tokens", usage_data.get("cache_creation_input_tokens", 0)) or 0
-        )
         prompt_cache_ttl = str(usage_data.get("prompt_cache_ttl") or "")
         ledger_attempt_ids = [str(value) for value in (usage_data.get("ledger_attempt_ids") or []) if value]
-        routed_provider = provider or infer_provider_from_model(model)
+        routed_provider = provider or str(usage_data.get("provider") or "") or infer_provider_from_model(model)
         cost = cost_usd if cost_usd is not None else usage_data.get("cost", usage_data.get("total_cost"))
         # Task-tree attribution from the bound usage scope (the supervisor
         # additionally backfills delegation/lane fields from RUNNING).
@@ -251,14 +242,13 @@ def emit_review_usage(
             "api_key_type": infer_api_key_type(model, routed_provider),
             "model_category": infer_model_category(model),
             "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "cached_tokens": cached_tokens,
-                "cache_write_tokens": cache_write_tokens,
+                **event_token_counts(usage_data),
                 "prompt_cache_ttl": prompt_cache_ttl,
                 "cost": cost,
                 "cost_known": cost is not None,
                 "ledger_attempt_ids": ledger_attempt_ids,
+                **{key: copy.deepcopy(usage_data[key]) for key in ("claudexor", "effort", "effort_resolution",
+                                                                   "request_wire") if isinstance(usage_data.get(key), dict)},
             },
             "provider": routed_provider,
             "source": source,
@@ -267,8 +257,8 @@ def emit_review_usage(
             "ledger_attempt_ids": ledger_attempt_ids,
             **{key: value for key, value in attribution.items() if value},
         }
-        if session_id:
-            event["session_id"] = session_id
+        if session_id or usage_data.get("session_id"):
+            event["session_id"] = str(session_id or usage_data["session_id"])
         if prompt_chars:
             event["prompt_chars"] = int(prompt_chars)
         if extra:
@@ -346,6 +336,12 @@ def review_wave_budget_gate(
             "slot_bounds": admission.get("slot_bounds"),
             "unpriced_slots": unpriced,
         }
+        unknown = admission.get("admission_unknown")
+        if unknown or admission.get("reason") == "billing_authority_unavailable":
+            detail = {"error": unknown} if unknown else {"billing_authority": admission.get("billing_authority")}
+            event = "review_wave_admission_unavailable" if unknown else "review_wave_billing_authority_unavailable"
+            emit_review_event(ctx, {"type": event, **base, **detail, **(extra or {})})
+            return None  # Exhaustion not established; each seat's reservation remains authoritative.
         if admission.get("fits", True):
             # An admitted wave is normally silent. It must NOT be silent when part of the
             # estimate was unknowable: "fits, every slot priced" and "fits, but one slot
@@ -609,6 +605,8 @@ def build_goal_section(
     scope: str = "",
     commit_message: str = "",
     owner_words: str = "",
+    preflight_execution: str = "",
+    diff_pulse: str = "",
 ) -> str:
     """Format the 'Intended transformation' section.
 
@@ -622,6 +620,10 @@ def build_goal_section(
     caused the work (``owner_words.owner_words_text``), placed right after the
     intent: what was asked, beside the author's account of the change. Empty
     keeps the section byte-identical to a review without it.
+    ``preflight_execution`` is the wave's frozen test execution exhibit
+    (``preflight_receipts.execution_section``), placed after them on the same terms,
+    and ``diff_pulse`` the subject's growth since its contribution base
+    (``review_subject_pulse``) after that.
     """
     resolved_text, source = resolve_intent(goal, scope, commit_message)
     sections = [
@@ -634,6 +636,10 @@ def build_goal_section(
     ]
     if owner_words.strip():
         sections.append(f"\n\n{owner_words}")
+    if preflight_execution.strip():
+        sections.append(f"\n\n{preflight_execution}")
+    if diff_pulse.strip():
+        sections.append(f"\n\n{diff_pulse}")
 
     commit_text = commit_message.strip()
     if commit_text and commit_text != resolved_text:
@@ -648,22 +654,22 @@ def build_goal_section(
     return "\n".join(sections)
 
 
-def review_history_with_obligations(history: Any, *, drive_root: Any, repo_root: Any) -> str:
-    """The prior-rounds section with the repository's durable open obligations
-    (anti-thrashing across restarts) — the ONE owner for every brief that carries
-    history: the gate's packet, the retrieving seats' brief and the public builder,
-    so a brief rebuilt outside the gate reads the history the seat was sent.
-    Best-effort: unreadable state states the history it has, never fails."""
-    open_obligations: list = []
-    if drive_root is not None and repo_root is not None:
-        try:
-            from ouroboros.review_state import load_state, make_repo_key
+def review_subject_pulse(review_root: Any, layer: str, managed: Any = None) -> str:
+    """The diff pulse a review brief carries: ``review.diff_pulse`` over the reading root's
+    index, which holds the subject. Only the body has a contribution base to grow from, and
+    a managed resolution is reviewed as its declared delta rather than as that growth, so
+    neither another root's subject nor a managed one carries a pulse."""
+    if layer != "body" or managed is not None:
+        return ""
+    from ouroboros.review import diff_pulse
 
-            state = load_state(pathlib.Path(drive_root))
-            open_obligations = state.get_open_obligations(repo_key=make_repo_key(pathlib.Path(repo_root)))
-        except Exception:
-            open_obligations = []
-    return build_review_history_section(list(history or []), open_obligations=open_obligations)
+    return diff_pulse(Path(review_root), staged=True)
+
+
+def review_history_with_obligations(history: Any, *, drive_root: Any, repo_root: Any, task_id: str = "") -> str:
+    """Public brief facade; the dispute owner joins its sources and obligations."""
+    from ouroboros.review_history import render_history_with_obligations
+    return render_history_with_obligations(history, drive_root=drive_root, repo_root=repo_root, task_id=task_id)
 
 
 def build_scope_section(scope: str = "") -> str:
@@ -747,27 +753,7 @@ def check_worktree_readiness(
     except Exception:
         pass
 
-    # 4. Diff size.
-    try:
-        diff_path_args = (["--"] + list(paths)) if paths else []
-        staged = subprocess.run(
-            ["git", "diff", "--cached"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        unstaged = subprocess.run(
-            ["git", "diff"] + diff_path_args,
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
-        )
-        combined_len = len(staged.stdout or "") + len(unstaged.stdout or "")
-        if combined_len > 400_000:
-            warnings.append(
-                f"Large diff detected ({combined_len:,} chars). "
-                "Consider splitting into smaller commits for better advisory coverage."
-            )
-    except Exception:
-        pass
-
-    # 5. Size-ratchet findings. Never blocking here: the official repository's
+    # 4. Size-ratchet findings. Never blocking here: the official repository's
     # CI ``size_ratchet`` lane is the enforcing surface; this warning lets the
     # agent regenerate the manifest or shrink the debt before the official
     # line rejects the same finding. Cheap since the history replay retired
@@ -795,15 +781,6 @@ def check_worktree_readiness(
                 "the official CI lane still enforces"
             )
 
-    try:  # 6. Touched reference books' balance: a warning; official CI refuses a grown book.
-        from ouroboros.reference_books import BOOK_GROWTH_RULE, book_balances, render_book_balance
-        if status_result is not None and (repo_dir / "ouroboros" / "reference_books.py").is_file():
-            touched = parse_changed_paths_from_porcelain(status_result.stdout or "")
-            warnings.extend(f"official CI will enforce: {render_book_balance(b)}. {BOOK_GROWTH_RULE}"
-                            for b in book_balances(repo_dir, touched) if b.owed)
-    except Exception:
-        pass
-
     return warnings
 
 
@@ -826,6 +803,8 @@ def _run_review_preflight_tests(ctx: "Any", timeout: Optional[int] = None, *, fo
 
         # Pre-commit entry point: the deleted-suite baseline is HEAD alone.
         run_kwargs = {"max_output": MAX_OUTPUT, "phase": PRE_COMMIT_PHASE, "ctx": ctx}
+        from ouroboros.test_selection import commit_test_options
+        run_kwargs.update(commit_test_options(ctx, force=force))
         if timeout is not None:
             run_kwargs["timeout"] = timeout
         output = run_hermetic_pytest(pathlib.Path(repo_dir), **run_kwargs)

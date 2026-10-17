@@ -88,6 +88,8 @@ class ReviewLedgerRecord:
     author_decision: Optional[Dict[str, Any]] = None
     tests: Dict[str, Any] = field(default_factory=lambda: {"policy": "NOT_RUN", "result": UNKNOWN})
     preflight: Dict[str, Any] = field(default_factory=lambda: {"status": "not_performed", "record_id": ""})
+    # The exhibit frozen for this attempt; dispatch and observed exposure are separate facts.
+    preflight_execution: Dict[str, Any] = field(default_factory=lambda: {"status": "unobserved"})
     dispatch_refusal: Optional[Dict[str, Any]] = None
     cost: Dict[str, Any] = field(default_factory=lambda: {"usd": 0.0, "unknown": True})
     fingerprints: Dict[str, Any] = field(default_factory=lambda: {"review_contract": "", "binding": ""})
@@ -213,11 +215,10 @@ def source_ref_resolvable(drive_root: Any, task_id: str, ref: Dict[str, Any]) ->
     if ref.get("status") != "retained" or not isinstance(inner, dict):
         return False
     try:
-        from ouroboros.artifacts import task_artifact_dir_path
+        from ouroboros.evidence_packs import handle_info  # loose or a pack member of this task
 
-        base = task_artifact_dir_path(drive_root, str(ref.get("task_id") or task_id), create=False)
-        target = base.joinpath(*pathlib.PurePosixPath(str(inner.get("path") or "")).parts)
-        return target.is_file() and target.stat().st_size == int(inner.get("size", -1))
+        info = handle_info(drive_root, str(ref.get("task_id") or task_id), str(inner.get("path") or ""))
+        return info is not None and int(info["size"]) == int(inner.get("size", -1))
     except Exception:
         return False
 
@@ -230,9 +231,10 @@ def record_sources_resolvable(drive_root: Any, payload: Dict[str, Any]) -> bool:
     except ValueError:
         return False
     task_id = str(payload.get("task_id") or "")
-    return all(source_ref_resolvable(drive_root, task_id, ref)
-               for row in payload.get("rows") or [] for ref in (row or {}).get("source_refs") or []
-               if isinstance(ref, dict) and "role" in ref)
+    refs = [ref for row in payload.get("rows") or [] for ref in (row or {}).get("source_refs") or []]
+    refs.extend([((payload.get("brief") or {}).get("dispute_input") or {}).get("rebuttal"),
+                 (payload.get("author_decision") or {}).get("source_ref")])
+    return all(source_ref_resolvable(drive_root, task_id, ref) for ref in refs if isinstance(ref, dict) and "role" in ref)
 
 
 def _read_json(path: pathlib.Path) -> Optional[Dict[str, Any]]:
@@ -315,9 +317,11 @@ def load_record(drive_root: Any, record_id: str) -> Optional[Dict[str, Any]]:
 def note_author_decision(drive_root: Any, record_id: str, decision: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Attach the author's informed decision to the record it continued from."""
     def _mutate(payload: Dict[str, Any]) -> Dict[str, Any]:
-        payload["author_decision"] = {"disposition": str(decision.get("disposition") or ""),
+        from ouroboros.review_history import retain_author_decision
+
+        payload["author_decision"] = retain_author_decision(drive_root, payload, {"disposition": str(decision.get("disposition") or ""),
                                       "rationale": str(decision.get("rationale") or ""),
-                                      "reused_record_id": str(decision.get("reused_record_id") or record_id)}
+                                      "reused_record_id": str(decision.get("reused_record_id") or record_id)})
         return payload
 
     try:
@@ -966,6 +970,9 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
     # The root whose rules the seats were given (a frozen subject names it; the gate states
     # the serving body's): the record says WHICH body judged, not only that one did.
     subject["governance_root"] = str(facts.get("governance_root") or frozen.get("governance_root") or "")
+    from ouroboros.review_history import wave_history_input
+
+    dispute_input = wave_history_input(drive_root, facts, subject, record_id)
     checklist = _checklist_facts(layer=str(facts.get("layer") or structured.get("layer") or ""),
                                  body_fact=str(facts.get("body_fact") or ""), how=str(facts.get("body_how") or ""))
     enforcement, contract_fp = str(facts.get("enforcement") or ""), str(facts.get("review_contract_fingerprint") or "")
@@ -982,7 +989,8 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
         surface=surface, subject=subject,
         brief={"goal": str(facts.get("goal") or ""), "scope": str(facts.get("scope") or ""),
                "parts": [part for part in PARTS if any(part in (seat.get("parts") or []) for seat in rows)],
-               "author_questions": list(facts.get("author_questions") or []), "checklist": checklist},
+               "author_questions": list(facts.get("author_questions") or []), "checklist": checklist,
+               "dispute_input": dispute_input},
         enforcement=enforcement, mode=str(facts.get("mode") or ""),
         enforcement_blocks=bool(facts.get("enforcement_blocks")),
         panel=panel_facts(rows, composition=str(facts.get("composition") or "full_pool"),
@@ -990,6 +998,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
         rows=rows, verdict=verdict,
         tests=dict(facts.get("tests") or {"policy": "NOT_RUN", "result": UNKNOWN}),
         preflight=dict(facts.get("preflight") or {"status": "not_performed", "record_id": ""}),
+        preflight_execution=dict(facts.get("preflight_execution") or {"status": "unobserved"}),
         dispatch_refusal=dict(refusal) if isinstance(refusal, dict) else None,
         cost={"usd": round(sum(known_costs), 6), "unknown": len(known_costs) < len(rows)},
         fingerprints={"review_contract": contract_fp, "binding": str(facts.get("binding_fingerprint") or ""),
@@ -1005,9 +1014,11 @@ def build_commit_gate_record(facts: Dict[str, Any], *, record_id: str = "", driv
 # What a pending record keeps from the attempt that DISPATCHED the wave when a later
 # attempt settles it: the subject, the brief with the checklist/rules the seats were
 # judged by, the panel, the fingerprints (reuse key over those rules), and per seat
-# the requested row, its parts and the brief it was given.
+# the requested row, its parts and the brief it was given; the execution exhibit too,
+# and a dispatch that recorded none (pre-exhibit) stays unobserved, never backfilled.
 PROVENANCE_FIELDS = ("task_id", "root_task_id", "review_wave_id", "surface", "subject", "brief", "enforcement", "mode",
-                     "enforcement_blocks", "panel", "fingerprints", "preflight", "dispatch_refusal", "author_decision")
+                     "enforcement_blocks", "panel", "fingerprints", "preflight", "preflight_execution",
+                     "dispatch_refusal", "author_decision")
 ROW_PROVENANCE_FIELDS = ("subagent_id", "parts", "additional", "requested", "brief_sha")
 
 
@@ -1019,7 +1030,8 @@ def settle_pending_payload(prior: Dict[str, Any], fresh: Dict[str, Any]) -> Dict
     status, cost, observed model and response refs, the verdict, the cost, the state —
     so a rules or brief update between dispatch and settle never rewrites what the
     seats actually read. ``revision``/``ts`` are ``revise_record``'s."""
-    settled = {**fresh, **{key: prior[key] for key in PROVENANCE_FIELDS if key in prior}}
+    settled = {**fresh, **{key: prior[key] for key in PROVENANCE_FIELDS if key in prior},
+               **({} if "preflight_execution" in prior else {"preflight_execution": {"status": "unobserved"}})}
     before = {str(row.get("seat_id") or ""): row for row in prior.get("rows") or [] if isinstance(row, dict)}
     rows = []
     for row in fresh.get("rows") or []:

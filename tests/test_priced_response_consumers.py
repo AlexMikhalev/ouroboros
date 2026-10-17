@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from ouroboros import loop, loop_llm_call, owner_mailbox
+from ouroboros import loop, loop_llm_call, loop_transport, owner_mailbox
 from ouroboros.llm import LLMClient
 from ouroboros.model_wait import ModelWaitInterrupted
 from ouroboros.transport_custody import (
@@ -50,10 +50,15 @@ class StreamConsumer:
 
 def presence(root, monkeypatch, consumer):
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("OUROBOROS_MODEL_FALLBACKS", raising=False)
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     monkeypatch.setattr(loop, "_run_cross_model_fallback_chain", _no_chain)
     monkeypatch.setattr(loop_llm_call, "_sleep_within_deadline",
                         lambda *a, **k: not k.get("wake_check", lambda: False)())
+    monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 60 if consumer.recover else 0)
+    monkeypatch.setattr(loop_transport, "upstream_transport_reachable",
+                        lambda *_a, **_kw: {"kind": "upstream_http", "status_code": 200})
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda *_a: False)
     kwargs = _presence_turn(_loop_kwargs(root, consumer, []))
     kwargs["tools"]._ctx.task_id = "t-death"
     kwargs["tools"]._ctx.task_attempt = 1
@@ -63,22 +68,23 @@ def presence(root, monkeypatch, consumer):
 @pytest.mark.parametrize("cost", [0.0, 1.25])
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("recover", [False, True])
-def test_real_inline_presence_repeats_priced_incomplete_stream_with_existing_bound(
+def test_real_inline_presence_recovers_priced_incomplete_stream_with_shared_wait(
         isolated, monkeypatch, cost, asynchronous, recover):
     consumer = StreamConsumer(cost, asynchronous=asynchronous, recover=recover)
     text, usage, trace = presence(isolated, monkeypatch, consumer)
-    assert consumer.calls == (2 if recover else 3)
+    assert consumer.calls == (2 if recover else 1)
     rows = ledger_rows(isolated)
     assert len(rows) == consumer.calls
     assert len({row["attempt_id"] for row in rows}) == consumer.calls
     assert all(row["state"] == "settled" and row["cost_usd"] == cost and row["cost_final"] for row in rows)
     events = [json.loads(line) for line in (isolated / "events.jsonl").read_text().splitlines()]
     failures = [row for row in events if row.get("type") == "llm_api_error"]
-    assert [row["retry_same_request"] for row in failures] == ([True] if recover else [True, True, False])
+    assert [row["retry_same_request"] for row in failures] == [False]
     assert all(row["attempt_custody_state"] == "settled" and row["stream_incomplete"] for row in failures)
     if recover:
         assert text == "answer"
         assert loop_llm_call.TRANSPORT_DEATHS_KEY not in usage
+        assert usage["transport_recovery"]["old_outcome"] == "unknown"
     else:
         assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
         assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"

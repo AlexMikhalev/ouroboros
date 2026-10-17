@@ -644,7 +644,7 @@ def test_named_project_consumers_keep_healthy_neighbor_available(room, tmp_path,
         assert room_chat_lens_dir(room.root, "target") == (str(folder), "")
     elif operation == "route":
         events = []
-        answer = _route_to_project(_ctx(room.root, events), "target", "Continue", predecessor_task_id="")
+        answer = _route_to_project(_ctx(room.root, events), "target", "Continue", title="Project work", predecessor_task_id="")
         assert answer.startswith("⚠️ ROUTE_UNCONFIRMED:"), answer
         assert len(events) == 1 and events[0]["project_id"] == "target"
     else:

@@ -1,9 +1,10 @@
 """
 Policy-based safety check for tool calls.
 
-Built-ins use explicit policy entries; unknown tools default to one light-model
-check. Structured resource admission precedes the assessment; review evidence
-and actual execution remain independent of the Cyber advisory decision.
+Built-ins carry an explicit policy (a ``TOOL_POLICY`` entry, else their own
+``ToolEntry`` declaration); unknown tools default to one light-model check.
+Structured resource admission precedes the assessment; review evidence and
+actual execution remain independent of the Cyber advisory decision.
 """
 
 import ast
@@ -31,11 +32,16 @@ log = logging.getLogger(__name__)
 POLICY_SKIP = "skip"
 POLICY_CHECK = "check"
 POLICY_CHECK_CONDITIONAL = "check_conditional"
+POLICY_VALUES = frozenset({POLICY_SKIP, POLICY_CHECK, POLICY_CHECK_CONDITIONAL})
 
-# Unknown/agent-created tools get one cheap LLM recheck.
+# A tool with neither a table entry nor a valid declaration (every extension
+# and MCP tool among them) gets one cheap LLM recheck.
 DEFAULT_POLICY = POLICY_CHECK
 
-# Must cover every built-in exported from ouroboros/tools; invariant-tested.
+# Protected per-tool policy. It outranks a built-in's own declaration
+# (``ToolEntry.safety_policy``), so editing a tool module never lowers a listed
+# tool. Each built-in has exactly one home, here or its declaration
+# (invariant-tested).
 TOOL_POLICY: Dict[str, str] = {
     # Typed host maintenance enforces existing actor/resource/Pause authority.
     "inspect_harness": POLICY_SKIP,
@@ -57,10 +63,14 @@ TOOL_POLICY: Dict[str, str] = {
     "codebase_health": POLICY_SKIP,
     "search_code": POLICY_SKIP,
     "query_code": POLICY_SKIP,
+    "query_data": POLICY_SKIP,
     "list_available_tools": POLICY_SKIP,
     "memory_map": POLICY_SKIP,
     "analyze_screenshot": POLICY_SKIP,
     "vlm_query": POLICY_SKIP,
+    "generate_image": POLICY_SKIP,
+    "list_image_models": POLICY_SKIP,
+    "recover_image": POLICY_SKIP,
     "view_image": POLICY_SKIP,
     "ocr_pdf": POLICY_SKIP,
     "youtube_transcript": POLICY_SKIP,
@@ -640,6 +650,7 @@ _REMOTE_PROVIDER_KEYS = (
     "DEEPSEEK_API_KEY",
     "ZAI_API_KEY",
     "OPENAI_COMPATIBLE_API_KEY",
+    "OPENAI_COMPATIBLE_BASE_URL",  # an endpoint without auth is configured access too
     "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     "GIGACHAT_CREDENTIALS",
     "GIGACHAT_PASSWORD",
@@ -692,19 +703,14 @@ def _light_model_has_reachable_provider(light_model: str) -> bool:
             str(runtime_setting("GIGACHAT_PASSWORD", "") or "").strip()
         )
         return has_creds or has_basic
+    if key_type == "openai-compatible":  # the lane's one endpoint/key pair, blank key = no auth
+        from ouroboros.provider_models import provider_has_credentials
+
+        return provider_has_credentials("openai-compatible")
     env_key = _PROVIDER_KEY_ENV.get(key_type)
     if env_key is None:
         return True
-    if not str(runtime_setting(env_key, "") or "").strip():
-        return False
-    if key_type == "openai-compatible":
-        base_url = (
-            str(runtime_setting("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip()
-            or str(runtime_setting("OPENAI_BASE_URL", "") or "").strip()
-        )
-        if not base_url:
-            return False
-    return True
+    return bool(str(runtime_setting(env_key, "") or "").strip())
 
 
 def _safety_deadline_epoch(ctx: Optional[Any]) -> Optional[float]:
@@ -1345,12 +1351,17 @@ def check_safety(
     ctx: Optional[Any] = None,
     python_resolution: Optional[Any] = None,
     resolved_binding: Optional[Any] = None,
+    declared_policy: str = "",
 ) -> Tuple[bool, str]:
-    """Return ``(allowed, warning_or_error)`` for one tool call."""
+    """Return ``(allowed, warning_or_error)`` for one tool call.
+
+    ``declared_policy`` is a first-party ``ToolEntry``'s own declaration; a
+    ``TOOL_POLICY`` entry outranks it and an invalid value is ``DEFAULT_POLICY``."""
     # Arguments can be None for no-parameter tool calls.
     tool_name = str(tool_name or "").strip()
     arguments = arguments or {}
-    policy = TOOL_POLICY.get(tool_name, DEFAULT_POLICY)
+    declared = declared_policy if isinstance(declared_policy, str) else ""
+    policy = TOOL_POLICY.get(tool_name) or (declared if declared in POLICY_VALUES else DEFAULT_POLICY)
 
     if policy == POLICY_SKIP:
         return True, ""

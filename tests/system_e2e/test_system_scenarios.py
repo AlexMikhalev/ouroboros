@@ -556,6 +556,24 @@ def test_interface_stubs_refuse_instantiation_until_their_lanes_land():
         PlaywrightUIClient()
 
 
+def test_artifact_oracle_reads_current_children_and_ignores_retired_files(tmp_path):
+    from tests._store_shared import seed_result
+
+    for task_id, parent in (("parent", ""), ("child", "parent"),
+                            ("grandchild", "child"), ("unrelated", "other")):
+        seed_result(tmp_path, task_id, {"status": "completed", "parent_task_id": parent,
+                                        "result": f"durable {task_id}"})
+    oracle = ArtifactOracle(tmp_path)
+    assert oracle.task_result("child")["result"] == "durable child"
+    assert oracle.child_task_ids("parent") == ["child"]
+    assert oracle.child_task_ids("absent") == []
+    retired = tmp_path / "task_results" / "phantom.json"
+    retired.parent.mkdir(exist_ok=True)
+    retired.write_text(json.dumps({"task_id": "phantom", "parent_task_id": "parent"}))
+    assert oracle.child_task_ids("parent") == ["child"]
+    assert oracle.child_task_ids("child") == ["grandchild"]
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are meaningless on Windows")
 def test_settings_file_is_created_secret_safe(tmp_path):
     """0600-before-content (carried over from the v7_wip cancellation harness)."""
@@ -632,12 +650,12 @@ def test_s1_boot_identity_ws_chat_and_task_contract(e2e_clone, tmp_path_factory)
             result = server.wait_task(task_id, timeout=300)
             assert result.get("status") == "completed", result
 
-            # Durable truth, not the HTTP answer: task_results/<id>.json.
+            # Durable truth, independently of HTTP: the current-facts SQLite store.
             stored = wait_durable_result(oracle, task_id)
             assert stored.get("task_id") == task_id, stored
             assert stored.get("status") == "completed", stored
             assert str(stored.get("result") or "").strip(), "durable result text is empty"
-            json.loads(oracle.task_result_bytes(task_id))  # bytes on disk are valid JSON
+            assert (server.data_root / "state" / "current.sqlite").is_file()
 
             # The queue drained and the stub actually drove the loop.
             assert wait_until(lambda: task_id not in oracle.running_ids(), 60)

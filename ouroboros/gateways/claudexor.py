@@ -25,9 +25,10 @@ import logging
 import os
 import pathlib
 import re
+import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -82,12 +83,27 @@ _OBSERVATION_RETRYABLE_ERRORS = (
 # all key on ``daemon_unreachable`` for reasons that have nothing to do with an
 # observation.
 _OBSERVATION_READ_TIMEOUT = "observation_read_timeout"
+# The engine's typed 503 answers that it cannot serve now (its local RPC timed out or is
+# down, or it serves recovery only). For a GET they are the same retryable observation
+# hole, under the engine's own code: never an outage line or a model wake. A POST keeps
+# the refusal, since a lost answer never proves a mutation was not accepted.
+DAEMON_BUSY_CODES = frozenset({"daemon_busy", "daemon_unavailable", "daemon_recovery_only",
+                               "daemon_unreachable"})
 
 
 def _observation_reason(exc: BaseException) -> str:
     """The typed reason for a read-only observation hole."""
     return (_OBSERVATION_READ_TIMEOUT if isinstance(exc, httpx.ReadTimeout)
             else "daemon_unreachable")
+
+
+def _request_timeout(timeout_sec: Optional[float]) -> Dict[str, Any]:
+    if timeout_sec is None:
+        return {}
+    bounded = max(0.000001, float(timeout_sec))
+    return {"timeout": httpx.Timeout(bounded, connect=min(_CONNECT_TIMEOUT_SEC, bounded))}
+
+
 _ATTEMPTS_REL = "attempts"
 _ATTEMPT_RECORD = "attempt.yaml"
 
@@ -102,6 +118,7 @@ class ClaudexorUnavailable(RuntimeError):
     # What the engine reported about a failed run or request; diagnostic, never policy.
     reported_cause = ""
     retry_after = ""  # The received HTTP Retry-After header, never a local backoff.
+    observation_answered = False  # The engine itself answered the read (a typed 503): the transport is intact.
 
     def __init__(self, code: str, message: str, *, status_code: int = 0,
                  required_actions: tuple[str, ...] = (), observation_timeout: bool = False,
@@ -110,8 +127,8 @@ class ClaudexorUnavailable(RuntimeError):
         self.code = str(code or "claudexor_unavailable")
         self.status_code = int(status_code or 0)
         self.required_actions = tuple(required_actions or ())
-        # Read-only observers may retry this exact HTTP read without claiming
-        # anything about the worker. A received HTTP refusal still wins.
+        # Read-only observers may retry this exact HTTP read without claiming anything
+        # about the worker. A received refusal still wins, except a GET's DAEMON_BUSY_CODES.
         self.observation_timeout = bool(observation_timeout)
         # Which hole it was, for the observer only (``_observation_reason``):
         # a read bound that expired against a live daemon is not the same fact
@@ -472,36 +489,31 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         # Absent, the call is not passed at all rather than passed as None — httpx reads
         # an explicit ``timeout=None`` as "no timeout", which is the opposite of the
         # default it would otherwise inherit.
-        if timeout_sec is None:
-            bound: Dict[str, Any] = {}
-        else:
-            bounded = max(0.000001, float(timeout_sec))
-            bound = {
-                "timeout": httpx.Timeout(
-                    bounded,
-                    connect=min(_CONNECT_TIMEOUT_SEC, bounded),
-                )
-            }
         response = None
+        started = time.monotonic()
         try:
             # Preserve received headers even when decoding or reading the body
             # fails. In particular, a 401/403 must survive a later read timeout.
             payload = {"content": content_body} if content_body is not None else {"json": json_body}
             with self._client.stream(method, path, **payload,
-                                     headers=headers or None, **bound) as response:
+                                     headers=headers or None, **_request_timeout(timeout_sec)) as response:
                 response.read()
         except httpx.HTTPError as exc:
             retryable = (isinstance(exc, _OBSERVATION_RETRYABLE_ERRORS)
                          and (response is None or response.status_code < 400))
+            # Only the code-owned endpoint family: no query, IDs, paths or exception URL.
+            parts = path.split("?", 1)[0].split("/", 3)
+            endpoint = "/".join(parts[:3]) + ("/..." if len(parts) > 3 else "")
             raise ClaudexorUnavailable(
                 "daemon_unreachable",
-                f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
+                f"Claudexor control {method} {endpoint} failed after "
+                f"{time.monotonic() - started:.3f}s: {type(exc).__name__}",
                 status_code=response.status_code if response is not None else 0,
                 observation_timeout=retryable,
                 observation_reason=_observation_reason(exc) if retryable else "",
             ) from exc
         if response.status_code >= 400:
-            raise self._problem(response)
+            raise self._problem(response, method)
         if raw_bytes:
             return response.content
         if not response.content:
@@ -514,7 +526,7 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                 f"Claudexor returned a non-JSON body for {method} {path}: {exc}",
             ) from exc
 
-    def _problem(self, response: httpx.Response) -> ClaudexorUnavailable:
+    def _problem(self, response: httpx.Response, method: str = "") -> ClaudexorUnavailable:
         """Keep ControlProblem authority; nested lookup causes are diagnostics only."""
         code = f"http_{response.status_code}"
         message = response.text[:500]
@@ -556,6 +568,8 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                                         required_actions=required_actions))
         error.problem = body if isinstance(body, dict) else {"code": code, "message": message}
         error.retry_after = response.headers.get("Retry-After", "")
+        if method == "GET" and response.status_code == 503 and code in DAEMON_BUSY_CODES:
+            error.observation_timeout, error.observation_reason, error.observation_answered = True, code, True
         if isinstance(context.get("cause"), dict):
             facts = {key: context[key] for key in ("stage", "cause", "preflight") if key in context}
             error.reported_cause = run_failure_cause({"safeMessage": json.dumps(facts, ensure_ascii=False)})
@@ -848,6 +862,12 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         404 ``project_not_registered``, so registration is a required step, not an
         optimization. Re-registering an existing root returns the existing id.
         """
+        return self.project_registration(root)[0]
+
+    def project_registration(self, root: str) -> Tuple[str, Optional[bool]]:
+        """One keyed ``POST /v2/projects``: ``(project_id, created)``. ``created`` is the
+        engine's own answer whether THIS request registered the root, ``None`` when the
+        answer carries no such field (an engine that predates it): presence decides."""
         body = self._request(
             "POST", "/v2/projects",
             json_body={"root": str(root)},
@@ -856,7 +876,8 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         project_id = str((body or {}).get("id") or "") if isinstance(body, dict) else ""
         if not project_id:
             raise ClaudexorUnavailable("malformed_response", "project registration returned no id")
-        return project_id
+        created = body.get("created")
+        return project_id, created if isinstance(created, bool) else None
 
     def remove_project(self, project_id: str) -> Dict[str, Any]:
         """Retire a project registration. Non-destructive: artifacts are retained."""
@@ -1055,19 +1076,15 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                            answers: List[Dict[str, Any]]) -> Dict[str, Any]:
         """POST /v2/runs/:id/interactions/:iid/answer — deliver one answer set.
 
-        ``answers`` rows are already in the wire shape (``questionId`` /
-        ``selectedLabels`` / ``freeText`` — the strict ``ControlInteractionAnswerRequest``);
-        this method is transport, not translation.
-
-        The engine's reply is TYPED at every HTTP status it owns: 200 carries
-        ``{accepted, status: "delivered"}``, and a 404/409 refusal carries the SAME
-        ``ControlInteractionAnswerResponse`` shape with ``status`` ``not_found`` /
-        ``already_resolved`` / ``rejected`` (daemon-server answers the route with the
-        parsed response at 200/404/409). Any body carrying one of those statuses is
-        returned as the ANSWER it is — an engine's ``already_resolved`` is a fact,
-        not an outage. What still raises ``ClaudexorUnavailable``: transport
-        failures, a bodyless 404 (``no such run``), the 501 of an engine build with
-        no answer service, and any other refusal without a typed status.
+        Transport, not translation: ``answers`` rows are already the strict
+        ``ControlInteractionAnswerRequest`` wire shape (``questionId`` / ``selectedLabels`` /
+        ``freeText``). The engine returns ``ControlInteractionAnswerResponse`` directly on
+        success; at 404/409 its error serializer moves ``accepted`` and the refusal status
+        into the ``context`` of a generic ``http_<status>`` ControlProblem and keeps
+        ``message`` on top. That envelope and a legacy top-level reply both return the typed
+        answer: ``already_resolved`` is an answer fact, not an outage. Transport failures, an
+        untyped 404 (``no such run``), 501 (no answer service) and every other problem raise
+        ``ClaudexorUnavailable``.
         """
         path = (f"/v2/runs/{quote(str(run_id), safe='')}"
                 f"/interactions/{quote(str(interaction_id), safe='')}/answer")
@@ -1079,15 +1096,19 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
                 "daemon_unreachable",
                 f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
             ) from exc
-        body: Any = None
-        if response.content:
-            try:
-                body = response.json()
-            except ValueError:
-                body = None
-        if isinstance(body, dict) and str(body.get("status") or "") in (
-                "delivered", "not_found", "already_resolved", "rejected"):
-            return body
+        try:
+            body = response.json() if response.content else None
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            context = body.get("context")
+            if (response.headers.get("content-type", "").split(";", 1)[0].strip() == "application/problem+json"
+                    and body.get("code") == f"http_{response.status_code}"
+                    and isinstance(context, dict) and context.get("accepted") is False
+                    and context.get("status") in ("not_found", "already_resolved", "rejected")):
+                body = {**context, "message": body.get("message", "")}
+            if str(body.get("status") or "") in ("delivered", "not_found", "already_resolved", "rejected"):
+                return body
         if response.status_code >= 400:
             raise self._problem(response)
         raise ClaudexorUnavailable(
@@ -1122,14 +1143,10 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         payload: Dict[str, Any] = {"text": str(text)}
         if expected_attempt_id:
             payload["expectedAttemptId"] = str(expected_attempt_id)
-        bound: Dict[str, Any] = {}
-        if timeout_sec is not None:
-            bounded = max(0.000001, float(timeout_sec))
-            bound = {"timeout": httpx.Timeout(bounded, connect=min(_CONNECT_TIMEOUT_SEC, bounded))}
         try:
             response = self._client.request(
                 "POST", path, json=payload,
-                headers={"Idempotency-Key": str(idempotency_key)}, **bound)
+                headers={"Idempotency-Key": str(idempotency_key)}, **_request_timeout(timeout_sec))
         except httpx.HTTPError as exc:
             raise ClaudexorUnavailable(
                 "daemon_unreachable",

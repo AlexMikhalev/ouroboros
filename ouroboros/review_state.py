@@ -114,6 +114,7 @@ def _commit_attempt_from_dict(d: Dict[str, Any]) -> CommitAttemptRecord:
         ),
         author_disposition=(dict(d.get("author_disposition"))
                             if isinstance(d.get("author_disposition"), dict) else {}),
+        review_input=dict(d.get("review_input") or {}),
         paid=bool(d.get("paid", False)),
         review_owner_pid=_coerce_int(d.get("review_owner_pid", 0)),
         raw_stripped=bool(d.get("raw_stripped", False)),
@@ -286,8 +287,8 @@ def compute_obligation_semantic_redirects(
 
     Must run OUTSIDE the review-state lock (it calls a light model). Side-effect-free and
     fail-open: any failure (model down, no candidates, parse error) yields no redirect — the
-    finding becomes a new obligation — and it NEVER blocks review. Canonical-anchor findings
-    are skipped: they already dedup structurally via the obligation fingerprint."""
+    finding becomes a new obligation — and it NEVER blocks review. Checklist-item findings are
+    skipped: they fold only as an exact restatement or by a reused open ``obligation_id``."""
     try:
         if not findings:
             return {}
@@ -315,7 +316,7 @@ def compute_obligation_semantic_redirects(
                 continue
             item = str(f.get("item", "unknown"))
             reason = str(f.get("reason", ""))
-            # Only FREE-TEXT findings: a canonical-anchor item already dedups structurally.
+            # Only FREE-TEXT findings; a checklist item folds by fingerprint or reused id.
             if _normalize_obligation_item_key(item):
                 continue
             fingerprint = _make_obligation_fingerprint(item, reason)
@@ -341,12 +342,11 @@ def _save_state_unlocked(
     path = drive_root / _STATE_RELPATH
     path.parent.mkdir(parents=True, exist_ok=True)
     _prepare_state_for_persistence(state)
-    # Legacy/in-memory callers may construct pre-author-disposition
-    # CommitAttemptRecord objects directly.  Normalize the additive field before
-    # dataclass encoding so persistence remains backward compatible.
+    # Fill missing additive mappings before shallow encoding; keep legacy author/source bindings.
     for attempt in state.attempts:
-        if not hasattr(attempt, "author_disposition"):
-            setattr(attempt, "author_disposition", {})
+        for name in ("author_disposition", "review_input"):
+            if not hasattr(attempt, name):
+                setattr(attempt, name, {})
     data: Dict[str, Any] = {
         "state_version": _STATE_SCHEMA_VERSION,
         "schema_version": _STATE_SCHEMA_VERSION,

@@ -11,9 +11,10 @@ import pytest
 
 from ouroboros import loop, task_pacing, usage_accounting as accounting, working_checkpoint as wc
 from ouroboros.contracts.task_contract import build_task_contract
-from ouroboros.task_results import task_result_path, write_task_result
+from ouroboros.task_results import write_task_result
 from tests.test_context_fit_v664 import _plan
 from tests.test_working_checkpoint import _registry
+from tests._store_shared import delete_result, unreadable_result
 
 def _saved_start(tmp_path, monkeypatch, new_id, *, saved_usd=7.0):
     source_id, target_id = "saved", "retry" if new_id else "saved"
@@ -94,12 +95,13 @@ def test_working_restore_rereads_explicit_then_unreadable_then_ordinary_root(tmp
     assert explicit.ceiling_usd == 7.0 and explicit.basis == "old_stop"
     assert task_pacing.cost_stop_authority(registry._ctx) == "explicit"
 
-    task_result_path(tmp_path, root_id).write_text("{")
+    switch = unreadable_result(monkeypatch, root_id)  # the store cannot answer for the root's row
     unknown = _restore(registry, saved, scope)
     assert unknown.ceiling_usd == 7.0 and unknown.basis == "legacy_policy_unverified(old_stop)"
     assert task_pacing.cost_stop_authority(registry._ctx) == "unknown"
 
-    task_result_path(tmp_path, root_id).unlink()
+    switch["on"] = False
+    delete_result(tmp_path, root_id)
     write_task_result(tmp_path, root_id, "running", task_contract=build_task_contract({
         "id": root_id, "type": "task", "task_contract": {"budget_profile": {}}}))
     ordinary = _restore(registry, saved, scope)

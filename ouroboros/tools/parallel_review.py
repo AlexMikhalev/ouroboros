@@ -78,7 +78,12 @@ def _reserve_parallel_review_roster(ctx, prepared) -> None:
             route=routes[index] if index < len(routes) else "api_chat",
             effort=efforts[index] if index < len(efforts) else "",
         )
-        rows.append(_reserved_actor_row(slot, operation_id))
+        reserved = _reserved_actor_row(slot, operation_id)
+        reserved["review_plan"] = {key: row_plan[key][index] for key in
+            ("parts", "additional", "retrieves", "brief_shas") if index < len(row_plan.get(key) or [])}
+        if "brief_shas" in reserved["review_plan"]:
+            reserved["review_plan"]["brief_sha"] = reserved["review_plan"].pop("brief_shas")
+        rows.append(reserved)
         operations["multi_model_review"][slot_id] = operation_id
 
     if not operations["multi_model_review"]:
@@ -377,23 +382,31 @@ def run_parallel_review(
                     f"before dispatch — {e}\nNo reviewer was started; fix the state write and retry."
                 )
             else:
-                with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-                    # The wave runs under a COPY of the admitting context
-                    # (contextvars.copy_context, the loop_tool_execution and
-                    # plan_review precedent): the usage scope the wave was
-                    # admitted with — its bound root fence included — is the
-                    # one every seat's reserve_attempt binds, so admission and
-                    # reservation share one fence even after a mid-turn
-                    # settings reload changed the environment's number.
-                    future = pool.submit(contextvars.copy_context().run, _dispatch_unified_review,
-                                         ctx, commit_message, prepared)
-                    try:
-                        review_err = future.result()
-                    except Exception as e:
-                        log.warning("Review dispatch raised unexpected exception: %s", e)
-                        review_err = f"⚠️ REVIEW_BLOCKED: Review dispatch crashed — {e}\nFix the issue and retry."
-                        ctx._last_review_block_reason = "infra_failure"
-                        ctx._last_review_critical_findings = []
+                from ouroboros.review_history_view import queue_review_history_context
+                try:
+                    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                        # The wave runs under a COPY of the admitting context
+                        # (contextvars.copy_context, the loop_tool_execution and
+                        # plan_review precedent): the usage scope the wave was
+                        # admitted with — its bound root fence included — is the
+                        # one every seat's reserve_attempt binds, so admission and
+                        # reservation share one fence even after a mid-turn
+                        # settings reload changed the environment's number.
+                        future = pool.submit(contextvars.copy_context().run, _dispatch_unified_review,
+                                             ctx, commit_message, prepared)
+                        try:
+                            review_err = future.result()
+                        except Exception as e:
+                            log.warning("Review dispatch raised unexpected exception: %s", e)
+                            review_err = f"⚠️ REVIEW_BLOCKED: Review dispatch crashed — {e}\nFix the issue and retry."
+                            ctx._last_review_block_reason = "infra_failure"
+                            ctx._last_review_critical_findings = []
+                finally:
+                    # Like every review producer, refresh the author's review view at
+                    # the tool boundary: it outlives the author's compaction of this
+                    # raw return. The repository root is the one the wave's attempt binds.
+                    queue_review_history_context(ctx, family="commit",
+                                                 repo_root=subject.spec.root if subject is not None else ctx.repo_dir)
     block_reason = getattr(ctx, "_last_review_block_reason", "critical_findings")
     advisory_post = list(getattr(ctx, "_review_advisory", []))
     advisory = [a for a in advisory_post if a not in _advisory_snapshot_before]

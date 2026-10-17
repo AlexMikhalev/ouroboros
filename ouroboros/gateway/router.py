@@ -15,7 +15,7 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 
 
 def _ui_client_routes() -> list[BaseRoute]:
-    """The browser client's own state: per-client UI preferences and the install's
+    """Installation-wide owner UI preferences and the install's
     interface language with its translation memory (``/api/ui/*``)."""
     from ouroboros.gateway.ui_i18n import (
         api_ui_i18n_export_get,
@@ -73,6 +73,7 @@ def collect_routes(
     )
     from ouroboros.gateway.history import make_chat_history_endpoint, make_cost_breakdown_endpoint
     from ouroboros.gateway.logs import api_logs_tail
+    from ouroboros.gateway.storage import storage_routes
     from ouroboros.gateway.marketplace import (
         api_marketplace_info,
         api_marketplace_install,
@@ -104,7 +105,7 @@ def collect_routes(
         api_onboarding_subagents_preview,
     )
     from ouroboros.gateway.settings import api_review_pool
-    from ouroboros.gateway.mcp import api_mcp_refresh, api_mcp_status, api_mcp_test
+    from ouroboros.gateway.mcp import mcp_routes
     from ouroboros.gateway.models import (
         api_local_model_install_runtime,
         api_local_model_start,
@@ -138,7 +139,7 @@ def collect_routes(
         api_projects_create,
         api_projects_list,
     )
-    from ouroboros.gateway.state import api_health, api_state
+    from ouroboros.gateway.state import api_contract, api_health, api_state
     from ouroboros.gateway.skill_publish import skill_publish_routes
     from ouroboros.gateway.tasks import (
         api_task_artifact,
@@ -152,7 +153,7 @@ def collect_routes(
         api_tasks_list,
     )
     from ouroboros.gateway import desktop_autostart as desktop_host
-    from ouroboros.gateway.onboarding_host import onboarding_page
+    from ouroboros.gateway.onboarding_host import api_onboarding_bootstrap, onboarding_page
     from ouroboros.gateway.owner_effort import api_owner_effort_range
     from ouroboros.gateway.settings import (
         api_acknowledge_capability,
@@ -174,6 +175,7 @@ def collect_routes(
 
     routes: list[BaseRoute] = [
         Route("/api/health", endpoint=api_health),
+        Route("/api/contract", endpoint=api_contract, methods=["GET"]),
         Route("/api/state", endpoint=api_state),
         Route("/api/widgets", endpoint=api_widgets, methods=["GET"]),
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
@@ -231,6 +233,8 @@ def collect_routes(
         # /api/onboarding sibling below stays the readiness probe + legacy body.
         Route("/onboarding", endpoint=onboarding_page, methods=["GET"]),
         Route("/api/onboarding", endpoint=onboarding),
+        # The same wizard bootstrap as JSON, for a client that renders its own setup.
+        Route("/api/onboarding/bootstrap", endpoint=api_onboarding_bootstrap, methods=["GET"]),
         # ONE atomic owner-scoped completion (D-8): replaces the wizard's old
         # POST /api/settings + POST /api/owner/runtime-mode pair.
         Route("/api/onboarding/subagents/preview", endpoint=api_onboarding_subagents_preview, methods=["POST"]),
@@ -280,6 +284,7 @@ def collect_routes(
         Route("/api/update/preflight", endpoint=api_update_preflight, methods=["POST"]),
         Route("/api/update/apply", endpoint=api_update_apply, methods=["POST"]),
         Route("/api/cost-breakdown", endpoint=make_cost_breakdown_endpoint(data_dir)),
+        *storage_routes(data_dir),
         Route("/api/evolution-data", endpoint=api_evolution_data),
         Route("/api/chat/history", endpoint=make_chat_history_endpoint(data_dir)),
         Route("/api/logs/{name}", endpoint=api_logs_tail, methods=["GET"]),
@@ -296,9 +301,7 @@ def collect_routes(
             endpoint=api_local_model_install_runtime,
             methods=["POST"],
         ),
-        Route("/api/mcp/status", endpoint=api_mcp_status, methods=["GET"]),
-        Route("/api/mcp/refresh", endpoint=api_mcp_refresh, methods=["POST"]),
-        Route("/api/mcp/test", endpoint=api_mcp_test, methods=["POST"]),
+        *mcp_routes(),
         # Agent accounts (D30): thin proxies of the owned Claudexor daemon's
         # own account surface; zero auth logic on this side.
         Route("/api/review-pool", endpoint=api_review_pool, methods=["GET"]),

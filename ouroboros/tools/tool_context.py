@@ -70,6 +70,10 @@ class ToolContext:
     # drain seam; ``None`` while the turn still acts only on the message that
     # started it.
     last_owner_delivery: Optional[Dict[str, Any]] = None
+    # This turn's own routing acts whose wait ended unconfirmed (``{action,
+    # client_message_id, routing_token, target}``): later acting rounds read their
+    # exact receipts and report an outcome once it is recorded.
+    unconfirmed_routing_acts: List[Dict[str, str]] = field(default_factory=list)
     executor_ref: Dict[str, Any] = field(default_factory=dict)
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     current_chat_id: Optional[int] = None

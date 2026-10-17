@@ -35,12 +35,6 @@ def _read(rel: str) -> str:
 # ────────── Bug 1 (polish): the retired loop's rows replay honestly ──────────
 
 
-def test_log_events_has_no_background_loop_projector():
-    src = _read("web/modules/log_events.js")
-    assert "consciousness_state" not in src
-    assert "bg-consciousness" not in src
-
-
 def test_history_never_fabricates_a_terminal_status_for_legacy_bg_rows(tmp_path):
     from ouroboros.gateway.history import make_chat_history_endpoint
 
@@ -108,7 +102,8 @@ def test_reconnect_merges_user_rows_without_clearing_visible_history():
     # Keyed reconciliation replaces the former clear-and-rebuild requirement:
     # physical rows dedupe and an offline/local echo is adopted in place.
     assert "opts.historyId ? `history:${opts.historyId}` : legacyKey" in add
-    assert "if (messageKey && seenMessageKeys.has(messageKey))" in add
+    # A retained DOM row or a remembered key suppresses a late live copy.
+    assert "if (prior || (messageKey && seenMessageKeys.has(messageKey))) return false;" in add
     assert "node.dataset.clientMessageId === clientMessageId" in add
     assert "stampHistoryNode(prior, opts.historyId, opts.historyPosition);" in add
     assert "seenMessageKeys.clear();" not in sync + replay

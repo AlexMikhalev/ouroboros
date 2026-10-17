@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import queue
 import types
 
@@ -11,6 +10,7 @@ import pytest
 from ouroboros.project_dialogue import build_owner_message_ref
 from ouroboros.projects_registry import create_project
 from ouroboros.tools.control import _list_projects, _route_to_project, get_tools
+from tests._store_shared import seed_result
 
 
 def _ctx(tmp_path, events=None, *, task_metadata=None, **overrides):
@@ -51,7 +51,7 @@ def test_a_task_on_a_forked_drive_reads_the_registry_from_the_canonical_root(tmp
     forked = _ctx(child, task_metadata={"budget_drive_root": str(tmp_path)}, budget_drive_root=str(tmp_path))
 
     assert "racer — Racer" in _list_projects(forked)
-    out = _route_to_project(forked, "racer", "continue the engine tuning", predecessor_task_id="")
+    out = _route_to_project(forked, "racer", "continue the engine tuning", title="Project work", predecessor_task_id="")
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED:"), out
     assert forked.pending_events[0]["project_id"] == "racer"
     assert _effective_scope_note(forked, "racer") == " in project 'Racer' (racer)"
@@ -61,7 +61,8 @@ def test_a_task_on_a_forked_drive_reads_the_registry_from_the_canonical_root(tmp
         lambda *_a, **_k: {"status": "scheduled", "effective_project_id": "racer"},
     )
     promoted = _ctx(child, task_metadata={"budget_drive_root": str(tmp_path)}, budget_drive_root=str(tmp_path))
-    out = _promote_chat_to_task(promoted, "tune the engine", project_id="racer", workspace="none", predecessor_task_id="")
+    out = _promote_chat_to_task(promoted, "tune the engine", title="Engine tuning",
+                                project_id="racer", workspace="none", predecessor_task_id="")
     assert out.startswith("OK: task") and "in project 'Racer' (racer)" in out, out
 
     # The quiet direction: no canonical root at all means the task's own drive is the registry.
@@ -88,7 +89,7 @@ def test_route_to_existing_project_emits_event_and_receipt(tmp_path):
         "origin_message_text": "continue the engine tuning",
     })
     ctx.task_id = "drafter"
-    out = _route_to_project(ctx, "racer", "paraphrased: keep tuning the engine", reason="follow-up", predecessor_task_id="")
+    out = _route_to_project(ctx, "racer", "paraphrased: keep tuning the engine", reason="follow-up", title="Project work", predecessor_task_id="")
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED:")
     assert "do not retry automatically" in out.lower()
     assert len(events) == 1
@@ -119,7 +120,7 @@ def test_main_route_to_existing_project_explicitly_selects_predecessor_or_stays_
     }
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
-    (result_dir / "racer-old.json").write_text(json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8")
+    seed_result(tmp_path, "racer-old", {"_schema_version": 1, **predecessor})
     preview = server._task_result_ground_truth(predecessor)
     metadata = {"main_routing_manifest": {"final_results": [preview]}}
     events = []
@@ -127,7 +128,7 @@ def test_main_route_to_existing_project_explicitly_selects_predecessor_or_stays_
 
     out = route_tool.handler(
         _ctx(tmp_path, events, task_metadata=metadata),
-        "racer", "Continue the racer", predecessor_task_id="racer-old",
+        "racer", "Continue the racer", title="Project work", predecessor_task_id="racer-old",
     )
 
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED")
@@ -137,7 +138,7 @@ def test_main_route_to_existing_project_explicitly_selects_predecessor_or_stays_
     fresh_events = []
     route_tool.handler(
         _ctx(tmp_path, fresh_events, task_metadata=metadata),
-        "racer", "Start a separate racer experiment", predecessor_task_id="",
+        "racer", "Start a separate racer experiment", title="Project work", predecessor_task_id="",
     )
     assert "predecessor_authority_source" not in fresh_events[0]
     assert "predecessor_task_id" in route_tool.schema["parameters"]["properties"]
@@ -153,8 +154,8 @@ def test_managed_swarm_routes_distinct_work_without_a_conversation_latch(tmp_pat
     ctx = _ctx(tmp_path, events, project_id="", task_metadata={
         "client_message_id": "swarm-root-1", "force_plan": True, "force_plan_source": "swarm",
     })
-    first = _route_to_project(ctx, "racer", "Audit Racer", predecessor_task_id="")
-    second = _route_to_project(ctx, "racer", "Research a separate design", predecessor_task_id="")
+    first = _route_to_project(ctx, "racer", "Audit Racer", title="Project work", predecessor_task_id="")
+    second = _route_to_project(ctx, "racer", "Research a separate design", title="Project work", predecessor_task_id="")
     assert "durably scheduled" in first and "durably scheduled" in second
     assert len(events) == 2
     assert events[0]["task_id"] != events[1]["task_id"]
@@ -170,7 +171,7 @@ def test_managed_swarm_uses_ordinary_project_routing(tmp_path, monkeypatch):
     )
     events = []
     ctx = _ctx(tmp_path, events, project_id="alpha", task_metadata={"force_plan": True})
-    out = _route_to_project(ctx, "beta", "Audit and fix this in Beta", predecessor_task_id="")
+    out = _route_to_project(ctx, "beta", "Audit and fix this in Beta", title="Project work", predecessor_task_id="")
     assert "durably scheduled" in out
     assert events[0]["project_id"] == "beta"
     assert "force_plan" not in events[0]
@@ -206,7 +207,7 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
     }
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
-    (result_dir / "previous.json").write_text(json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8")
+    seed_result(tmp_path, "previous", {"_schema_version": 1, **predecessor})
     preview = server._task_result_ground_truth(predecessor)
     events = []
     metadata = {"client_message_id": "owner-4", "main_routing_manifest": {"final_results": [preview]}}
@@ -333,7 +334,7 @@ def test_a_task_issuer_with_an_unmet_obligation_moves_it_through_route_to_projec
     ctx = _ctx(tmp_path, events, task_id="swarm-root", task_metadata={
         "force_plan": True, "force_plan_source": "swarm", "root_task_id": "swarm-root",
     })
-    out = _route_to_project(ctx, "racer", "Implement it in Racer", predecessor_task_id="")
+    out = _route_to_project(ctx, "racer", "Implement it in Racer", title="Project work", predecessor_task_id="")
     assert "durably scheduled" in out and "planning obligation (force_plan) moved to task" in out
     assert events[0]["type"] == "promote_chat_to_task"
     assert events[0]["force_plan"] is True and events[0]["force_plan_source"] == "swarm"
@@ -419,7 +420,7 @@ def test_a_suppressed_origin_still_hands_the_routed_task_the_owners_stamped_inst
                task_metadata={"client_message_id": "owner-route-2", "origin_suppressed": True})
     ctx.task_id = "drafter"
     ctx._owner_directives = [{"source": "initial_user", "content": "continue the engine tuning"}]
-    out = _route_to_project(ctx, "racer", "paraphrased objective", reason="follow-up", predecessor_task_id="")
+    out = _route_to_project(ctx, "racer", "paraphrased objective", reason="follow-up", title="Project work", predecessor_task_id="")
     assert out.startswith("⚠️ ROUTE_UNCONFIRMED:"), out
     evt = events[0]
     assert evt["origin_suppressed"] is True and "source_text" not in evt
@@ -433,5 +434,5 @@ def test_a_suppressed_origin_still_hands_the_routed_task_the_owners_stamped_inst
     unstamped = _ctx(tmp_path, [], task_metadata={"client_message_id": "wake-1"})
     unstamped.task_id = "drafter"
     unstamped._owner_directives = [{"source": "initial_text", "content": "a wake-up nobody typed"}]
-    _route_to_project(unstamped, "racer", "objective", reason="r", predecessor_task_id="")
+    _route_to_project(unstamped, "racer", "objective", reason="r", title="Project work", predecessor_task_id="")
     assert unstamped.pending_events[0]["owner_corpus"] == []

@@ -129,7 +129,10 @@ def test_headless_pending_cancel_still_emits_task_done(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=events.append))
     monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
 
-    assert queue.cancel_task_by_id(task["id"]) is True
+    from ouroboros.cancel_intents import request_cancel
+
+    request_cancel(tmp_path, task["id"])
+    assert queue.drive_cancel_intent_scope(task["id"]) == queue.CANCEL_CANCELLED
 
     terminal = [event for event in events if event.get("type") == "task_done"]
     assert len(terminal) == 1
@@ -151,7 +154,7 @@ def _patch_reaper(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "QUEUE_MAX_RETRIES", 1)
     monkeypatch.setattr(queue, "reconstruct_task_cost", lambda *_a, **_k: _available_cost_fields())
 
-    def _enqueue_task(task, front=False):
+    def _enqueue_task(task, front=False, timeout_retry=False):
         admitted = dict(task)
         pending.append(admitted)
         enqueued.append((admitted, front))

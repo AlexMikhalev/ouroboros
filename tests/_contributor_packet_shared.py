@@ -15,6 +15,8 @@ import os
 import pathlib
 import subprocess
 
+from ouroboros.tools.scope_review_contract import COUPLING_QUESTION_IDS
+
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
     "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
@@ -67,9 +69,7 @@ def _coupling_matrix(reason: str) -> list:
     ``coupling`` block must cover every required item or the gate records it as
     unanswered."""
     return [{"item": item, "verdict": "PASS", "severity": "advisory", "reason": reason}
-            for item in ("intent_alignment", "forgotten_touchpoints", "cross_surface_consistency",
-                         "regression_surface", "prompt_doc_sync", "architecture_fit",
-                         "cross_module_bugs", "implicit_contracts")]
+            for item in COUPLING_QUESTION_IDS]
 
 
 # The packet seat (t1) answers contract A (the change array); the retrieving seats
@@ -103,8 +103,10 @@ def golden_pool(*extra_rows: dict) -> str:
 def git(repo: pathlib.Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", *args],
-        cwd=str(repo), capture_output=True, text=True, check=True, env={**os.environ, **GIT_ENV},
+        cwd=str(repo), capture_output=True, text=True, env={**os.environ, **GIT_ENV},
     )
+    # git's own reason: a CalledProcessError message drops stderr, so a fixture's exit 128 named nothing.
+    assert result.returncode == 0, f"git {' '.join(args)} exited {result.returncode}: {result.stderr.strip()}"
     return result.stdout.strip()
 
 
@@ -120,6 +122,9 @@ def init_installed_body(root: pathlib.Path) -> dict[str, str]:
     repo = (root / "installed").resolve()
     repo.mkdir(parents=True)
     git(repo, "init", "-q")
+    # The golden describes these LF fixture bytes, including after checkout.
+    # Per-command -c in git() does not configure production helper invocations.
+    git(repo, "config", "core.autocrlf", "false")
     _write(repo, BASE_FILES)
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "installed body")

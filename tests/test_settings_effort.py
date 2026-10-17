@@ -116,8 +116,8 @@ def test_review_models_default_in_config():
     assert "OUROBOROS_REVIEW_MODELS" in RETIRED_SETTING_KEYS
     assert list(OPENROUTER_REVIEW_DEFAULTS["triad"]) == [
         "google/gemini-3.8-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-opus-5.5",
     ]
 
 
@@ -179,20 +179,16 @@ def _factory_pool_models(doc: dict) -> list:
     return [row["route"]["target_id"] for row in factory_review_rows(doc)]
 
 
-def test_factory_pool_repeats_main_in_openai_only_mode():
-    """The OpenAI-only profile mints three independent Main catalog rows."""
+def test_factory_pool_seats_main_once_in_openai_only_mode():
+    """The OpenAI-only profile mints ONE Main catalog row (owner Q5=A: no paid copies of one model)."""
     assert _factory_pool_models({"OPENAI_API_KEY": "configured", "OUROBOROS_MODEL": "openai::gpt-5.6-terra"}) == [
-        "openai::gpt-5.6-terra",
-        "openai::gpt-5.6-terra",
         "openai::gpt-5.6-terra",
     ]
 
 
-def test_factory_pool_repeats_main_in_anthropic_only_mode():
-    """The Anthropic-only profile repeats even an explicit provider Main."""
+def test_factory_pool_seats_main_once_in_anthropic_only_mode():
+    """The Anthropic-only profile seats even an explicit provider Main once."""
     assert _factory_pool_models({"ANTHROPIC_API_KEY": "sk-ant", "OUROBOROS_MODEL": "anthropic::claude-opus-4-6"}) == [
-        "anthropic::claude-opus-4-6",
-        "anthropic::claude-opus-4-6",
         "anthropic::claude-opus-4-6",
     ]
 
@@ -202,8 +198,8 @@ def test_factory_pool_routes_to_gigachat_in_gigachat_only_mode(monkeypatch):
     install (no other provider) gets a gigachat:: review pool, never an empty one
     or an unconfigured foreign provider — the single-isolated-provider invariant
     (docs/DEVELOPMENT.md "Provider Independence"). GIGACHAT_DIRECT_DEFAULTS uses the
-    universally available GigaChat-2-Max for every slot, so the quorum-safe panel is
-    [main, main, main] — three catalog rows (PR-3)."""
+    universally available GigaChat-2-Max for every slot, so the panel is Main once — one
+    catalog row (PR-3; owner Q5=A)."""
     monkeypatch.setenv("GIGACHAT_CREDENTIALS", "giga-creds")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -215,8 +211,6 @@ def test_factory_pool_routes_to_gigachat_in_gigachat_only_mode(monkeypatch):
     monkeypatch.setenv("OUROBOROS_MODEL", "gigachat::GigaChat-2-Max")
 
     assert _factory_pool_models({"GIGACHAT_CREDENTIALS": "giga-creds", "OUROBOROS_MODEL": "gigachat::GigaChat-2-Max"}) == [
-        "gigachat::GigaChat-2-Max",
-        "gigachat::GigaChat-2-Max",
         "gigachat::GigaChat-2-Max",
     ]
 
@@ -238,11 +232,11 @@ def test_from_zero_local_only_review_slots_inherit_main_and_stay_local(monkeypat
         "openai/gpt-5.6-luna,google/gemini-3.6-flash,anthropic/claude-sonnet-5",
     )
 
-    # The factory pool is the shipped panel's three seats on the local Main (three
-    # independent runs, quorum 2 of 3); every review slot built from it runs on the
-    # local lane.
+    # The factory pool is ONE seat on the local Main in its full route identity (owner
+    # Q5=A: no paid copies of one model; quorum 1 of 1); every review slot built from it
+    # runs on the local lane, and delegation reads the same label.
     assert _factory_pool_models({"USE_LOCAL_MAIN": "true", "LOCAL_MODEL_SOURCE": "owner/local.gguf",
-                                 "OUROBOROS_MODEL": "owner/local-main"}) == ["owner/local-main"] * 3
+                                 "OUROBOROS_MODEL": "owner/local-main"}) == ["owner/local-main (local)"]
     assert review_model_uses_local("owner/local-main") is True
 
     from ouroboros.reviewer_slot_config import review_pool_slots
@@ -251,7 +245,7 @@ def test_from_zero_local_only_review_slots_inherit_main_and_stay_local(monkeypat
     rows = factory_review_rows({"USE_LOCAL_MAIN": "true", "LOCAL_MODEL_SOURCE": "owner/local.gguf",
                                 "OUROBOROS_MODEL": "owner/local-main"})
     slots = review_pool_slots({"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": rows})})
-    assert [slot.model for slot in slots] == ["owner/local-main"] * 3  # three runs of Main, quorum 2 of 3
+    assert [slot.model for slot in slots] == ["owner/local-main (local)"]  # Main once, quorum 1 of 1
     assert all(slot.use_local for slot in slots)
 
 

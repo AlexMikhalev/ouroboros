@@ -287,8 +287,8 @@ def test_cold_rechecks_a_child_claim_that_lands_after_initial_census(tmp_path, m
     ctx._model_sleep = {"sleep_id": "s", "mode": "cold", **model_sleep.selectors(ctx, wake_after_sec=3600)}
     original = model_sleep.cold_blockers
     observations = []
-    def initial_census(source):
-        blockers = original(source)
+    def initial_census(source, **kwargs):
+        blockers = original(source, **kwargs)
         observations.append(blockers)
         if len(observations) == 1:
             write_task_result(tmp_path, "child", "scheduled", launch_handoffs={"external": {"tool": "opaque"}})
@@ -350,7 +350,10 @@ def test_delegated_start_pause_after_claim_prevents_post(tmp_path, monkeypatch):
         assert request_owner_pause("root", request_id="delegate-final")["ok"]
         return value
     monkeypatch.setattr(delegate, "claimed_start_request", claim)
-    token = subagent_runtime._EXACT_START_SELECTION.set({"snapshot": _transport_snapshot(subagents.get_subagent_harness())})
+    # A read-only child (the stub serves readonly only); #1609: technical access alone
+    # decides the run shape, so the selected row says so.
+    token = subagent_runtime._EXACT_START_SELECTION.set(
+        {"snapshot": _transport_snapshot(subagents.get_subagent_harness(), access="readonly")})
     try:
         outcome = delegate._delegate_start(_nanny_ctx(tmp_path, "root"), "work")
     finally:
@@ -412,6 +415,12 @@ def test_timed_out_mcp_runner_cannot_start_after_caller_return(tmp_path, monkeyp
     monkeypatch.setattr(mcp_client, "_transport_factory", transport)
     monkeypatch.setattr(mcp_client, "ClientSession", Session)
     def timed_call(*_a):
+        join = threading.Thread.join
+        def after_entry(thread, timeout=None):
+            if thread.name == "mcp-sync-runner":
+                assert entered.wait(5)  # prove preparation began before caller timeout
+            return join(thread, timeout)
+        monkeypatch.setattr(threading.Thread, "join", after_entry)
         try:
             return mcp_client._run_async(
                 lambda: mcp_client._call_tool_async(None, "effect", {}, timeout_sec=10), join_timeout=0)
@@ -424,7 +433,8 @@ def test_timed_out_mcp_runner_cannot_start_after_caller_return(tmp_path, monkeyp
     try:
         result = asyncio.run(execute())
         assert result.status == "timeout" and entered.wait(5)
-        assert not load_task_result(tmp_path, "root").get("launch_handoffs")
+        # Unlike a closed-before-entry runner, this transport is really alive.
+        assert load_task_result(tmp_path, "root").get("launch_handoffs")
     finally:
         release.set()
         assert entered.wait(5)

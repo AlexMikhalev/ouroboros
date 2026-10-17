@@ -187,6 +187,7 @@ def delivery_subject_projection(
     text = full_answer if full_answer is not None else getattr(candidate, "full_text", "")
     return {
         "candidate_sha256": hashlib.sha256(str(text).encode("utf-8")).hexdigest(),
+        "produced_sources": (llm_trace.get("acceptance_material") or {}).get("sources", []),
         "effective_criteria": _effective_delivery_criteria(tool_ctx),
         "material_evidence_fingerprint": delivery_evidence_fingerprint(tool_ctx, llm_trace),
     }
@@ -289,17 +290,14 @@ def delivery_evidence_fingerprint(
             if isinstance(call, dict) and index in getattr(tool_ctx, "_delivery_material_tool_indices", ())
         ],
         "tool_effects": reviewable_effect_projection(llm_trace),
-        # The typed plan-review control is not a filesystem effect, but it
+        # A plan_task call is not a filesystem effect, but what it wrote and asked
         # changes whether a pre-plan answer is grounded.
         "plan_review_receipts": [
-            {
-                "index": index,
-                "outcome": call.get("plan_review_outcome"),
-                "closed": call.get("plan_review_closed"),
-                "result": call.get("result"),
-            }
+            {"index": index, "result": call.get("result"),
+             **{key.removeprefix("plan_"): call.get(key) for key in (
+                 "plan_effect", "plan_revision", "plan_open_objections", "plan_holding", "plan_pending_asks")}}
             for index, call in enumerate(llm_trace.get("tool_calls") or [])
-            if isinstance(call, dict) and call.get("plan_review_outcome")
+            if isinstance(call, dict) and call.get("plan_effect")
         ],
         "children": children,
         "verification_receipts": read_context_verification_receipts(
@@ -1332,6 +1330,7 @@ def _no_tool_final_answer(
             llm_trace["reasoning_notes"].append(
                 "Task services were finalized before acceptance; the complete answer must bind the resulting evidence."
             )
+            _loop()._disclose_service_finalization(limit_ctx, llm_trace)
             _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
             return held()
 
@@ -1563,16 +1562,14 @@ def finish_completed_stop(tools: ToolRegistry, ctx: Any, emit_progress: Any,
 
 def record_stopped_completion(tools: ToolRegistry, ctx: Any, trace: dict, request: dict,
                               candidate: DeliveryCandidate) -> None:
-    """A local stop is truthful for every task; eligible roots retain author-stop review semantics."""
+    """A local stop is truthful for every task; roots retain its author disposition."""
     trace["task_completion"] = {"action": "stop", "rationale": request["rationale"],
         "answer_sha256": candidate.content_sha256, "source": request.get("source", "finish_task")}
     from ouroboros.loop_acceptance_review import _resolve_ctx_lineage
     from ouroboros.review_records import build_author_disposition
-    eligible, _ = _loop()._task_acceptance_eligible(_loop().get_task_review_mode(), trace,
-        bool(getattr(tools._ctx, "is_direct_chat", False)),
-        is_root_task=_resolve_ctx_lineage(tools._ctx, ctx.task_id)["is_root_task"],
-        task_contract=getattr(tools._ctx, "task_contract", {}))
-    if not eligible:
+    # Stop grants no approval and buys no panel. Preserve it even when Auto has
+    # no nomination, Required has no production, or new reviews are Off.
+    if not _resolve_ctx_lineage(tools._ctx, ctx.task_id)["is_root_task"]:
         return
     from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
     from ouroboros.task_results import project_task_acceptance_review_capacity

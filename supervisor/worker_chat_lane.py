@@ -92,15 +92,16 @@ def wake_gate_open() -> bool:
     return not reason or conversation_admitted_during_update(reason)
 
 
-def owner_conversation_admitted(chat_id: int) -> bool:
+def owner_conversation_admitted(chat_id: int, client_message_id: str = "") -> bool:
     """Admit one owner chat turn: open gate, or a resolver-held update.
 
-    A refused turn gets the pool's existing lock notice (``_repo_writer_turn_allowed``).
+    A refused turn gets the pool's existing lock notice (``_repo_writer_turn_allowed``),
+    naming the submission it answers.
     """
     reason = _pool().repo_writer_admission_closed()
     if not reason or conversation_admitted_during_update(reason):
         return True
-    return bool(_pool()._repo_writer_turn_allowed(chat_id))
+    return bool(_pool()._repo_writer_turn_allowed(chat_id, client_message_id))
 
 
 def preload_owner_control_path() -> list[str]:
@@ -155,7 +156,7 @@ def handle_chat_direct(
     task_constraint: Optional[dict] = None,
     task_metadata: Optional[dict] = None,
 ) -> None:
-    if not owner_conversation_admitted(chat_id):
+    if not owner_conversation_admitted(chat_id, str((task_metadata or {}).get("client_message_id") or "")):
         return
     _handle_chat_direct_locked(
         chat_id, text, image_data,
@@ -191,12 +192,35 @@ def _handle_chat_direct_locked(
 
 
 def _host_operation_failure(metadata: Optional[dict]) -> dict:
-    """Optional terminal correlation for the host's preaccepted skill messages."""
+    """A refusal's correlation: the owner submission it answers (only that
+    ``Sending...`` settles) and, for the host's preaccepted skill messages,
+    their terminal correlation."""
     from ouroboros.task_finalization import host_operation_reply_kwargs
 
-    if (metadata or {}).get("_host_operation"):
-        return host_operation_reply_kwargs((metadata or {}).get("origin_message_ref"), "failed")
-    return {}
+    meta = metadata or {}
+    source = meta.get("origin_message_ref") if meta.get("_host_operation") else None
+    return host_operation_reply_kwargs(source, "failed", str(meta.get("client_message_id") or ""))
+
+
+def _rejected_rows(manifest: Any) -> list:
+    """The rejected declarations of one staging manifest."""
+    return [row for row in (manifest or []) if isinstance(row, dict) and row.get("status") == "rejected"]
+
+
+def _record_attachment_rejections(
+    task: Dict[str, Any], chat_id: int, metadata: Optional[dict], manifest: Any, *, started: bool,
+) -> None:
+    """One failure-only diagnostic row: the per-file reasons the owner's chat no longer carries."""
+    rows = [{key: row.get(key) for key in ("ordinal", "label", "status", "reason", "rule") if row.get(key) is not None}
+            for row in _rejected_rows(manifest)]
+    try:
+        append_jsonl(_pool().DRIVE_ROOT / "logs" / "supervisor.jsonl", {
+            "ts": utc_now_iso(), "type": "attachments_rejected", "task_id": str(task.get("id") or ""),
+            "chat_id": int(chat_id or 0), "started": started,
+            "origin_message_ref": (metadata or {}).get("origin_message_ref"), "rejected": rows,
+        })
+    except Exception:
+        log.debug("attachments_rejected row failed", exc_info=True)
 
 
 def _broadcast_task_named(msg: dict) -> None:
@@ -272,7 +296,7 @@ def _admit_chat_task(
 
     quiet = is_consciousness_origin(task_metadata)  # a wake: the alarm reports the refusal, not the chat
     with _pool()._repo_writer_gate_lock:
-        if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id)):
+        if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id, client_msg_id)):
             return None
         activity = registry.register(
             task["id"], chat_id,
@@ -351,29 +375,32 @@ def _admit_chat_task(
             from ouroboros.gateway.tasks import _render_attachment_lines
 
             manifest = stage_task_attachments(_pool().DRIVE_ROOT, str(task["id"]), uploads)
-            rendered = _render_attachment_lines(manifest)
             # Partial staging is the default (В25c, capinv-447); a FULLY-rejected
             # set stays atomic — the task would start with none of its material.
             if attachment_manifest_all_rejected(manifest):
                 from ouroboros.artifacts import remove_staged_attachments
+                from ouroboros.project_dialogue import routing_refusal_cause
 
                 remove_staged_attachments(manifest)
+                _record_attachment_rejections(task, chat_id, task_metadata, manifest, started=False)
+                # No mind will read this message: one short typed mark in owner words
+                # (closed class), never the model's block; the files are on the owner's
+                # bubble and the per-file causes in the diagnostic row.
+                cause = routing_refusal_cause("promote_chat_to_task", "rejected", "attachment_admission_rejected")
+                count = len(_rejected_rows(manifest))
                 _pool().send_with_budget(
-                    chat_id,
-                    f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
+                    chat_id, f"{cause} ({count} file{'' if count == 1 else 's'})" if count else cause,
                     **_host_operation_failure(task_metadata),
-                    role="system", system_type="attachment_notice")
+                    role="system", system_type="task_not_started")
                 registry.unregister(task["id"])
                 return None
             from ouroboros.artifacts import attachment_manifest_projection
             authority = attachment_manifest_projection(_pool().DRIVE_ROOT, str(task["id"]), manifest)
             rendered = _render_attachment_lines(authority)
             if attachment_manifest_has_rejections(manifest):
-                _pool().send_with_budget(
-                    chat_id,
-                    "⚠️ Some declared attachments could not be staged; the task "
-                    f"starts with the rest.\n{rendered}",
-                    role="system", system_type="attachment_notice")
+                # The turn starts with the rejected rows in its own block and
+                # tells the owner itself; the host keeps only the diagnostic.
+                _record_attachment_rejections(task, chat_id, task_metadata, manifest, started=True)
             if manifest:
                 manifest = [dict(row) for row in manifest]
                 task["drive_root"] = str(_pool().DRIVE_ROOT)
@@ -576,10 +603,11 @@ def _report_direct_chat_error(admitted: Dict[str, Any], e: BaseException) -> Non
                 )
             except Exception:
                 log.debug("Failed-turn typing announce failed", exc_info=True)
-        failure_meta = _host_operation_failure(task_metadata)
+        # The keyed final concludes its own turn and linked Sending; it keeps only the host-operation source.
+        correlation = _host_operation_failure(task_metadata).get("progress_meta", {})
         progress_meta = {"task_terminal_status": "failed"}
-        if failure_meta:
-            progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
+        if "origin_message_ref" in correlation:
+            progress_meta["origin_message_ref"] = correlation["origin_message_ref"]
         initiator = str((task_metadata or {}).get("initiator") or "")
         if initiator:
             progress_meta["initiator"] = initiator

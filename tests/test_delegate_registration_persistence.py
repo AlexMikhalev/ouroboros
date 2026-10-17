@@ -30,18 +30,19 @@ class _ProcessGateway:
 def _settle_shared_project_process(root, run_id, removals, replay_barrier):
     from pathlib import Path
     from ouroboros import delegate_custody as dc
-    from ouroboros import delegate_custody_usage as usage
+    from ouroboros import delegate_custody_current as current
 
-    original = usage.complete_custody_rows
+    original = current.runs
 
     def synchronized_replay(*args, **kwargs):
         try:
-            replay_barrier.wait(timeout=0.5)
+            if len(args) > 1 and args[1] == "project_id=?":
+                replay_barrier.wait(timeout=0.5)
         except Exception:
             pass
         return original(*args, **kwargs)
 
-    usage.complete_custody_rows = synchronized_replay
+    current.runs = synchronized_replay
     row = dc.replay(Path(root))[run_id]
     dc.settle_run(
         Path(root), _ProcessGateway(removals), row,

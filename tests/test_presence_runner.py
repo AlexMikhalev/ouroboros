@@ -270,8 +270,10 @@ def test_presence_turn_is_live_for_liveness_readers_but_never_an_owner_target(mo
     monkeypatch.setattr(workers, "PENDING", [])
     monkeypatch.setattr(workers, "RUNNING", {})
     (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "queue_snapshot.json").write_text(
-        '{"ts": "2027-01-15T08:00:00+00:00", "pending": [], "running": []}', encoding="utf-8")
+    from tests._shared import write_queue_document
+
+    write_queue_document(tmp_path / "state" / "queue_snapshot.json",
+                         {"ts": "2027-01-15T08:00:00+00:00", "pending": [], "running": []})
     append_jsonl(tmp_path / "logs" / "events.jsonl", {"ts": "2026-05-28T00:00:02+00:00", "type": "worker_boot"})
     orphan_row = {"status": "running", "ts": "2026-05-28T00:00:00+00:00"}
     registry = get_direct_activity_registry()

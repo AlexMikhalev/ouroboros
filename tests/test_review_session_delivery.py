@@ -224,6 +224,14 @@ def test_transport_retry_reuses_the_pending_invocation_id(tmp_path, fake_route):
 
 
 
+@pytest.fixture(autouse=True)
+def _real_roots(tmp_path):
+    """These reviews belong to real task trees: their roots exist before any session bills."""
+    from ouroboros.task_results import write_task_result
+    for root in ("t-root", "stored-root"):
+        write_task_result(tmp_path, root, "running", root_task_id=root)
+
+
 def _lineage_scope(*, skill_review=False):
     from ouroboros.usage_accounting import UsageScope
 

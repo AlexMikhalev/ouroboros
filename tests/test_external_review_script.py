@@ -132,8 +132,6 @@ def test_external_review_script_is_a_wrapper_over_the_review_operation():
     import scripts.run_external_review as module
 
     source = Path("scripts/run_external_review.py").read_text(encoding="utf-8")
-    assert "v6.10.0" not in source
-    assert "Google Colab" not in source
     # Contributor lane: the review operation over the frozen base..head subject.
     assert "ouroboros.tools import review_change" in source
     assert 'root="system_repo", surface="change"' in source
@@ -162,22 +160,6 @@ def test_external_review_script_is_a_wrapper_over_the_review_operation():
 def test_external_review_script_defaults_to_pro_mode():
     source = Path("scripts/run_external_review.py").read_text(encoding="utf-8")
     assert 'setdefault("OUROBOROS_RUNTIME_MODE", "pro")' in source
-
-
-def test_the_operator_lane_sets_no_retired_diff_aware_knob():
-    """The commit gate pays the suite on every diff (owner answer A, 2026-10-08), so nothing
-    reads ``OUROBOROS_PREFLIGHT_DIFF_AWARE`` any more; the lane neither sets it nor leaves a
-    mention for an operator to copy. The whole tree under test has no reader of the name."""
-    name = "OUROBOROS_PREFLIGHT_" + "DIFF_AWARE"
-    assert name not in Path("scripts/run_external_review.py").read_text(encoding="utf-8")
-    readers = [
-        path.relative_to(REPO_ROOT).as_posix()
-        for folder in ("ouroboros", "supervisor", "scripts", "web", "docs", "prompts")
-        for path in (REPO_ROOT / folder).rglob("*")
-        if path.is_file() and path.suffix in {".py", ".js", ".md", ".json"}
-        and name in path.read_text(encoding="utf-8", errors="ignore")
-    ]
-    assert readers == []
 
 
 def test_external_review_script_resolves_models_and_efforts(monkeypatch):
@@ -906,15 +888,11 @@ def test_contributor_landing_obligations_are_exact_typed_items_only():
         "block_reason": "critical_findings",
         "combined_findings": [
             {"item": "version_bump", "severity": "critical"},
-            {"item": "changelog_and_badge", "severity": "critical"},
         ],
     }
     deferred = _apply_contributor_landing_obligations(version_only)
     assert deferred["status"] == "passed"
-    assert {item["item"] for item in deferred["landing_obligations"]} == {
-        "version_bump",
-        "changelog_and_badge",
-    }
+    assert {item["item"] for item in deferred["landing_obligations"]} == {"version_bump"}
 
     real_defect = {
         **version_only,

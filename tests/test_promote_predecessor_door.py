@@ -16,6 +16,7 @@ from __future__ import annotations
 import types
 
 import pytest
+from tests._store_shared import delete_result, result_exists
 
 
 def _room_ctx(tmp_path, metadata, *, project_id: str = "racer"):
@@ -199,7 +200,7 @@ def test_a_helpers_result_is_continued_with_its_root_named_and_never_offered(tmp
 
     _confirm(monkeypatch, effective_project_id="racer")
     ctx = _room_ctx(tmp_path, metadata)
-    out = _promote_chat_to_task(ctx, "Continue the helper's work", workspace="none",
+    out = _promote_chat_to_task(ctx, "Continue the helper's work", title="Helper work continuation", workspace="none",
                                 predecessor_task_id="racer-child")
     assert out.startswith("OK: task"), out
     assert "Note: predecessor racer-child is a delegated helper's result; its root is racer-root." in out
@@ -224,16 +225,19 @@ def test_a_helper_predecessor_is_named_on_the_route_verb_and_without_a_root_id(t
     _confirm(monkeypatch, effective_project_id="racer")
 
     routed = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _route_to_project(routed, "racer", "continue the helper's work", predecessor_task_id="racer-child")
+    out = _route_to_project(routed, "racer", "continue the helper's work", title="Helper continuation",
+                            predecessor_task_id="racer-child")
     assert out.startswith("✉️ Routed to project 'Racer' (racer)"), out
     assert "Note: predecessor racer-child is a delegated helper's result; its root is racer-root." in out
 
     nested = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _promote_chat_to_task(nested, "Continue the nested helper", workspace="none", predecessor_task_id="racer-nested")
+    out = _promote_chat_to_task(nested, "Continue the nested helper", title="Nested helper continuation",
+                                workspace="none", predecessor_task_id="racer-nested")
     assert "Note: predecessor racer-nested is a delegated helper's result; its parent is racer-child." in out
 
     orphan = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _promote_chat_to_task(orphan, "Continue the role-only helper", workspace="none", predecessor_task_id="racer-orphan")
+    out = _promote_chat_to_task(orphan, "Continue the role-only helper", title="Role-only helper continuation",
+                                workspace="none", predecessor_task_id="racer-orphan")
     assert "Note: predecessor racer-orphan is a delegated helper's result; its root is unknown." in out
 
 
@@ -285,8 +289,8 @@ def test_a_pooled_task_continues_another_rooms_root_into_that_room_in_one_hop(tm
     _confirm(monkeypatch, effective_project_id="tower")
 
     promoted = _room_ctx(tmp_path, metadata, project_id="coord")
-    out = _promote_chat_to_task(promoted, "Continue the tower work", project_id="tower",
-                                workspace="none", predecessor_task_id="tower-root")
+    out = _promote_chat_to_task(promoted, "Continue the tower work", title="Tower work continuation",
+                                project_id="tower", workspace="none", predecessor_task_id="tower-root")
     assert out.startswith("OK: task"), out
     assert "belongs to" not in out
     [evt] = promoted.pending_events
@@ -296,7 +300,7 @@ def test_a_pooled_task_continues_another_rooms_root_into_that_room_in_one_hop(tm
     assert "predecessor_facts" not in evt
 
     routed = _room_ctx(tmp_path, metadata, project_id="coord")
-    out = _route_to_project(routed, "tower", "continue the tower work", predecessor_task_id="tower-root")
+    out = _route_to_project(routed, "tower", "continue the tower work", title="Project work", predecessor_task_id="tower-root")
     assert out.startswith("✉️ Routed to project 'Tower' (tower)"), out
     assert "belongs to" not in out
     [evt] = routed.pending_events
@@ -318,18 +322,18 @@ def test_a_landing_outside_the_predecessors_project_is_disclosed_once(tmp_path, 
 
     _confirm(monkeypatch, effective_project_id="racer")
     ctx = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _promote_chat_to_task(ctx, "Continue elsewhere", project_id="racer", workspace="none",
-                                predecessor_task_id="tower-root")
+    out = _promote_chat_to_task(ctx, "Continue elsewhere", title="Continuation elsewhere",
+                                project_id="racer", workspace="none", predecessor_task_id="tower-root")
     assert out.startswith("OK: task") and note in out, out
 
     routed = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _route_to_project(routed, "racer", "continue elsewhere", predecessor_task_id="tower-root")
+    out = _route_to_project(routed, "racer", "continue elsewhere", title="Project work", predecessor_task_id="tower-root")
     assert out.startswith("✉️ Routed to project 'Racer' (racer)") and note in out, out
 
     _confirm(monkeypatch, effective_project_id="tower")
     home = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _promote_chat_to_task(home, "Continue at home", project_id="tower", workspace="none",
-                                predecessor_task_id="tower-root")
+    out = _promote_chat_to_task(home, "Continue at home", title="Home continuation",
+                                project_id="tower", workspace="none", predecessor_task_id="tower-root")
     assert out.startswith("OK: task") and "belongs to" not in out, out
 
 
@@ -349,7 +353,7 @@ def test_a_main_root_is_continued_from_a_room_and_its_home_is_named(tmp_path, mo
 
     _confirm(monkeypatch, effective_project_id="racer")
     ctx = _room_ctx(tmp_path, {}, project_id="racer")
-    out = _promote_chat_to_task(ctx, "Continue the main work here", project_id="racer",
+    out = _promote_chat_to_task(ctx, "Continue the main work here", title="Main work continuation", project_id="racer",
                                 workspace="none", predecessor_task_id="main-root")
     assert "predecessor main-root belongs to the main chat; this continuation runs in project 'racer'" in out
 
@@ -363,7 +367,7 @@ def test_a_public_conversation_continues_a_settled_root_and_still_lands_without_
     _tower(tmp_path)
     _confirm(monkeypatch, effective_project_id="")
     ctx = _room_ctx(tmp_path, {"presence": {"binding_id": "b" * 32}}, project_id="")
-    out = _promote_chat_to_task(ctx, "Continue the tower work", project_id="tower",
+    out = _promote_chat_to_task(ctx, "Continue the tower work", title="Tower work continuation", project_id="tower",
                                 workspace="none", predecessor_task_id="tower-root")
     assert out.startswith("OK: task"), out
     [evt] = ctx.pending_events
@@ -414,7 +418,7 @@ def test_an_unreadable_predecessor_still_answers_authority_source_unavailable(tm
     metadata = server._decision_turn_metadata(
         _host_ctx(tmp_path), int(project["chat_id"]), "room-6", {"project_id": "racer"},
     )
-    (tmp_path / "task_results" / "racer-gone.json").unlink()
+    delete_result(tmp_path, "racer-gone")
 
     evt: dict = {}
     refusal = _door(_room_ctx(tmp_path, metadata), "racer-gone", evt)
@@ -423,13 +427,13 @@ def test_an_unreadable_predecessor_still_answers_authority_source_unavailable(tm
 
     ctx = _room_ctx(tmp_path, metadata)
     ctx.event_queue = _RecordingQueue()
-    out = _promote_chat_to_task(ctx, "Continue the interrupted work", workspace="none",
-                                predecessor_task_id="racer-gone")
+    out = _promote_chat_to_task(ctx, "Continue the interrupted work", title="Interrupted work continuation",
+                                workspace="none", predecessor_task_id="racer-gone")
     assert out.startswith("\u26a0\ufe0f AUTHORITY_SOURCE_UNAVAILABLE (promote_chat_to_task):")
     assert "missing or unreadable" in out
     # Nothing was emitted, so no id was reserved and no second root can follow.
     assert ctx.event_queue.events == [] and ctx.pending_events == []
-    assert not (tmp_path / "task_results" / "racer-gone.json").exists()
+    assert not result_exists(tmp_path, "racer-gone")
 
 
 def test_outside_a_room_an_unlisted_settled_root_is_continued_too(tmp_path):
@@ -492,19 +496,16 @@ def test_the_self_heal_scan_never_offers_or_stamps_a_child(tmp_path):
     """The lookup's fallback scan is the pointer's SECOND writer: with no pointer
     yet and a child as the project's newest result, it answers with the newest ROOT
     and stamps that, never the child the hint does not offer."""
-    import os
-
     import server
     from ouroboros.projects_registry import create_project, get_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer")
+    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer",
+                      ts="2026-09-21T10:00:00Z")
     write_task_result(tmp_path, "racer-child", "completed", project_id="racer", result="helper answer",
-                      parent_task_id="racer-root", root_task_id="racer-root", delegation_role="subagent")
-    results = task_results_dir(tmp_path, create=False)
-    os.utime(results / "racer-root.json", (1_000, 1_000))
-    os.utime(results / "racer-child.json", (2_000, 2_000))  # the child is the newest file
+                      parent_task_id="racer-root", root_task_id="racer-root", delegation_role="subagent",
+                      ts="2026-09-21T11:00:00Z")  # the child is the newest row
     assert not get_project(tmp_path, "racer").get("last_task_result_id")
 
     row = server._latest_project_task_result(_host_ctx(tmp_path), "racer")
@@ -537,22 +538,19 @@ def test_a_pointer_a_child_stamped_before_the_rule_heals_onto_the_root(tmp_path)
 
 
 def test_a_pending_promote_is_neither_the_last_result_nor_a_predecessor(tmp_path):
-    """An emitted stub carries the project's id and is the newest file, but it is an
+    """An emitted stub carries the project's id and is the newest row, but it is an
     admission still pending, not a result: the lookup answers with the root and never
     stamps the stub, and the door says what it is instead of "steer this live root"."""
-    import os
-
     import server
     from ouroboros.projects_registry import create_project, get_project
-    from ouroboros.task_results import task_results_dir, write_task_result
+    from ouroboros.task_results import write_task_result
 
     create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer")
-    write_task_result(tmp_path, "racer-promote", "requested", project_id="racer", promotion_admission={
-        "status": "emitted", "routing_token": "tok-1", "emitted_at": "2026-09-21T10:00:00Z"})
-    results = task_results_dir(tmp_path, create=False)
-    os.utime(results / "racer-root.json", (1_000, 1_000))
-    os.utime(results / "racer-promote.json", (2_000, 2_000))
+    write_task_result(tmp_path, "racer-root", "completed", project_id="racer", result="root answer",
+                      ts="2026-09-21T09:00:00Z")
+    write_task_result(tmp_path, "racer-promote", "requested", project_id="racer", ts="2026-09-21T10:00:00Z",
+                      promotion_admission={"status": "emitted", "routing_token": "tok-1",
+                                           "emitted_at": "2026-09-21T10:00:00Z"})  # the newest row
 
     assert server._latest_project_task_result(_host_ctx(tmp_path), "racer")["task_id"] == "racer-root"
     assert get_project(tmp_path, "racer")["last_task_result_id"] == "racer-root"

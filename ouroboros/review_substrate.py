@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger("review_substrate")
 
 from ouroboros.llm import LLMClient
-from ouroboros.observability import new_call_id, persist_call, redact_projection  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
+from ouroboros.observability import new_call_id, persist_call, read_call_payload, redact_projection  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.provider_models import provider_for_model  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.review_execution_projection import (
     MAX_PROJECTED_ACTOR_FINDINGS, projected_finding_row,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
@@ -54,7 +54,7 @@ from ouroboros.review_custody import (
 # Reviewer-output JSON extraction lives in ONE place beside the array
 # extractor it falls back to (the fenced-object and verdict parsers were
 # split across two modules for no reason).
-from ouroboros.triad_review import parse_review_findings
+from ouroboros.triad_review import emit_review_run_errors, parse_review_findings
 from ouroboros.usage_accounting import (
     PhysicalAttemptLimitExceeded,
     UsageAccountingError,
@@ -199,6 +199,10 @@ class ReviewCoordinator:
                 degraded_reasons=["no_review_slots"],
                 panel_id=_review_panel_id(request, []),
             )
+
+        if not request.reconcile_only and not request.checking_source:
+            from ouroboros.review_checking import wave_checking_source
+            request.checking_source = wave_checking_source(request.session_root, slots, data_root=self._custody_drive_root())
 
         base_scope = current_usage_scope() or UsageScope()
         usage_meta = (
@@ -372,6 +376,8 @@ class ReviewCoordinator:
             criteria_shape_valid=_criteria_shape_valid,
             advisory_hardness=HARDNESS_ADVISORY_VISIBLE,
         )
+        # #1578: every surface's reviewer failures reach the canonical log once.
+        emit_review_run_errors(self.usage_ctx, request, actors, drive_root=self.drive_root)
         return ReviewRunResult(
             request=asdict(request),
             actors=[asdict(actor) for actor in actors],
@@ -492,13 +498,19 @@ class ReviewCoordinator:
             if callable(pending_invocation_checkpoint):
                 pending_invocation_checkpoint(invocation_id)
         executor.set_pending_invocation_checkpoint(checkpoint)
+        from ouroboros.review_session_custody import exact_recovery_join
+        exact_recovery = exact_recovery_join(executor, self._custody_drive_root(), retry_state, operation_id, slot,
+                                             replay=request.reconcile_only)
         prompt_projection = executor.prompt_payload()
         prompt_ref: Dict[str, Any] = {}
         response_ref: Dict[str, Any] = {}
         start = time.time()
         attempt_history = _ReviewAttemptHistory(incoming_capture=last_physical_attempt_capture())
         try:
-            prompt_ref = persist_call(
+            # A collector must not replace the original immutable prompt with
+            # today's reconstruction or a redacted projection of the raw request.
+            prompt_ref = read_call_payload(self._custody_drive_root(), task_id=request.task_id or "review",
+                                           call_id=f"{call_id}_prompt")[2] if exact_recovery else persist_call(
                 self._custody_drive_root(),
                 task_id=request.task_id or "review",
                 call_id=f"{call_id}_prompt",
@@ -508,7 +520,7 @@ class ReviewCoordinator:
                           "review_operation_binding": binding},
             )
         except Exception:
-            if request.slot_source_delivery.get(slot.slot_id):
+            if request.slot_source_delivery.get(slot.slot_id) and not exact_recovery:
                 # A sourced review must retain its canonical identity before
                 # dispatch, not only in a post-run result or a worker buffer.
                 raise
@@ -547,11 +559,6 @@ class ReviewCoordinator:
         # selected by ``run_custodied_review_slots`` must remain usable after the
         # owner deadline.  The executor still validates the token and refuses a
         # missing/mismatched durable record before any new POST.
-        recovery_token = str(
-            (retry_state or {}).get("pending_invocation_id") or ""
-        ).strip()
-        exact_recovery = bool(recovery_token and str(operation_id or "").strip()
-            and str(getattr(slot.route, "value", slot.route) or "") == "agent_session")
         if not exact_recovery and owner_deadline_exhausted(
             deadline_at=owner_deadline, reserve_sec=get_finalization_grace_sec(),
         ):
@@ -752,9 +759,12 @@ class ReviewCoordinator:
         try:
             from ouroboros.tools.review_helpers import emit_review_usage
 
+            session = bool(usage.get("delegated_run_started") or usage.get("delegated_run_id"))
             emit_review_usage(
                 self.usage_ctx,
-                model=str(usage.get("resolved_model") or slot.model),
+                # A session row names its OBSERVED model or none: the seat's requested route
+                # label rides the ``claudexor`` receipt, never this field (#1578).
+                model=str(usage.get("resolved_model") or ("" if session else slot.model)),
                 provider=str(usage.get("provider") or ""), usage=usage,
                 source=f"review_substrate:{request.surface}",
                 prompt_chars=prompt_chars,

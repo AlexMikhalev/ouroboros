@@ -712,10 +712,65 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``context_input_selection._historical_anchor`` in
 # ``task_results/artifacts/*/source_handles/context_checkpoints/historical-author-input-*.json``
 # (one section-7 row; evidence, not current task authority).
-# 349 -> 351 (#1563 saved work): the rolling per-attempt working checkpoint,
+# 349 -> 351: review_history_view retains the selected authored capsule and the
+# transfer-only checkpoint as review-history-view / review-transfer files in the
+# existing context_checkpoints CAS (two section-7 rows; retention is unchanged).
+# 351 -> 353 (#1563 saved work): the rolling per-attempt working checkpoint,
 # ``task_results/artifacts/<task>/source_handles/working`` and its ``*.json`` file
 # (``ouroboros/working_checkpoint.py``; one row beside the source-handle rows).
-EXPECTED_SCAN_PATHS = 351
+# 353 -> 354 (storage on SQLite, S0): the dormant current-facts store ``state/current.sqlite``
+# (``ouroboros/store.py``; one section-3 row covers it with its siblings and locks).
+# 354 -> 356 (storage on SQLite, S0): the store's name-tier lock ``state/current.lock``
+# (``ouroboros/store_import.py``; the same section-3 row) and the reconciliation's copy of a row
+# whose file an older body deleted, ``task_results/quarantine/<id>.deleted-<UTC>.json`` (the
+# quarantine row).
+# 356 -> 359 (storage on SQLite, S0): the dormant authority switch's intent, receipt and
+# progress files ``state/switch_intent.json``, ``state/switch_receipt.json``,
+# ``state/switch_progress.json`` (``ouroboros/store_switch.py``; three section-2 rows).
+# 359 -> 360 (storage on SQLite, S1): the queue liveness stamp ``state/queue.alive`` published after the
+# structural queue files (``supervisor/queue_snapshot.py``; the queue-snapshot row).
+# 360 -> 358 (storage on SQLite, S3): the obligation sets' lock ``state/obligations.lock`` and rebuild
+# mark ``state/obligations/rebuild.owed`` are gone (flag columns of ``state/current.sqlite``); the
+# result bodies ``task_results/*.json`` are the importer's and exporter's alone, so the scan now names
+# the launch lock and the quarantine files specifically (same rows).
+# 358 -> 356 (storage on SQLite, S3 custody rows): the settled-terminal refresh cursor
+# ``state/delegate_terminal_refresh_cursor.json`` (the closing receipts in ``delegated_runs`` rows
+# replace the chain offset) and the ``logs/containment_faults.jsonl`` projection (the fault lives on
+# the run's ``custody_runs`` row) are gone.
+# 356 -> 359 (storage on SQLite, S5): the evidence-pack directory, its per-task packs
+# and sidecars and the index cache ``observability/packs``, ``observability/packs/*``,
+# ``observability/packs/index.sqlite`` (``ouroboros/evidence_packs.py``; one section-2 row).
+# 359 -> 360 (S5 FIX): the settlement census now names the existing state/obligations
+# directory itself, in addition to its already documented members; no new durable plane.
+# INT1: the integrated scan was actually 362 (the inherited 360 pin was stale).
+# Store-backed packing removes state/obligations, state/obligations/* and
+# state/obligations/rebuild.owed. The remaining 359 are S3's 356 plus the three
+# documented evidence-pack paths above; no new durable plane or exemption.
+# 353 -> 364 (Sprint 4 review pool): per-operation reviewer checking
+# areas/markers/evidence generations, retained frozen folder views and staging
+# names (review_checking.py), plus investigation named evidence
+# (tools/subagent_integration_delegated.py). The two section-4 checking rows and
+# section-7 delegated evidence row in PERSISTENCE.md cover the measured additions.
+# merge of the storage PR (353 -> 359, above) and Sprint 4 (353 -> 364): 353 + 6 + 11.
+# 370 -> 371 (FIXB): observability/packs/.publications, the disposable per-pass
+# reference journal documented in the existing evidence-pack row.
+# 371 -> 372: the fixed DATA server-lifetime admission lock (state/server.lock).
+# 373 -> 374: review_checking quarantines an invalid cached reader view under
+# state/review_checkouts/views/.discarded-*.* before removing it (PERSISTENCE views row).
+# 374 -> 372: the automatic reflection writer's two literal history paths left with it
+# (memory/knowledge/patterns_history.jsonl, retained as history; memory/knowledge_history.jsonl,
+# still written by knowledge.write_knowledge_note through its address, which the scan cannot see).
+# 372 -> 373: the generation's startup verification stamp (state/startup_verification.json).
+# 373 -> 378 (#1772, work scopes): the installation scope marker ``state/installation_scope.json``,
+# the per-task scope records ``state/task_scopes`` + ``state/task_scopes/*.json``, the unfinished
+# Panic sweep ``state/panic_sweep_pending.json`` (``ouroboros/process_scope.py``; two section-2
+# rows and one section-4 row) and the engine's own index ``claudexor/daemon/run-scopes.json``,
+# read at Panic and covered by the existing ``claudexor/**`` row.
+# 378 -> 377: the retired plan engine's operative-spec source (context_checkpoints/plan-spec-*.json);
+# earlier records keep theirs, nothing writes one any more.
+# 377 -> 378 (test health): adoption reads the receipt directory ``state/preflight_receipts``
+# (``ouroboros/preflight_qualification.py``; the existing receipts row).
+EXPECTED_SCAN_PATHS = 378
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -738,7 +793,6 @@ SENTINELS = frozenset({
     "uploads",
     # stage-2: names that live in constants, helper returns or f-strings
     "state/claudexor_rotation_provisioning.json",
-    "state/delegate_terminal_refresh_cursor.json",
     "state/extension_generation.json",
     "state/post_task_evolution_counter.json",
     "state/post_task_evolution_request.json",
@@ -1001,7 +1055,6 @@ def test_constant_named_durable_files_are_visible_to_the_scan():
     paths = scan_data_paths()
     hidden = sorted(p for p in (
         "state/claudexor_rotation_provisioning.json",
-        "state/delegate_terminal_refresh_cursor.json",
         "state/extension_generation.json",
         "state/post_task_evolution_counter.json",
         "state/post_task_evolution_request.json",

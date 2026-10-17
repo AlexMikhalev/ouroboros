@@ -83,9 +83,9 @@ def test_session_access_defaults_full_and_preserves_an_explicit_lower_choice():
     assert explicit_default.items[0].access == "workspace_write"
 
     configured, serialized = normalize_configured_subagents(_config(
-        _row("broad"), _row("ordinary", access="workspace_write"),
+        _row("broad"), _row("ordinary", access="workspace_write"), _row("reader", access="readonly"),
     ))
-    assert [row.access for row in configured.items] == ["full", "workspace_write"]
+    assert [row.access for row in configured.items] == ["full", "workspace_write", "readonly"]
     assert json.loads(serialized)["items"][0]["access"] == "full"
     assert json.loads(serialized)["items"][1]["access"] == "workspace_write"
     assert parse_configured_subagents(serialized) == configured
@@ -93,9 +93,9 @@ def test_session_access_defaults_full_and_preserves_an_explicit_lower_choice():
     assert configured_subagents_fingerprint(full_only) == configured_subagents_fingerprint(original)
 
 
-@pytest.mark.parametrize("access", [None, "", "readonly", "inherit_native", True, {}, "FULL"])
+@pytest.mark.parametrize("access", [None, "", "inherit_native", True, {}, "FULL"])
 def test_invalid_actor_access_is_not_silently_coerced(access):
-    with pytest.raises(ValueError, match="access must be workspace_write or full"):
+    with pytest.raises(ValueError, match="access must be readonly, workspace_write or full"):
         parse_configured_subagents(_config(_row(access=access)))
 
 

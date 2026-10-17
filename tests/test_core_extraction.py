@@ -131,8 +131,22 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # for same-tree mail: the forward_to_worker description names its peer addressees
     # as any other task in the caller's tree (parent, sibling, any task sharing the
     # root) and says Presence observation gaps are disclosed inside the tree too.
+    # Rolled again for source-addressed delivery (owner Q4): read_file gains the
+    # additive `max_chars` view budget (an exact piece of one window after start_char,
+    # the header naming the next cursor) and start_char's description names the
+    # code-point basis and the partial-view address; no parameter changed type,
+    # default or required status. Rolled for the owner-approved edit/read package:
+    # numbered read views (both cursors count source characters, never display
+    # numbers), explicit omitted-root semantics and ordered same-file edit_text
+    # replacements; editor calls run in call order and `force` confirms only an
+    # intentional shrink. The composed catalog retains both independent changes:
+    # public long-line search_code windows name the first match and read_file range;
+    # #1660 escalate adds explicit close (action, quiz_id, question_task_id, reason),
+    # registered materials and retention after task end. Only ask's validator requires
+    # question. The exact hash below pins their union; parameter types/defaults and
+    # required keys outside escalate, all other schemas and handler owners stay intact.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "25ab2df2f9cc9c65e4971b7d4e2a5d1013041933aa070849639a01c9a4398e83"
+        "5db47ba14469af3dceea9d20a40257f7eccb4599b047f879e7f691bfdd856cdf"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
@@ -178,7 +192,7 @@ def test_extracted_read_and_list_result_bytes_are_stable(tmp_path):
     ctx = ToolContext(repo_dir=repo, drive_root=data)
 
     assert core_file_tools._repo_read(ctx, "sample.txt").encode() == (
-        b"# sample.txt \xe2\x80\x94 lines 1\xe2\x80\x932 of 2\nalpha\nbeta\n"
+        b"# sample.txt \xe2\x80\x94 lines 1\xe2\x80\x932 of 2\n     1\talpha\n     2\tbeta\n"
     )
     assert core_file_tools._repo_list(ctx, ".").encode() == (
         b'[\n  "nested/",\n  "sample.txt"\n]'

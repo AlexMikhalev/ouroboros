@@ -42,7 +42,7 @@ _METADATA_FIELDS = frozenset({
     'required_sources', 'late_settlement', 'reviewer_outputs', 'emitted_answer', 'delivered',
     'tool_trajectory', 'tool_trajectory_selected', '__unresolved_partial_artifacts__',
     'owner_requirements_and_decisions', 'plan_claims_exhibit', 'acceptance_support_refs',
-    'skill_lifecycle_history_coverage', 'evidence_manifest',
+    'skill_lifecycle_history_coverage', 'evidence_manifest', 'acceptance_material', 'selected_answer', 'workspace', 'observed_effects',
 })
 
 
@@ -65,7 +65,7 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
     if carrier == 'contract':
         return {'predecessor_authority': 'task_result', 'attachment_manifest_ref': 'metadata'}.get(key, '')
     if carrier == 'task_result':
-        return {'task_contract': 'contract', 'trace_refs': 'trace', 'plan_review_state': 'plan_state',
+        return {'task_contract': 'contract', 'trace_refs': 'trace', 'plan_review_state': 'plan_state', 'plan_record': 'plan_record',
                 'review_evidence': 'evidence', 'review_projection': 'metadata', 'loop_outcome': 'metadata',
                 'completion_observations': 'metadata', 'owner_wait': 'metadata',
                 'verification_ledger': 'metadata', 'root_phase_checkpoint': 'metadata',
@@ -81,8 +81,21 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
         return 'call_request' if key == 'kwargs' else 'message'
     if carrier == 'plan_state':
         return {'waves': 'plan_wave', 'current_attempt': 'plan_attempt'}.get(key, '')
+    # The planning organ's record: exact revision texts and each participant's retained
+    # delivery/reply (``plan_record``), every one a task source the closure follows.
+    if carrier == 'plan_record':
+        return {'revisions': 'plan_revisions', 'asks': 'plan_asks'}.get(key, '')
+    if carrier == 'plan_revisions':
+        return 'metadata' if key == 'text_ref' else ''
+    if carrier == 'plan_asks':
+        return {'participants': 'plan_participants', 'dialogue_ref': 'plan_source_entry'}.get(key, '')
+    if carrier == 'plan_participants':
+        return {'delivery_ref': 'plan_source_entry', 'reply_ref': 'plan_source_entry',
+                'prompt_ref': 'metadata', 'response_ref': 'metadata'}.get(key, '')
+    if carrier == 'plan_source_entry':
+        return 'metadata' if key == 'ref' else ''
     if carrier == 'plan_attempt':
-        return 'metadata' if key == 'author_subject' else ''
+        return 'metadata' if key in {'author_subject', 'submitted_subject'} else ''
     if carrier == 'plan_wave':
         return {'wave_artifact': 'metadata', 'previous_wave_artifact': 'metadata',
                 'supersedes_wave_artifact': 'metadata', 'spec_source_ref': 'metadata',
@@ -105,6 +118,9 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
             return ''
         if key == 'historical_author_inputs':
             return 'historical_inputs'
+        if key == 'service_finalization':
+            # Host teardown rows: only their log_finalization refs are walked.
+            return 'metadata' if isinstance(provenance, dict) and provenance.get(key) == 'host_attested' else ''
     if key == 'task_contract' and carrier in {'evidence', 'task_result'}:
         return 'contract'
     if key == 'request' and carrier == 'metadata':
@@ -113,9 +129,29 @@ def source_carrier(value: dict, key: str, carrier: str) -> str:
         return 'trace'
     if key == 'plan_review_state':
         return 'plan_state'
+    if key == 'plan_record':
+        return 'plan_record'
     if key == 'response_ref':
         return 'response_ref'
     return 'metadata' if key in _REF_FIELDS | _METADATA_FIELDS else ''
+
+
+def _owned_attachment_path(path: pathlib.Path, root: pathlib.Path, task_id: str) -> bool:
+    """The task store's own ``attachments/``, or the review-input copy of one of them.
+
+    ``retain_review_request_sources`` places a reviewer's attachment copy at
+    ``source_handles/review_inputs/request-*/task_results/artifacts/<task>/attachments/<file>``
+    under the same task root, so a persisted request names that placement.
+    """
+    resolved = path.resolve()
+    if resolved.is_relative_to(root / 'attachments'):
+        return True
+    inputs = root / 'source_handles' / 'review_inputs'
+    if not resolved.is_relative_to(inputs):
+        return False
+    rel = resolved.relative_to(inputs).parts
+    return (len(rel) == 6 and rel[0].startswith('request-')
+            and rel[1:5] == ('task_results', 'artifacts', task_id, 'attachments'))
 
 
 def retain_contract(value: dict, source: pathlib.Path, custody: pathlib.Path, task_id: str, state: dict) -> dict:
@@ -133,9 +169,11 @@ def retain_contract(value: dict, source: pathlib.Path, custody: pathlib.Path, ta
                 continue
             path = pathlib.Path(row.get('abs_path') or '')
             if (not path.is_absolute() or path.is_symlink()
-                    or not any(path.resolve().is_relative_to(root / 'attachments') for root in roots)
+                    or not any(_owned_attachment_path(path, root, task_id) for root in roots)
                     or type(row.get('size')) is not int or len(str(row.get('sha256') or '')) != 64):
-                raise ValueError('review attachment has no captured owner-bound source')
+                from ouroboros.source_retention import InvalidRetainedSource
+
+                raise InvalidRetainedSource('review attachment has no captured owner-bound source', path)
     wrapper = {'task_contract': copy.deepcopy(value)}
     promote_task_attachment_refs(custody, source, task_id, wrapper, state)
     return wrapper['task_contract']
@@ -162,7 +200,7 @@ def _retain_named_sources(request: Any, source: pathlib.Path, custody: pathlib.P
     from ouroboros.artifacts import (collect_task_artifact_records, copy_artifact_file, read_actor_source_bytes, store_actor_source_bytes,
                                     stream_artifact_file, task_artifact_dir_path)
     from ouroboros.outcome_receipt_store import publish_verification_receipt_union, verification_receipts_path
-    from ouroboros.task_results import load_task_result, task_result_path
+    from ouroboros.task_results import load_task_result
 
     task_id, rows = request.task_id, []
     base = task_artifact_dir_path(source, task_id)
@@ -242,7 +280,7 @@ def _retain_named_sources(request: Any, source: pathlib.Path, custody: pathlib.P
     # both explicit producer roots before copying into the private reader root.
     result = retain_review_refs(bind_artifacts(result), source, canonical, task_id, carrier='task_result')
     result = retain_review_refs(result, canonical, custody, task_id, carrier='task_result')
-    retain('task-result', task_result_path(source, task_id), json.dumps(result, ensure_ascii=False).encode())
+    retain('task-result', f'task:{task_id}', json.dumps(result, ensure_ascii=False).encode())
     request.evidence = bind_artifacts(request.evidence)
     retain('artifact-inventory', base, json.dumps({'task_id': task_id, 'artifacts': [
         row for row in rows if row['name'].startswith('artifact:')]}, ensure_ascii=False).encode())
@@ -283,6 +321,8 @@ def _reader_bindings(value: Any, root: pathlib.Path, task_id: str) -> list[dict]
     def visit(item, owner, carrier='request'):
         if isinstance(item, dict):
             if item.get('kind') == 'task_source':
+                if not item.get('path'):
+                    return  # a path-less legacy gap names no address to bind; it states its own loss
                 path = task_artifact_dir_path(root, owner) / item['path']
                 rows[(owner, str(path))] = {'owner_task_id': owner, 'source_path': item['path'],
                     'sha256': item['sha256'], 'size': item['size'],

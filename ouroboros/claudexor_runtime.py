@@ -244,15 +244,18 @@ class ClaudexorRuntimePin:
             raise ClaudexorRuntimeError("runtime_pin_invalid", "; ".join(errors))
 
 
-def load_runtime_pin(path: "str | pathlib.Path | None" = None) -> Optional[ClaudexorRuntimePin]:
+def load_runtime_pin(path: "str | pathlib.Path | None" = None, *,
+                     data: Optional[bytes] = None) -> Optional[ClaudexorRuntimePin]:
     """Load the tracked exact pin; ``release: null`` means not published yet.
 
     A partial or placeholder release is a typed error, never an implicit latest
-    version.  Tests and release tooling may pass an alternate file explicitly.
+    version.  Tests and release tooling may pass an alternate file explicitly;
+    ``data`` are the bytes of a pin file read elsewhere (a bound candidate's, a
+    switch target's), parsed and validated exactly like the file.
     """
     pin_path = pathlib.Path(path) if path is not None else pathlib.Path(__file__).with_name(_PIN_FILENAME)
     try:
-        raw = json.loads(pin_path.read_text(encoding="utf-8"))
+        raw = json.loads(pin_path.read_text(encoding="utf-8") if data is None else data.decode("utf-8"))
     except FileNotFoundError as exc:
         raise ClaudexorRuntimeError(
             "runtime_pin_missing", f"managed runtime pin not found at {pin_path}"

@@ -108,6 +108,28 @@ def _live_cmd_sha256(pid: int) -> str:
     return hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()
 
 
+def process_fingerprint(pid: int, cmd: Any = None) -> Dict[str, str]:
+    """The measured birth/command identity of a live PID, as custody rows record it."""
+    return {
+        # DOWNGRADE-SAFE split: the unversioned field keeps the legacy ``ps``
+        # spelling an N-1 reader still understands (a rollback that reads a
+        # boot-qualified token here would mismatch every row and prune it
+        # WITHOUT killing, orphaning the process forever), while the current
+        # reader prefers the boot-qualified sibling below. One extra ``ps``
+        # per SPAWN (the write path always paid it before /proc-first); the
+        # hot sweep path stays subprocess-free.
+        "start_time": (legacy_start := process_start_time_legacy(pid)),
+        **(
+            {"start_time_boot": boot_start}
+            if (boot_start := process_start_time(pid)) and boot_start != legacy_start
+            else {}
+        ),
+        # The LIVE command line (what the OS reports) is the reap-time
+        # comparison anchor; the argv we passed may differ cosmetically.
+        "cmd_sha256": _live_cmd_sha256(pid) or _cmd_sha256(cmd),
+    }
+
+
 def record_process(
     drive_root: pathlib.Path,
     *,
@@ -129,24 +151,7 @@ def record_process(
         "ts": utc_now_iso(),
         "pid": int(pid),
         "pgid": int(pgid or 0) if reap_process_group else 0,
-        "fingerprint": {
-            # DOWNGRADE-SAFE split: the unversioned field keeps the legacy ``ps``
-            # spelling an N-1 reader still understands (a rollback that reads a
-            # boot-qualified token here would mismatch every row and prune it
-            # WITHOUT killing, orphaning the process forever), while the current
-            # reader prefers the boot-qualified sibling below. One extra ``ps``
-            # per SPAWN (the write path always paid it before /proc-first); the
-            # hot sweep path stays subprocess-free.
-            "start_time": (legacy_start := process_start_time_legacy(pid)),
-            **(
-                {"start_time_boot": boot_start}
-                if (boot_start := process_start_time(pid)) and boot_start != legacy_start
-                else {}
-            ),
-            # The LIVE command line (what the OS reports) is the reap-time
-            # comparison anchor; the argv we passed may differ cosmetically.
-            "cmd_sha256": _live_cmd_sha256(pid) or _cmd_sha256(cmd),
-        },
+        "fingerprint": process_fingerprint(pid, cmd),
         "purpose": str(purpose or "")[:200],
         "scope": scope,
         "owner_task": str(owner_task_id or ""),
@@ -189,8 +194,16 @@ def spawn_supervised(
         popen_kwargs = merged
     from ouroboros.owner_pause import operation_start
 
-    with operation_start():
-        proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603 — callers pass vetted argv lists
+    from ouroboros.tool_custody import external_handoff
+    confirmed = external_handoff("supervised_process")
+    proc = None
+    try:
+        with operation_start():
+            proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603 — callers pass vetted argv lists
+    except BaseException:
+        if proc is None:
+            confirmed()
+        raise
     try:
         if on_spawn is not None:
             on_spawn(proc)
@@ -209,7 +222,10 @@ def spawn_supervised(
             proc.wait(timeout=5)
         except Exception:
             pass
+        if proc.poll() is not None:
+            confirmed()
         raise RuntimeError("spawned process could not enter durable custody") from exc
+    confirmed()
     return proc
 
 
@@ -246,6 +262,11 @@ def _legacy_start_matches(pid: int, recorded: str, current: str) -> bool:
     # ``ps``-capable host a bare-tick row compares against the ``ps`` spelling, fails,
     # and is PRUNED — the safe direction (prune, never kill).
     return bool(recorded) and process_start_time_legacy(pid) == recorded
+
+
+def process_fingerprint_matches(entry: Dict[str, Any], *, require_measured: bool = False) -> bool:
+    """Prove a captured process identity using the custody owner's matching rules."""
+    return _fingerprint_matches(entry, require_measured=require_measured)
 
 
 def _fingerprint_matches(entry: Dict[str, Any], *, require_measured: bool = False) -> bool:
@@ -313,7 +334,7 @@ def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
     scope = str(entry.get("scope") or "")
     pgid = int(entry.get("pgid") or 0)
     return bool(
-        purpose.startswith(("service:", "workspace_service:"))
+        (purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer")
         and scope in {"task", "session"}
         and pgid > 0
         and process_group_has_live_members(pgid)
@@ -446,6 +467,43 @@ def _rewrite_ledger(
         forget_ledgered_pids(drive_root, dropped)  # the ledger's close path is the set's too
 
 
+# A spawner names itself to the Python entrypoints it launches, in the child's
+# own env and never in its os.environ. A bare container server is PID 1, and
+# PID 1 also adopts orphans, so a child's parent PID alone cannot tell a live
+# spawner from an adoption.
+PARENT_PID_ENV = "OUROBOROS_PARENT_PID"
+
+
+def lifeline_parent_env() -> Dict[str, str]:
+    """Overlay this LAST onto a child env so no manifest or leftover names another parent."""
+    return {PARENT_PID_ENV: str(os.getpid())}
+
+
+def _orphaned_at_start(ppid: int) -> bool:
+    """True when the spawner was gone before the lifeline started.
+
+    A ``multiprocessing`` child ignores the env: PID 1 is its live spawner only
+    as its own multiprocessing parent under spawn/fork. A forkserver child's
+    ppid is the forkserver, so PID 1 there is always an adoption. A plain child
+    whose spawner named itself must still have that parent (an import-delay
+    reparent to a subreaper included); a legacy spawner names nobody and keeps
+    the old ``ppid <= 1`` refusal. Anything unreadable keeps that refusal too.
+    """
+    try:
+        import multiprocessing
+
+        parent = multiprocessing.parent_process()
+        if parent is not None:
+            if ppid != 1:
+                return ppid <= 0
+            method = getattr(type(multiprocessing.current_process()), "_start_method", None)
+            return not (parent.pid == 1 and method in ("spawn", "fork"))
+        named = os.environ.get(PARENT_PID_ENV)
+        return (ppid <= 0 or ppid != int(named)) if named else ppid <= 1
+    except Exception:
+        return ppid <= 1
+
+
 def _multiprocessing_parent_sentinel() -> Optional[int]:
     """The spawner's sentinel fd inside a ``multiprocessing`` child, else None.
 
@@ -509,14 +567,15 @@ def start_parent_lifeline(*, poll_sec: float = 5.0, label: str = "", stop_socket
                 os._exit(1)
 
     initial_ppid = os.getppid()
+    orphaned = _orphaned_at_start(initial_ppid)
     sentinel = _multiprocessing_parent_sentinel()
     watched = ([sentinel] if sentinel is not None else []) + ([stop_socket] if stop_socket is not None else [])
     ready = []
     try:
         ready = _mp_wait(watched, timeout=0) if watched else []
-        died_early = initial_ppid <= 1 or bool(ready)
+        died_early = orphaned or bool(ready)
     except Exception:
-        sentinel, died_early = None, initial_ppid <= 1
+        sentinel, died_early = None, orphaned
     if died_early:
         # The parent died before we even got here (import-delay race after an
         # abrupt supervisor kill). These entrypoints are always spawned by a
@@ -729,7 +788,7 @@ def quiesce_custodied_services(
     blockers: List[str] = []
     for entry in entries:
         purpose = str(entry.get("purpose") or "")
-        is_service = purpose.startswith(("service:", "workspace_service:"))
+        is_service = purpose.startswith(("service:", "workspace_service:")) or purpose == "evidence_packer"
         leader_matches = _fingerprint_matches(entry)
         if (
             is_service

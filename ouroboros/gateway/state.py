@@ -7,7 +7,7 @@ import logging
 import os
 import pathlib
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse
 from ouroboros import get_version
 from ouroboros.settings_scales import effort_range
 from ouroboros.gateway._helpers import json_exception, request_drive_root
-from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+from ouroboros.post_task_checkpoint import post_task_synthesis_is_open, post_task_synthesis_is_terminal
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,8 @@ def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def api_health(_request: Request) -> JSONResponse:
+    from ouroboros.gateway.schema import GATEWAY_ABI_VERSION
+
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
     return JSONResponse({
@@ -116,7 +118,23 @@ async def api_health(_request: Request) -> JSONResponse:
         "version": runtime_version,
         "runtime_version": runtime_version,
         "app_version": app_version,
+        # The wire-contract carrier a client checks before relying on GET /api/contract.
+        "abi_version": GATEWAY_ABI_VERSION,
     })
+
+
+async def api_contract(_request: Request) -> JSONResponse:
+    """``GatewayContractResponse``: the gateway ABI derived from the endpoint and envelope indexes."""
+    from ouroboros.gateway.schema import contract_document
+
+    return JSONResponse(contract_document(), headers={"Cache-Control": "no-store"})
+
+
+def _served_ui_state(request: Request) -> Dict[str, str]:
+    """This generation's applied main interface. The lifespan attaches the server's ServedUI;
+    before that (or in an app assembled without one) the routes still serve the builtin default."""
+    served_ui = _state_attr(request, "served_ui")
+    return served_ui.selection.state() if served_ui is not None else {"source": "builtin"}
 
 
 def _describe_bg(request: Request) -> Callable[[bool], dict[str, Any]] | None:
@@ -208,10 +226,17 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     )
     activity_availability = {"complete": True}
     task_bindings = _task_bindings_safe(request, availability=activity_availability)
+    bindings_complete = activity_availability["complete"]
     direct_turns = _direct_turns_snapshot_safe(availability=activity_availability)
+    decision_owners = []
     activities = _chat_activities_snapshot_safe(
         drive_root, task_bindings, direct_turns=direct_turns, availability=activity_availability,
+        decision_owners=decision_owners,
     )
+    from ouroboros.gateway.main_decisions import main_decisions_snapshot
+    decisions = main_decisions_snapshot(drive_root, decision_owners, task_bindings,
+                                       activities_complete=activity_availability["complete"],
+                                       bindings_complete=bindings_complete)
     # Registered-project facts (never raise): the compact sidebar list, and the
     # COMPLETE (uncapped, all-status) project chat_ids for the live WS fan-out
     # isolation SSOT — distinct from the capped/filtered sidebar list, so
@@ -252,6 +277,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         "active_direct_turns": direct_turns,
         "active_chat_activities": activities,
         "active_chat_activities_complete": activity_availability["complete"],
+        **decisions,
     }
 
 
@@ -283,31 +309,35 @@ def _epoch_or_zero(value: Any) -> float:
         return 0.0
 
 
-# Exact root/task path -> stat-keyed outcome, finalizing and question display facts.
+def _answer_stored(synthesis: Any) -> bool:
+    """A post-answer checkpoint state; the pre-answer cost ``refresh`` pseudo-status is not one."""
+    return post_task_synthesis_is_open(synthesis) or post_task_synthesis_is_terminal(synthesis)
+
+
+# Exact root/task path -> stat-keyed outcome, finalizing and question display facts. Sized for a
+# census that includes running children (the Main decision owners): a smaller bound evicts the
+# census on every poll and re-reads each document twice.
 _FINALIZING_MEMO: Dict[tuple, tuple] = {}
-_FINALIZING_MEMO_MAX = 64
+_FINALIZING_MEMO_MAX = 1024
 
 
 def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
-    """One stat-keyed read serves outcome, finalizing, retry and question facts."""
+    """One signature-keyed read serves outcome, finalizing, retry and question facts."""
+    from ouroboros.task_store import read_document, signature
+
     memo_id = (str(pathlib.Path(drive_root).resolve()), task_id)
     try:
-        from ouroboros.task_results import task_results_dir
-
-        path = task_results_dir(pathlib.Path(drive_root), create=False) / f"{task_id}.json"
-        stat = path.stat()
+        key = signature(drive_root, task_id)
     except Exception:
+        key = None
+    if key is None:
         _FINALIZING_MEMO.pop(memo_id, None)
         return {}
-    # Atomic replacement can preserve size and mtime within one timestamp tick.
-    key = (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
     memo = _FINALIZING_MEMO.get(memo_id)
     if memo is not None and memo[0] == key:
         return memo[1]
     try:
-        from ouroboros.utils import read_json_dict
-
-        data = read_json_dict(path)
+        data = read_document(drive_root, task_id)
         if not isinstance(data, dict):
             return {}
     except Exception:
@@ -323,10 +353,21 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
 
     display = {key: data[key] for key in ("status", "reason_code", "timeout_retry_from", "original_task_id")
                if key in data}
+    if isinstance(data.get("model_waits"), dict):
+        display["model_waits"] = data["model_waits"]
     if data.get("status") or data.get("outcome_axes"):
         display["outcome_axes"] = normalize_outcome_axes(data)
     if synthesis:
         display["root_phase_checkpoint"] = {"post_task_synthesis": synthesis}
+    if _answer_stored(synthesis):
+        # An answered root whose late phase remains (D10) names its work where no
+        # card does: Activity shows it beside the saved remainder's controls.
+        from ouroboros.projects_registry import task_presentation_name
+        from ouroboros.terminal_time import terminal_time_fact
+
+        # The executor's own terminal fact or nothing: generic ts is never an answer time.
+        display["late_work"] = {"title": task_presentation_name(data),
+                                "answered_at": terminal_time_fact(data).get("occurred_at") or ""}
     facts = {"finalizing": post_task_synthesis_is_open(synthesis), "late_phase": synthesis,
              "display": display,
              # An answered root's census row (D10) carries only its own routing identity.
@@ -339,7 +380,8 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
              "quiz": {key: quiz[key] for key in ("quiz_id", "state", "asked_at", "wait_for_answer", "question",
                                                  "options", "option_details", "stake", "assumption",
                                                  "recommended_index", "answered_index", "comment", "wait_ended_at",
-                                                 "host_facts")
+                                                 "host_facts", "materials", "closed_reason", "closed_at",
+                                                 "closed_by_task_id", "closed_actor", "closed_request_id", "delivery")
                       if isinstance(quiz, dict) and key in quiz}}
     if len(_FINALIZING_MEMO) >= _FINALIZING_MEMO_MAX:
         _FINALIZING_MEMO.clear()
@@ -380,6 +422,22 @@ def _owner_fence_state(drive_root: Any, row: Dict[str, Any], task_id: str) -> st
         budget_drive_root=str(row.get("budget_drive_root") or drive_root))).get("state") or "")
 
 
+def _interrupted_owner_resume(drive_root: Any, row: Dict[str, Any], task_id: str) -> Optional[bool]:
+    """A parked member whose owner Resume was consumed, then interrupted (#1716): not its owner's own
+    Pause. ``None``: a fact it needs is unreadable, so the row is unknown, never quietly absent."""
+    from ouroboros.owner_pause import interrupted_member_resume
+
+    recovery, root_id = row.get("_working_recovery"), str(row.get("root_task_id") or task_id)
+    if not isinstance(recovery, dict) or root_id == task_id:
+        return False
+    try:  # the attempt whose saved work resumes, exactly as the held selection reads it
+        attempt = int(recovery.get("from_attempt") or 0)
+    except (TypeError, ValueError):
+        return None
+    return interrupted_member_resume(pathlib.Path(row.get("budget_drive_root") or drive_root), root_id, task_id,
+                                     attempt=attempt)
+
+
 def _finishing_reviews(drive_root: Any, row: Dict[str, Any], task_id: str) -> bool:
     """Whether review work the owner's Pause lets finish still runs, as its census recorded it.
     The census names tasks and model sends alike, so it is never a reviewer count."""
@@ -406,7 +464,7 @@ def _activity_pause_cause(row: dict, fence: dict) -> str:
         return "owner"
     pause = row.get("_budget_pause") or row.get("budget_pause") or {}
     reason = pause.get("reason") if isinstance(pause, dict) else None
-    if reason in {"budget", "owner", "sleep"}:
+    if reason in {"budget", "owner", "sleep", "authority"}:
         return reason
     if isinstance(pause, dict) and pause.get("status") == "paused_before_dispatch":
         return "budget"
@@ -414,6 +472,8 @@ def _activity_pause_cause(row: dict, fence: dict) -> str:
         return "budget"
     if row.get("reason_code") == "owner_paused":
         return "owner"
+    if row.get("reason_code") == "authority_paused":
+        return "authority"
     return "unknown"
 
 
@@ -441,7 +501,8 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
     return activity
 
 
-def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None) -> list:
+def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None,
+                                  decision_owners=None) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
     Additive beside ``active_direct_turns`` (kept unchanged for compatibility):
@@ -458,6 +519,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     """
     direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe()
     activities = [_direct_activity_pause_projection(drive_root, row, availability) for row in direct_rows]
+    census_ids = {row.get("activity_id") for row in activities}
     bindings = task_bindings if isinstance(task_bindings, dict) else {}
     try:
         from supervisor import queue as queue_mod
@@ -474,7 +536,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 (
                     str(task_id),
                     {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
-                        or (meta.get("task") or {}).get("_attempt") or 1)} if isinstance(meta, dict) else {},
+                        or (meta.get("task") or {}).get("_attempt") or 1),
+                     "model_activity": (meta.get("active_llm_call") or {}).get("model_activity")} if isinstance(meta, dict) else {},
                     _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0,
                 )
                 for task_id, meta in queue_mod.RUNNING.items()
@@ -496,7 +559,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                     availability["complete"] = False
                 return False
 
-        def _activity(task_id: str, row: Dict[str, Any], phase: str, started_at: float) -> Dict[str, Any]:
+        def _activity(task_id: str, row: Dict[str, Any], phase: str, started_at: float, *, root: bool = True,
+                      can_resume: bool = False, owner_resumed: bool = False) -> Dict[str, Any]:
             from ouroboros.project_admission import project_hold_fact
 
             if phase == "unknown" and availability is not None:
@@ -508,32 +572,63 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 "client_message_id": "",
                 "kind": "direct_chat" if row.get("_is_direct_chat") else "managed_task",
                 "phase": phase,
-                **({"pause_cause": _activity_pause_cause(
-                    row, fence_rows.get(str(row.get("root_task_id") or task_id), {}))}
+                # Cancel stops a lineage-resolved root (``ChatOutbound.cancelable``); Resume is the
+                # parked row's own release rule (``events_budget.explicit_resume_required``).
+                "can_resume": bool(can_resume), "cancelable": bool(root),
+                # A consumed owner Resume answered that fence's Pause: the row's own facts explain it.
+                **({"pause_cause": _activity_pause_cause(row, {} if owner_resumed else fence_rows.get(
+                    str(row.get("root_task_id") or task_id), {}))}
                    if phase in {"budget_paused", "budget_pausing"} else {}),
                 **({"finishing_reviews": finishing} if phase == "budget_paused" and (
                     finishing := _finishing_reviews(drive_root, row, task_id)) else {}),
                 "started_at": started_at,
                 "task_attempt": int(row.get("_attempt") or 1),
                 **{key: row[key] for key in ("timeout_retry_from", "original_task_id") if row.get(key)},
+                # A child is never a census row: its lineage serves only the Main decision projection.
+                **({} if root else {key: row[key] for key in ("parent_task_id", "root_task_id", "delegation_role")
+                                    if row.get(key)}),
                 **({"model_waits": row["model_waits"]} if row.get("model_waits") else {}),
+                **({"model_activity": row["model_activity"]} if row.get("model_activity")
+                   and row["model_activity"].get("task_attempt") == int(row.get("_attempt") or 1) else {}),
                 **({"project_admission_hold": project_hold_fact(row)}
                    if row.get("_project_admission_restore_hold") else {}),
             }
 
+        from types import SimpleNamespace
+
+        from supervisor.events_budget import explicit_resume_required
         from supervisor.queue_transitions import budget_pause_fact
 
+        registries = SimpleNamespace(PENDING=pending_rows, BUDGET_ROOT_FENCES=fence_rows, DRIVE_ROOT=drive_root,
+                                     RUNNING={task_id: {"task": row} for task_id, row, _started in running_rows})
+        active_roots = set()  # logical roots represented by the current physical queue actors
         for row in pending_rows:
             task_id = str(row.get("id") or "")
-            if task_id and _is_root(task_id, row):
+            if task_id:
+                root = _is_root(task_id, row)
+                if root:
+                    census_ids.add(task_id)
+                    active_roots.add(str(row.get("root_task_id") or task_id))
                 # #322 (P1): a budget-paused member must not masquerade as
                 # "queued" — nothing will dispatch it until an explicit resume.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
                 phase = ("unknown" if pausing is None else "budget_pausing" if pausing
                          else "budget_paused" if budget_pause_fact(row, fence_rows) else "queued")
-                activities.append(_activity(task_id, row, phase, _epoch_or_zero(row.get("queued_at"))))
+                # An interrupted owner Resume leaves the member parked; only that existing Resume continues it.
+                interrupted = phase in {"budget_paused", "budget_pausing"} and _interrupted_owner_resume(
+                    drive_root, row, task_id)
+                phase = "unknown" if interrupted is None else "budget_paused" if interrupted else phase
+                resume = interrupted is True or (phase == "budget_paused" and explicit_resume_required(
+                    registries, row, owner_paused=(fence_rows.get(str(row.get("root_task_id") or task_id)) or {}).get(
+                        "cause") == "owner_pause" or _owner_fence_state(drive_root, row, task_id) == "paused"))
+                activities.append(_activity(task_id, row, phase, _epoch_or_zero(row.get("queued_at")),
+                                            root=root, can_resume=resume, owner_resumed=interrupted is True))
         for task_id, row, started_at in running_rows:
-            if task_id and _is_root(task_id, row):
+            if task_id:
+                root = _is_root(task_id, row)
+                if root:
+                    census_ids.add(task_id)
+                    active_roots.add(str(row.get("root_task_id") or task_id))
                 # #1196: a RUNNING root whose durable budget_pause row says
                 # "pausing" is neither working nor paused yet — additive phase.
                 pausing = _managed_task_budget_pausing(drive_root, row, task_id)
@@ -543,7 +638,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                     phase = "budget_paused"  # its stack parked warm under a settled Pause
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
-                activities.append(_activity(task_id, row, phase, started_at))
+                activities.append(_activity(task_id, row, phase, started_at, root=root))
         from ouroboros.post_task_checkpoint import post_task_model_waits, post_task_synthesis_in_flight
         from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
         visible = {row["activity_id"]: row for row in activities}
@@ -553,6 +648,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             if latch.get("cause") != "owner_pause" or root_id in visible:
                 continue
             facts = _task_activity_facts(drive_root, root_id)
+            if root_id in active_roots and not (
+                    facts.get("late_phase") == "paused" or facts.get("finalizing")
+                    or post_task_synthesis_in_flight(drive_root, root_id)
+                    or task_has_live_review_operation(drive_root, root_id)
+                    or paused_acceptance_preparations(drive_root, root_id, str(latch.get("fence_id") or ""))):
+                continue  # the logical fence alone is no second actor; genuine late work stays
             # The fence's own census is the truth of "Paused": reviewers already
             # launched finish separately and never keep the tree Pausing.
             if facts.get("late_phase") == "paused" or _owner_fence_state(
@@ -568,8 +669,10 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 continue
             row = dict(facts.get("row") or {})
             visible[root_id] = _activity(root_id, row, phase, _epoch_or_zero(row.get("queued_at")))
+            census_ids.add(root_id)
             activities.append(visible[root_id])
         for owner in post_task_model_waits(drive_root):
+            census_ids.add(owner.task_id)
             waits = owner.snapshot()["model_waits"]
             if owner.task_id in visible:
                 # A Pause settling over the late phase stays "pausing", never back to finalizing.
@@ -578,7 +681,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                                               **({} if pausing else {"phase": "finalizing"}))
             else:
                 row = {**owner.task, "model_waits": waits}
-                activities.append(_activity(owner.task_id, row, "finalizing", _epoch_or_zero(row.get("queued_at"))))
+                activities.append(_activity(owner.task_id, row, "finalizing", _epoch_or_zero(row.get("queued_at")),
+                                            root=_is_root(owner.task_id, owner.task)))
     except Exception:
         if availability is not None:
             availability["complete"] = False
@@ -589,8 +693,15 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     # convert-gate fact only (#902) — that task was never bound, and its chat
     # rows are still where it was started, so moving its live card into the
     # project room would strand the card from its own history.
+    owners_by_id = {row["activity_id"]: row for row in activities}
     for activity in activities:
-        binding = bindings.get(str(activity.get("activity_id") or ""))
+        # A child re-homes through its own, then its parent's or root's durable binding.
+        binding = next((bindings[key] for key in (activity.get("activity_id"), activity.get("parent_task_id"),
+            activity.get("root_task_id")) if isinstance(bindings.get(key), dict)
+            and not bindings[key].get("origin_bound")), None)
+        if binding is None and not activity.get("project_id"):
+            binding = next((owners_by_id[key] for key in (activity.get("parent_task_id"), activity.get("root_task_id"))
+                if key in owners_by_id and owners_by_id[key].get("project_id")), None)
         if isinstance(binding, dict) and not binding.get("origin_bound"):
             for key in ("chat_id", "project_id"):
                 if binding.get(key):
@@ -610,11 +721,35 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     for activity in activities:
         try:
             facts = _task_activity_facts(drive_root, str(activity.get("activity_id") or ""))
-            activity.update(facts.get("display") or {})
+            display = dict(facts.get("display") or {})
+            recorded_waits = display.pop("model_waits", {})
+            attempt = int(activity.get("task_attempt") or 1)
+            # Live post-task/direct owners and canonical result facts may land
+            # at different times. Merge identities at their current attempt,
+            # choosing the newest revision; an old result must not erase a
+            # current review wait or restore an already settled one.
+            waits = {}
+            for source in (recorded_waits, activity.get("model_waits") or {}):
+                for wait_id, wait in source.items():
+                    if not isinstance(wait, dict) or wait.get("task_attempt") != attempt:
+                        continue
+                    revision = wait.get("revision")
+                    previous = (waits.get(wait_id) or {}).get("revision")
+                    # An unreadable live revision cannot authorize the older
+                    # result's controls; retain its gap for the Main projector.
+                    if (type(revision) is not int or type(previous) is not int
+                            or revision >= previous):
+                        waits[wait_id] = wait
+            activity.update(display)
+            if waits:
+                activity["model_waits"] = waits
             wait = facts.get("owner_wait", {})
             if not wait.get("quiz_id"):
                 continue
+            # The waited quiz's own id rides along: Main's work list goes to that exact question
+            # (a Main task has no Project pointer to carry it).
             activity["owner_wait"] = {**owner_wait_projection(wait["quiz_id"], wait, facts.get("quiz")),
+                                      "quiz_id": str(wait["quiz_id"]),
                                       "quiz_state": (facts.get("quiz") or {}).get("state", "unknown")}
             pointer = project_question_pointer(
                 {"task_id": activity["activity_id"], "quiz_id": wait["quiz_id"], "wait_for_answer": True},
@@ -632,7 +767,22 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             # A recorded quiz wait with no readable Project pointer: the wait is
             # real, its detail is not; disclose rather than animate.
             activity["required_question_unavailable"] = True
-    return activities
+    if decision_owners is not None:
+        decision_owners.extend(activities)  # waits belong to their emitting owner, including children
+    return [row for row in activities if row.get("activity_id") in census_ids]
+
+
+def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[[Any, dict], bool]) -> list:
+    """Census roots a recent history page addresses as current work of its room.
+
+    An answered root whose late phase alone remains (D10: the answer stays, the owner
+    paused only its post-task work) is not current conversation: its card stays beside
+    its delivered answer and Activity offers the saved remainder, so it is never
+    re-addressed at the end of a page that no longer holds its own rows."""
+    return [str(row["activity_id"]) for row in _chat_activities_snapshot_safe(drive_root, task_bindings)
+            if row.get("activity_id") and row.get("chat_id") is not None
+            and not _answer_stored((row.get("root_phase_checkpoint") or {}).get("post_task_synthesis"))
+            and matches(row["chat_id"], {**row, "task_id": row["activity_id"]})]
 
 
 async def api_state(request: Request) -> JSONResponse:
@@ -748,6 +898,13 @@ async def api_state(request: Request) -> JSONResponse:
             "active_direct_turns": snap.get("active_direct_turns") or [],
             "active_chat_activities": snap.get("active_chat_activities") or [],
             "active_chat_activities_complete": snap.get("active_chat_activities_complete") is True,
+            "current_questions": snap.get("current_questions") or [],
+            "current_questions_complete": snap.get("current_questions_complete") is True,
+            "current_questions_gaps": snap.get("current_questions_gaps") or [],
+            "main_attention": snap.get("main_attention") or [],
+            "main_attention_complete": snap.get("main_attention_complete") is True,
+            "main_attention_gaps": snap.get("main_attention_gaps") or [],
+            "served_ui": _served_ui_state(request),
         })
     except Exception as exc:
         return json_exception(exc)
@@ -810,4 +967,4 @@ def _task_bindings_safe(request: Request, *, availability=None) -> dict:
 
 
 
-__all__ = ["api_health", "api_state"]
+__all__ = ["api_contract", "api_health", "api_state"]

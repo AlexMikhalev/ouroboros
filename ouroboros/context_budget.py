@@ -24,6 +24,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, Tuple
 
+# Canonical host-row classification; physical requests omit this top-level metadata.
+HOST_CONTEXT_KIND_KEY = "_host_context_kind"
+
 # Owner-selected Low's total-context economy/short-window target. This is an
 # elastic target, not a provider admission ceiling: Phase 2 measures the sealed
 # Main input plus its unchanged response reserve against T and the selected
@@ -32,13 +35,15 @@ from typing import Any, Dict, Literal, Optional, Tuple
 # owner's choice of 2026-09-29.
 OWNER_LOW_TARGET_TOKENS = 250_000
 
-# Nano's owner-selected target sizes what goes INTO the request (the memory view
-# floor, the book form, the schema selection, the task-input pointer, the one
-# deficit-triggered reclaim). It stands in for the route window only when that
-# window is unknown. NANO_MIN_HEADROOM_TOKENS is the minimum the input fit leaves
-# for the reply and the reply floor R of ``reply_allowance_tokens``; the reply
-# itself follows the known window up to the caller's ceiling (owner decisions
-# 2026-10-05: Q1=A reply follows the window, Q3=A slack W/8 on approximate counts).
+# Nano's owner-selected target sizes what the host adds to the request unasked (the
+# memory view floor, the book form, the schema selection, unsolicited tool output, the
+# one deficit-triggered reclaim). For the reply alone it stands in for an unknown
+# window; a read the mind chose and the owner's task text answer to the known window
+# only, never to this target (owner decisions 2026-10-11 1A, 2026-10-13 #1527 A).
+# NANO_MIN_HEADROOM_TOKENS is the minimum the input fit leaves for the reply and the
+# reply floor R of ``reply_allowance_tokens``; the reply itself follows the known
+# window up to the caller's ceiling (owner decisions 2026-10-05: Q1=A reply follows
+# the window, Q3=A slack W/8 on approximate counts).
 OWNER_NANO_TARGET_TOKENS = 85_000
 NANO_MIN_HEADROOM_TOKENS = 8_192
 
@@ -432,13 +437,11 @@ CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 # readers that walk the rotated segments (recent_records without hot_only) replay the
 # whole chain, so its total size is enrolled here like the chat archive chain.
 REVIEW_LEDGER_INDEX_WARN_BYTES = 64_000_000
-# The FIRST custody read of each process folds the WHOLE events chain — live
-# file plus archive/events_*.jsonl — into the process-local row memo
-# (delegate_custody_memo); later reads fold only appended bytes. Explicit
-# forensic and retirement scans still walk the chain. This inherits the
-# pre-rotation 100MB replay-degradation signal, now measured over the chain;
-# archives stay durable history (never GC'd), so the remediation is a durable
-# compact custody projection, never deletion.
+# Current custody is read from the store's rows (``custody_runs``); only the
+# importer's one fold and the explicit forensic replays walk the WHOLE events
+# chain — live file plus archive/events_*.jsonl. This inherits the pre-rotation
+# 100MB replay-degradation signal, now measured over the chain; archives stay
+# durable history (never GC'd), so the remediation is never deletion.
 EVENTS_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 # Warn before the observed 242-of-253 retained-drive corpus becomes routine;
 # count only direct child directories of state/headless_tasks and task_drives

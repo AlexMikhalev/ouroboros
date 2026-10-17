@@ -13,7 +13,10 @@ boundary instead of the whole line of thought:
   by the task's own Stop/Panic/deadline); no unrecorded effect starts;
 - ``post_batch`` — the completed batch and its results;
 - ``candidate`` — a no-tool answer published as the delivery candidate, before
-  acceptance, review or delivery.
+  acceptance, review or delivery;
+- ``resumed`` — an exact Resume's restored continuation and its budget tail,
+  written before the grant is consumed (``save_resumed``): the pause retired
+  this file, and consumption ends the pause's own recovery ownership.
 
 The file (``task_results/artifacts/<task>/source_handles/working/working_checkpoint-a<attempt>.json``,
 never a deliverable: every artifact/evidence scanner skips ``source_handles``)
@@ -54,6 +57,7 @@ FILE_PREFIX = "working_checkpoint-a"
 SOURCE_WORKING = "working"
 SOURCE_OWNER_WAIT = "owner_wait"
 BOUNDARIES = ("ready", "pre_effect", "post_batch", "candidate")
+RESUMED = "resumed"
 HOLD_UNWRITABLE = "working_checkpoint_unwritable"
 _TRANSIENT_USAGE = ("execution_status", "reason_code", "_best_effort_extracted", "budget_pause_hold",
                     "_llm_round_started", "working_checkpoint")
@@ -95,19 +99,40 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
     write failure; the caller decides whether that holds (``pre_effect``) or is
     retried at the next boundary.
     """
-    from ouroboros.budget_pause import pending_tool_call_ids
-    from ouroboros.owner_wait import continuation_state
-    from ouroboros.utils import utc_now_iso, write_bytes_atomic
-
     if boundary not in BOUNDARIES:
         raise ValueError(f"unknown working checkpoint boundary: {boundary!r}")
     ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
     if ctx is None or not str(getattr(ctx, "task_id", "") or "") or not (
             getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None)) or not _root(ctx).is_dir():
         return False  # no durable task root: nothing here could be recovered from it
-    signature = _signature(limit_ctx)
-    if boundary == "ready" and getattr(ctx, "_working_checkpoint_signature", None) == signature:
+    if boundary == "ready" and getattr(ctx, "_working_checkpoint_signature", None) == _signature(limit_ctx):
         return False
+    _write(ctx, limit_ctx, boundary)
+    return True
+
+
+def save_resumed(tools: Any, state: Dict[str, Any], messages: list, trace: dict, usage: dict, seen: set) -> None:
+    """An exact Resume's restored continuation, before ``resume_paused_loop`` consumes the grant.
+
+    It never skips: it returns once the replace landed and raises otherwise, so
+    the caller holds the unconsumed grant. It acknowledges no mail. It runs before
+    the route rebinds, so it keeps the source's model role, not the new worker's.
+    """
+    from types import SimpleNamespace
+
+    _write(tools._ctx, SimpleNamespace(
+        tools=tools, messages=messages, llm_trace=trace, accumulated_usage=usage, owner_msg_seen=seen,
+        round_idx=int(state["round_idx"]), tool_schemas=state["tool_schemas"],
+        budget_tail=str((state.get("resume_point") or {}).get("budget_tail") or "tool"),
+        context_model_role=str(state.get("context_model_role") or "")), RESUMED)
+
+
+def _write(ctx: Any, limit_ctx: Any, boundary: str) -> None:
+    from ouroboros.budget_pause import pending_tool_call_ids
+    from ouroboros.owner_wait import continuation_state
+    from ouroboros.utils import utc_now_iso, write_bytes_atomic
+
+    signature = _signature(limit_ctx)
     started = time.perf_counter()
     usage = limit_ctx.accumulated_usage
     seq = int(getattr(ctx, "_working_checkpoint_seq", 0) or 0) + 1
@@ -115,6 +140,8 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
         ctx, limit_ctx.messages, limit_ctx.llm_trace if isinstance(limit_ctx.llm_trace, dict) else {},
         {key: value for key, value in usage.items() if key not in _TRANSIENT_USAGE},
         int(limit_ctx.round_idx), list(limit_ctx.tool_schemas or []), set(limit_ctx.owner_msg_seen or ()))
+    if boundary == RESUMED:  # written before the rebind: the plan is still the new worker's
+        state["context_model_role"] = limit_ctx.context_model_role
     state["working"] = {"boundary": boundary, "seq": seq, "saved_at": utc_now_iso(),
                         "budget_tail": getattr(limit_ctx, "budget_tail", "tool"),
                         "pending_tool_call_ids": pending_tool_call_ids(limit_ctx.messages)}
@@ -139,7 +166,6 @@ def save_round(limit_ctx: Any, boundary: str) -> bool:
     stats.update(saves=stats["saves"] + 1, last_bytes=len(data), max_bytes=max(stats["max_bytes"], len(data)),
                  last_boundary=boundary, encode_ms=round(stats["encode_ms"] + (encoded - started) * 1000, 3),
                  write_ms=round(stats["write_ms"] + (written - encoded) * 1000, 3))
-    return True
 
 
 def save_or_log(limit_ctx: Any, boundary: str) -> bool:
@@ -269,8 +295,115 @@ def final_answer_registered(root: Any, task_id: str) -> bool:
     from supervisor.terminal_delivery import terminal_answer_receipts
 
     receipts = terminal_answer_receipts(root, task_id)
-    return (receipts.get("state") in {"delivered", "owed"}
+    return (receipts.get("state") in {"delivered", "owed", "exhausted"}
             or bool(receipts.get("unverified_delivery_ids")) or receipts.get("registry") == "unreadable")
+
+
+REASON_FINALIZATION_INCOMPLETE = "finalization_incomplete"
+
+
+def registered_answer(root: Any, task_id: str) -> Dict[str, Any]:
+    """The answer the host already holds for this task, read from the outbox owner; ``{}`` when none.
+
+    ``basis`` names the custody: ``owed`` (a pending outbox row the replay still
+    sends — its exact text travels), ``exhausted`` (the host gave up sending it; its
+    text and any preserved copy's ``preserved_path`` travel), ``delivered`` (a retained
+    receipt whose bytes are re-read; a legacy id proves no bytes, so ``text`` may be
+    empty) or ``unreadable`` (the registry could not be read: an answer may exist, which
+    is not permission to regenerate). Never the task result's prose.
+    """
+    from supervisor.terminal_delivery import terminal_answer_receipts
+
+    receipts = terminal_answer_receipts(root, task_id)
+    if receipts.get("registry") == "unreadable":
+        return {"basis": "unreadable", "text": "", "delivery_id": "", "terminal_origin": ""}
+    for basis in ("owed", "exhausted"):  # a row the replay still sends outranks one it gave up
+        rows = [row for row in (receipts.get(basis) or []) if isinstance(row, dict)]
+        if rows:
+            row = max(rows, key=lambda item: str(item.get("registered_at") or ""))
+            return {"basis": basis, "text": str(row.get("text") or ""), "delivery_id": str(row.get("delivery_id") or ""),
+                    "terminal_origin": str(row.get("terminal_origin") or ""),
+                    **({"preserved_path": str(row["preserved_path"])} if row.get("preserved_path") else {})}
+    delivered = [row for row in (receipts.get("delivered") or []) if isinstance(row, dict)]
+    if delivered:
+        receipt = max(delivered, key=lambda item: str(item.get("sent_at") or ""))
+        text = origin = ""
+        try:
+            from ouroboros.artifacts import read_actor_source_bytes
+
+            record = json.loads(read_actor_source_bytes(root, task_id, receipt.get("source_ref")).decode("utf-8"))
+            if isinstance(record, dict):
+                text, origin = str(record.get("text") or ""), str(record.get("terminal_origin") or "")
+        except Exception:
+            log.debug("Retained terminal answer of %s could not be re-read", task_id, exc_info=True)
+        return {"basis": "delivered", "text": text, "delivery_id": str(receipt.get("delivery_id") or ""),
+                "terminal_origin": origin}
+    unverified = [str(did) for did in (receipts.get("unverified_delivery_ids") or [])]
+    if unverified:
+        return {"basis": "delivered", "text": "", "delivery_id": unverified[-1], "terminal_origin": ""}
+    return {}
+
+
+def adopt_registered_answer(root: Any, task: Dict[str, Any], task_id: str, *, attempt: int, cause: str,
+                            registry_root: Any = None) -> Optional[Dict[str, Any]]:
+    """Finalize a dead attempt whose answer the host already holds, instead of running its prompt again.
+
+    Timeout reaping and dead-worker recovery consult this before admitting a fresh
+    model attempt, cancellation custody before cancelling a boot restore fence. With
+    the answer out before the result store (owner 1A(1)) a death inside the store is
+    an ordinary window; the authored answer must not be generated a second time.
+    A registered answer — owed, exhausted,
+    delivered, or merely unreadable evidence — terminalizes the attempt in the
+    lifecycle-fault vocabulary: lifecycle ``failed``, execution ``infra_failed``,
+    reason ``finalization_incomplete``, the outbox's own text as the result and a
+    host notice naming what stayed incomplete. An owed row keeps replaying through
+    the outbox; an exhausted one is named as given up. Returns the stored terminal row, or None when no answer is
+    registered (the ordinary retry proceeds). A refused write raises: the caller's
+    existing no-retry fallback owns the attempt, never a second model run.
+    """
+    answer = registered_answer(registry_root if registry_root is not None else root, task_id)
+    if not answer:
+        return None
+    from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
+    from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    # Only causes whose phrase claims no retry name themselves; the rest stay typed.
+    ended = _CAUSES[cause] if cause in {"worker_crash", "app_stop"} else f"its attempt was stopped ({cause or 'unknown cause'})"
+    copy = f"; its copy is kept at {answer['preserved_path']}" if answer.get("preserved_path") else ""
+    held = {"owed": "was authored and is owed to the chat (the outbox delivers it)",
+            "exhausted": f"was authored, but sending it to the chat was given up{copy}",
+            "delivered": "was authored and delivered to the chat",
+            "unreadable": "may already exist (the delivery registry could not be read)"}[answer["basis"]]
+    notice = (f"Finalization did not complete: the final answer {held}, then {ended} before the "
+              "result, review evidence, artifacts and cost accounting were stored. The prompt was "
+              "not run again; those facts are incomplete.")
+    fields: Dict[str, Any] = {
+        "reason_code": REASON_FINALIZATION_INCOMPLETE, "terminal_host_notice": notice,
+        "finalization_recovery": {"cause": str(cause or ""), "answer": answer["basis"],
+                                  "delivery_id": answer["delivery_id"], "attempt": int(attempt or 0)},
+        "outcome_axes": terminal_outcome_axes(
+            lifecycle=STATUS_FAILED, execution=EXECUTION_INFRA_FAILED,
+            reason_code=REASON_FINALIZATION_INCOMPLETE, review_trigger="supervisor_terminal"),
+        "result": answer["text"] or notice,
+    }
+    origin = answer.get("terminal_origin") or ""
+    if origin == TERMINAL_ORIGIN_HOST_SALVAGE:
+        # The owed text is the short receipt; the full bytes the host preserved before the
+        # send are the result an ordinary store would have written, with their path.
+        from ouroboros.observability import preserved_salvage_path
+
+        path = preserved_salvage_path(pathlib.Path(registry_root if registry_root is not None else root), task_id)
+        try:
+            if path:
+                fields.update(terminal_salvage_path=path, result=pathlib.Path(path).read_text(encoding="utf-8"))
+        except OSError:
+            log.warning("Preserved host salvage of %s could not be read; the receipt stays the result", task_id)
+    if answer["text"] and origin:  # the producer's stamp travels; an unstamped legacy row claims none
+        fields["terminal_origin"] = origin
+    log.warning("Task %s attempt %s: finalizing from its registered answer (%s) instead of a retry (%s)",
+                task_id, attempt, answer["basis"], cause)
+    return write_task_result(pathlib.Path(root), task_id, STATUS_FAILED, **fields)
 
 
 def prepare_recovery(root: Any, task_id: str, *, from_attempt: int, cause: str) -> Dict[str, Any]:
@@ -417,6 +550,7 @@ def complete_pause_from_working(root: Any, task_id: str, row: Dict[str, Any], at
 def load_recovery(ctx: Any, handoff: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The loop side: the frozen source named by this start's ``_working_recovery``."""
     from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.runtime_limits import explicit_execution_timeout_sec
 
     handoff = handoff or getattr(ctx, "working_recovery", None)
     if not isinstance(handoff, dict) or not handoff.get("source_ref"):
@@ -440,6 +574,11 @@ def load_recovery(ctx: Any, handoff: Optional[Dict[str, Any]] = None) -> Dict[st
         # that new clock (including when the loop next saves/parks this state).
         state["model_wait"] = {**(state.get("model_wait") or {}),
                                "quota_clock": {}, "budget_paused_sec": 0.0}
+    elif explicit_execution_timeout_sec(getattr(ctx, "task_metadata", {}) or {}) is not None:
+        from ouroboros.model_wait import adopt_handoff_clock
+
+        # The loop's next Pause must keep the same queue exclusion as agent start.
+        state["model_wait"] = adopt_handoff_clock(state.get("model_wait") or {}, handoff)
     return {**state, "_working_handoff": dict(handoff)}
 
 
@@ -600,5 +739,11 @@ def resume_from_working(tools: Any, state: Dict[str, Any], messages: list, trace
         "termination: never start a second writer over such a run; the host never continues one by itself.")})
     # A batch rejoins its tool tail; ready state repeats its logical round.
     # A saved candidate rejoins finalization before another author call.
+    # A Resume handover rejoins its pause's tail, under the last-fit permission
+    # that Resume already spent (its receipt rides a same-ID usage).
+    resumed = boundary == RESUMED
+    if resumed:
+        ctx._budget_resume_last_fit_relaxed = bool((usage.get("budget_pause_resume") or {}).get("last_fit_relaxed"))
     return (ctx.active_model, ctx.active_effort, ctx.active_use_local, mode, int(state["round_idx"]), plan,
-            boundary in {"pre_effect", "post_batch"})
+            boundary in {"pre_effect", "post_batch"}
+            or resumed and (state.get("working") or {}).get("budget_tail") == "tool")

@@ -98,10 +98,13 @@ def test_compact_encoding_preserves_full_legacy_payload_and_nested_evidence(tmp_
     loaded = store._load_state_unlocked(tmp_path, strict_attempt_authority=True)
     assert loaded.attempts[0].triad_raw_results == expected["attempts"][0]["triad_raw_results"]
     assert loaded.next_obligation_seq == 8 and loaded.next_commit_readiness_debt_seq == 10
-    # The shared JSON writer keeps its existing formatting contract.
+    # Machine JSON is compact; owner-authored settings retain their indentation.
     other = tmp_path / "other.json"
     atomic_write_json(other, {"unchanged": [1, 2]})
-    assert "\n" in other.read_text(encoding="utf-8")
+    assert other.read_text(encoding="utf-8") == '{"unchanged":[1,2]}'
+    settings = tmp_path / "settings.json"
+    atomic_write_json(settings, {"unchanged": [1, 2]})
+    assert settings.read_text(encoding="utf-8") == json.dumps({"unchanged": [1, 2]}, indent=2)
 
 
 def test_unknown_object_is_not_stringified_and_cannot_replace_durable_evidence(tmp_path):

@@ -9,6 +9,27 @@ export async function apiFetch(url, init = {}) {
 }
 
 /**
+ * The core's own same-origin sign-in, returning to this page. Only its network
+ * gate answers 401 on the readiness and state reads that send a page here: a
+ * separately hosted interface never passes through the gate's login page at load,
+ * and a page whose session expired keeps showing until such a read is refused.
+ * Every other failure keeps its own presentation, and nothing the page had queued
+ * or failed to save is resent after signing in — the return is a fresh load.
+ */
+export function signInUrl(href = window.location.href) {
+    const here = new URL(href);
+    here.searchParams.delete('_ouro_refresh');
+    here.searchParams.delete('_ouro_reason');
+    return `/auth/login?next=${encodeURIComponent(`${here.pathname}${here.search}${here.hash}`)}`;
+}
+
+export function openSignIn() {
+    window.location.replace(signInUrl());
+}
+
+export const isStoreMigrating = error => error?.status === 503 && error?.body?.reason_code === 'migrating';
+
+/**
  * Read an owner-visible sentence out of a gateway error body. Several routes
  * answer with a STRUCTURED error (`{error: {code, message, ...}}`), and
  * interpolating that object straight into an Error message produced the
@@ -126,12 +147,15 @@ export function createTask(payload) {
 }
 
 /**
- * Cancel a task. With {cascade:true} the server also cancels the task's live
- * subtree and answers only once that teardown has finished; without it the
- * request stays the synchronous single-task cancel (no body — headless compat).
- * S3 (Q1/Q2): stopPolicy "finalize_then_cancel" requests the soft
- * finalize-then-stop episode (202 acknowledgement, cancel_state "pending");
- * "immediate" (or absent) keeps today's hard cancel byte-identical.
+ * Cancel a task. The server records the durable Stop first, then drives it;
+ * with {cascade:true} the task's live subtree is torn down too. Without
+ * options no body is sent (headless compat). Every answer with ok:true is an
+ * accepted Stop: 200 once the teardown settled, 202 cancel_state "pending"
+ * while it is still being finished — the soft finalize-then-stop episode of
+ * stopPolicy "finalize_then_cancel" (S3, Q1/Q2), or an "immediate" (or
+ * absent) Stop whose teardown is not confirmed yet (reason_code
+ * "teardown_unconfirmed"); the supervisor finishes it and task detail shows
+ * the pending state. 404 means there is nothing to stop.
  * Shared by the Chat live-card stop control and the Activity tab.
  * @param {string} taskId
  * @param {{cascade?: boolean, stopPolicy?: string, stopActionId?: string}} [options]
@@ -274,7 +298,10 @@ export async function fetchTaskDetailStrict(taskId) {
         if (resp.ok !== false) return resp.json();
         if (resp.status === 404) return null;
     }
-    throw new Error(`task detail read failed (HTTP ${resp?.status ?? 'no response'})`);
+    const error = new Error(`task detail read failed (HTTP ${resp?.status ?? 'no response'})`);
+    error.status = resp?.status;
+    try { error.body = await resp.json(); } catch { /* Retain the HTTP failure without a readable body. */ }
+    throw error;
 }
 
 export function cleanExtensionRoute(value) {
@@ -335,7 +362,7 @@ export const apiClient = {
     responseLimitPreview: ({ model, local = false, account = '' }) => fetchJson(
         `/api/settings?${new URLSearchParams({ response_limit_preview: '1', model, local: String(Boolean(local)), account })}`,
         { cache: 'no-store' }),
-    /** @param {{key: string}|{mcp_server_id: string}} selector @returns {Promise<{value: string}>} */
+    /** @param {{key: string}|{mcp_server_id: string, header_name?: string}} selector @returns {Promise<{value: string}>} */
     revealSettingsSecret: (selector) => jsonPost('/api/settings/secret', selector),
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
@@ -431,7 +458,19 @@ export const apiClient = {
     projectDelete: (projectId) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/delete`, {}),
     /** @returns {Promise<import('./api_types.js').FsDirsResponse>} */
     fsDirs: (path = '') => fetchJson(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`, { cache: 'no-store' }),
+    /**
+     * Dashboard storage: the server's last measurement, read passively (no walk, no write).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    storage: (init = {}) => fetchJson('/api/storage', { cache: 'no-store', ...init }),
+    /**
+     * Start one bounded measurement, or join the running one (202 either way).
+     * @returns {Promise<import('./storage_types.js').StorageResponse>}
+     */
+    measureStorage: () => jsonPost('/api/storage/measure', {}),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateStatus: () => fetchJson('/api/update/status', { cache: 'no-store' }),
+    /** @returns {Promise<import('./management_contract_types.js').UpdateStatusResponse>} */
     updateCheck: () => jsonPost('/api/update/check', {}),
     /** @returns {Promise<import('./api_types.js').UpdatePreflightResponse>} */
     updatePreflight: () => jsonPost('/api/update/preflight', {}),
@@ -443,3 +482,15 @@ export const apiClient = {
         ...(confirmRecovery ? { confirm_recovery: true } : {}),
     }),
 };
+
+/** Read-only import preview. Values return only to this Settings draft; this never saves or connects.
+ * @param {import('./mcp_import_types.js').MCPImportPreviewRequest} payload
+ * @param {AbortSignal=} signal
+ * @returns {Promise<import('./mcp_import_types.js').MCPImportPreviewResponse>}
+ */
+export function previewMcpImport(payload, signal) {
+    return fetchJson('/api/mcp/import/preview', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload), signal,
+    });
+}
