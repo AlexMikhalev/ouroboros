@@ -11,6 +11,8 @@ module's docstring.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import os
 import pathlib
@@ -487,7 +489,7 @@ def task_result_signature(data_root, task_id: str):
 
 def chat_bytes(data_root) -> bytes:
     path = pathlib.Path(data_root) / "logs" / "chat.jsonl"
-    return path.read_bytes() if path.exists() else b""
+    return dialogue_test.log_bytes(path)
 
 
 def queue_snapshot(data_root) -> dict:

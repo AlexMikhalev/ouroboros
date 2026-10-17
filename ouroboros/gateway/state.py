@@ -107,11 +107,21 @@ def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
     return {**evolution_state, "campaign": {**campaign, "history": history}}
 
 
-async def api_health(_request: Request) -> JSONResponse:
+def _boot_document(request: Request) -> Dict[str, Any]:
+    """The ``boot`` object: this process's phases and steps (``server_liveness.BOOT``), the
+    supervisor latches the server attached to the app, the store's named-job rows."""
+    from ouroboros.server_liveness import boot_document
+
+    return boot_document(request_drive_root(request), getattr(request.app, "state", None))
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """Answers 200 as soon as the socket serves, during boot too; ``boot`` carries the phase."""
     from ouroboros.gateway.schema import GATEWAY_ABI_VERSION
 
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
+    boot = await asyncio.to_thread(_boot_document, request)  # one indexed store read, off the loop
     return JSONResponse({
         "status": "ok",
         # legacy field for backward compatibility
@@ -120,6 +130,7 @@ async def api_health(_request: Request) -> JSONResponse:
         "app_version": app_version,
         # The wire-contract carrier a client checks before relying on GET /api/contract.
         "abi_version": GATEWAY_ABI_VERSION,
+        "boot": boot,
     })
 
 
@@ -170,6 +181,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     # value from settings; keeping zero here makes that state explicit.
     limit = max(0.0, float(TOTAL_BUDGET_LIMIT or 0.0))
     drive_root = request_drive_root(request)
+    boot = _boot_document(request)
     accounting_available = True
     try:
         # The writer's slim snapshot (totals, marker, OpenRouter bucket): this response
@@ -258,6 +270,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         # Resolved here so the checkout file reads stay on the snapshot thread.
         "runtime_identity": _runtime_repo_identity(st),
         "workers_alive": alive,
+        "boot": boot,
         "workers_total": total_w,
         "pending_count": len(PENDING),
         "running_count": len(RUNNING),
@@ -325,12 +338,14 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     """One signature-keyed read serves outcome, finalizing, retry and question facts.
 
     ``{}`` is an absent document; a read that could not answer is ``{"unavailable": True}``."""
-    from ouroboros.task_store import read_document, signature
+    from ouroboros.task_store import read_document
+    from ouroboros.store_hot_facts import read
     from ouroboros.task_activity_facts import card_facts
 
     memo_id = (str(pathlib.Path(drive_root).resolve()), task_id)
     try:
-        key = signature(drive_root, task_id)
+        hot = read(drive_root, task_id)
+        key = (hot["write_seq"], hot["updated_at"]) if hot else None
     except Exception:
         _FINALIZING_MEMO.pop(memo_id, None)
         return {"unavailable": True}
@@ -341,7 +356,7 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     if memo is not None and memo[0] == key:
         return memo[1]
     try:
-        data = read_document(drive_root, task_id)
+        data, key = read_document(drive_root, task_id, signed=True)
         if not isinstance(data, dict):
             return {"unavailable": True}
     except Exception:
@@ -394,7 +409,12 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
 
 
 def _managed_task_finalizing(drive_root: Any, task_id: str) -> bool:
-    return bool(_task_activity_facts(drive_root, task_id).get("finalizing"))
+    from ouroboros.store_hot_facts import read
+
+    try:
+        return post_task_synthesis_is_open((read(drive_root, task_id) or {}).get("post_task_synthesis"))
+    except Exception:
+        return False
 
 
 def _managed_task_budget_pausing(drive_root: Any, row: Dict[str, Any], task_id: str) -> bool | None:
@@ -421,9 +441,12 @@ def _owner_fence_state(drive_root: Any, row: Dict[str, Any], task_id: str) -> st
 
     from ouroboros.owner_pause import member_fence
 
-    return str(member_fence(SimpleNamespace(
-        task_id=task_id, root_task_id=str(row.get("root_task_id") or task_id),
-        budget_drive_root=str(row.get("budget_drive_root") or drive_root))).get("state") or "")
+    try:
+        return str(member_fence(SimpleNamespace(
+            task_id=task_id, root_task_id=str(row.get("root_task_id") or task_id),
+            budget_drive_root=str(row.get("budget_drive_root") or drive_root))).get("state") or "")
+    except Exception:
+        return "unknown"
 
 
 def _interrupted_owner_resume(drive_root: Any, row: Dict[str, Any], task_id: str) -> Optional[bool]:
@@ -496,9 +519,13 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
         if availability is not None:
             availability["complete"] = False
     elif state in {"requested", "paused"}:
-        from supervisor.owner_pause_control import _warm_paused_direct_turn
+        from ouroboros.store_hot_facts import read
 
-        if _warm_paused_direct_turn(pathlib.Path(row.get("budget_drive_root") or drive_root), task_id):
+        try:
+            own = read(row.get("budget_drive_root") or drive_root, task_id) or {}
+        except Exception:
+            own = {}
+        if own.get("owner_wait_state") == "waiting" and own.get("owner_wait_reason") == "owner_pause":
             activity.update(phase="budget_paused" if state == "paused" else "budget_pausing", pause_cause="owner")
             if state == "paused" and (finishing := _finishing_reviews(drive_root, row, task_id)):
                 activity["finishing_reviews"] = finishing
@@ -507,6 +534,55 @@ def _direct_activity_pause_projection(drive_root: Any, row: dict, availability: 
 
 def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None,
                                   decision_owners=None, owners_only: bool = False, question_details: bool = True) -> list:
+    """Copy live owners first, then read their control/phase facts in one store transaction."""
+    from ouroboros.post_task_checkpoint import post_task_model_waits
+    from ouroboros.store_hot_facts import snapshot
+    from supervisor import queue as queue_mod
+
+    direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe(availability=availability)
+    try:
+        with queue_mod._queue_lock:
+            pending_rows = [dict(task) for task in queue_mod.PENDING]
+            fence_rows = {str(key): dict(value) for key, value in queue_mod.BUDGET_ROOT_FENCES.items()
+                          if isinstance(value, dict)}
+            running_rows = [
+                (str(task_id), {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
+                    or (meta.get("task") or {}).get("_attempt") or 1),
+                    "model_activity": (meta.get("active_llm_call") or {}).get("model_activity")} if isinstance(meta, dict) else {},
+                 _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0)
+                for task_id, meta in queue_mod.RUNNING.items()]
+    except Exception:
+        if availability is not None:
+            availability["complete"] = False
+        pending_rows, fence_rows, running_rows = [], {}, []
+    try:
+        late_owners = list(post_task_model_waits(drive_root))
+    except Exception:
+        if availability is not None:
+            availability["complete"] = False
+        late_owners = []
+    owners = [(str(row.get("activity_id") or ""), row) for row in direct_rows]
+    owners += [(str(row.get("id") or ""), row) for row in pending_rows]
+    owners += [(tid, row) for tid, row, _started in running_rows]
+    owners += [(owner.task_id, owner.task) for owner in late_owners]
+    owners += [(tid, {}) for tid in fence_rows]
+    requests = []
+    for tid, row in owners:
+        root = row.get("budget_drive_root") or drive_root
+        requests.extend(((drive_root, tid), (root, tid), (root, str(row.get("root_task_id") or tid))))
+    if owners_only:  # which work is current, without the per-row control facts
+        return _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
+                                         running_rows, late_owners, availability, decision_owners, True,
+                                         question_details)
+    with snapshot(requests):
+        return _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
+                                         running_rows, late_owners, availability, decision_owners, False,
+                                         question_details)
+
+
+def _chat_activities_snapshot(drive_root, task_bindings, direct_rows, pending_rows, fence_rows,
+                              running_rows, late_owners, availability, decision_owners, owners_only,
+                              question_details=True) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
     Additive beside ``active_direct_turns`` (kept unchanged for compatibility):
@@ -525,32 +601,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     must not pay for the whole census. ``question_details=False`` skips optional Project/question
     enrichment but retains phases, fences, waits and current result facts. Never raises.
     """
-    direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe()
     activities = [dict(row) if owners_only else _direct_activity_pause_projection(drive_root, row, availability)
                   for row in direct_rows]
     census_ids = {row.get("activity_id") for row in activities}
     bindings = task_bindings if isinstance(task_bindings, dict) else {}
     try:
-        from supervisor import queue as queue_mod
         from ouroboros.task_results import resolve_task_lineage
-
-        with queue_mod._queue_lock:
-            pending_rows = [dict(task) for task in queue_mod.PENDING]
-            fence_rows = {
-                str(key): dict(value)
-                for key, value in queue_mod.BUDGET_ROOT_FENCES.items()
-                if isinstance(value, dict)
-            }
-            running_rows = [
-                (
-                    str(task_id),
-                    {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
-                        or (meta.get("task") or {}).get("_attempt") or 1),
-                     "model_activity": (meta.get("active_llm_call") or {}).get("model_activity")} if isinstance(meta, dict) else {},
-                    _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0,
-                )
-                for task_id, meta in queue_mod.RUNNING.items()
-            ]
 
         def _is_root(task_id: str, row: Dict[str, Any]) -> bool:
             try:
@@ -656,7 +712,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 else:
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
-        from ouroboros.post_task_checkpoint import post_task_model_waits, post_task_synthesis_in_flight
+        from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
         from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
         visible = {row["activity_id"]: row for row in activities}
         for root_id, latch in fence_rows.items():
@@ -688,7 +744,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             visible[root_id] = _activity(root_id, row, phase, _epoch_or_zero(row.get("queued_at")))
             census_ids.add(root_id)
             activities.append(visible[root_id])
-        for owner in post_task_model_waits(drive_root):
+        for owner in late_owners:
             census_ids.add(owner.task_id)
             waits = owner.snapshot()["model_waits"]
             if owner.task_id in visible:
@@ -871,6 +927,7 @@ async def api_state(request: Request) -> JSONResponse:
             ),
             "supervisor_ready": bool(supervisor_ready.is_set()) if supervisor_ready else False,
             "supervisor_error": get_supervisor_error() if callable(get_supervisor_error) else None,
+            "boot": snap["boot"],  # the boot phases the header paints (Starting… → chat ready → Online)
             "runtime_mode": get_runtime_mode(),
             "context_mode": get_context_mode(),
             # Frozen one-window compatibility field. Persistent auto-Low is retired.

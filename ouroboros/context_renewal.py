@@ -14,11 +14,11 @@ any row written before host state was bound to its text, which may hold merged o
 Ouroboros's outward dialogue; the mind's authored notes (actor capsules) and a predecessor's
 notes; the current review decisions; and the mind's own prose since its newest note,
 including the text it wrote beside a tool call. Complete tool units, replies the notes
-already cover, host state the host sends afresh (facts, clock, roster: bound and unchanged),
-superseded review copies and earlier address records leave the view; one host record names
-the checkpoint that holds them exactly. A renewal that would remove no tool unit and no
-covered reply, or a seed not smaller than the refused request, is never sent: the round then
-ends in the named refusal.
+already cover, host state the host sends afresh (facts, clock, roster and skill snapshots,
+bound and unchanged), superseded review copies and earlier address records leave the view;
+one host record names the checkpoint that holds them exactly. A renewal that would remove no
+tool unit and no covered reply, or a seed not smaller than the refused request, is never
+sent: the round then ends in the named refusal.
 """
 from __future__ import annotations
 
@@ -41,8 +41,10 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
     from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
     from ouroboros.review_history_view import REVIEW_CONTEXT_INDEX_KEY, obsolete_review_index_positions
     from ouroboros.send_clock import CLOCK_ROW_NAME
+    from ouroboros.skill_context_snapshot import SNAPSHOT_KIND
 
-    resent = {CONTEXT_FACTS_NAME, CLOCK_ROW_NAME, ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME, RENEWAL_RECORD_NAME}
+    resent = {CONTEXT_FACTS_NAME, CLOCK_ROW_NAME, ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME, SNAPSHOT_KIND,
+              RENEWAL_RECORD_NAME}
 
     def note(row: Dict[str, Any]) -> bool:
         capsule, meta = _capsule_metadata(row)

@@ -91,14 +91,18 @@ SUBROOT_ALIASES = {
     # UNINSTALL_TOMBSTONE_FILENAME` — which the scan already resolves to the
     # aliased path, so the two spellings collapse onto one entity.
     "uninstalled.json": "state/skills/*/uninstalled.json",
-    # _stage_extension_import_tree (extension_import_staging.py:84-88) builds
-    # `state_dir / "__extension_imports" / f"{pid}-{uuid}"` plus its `skill`
-    # subtree; its ONE caller (extension_loader.py:649) passes the
-    # `state_dir = skill_state_dir(drive_root, skill.name)` bound at :581, and
-    # the sweep (:120) spells the same directory through skill_state_dir.
-    "__extension_imports/*-*": "state/skills/*/__extension_imports/*-*",
-    "__extension_imports/*-*/skill": "state/skills/*/__extension_imports/*-*/skill",
-    "__extension_imports/*-*/skill/*": "state/skills/*/__extension_imports/*-*/skill/*",
+    # _stage_extension_import_tree (extension_import_staging.py) builds the content-addressed
+    # `state_dir / "__extension_imports" / identity` tree (`skill/`, `complete.json`, `owners/<pid>`)
+    # and extension_cache_lock spells `state_dir / f".extension-{purpose}.lock"`; every caller
+    # passes `state_dir = skill_state_dir(drive_root, skill.name)` (extension_loader.py, the
+    # catalog cache in extension_process_runner.py, the sweep's own skill_state_dir binding).
+    "__extension_imports/*": "state/skills/*/__extension_imports/*",
+    "__extension_imports/*/complete.json": "state/skills/*/__extension_imports/*/complete.json",
+    "__extension_imports/*/owners": "state/skills/*/__extension_imports/*/owners",
+    "__extension_imports/*/owners/*": "state/skills/*/__extension_imports/*/owners/*",
+    "__extension_imports/*/skill": "state/skills/*/__extension_imports/*/skill",
+    "__extension_imports/*/skill/*": "state/skills/*/__extension_imports/*/skill/*",
+    ".extension-*.lock": "state/skills/*/.extension-*.lock",
 }
 
 # The same human promise for a parameter whose NAME is the audited root, read
@@ -773,7 +777,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 378 -> 379 (review copies' lifetime): the prune walks ``state/review_checkouts`` itself
 # (``ouroboros/review_checking_prune.py``; the existing seats and views rows).
 # 379 -> 380: test_evidence stores full gate sources/results below source_handles/test-evidence.
-EXPECTED_SCAN_PATHS = 380
+# 380 -> 387 (the startup-architecture change): the boot receipts ``state/git_bootstrap.json`` and
+# ``state/native_seed.json``, the content-addressed extension import trees and their locks
+# (``__extension_imports/*``, ``.extension-*.lock``), ``state/dialog.sqlite`` and its name-tier lock
+# ``state/dialog.lock`` (``ouroboros/dialogue_store.py``; one section-3 row that also names the cutover
+# and import-job locks).
+EXPECTED_SCAN_PATHS = 387
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

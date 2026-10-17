@@ -32,16 +32,19 @@ _FACT_ARGUMENTS_CHARS = 400
 def _obsolete_host_rows(messages: Sequence[Mapping[str, Any]]) -> set[int]:
     """Only producer-labelled state replaced by a later full snapshot is obsolete.
 
-    A row counts only while it is still exactly what its producer wrote
-    (``context_budget.host_row_intact``): a row written before that binding, or
-    changed since, stays whole for the mind to fold. Legacy/unlabelled prose stays
-    raw, and neither an old warning nor a peer message is obsolete merely because
-    the mind has already seen it. Provenance is typed; no text is matched.
+    A facts, clock or roster row counts only while it is still exactly what its
+    producer wrote (``context_budget.host_row_intact``): a row written before that
+    binding, or changed since, stays whole for the mind to fold. Review copies and
+    skill snapshots follow their producers' own supersession (typed from birth,
+    never merged into). Legacy/unlabelled prose stays raw, and neither an old
+    warning nor a peer message is obsolete merely because the mind has already
+    seen it. Provenance is typed; no text is matched.
     """
     from ouroboros.loop_messages import CONTEXT_FACTS_NAME
     from ouroboros.peer_roster import ROSTER_SNAPSHOT_NAME, ROSTER_UPDATE_NAME
     from ouroboros.review_history_view import obsolete_review_index_positions
     from ouroboros.send_clock import CLOCK_ROW_NAME
+    from ouroboros.skill_context_snapshot import obsolete_snapshot_positions
 
     obsolete = set()
     for full_name, names in ((CONTEXT_FACTS_NAME, {CONTEXT_FACTS_NAME}), (CLOCK_ROW_NAME, {CLOCK_ROW_NAME}),
@@ -52,7 +55,7 @@ def _obsolete_host_rows(messages: Sequence[Mapping[str, Any]]) -> set[int]:
         obsolete.update(i for i, row in enumerate(messages[:max(0, latest)])
                         if row.get("role") == "user" and row.get(HOST_CONTEXT_KIND_KEY) in names
                         and host_row_intact(row))
-    return obsolete | set(obsolete_review_index_positions(messages))
+    return obsolete | set(obsolete_review_index_positions(messages)) | obsolete_snapshot_positions(messages)
 
 
 def _exposed_units(messages: list, units: Sequence[_AtomicUnit], observation: Mapping[str, Any]) -> set[str]:

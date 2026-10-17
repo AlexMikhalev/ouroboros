@@ -141,7 +141,8 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
     (the successor); a child's contract spread carries the brief and its reader alone.
     The notes are the actor capsules the predecessor kept in its selected
     review-history view — the working views its mind authored and chose to keep, in
-    order — or, on records earlier versions wrote, its stored authored narrative. The
+    order — or, on records earlier versions wrote, its authored narrative stored beside the
+    result or in the chat log (``project_dialogue.resolve_legacy_continuation_narrative``). The
     row is a plain host prose row (``_host_context_kind``): the mind folds it like any
     dialogue unit, the fold's checkpoint retains its exact text, and the header names
     the exact source. A pointer whose source cannot be read yields a typed gap row;
@@ -157,7 +158,7 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
         return None
     from ouroboros import review_history_view as view
     from ouroboros.artifacts import read_actor_source_bytes
-    from ouroboros.project_dialogue import continuation_narrative_is_valid
+    from ouroboros.project_dialogue import continuation_narrative_is_valid, resolve_legacy_continuation_narrative
     from ouroboros.task_results import load_task_result
 
     reader = f"get_task_result(task_id={owner!r}, include_authority=True)"
@@ -173,8 +174,19 @@ def predecessor_notes_message(task: Mapping[str, Any], *, drive_root: Any) -> Op
         elif continuation_narrative_is_valid(narrative, owner):
             texts = [str(narrative["text"])]
             where = f"{reader} -> continuation_narrative"
-        else:
-            return None
+        else:  # a record earlier versions wrote only to the chat log, read by its exact task identity
+            try:
+                legacy = resolve_legacy_continuation_narrative(
+                    drive_root, owner, {"kind": "task_result", "task_id": owner, "reader": "get_task_result"})
+            except (OSError, ValueError, KeyError, TypeError, StoreError) as exc:
+                return {"role": "user", HOST_CONTEXT_KIND_KEY: PREDECESSOR_NOTES_NAME, "content": (
+                    f"[PREDECESSOR_NOTES] Task {owner}'s chat log could not be searched for an authored narrative "
+                    f"now ({type(exc).__name__}: {exc}); nothing was inferred. The complete stored record stays "
+                    f"readable with {reader}.")}
+            if not continuation_narrative_is_valid(legacy, owner):
+                return None
+            texts = [str(legacy["text"])]
+            where = f"the chat-log row {json.dumps(legacy['source'], ensure_ascii=False, sort_keys=True)}"
     except (OSError, ValueError, KeyError, TypeError, StoreError) as exc:
         body = (f"[PREDECESSOR_NOTES] Task {owner} kept authored notes, but their retained source could not "
                 f"be read now ({type(exc).__name__}: {exc}); nothing was inferred in their place. "

@@ -402,8 +402,12 @@ class Core:
         return self.process.log_text().count("Starting Ouroboros server on")
 
     def jsonl(self, relative: str) -> list[dict]:
-        """Rows of one of the core's own JSONL records (``logs/chat.jsonl`` ...)."""
+        """Core log rows: dialogue from SQL, other streams from their JSONL records."""
         path = self.data_dir / relative
+        if relative in {"logs/chat.jsonl", "logs/progress.jsonl"}:
+            from tests._dialogue import log_rows
+
+            return log_rows(path)
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]

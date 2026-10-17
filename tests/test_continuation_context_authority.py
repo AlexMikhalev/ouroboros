@@ -164,6 +164,31 @@ def test_a_stored_legacy_narrative_is_the_notes_row_and_main_never_substitutes(t
         assert note is None
 
 
+def test_a_narrative_only_in_the_chat_log_is_the_notes_row_by_its_exact_task(tmp_path):
+    """Records written before narratives were stored beside the result keep theirs in the chat
+    log; the notes row reads it by exact task identity from the dialogue store, nothing else."""
+    from types import SimpleNamespace
+
+    from ouroboros import dialogue_store as ds
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+    from ouroboros.main_context_authority import predecessor_notes_message
+    from ouroboros.task_results import write_task_result
+
+    task_id = "chat-narrative-root"
+    write_task_result(tmp_path, task_id, "completed", result="done")
+    task = {"id": "next", "text": "continue", "budget_drive_root": str(tmp_path),
+            "predecessor_authority_source": _pull_source(task_id)}
+    assert validate_task_authority_sources(SimpleNamespace(drive_root=tmp_path, budget_drive_root=tmp_path), task) == {}
+    assert predecessor_notes_message(task, drive_root=tmp_path) is None  # no narrative anywhere: no row
+    row = {**_narrative(task_id, "What the earlier version wrote to chat."), "chat_id": 1, "type": "task_summary"}
+    ds.append(tmp_path, "chat", {**row, "task_id": "another-task", "text": "Not this task's account."})
+    receipt = ds.append(tmp_path, "chat", row)
+    note = predecessor_notes_message(task, drive_root=tmp_path)
+    assert note[HOST_CONTEXT_KIND_KEY] == "predecessor_notes"
+    assert note["content"].endswith("What the earlier version wrote to chat.")
+    assert f"chat:{receipt.seq}" in note["content"] and "Not this task's account." not in note["content"]
+
+
 @pytest.mark.parametrize("parent_has_narrative", [False, True])
 def test_child_copyback_preserves_the_authoritative_narrative(tmp_path, parent_has_narrative):
     from ouroboros.headless import copy_child_task_result

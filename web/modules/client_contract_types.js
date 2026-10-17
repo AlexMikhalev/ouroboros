@@ -285,7 +285,6 @@
  * @property {boolean=} ingress_accepted
  * @property {boolean=} ingress_dispatched
  * @property {boolean=} ingress_pending
- * @property {boolean=} ingress_undispatched
  * @property {Object[]=} attachments  // ChatAttachmentView
  * @property {boolean=} text_placeholder
  * @property {Object=} chat_annotation
