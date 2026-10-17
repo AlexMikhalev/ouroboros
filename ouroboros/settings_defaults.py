@@ -256,13 +256,13 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SKILLS_REPO_PATH": "",
     "OUROBOROS_CLAWHUB_REGISTRY_URL": "https://clawhub.ai/api/v1",
     "OUROBOROS_HUB_CATALOG_URL": "https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json",
-    # Skill sources (JSON list of {id, name, kind, url|path, ref|commit, part, trust, confirmed}; a build may mark
-    # its rows managed: true); empty = derived from the three keys above and OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS
-    # (skill_sources.derived_sources).
+    # JSON source rows: {id, name, kind, url|path, ref|commit, part, trust, confirmed}; builds may add managed: true.
+    # Blank: skill_sources.derived_sources uses the three keys above and OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS.
     "OUROBOROS_SKILL_SOURCES": "",
-    # Starter skills installed once on a new install (JSON list of catalog ids); empty = the built-in and
-    # Official skills their maintainers mark recommended (skill_starter.default_starter_ids).
+    # Starter catalog ids install once; absent/"" uses recommended built-in/Official (skill_starter.default_starter_ids).
+    # An explicit [] means none; the first-enable choice never overrides an owner's Off.
     "OUROBOROS_STARTER_SKILLS": "",
+    "OUROBOROS_STARTER_SKILLS_TURN_ON": "true",
     "MCP_ENABLED": False,
     "MCP_SERVERS": [],
     "MCP_TOOL_TIMEOUT_SEC": 60,
@@ -464,10 +464,8 @@ REVIEW_POOL_MIGRATION_CLASS_LINE = (
 # save) and a stray effort key can survive without lanes, so the notice must name their successor.
 RETIRED_SETTING_SUCCESSORS: dict[str, tuple[str, ...]] = {
     # The flat wall-clock pair was superseded by the activity model.
-    "OUROBOROS_SOFT_TIMEOUT_SEC": (
-        "OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"),
-    "OUROBOROS_HARD_TIMEOUT_SEC": (
-        "OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"),
+    **{key: ("OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC")
+       for key in ("OUROBOROS_SOFT_TIMEOUT_SEC", "OUROBOROS_HARD_TIMEOUT_SEC")},
     # The review lanes and their surface keys became rows of the subagent catalog.
     **{key: ("OUROBOROS_SUBAGENTS",) for key in REVIEW_POOL_MIGRATED_SETTING_KEYS},
     # Evolution tasks and consciousness wakes start at the top of the owner's effort range.

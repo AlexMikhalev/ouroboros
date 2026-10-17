@@ -216,11 +216,13 @@ class SkillPublishPreflightRequest(TypedDict, total=False):
 
 class SkillUpdateRequest(TypedDict, total=False):
     """``POST /api/skills/{skill}/update``: ``mode`` replace | keep | merge, ``digest`` the candidate
-    the dialog showed, ``local_digest`` the local revision it showed (a change refuses)."""
+    the dialog showed, ``local_digest`` the local revision it showed (a change refuses).
+    ``skip_review`` is the owner's Update without review, only for replace."""
 
     mode: Required[str]
     digest: str
     local_digest: str
+    skip_review: bool
 
 
 class SkillUpdateResponse(TypedDict, total=False):

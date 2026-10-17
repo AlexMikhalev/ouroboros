@@ -195,7 +195,7 @@ def preflight_failed(findings: Any) -> bool:
 
 
 # Acceptance reasons that make the current bytes executable without a critic PASS.
-ACCEPTANCE_REASONS = frozenset({"trusted_source", "owner_skip", "owner_edit", "author_accepted_advisory"})
+ACCEPTANCE_REASONS = frozenset({"trusted_source", "self_check", "owner_skip", "owner_edit", "author_accepted_advisory"})
 
 
 def _acceptance_reason(acceptance: Any, current_hash: str) -> str:
@@ -207,8 +207,8 @@ def _acceptance_reason(acceptance: Any, current_hash: str) -> str:
     if not current_hash or not isinstance(acceptance, dict):
         return ""
     basis = str(acceptance.get("basis") or "")
-    if basis in {"trusted", "owner_skip"} and acceptance.get("release_digest") == current_hash:
-        return "trusted_source" if basis == "trusted" else "owner_skip"
+    if basis in {"trusted", "self_check", "owner_skip"} and acceptance.get("release_digest") == current_hash:
+        return "trusted_source" if basis == "trusted" else basis
     if acceptance.get("owner_edit_digest") == current_hash:
         return "owner_edit"
     return ""
@@ -216,6 +216,7 @@ def _acceptance_reason(acceptance: Any, current_hash: str) -> str:
 
 _ACCEPTANCE_SUMMARIES = {
     "trusted_source": "Installed unchanged from a source the owner trusts; no review is required for these exact bytes.",
+    "self_check": "Ouroboros read this exact release and recorded why it may run.",
     "owner_skip": "The owner skipped the review for these exact bytes at install.",
     "owner_edit": "The owner, or Ouroboros on the owner's instruction, edited these exact bytes.",
 }

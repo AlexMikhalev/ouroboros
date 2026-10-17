@@ -357,7 +357,9 @@ def run_skill_action(
                 return SkillReviewOutcome(skill_name=name, status="pending", error=refusal["error"])
             return review_skill_owner_attest(review_ctx, name)
 
-        result = run_skill_review_lifecycle_blocking(ctx, skill_name, source="skills" if _owner_actor else "tool", review_impl=attest, repo_path=repo_path)
+        result = run_skill_review_lifecycle_blocking(ctx, skill_name, source="skills" if _owner_actor else "tool",
+                                                    review_impl=attest, repo_path=repo_path,
+                                                    owner_attestation=True)
         result["ok"] = result.get("status") == "clean"
         if not result["ok"]:
             result["status_code"] = 409

@@ -2,8 +2,9 @@
 
 The starter list is ``OUROBOROS_STARTER_SKILLS`` (catalog ids; an enterprise build ships its own). Its
 default is every built-in skill and every Official hub skill the maintainer marked recommended.
-Onboarding shows all built-in and Official skills grouped by category with the recommended ones ticked;
-completing it installs the ticked ids once, in the background, each with turn-on-when-ready. An install
+Onboarding also offers configured ids from any source in their categories. An explicit [] selects none;
+only absent/blank means defaults. Completing it installs once in the background; the build's
+OUROBOROS_STARTER_SKILLS_TURN_ON (default true) decides first enablement. An install
 that never shows onboarding (headless, Colab, a preset) runs the same installer at its first start with
 the default list. ``state/skill_starter.json`` records the outcome so the installer never runs twice:
 built-ins work offline, and a hub skill that could not be fetched yet is retried at a later start. An
@@ -42,15 +43,24 @@ def _write_marker(drive_root: pathlib.Path, **fields: Any) -> Dict[str, Any]:
     return marker
 
 
-def _offer(drive_root: pathlib.Path, rows: List[Dict[str, Any]], repo_dir: Optional[pathlib.Path]) -> List[Dict[str, Any]]:
-    """Every built-in item and every Official hub item, from local data."""
+def _offer(drive_root: pathlib.Path, rows: List[Dict[str, Any]], repo_dir: Optional[pathlib.Path],
+           configured: Optional[set[str]] = None) -> List[Dict[str, Any]]:
+    """Built-in/Official items and every configured starter, from available source data."""
     from ouroboros.skill_source_catalog import items_for, snapshot_for
 
     out: List[Dict[str, Any]] = []
+    configured = configured or set()
     for row in rows:
-        if row["kind"] == "builtin" or (row["kind"] == "hub" and row.get("part") == "official"):
+        usual = row["kind"] == "builtin" or (row["kind"] == "hub" and row.get("part") == "official")
+        if usual or any(item.startswith(row["id"] + "/") for item in configured):
             snapshot, _status = snapshot_for(drive_root, row, repo_dir=repo_dir)
-            out.extend(item for item in items_for(row, snapshot) if row["kind"] == "builtin" or item["official"])
+            out.extend(item for item in items_for(row, snapshot)
+                       if (usual and (row["kind"] == "builtin" or item["official"])) or item["id"] in configured)
+    found = {item["id"] for item in out}
+    for item_id in sorted(configured - found):
+        source_id, _, name = item_id.partition("/")
+        out.append({"id": item_id, "source_id": source_id, "name": name, "category": [],
+                    "description": "Source details are not available yet."})
     return out
 
 
@@ -64,20 +74,21 @@ def default_starter_ids(drive_root: pathlib.Path, rows: Optional[List[Dict[str, 
 
 def starter_ids(drive_root: pathlib.Path, settings: Optional[Dict[str, Any]] = None,
                 rows: Optional[List[Dict[str, Any]]] = None, *, repo_dir: Optional[pathlib.Path] = None) -> List[str]:
-    """The configured starter ids, or the default when the setting is absent or invalid."""
+    """Configured ids, including an empty list; only absent or blank selects the defaults."""
     if settings is None:
         from ouroboros.config import load_settings
 
         settings = load_settings()
-    raw = settings.get(STARTER_SETTING)
-    if raw not in (None, "", []):
+    raw = settings.get(STARTER_SETTING, "")
+    if raw != "":
         try:
             value = json.loads(raw) if isinstance(raw, str) else raw
             if isinstance(value, list) and all(isinstance(item, str) for item in value):
                 return list(dict.fromkeys(value))
         except ValueError:
             pass
-        log.warning("%s is not a JSON list of catalog ids; using the default starter list", STARTER_SETTING)
+        log.warning("%s is not a JSON list of catalog ids; no starter skills selected", STARTER_SETTING)
+        return []
     return default_starter_ids(drive_root, rows, repo_dir=repo_dir)
 
 
@@ -98,10 +109,10 @@ def starter_groups(drive_root: pathlib.Path, *, rows: Optional[List[Dict[str, An
             if category["id"] not in labels:
                 labels[category["id"]] = category["label"]
                 order.append(category["id"])
-        if row["kind"] in {"builtin", "hub"}:
+        if row["kind"] in {"builtin", "hub"} or any(i.startswith(row["id"] + "/") for i in ticked):
             statuses.append({**row, **status})
     groups: Dict[str, List[Dict[str, Any]]] = {}
-    for item in _offer(drive_root, rows, repo_dir):
+    for item in _offer(drive_root, rows, repo_dir, ticked):
         category = (item.get("category") or ["other"])[0]
         groups.setdefault(category, []).append({
             "id": item["id"], "name": item["name"], "description": item.get("description", ""),
@@ -122,11 +133,13 @@ def starter_groups(drive_root: pathlib.Path, *, rows: Optional[List[Dict[str, An
 
 def _install_one(drive_root: pathlib.Path, item_id: str, rows: List[Dict[str, Any]],
                  repo_dir: Optional[pathlib.Path]) -> Dict[str, Any]:
+    from ouroboros.config import get_starter_skills_turn_on
     from ouroboros.skill_source_install import SkillInstallError, install_item, run_in_lane, start_review
 
     try:
         result = run_in_lane(drive_root, "install", item_id, lambda: install_item(
-            drive_root, item_id, actor="owner", reason="starter skills", turn_on_when_ready=True,
+            drive_root, item_id, actor="owner", reason="starter skills",
+            turn_on_when_ready=get_starter_skills_turn_on(),
             rows=rows, repo_dir=repo_dir), message=f"Installing starter skill {item_id}")
     except SkillInstallError as exc:
         status = "pending" if exc.code in _RETRY_CODES else "skipped" if exc.code == "name_taken" else "failed"
@@ -146,21 +159,36 @@ def run_starter(drive_root: pathlib.Path, ids: Optional[List[str]], *, origin: s
     a source cannot be read its recommended skills are unknown, so the run stays pending and a later
     start resolves the list again (installed items are kept).
     """
+    from ouroboros.config import load_settings
     from ouroboros.skill_source_catalog import read_snapshot, refresh_source
     from ouroboros.skill_sources import load_sources, source_by_id
 
     with _LOCK:
         rows = load_sources()
-        fetched: Dict[str, bool] = {}
-        for row in rows:
-            if row["kind"] in {"hub", "git"} and (ids is None or any(i.startswith(row["id"] + "/") for i in ids)):
-                refresh_source(drive_root, row)
-                fetched[row["id"]] = read_snapshot(drive_root, row) is not None
-        unread = [row["id"] for row in rows if fetched.get(row["id"]) is False]
-        chosen = list(ids) if ids is not None else starter_ids(drive_root, rows=rows, repo_dir=repo_dir)
+        settings = load_settings()
+        defaults = ids is None and settings.get(STARTER_SETTING, "") == ""
+        builtin_rows = [row for row in rows if row["kind"] == "builtin"]
+        chosen = list(ids) if ids is not None else starter_ids(drive_root, settings, builtin_rows, repo_dir=repo_dir)
         marker = _write_marker(drive_root, state="running", origin=origin, requested=chosen,
                                resolve_default=ids is None)
         results = dict(marker.get("results") or {})
+        def install(item_id: str) -> None:
+            if (results.get(item_id) or {}).get("status") not in {"installed", "skipped", "failed"}:
+                results[item_id] = _install_one(drive_root, item_id, rows, repo_dir)
+                _write_marker(drive_root, results=results)
+
+        for item_id in chosen:
+            if any(item_id.startswith(row["id"] + "/") for row in builtin_rows):
+                install(item_id)
+        fetched: Dict[str, bool] = {}
+        for row in rows:
+            if row["kind"] in {"hub", "git"} and (defaults or any(i.startswith(row["id"] + "/") for i in chosen)):
+                refresh_source(drive_root, row)
+                fetched[row["id"]] = read_snapshot(drive_root, row) is not None
+        unread = [row["id"] for row in rows if fetched.get(row["id"]) is False]
+        if defaults:
+            chosen = starter_ids(drive_root, settings, rows, repo_dir=repo_dir)
+        _write_marker(drive_root, requested=chosen)
         for item_id in chosen:
             if (results.get(item_id) or {}).get("status") in {"installed", "skipped", "failed"}:
                 continue
@@ -169,9 +197,9 @@ def run_starter(drive_root: pathlib.Path, ids: Optional[List[str]], *, origin: s
                 results[item_id] = {"status": "pending", "code": "source_unread",
                                     "error": f"{row['name']} could not be read yet"}
                 continue
-            results[item_id] = _install_one(drive_root, item_id, rows, repo_dir)
+            install(item_id)
         pending = [item for item, value in results.items() if value.get("status") == "pending"]
-        waiting = bool(pending) or (ids is None and bool(unread))
+        waiting = bool(pending) or (defaults and bool(unread))
         return _write_marker(drive_root, state="pending" if waiting else "done", results=results)
 
 
@@ -220,8 +248,10 @@ def at_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_r
     Never raises."""
     try:
         from ouroboros.skill_install_record import convert_legacy_records
+        from ouroboros.skill_source_install import settle_pending_updates_at_startup
 
         convert_legacy_records(drive_root)
+        settle_pending_updates_at_startup(drive_root)
         marker = read_marker(drive_root)
         state = str(marker.get("state") or "")
         onboarded = bool(str(settings.get("OUROBOROS_ONBOARDING_COMPLETED_AT") or "").strip())

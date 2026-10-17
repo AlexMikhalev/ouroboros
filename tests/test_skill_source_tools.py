@@ -43,6 +43,9 @@ def test_the_four_tools_are_registered_with_schemas():
     names = {entry.name: entry for entry in tools.get_tools()}
     assert set(names) == {"skill_sources", "skill_search", "skill_install", "skill_update"}
     assert names["skill_install"].schema["parameters"]["required"] == ["id", "reason"]
+    assert {name: entry.safety_policy for name, entry in names.items()} == {
+        "skill_sources": "check", "skill_search": "skip", "skill_install": "check", "skill_update": "check",
+    }
 
 
 def test_search_reads_a_new_source_once_and_returns_catalog_ids(ctx):
@@ -126,3 +129,37 @@ def test_a_merge_ouroboros_asks_for_is_its_own_task_never_the_owner_door(ctx, mo
     assert out["task"] == "current" and out["base_available"] is True
     assert out["local_tree"] == "skills/ouroboroshub/notes" and "skill_review" in out["instructions"]
     assert read_install_record(drive, "notes")["merge"]["requested_by"] == "ouroboros"
+
+
+def test_search_serves_release_capabilities_and_current_local_digest(ctx):
+    from ouroboros.skill_loader import find_skill
+
+    context, drive, _reviews, _hub = ctx
+    first = json.loads(_call("skill_search", context, query="notes"))["items"][0]
+    assert first["digest"] and first["type"] == "instruction"
+    assert first["needs_keys"] == [] and first["permissions"] == []
+    assert "local_digest" not in first
+    _call("skill_install", context, id=first["id"], reason="r")
+    loaded = find_skill(drive, "notes")
+    (loaded.skill_dir / "edit.txt").write_text("local", encoding="utf-8")
+    item = json.loads(_call("skill_search", context, query="notes"))["items"][0]
+    assert item["digest"] == first["digest"]
+    assert item["local_digest"] == find_skill(drive, "notes").content_hash != item["digest"]
+    refused = _call("skill_update", context, name="notes", mode="replace", local_digest=first["digest"])
+    assert "local_changed" in refused
+    assert (loaded.skill_dir / "edit.txt").exists()
+
+
+def test_tools_record_self_check_without_starting_panel(ctx):
+    context, drive, reviews, _hub = ctx
+    _call("skill_search", context)
+    installed = json.loads(_call("skill_install", context, id="ouroboros-community/notes", reason="r",
+                                 check="self", check_notes="Read this release; it only describes note formatting."))
+    assert installed["basis"] == "self_check" and not reviews
+    updated = json.loads(_call("skill_update", context, name="notes", mode="replace",
+                               check="self", check_notes="Read the exact offered release."))
+    assert updated["basis"] == "self_check" and not reviews
+    assert read_install_record(drive, "notes")["check"]["task_id"] == "task-1"
+    schemas = {e.name: e.schema["parameters"]["properties"] for e in tools.get_tools()}
+    assert schemas["skill_install"]["check"]["enum"] == schemas["skill_update"]["check"]["enum"] == ["review", "self"]
+    assert "skip_review" not in schemas["skill_update"]

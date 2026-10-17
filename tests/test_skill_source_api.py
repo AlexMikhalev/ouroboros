@@ -234,3 +234,19 @@ def test_http_source_probe_exposes_the_encryption_warning(env, monkeypatch):
     assert response.status_code == 200
     assert assert_bound("POST /api/skill-sources/probe", response) == "SkillSourceProbeResponse"
     assert response.json()["warning"] == "not_encrypted"
+
+
+def test_update_without_review_is_owner_http_replace_only(env, monkeypatch):
+    from ouroboros.skill_source_install import install_item
+
+    client, drive, hub, _tmp = env
+    reviews = []
+    monkeypatch.setattr("ouroboros.skill_source_install.start_review", lambda *a, **k: reviews.append(a))
+    install_item(drive, "ouroboros-community/notes", rows=hub.rows())
+    for body in ({"mode": "keep", "skip_review": True}, {"mode": "merge", "skip_review": True},
+                 {"mode": "replace", "skip_review": "false"}):
+        assert client.post("/api/skills/notes/update", json=body).status_code == 400
+    result = client.post("/api/skills/notes/update", json={"mode": "replace", "skip_review": True})
+    assert result.status_code == 200 and assert_bound("POST /api/skills/{skill}/update", result)
+    assert _wait(lambda: (read_install_record(drive, "notes") or {}).get("basis") == "owner_skip")
+    assert not reviews

@@ -403,6 +403,11 @@ def get_trust_native_seeded_skills() -> bool:
     return _settings_flag_enabled("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS")
 
 
+def get_starter_skills_turn_on() -> bool:
+    """Whether the build's starter installs request first enablement when ready."""
+    return _settings_flag_enabled("OUROBOROS_STARTER_SKILLS_TURN_ON")
+
+
 def get_runtime_mode() -> str:
     """Return effective Access, preserving the process's restart-bound baseline."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_RUNTIME_MODE"])

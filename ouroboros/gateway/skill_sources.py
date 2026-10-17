@@ -345,9 +345,13 @@ async def api_skill_update(request: Request) -> JSONResponse:
     mode = str(body.get("mode") or "")
     if mode not in {"replace", "keep", "merge"}:
         return json_error("mode is replace, keep or merge", 400)
+    skip_review = body.get("skip_review", False)
+    if not isinstance(skip_review, bool) or (skip_review and mode != "replace"):
+        return json_error("skip_review is a boolean for mode replace only", 400)
     drive_root, repo_dir = request_drive_root(request), request_repo_dir(request)
     kwargs = {"mode": mode, "digest": str(body.get("digest") or ""),
-              "local_digest": str(body.get("local_digest") or ""), "actor": "owner", "repo_dir": repo_dir}
+              "local_digest": str(body.get("local_digest") or ""), "skip_review": skip_review,
+              "actor": "owner", "repo_dir": repo_dir}
     if mode != "replace":
         try:
             result = await run_lifecycle_job(

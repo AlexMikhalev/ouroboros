@@ -421,7 +421,7 @@ def test_conversion_records_the_trusted_release_of_an_unchanged_seed(env, monkey
 def test_conversion_leaves_an_edited_seed_unreviewed(env, monkeypatch):
     from ouroboros import skill_builtin
     from ouroboros.skill_install_record import read_install_record
-    from ouroboros.skill_loader import compute_content_hash, find_skill
+    from ouroboros.skill_loader import find_skill
 
     seed_dir, drive_root = env
     monkeypatch.setattr(skill_builtin, "bundled_skills_dir", lambda: seed_dir)
@@ -429,18 +429,15 @@ def test_conversion_leaves_an_edited_seed_unreviewed(env, monkeypatch):
     skill_builtin.ensure_builtin_skills(drive_root)
     skill = find_skill(drive_root, "weather")
     record = read_install_record(drive_root, "weather")
-    bundled = compute_content_hash(seed_dir / "weather")
-    assert record["release"]["digest"] == record["base_digest"] == bundled != skill.content_hash
+    assert record["release"]["digest"] == record["base_digest"] == ""
+    assert record["modified"] is True and record["legacy"] is True
     assert skill.review.content_hash == legacy  # stale stays stale
     assert skill.review.gate_for(skill.content_hash)["executable_review"] is False
 
 
 @pytest.mark.parametrize("edit_after", [False, True])
-def test_first_start_re_seeds_a_drifted_launcher_copy(env, monkeypatch, edit_after):
-    """The first start after the upgrade converts, then re-seeds a launcher copy whose
-    bundled version moved. An unchanged copy was proven by its native-seed verdict; an
-    edited one has no recorded base (its original release is unknown), so the launcher's
-    version re-seed applies to it once, as before. From then on the recorded base decides."""
+def test_first_start_preserves_proven_edits_and_reseeds_unchanged_launcher_copy(env, monkeypatch, edit_after):
+    """A stale native-seed review proves local edits even when the original base is unknown."""
     from ouroboros import skill_builtin
     from ouroboros.skill_install_record import read_install_record
     from ouroboros.skill_loader import find_skill
@@ -449,9 +446,26 @@ def test_first_start_re_seeds_a_drifted_launcher_copy(env, monkeypatch, edit_aft
     monkeypatch.setattr(skill_builtin, "bundled_skills_dir", lambda: seed_dir)
     installed, _ = _legacy_native_seed(drive_root, seed_dir, edit_after=edit_after)
     _write_skill(seed_dir, "weather", "2.0.0")
-    assert skill_builtin.ensure_builtin_skills(drive_root) == 1
-    assert "version: 2.0.0" in (installed / "SKILL.md").read_text(encoding="utf-8")
+    assert skill_builtin.ensure_builtin_skills(drive_root) == (0 if edit_after else 1)
+    assert f"version: {'1.0.0' if edit_after else '2.0.0'}" in (installed / "SKILL.md").read_text(encoding="utf-8")
     skill = find_skill(drive_root, "weather")
     record = read_install_record(drive_root, "weather")
-    assert record["base_digest"] == record["release"]["digest"] == skill.content_hash
-    assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+    if edit_after:
+        assert record["modified"] is True and record["base_digest"] == ""
+        assert (installed / "extra.txt").read_text(encoding="utf-8") == "owner edit\n"
+        assert not skill.review.gate_for(skill.content_hash)["executable_review"]
+    else:
+        assert record["base_digest"] == record["release"]["digest"] == skill.content_hash
+        assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+
+
+def test_conversion_without_seed_review_keeps_launcher_version_reseed(env, monkeypatch):
+    from ouroboros import skill_builtin
+
+    seed_dir, drive = env
+    monkeypatch.setattr(skill_builtin, "bundled_skills_dir", lambda: seed_dir)
+    installed, _ = _legacy_native_seed(drive, seed_dir, edit_after=True)
+    (drive / "state" / "skills" / "weather" / "review.json").unlink()
+    _write_skill(seed_dir, "weather", "2.0.0")
+    assert skill_builtin.ensure_builtin_skills(drive) == 1
+    assert "version: 2.0.0" in (installed / "SKILL.md").read_text(encoding="utf-8")

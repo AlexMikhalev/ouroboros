@@ -125,13 +125,14 @@ def test_conversion_moves_only_records_that_covered_the_unchanged_bytes(tmp_path
     (state / "ouroboroshub.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     summary = si.convert_skill_identities(drive_root)
-    assert sorted(summary["converted"]["probe"]) == ["grants.json", "review.json"]
+    assert sorted(summary["converted"]["probe"]) == ["grants.json", "ouroboroshub.json", "review.json"]
     review = json.loads((state / "review.json").read_text(encoding="utf-8"))
     assert review["content_hash"] == digest and review["legacy_content_hashes"] == [legacy]
     assert review["author_disposition"]["subject_hash"] == digest
     assert review["findings"][0]["item"] == "bug_hunting"  # evidence itself is untouched
     assert json.loads((state / "grants.json").read_text(encoding="utf-8"))["content_hash"] == digest
     assert json.loads((state / "owner_attestation.json").read_text(encoding="utf-8"))["content_hash"] == "f" * 64
+    receipt["published"]["content_hash"] = digest
     assert json.loads((state / "ouroboroshub.json").read_text(encoding="utf-8")) == receipt
     loaded = find_skill(drive_root, "probe")
     assert loaded.review.gate_for(loaded.content_hash)["executable_review"] is True
@@ -149,10 +150,67 @@ def test_conversion_keeps_stale_records_stale(tmp_path):
     state = _state(drive_root)
     (state / "review.json").write_text(json.dumps({"content_hash": "0" * 64, "status": "clean", "findings": [
         {"item": "x", "verdict": "PASS", "model": "m"}]}), encoding="utf-8")
+    receipt = {"published": {"content_hash": "0" * 64, "slug": "probe"}}
+    (state / "ouroboroshub.json").write_text(json.dumps(receipt), encoding="utf-8")
     si.convert_skill_identities(drive_root)
+    assert json.loads((state / "ouroboroshub.json").read_text(encoding="utf-8")) == receipt
     assert json.loads((state / "review.json").read_text(encoding="utf-8"))["content_hash"] == "0" * 64
     loaded = find_skill(drive_root, "probe")
     assert loaded.review.gate_for(loaded.content_hash)["executable_review"] is False
+
+
+def test_identity_conversion_retries_after_a_record_write_error(tmp_path, monkeypatch):
+    drive = tmp_path / "data"
+    skill = _skill(drive / "skills" / "external")
+    state = _state(drive)
+    (state / "review.json").write_text(json.dumps({"content_hash": si.legacy_content_hashes(skill)[0]}),
+                                      encoding="utf-8")
+    original = si.convert_skill_records
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise OSError("write interrupted")
+        patch.setattr(si, "convert_skill_records", fail)
+        assert si.convert_skill_identities(drive)["errors"]
+    assert not (drive / "state" / "skills" / si.CONVERSION_MARKER).exists()
+    assert si.convert_skill_records is original
+    assert si.convert_skill_identities(drive)["converted"] == {"probe": ["review.json"]}
+    assert si.convert_skill_identities(drive) == {"skipped": True}
+
+
+@pytest.mark.parametrize("edited", [False, True])
+@pytest.mark.parametrize("manifest_name", ["SKILL.md", "skill.json"])
+def test_legacy_hub_conversion_uses_only_the_original_manifest_declaration(tmp_path, edited, manifest_name):
+    from ouroboros.skill_install_record import convert_legacy_records, read_install_record
+    from ouroboros.skill_loader import find_skill
+    from ouroboros.skill_source_catalog import install_listing
+
+    drive = tmp_path / "data"
+    payload = _skill(drive / "skills" / "ouroboroshub", extra="dependencies:\n  pip: [requests]\n")
+    if manifest_name == "skill.json":
+        (payload / "SKILL.md").unlink()
+        (payload / manifest_name).write_text(json.dumps({"name": "probe", "description": "d", "version": "1.0.0",
+            "type": "instruction", "dependencies": {"pip": ["requests"]}}), encoding="utf-8")
+    digest = si.payload_digest(payload)
+    files = [{"path": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+             for p in payload.iterdir() if p.is_file()]
+    sidecar = {"source": "ouroboroshub", "slug": "probe", "version": "1.0.0", "files": files,
+               "catalog_url": "https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json"}
+    (payload / ".ouroboroshub.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    if edited:
+        manifest = payload / manifest_name
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace("requests", "httpx"), encoding="utf-8")
+    row = {"id": "community", "kind": "hub", "name": "Community", "url": "https://github.com/razzant/OuroborosHub"}
+    assert convert_legacy_records(drive, [row])["converted"] == ["probe"]
+    record = read_install_record(drive, "probe")
+    loaded = find_skill(drive, "probe")
+    listing = install_listing(drive, loaded, {"community": (row, {"entries": [
+        {"name": "probe", "version": "1.0.0", "digest": digest}]})})["install"]
+    assert listing["modified"] is edited
+    if not edited:
+        assert record["release"]["digest"] == loaded.content_hash == digest
+        assert listing["update_available"] is None
+    else:
+        assert record["release"]["digest"] == si.release_digest_from_files(files)
 
 
 def test_free_replay_matches_history_rows_of_the_same_snapshot(tmp_path):

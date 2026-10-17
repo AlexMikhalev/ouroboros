@@ -4,8 +4,8 @@
 re-trusts or removes a source). ``skill_search`` finds catalog ids in the connected sources (ClawHub
 joins a text search). ``skill_install`` installs one by catalog id, never by URL: from a trusted source
 the skill gets the keys it asks for (under the owner's auto-grant setting) and turns on when ready; from
-a review source it is installed at once, its review starts, and it turns on only when the review leaves
-no blockers. ``skill_update`` applies one update choice. Skipping a review stays the owner's act.
+a review source Ouroboros chooses the configured review or records a self-check of the exact release.
+``skill_update`` applies one update choice. Skipping without a check stays the owner's act.
 """
 
 from __future__ import annotations
@@ -97,11 +97,20 @@ def _handle_skill_sources(ctx: ToolContext, action: str = "list", url: str = "",
                                           "A trust change never rewrites an existing install."})
 
 
-def _compact(item: Dict[str, Any]) -> Dict[str, Any]:
+def _compact(item: Dict[str, Any], drive: pathlib.Path) -> Dict[str, Any]:
     keep = ("id", "name", "source_name", "trust", "official", "recommended", "category", "version", "withdrawn",
             "installed", "needs_keys", "type")
     out = {key: item.get(key) for key in keep if item.get(key) not in (None, "", [], False)}
     out["description"] = str(item.get("description") or "")[:240]
+    out.update(digest=item.get("digest", ""), needs_keys=list(item.get("needs_keys") or []),
+               permissions=list(item.get("permissions") or []), type=item.get("type", ""))
+    if (item.get("installed") or {}).get("state") == "installed":
+        from ouroboros.config import get_skills_repo_path
+        from ouroboros.skill_loader import find_skill
+
+        loaded = find_skill(drive, item["name"], repo_path=get_skills_repo_path())
+        if loaded is not None:
+            out["local_digest"] = loaded.content_hash
     return out
 
 
@@ -128,14 +137,14 @@ def _handle_skill_search(ctx: ToolContext, query: str = "", source: str = "", ca
                     items.extend(registry_items(row, " ".join(words)))
                 except Exception as exc:
                     notes.append(f"{row['name']}: {exc}")
-    return _dump({"count": len(items), "items": [_compact(item) for item in items[:_MAX_RESULTS]],
+    return _dump({"count": len(items), "items": [_compact(item, drive) for item in items[:_MAX_RESULTS]],
                   "omitted": max(0, len(items) - _MAX_RESULTS), "notes": notes,
                   "categories": view["categories"],
                   "hint": "Install with skill_install(id, reason); the id is <source>/<name>."})
 
 
 def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", replace: bool = False,
-                          owner_source: Any = None, **_kw: Any) -> str:
+                          owner_source: Any = None, check: str = "review", check_notes: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, install_item, run_in_lane, start_review
 
     item_id = str(id or "").strip()
@@ -152,7 +161,8 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     try:
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
-            turn_on_when_ready=True), message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
+            turn_on_when_ready=True, check=check, check_notes=check_notes),
+            message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
         return "⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())
@@ -161,13 +171,15 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
         result["next"] = ("The review runs now in the skill lifecycle lane; the skill turns on when it leaves no "
                           "blockers. list_skills(name=...) shows its state.")
     acceptance = result.get("acceptance") or {}
+    basis_text = {"trusted": "installs without review", "self_check": "Ouroboros self-check recorded"}
     result["message"] = (f"Installed {result.get('name')} from {result['source'].get('name')} "
-                         f"({'installs without review' if result.get('basis') == 'trusted' else 'reviewed before it runs'})"
+                         f"({basis_text.get(result.get('basis'), 'reviewed before it runs')})"
                          f"; reason: {reason}. Keys granted: {', '.join(acceptance.get('granted_keys') or []) or 'none'}.")
     return _dump(result)
 
 
-def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", digest: str = "", **_kw: Any) -> str:
+def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", digest: str = "", local_digest: str = "",
+                         check: str = "review", check_notes: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, run_in_lane, start_review, update_installed
 
     skill = str(name or "").strip()
@@ -176,7 +188,8 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
     drive = _drive(ctx)
     try:
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
-            drive, skill, mode=mode, digest=str(digest or ""), actor="ouroboros",
+            drive, skill, mode=mode, digest=str(digest or ""), local_digest=str(local_digest or ""), actor="ouroboros",
+            check=check, check_notes=check_notes,
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
@@ -185,6 +198,13 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
         start_review(drive, skill)
     return _dump(result)
 
+
+_CHECK_PROPERTIES = {
+    "check": {"type": "string", "enum": ["review", "self"], "description":
+              "Choose depth by what the skill can touch: review (default, configured panel), or self after reading "
+              "the exact release and explaining why it may run. A trusted source ignores this choice."},
+    "check_notes": {"type": "string", "description": "self requires 1..2000 characters recording what you read and why."},
+}
 
 _SCHEMAS = {
     "skill_sources": {
@@ -206,7 +226,8 @@ _SCHEMAS = {
     "skill_search": {
         "description": (
             "Search the skills offered by the connected sources (ClawHub joins a text search). Returns catalog ids "
-            "for skill_install with source, trust, Official, category, version and installed state."
+            "for skill_install with source, trust, digest, keys, permissions, type and installed state; "
+            "local_digest names an installed copy's current bytes."
         ),
         "properties": {
             "query": {"type": "string", "description": "Words to match in names and descriptions; empty lists all."},
@@ -218,47 +239,51 @@ _SCHEMAS = {
         "description": (
             "Install one skill by catalog id from skill_search (never a URL). From a trusted source it gets the keys "
             "it asks for under the owner's auto-grant setting and turns on when ready; from a review source it "
-            "installs now, its review starts, and it turns on only without blocker findings. The reason is recorded "
-            "for the reviewer and the owner."
+            "installs now, then uses the configured review or your recorded self-check. Choose by what it can touch. "
+            "After installing, tell the owner what you installed, why, and which keys it received."
         ),
         "properties": {
             "id": {"type": "string", "description": "Catalog id <source>/<name>."},
             "reason": {"type": "string", "description": "Why this work needs the skill."},
             "replace": {"type": "boolean", "description": "Replace another skill of the same name (owner's instruction)."},
             "owner_source": _OWNER_SOURCE,
+            **_CHECK_PROPERTIES,
         },
         "required": ["id", "reason"],
     },
     "skill_update": {
         "description": (
-            "Apply an update an installed skill's source offers: replace (keeps the previous copy), keep (skip this "
-            "release) or merge (a task merges the release into local changes). digest names the release you saw."
+            "Apply an update: replace replaces local edits (the previous copy is kept as .previous), keep skips "
+            "this release, merge merges it into local changes. digest names the release you saw; local_digest "
+            "detects edits since you looked. Choose the configured review or a recorded self-check by what it can touch."
         ),
         "properties": {
             "name": {"type": "string"},
             "mode": {"type": "string", "enum": ["replace", "keep", "merge"]},
             "digest": {"type": "string", "description": "The candidate release digest from skill_search."},
+            "local_digest": {"type": "string", "description": "The installed copy's local_digest from skill_search."},
+            **_CHECK_PROPERTIES,
         },
         "required": ["name", "mode"],
     },
 }
-_HANDLERS = {"skill_sources": _handle_skill_sources, "skill_search": _handle_skill_search,
-             "skill_install": _handle_skill_install, "skill_update": _handle_skill_update}
-_TIMEOUTS = {"skill_sources": 300, "skill_search": 300, "skill_install": 1800, "skill_update": 1800}
+def _schema(name: str) -> Dict[str, Any]:
+    spec = _SCHEMAS[name]
+    return {"name": name, "description": spec["description"],
+            "parameters": {"type": "object", "properties": spec["properties"],
+                           "required": spec.get("required", [])}}
 
 
 def get_tools() -> List[ToolEntry]:
     return [
-        ToolEntry(
-            name=name,
-            schema={"name": name, "description": spec["description"],
-                    "parameters": {"type": "object", "properties": spec["properties"],
-                                   "required": spec.get("required", [])}},
-            handler=_HANDLERS[name],
-            is_code_tool=False,
-            timeout_sec=_TIMEOUTS[name],
-        )
-        for name, spec in _SCHEMAS.items()
+        ToolEntry("skill_sources", _schema("skill_sources"), _handle_skill_sources,
+                  is_code_tool=False, timeout_sec=300, safety_policy="check"),
+        ToolEntry("skill_search", _schema("skill_search"), _handle_skill_search,
+                  is_code_tool=False, timeout_sec=300, safety_policy="skip"),
+        ToolEntry("skill_install", _schema("skill_install"), _handle_skill_install,
+                  is_code_tool=False, timeout_sec=1800, safety_policy="check"),
+        ToolEntry("skill_update", _schema("skill_update"), _handle_skill_update,
+                  is_code_tool=False, timeout_sec=1800, safety_policy="check"),
     ]
 
 
