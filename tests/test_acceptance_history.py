@@ -89,7 +89,11 @@ def _caller(f):
 def _source(ctx, *, text="Review historical answer; set its original root cap to 9 USD.", kind="chat", chat=0, ts=None, presence=False):
     from ouroboros.utils import utc_now_iso
     if kind == "chat":
-        ref = build_owner_message_ref(chat_id=chat, client_message_id="new-owner-request",
+        # Each owner message names its own client id; one id is one accepted message (a resend of it
+        # answers with the stored row).
+        import uuid
+
+        ref = build_owner_message_ref(chat_id=chat, client_message_id=f"new-owner-request-{uuid.uuid4().hex[:8]}",
                                        ts=ts or utc_now_iso(), text=text)
         from ouroboros import dialogue_store as ds
 
