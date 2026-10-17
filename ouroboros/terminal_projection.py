@@ -19,7 +19,6 @@ import pathlib
 import uuid
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
@@ -277,20 +276,23 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
     return result
 
 
-def _already_in_chat(root: Any, row: dict) -> dict | None:
-    """The row's own earlier publication (append/receipt crash): the task's chat rows in the
-    dialogue store (one indexed probe), the one carrying this summary id and readiness token.
-    Row timestamps never bound the lookup (a delayed worker row can sit behind a newer summary)."""
-    from ouroboros import dialogue_store
+def _already_in_chat(root: Any, row: dict, *, since_ts: str = "") -> dict | None:
+    """The task's earlier publication by summary id and readiness token.
+
+    Row timestamps never limit this lookup: delayed worker rows can be backdated.
+    The indexed task probe replaces archive-time bounds; ``since_ts`` remains a
+    caller-compatible argument. A miss during import is unknown and keeps the debt.
+    """
+    from ouroboros import dialogue_store as ds
 
     task_id = str(row.get("task_id") or "")
     if not task_id:
-        return None
-    for stored in reversed(dialogue_store.task_rows(root, [task_id], stream="chat")):
-        entry = stored.row
-        if (entry.get("summary_id") == row["summary_id"]
-                and entry.get("terminal_projection_token") == row.get("terminal_projection_token")):
-            return entry
+        raise ValueError("a terminal projection must name its task")
+    for entry in ds.iter_probes(root, "chat", [("task_id", task_id)], newest_first=True):
+        if (entry.row.get("summary_id") == row["summary_id"]
+                and entry.row.get("terminal_projection_token") == row.get("terminal_projection_token")):
+            return entry.row
+    ds.require_imported(root, "chat")
     return None
 
 

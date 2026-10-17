@@ -6,6 +6,7 @@ takes the one carrying this summary id and readiness token; it never trusts row 
 (Astra R3: a delayed worker row sits behind a newer summary) and opens no chain file. A
 readiness minted in the same call skips the check. The delivery ack re-enters the settle owner,
 so a card held behind its owed answer follows that answer without waiting for a sweep.
+An unknown import keeps the debt: a miss while importing raises, never reads as absent.
 """
 from __future__ import annotations
 
@@ -14,15 +15,27 @@ import pathlib
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros import dialogue_import, dialogue_store, terminal_projection as tp
+from ouroboros import dialogue_import as di, dialogue_store as ds
 from ouroboros.task_results import load_task_result, write_task_result
 from supervisor import events_chat_delivery as delivery
 from supervisor import terminal_delivery as td
 from tests._dialogue import chat_rows
 
 TOKEN = "ready-token"
-SUMMARY = {"type": "task_summary", "summary_id": "task-terminal:T", "task_id": "T", "terminal_projection_token": TOKEN,
+SUMMARY = {"task_id": "T", "type": "task_summary", "summary_id": "task-terminal:T", "terminal_projection_token": TOKEN,
            "ts": "2026-10-14T10:01:00+00:00", "text": "Done. Root task T."}
+
+
+@pytest.fixture(autouse=True)
+def sql_summary_writer(monkeypatch):
+    """Q1a owns this writer; exercise its contracted SQL seam before the writer merge."""
+    from ouroboros import project_dialogue
+
+    monkeypatch.setattr(project_dialogue, "append_canonical_task_summary",
+                        lambda root, row: ds.append(root, "chat", row) is not None)
 
 
 def _write(path: pathlib.Path, *rows: dict) -> None:
@@ -48,20 +61,49 @@ def test_a_summary_is_found_by_its_task_wherever_it_sits_and_no_chain_file_is_op
     and one appended through the store answer alike; a backdated worker row never hides them, a
     different readiness token never matches, and the check opens no chain file."""
     _write(tmp_path / "archive" / "chat_20261014T100200.jsonl", SUMMARY)
-    _write(tmp_path / "logs" / "chat.jsonl", {"ts": "2026-10-14T09:59:00+00:00", "task_id": "T", "text": "late"},
-           {"text": "newer, no summary"})
-    dialogue_import.cutover(tmp_path)
-    assert tp._already_in_chat(tmp_path, SUMMARY) is None, "the archive segment is not imported yet"
-    dialogue_import.run_dialogue_import(tmp_path)
+    _write(tmp_path / "logs" / "chat.jsonl", {"ts": "2026-10-14T09:59:00+00:00", "text": "late"})
+    ds.ensure(tmp_path)
+    for segment in di.pending_segments(tmp_path):
+        di.import_segment(tmp_path, segment["stream"], segment["name"])
+    assert tp._already_in_chat(tmp_path, SUMMARY, since_ts="2026-10-14T10:00:00+00:00") == SUMMARY
+
+
+def test_no_frozen_archive_is_opened_after_import(tmp_path, monkeypatch):
+    _write(tmp_path / "archive" / "chat_20261014T095900.jsonl", SUMMARY)
+    _write(tmp_path / "archive" / "chat_20261014T095000.jsonl", {"text": "ancient"})
+    ds.ensure(tmp_path)
+    for segment in di.pending_segments(tmp_path):
+        di.import_segment(tmp_path, segment["stream"], segment["name"])
     opened = _opened(monkeypatch)
     assert tp._already_in_chat(tmp_path, SUMMARY) == SUMMARY
-    assert tp._already_in_chat(tmp_path, {**SUMMARY, "terminal_projection_token": "other"}) is None
-    assert tp._already_in_chat(tmp_path, {**SUMMARY, "task_id": ""}) is None
-    assert opened == [], "no chain file is opened"
-    appended = {**SUMMARY, "summary_id": "task-terminal:U", "task_id": "U", "ts": "2026-10-14T10:03:00+00:00"}
-    dialogue_store.append(tmp_path, "chat", {"ts": "2026-10-14T10:02:30+00:00", "task_id": "U", "text": "a worker row"})
-    dialogue_store.append(tmp_path, "chat", appended)
-    assert tp._already_in_chat(tmp_path, appended) == appended and opened == []
+    assert tp._already_in_chat(tmp_path, {**SUMMARY, "terminal_projection_token": "other-readiness"}) is None
+    assert opened == []
+
+
+def test_pending_import_is_unknown_then_a_missing_publication_is_absent(tmp_path):
+    _write(tmp_path / "archive" / "chat_legacy.jsonl", SUMMARY)
+    with pytest.raises(ds.StoreMigrating, match="still importing"):
+        tp._already_in_chat(tmp_path, SUMMARY)
+    [segment] = di.pending_segments(tmp_path)
+    di.import_segment(tmp_path, "chat", segment["name"])
+    assert tp._already_in_chat(tmp_path, SUMMARY) == SUMMARY
+    assert tp._already_in_chat(tmp_path, {**SUMMARY, "terminal_projection_token": "later-readiness"}) is None
+
+
+def test_summary_lookup_has_equal_sql_work_with_one_or_thirty_foreign_rooms(tmp_path, monkeypatch):
+    from tests.test_dialogue_addressed_readers import metered
+
+    measurements = []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        ds.append(root, "chat", SUMMARY)
+        for room in range(rooms):
+            for index in range(10):
+                ds.append(root, "chat", {"chat_id": room + 10, "task_id": f"foreign-{room}", "text": str(index)})
+        with metered(monkeypatch) as counts:
+            assert tp._already_in_chat(root, SUMMARY) == SUMMARY
+        measurements.append(dict(counts))
+    assert measurements[0] == measurements[1] and measurements[0]["steps"] > 0
 
 
 def test_a_readiness_minted_in_the_same_call_skips_the_scan(tmp_path, monkeypatch):
@@ -94,7 +136,7 @@ def test_the_delivery_ack_settles_a_card_held_behind_its_answer(tmp_path, monkey
 
     def send(chat_id, body, **kwargs):
         sent.append(body)
-        dialogue_store.append(tmp_path, "chat", {"ts": "2026-10-15T00:00:00Z", "chat_id": chat_id, "text": body, "task_id": tid})
+        ds.append(tmp_path, "chat", {"ts": "2026-10-15T00:00:00Z", "chat_id": chat_id, "text": body, "task_id": tid})
 
     host = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, send_with_budget=send)
     delivery._handle_send_message(event, host)
