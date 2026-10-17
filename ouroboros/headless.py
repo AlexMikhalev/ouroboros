@@ -207,17 +207,14 @@ def _drive_retention_rows(parent: pathlib.Path, names: List[str], stop: Any) -> 
 
 def _prune_drives(base: pathlib.Path, parent: pathlib.Path, *, drive_of: Any, not_terminal: str,
                   retention_days: Optional[int], now: Optional[float], live: Any, guard: Any, stop: Any,
-                  budget: Optional[int], after: str, extra_checks: Any,
-                  rested: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  budget: Optional[int], after: str, extra_checks: Any, rested: Optional[Dict] = None) -> Dict[str, Any]:
     """The prune both layouts share: cheap per-name facts select possible work;
     fresh strict canonical status/date and existing checks still decide eligibility.
     Settlement through ``task_custody.settle_child_drive`` runs in name order after ``after`` (wrapping), at
-    most ``budget`` attempts per call; ``cursor`` is the last attempted drive, ``deferred`` the unreached rest.
-    ``rested`` (the caller's durable verdicts, updated in place) skips a drive whose last retention
-    is not transient while nothing it was read from changed (``task_custody.settlement_basis``): an unproven
-    custody is not copied and hashed again on every pass."""
+    most ``budget`` attempts per call; ``cursor`` is the last attempted drive, ``deferred`` the unreached rest;
+    ``rested`` the caller's durable verdicts (``task_custody.rested_verdict``), updated in place."""
     from ouroboros.retention import age_cutoff
-    from ouroboros.task_custody import TRANSIENT_RETENTIONS, settle_child_drive, settlement_basis
+    from ouroboros.task_custody import forget_departed, record_rest, rested_verdict, settle_child_drive
 
     days = _resolve_retention_days(retention_days)
     cutoff = age_cutoff(days, now)
@@ -227,10 +224,7 @@ def _prune_drives(base: pathlib.Path, parent: pathlib.Path, *, drive_of: Any, no
         return report
     names = sorted(entry.name for entry in base.iterdir() if entry.is_dir())
     names = [name for name in names if name > after] + [name for name in names if name <= after]
-    layout = base.name
-    if rested is not None:  # verdicts of drives that left this layout go with them
-        for name in [key for key, verdict in rested.items() if verdict.get("layout") == layout and key not in names]:
-            del rested[name]
+    forget_departed(rested, base.name, names)
     attempts = 0
     for task_id, fact in _drive_retention_rows(parent, names, stop):
         task_dir = base / task_id
@@ -251,8 +245,7 @@ def _prune_drives(base: pathlib.Path, parent: pathlib.Path, *, drive_of: Any, no
             if stop is not None and stop():
                 report["deferred"].append(task_id)
                 continue
-            verdict = (rested or {}).get(task_id)  # its basis holds the row signature: nothing to decode again
-            if verdict is not None and verdict.get("basis") == settlement_basis(parent, task_id, task_dir, drive_of(task_dir)):
+            if verdict := rested_verdict(rested, parent, task_id, task_dir, drive_of(task_dir)):
                 report["skipped"].append({"task_id": task_id, "reason": "custody_unchanged", "retained": verdict.get("reason")})
                 continue
             # A hint never authorizes removal. In particular a date changed after
@@ -274,17 +267,10 @@ def _prune_drives(base: pathlib.Path, parent: pathlib.Path, *, drive_of: Any, no
                 continue
             attempts += 1
             report["cursor"] = task_id
-            outcome = settle_child_drive(parent, task_id, drive_of(task_dir), live=live, guard=guard, stop=stop,
-                                         report=report)
-            if outcome["status"] == "removed":
+            if (outcome := settle_child_drive(parent, task_id, drive_of(task_dir), live=live, guard=guard, stop=stop,
+                                              report=report))["status"] == "removed":
                 report["pruned"].append({"task_id": task_id, "path": str(task_dir)})
-            if rested is not None:
-                reason = str(outcome.get("reason") or "")
-                if outcome["status"] == "removed" or reason in TRANSIENT_RETENTIONS or reason.startswith("custody_error"):
-                    rested.pop(task_id, None)
-                else:
-                    rested[task_id] = {"layout": layout, "reason": reason,
-                                       "basis": settlement_basis(parent, task_id, task_dir, drive_of(task_dir))}
+            record_rest(rested, base.name, parent, task_id, task_dir, drive_of(task_dir), outcome)
         except Exception as exc:
             report["errors"].append({"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"})
     return report

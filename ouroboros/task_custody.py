@@ -1136,6 +1136,32 @@ def settlement_basis(parent: pathlib.Path, task_id: str, task_dir: pathlib.Path,
         identity(_mailbox_path(drive, task_id)), str(__version__)], default=str))
 
 
+def rested_verdict(rested: Optional[Dict[str, Any]], parent: pathlib.Path, task_id: str, task_dir: pathlib.Path,
+                   drive: pathlib.Path) -> Optional[Dict[str, Any]]:
+    """A retained drive's durable verdict while nothing it was read from changed (``settlement_basis``):
+    the pass skips it instead of copying and hashing an unproven custody again."""
+    verdict = (rested or {}).get(task_id)
+    return verdict if verdict is not None and verdict.get("basis") == settlement_basis(parent, task_id, task_dir, drive) else None
+
+
+def forget_departed(rested: Optional[Dict[str, Any]], layout: str, names: List[str]) -> None:
+    """Verdicts of drives that left a layout go with them."""
+    for name in [key for key, verdict in (rested or {}).items() if verdict.get("layout") == layout and key not in names]:
+        del rested[name]
+
+
+def record_rest(rested: Optional[Dict[str, Any]], layout: str, parent: pathlib.Path, task_id: str,
+                task_dir: pathlib.Path, drive: pathlib.Path, outcome: Dict[str, Any]) -> None:
+    """Keep a retained drive's verdict; a removed, transiently retained or failed one owes another look."""
+    if rested is None:
+        return
+    reason = str(outcome.get("reason") or "")
+    if outcome["status"] == "removed" or reason in TRANSIENT_RETENTIONS or reason.startswith("custody_error"):
+        rested.pop(task_id, None)
+    else:
+        rested[task_id] = {"layout": layout, "reason": reason, "basis": settlement_basis(parent, task_id, task_dir, drive)}
+
+
 def settle_child_drive(canonical_root: Any, task_id: str, drive: Any, *, live: Optional[LiveProbe],
                        guard: Optional[Guard] = None, stop: Optional[Callable[[], bool]] = None,
                        admission_rollback: bool = False, report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
