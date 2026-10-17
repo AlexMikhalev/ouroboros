@@ -24,6 +24,7 @@ def installed(tmp_path, name="demo", *, entries=None, kind="extension", permissi
               enabled=True, reviewed=True, plugin="def register(api): pass\n"):
     skill_dir = tmp_path / "skills/native" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / ".seed-origin").write_text("test seed")
     (skill_dir / "skill.json").write_text(json.dumps({"name": "Display " + name, "type": kind,
         "entry": "plugin.py" if kind == "extension" else "", "plugin_api": "2.0",
         "permissions": list(permissions), "contributes": entries or [TEMPLATE]}))
@@ -143,7 +144,7 @@ def test_invalid_entry_is_reported_without_losing_working_entry(tmp_path, monkey
 
 def test_out_of_process_publication_and_recovery_keep_capture(tmp_path):
     skill = installed(tmp_path, entries=[CLIENT], permissions=["page_module"])
-    args = dict(catalog={}, drive_root=tmp_path, state_dir=tmp_path / "state/skills/demo", settings_reader=lambda: {}, granted_keys=[])
+    args = dict(catalog={}, drive_root=tmp_path, state_dir=tmp_path / "state/skills/demo", settings_reader=lambda: {}, granted_keys=[], dependency_site_dirs_enabled=False)
     extension_loader._publish_out_of_process_registration(skill, current_hash=skill.content_hash, **args)
     generation = extension_loader._extensions["demo"].generation_digest
     before = live_host_asset("demo", skill.content_hash, "ui/voice.js")
@@ -203,7 +204,7 @@ def test_speech_and_ordinary_uploads_keep_existing_cap(tmp_path, monkeypatch):
     extension_loader._publish_out_of_process_registration(skill, catalog={"routes": [
         {"skill": "demo", "path": f"/api/extensions/demo/{name}", "methods": ["POST"]}
         for name in ("transcribe", "ordinary")]}, drive_root=tmp_path, state_dir=tmp_path / "state/skills/demo",
-        settings_reader=lambda: {}, granted_keys=[], current_hash=skill.content_hash)
+        settings_reader=lambda: {}, granted_keys=[], dependency_site_dirs_enabled=False, current_hash=skill.content_hash)
     seen = []
     def dispatch(spec, request, **kwargs):
         from starlette.responses import JSONResponse
@@ -215,3 +216,46 @@ def test_speech_and_ordinary_uploads_keep_existing_cap(tmp_path, monkeypatch):
             assert http.post(f"/api/extensions/demo/{name}?lang=en", content=b"a" * 393216, headers={"Content-Type": "audio/webm"}).json() == {"text": "recognized"}
             assert http.post(f"/api/extensions/demo/{name}", content=b"a" * (512 * 1024 + 1)).status_code == 413
     assert len(seen) == 2 and all(row["query_string"] == "lang=en" for row in seen)
+
+
+def test_instruction_review_changes_follow_install_enforcement(tmp_path, monkeypatch):
+    skill = installed(tmp_path, kind="instruction")
+    save_review_state(tmp_path, "demo", SkillReviewState(status="blockers", content_hash=skill.content_hash))
+    monkeypatch.setattr("ouroboros.config.get_review_enforcement", lambda: "blocking")
+    with client(tmp_path, monkeypatch) as http:
+        assert http.get("/api/ui/contributions").json()["contributions"] == []
+        monkeypatch.setattr("ouroboros.config.get_review_enforcement", lambda: "advisory")
+        assert http.get("/api/ui/contributions").json()["contributions"][0]["key"] == "demo:simpler"
+        (skill.skill_dir / "plugin.py").write_text("# changed payload")
+        assert http.get("/api/ui/contributions").json()["contributions"] == []
+
+
+def test_capture_must_match_publication_hash_and_keeps_data_entry(tmp_path):
+    from ouroboros.extension_contributions import stage_contributions
+    from ouroboros.extension_registry_state import _StagedRegistrations
+
+    skill = installed(tmp_path, entries=[CLIENT, TEMPLATE], permissions=["page_module"])
+    api = SimpleNamespace(_staged=_StagedRegistrations())
+    stage_contributions(api, skill, skill.content_hash)
+    assert len(api._staged.contributions) == 2 and api._staged.host_sources
+    (skill.skill_dir / "ui/voice.js").write_text("export function mount() { return {}; }")
+    api = SimpleNamespace(_staged=_StagedRegistrations())
+    stage_contributions(api, skill, skill.content_hash)
+    assert [row["id"] for row in api._staged.contributions] == ["simpler"]
+    assert api._staged.host_sources == {}
+    assert "payload changed" in api._staged.contribution_problems[0]
+
+
+def test_chunked_speech_upload_has_no_cap_exception():
+    from ouroboros.gateway.extensions import _read_child_dispatch_body
+
+    async def read(size):
+        chunks = iter([b"x" * (size // 2), b"x" * (size - size // 2)])
+        async def receive():
+            chunk = next(chunks, b"")
+            return {"type": "http.request", "body": chunk, "more_body": bool(chunk)}
+        request = Request({"type": "http", "headers": []}, receive)
+        return await _read_child_dispatch_body(request)
+    assert len(asyncio.run(read(524288))) == 524288
+    with pytest.raises(ValueError, match="too large"):
+        asyncio.run(read(524289))

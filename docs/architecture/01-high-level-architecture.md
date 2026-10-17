@@ -331,7 +331,7 @@ ouroboros/ — agent core and shared runtime (§6)
   extension_contributions.py — Manifest staging, captured host assets and revision URLs
   extension_isolated_deps.py — Non-reentrant reader/writer leases for `sys.path`, polled asynchronously; dependency RLock also serializes owned importer-cache sweeps against double deletion, not plugin execution
   extension_health.py — Durable process-qualified per-skill health at `data/state/skills/<name>/health.json`; server observation is authoritative, worker observation a handoff-qualified view
-  extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — The extension runtime's leaves: the `PluginAPI` handed to `register(api)`, live-surface registries, liveness, child-catalog validation, staged import trees, provider-safe surface naming
+  extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — PluginAPI implementation, live registries, liveness, child catalog, staged imports and provider-safe names
   skill_token.py — Opaque Host Service token minting/validation (§12)
   marketplace/ — ClawHub and OuroborosHub (§13)
     clawhub.py, ouroboroshub.py, fetcher.py, adapter.py, install.py, install_specs.py, isolated_deps.py, provenance.py — Registry clients (the hub update is an adopt transaction with verified rollback), fetch, manifest adaptation, install and dependency metadata, isolated deps, provenance and the publication receipt
@@ -424,7 +424,7 @@ ouroboros/ — agent core and shared runtime (§6)
     extensions.py — Extensions/skills HTTP surface (routes: §4)
     contributions.py — Live contributions, offers, voice availability, captured assets and UI preference types (CLIENT_CONTRACT §11)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
-    widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot, with no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts contracts.py re-exports
+    widgets.py — GET /api/widgets: live cards, no discovery/reconcile/hash/write; widget types re-exported by contracts.py
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
     marketplace.py — ClawHub and OuroborosHub HTTP surface
     mcp.py — MCP HTTP surface over the shared MCPManager

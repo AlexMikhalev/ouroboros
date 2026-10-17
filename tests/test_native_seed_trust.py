@@ -307,8 +307,9 @@ def test_new_contribution_seeds_reach_existing_installs(seed_env):
     from ouroboros.launcher_bootstrap import _SEED_COMPLETE_MARKER
 
     seed_dir, target_root, data_root = seed_env
-    (target_root / _SEED_COMPLETE_MARKER).write_text("done")
+    (target_root / "native").mkdir()
+    (target_root / "native" / _SEED_COMPLETE_MARKER).write_text("done")
     for name in ("templates", "device_voice", "browser_speech", "not_new"):
         _write_skill(seed_dir, name, permissions="[tool]")
     assert _seed_skills_into(seed_dir, target_root, log) == 3
-    assert {path.name for path in (target_root / "native").iterdir()} == {"templates", "device_voice", "browser_speech"}
+    assert {path.name for path in (target_root / "native").iterdir() if path.is_dir()} == {"templates", "device_voice", "browser_speech"}

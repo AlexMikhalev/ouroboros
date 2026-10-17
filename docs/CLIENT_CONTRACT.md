@@ -504,6 +504,55 @@ A refused action answers `SkillActionRefusal`: `error`, the `status_code` it was
   - `module`: reviewed JavaScript run in a sandboxed frame. [`WIDGET_HOST_PROTOCOL.md`](WIDGET_HOST_PROTOCOL.md) is the complete host protocol: frame, document policy, message grammar, fetch relay, events, theme, size, downloads, links and the dispose handshake.
 - `GET /api/extensions/{skill}/module/{entry}` serves reviewed module code (never cached, any origin may load it).
 
+**Contributions (controls and speech engines):** `GET /api/ui/contributions`
+(`UiContributionsResponse`, `Cache-Control: no-store`) returns `contributions`,
+`offers.stt`, `icons`, `problems` (skill → warning strings), `preferences` and
+`voice`. The same fields appear beside `skills`/`live` in `GET /api/extensions`;
+`live.contributions` contains the loaded extensions' captured entries.
+Instruction skills contribute only while enabled and allowed by their current
+review gate; extension entries belong to their loaded publication. Invalid
+semantic entries are dropped individually and reported, also by skill preflight.
+
+Each contribution has `key` (`<skill>:<id>`), `skill`, `skill_label` (manifest name),
+`id`, `label`, `title`, `icon`, `order`, `revision` and `render: {kind, url}`,
+plus either `placement` or `provides`. Placement entries carry `action` and chips
+carry `source: {url, refresh_s}`. For `skill.request`, `action.url` and `route_url`
+name the host-computed absolute route; providers use `route_url`. Optional
+provider fields are `runtime`, `destination`, `languages`, `formats`,
+`install_size`, `max_bytes` and `max_seconds`. `icons` is the validator's icon
+catalog. `offers.stt` lists non-live bundled providers as
+`{skill, skill_label, id, label, destination, install_size, enabled: false}`.
+There is no marketplace offer until its catalog exposes contribution metadata;
+clients can link to the Skills entry instead.
+
+`render.kind: host` runs trusted same-origin code and requires an extension with
+`page_module` permission and its ordinary hash-bound grant/review authority.
+`GET /api/extensions/{skill}/ui/{revision}/{path}` serves only captured `ui/`
+assets of that live revision: `.js` as `text/javascript`, CSS, JSON and images by
+type, with no-store and nosniff. Example entry:
+`/api/extensions/voice/ui/<revision>/ui/voice.js`; relative imports stay in that
+revision. Missing, non-UI, unsupported, unloaded or stale paths answer 404.
+These modules are distinct from the opaque-origin widget frame protocol.
+
+`GET`/`POST /api/ui/preferences` persist `voice: {stt:"", tts:""}` and
+`contributions: {hidden:[], order:[]}` in the install-wide preference file.
+POST merges named nested keys, replaces each supplied list, and rejects unknown
+nested keys, non-string keys, strings over 120 characters and lists over 64 items
+with 400. A missing provider never clears or substitutes a saved key.
+The contribution response includes these preferences and `voice[kind]` as
+`{key, available, reason}`: reason is empty when available, `not_selected` for an
+empty choice or `provider_unavailable` for a missing chosen engine. Client API
+availability is a separate browser fact. Re-read on `extension_lifecycle`, WS
+open and `ouro:skill-lifecycle`; owner toggles invalidate instruction entries too.
+
+Server STT uses POST of raw audio to `route_url`, with its recorded `Content-Type`
+and optional `?lang=`. Reply: `{text}`, `{text:"", status:"no_speech"}` or
+`{error:{code,message}}`. The existing 512 KiB extension-route cap is unchanged.
+Optional `max_bytes` is 1..524288 and `max_seconds` 1..600; `formats` is a subset
+of `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`. The recorder
+honors these limits before upload; 393216 bytes at 32 kbps for 60 seconds is a
+provider declaration, never a host exception by skill name.
+
 **The skill's own routes:** everything else under `/api/extensions/{skill}/` belongs to the skill.
 - A route that does not exist answers 404, and a skill that is not running answers 409.
 - A method the skill did not declare answers 405.
