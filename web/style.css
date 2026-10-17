@@ -4841,6 +4841,13 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     color: var(--text-primary);
 }
 
+/* A fact too long for a narrow card moves its value under its label instead of overflowing. */
+.evo-runtime-chip {
+    flex-wrap: wrap;
+    max-width: 100%;
+    white-space: normal;
+}
+
 .evo-chart-wrap {
     position: relative;
     width: 100%;
@@ -6156,6 +6163,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     justify-content: space-between;
     gap: 10px;
 }
+
+/* A long unbroken title (a skill name) wraps; Close never leaves the dialog. */
+.marketplace-modal-head > h3 { min-width: 0; overflow-wrap: anywhere; }
+.marketplace-modal-head > button { flex: 0 0 auto; }
 
 .marketplace-modal-head, .marketplace-modal-actions { flex-shrink: 0; }
 .marketplace-modal-body > * { flex-shrink: 0; }
@@ -8745,6 +8756,7 @@ textarea.chat-input {
     color: var(--text-meta);
 }
 .chat-quiz-dot {
+    flex: 0 0 auto;
     width: 8px;
     height: 8px;
     border-radius: 50%;
