@@ -315,6 +315,23 @@ def owner_source_sha256(ctx: Any) -> str:
     ).encode("utf-8")).hexdigest()
 
 
+def owner_input_revision(ctx: Any) -> int:
+    """How many of the owner's own rows this run has admitted (``initial_text`` and peers are not theirs)."""
+    from ouroboros.owner_words import OWNER_SOURCES
+
+    return sum(isinstance(row, dict) and row.get("source") in OWNER_SOURCES
+               for row in getattr(ctx, "_owner_directives", None) or [])
+
+
+def owner_reply_owed(ctx: Any) -> bool:
+    """Owner rows arrived after this run's latest LIVE text send (``tools/owner_delivery.py``).
+
+    A failed or deferred send discharges nothing; queue admission is not a read receipt, and
+    whether a sent line answered completely remains the author's judgment, not the host's.
+    """
+    return owner_input_revision(ctx) > int(getattr(ctx, "_owner_reply_revision", None) or 0)
+
+
 def queue_inspection_unknown(ctx: Any, exc: BaseException) -> Dict[str, Any]:
     """The one typed stamp for a queue inspection that could not be read.
 

@@ -165,6 +165,13 @@ def _record_forced_finalization(
     # path (`_handle_budget_exceeded` -> `_forced_fallback_result`).
     _loop()._record_forced_acceptance_bypass(ctx, llm_trace, reason_code)
     ctx.accumulated_usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_NOTICE)
+    # Every rail returns this candidate's bytes. A wake's quiet selection stays
+    # internal here too (the pipeline publishes only the host's outcome notice);
+    # an ordinary replacement or the host's own fallback text is speech.
+    if getattr(candidate, "quiet", False):
+        ctx.accumulated_usage.update(wake_silent=True, terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL)
+    else:
+        ctx.accumulated_usage.pop("wake_silent", None)
     binding = dict(candidate.acceptance_binding or {}) if candidate is not None else {}
     tools = getattr(ctx, "tools", None)
     current_fingerprint = str(
@@ -984,6 +991,7 @@ def _publish_stale_forced_candidate(
     candidate.evidence_revision = stale_candidate.evidence_revision
     candidate.evidence_fingerprint = stale_candidate.evidence_fingerprint
     candidate.owner_source_sha256 = stale_candidate.owner_source_sha256
+    candidate.quiet = stale_candidate.quiet  # nor make a wake's internal words speech
     candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
         tools, candidate, reason_code,
     )
