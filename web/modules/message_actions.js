@@ -91,7 +91,7 @@ export function messageRow(bubble) {
         address,
         role: ROLE_NAMES.find((name) => bubble.classList.contains(name)) || '',
         taskId: bubble.dataset.taskId || '',
-        text: String(content?.textContent || '').trim(),
+        text: String(content?.textContent || bubble.dataset.rowWords || '').trim(),  // a living card: its fallback words
         content,
     };
 }

@@ -11,6 +11,7 @@ import { stampHistoryNode } from './chat_history_replay.js';
 import { isFileDrag } from './chat_activity.js';
 import { buildAttachmentBlock } from './chat_attachments.js';
 import { createDocumentReader, documentReaderKind } from './document_reader.js';
+import { createChatCards } from './chat_cards.js';
 
 // Player controls draw the house stroke vectors; each button's aria-label names its
 // current action and is rewritten with the icon whenever the state flips.
@@ -198,6 +199,8 @@ export function createChatMedia({
     senderLabel,
     stampNodeTimestamp,
     onDomWrite = (mutate) => mutate(),
+    replies = null,
+    composer = () => null,
 }) {
     const disposers = new Set();
     const resourceOwners = new Map();
@@ -212,6 +215,11 @@ export function createChatMedia({
     let dialogFile = null;
     let dialogOwner = null;  // the card's item (buildGallery may move it to an earlier group): releasing it or its holder closes the dialog
     let destroyed = false;
+    // Living cards are delivered rows too: Copy takes their fallback text, Reply their row address (chat_cards.js).
+    const cards = createChatCards({ frameNode: bubbleFrameNode, composer, onDomWrite, decorate(bubble, msg, text) {
+        attachCopyControl(bubble, text);
+        replies?.decorate(bubble, msg);
+    } });
 
     // A disposer owned like a listener (a late answer's end too): its owner's release, reset or destroy runs it.
     function own(dispose, owner) { disposers.add(dispose); resourceOwners.set(dispose, owner); return dispose; }
@@ -909,6 +917,7 @@ export function createChatMedia({
     // keep their listeners, playback, focus and outstanding user actions.
     function release(root) {
         reader.release(root);
+        cards.release(root);
         const owns = (node) => node === root || root?.contains?.(node);
         if (dialogOwner && owns(dialogOwner)) closeFileDialog();  // no actions on a released message's file
         for (const [dispose, owner] of resourceOwners) if (owns(owner)) {
@@ -934,6 +943,7 @@ export function createChatMedia({
     function destroy() {
         if (destroyed) return;
         reset();
+        cards.destroy();
         reader.destroy();
         destroyed = true;
     }
@@ -1009,6 +1019,23 @@ export function createChatMedia({
             rememberBubble(bubble, keys);
             return insertMessageNode(bubble) !== false;
         }
+        function appendCardMessage(msg) {
+            const keys = keysFor(msg, `card:${msg.card?.card_id || ''}`);
+            if (alreadyRendered(msg, keys)) return false;
+            const bubble = cards.buildCard(msg);
+            if (!bubble) return false;
+            rememberBubble(bubble, keys);
+            return insertMessageNode(bubble) !== false;
+        }
+        // One replayed delivery row (a file, photo, video, link card, question or living card), drawn before final
+        // handling: a mid-task delivery cannot finish its task card. False for any other row.
+        const replayed = { document: appendDocumentBubble, links: appendLinksMessage, quiz: appendQuizMessage,
+            card: appendCardMessage, photo: appendMediaBubble, video: appendMediaBubble };
+        function appendDelivery(msg) {
+            const append = Object.hasOwn(replayed, msg?.msg_type || '') ? replayed[msg.msg_type] : null;
+            if (append) append(msg);
+            return Boolean(append);
+        }
         // Media frames carry no activity identity: hide the dots row but keep
         // the authoritative active set intact; sync derives the header from it.
         const deliver = (append) => (msg) => {
@@ -1021,6 +1048,12 @@ export function createChatMedia({
         onWs('document', deliver(appendDocumentBubble));
         onWs('links', deliver(appendLinksMessage));
         onWs('quiz', deliver(appendQuizMessage));
+        onWs('card', deliver(appendCardMessage));
+        // A shown card changed (a new body or a recorded press): the existing row only, no unread bump.
+        onWs('card_state', (msg) => deliverContentMutation(() => cards.applyCardState(msg)));
+        onWs('extension_lifecycle', cards.lifecycle);
+        onWs('open', cards.reconnect);
+        onWs('message', cards.relay);
         if (applyQuizStateFrame && messagesRoot) {
             // Lifecycle updates address an EXISTING card by quiz_id — no
             // thread routing, no unread bump, never a new bubble.
@@ -1028,7 +1061,7 @@ export function createChatMedia({
                 () => applyQuizStateFrame(messagesRoot(), msg),
             ));
         }
-        return { appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage };
+        return { appendDelivery, appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage, appendCardMessage };
     }
 
     return {

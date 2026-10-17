@@ -34,7 +34,10 @@ import {
 } from './api_client.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { collectSafeFieldValues, downloadViaHostBridge } from './ui_helpers.js';
-import { filenameFromWidgetUrl, indexComponentTree, renderComponent } from './widget_render.js';
+import { mountPinnedCard, setCardPinned } from './card_components.js';
+import {
+    filenameFromWidgetUrl, indexComponentTree, patchWidgetChildren, renderComponent, syncWidgetCharts,
+} from './widget_render.js';
 
 export {
     WIDGET_FRAME_BORDER_RESERVE,
@@ -62,8 +65,9 @@ function pageTemplate() {
 function renderCardHtml(tab) {
     // Avoid leaking internal "skill:tab_id"; show skill only as needed.
     const title = tab.title || tab.tab_id || tab.skill;
+    const source = tab.pinned_card ? 'kept from the chat' : `from ${tab.skill}`;
     const subtitle = tab.skill && tab.skill !== title
-        ? `<span class="widgets-card-source">from ${escapeHtml(tab.skill)}</span>`
+        ? `<span class="widgets-card-source">${escapeHtml(source)}</span>`
         : '';
     const span = Number(tab.span || tab.grid_span || 1);
     const spanClass = span >= 2 ? ' widgets-card-span-2' : '';
@@ -153,77 +157,9 @@ async function callWidgetRoute(tab, spec, values, signal) {
     }
 }
 
-// Data updates patch the mounted declaration, never detach a retained control
-// or its ancestors. Component ids/tree paths already own identity; field and
-// kanban keys distinguish editable siblings inside those component roots.
-function widgetNodeKey(node) {
-    const data = node.dataset || {};
-    if (data.widgetComponent) return `component:${data.widgetComponent}`;
-    if (data.widgetFeedback) return `feedback:${data.widgetFeedback}`;
-    if (data.widgetTabKey) return `tab:${data.widgetTabKey}:${data.widgetTabIdx}`;
-    if (data.widgetKanbanCard) return `card:${data.widgetKanbanCard}`;
-    if (data.widgetKanbanCol) return `column:${data.widgetKanbanCol}`;
-    return node.name ? `field:${node.name}` : '';
-}
-
-function patchWidgetChildren(current, desired) {
-    const available = Array.from(current.childNodes);
-    const used = new Set();
-    const pools = new Map();
-    const matchKey = (node) => `${node.nodeType}:${node.nodeName}:${widgetNodeKey(node)}`;
-    for (const node of available) {
-        const key = matchKey(node);
-        if (!pools.has(key)) pools.set(key, { nodes: [], next: 0 });
-        pools.get(key).nodes.push(node);
-    }
-    const pairs = Array.from(desired.childNodes).map((next) => {
-        const pool = pools.get(matchKey(next));
-        const live = pool?.nodes[pool.next++];
-        if (live) used.add(live);
-        return [live, next];
-    });
-    available.filter((node) => !used.has(node)).forEach((node) => node.remove());
-    let anchor = current.firstChild;
-    for (const [live, next] of pairs) {
-        const node = live || next.cloneNode(true);
-        if (node !== anchor) current.insertBefore(node, anchor);
-        if (live) patchWidgetNode(live, next);
-        anchor = node.nextSibling;
-    }
-}
-
-function patchWidgetNode(current, desired) {
-    if (current.nodeType !== 1) {
-        if (current.nodeValue !== desired.nodeValue) current.nodeValue = desired.nodeValue;
-        return;
-    }
-    if (current.classList.contains('widget-chart-canvas')) {
-        // Chart.js owns its canvas and responsive parent. Only the declaration
-        // attributes change here; renderAll updates the existing chart below.
-        const canvas = current.querySelector('canvas');
-        const next = desired.querySelector('canvas');
-        if (canvas && next) {
-            canvas.dataset.widgetChartConfig = next.dataset.widgetChartConfig;
-            canvas.setAttribute('aria-label', next.getAttribute('aria-label') || '');
-            return;
-        }
-    }
-    const field = current.matches('input, textarea, select') && current.closest('[data-widget-form]');
-    const preserve = (name) => (field && ['value', 'checked', 'selected'].includes(name))
-        || (current.tagName === 'DETAILS' && name === 'open');
-    for (const attr of Array.from(current.attributes)) {
-        if (!preserve(attr.name) && !desired.hasAttribute(attr.name)) current.removeAttribute(attr.name);
-    }
-    for (const attr of Array.from(desired.attributes)) {
-        if (!preserve(attr.name) && current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
-    }
-    // The declaration is fixed for this mount. Do not rewrite editable values,
-    // textarea children or select options during a composition/native popup.
-    // Passwords remain only in their live control, outside saved formValues.
-    if (!field) patchWidgetChildren(current, desired);
-}
-
-async function mountDeclarativeWidget(mount, tab, render) {
+// `input` (a living card showing this widget in a message: `show_card(widget={..., input})`) gives the
+// widget's form fields of the same names their first values; what the owner typed in this page session wins.
+export async function mountDeclarativeWidget(mount, tab, render, { input = null } = {}) {
     // A new mount is a real lifecycle boundary, including password lifetime.
     // In-place reconciliation applies only while this mounted owner is alive.
     mount.replaceChildren();
@@ -237,7 +173,10 @@ async function mountDeclarativeWidget(mount, tab, render) {
     const saved = widgetSessionState.get(persistenceKey) || {};
     const state = { ...(saved.state || {}) };
     const status = { ...(saved.status || {}) };
-    const formValues = { ...(saved.formValues || {}) };
+    const seeded = input && typeof input === 'object' ? componentEntries.filter(({ component }) => component.type === 'form')
+        .map(({ component, key }) => [key, Object.fromEntries((component.fields || [])
+            .filter((field) => Object.hasOwn(input, field?.name || '')).map((field) => [field.name, input[field.name]]))]) : [];
+    const formValues = { ...Object.fromEntries(seeded), ...(saved.formValues || {}) };
     const componentState = { ...(saved.componentState || {}) };
     const timers = new Set();
     const controllers = new Set();
@@ -594,39 +533,7 @@ async function mountDeclarativeWidget(mount, tab, render) {
         const desired = document.createElement('template');
         desired.innerHTML = components.map((component, idx) => renderComponent(renderContext, component, view, `components.${idx}`)).join('');
         patchWidgetChildren(mount, desired.content);
-        const mountedChartKeys = new Set();
-        mount.querySelectorAll('[data-widget-chart-config]').forEach((canvas) => {
-            if (typeof Chart === 'undefined') return;
-            const chartKey = canvas.dataset.widgetChartKey || '';
-            mountedChartKeys.add(chartKey);
-            try {
-                const config = JSON.parse(canvas.dataset.widgetChartConfig || '{}');
-                const existing = chartInstances.get(chartKey);
-                const shape = JSON.stringify({ type: config.type, options: config.options || {} });
-                if (existing && existing.canvas === canvas && chartShapes.get(chartKey) === shape) {
-                    existing.data = config.data;
-                    existing.update();
-                    return;
-                }
-                if (existing) existing.destroy();
-                const chart = new Chart(canvas, config);
-                // widget_chart.js is DOM-free by contract, so its serialized
-                // config carries neutral chrome; the live theme is layered on
-                // here, where the document is actually readable.
-                applyChartTheme(chart);
-                chartInstances.set(chartKey, chart);
-                chartShapes.set(chartKey, shape);
-            } catch (err) {
-                console.warn('widgets: chart render failed', err);
-            }
-        });
-        chartInstances.forEach((chart, chartKey) => {
-            if (!mountedChartKeys.has(chartKey)) {
-                chart.destroy();
-                chartInstances.delete(chartKey);
-                chartShapes.delete(chartKey);
-            }
-        });
+        syncWidgetCharts(mount, chartInstances, chartShapes);
         visibleKeys.forEach((key) => {
             const component = componentSpec(key);
             if (!component) return;
@@ -777,6 +684,8 @@ async function mountTab(card, tab, mountSignal = null) {
     if (render.kind === 'iframe' && render.route) {
         return mountRouteIframeWidget(mount, tab, render);
     }
+    // A kept living card is Ouroboros's, not a skill's: no route, its presses go to the card's decisions.
+    if (tab.pinned_card) return mountPinnedCard(mount, tab);
     if (render.kind === 'declarative') {
         return mountDeclarativeWidget(mount, tab, render);
     }
@@ -1220,7 +1129,16 @@ export function initWidgets(ctx = {}) {
     }
 
     retryButton.addEventListener('click', reconcileWidgetList);
-    const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths);
+    // Remove on a card kept from the chat takes it off the board; the server's `extension_lifecycle` re-reads the list.
+    async function removeKeptCard(key) {
+        const tab = tabByKey(key);
+        if (!tab?.pinned_card) return;
+        const { ok, error } = await setCardPinned(tab.tab_id, false);
+        const status = list.parentElement?.querySelector('[data-widget-arrange-status]');
+        if (!ok && status) Object.assign(status, { textContent: `The card was not removed: ${error}` }).dataset.tone = 'error';
+    }
+
+    const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths, removeKeptCard);
     window.addEventListener('pagehide', (event) => {
         listRequests.abortAll();
         if (!event.persisted) { cardMenus.destroy(); widths.dispose(); }

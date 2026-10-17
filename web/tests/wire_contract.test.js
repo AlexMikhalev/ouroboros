@@ -250,10 +250,11 @@ test('delivered photo, video, and document rows keep their replay wire fields', 
     }
     assert.ok(branch('if kind == "card"', 'return {}').includes('"msg_type": "card"'), 'card replay lost its msg_type');
 
-    assert.match(chat, /\['document', 'photo', 'video', 'links', 'quiz'\]\.includes\(msg\.msg_type\)/);
-    assert.match(chat, /if \(msg\.msg_type === 'document'\) appendDocumentBubble\(msg\);/);
-    assert.match(chat, /else if \(msg\.msg_type === 'links'\) appendLinksMessage\(msg\);/);
-    assert.match(chat, /else appendMediaBubble\(msg\);/);
+    // Replay draws every delivery row through the one table in chat_media.js, before final handling.
+    const media = moduleFile('chat_media.js');
+    assert.match(media, /const replayed = \{ document: appendDocumentBubble, links: appendLinksMessage, quiz: appendQuizMessage,\s+card: appendCardMessage, photo: appendMediaBubble, video: appendMediaBubble \};/);
+    const replay = chat.indexOf('if (appendDelivery(msg)) continue;');
+    assert.ok(replay > 0 && replay < chat.indexOf('if (taskId && replayConcludesTask(msg))'), 'deliveries replay before final handling');
 });
 
 test('live structured delivery frames keep additive grouping and size fields', () => {
@@ -270,10 +271,11 @@ test('live structured delivery frames keep additive grouping and size fields', (
     assert.match(bus, /"type": "document",[\s\S]*?"size_bytes": size_bytes,[\s\S]*?"task_id": str\(task_id or ""\)/);
     assert.match(bus, /"type": "links",[\s\S]*?"actions": validated,[\s\S]*?"task_id": str\(task_id or ""\)/);
     assert.match(bus, /"type": "quiz",[\s\S]*?"quiz_id": qid,[\s\S]*?"task_id": str\(task_id or ""\)/);
-    // Replay: the quiz row joins the non-terminal delivery family in chat.js
-    // BEFORE the finishLiveCard/plainUntypedFinal block.
+    // Replay: the quiz row joins the non-terminal delivery family (chat_media.js's table, drawn by chat.js
+    // BEFORE the finishLiveCard/plainUntypedFinal block).
     const chat = moduleFile('chat.js');
-    assert.match(chat, /msg\.msg_type === 'quiz'\) appendQuizMessage\(msg\)/);
+    assert.match(moduleFile('chat_media.js'), /quiz: appendQuizMessage,/);
+    assert.ok(chat.indexOf('if (appendDelivery(msg)) continue;') < chat.indexOf('if (taskId && replayConcludesTask(msg))'));
     // The card gets the SAME sanitizing markdown pipeline as assistant bubbles.
     assert.match(chat, /mountMarkdown: mountChatMarkdown/);
     assert.match(chat, /enhanceMarkdown: enhanceMountedMarkdown/);

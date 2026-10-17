@@ -432,7 +432,7 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "startModeWrites = write.catch(() => {});" in page
     set_mode = page.split("async function setWidgetStartMode(key, mode) {", 1)[1].split("bindWidgetCardMenus", 1)[0]
     assert set_mode.index("await write;") < set_mode.index("const card = liveCardFor(list, key);")
-    assert "bindWidgetCardMenus(list, setWidgetStartMode, widths);" in page
+    assert "bindWidgetCardMenus(list, setWidgetStartMode, widths, removeKeptCard);" in page
     assert "event.target.closest('[data-widget-power]')" in page
     # Force-stop + eviction on a vanished card; the frame keeps its ack window.
     removed_branch = page.split("for (const key of plan.removed) {", 1)[1].split("for (const tab of nextTabs) {", 1)[0]
@@ -545,7 +545,7 @@ def test_widgets_card_width_is_owner_ui_preference():
     assert "widget_size: readSizes(prefs.widget_size)," in sync
     assert "widths.readSizes(" not in source
     assert "save: (payload) => apiClient.saveUiPreferences(payload)," in source
-    assert "const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths);" in source
+    assert "const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths, removeKeptCard);" in source
     assert "export function createWidgetWidths(list, options)" in reorder
     assert "list.parentElement?.querySelector('[data-widget-arrange-status]')" in reorder
     assert "const mode = plan.availableColumns > 1 ? 'columns' : 'stack';" in reorder

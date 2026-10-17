@@ -1336,6 +1336,24 @@ recorded failure reasons, repeated ones grouped with their counts; Logs Raw
 keeps the complete source/failure facts, and a missing recorded reason is stated
 explicitly. Existing task-detail hydration and replay refresh this projection.
 
+### Living cards
+
+A living card is an object Ouroboros made inside its own message (`show_card`), never a host decision: no status
+chip, no amber, no answer field. The bubble is the object, so the card adds no box of its own: its title
+(`--type-section`, 600) leads, then its body — components drawn exactly as on the Widgets board, a skill's widget, or
+an app in a tray — and a foot that says `Ouroboros made this` in meta ink with the card's capsules on the right:
+`Keep on Widgets` for a component card (then `Kept on Widgets` with `Undo`, or `Remove` when it was kept before; on
+the Widgets page the kept card says `kept from the chat` and its menu carries `Remove`) and `Make it a skill` for an
+app, which only puts a request into the draft. Until the body arrives, and whenever it cannot be read, the card shows
+its plain words (the text Telegram gets) with one status line — `Loading the card…`, the failure with Retry, `This
+card is no longer available.`, `This skill is off.` — never an empty box. A press on a card's control is the owner's:
+it says `Sending…`, then `Sent ✓` or the honest failure, and a control meant once locks after it counted. A frame in
+a message (an app, a skill's widget) is at least 120 px and at most 70 % of the window, with `Expand` / `Collapse`
+beyond; at most three run at once, started near the view, and a far one rests as its words with `Open`. What an app
+hands back lands as one line in the owner's draft: nothing in a card ever sends. Copy takes the plain words, Reply
+and the row menu work as on any message, and a card that grows while the room follows its newest message keeps it
+in view.
+
 ### Chat attachments
 
 The owner's photos and files are part of the owner's message, shown the way
@@ -1918,6 +1936,7 @@ has migrated. Migrated today:
 - `web/onboarding.css` (the whole first-run wizard)
 - `web/model_roles.css` (shared role editor)
 - `web/room_work.css` (room work disclosure, rows and reading return)
+- `web/cards.css` (living cards in the feed)
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
   card, one action row, collapsed Recovery with one restore list) and Storage;
