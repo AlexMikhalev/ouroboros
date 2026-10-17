@@ -142,7 +142,10 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         setStatus(record, note, tone);
         if (retry) record.status.insertAdjacentHTML('beforeend', ` ${button('Retry', 'data-card-retry')}`);
     });
+    // Every disposal starts a new draw: a draw still resolving (the widget list, a widget's first paint) finds its
+    // generation passed and mounts nothing, so overlapping draws never both mount and a later draw always wins.
     const disposeBody = (record) => {
+        record.draw += 1;
         observer?.unobserve(record.bubble);
         record.mounted?.dispose?.();
         record.mounted = null;
@@ -235,14 +238,16 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
     }
 
     async function mountWidget(record, ref) {
+        const draw = record.draw;
+        const current = () => !destroyed && records.get(record.id) === record && record.draw === draw;
         let tab = null;
         try {
             tab = (await liveWidgetTabs()).find((item) => item.skill === ref?.skill && item.tab_id === ref?.tab_id && !item.pinned_card) || null;
         } catch (error) {
-            showFallback(record, `The widget list could not be read: ${error.message || error}`, 'danger', true);
+            if (current()) showFallback(record, `The widget list could not be read: ${error.message || error}`, 'danger', true);
             return;
         }
-        if (destroyed || !records.has(record.id)) return;
+        if (!current()) return;
         if (!tab) { showFallback(record, 'This skill is off.'); return; }
         record.tab = tab;
         record.widgetSignature = JSON.stringify([tab.revision, tab.render]);
@@ -268,7 +273,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             resized?.observe(content);
             record.fit.fit(content.offsetHeight);
             const dispose = await mounting;
-            if (destroyed || !records.has(record.id)) dispose?.();
+            if (!current()) dispose?.();
             else record.mounted = { dispose };
             return;
         }
@@ -377,7 +382,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             id, title, fallback, node, bubble, revision: Number(card.revision) || 0, heading: node.querySelector('.chat-card-title'),
             body: node.querySelector('[data-card-body]'), status: node.querySelector('.chat-card-status'),
             toggle: node.querySelector('.chat-card-expand'), actions: node.querySelector('[data-card-actions]'),
-            data: null, mounted: null, framed: null, framedKind: '', fit: null, tab: null,
+            data: null, mounted: null, framed: null, framedKind: '', fit: null, tab: null, draw: 0,
         };
         node.addEventListener('click', (event) => onClick(record, event));
         records.set(id, record);

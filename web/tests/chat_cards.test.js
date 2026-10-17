@@ -377,3 +377,42 @@ test('a stopped widget frame cannot size or fault the frame that replaced it; th
         dom.restore();
     }
 });
+
+test('overlapping draws: an earlier draw that resolves late mounts nothing, and only the latest widget stays mounted', async () => {
+    const dom = installCardDom();
+    const revisions = { card_d1: 1, card_d2: 1 };
+    const widgetBody = (id) => ({ card_id: id, kind: 'widget', title: 'Weather', fallback_text: 'Sunny', revision: revisions[id],
+        widget: { skill: 'weather', tab_id: 'now' }, submissions_summary: [] });
+    let answerWidgets = null;
+    const server = serve({
+        'GET /api/cards/card_d1': () => json(200, revisions.card_d1 === 1 ? widgetBody('card_d1') : componentsBody('card_d1', { revision: 2 })),
+        'GET /api/cards/card_d2': () => json(200, widgetBody('card_d2')),
+        'GET /api/widgets': () => new Promise((resolve) => { answerWidgets = () => resolve(json(200, { ui_tabs: [{ key: 'weather:now',
+            skill: 'weather', tab_id: 'now', revision: '1', render: { kind: 'declarative', components: [{ type: 'callout', text: 'Sunny' }] } }] })); }),
+    });
+    try {
+        const cards = feed();
+        cards.lifecycle({ skill: 'weather', action: 'enabled' });  // the shared widget list is read fresh (and slowly)
+        const replaced = cards.buildCard(identity('card_d1', 'widget'));
+        const redrawn = cards.buildCard(identity('card_d2', 'widget'));
+        await flush();  // both first draws wait for the widget list
+        revisions.card_d1 = 2;
+        revisions.card_d2 = 2;
+        cards.applyCardState({ type: 'card_state', card: { card_id: 'card_d1', kind: 'components', title: 'Plans', revision: 2 }, submissions_summary: [] });
+        cards.applyCardState({ type: 'card_state', card: { card_id: 'card_d2', kind: 'widget', title: 'Weather', revision: 2 }, submissions_summary: [] });
+        await flush();
+        assert.equal(replaced.querySelector('[data-widget-action]').textContent, 'Choose Pro', 'the replacement drew at once');
+        answerWidgets();
+        await flush();
+        assert.equal(replaced.querySelector('.chat-card-widget'), null, 'the earlier widget draw resolved late and drew nothing');
+        assert.equal(replaced.querySelector('[data-widget-action]').textContent, 'Choose Pro', 'the later draw won');
+        assert.equal(redrawn.querySelector('.chat-card-widget').textContent, 'Sunny');
+        assert.equal(window.listeners('resize'), 1, 'one widget mounted, under one size policy');
+        assert.equal(redrawn.querySelector('.chat-card-expand').listenerCount(), 1);
+        cards.destroy();
+        assert.equal(window.listeners('resize'), 0, 'nothing left mounted');
+    } finally {
+        server.restore();
+        dom.restore();
+    }
+});
