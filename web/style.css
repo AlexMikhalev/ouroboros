@@ -3768,6 +3768,38 @@ body.resizing-panels { user-select: none; }
     overflow: hidden;
 }
 .chat-composer-chips > * { flex: 0 0 auto; }
+/* Where the engine can clip one axis, the slot clips only sideways, so the chips keep their rest shadow below them.
+   Folded, it takes all the room the capsules leave, and "+N" lists the chips that do not fit (composer_chips.js). */
+@supports (overflow: clip) {
+    .chat-composer-chips { overflow-x: clip; overflow-y: visible; }
+}
+.chat-composer-chips[data-folded] { max-width: none; }
+/* A contributed chip is one of the row's capsules: the pills' height, the skill's name in the secondary ink at 500,
+   its value in the meta ink at 600, and a dot of the value's status tone when the skill names one. */
+.chat-composer-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    box-sizing: border-box;
+    height: var(--composer-control-height);
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font: inherit;
+    font-size: var(--composer-control-font-size);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.chat-composer-chip:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: -2px; }
+.chat-chip-name { font-weight: 500; }
+.chat-chip-value { color: var(--text-meta); font-weight: 600; }
+.chat-chip-dot { display: none; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; }
+.chat-composer-chip:is([data-tone="ok"], [data-tone="warn"], [data-tone="bad"]) .chat-chip-dot { display: inline-block; }
+.chat-composer-chip[data-tone="ok"] .chat-chip-dot { background: var(--status-ok-fg); }
+.chat-composer-chip[data-tone="warn"] .chat-chip-dot { background: var(--status-warn-fg); }
+.chat-composer-chip[data-tone="bad"] .chat-chip-dot { background: var(--status-error-fg); }
+/* "+N" is the narrowest capsule, so it still fits the room a 320 px phone's capsules leave. */
+.chat-chip-more { padding: 0 var(--space-2); }
 
 .chat-attachment-preview {
     display: none;
@@ -5839,6 +5871,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .toast-warn { border-color: var(--status-warn-border); color: var(--status-warn-fg); }
 .toast-muted,
 .toast-info { color: var(--status-neutral-fg); }
+/* A notice's one way back (host_modules.js recovery) follows its words on the same line when they fit. */
+.toast .toast-action { display: inline-flex; margin-left: var(--space-2); vertical-align: middle; }
 
 @keyframes toast-in {
     from { opacity: 0; transform: translateY(8px); }
@@ -8940,7 +8974,9 @@ textarea.chat-input {
 }
 
 /* D12: always-visible compact copy icon in the bubble's bottom-right corner. The Reply control joins it in
-   one control row (docs/DESIGN.md "Replies"): the same 24px square, ink and rhythm, one --space-2 gap. */
+   one control row (docs/DESIGN.md "Replies"), and so do the registered message actions between them
+   (message_actions.js): the same 24px square, ink and rhythm, one --space-2 gap. */
+.chat-message-action,
 .chat-message-copy,
 .chat-message-reply {
     display: inline-flex;
@@ -8971,12 +9007,19 @@ textarea.chat-input {
 }
 .chat-message-actions > .chat-message-copy { position: static; }
 
+.chat-message-action:hover,
+.chat-message-action:focus-visible,
+.chat-message-action[aria-pressed="true"],
 .chat-message-copy:hover,
 .chat-message-copy:focus-visible,
 .chat-message-reply:hover,
 .chat-message-reply:focus-visible { opacity: 1; }
+.chat-message-action:hover,
 .chat-message-copy:hover,
 .chat-message-reply:hover { background: var(--surface-control); }
+/* An action that is on now (Read aloud while it speaks) wears the crimson ink of a chosen control. */
+.chat-message-action[aria-pressed="true"] { color: var(--tone-crimson-ink); }
+.chat-message-action:focus-visible,
 .chat-message-copy:focus-visible,
 .chat-message-reply:focus-visible {
     outline: 2px solid var(--focus-accent-border);
@@ -8984,9 +9027,12 @@ textarea.chat-input {
 }
 
 /* Reserve a gutter so the timestamp never sits under the always-visible controls (Copy ends 32px from the
-   bubble's edge, Reply and Copy 64px; the bubble's own inset is --space-4, the gap to the time --space-2). */
+   bubble's edge, Reply and Copy 64px, each registered action one more square and gap; the bubble's own inset is
+   --space-4, the gap to the time --space-2). */
 .chat-bubble.has-copy .msg-time { margin-right: var(--space-5); }
-.chat-bubble.has-reply .msg-time { margin-right: calc(var(--space-5) * 2 + var(--space-2)); }
+.chat-bubble.has-reply .msg-time {
+    margin-right: calc((var(--space-5) + var(--space-2)) * (2 + var(--chat-message-extra-actions, 0)) - var(--space-2));
+}
 
 /* The message a quote points at: a calm ring for a moment, a keyboard ring while it holds focus. */
 @keyframes chat-quote-target {
@@ -9523,11 +9569,11 @@ textarea.chat-input {
    its value the meta ink at 600 (owner 16.10: never the darkest ink); the only colour is a ring's lit arc. Send is the
    primary action's crimson tone. */
 :root[data-theme] .chat-input-wrap { --composer-control-shadow: var(--elev-rest); }
-:root[data-theme] :is(.chat-swarm, .chat-capsule) {
+:root[data-theme] :is(.chat-swarm, .chat-capsule, .chat-composer-chip) {
     border-color: transparent; background: var(--surface-capsule); color: var(--text-secondary); font-weight: 600;
     box-shadow: var(--elev-rest); -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
 }
-:root[data-theme] .chat-swarm:hover { border-color: transparent; background: var(--surface-capsule-hover); color: var(--text-primary); }
+:root[data-theme] :is(.chat-swarm, .chat-composer-chip):hover { border-color: transparent; background: var(--surface-capsule-hover); color: var(--text-primary); }
 :root[data-theme] .chat-swarm[data-armed="true"] {
     border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); box-shadow: var(--elev-rest);
 }
@@ -9578,7 +9624,7 @@ textarea.chat-input {
 :root[data-theme] .filter-chip.active { border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); }
 /* A press deepens a capsule's colour; nothing changes height. */
 :root[data-theme] :is(.chat-header-btn, .chat-budget-pill, .project-panel-close, .mobile-nav-toggle, .chat-swarm, .chat-send-inline,
-    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .chat-question-nav):not(:disabled):active,
+    .app-tab, .filter-chip, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .chat-question-nav, .chat-composer-chip):not(:disabled):active,
 :root[data-theme] .chat-capsule:not([data-open="true"]):active {
     filter: var(--press);
 }
@@ -9587,7 +9633,7 @@ textarea.chat-input {
     .app-tab, .chat-load-older-btn, .chat-scroll-bottom-btn, .rw-back, .rw-row .rw-pill):disabled {
     box-shadow: none;
 }
-:root[data-theme] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn) {
+:root[data-theme] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn, .chat-composer-chip) {
     transition: var(--motion-tone);
 }
 

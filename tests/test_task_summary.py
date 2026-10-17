@@ -17,7 +17,9 @@ import ouroboros.agent_task_pipeline as pipeline
 
 
 def _rows(drive_logs):
-    return [json.loads(line) for line in (drive_logs / "chat.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    from tests._dialogue import chat_rows
+
+    return chat_rows(drive_logs.parent)
 
 
 @pytest.fixture

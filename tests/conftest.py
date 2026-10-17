@@ -724,17 +724,6 @@ def _reset_custody_memo_between_tests():
 
 
 @pytest.fixture(autouse=True)
-def _reset_accepted_ids_between_tests():
-    """The named-ingress index (``message_ingress._AcceptedIds``) is keyed by chat-log path:
-    no folded prefix outlives its test, whatever the next one writes at that path."""
-    from supervisor.message_ingress import reset_accepted_ids
-
-    reset_accepted_ids()
-    yield
-    reset_accepted_ids()
-
-
-@pytest.fixture(autouse=True)
 def _unlatch_supervisor_event_bus_between_tests():
     """A TestClient lifespan runs the server shutdown, whose ``workers.shutdown_event_q()``
     latches ``_EVENT_Q_SHUTDOWN`` for the rest of the xdist worker; the next test in that
@@ -769,6 +758,18 @@ def _clear_server_stop_flags_between_tests():
         server_process._supervisor_stop.clear()
         server_process._restart_requested.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_live_log_sink_between_tests(monkeypatch):
+    """The same class once more: a TestClient lifespan opens the dialogue, whose bridge installs the
+    process-global live log sink (``utils.set_log_sink``, bound to that test's root and bridge), and
+    nothing removes it; every later progress row in that xdist worker then streamed through the stale
+    sink, which resolved rooms against the old root (store reads a cost test counted, red only in the
+    full battery). Each test starts without a sink, and one it installs goes with it."""
+    from ouroboros import utils
+
+    monkeypatch.setattr(utils, "_log_sink", None)
 
 
 @pytest.fixture(autouse=True)

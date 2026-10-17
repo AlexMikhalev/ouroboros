@@ -20,6 +20,8 @@ read live, after reload, and after a server restart with the page left open.
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import copy
 import json
 import os
@@ -200,7 +202,7 @@ def _seed(host, monkeypatch, data_dir: Path, tmp_path: Path) -> dict:
     refused_result = load_task_result(data_dir, refused, strict=True)
     annotations = [row for row in _rows(data_dir / "logs" / "chat_annotations.jsonl")
                    if row.get("client_message_id") == client_message_id]
-    notices = [row for row in _rows(data_dir / "logs" / "chat.jsonl")
+    notices = [row for row in dialogue_test.log_rows(data_dir / "logs" / "chat.jsonl")
                if row.get("task_id") == refused and row.get("type") == "task_not_started"]
     assert refused_result["status"] == "failed" and refused_result["admission_outcome"] == "never_admitted"
     assert refused_result["reason_code"] == "project_routing_fence_changed"
@@ -437,7 +439,7 @@ def test_never_admitted_project_refusal_stays_an_origin_receipt(
                 _wait_main(page, [*published, REPLACEMENT], timeout=180_000)
                 record("replacement_publication", {
                     "result": load_task_result(data_dir, REPLACEMENT, strict=True),
-                    "main_history": [row for row in _rows(data_dir / "logs/chat.jsonl")
+                    "main_history": [row for row in dialogue_test.log_rows(data_dir / "logs/chat.jsonl")
                                      if row.get("task_id") == REPLACEMENT],
                 })
 

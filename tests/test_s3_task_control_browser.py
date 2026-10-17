@@ -22,6 +22,7 @@ import json
 
 import pytest
 
+from ouroboros import dialogue_store
 from ouroboros.test_evidence import diagnostic_directory
 
 from tests.test_ui_smoke_playwright import (
@@ -204,18 +205,12 @@ def test_s3_chat_card_dropdown_hurry_and_soft_stop(direct_server_with_data):
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
     # Seed while no server runs (the live loop rewrites the queue snapshot every tick).
     direct_server_with_data["stop_server"]()
-    (logs_dir / "chat.jsonl").write_text("", encoding="utf-8")
-    (logs_dir / "progress.jsonl").write_text(
-        json.dumps({
-            "ts": "2026-08-15T10:00:00+00:00", "chat_id": 1, "task_id": "live-root",
-            "content": "Working on the big thing", "cancelable": True,
-        }) + "\n",
-        encoding="utf-8",
-    )
+    dialogue_store.append(data_dir, "progress", {
+        "ts": "2026-08-15T10:00:00+00:00", "chat_id": 1, "task_id": "live-root",
+        "content": "Working on the big thing", "cancelable": True,
+    })
     _hold_live_root(data_dir, "live-root")
     direct_server_with_data["start_server"]()
 
@@ -551,10 +546,6 @@ def test_s3_activity_tab_dropdown_parity_and_no_chat_hurry(direct_server_with_da
 
     url = direct_server_with_data["url"]
     data_dir = direct_server_with_data["data_dir"]
-    logs_dir = data_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    (logs_dir / "chat.jsonl").write_text("", encoding="utf-8")
-    (logs_dir / "progress.jsonl").write_text("", encoding="utf-8")
 
     # The activity queue view is fed by GET /api/tasks?queue_only=1; stub it at
     # the same fetch seam (no real queue mutation from a UI test).

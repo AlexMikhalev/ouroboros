@@ -171,6 +171,30 @@ the `list_skills` index and the "Installed Skills" context section, whole in
 manifest — so write it for the model, not for the human reviewer. Unknown keys or
 non-string values are refused at parse time.
 
+### Passive context snapshots (extensions only)
+
+A reviewed extension may declare `context_snapshot: {path: context-snapshot.json}`
+and the `context_snapshot` permission/grant. Its existing deterministic task or
+companion writes that relative path under its own skill state, atomically:
+`{"schema_version":1,"observed_at":"…Z","valid_until":"…Z","text":"…"}`.
+Dates must be finite timezone-aware ISO instants, observed ≤ valid and not in the
+future. The complete UTF-8 JSON file is bounded at 32768 bytes; malformed, missing,
+escaping or oversized files yield an explicit unknown, never clipped prose.
+
+Write compact deterministic facts, not instructions or relative-age counters.
+Keep changing poll timestamps out of `text`: the envelope dates date the visible
+claim. Main, project roots and consciousness receive a labelled UNTRUSTED tail
+note after compaction; children and Presence do not. No callback, model, network,
+refresh or scheduler is run by prompt preparation. Current enablement, review,
+grants, dependencies and publication must remain eligible. Revocation/expiry emits
+one withdrawal; it does not resend old facts. A changed material value appends a
+full note; timestamp-only renewal waits until the visible lease expires, then
+references that exact full text's source/text hashes with new dates. No delta
+chain or hidden memo is authority: reclaim keeps the required visible base, and
+an absent base after compaction/cold Resume causes a complete current note. This preserves the
+existing prefix, not a promise of provider cache hits. Source bytes are retained
+through observability; earlier notes remain historical, not current authority.
+
 Manifest refusals teach: every `SkillManifestError` carries the problem plus,
 where the parser knows the repair, a `fix_hint` rendered into the message
 (`... — fix: ...`), so a refused registration tells you how to fix the
@@ -259,6 +283,72 @@ return `{dispose}`; release resources when disposed. These are trusted page
 modules, distinct from sandboxed widget modules or model-written mini-apps.
 Ordinary external skills keep the existing review and owner grant policy;
 launcher-written native seeds can receive the hash-bound page grant automatically.
+
+### What placed controls do
+
+A `composer.plus` item appears in the composer's "+" menu, after Attach file,
+in a section under the skill's name, in the owner's arrangement and otherwise
+by `order`. A `composer.chips` chip is one of the capsule row's capsules: its
+`label`, then the `text` its source answers (the first 24 characters; longer
+text and the answer's `title` become the chip's description), with a dot for a
+`tone` of `ok`, `warn` or `bad` (`muted`, or none, shows no dot). The host
+reads the source every `refresh_s` (15 seconds at least) and only while a room
+shows the chip on a visible page; after a failed read it shows "—" with the
+reason and asks again later, doubling the wait up to sixteen refreshes. Chips
+that do not fit beside the host's capsules fold into one "+N" chip whose list
+holds them, so keep the label and the text short. A press does the chip's
+`action`.
+
+A `message.action` appears on Ouroboros's saved replies, never on the owner's
+own rows or on work cards: an icon control between the reply's Reply and Copy
+(its accessible name is `label`, its tooltip `title`) and an item in the row's
+menu, in words. Its `skill.request` with `with: message` POSTs JSON
+`{text, row_id}`: the reply's plain words and its row address. With
+`with: draft` it POSTs `{text}`, the visible room's draft; with `none`, `{}`.
+A 2xx answer may carry `{notice}`, shown as one line (otherwise "<label>:
+done."). A failure shows one line naming the label and keeps the draft;
+`then: clear_draft` clears the draft only after a 2xx and only while it still
+holds the words that were sent. `draft.insert` puts its text into the visible
+room's draft at the caret and never sends; `open.tab` opens the Widgets page at
+the skill's card; `notice` shows its text.
+
+### Page modules
+
+The host imports every live `render.kind: host` entry from its revision URL
+and calls the module's exported `mount(ctx)` once per contribution (several
+contributions may share one file). `mount` may return `{dispose()}`, directly
+or through a promise; the host calls `dispose` when the skill is disabled,
+updated or removed, on Panic and when the page goes away, and aborts
+`ctx.signal` at the same moment. The context is frozen and versioned; a
+capability a later version adds is absent from an older context, never a stub.
+
+| `ctx` field | Meaning |
+|---|---|
+| `api` | `1`, the context version. |
+| `skill`, `key` | The skill's directory name and this contribution's key (`<skill>:<id>`). |
+| `signal` | An `AbortSignal`, aborted when the module is disposed. |
+| `providers.register(kind, impl)` | Registers the client provider this contribution declares (`provides` equal to `kind`, `runtime: client`) and returns its unregister. Any other kind throws. |
+| `notice(text)` | One line in the page, prefixed with the skill's name. |
+| `draft.insert(text)` | Puts words into the visible room's draft at the caret, never sends; answers false when there is no draft. |
+| `theme.dark`, `theme.reducedMotion` | The painted theme and the motion preference, read when asked. |
+| `origin.secure`, `origin.loopback` | The page is a secure context; it is served from this computer. |
+
+There is no composer, feed or other page DOM in the context: placements are
+the way into those. A module that cannot be imported, throws or rejects in
+`mount`, does not start within the host's module bound
+(`WIDGET_REQUEST_TIMEOUT_MS`, `web/modules/widget_job.js`) or registers a
+provider it does not declare is off for that page: its providers are
+unregistered and the owner sees one notice naming the skill. It stays off
+until the page reloads or the skill's revision changes; the other modules and
+the page keep working.
+
+Recovery never depends on the modules. While modules start, the host keeps a
+boot marker in the page's storage; a page that finds one younger than five
+minutes (the last start froze or crashed) starts without page modules and
+offers Start with plugins. Opening the page with `?plugins=off` does the same
+on purpose; Main's More menu (Restart without plugins) and the macOS app's
+Help menu (Start without plugins) reload it that way. Declarative contributions
+stay available in both cases.
 
 ## Lifecycle: install → review → enable → execute
 
@@ -666,6 +756,7 @@ calls and runtime behaviours:
 
 | Permission | What it grants |
 |------------|----------------|
+| `context_snapshot` | Opt-in standing model context from the declared local snapshot, subject to the existing content-hash-bound grant (see Passive context snapshots). No injection or model-start authority. |
 | `net` | The skill may make outbound network calls. |
 | `fs` | The skill may write outside its state dir (review item still enforces confinement). |
 | `subprocess` | The skill may spawn child processes (review items + cwd-confinement still enforce). |
