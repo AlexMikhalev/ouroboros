@@ -46,7 +46,14 @@ def _engine(monkeypatch, *, resumable=True, supported=True, refusal=False, lose_
         return copy.deepcopy(result)
 
     monkeypatch.setattr(FakeGateway, "agent_capabilities", capabilities)
-    monkeypatch.setattr(FakeGateway, "continue_run", continued, raising=False)
+    first_start = FakeGateway.start_run
+
+    def start(self, request, *, idempotency_key=""):
+        if "continueFrom" in request:  # a continuation is a start naming the stopped run
+            return continued(self, request["continueFrom"], idempotency_key=idempotency_key)
+        return first_start(self, request, idempotency_key=idempotency_key)
+
+    monkeypatch.setattr(FakeGateway, "start_run", start)
     monkeypatch.setattr(FakeGateway, "get_run", detail)
     return accepted, posts
 
@@ -78,8 +85,8 @@ def test_continues_each_new_stop_and_collects_in_same_seat(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("resumable,supported,refusal", [(False, True, False), (True, False, False), (True, True, True)])
-def test_unavailable_continuation_keeps_original_typed_error(tmp_path, monkeypatch, fake_route,
-                                                            resumable, supported, refusal):  # noqa: F811
+def test_unavailable_continuation_keeps_original_typed_error(tmp_path, monkeypatch, fake_route,  # noqa: F811
+                                                            resumable, supported, refusal):
     _accepted, posts = _engine(monkeypatch, resumable=resumable, supported=supported, refusal=refusal)
     checkpoints, stamps = [], []
     with pytest.raises(ClaudexorUnavailable) as error:
@@ -126,7 +133,7 @@ def test_gateway_continuation_uses_existing_start_protocol(monkeypatch):
     seen = []
     monkeypatch.setattr(gateway, "_request", lambda method, path, **kw: seen.append((method, path, kw)) or {"runId": "next"})
     try:
-        assert gateway.continue_run("stopped", idempotency_key="once")["runId"] == "next"
+        assert gateway.start_run({"continueFrom": "stopped"}, idempotency_key="once")["runId"] == "next"
         assert seen == [("POST", "/v2/runs", {"json_body": {"continueFrom": "stopped"},
                                                "headers": {"Idempotency-Key": "once"}})]
     finally:

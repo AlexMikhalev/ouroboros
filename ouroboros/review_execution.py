@@ -28,7 +28,7 @@ import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam surface
     ReviewSessionSucceededResultUnavailable,
@@ -671,11 +671,8 @@ def run_delegated_review_session(
     """
     from ouroboros import delegate_custody as custody
     from ouroboros.claudexor_daemon import ensure_owned_gateway
-    from ouroboros.gateways.claudexor import (
-        WINDOW_EXHAUSTED_CODES, ClaudexorSubscriptionWindowExhausted, ClaudexorUnavailable, final_attempt_facts,
-        run_failure_error,
-    )
-    from ouroboros.subagents import delegated_run_shape, route_health
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable, final_attempt_facts, run_failure_error
+    from ouroboros.subagents import delegated_run_shape
     from ouroboros.usage_accounting import current_usage_scope
     from ouroboros.review_checking import bind_checking_thread, session_checking, terminal_seat_evidence
     task_id, surface, slot_id, timeout_sec, logical_key_extra, output_schema, \
@@ -741,19 +738,7 @@ def run_delegated_review_session(
             from ouroboros.review_thread_continuity import require_delegated_review_threads
             require_delegated_review_threads(gateway)
         if not recovering and not run_id and not (use_thread and thread_id):
-            unavailable, reset_at = route_health(
-                gateway, route.route_id, shape, route_model=route.model,
-                pinned_profile=str(getattr(route, "profile_id", "") or ""))
-            if unavailable in WINDOW_EXHAUSTED_CODES or reset_at:
-                raise ClaudexorSubscriptionWindowExhausted(
-                    "delegated review route subscription window is exhausted"
-                    + (f" (resets {reset_at})" if reset_at else "")
-                    + "; this slot fails typed — never a silent fallback onto "
-                    "metered API spend", reset_at=reset_at,
-                    code=(unavailable or "subscription_window_exhausted"))
-            if unavailable:
-                raise ReviewRouteUnavailable(
-                    f"delegated review route unavailable: {unavailable}", code=unavailable)
+            _require_route_headroom(gateway, route, shape)
         if not recovering:
             from ouroboros.delegate_registration_policy import minted_review_root, resolve_registration
             project_id, owned_project_id, _persistent, ephemeral = resolve_registration(  # a sticky thread keeps it
@@ -905,31 +890,11 @@ def run_delegated_review_session(
             state.pop("delegated_run_id", None)
             raise run_failure_error(run_id, run_state, summary.get("failure"))
         text = _full_session_text(gateway, run_id, detail)
-        spend, estimated = custody.disclosed_spend(summary)
-        combined_summary = dict(summary)
-        if stopped_summaries:
-            spends = [custody.disclosed_spend(item) for item in [*stopped_summaries, summary]]
-            spend = sum(value for value, _estimated in spends) if all(value is not None for value, _ in spends) else None
-            estimated = any(flag for _value, flag in spends)
-            for key in ("inputTokens", "outputTokens", "cachedInputTokens"):
-                values = [item.get(key) for item in [*stopped_summaries, summary]]
-                combined_summary[key] = sum(values) if all(type(v) in (int, float) for v in values) else None
+        spend, estimated, combined_summary = _combined_session_usage(custody, stopped_summaries, summary)
         thread_receipt: Dict[str, Any] = {}
         if use_thread:
-            from ouroboros.review_thread_continuity import review_thread_receipt as receipt_for
-            try:
-                thread_receipt = receipt_for(gateway, thread_id, run_id, turn_id,
-                    expected_profile=str(getattr(route, "profile_id", "") or ""),
-                    applied_profile=observed.get("profile_id", ""))
-            except ReviewRouteUnavailable as exc:
-                if not continuations or exc.code != "review_thread_receipt_missing":
-                    raise
-                # continueFrom may move the session or use an evidence packet.
-                # Collect its answer without claiming it advanced the old thread.
-                thread_receipt = {"prior_thread_id": thread_id, "run_id": run_id,
-                                  "status": "continuation_not_in_thread"}
-                thread_id = ""
-            turn_id = str(thread_receipt.get("turn_id") or turn_id)
+            thread_receipt, thread_id, turn_id = _session_thread_receipt(
+                gateway, thread_id, run_id, turn_id, route, observed, continued=bool(continuations))
         state.pop("pending_invocation_id", None)
         state.pop("delegated_run_id", None)
         return {
@@ -989,6 +954,60 @@ def run_delegated_review_session(
     finally:
         if gateway is not None:
             gateway.close()
+
+
+def _require_route_headroom(gateway: Any, route: Any, shape: Any) -> None:
+    """A fresh seat starts only on a route with headroom: a spent subscription window fails the slot
+    typed, never a silent fallback onto metered API spend."""
+    from ouroboros.gateways.claudexor import WINDOW_EXHAUSTED_CODES, ClaudexorSubscriptionWindowExhausted
+    from ouroboros.subagents import route_health
+
+    unavailable, reset_at = route_health(gateway, route.route_id, shape, route_model=route.model,
+                                         pinned_profile=str(getattr(route, "profile_id", "") or ""))
+    if unavailable in WINDOW_EXHAUSTED_CODES or reset_at:
+        raise ClaudexorSubscriptionWindowExhausted(
+            "delegated review route subscription window is exhausted"
+            + (f" (resets {reset_at})" if reset_at else "")
+            + "; this slot fails typed — never a silent fallback onto metered API spend",
+            reset_at=reset_at, code=(unavailable or "subscription_window_exhausted"))
+    if unavailable:
+        raise ReviewRouteUnavailable(f"delegated review route unavailable: {unavailable}", code=unavailable)
+
+
+def _combined_session_usage(custody: Any, stopped: List[Dict[str, Any]],
+                            summary: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any]]:
+    """The seat's money and tokens across its continuations: a sum only when every run disclosed it."""
+    spend, estimated = custody.disclosed_spend(summary)
+    combined = dict(summary)
+    if stopped:
+        spends = [custody.disclosed_spend(item) for item in [*stopped, summary]]
+        spend = sum(value for value, _estimated in spends) if all(value is not None for value, _ in spends) else None
+        estimated = any(flag for _value, flag in spends)
+        for key in ("inputTokens", "outputTokens", "cachedInputTokens"):
+            values = [item.get(key) for item in [*stopped, summary]]
+            combined[key] = sum(values) if all(type(v) in (int, float) for v in values) else None
+    return spend, estimated, combined
+
+
+def _session_thread_receipt(gateway: Any, thread_id: str, run_id: str, turn_id: str, route: Any,
+                            observed: Dict[str, Any], *, continued: bool) -> Tuple[Dict[str, Any], str, str]:
+    """The thread receipt of the seat's final run, with the thread and turn it names."""
+    from ouroboros.review_thread_continuity import review_thread_receipt as receipt_for
+
+    try:
+        receipt = receipt_for(gateway, thread_id, run_id, turn_id,
+                              expected_profile=str(getattr(route, "profile_id", "") or ""),
+                              applied_profile=observed.get("profile_id", ""))
+    except ReviewRouteUnavailable as exc:
+        if not continued or exc.code != "review_thread_receipt_missing":
+            raise
+        # continueFrom may move the session or use an evidence packet.
+        # Collect its answer without claiming it advanced the old thread.
+        receipt, thread_id = {"prior_thread_id": thread_id, "run_id": run_id,
+                              "status": "continuation_not_in_thread"}, ""
+    return receipt, thread_id, str(receipt.get("turn_id") or turn_id)
+
+
 def _effective_route_carries_schema(gateway: Any, route_id: str) -> bool:
     """Can the EFFECTIVE route actually carry ``outputSchema`` on this run (D19)?
 

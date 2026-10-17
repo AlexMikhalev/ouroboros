@@ -309,7 +309,8 @@ def continue_review_run(gateway: Any, root: Any, entry: Any, detail: dict, invoc
             surface=invocation.surface, slot_id=invocation.slot_id, route=entry.route_id,
             max_seconds=entry.max_seconds, project_id=entry.project_id, project_owned=entry.project_owned,
             **{key: getattr(entry, key) for key in ("root_task_id", "parent_task_id", "category", "source",
-                "review_skill", "review_wave_id", "review_slot_id", "authority_source", "execution_root", "target_root")})
+                "review_skill", "review_wave_id", "review_slot_id", "authority_source", "execution_root",
+                "target_root")})
         if not requested:
             raise ReviewRouteUnavailable("Review continuation request could not be recorded; nothing was sent",
                                          code="start_request_row_unwritable")
@@ -317,7 +318,9 @@ def continue_review_run(gateway: Any, root: Any, entry: Any, detail: dict, invoc
     # seat settlement retires it; this step records only the stopped run's money.
     source = SimpleNamespace(drive_root=root, task_id=entry.task_id, root_task_id=entry.root_task_id)
     try:
-        handle = run_operation(source, lambda: gateway.continue_run(entry.run_id, idempotency_key=token))
+        # A continuation is an ordinary start naming the stopped run; the engine picks native/moved/packet.
+        handle = run_operation(source, lambda: gateway.start_run({"continueFrom": entry.run_id},
+                                                                 idempotency_key=token))
     except (ClaudexorUnavailable, OwnerPauseRefused) as exc:
         if isinstance(exc, OwnerPauseRefused) or 400 <= int(getattr(exc, "status_code", 0) or 0) < 500:
             if not custody.emit(root, custody.START_FAILED, {"invocation_id": token, "task_id": entry.task_id,
@@ -328,7 +331,8 @@ def continue_review_run(gateway: Any, root: Any, entry: Any, detail: dict, invoc
         raise  # Ambiguous acceptance remains replayable from the same token.
     run_id = str(handle.get("runId") or handle.get("jobId") or "")
     if not run_id or run_id in seen:
-        raise ReviewRouteUnavailable("Review continuation returned no new run handle", code="invalid_continuation_handle")
+        raise ReviewRouteUnavailable("Review continuation returned no new run handle",
+                                     code="invalid_continuation_handle")
     record_terminal_money(root, entry, detail)
     successor = custody.RunCustody(run_id=run_id, invocation_id=token, idempotency_key=token,
         continuation_of=entry.run_id, ledger_root=str(root),
