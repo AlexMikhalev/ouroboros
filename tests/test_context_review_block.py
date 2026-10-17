@@ -1,7 +1,7 @@
 """The ``## Review`` block: the review POOL a task's settings snapshot serves, in both context paths (#1548, PR-3).
 
 It is read through the builder every review surface uses (``review_pool_slots``), so the mind sees the pool its own
-commit, plan and acceptance review would run — never a last-execution receipt and never settings saved after the
+commit, plan and result review would run — never a last-execution receipt and never settings saved after the
 task started. The pool is the catalog's marked rows (contract §1.3): there is no default panel any more, and
 with none marked the Main model reviews alone (``main_self_review``).
 """
@@ -273,24 +273,6 @@ def test_both_context_paths_carry_the_block(tmp_path, monkeypatch):
     # The task's records are a changing fact: both paths carry them in the dynamic part only.
     assert _RECORDS_HEADER in shared.dynamic_text and _RECORDS_HEADER in declared.dynamic_text
     assert _RECORDS_HEADER not in shared.semi_stable_text + declared.semi_stable_text
-
-
-def test_root_and_child_acceptance_differ_and_a_seat_id_or_handle_is_the_child_selector(monkeypatch):
-    from ouroboros.reviewer_slot_config import child_acceptance_slots, review_pool_slots
-
-    monkeypatch.setenv(SUBAGENTS_SETTING, _roster(
-        _row("sol-key", "openai/gpt-5.6-sol"), _row("terra-key", "openai/gpt-5.6-terra"),
-    ))
-    block, _ = _block()
-    acceptance = block["surfaces"]["task_acceptance"]
-    slots = review_pool_slots()
-
-    assert acceptance["root"] != acceptance["child"] and "name one" in acceptance["child"]
-    assert child_acceptance_slots(slots)[1]["reason"] == "reviewer_selection_required"
-    for seat in block["pool"]:
-        for selector in (seat["seat_id"], seat["subagent_id"]):
-            chosen, refusal = child_acceptance_slots(slots, selector)
-            assert not refusal and [slot.slot_id for slot in chosen] == [seat["seat_id"]]
 
 
 @pytest.mark.parametrize("enforcement, mode, blocks, opening", [

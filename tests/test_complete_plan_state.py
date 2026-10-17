@@ -74,7 +74,7 @@ def test_large_operative_values_persist_once_and_rehydrate_for_consumers(tmp_pat
 def test_unavailable_full_spec_preserves_paid_state_and_never_becomes_empty_claims(tmp_path, damage, source):
     from ouroboros.artifacts import task_artifact_dir_path
     from ouroboros.owner_hurry import force_plan_decision
-    from ouroboros.review_evidence import build_task_acceptance_evidence
+    from ouroboros.review_evidence_sections import _accept_effective_claims
 
     _, wave = _record(tmp_path, _spec(goal="Deliver", acceptance_claims=[_claim("required criterion")]))
     path = task_artifact_dir_path(tmp_path, "large-plan", create=False) / wave[source]["path"]
@@ -87,8 +87,9 @@ def test_unavailable_full_spec_preserves_paid_state_and_never_becomes_empty_clai
         task_results.load_plan_review_state(tmp_path, "large-plan")
     ctx = SimpleNamespace(task_id="large-plan", task_metadata={},
                           task_contract={"objective": "Deliver"}, drive_root=tmp_path)
+    # The claims binder the result review reads raises; it never answers with an empty bar.
     with pytest.raises(artifacts.PlanReviewSourceUnavailable):
-        build_task_acceptance_evidence(ctx, drive_root=tmp_path, task_id="large-plan")
+        _accept_effective_claims(ctx, ctx.task_contract, tmp_path, "large-plan")
     assert force_plan_decision(ctx, {}, enforcement="blocking")["allow"] is False
 
 
