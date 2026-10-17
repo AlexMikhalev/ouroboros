@@ -150,8 +150,6 @@ def _activity_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[s
     from ouroboros import projects_registry as registry
 
     row = maintenance_jobs.job(root, "activity_backfill") or {}
-    if row.get("state") == "done":
-        return {"state": "done", "items": 0}
     try:
         if not isinstance(row.get("candidates"), dict):
             candidates = registry.legacy_activity_candidates(root)
@@ -183,7 +181,6 @@ def _activity_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[s
     maintenance_jobs.record(root, "activity_backfill", state="done", flagged=flagged, empty=empty,
                             coverage={"sources_read": done, "through": cursor}, total=done)
     return {"state": "done", "items": done}
-
 
 
 def _promotion_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
