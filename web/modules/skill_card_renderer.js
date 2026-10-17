@@ -354,6 +354,20 @@ export function renderReviewFindingsList(skill) {
     return `<ul>${rows}</ul>`;
 }
 
+// What the review block shows, as one key: while it holds, a re-read keeps the block (its open
+// disclosures and a findings list built on open); a new run, verdict or findings set replaces it.
+function reviewBlockKey(skill) {
+    const review = skill.skill_review && typeof skill.skill_review === 'object' ? skill.skill_review : {};
+    const history = Array.isArray(review.history) ? review.history : [];
+    const current = review.current && Object.keys(review.current).length ? review.current : history[history.length - 1] || {};
+    const text = JSON.stringify([current.job_id || '', current.content_hash || '', current.lifecycle_status || current.job_status || current.status || '',
+        current.review_status || '', current.terminal_reason || '', history.length, review.history_omitted ?? '',
+        Array.isArray(skill.review_findings) ? skill.review_findings.length : 0, skill.content_hash || '']);
+    let hash = 5381;  // a short attribute, never the recorded words themselves
+    for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
+    return (hash >>> 0).toString(36);
+}
+
 function reviewFindings(skill) {
     const findings = Array.isArray(skill.review_findings) ? skill.review_findings : [];
     if (!findings.length) return '';
@@ -620,17 +634,21 @@ export function renderInstalledSkillCard(skill, reviewingSkills = new Set(), rep
         skill.lifecycle_status === 'failed' && skill.lifecycle_error && !skill.lifecycle_virtual ? `<div class="skills-load-error">${escapeHtml(skill.lifecycle_error)}</div>` : '',
         skill.health_regressed ? `<div class="skills-load-error">Regression: was live at ${escapeHtml(String((skill.last_known_good || {}).version || '?'))} (${escapeHtml(String((skill.last_known_good || {}).sha || '').slice(0, 12))}); broken after a code update.</div>` : '',
     ].join('');
+    // Details: two fact groups the listing re-reads in place, the review block (kept while its key holds)
+    // and the Presence form (the owner's input; it follows its own saves).
     const details = `<details class="skills-details"><summary>Details</summary>
         <div class="skills-details-body">
-            ${detailRow('Review', `${escapeHtml(reviewSentence(skill))} ${statusBadge(skill.review_status, skill.review_gate, skill.review_profile)}`)}
-            <div class="skills-review-block">${reviewHistory(skill)}${reviewFindings(skill)}</div>
-            ${detailRow('Can use', escapeHtml(permissionWords(skill.permissions).join(' · ') || 'Nothing beyond its own folder'))}
-            ${accessRows(skill)}
-            ${installRecordRows(skill)}
-            ${liveRow(skill, live)}
-            ${publicationRow(skill)}
-            ${submit.visible && submit.disabled && submit.reason ? detailRow('Publishing', escapeHtml(submit.reason)) : ''}
-            ${provenanceRows(skill)}
+            <div class="skills-details-facts" data-skill-detail-review>${detailRow('Review', `${escapeHtml(reviewSentence(skill))} ${statusBadge(skill.review_status, skill.review_gate, skill.review_profile)}`)}</div>
+            <div class="skills-review-block" data-review-key="${escapeHtml(reviewBlockKey(skill))}">${reviewHistory(skill)}${reviewFindings(skill)}</div>
+            <div class="skills-details-facts" data-skill-detail-facts>
+                ${detailRow('Can use', escapeHtml(permissionWords(skill.permissions).join(' · ') || 'Nothing beyond its own folder'))}
+                ${accessRows(skill)}
+                ${installRecordRows(skill)}
+                ${liveRow(skill, live)}
+                ${publicationRow(skill)}
+                ${submit.visible && submit.disabled && submit.reason ? detailRow('Publishing', escapeHtml(submit.reason)) : ''}
+                ${provenanceRows(skill)}
+            </div>
             ${presenceRuntimeBlock(skill)}
         </div>
     </details>`;
@@ -668,12 +686,18 @@ export function patchInstalledSkillEnrichment(card, skill, reviewing, repairing,
         if (next.hasAttribute(name)) card.setAttribute(name, next.getAttribute(name));
         else card.removeAttribute(name);
     }
-    for (const selector of ['.skills-card-status', '[data-skill-trays]', '[data-skill-errors]', '.skills-card-who', '.skills-card-marks', '.skills-card-purpose']) {
+    for (const selector of ['.skills-card-status', '[data-skill-trays]', '[data-skill-errors]', '.skills-card-who', '.skills-card-marks', '.skills-card-purpose',
+        '[data-skill-detail-review]', '[data-skill-detail-facts]']) {
         const target = card.querySelector(selector), source = next.querySelector(selector);
         if (!target && source) {
             if (selector === '.skills-card-purpose') card.querySelector('.skills-head-title')?.after(source);
         } else if (target && !source) target.remove();
         else if (target && source && target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
+    }
+    const block = card.querySelector('.skills-review-block'), nextBlock = next.querySelector('.skills-review-block');
+    if (block && nextBlock && block.dataset.reviewKey !== nextBlock.dataset.reviewKey) {
+        block.dataset.reviewKey = nextBlock.dataset.reviewKey;
+        block.innerHTML = nextBlock.innerHTML;
     }
     const control = card.querySelector('.skills-toggle');
     if (control && control.dataset.skillPending !== 'true') {

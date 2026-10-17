@@ -249,6 +249,55 @@ def test_skills_late_enrichment_preserves_presence_and_portalled_menu(skills_bro
 
 
 @pytest.mark.parametrize("browser_name", ["chromium", "webkit"])
+def test_details_follow_the_listing_and_keep_what_the_owner_opened(skills_browser, browser_name):
+    """A re-read updates Details' facts in place (a forgotten publication record goes); an opened
+    findings list and the Presence form keep their identity until the review itself changes."""
+    browser = getattr(skills_browser, browser_name).launch(headless=True)
+    try:
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        findings = [{"item": "exec", "verdict": "warn", "reason": "Spawns a shell"}]
+        row = {**WEATHER, "enabled": True, "review_status": "warnings", "review_gate": {"executable_review": True},
+               "review_findings": findings, "published": {
+                   "version": "1.0", "pr_number": 7, "pr_url": "https://github.com/hub/project/pull/7",
+                   "content_hash": "a" * 64, "repository": "hub/project"},
+               "presence_runtime": {"defaults": {"model_slot": "main", "inline_max_rounds": 10},
+                                    "overrides": {}, "state_fingerprint": "a" * 64}}
+        skills = open_skills(page, extensions=[row])
+        page.goto(URL, wait_until="networkidle")
+        card = page.locator('.skills-card[data-skill="weather"]')
+        card.locator('.skills-details > summary').click()
+        publication = card.locator('.skills-detail-row', has_text="Publication")
+        assert "Submitted v1.0 · PR #7" in publication.inner_text()
+        card.locator('.skills-review-findings > summary').click()
+        card.locator('.skills-review-findings li').first.wait_for()
+        card.locator('[name="inline_max_rounds"]').fill("27")
+        page.evaluate("""() => {
+            window.keptForm = document.querySelector('[data-presence-runtime-form]');
+            window.keptFindings = document.querySelector('.skills-review-findings');
+        }""")
+
+        skills.set_skills([{**row, "published": None}])
+        refresh(page)
+        assert publication.count() == 0, "the forgotten record is gone without a reload"
+        assert card.locator('.skills-details').get_attribute('open') is not None
+        assert page.evaluate("keptForm === document.querySelector('[data-presence-runtime-form]')")
+        assert card.locator('[name="inline_max_rounds"]').input_value() == "27"
+        assert page.evaluate("keptFindings === document.querySelector('.skills-review-findings') && keptFindings.open")
+        assert card.locator('.skills-review-findings li').count() == 1
+
+        # A new review of these bytes replaces the block: its findings are the new run's.
+        skills.set_skills([{**row, "published": None, "review_findings": findings + [
+            {"item": "net", "verdict": "info", "reason": "Opens sockets"}]}])
+        refresh(page)
+        assert card.locator('.skills-review-findings > summary').inner_text() == "2 review findings"
+        assert card.locator('.skills-review-findings li').count() == 0, "the new block is built when opened"
+        assert page.evaluate("keptForm === document.querySelector('[data-presence-runtime-form]')")
+        capture(page, browser_name, 1280, "details-follow-listing")
+    finally:
+        browser.close()
+
+
+@pytest.mark.parametrize("browser_name", ["chromium", "webkit"])
 def test_installed_never_waits_for_sources_or_catalogs(skills_browser, browser_name):
     """Installed paints from the local listing; a source read in flight blocks nothing, and the
     Official mark explains its promise once the source it names is known."""

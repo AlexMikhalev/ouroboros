@@ -5572,6 +5572,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-installed-card .skills-details { margin: 0; border: none; padding: 0; }
 .skills-installed-card .skills-details > summary { display: flex; width: fit-content; margin-left: auto; color: var(--text-primary); font-size: var(--type-meta); }
 .skills-details-body { display: grid; gap: var(--space-1); padding-top: var(--space-2); }
+.skills-details-facts { display: contents; }
 .skills-detail-row {
     display: flex;
     flex-wrap: wrap;
