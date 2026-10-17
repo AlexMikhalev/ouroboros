@@ -211,6 +211,8 @@ test('a start that did not finish skips every module next time, with the way bac
     assert.deepEqual([skipped.tone, skipped.ttl, skipped.action.label], ['warn', 0, 'Start with plugins']);
     await h.publish([hostItem('one:x', { revision: 'r2', render: { kind: 'host', url: '/api/extensions/one/ui/r2/ui/x.js' } })]);
     assert.deepEqual(h.imported, [], 'a lifecycle change does not undo the skip');
+    h.win.emit('pagehide', { persisted: false });
+    assert.equal(local.map.has(BOOT_MARKER_KEY), true, 'reloading a skipped page skips again: only the action clears it');
     skipped.action.run();
     assert.equal(local.map.has(BOOT_MARKER_KEY), false);
     assert.deepEqual(h.win.navigations, ['http://127.0.0.1:8765/?x=1#chat'], 'the same page, plugins on');

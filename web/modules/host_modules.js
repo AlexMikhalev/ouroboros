@@ -217,11 +217,12 @@ export function createHostModules({ store, draft = null, win = globalThis.window
     /** Panic, unload or teardown: every module is disposed and none mounts again in this page. */
     function stop() {
         if (mode === 'stopped') return;
+        const wrote = mode === 'running';  // a skipped start keeps the marker it found: only Start with plugins clears it
         mode = 'stopped';
         for (const rec of [...mounts.values()]) retire(rec);
         batches = 0;
         batchKeys = [];
-        marker.clear();  // an orderly end is not a start that did not finish
+        if (wrote) marker.clear();  // an orderly end is not a start that did not finish
     }
 
     function restartWithPlugins() {

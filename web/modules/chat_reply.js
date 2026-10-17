@@ -1,8 +1,9 @@
 // Replies of one chat instance (docs/DESIGN.md "Replies"): the Reply control beside Copy in a bubble's
-// control row (with the registered message actions between them, message_actions.js), the quote above the replying bubble's text, the strip above the composer while the owner
-// is replying, the jump from a quote to the message it quotes, and the owner's words a relay carries into a
-// work's room (one Ouroboros bubble: his words in a quote panel above the note). A reply is a reference the
-// host resolves: this module sends only the quoted row's address and never decides who reads the words.
+// control row (the registered message actions stand between them, message_actions.js), the quote above the
+// replying bubble's text, the strip above the composer while the owner is replying, the jump from a quote to the
+// message it quotes, and the owner's words a relay carries into a work's room (one Ouroboros bubble: his words in
+// a quote panel above the note). A reply is a reference the host resolves: this module sends only the quoted
+// row's address and never decides who reads the words.
 import { tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { ensureLiveActionsEl } from './chat_activity.js';
