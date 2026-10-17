@@ -8,7 +8,8 @@ model, of what the seat cost in one wave — every attempt summed — with how m
 covers and their range. No history is "cost unknown", never a one-call estimate. A session row
 spends a seat and time, not money; callers say so before asking for a price.
 
-The table is read once per process and kept for a few minutes; a reader waits on the ledger
+The table is read once per process and kept for half an hour: ``## Review`` sits in a cached prompt
+prefix, so a price that moved with every settled wave would rewrite it. A reader waits on the ledger
 lock only for the display wait and otherwise reads the last table (or none).
 """
 
@@ -30,7 +31,7 @@ COST_UNKNOWN = "cost unknown"
 # grouped seat rows one read scans, and how long one process keeps a table it read.
 RECENT_REVIEWS = 20
 _SCAN_LIMIT = 5000
-_TABLE_TTL_SEC = 300.0
+_TABLE_TTL_SEC = 1800.0
 
 
 @dataclass(frozen=True)

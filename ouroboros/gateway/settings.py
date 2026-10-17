@@ -677,7 +677,7 @@ def _review_pool_costs(items: list) -> Dict[str, Dict[str, Any]]:
     uses a seat and time; an API row's price is what one review by that row actually cost
     (``review_price``: the median of its recent reviews on its model, with their count and
     range), the number ``## Review`` shows for its seat; a row without history stays unknown."""
-    from ouroboros.provider_models import provider_for_model
+    from ouroboros.provider_models import provider_for_model, review_model_uses_local
     from ouroboros.review_price import review_price
 
     costs: Dict[str, Dict[str, Any]] = {}
@@ -685,6 +685,9 @@ def _review_pool_costs(items: list) -> Dict[str, Dict[str, Any]]:
         row_id, route = str(item.get("subagent_id") or ""), item.get("route") or {}
         target = str(route.get("target_id") or "")
         seat = route.get("kind") == "agent_session" or provider_for_model(target) == "claudexor"
+        if target and not seat and review_model_uses_local(target):
+            costs[row_id] = {"usd_per_review": 0.0, "basis": "local_route"}
+            continue
         price = None if seat or not target else review_price(DATA_DIR, row_id, target)
         costs[row_id] = ({"usd_per_review": None, "basis": "subscription_seat" if seat else "unknown"}
                          if price is None else price.as_cost())

@@ -278,6 +278,7 @@ export function reviewPoolErrors(setting, { judged = false, allowEmpty = false }
 export function reviewCostText(row, cost = null) {
     if (routeSupportsAccount(row?.route || {})) return 'uses a session seat and time';
     if (!cost) return 'price appears after saving';
+    if (cost.basis === 'local_route') return 'no API cost per review';
     const usd = cost.usd_per_review;
     if (cost.basis !== 'observed_reviews' || typeof usd !== 'number' || !Number.isFinite(usd)) return 'cost unknown';
     const high = Number(cost.high);
