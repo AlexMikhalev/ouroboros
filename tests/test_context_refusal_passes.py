@@ -35,6 +35,16 @@ def test_the_target_is_measured_on_this_conversation_or_stays_unknown():
     assert lmc._refusal_target(_ctx(), _fit(933_440, anchor=None)) is None  # a cold count sizes nothing
     stated = _ctx("This model's maximum context length is 400,000 tokens.")
     assert lmc._refusal_target(stated, _fit(390_000, accepted=None, reply=20_000)) == 10_000 + 50_000
+    # Anthropic and Gemini wordings state both numbers; the provider's own count beats the estimate.
+    for message, size, limit in (
+            ("prompt is too long: 215000 tokens > 200000 maximum", 215_000, 200_000),
+            ("input length and `max_tokens` exceed context limit: 190000 + 65536 > 200000", 190_000, 200_000),
+            ("The input token count (1050000) exceeds the maximum number of tokens allowed (1048576).",
+             1_050_000, 1_048_576),
+            ("This model's maximum context length is 128000 tokens. However, your messages resulted in "
+             "131000 tokens.", 131_000, 128_000)):
+        assert lmc._refusal_target(_ctx(message), _fit(1, anchor=None, accepted=None, reply=8_192)) == (
+            max(0, size + 8_192 - limit) + -(-limit // 8)), message
     # A local serving instance that refused before sending gives its own exact counts (#1018 lane).
     local = SimpleNamespace(input_tokens=34_000, context_window_tokens=32_768)
     assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192), local) == (

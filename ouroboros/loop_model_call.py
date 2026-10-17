@@ -1398,17 +1398,20 @@ CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 def _refusal_window(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Tuple[Optional[int], int, int]:
     """``(stated limit or None, the refused size, the return-after-fold slack)`` of this refusal.
 
-    A provider's stated limit, or a local serving instance's own exact window and input (``refused``:
-    its pre-send ``context_window_tokens`` and ``input_tokens``), measure it; otherwise the refused
-    estimate stands. The slack is the owner's return-after-fold eighth (L33 2=A) of the stated window,
+    A provider's stated limit (OpenAI, Anthropic and Gemini wordings) with its own count of the refused
+    input when it states one, or a local serving instance's exact window and input (``refused``: its
+    pre-send ``context_window_tokens`` and ``input_tokens``), measure it; otherwise the refused estimate
+    stands. The slack is the owner's return-after-fold eighth (L33 2=A) of the stated window,
     else of the known window, else of the larger of the reading and the largest input accepted here.
     """
-    from ouroboros.capability_evidence import _parse_ctx_limit_number
+    from ouroboros.capability_evidence import _parse_ctx_limit_number, _parse_ctx_requested_number
     from ouroboros.context_fit import reclaim_low_water_margin
 
     measurement = fit.measurement
-    stated = _parse_ctx_limit_number(str(ctx.accumulated_usage.get("_last_llm_provider_message") or "")) or None
-    size = measurement.estimated_input_tokens
+    message = str(ctx.accumulated_usage.get("_last_llm_provider_message") or "")
+    stated = _parse_ctx_limit_number(message) or None
+    # The provider's own count of the refused input beats the estimate when it states both.
+    size = (_parse_ctx_requested_number(message) if stated else 0) or measurement.estimated_input_tokens
     exact_window, exact_input = (int(getattr(refused, key, 0) or 0) for key in ("context_window_tokens", "input_tokens"))
     if exact_window and exact_input:
         stated, size = exact_window, exact_input

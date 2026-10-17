@@ -668,7 +668,7 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     if estimate is None:
         parts.append("input unmeasured")
     else:
-        how = ("cold chars/4 estimate: nothing accepted on this model here yet" if anchor is None else
+        how = ("cold chars/4 estimate: no usable measurement of this model here yet" if anchor is None else
                ("after a rewrite, " if usage.get("_context_anchor_rewritten") else "")
                + f"round {anchor_round} accepted {int(anchor):,}, {int(estimate) - int(anchor):+,} since")
         parts.append(f"input ~{int(estimate):,} before this line ({how}) + reply {int(reserve or 0):,}")

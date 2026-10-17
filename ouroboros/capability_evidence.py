@@ -74,6 +74,20 @@ _CTX_LIMIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"maximum allowed length\s*\(?\s*([0-9][0-9,]*)", re.I),
     re.compile(r"context (?:window|length)\s*(?:of|is)?\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"maximum (?:input |prompt )?(?:length|tokens?)\s*(?:is|of)?\s*([0-9][0-9,]*)", re.I),
+    # Anthropic ("prompt is too long: 215000 tokens > 200000 maximum"; "input length and `max_tokens` exceed
+    # context limit: 190000 + 65536 > 200000") and Gemini ("... exceeds the maximum number of tokens allowed
+    # (1048576)") state the limit after the size.
+    re.compile(r"tokens\s*>\s*([0-9][0-9,]*)\s*maximum", re.I),
+    re.compile(r"context limit:\s*[0-9][0-9,]*\s*\+\s*[0-9][0-9,]*\s*>\s*([0-9][0-9,]*)", re.I),
+    re.compile(r"maximum number of tokens allowed\s*\(?\s*([0-9][0-9,]*)", re.I),
+)
+#: The refused request's own size where the provider states it beside the limit (same wordings).
+_CTX_REQUESTED_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"resulted in\s*([0-9][0-9,]*)\s*tokens", re.I),
+    re.compile(r"([0-9][0-9,]*)\s*in the messages", re.I),
+    re.compile(r"prompt is too long:\s*([0-9][0-9,]*)\s*tokens", re.I),
+    re.compile(r"context limit:\s*([0-9][0-9,]*)\s*\+", re.I),
+    re.compile(r"input token count\s*\(?\s*([0-9][0-9,]*)", re.I),
 )
 
 
@@ -83,6 +97,18 @@ def gateway_double_counted_cache(prompt_tokens: int, cached_tokens: int) -> bool
     Neither a density witness nor a conversation's size anchor (``context_anchor``) learns from it
     (``observe_token_density`` names the paid run that showed it)."""
     return bool(cached_tokens) and abs(int(prompt_tokens) - 2 * int(cached_tokens)) <= 1
+
+
+def _parse_ctx_requested_number(text: str) -> int:
+    """The refused request's input size as the provider stated it in an overflow message, or 0."""
+    for pat in _CTX_REQUESTED_PATTERNS:
+        m = pat.search(str(text or ""))
+        if m:
+            try:
+                return int(m.group(1).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+    return 0
 
 
 def _parse_ctx_limit_number(text: str) -> int:

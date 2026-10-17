@@ -136,23 +136,23 @@ def test_old_bare_literals_are_gone_from_call_sites():
 
 
 def test_overflow_classification_is_one_shared_seam():
-    """Main, the local transport, and the summarizer must classify overflow
-    through the SAME context_budget helper and constants — a seam keeping a
-    private marker copy or private output-size precedence regresses S1 N-1."""
+    """Main and the local transport must classify overflow through the SAME
+    context_budget helper and constants — a seam keeping a private marker copy
+    or private output-size precedence regresses S1 N-1. (The helper summarizer,
+    the third reader, left with its engine.)"""
     import ouroboros.context_compaction as cc_mod
     import ouroboros.llm as llm_mod
     import ouroboros.loop_llm_call as loop_call_mod
 
     assert llm_mod.context_overflow_message is cb.context_overflow_message
-    assert cc_mod._context_overflow_message is cb.context_overflow_message
     assert loop_call_mod._context_overflow_message is cb.context_overflow_message
     assert loop_call_mod._output_or_body_size_message is cb.output_or_body_size_message
     assert llm_mod.CONTEXT_OVERFLOW_CODES is cb.CONTEXT_OVERFLOW_CODES
-    assert cc_mod._TYPED_CONTEXT_OVERFLOW_CODES is cb.CONTEXT_OVERFLOW_CODES
     assert loop_call_mod._STRUCTURED_CONTEXT_OVERFLOW_CODES is cb.CONTEXT_OVERFLOW_CODES
-    # No module keeps a private marker tuple beside the shared one.
+    # No module keeps a private marker tuple beside the shared one, nor a classifier of its own.
     for mod in (llm_mod, cc_mod, loop_call_mod):
         assert not hasattr(mod, "_OUTPUT_OR_BODY_SIZE_MARKERS")
+    assert not hasattr(cc_mod, "_context_overflow_message") and not hasattr(cc_mod, "_TYPED_CONTEXT_OVERFLOW_CODES")
 
 
 def test_output_size_precedence_lives_inside_the_shared_helper():
