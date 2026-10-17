@@ -20,6 +20,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/skills/{skill}/publish-preflight` | |
 | GET | `/api/extensions/{skill}/manifest` | |
 | GET | `/api/extensions/{skill}/module/{entry:path}` | reviewed `.js`/`.mjs` from captured texts; `Access-Control-Allow-Origin: *` |
+| GET | `/api/extensions/{skill}/ui/{revision}/{path:path}` | captured page-module files of the live revision |
 | GET | `/api/widgets` | passive projection of live UI tabs and pinned cards; `Cache-Control: no-store` |
 | GET | `/api/extensions/{skill}/settings_section` | |
 | ANY | `/api/extensions/{skill}/{rest:path}` | extension dispatch (§13) |
@@ -87,6 +88,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/owner/safety-mode` | |
 | POST | `/api/owner/skills/{skill}/presence-runtime` | |
 | POST | `/api/owner/capability-ack` | |
+| GET | `/api/ui/contributions` | live skill controls, speech providers, offers |
 | GET | `/api/ui/preferences` | |
 | POST | `/api/ui/preferences` | |
 | GET | `/api/ui/i18n` | interface language and translation memory; a read never starts generation |
