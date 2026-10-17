@@ -389,6 +389,15 @@ and Send waits for both pending Context and Effort saves; a refused
 save keeps the draft, says why and returns to the saved value — unsaved values are
 never shown as saved.
 
+**"+" holds the composer's actions.** Where the paperclip stood, "+" (More actions, a
+finger-sized target that keeps the row's height) opens a menu sheet above itself: Attach
+file first, then the sections later controls add, each under its label; drag and paste
+still attach, and a pointer that opens it from the field leaves the focus in the field.
+The dictation mic has a slot between the field and Send that takes no room until an
+engine is chosen. Contributed chips have a slot at the end of the capsule row that takes
+only the room the capsules leave (never a second line, clipped first) and steps aside
+with them.
+
 ### `.muted`
 
 `.muted` is a **colour-only utility**: `color: var(--text-meta)`, nothing else.

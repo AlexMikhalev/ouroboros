@@ -18,6 +18,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     project_answer.js — Main's Project lifecycle rows and folded mirrored answers (§3 Main rows)
     work_portal.js, task_episodes.js, project_handoff.js — one Main card per work: the portal of a work in a Project room and every binding source; Continue episodes on one card; the binding receipt's words (§3 Project handoff receipts)
     chat_reply.js, chat_reply_quote.js, chat_row_menu.js, routing_receipt.js, text_fit.js — replies (Reply controls, composer strip, host-derived quotes, relay panel), the row menu, the owner message's routing receipt line, word-cut fitting (§3 Chat and Projects; DESIGN "Replies")
+    composer.js — a room's composer: "+" menu, slots, Send (§3)
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
     project_activity.js — `active_chat_activities` census projection for Project dots (§3 Liveness census)
     room_work.js, project_read_state.js — a room's header work list without execution authority; its read receipt (§3 Project rooms)
@@ -32,7 +33,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     review_command.js — `/review` chooser and send (§3 Chat and Projects)
     review_presentation.js, plan_record_presentation.js, review_record_card.js, review_dom_patch.js, harness_presentation.js — read-side Review Checkpoint grouping, one review record's panel and reviewer lines (`formatReviewProjection`), keyed DOM patching, the sole owner of harness identity markup (§3 Child cards and executor presentation)
     acceptance_incident_presentation.js — local evidence-preparation warning; no reviewer authority (§6 Task acceptance)
-    widgets.js, widget_module.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page: host and card registry, framed mounts, card chrome, list-request policy, reorder/size/chart helpers and masonry (§3)
+    widgets.js, widget_render.js, widget_module.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page: host and card registry, framed mounts, card chrome, list-request policy, render/reorder/size/chart helpers and masonry (§3)
 supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors/call observations for `/api/state`; private reply expectation/handoff facts, no spurious queue rows (§3 Direct turns and the activity block)
   message_bus.py — local message bus for the Web UI and transport skills; re-exports the ingress names
