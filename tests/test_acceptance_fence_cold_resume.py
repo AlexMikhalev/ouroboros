@@ -112,18 +112,21 @@ def test_exact_cold_resume_rebinds_and_seals(host, tmp_path, monkeypatch, reason
     from ouroboros.tools.registry import ToolRegistry
     tools = ToolRegistry(repo_dir=host.root, drive_root=host.root)
     tools._ctx = ctx
-    ctx._task_acceptance_reviewed = True
+    # The seal runs at an author stop, right before that stop is delivered.
+    ctx._completion_selected = {'action': 'stop', 'rationale': 'The cold continuation ends here; nothing else was asked.'}
     trace = {'reasoning_notes': [], 'tool_calls': []}
     limit = loop._RoundLimitContext(messages=[], llm=None, active_model='fixture', active_effort='high',
         max_retries=1, drive_logs=host.root / 'logs', task_id='held', round_idx=30, event_queue=None,
         accumulated_usage={}, task_type='task', active_use_local=False, max_rounds=None,
         drive_root=host.root, tools=tools, llm_trace=trace, tool_schemas=[])
-    # Independent reviewers already have custody; this test buys no panel or model call.
-    monkeypatch.setattr(loop, '_run_task_acceptance_review_once', lambda **_k: False)
+    # Independent reviewers already have custody; an author stop buys no review or model call.
+    monkeypatch.setattr('ouroboros.tools.review_result.result_review_at_delivery',
+                        lambda *_a, **_k: pytest.fail('an author stop bought a result review'))
     monkeypatch.setattr(loop, '_maybe_inject_finalization_nudges', lambda *_a, **_k: False)
     delivered = _no_tool_final_answer('Completed cold continuation.', limit, trace, tools,
         stdqueue.Queue(), set(), lambda *_a, **_k: None, explicit_candidate=True)
     assert delivered is not None and delivered[0] == 'Completed cold continuation.'
+    assert trace['task_completion']['action'] == 'stop'
     assert queue.ACCEPTANCE_FENCES['held']['status'] == 'sealed'
     assert load_task_result(host.root, 'held')['review_runs'] == paid
 
