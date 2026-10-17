@@ -139,11 +139,20 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                         ?.getBoundingClientRect(); const dock = document.querySelector('#page-chat .chat-input-wrap')?.getBoundingClientRect();
                         return { bottom: r?.bottom, dock: dock?.top }; }""", ids["app"])
                     assert feed["bottom"] <= feed["dock"] + 0.5, (where, "the newest card stays above the composer", feed)
+                    # A skill's widget in a message is capped at 70 % of the window until Expand.
+                    widget_card = page.locator(f'.chat-card[data-card-id="{ids["widget"]}"]')
+                    capped = widget_card.locator(".chat-card-widget").bounding_box()["height"]
+                    assert capped <= 900 * 0.7 + 1, (where, capped)
+                    assert widget_card.locator(".chat-card-expand").is_visible(), where
                     for kind in ("components", "widget"):
                         page.locator(f'.chat-card-bubble[data-card-id="{ids[kind]}"]').screenshot(
                             path=str(evidence / f"living-cards-{engine}-{theme}-{width}-{kind}.png"), animations="disabled")
                     if (theme, width) != ("light", 1280):
                         continue
+                    widget_card.locator(".chat-card-expand").click()
+                    assert widget_card.locator(".chat-card-widget").bounding_box()["height"] > capped + 50, "Expand lifts the cap"
+                    assert widget_card.locator(".chat-card-expand").inner_text() == "Collapse"
+                    widget_card.locator(".chat-card-expand").click()
 
                     # A press is the owner's: it goes to the card's decision and says Sent.
                     pressed = []

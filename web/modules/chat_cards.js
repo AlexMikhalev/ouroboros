@@ -239,14 +239,26 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         record.tab = tab;
         record.widgetSignature = JSON.stringify([tab.revision, tab.render]);
         if (tab.render?.kind === 'declarative') {
+            // Under the message's size policy like a frame: the content is measured, its box is capped, Expand
+            // lifts the cap. The declarative host paints its first frame synchronously: inside this write.
             const host = document.createElement('div');
             host.className = 'chat-card-widget';
-            // The declarative host paints its first frame synchronously: inside this write.
+            const content = document.createElement('div');
+            host.append(content);
+            let inline = null;
             const mounting = write(() => {
                 record.body.replaceChildren(host);
                 setStatus(record, '');
-                return mountDeclarativeWidget(host, { ...tab, key: `card:${record.id}` }, tab.render, { input: ref.input });
+                inline = createInlineFit(host, record.toggle);
+                return mountDeclarativeWidget(content, { ...tab, key: `card:${record.id}` }, tab.render, { input: ref.input });
             });
+            const resized = typeof ResizeObserver === 'function' ? new ResizeObserver(() => record.fit?.fit(content.offsetHeight)) : null;
+            record.fit = {
+                fit: (height) => write(() => inline.fit(height)),
+                dispose: () => { resized?.disconnect(); inline.dispose(); },
+            };
+            resized?.observe(content);
+            record.fit.fit(content.offsetHeight);
             const dispose = await mounting;
             if (destroyed || !records.has(record.id)) dispose?.();
             else record.mounted = { dispose };
