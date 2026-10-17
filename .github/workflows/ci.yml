@@ -847,6 +847,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # COPY . . keeps .git (the image needs its history); a persisted
+          # token would ride .git/config into an image layer.
+          persist-credentials: false
       - name: Build Docker image
         id: docker_build
         run: docker build -t ouroboros-web:test .
@@ -877,6 +881,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false  # same image build as docker-ui-smoke
       - name: Build Docker image
         run: docker build -t ouroboros-web:test .
       - name: Run portable detail tests in Docker

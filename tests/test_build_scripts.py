@@ -697,6 +697,21 @@ class TestDockerfile:
         )
         assert "playwright install --only-shell" not in ci, "the portable lane measures the shipped image"
 
+    def test_ci_docker_builds_never_bake_the_checkout_token(self):
+        """`COPY . .` keeps `.git`, so a job building the image from its checkout must not
+        persist GITHUB_TOKEN as `.git/config`'s extraheader into a layer (#1263)."""
+        import yaml
+
+        jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
+        building = sorted(name for name, job in jobs.items()
+                          if any("docker build" in str(step.get("run", "")) for step in job.get("steps", [])))
+        assert {"docker-portable-test", "docker-ui-smoke"} <= set(building), building
+        for name in building:
+            checkouts = [step for step in jobs[name]["steps"]
+                         if str(step.get("uses", "")).startswith("actions/checkout@")]
+            assert checkouts, name
+            assert all((step.get("with") or {}).get("persist-credentials") is False for step in checkouts), name
+
 
 @pytest.mark.parametrize(
     "path",
