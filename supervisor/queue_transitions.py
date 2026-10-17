@@ -1155,8 +1155,8 @@ def task_has_live_ownership(task_id: str, *, ignore_review_operation: str = '', 
     if not task_id:
         return False
     from supervisor.task_ownership import TaskOwnershipRead, prepare_retry_chain
-    from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
-    from ouroboros.owner_pause import fence_closed, FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED
+    from ouroboros.review_operation import task_has_live_review_operation
+    from ouroboros.owner_pause import FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED
 
     ownership = ownership or TaskOwnershipRead(q.DRIVE_ROOT)
     accessed = set()
@@ -1172,9 +1172,6 @@ def task_has_live_ownership(task_id: str, *, ignore_review_operation: str = '', 
         fence = current.get("owner_pause") or {}
         if not isinstance(fence, dict) or (fence and fence.get("state") not in
                                            {FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED}):
-            return True
-        if fence_closed(fence) and paused_acceptance_preparations(q.DRIVE_ROOT, task_id, fence['fence_id'],
-                                                                 result_loader=read):
             return True
         if (current.get("root_phase_checkpoint") or {}).get("post_task_synthesis") == "paused":
             return True

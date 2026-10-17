@@ -657,7 +657,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                     phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at, root=root))
         from ouroboros.post_task_checkpoint import post_task_model_waits, post_task_synthesis_in_flight
-        from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
+        from ouroboros.review_operation import task_has_live_review_operation
         visible = {row["activity_id"]: row for row in activities}
         for root_id, latch in fence_rows.items():
             # D10: an answered root under the owner's Pause whose late phase is the
@@ -668,8 +668,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             if root_id in active_roots and not (
                     facts.get("late_phase") == "paused" or facts.get("finalizing")
                     or post_task_synthesis_in_flight(drive_root, root_id)
-                    or task_has_live_review_operation(drive_root, root_id)
-                    or paused_acceptance_preparations(drive_root, root_id, str(latch.get("fence_id") or ""))):
+                    or task_has_live_review_operation(drive_root, root_id)):
                 continue  # the logical fence alone is no second actor; genuine late work stays
             # The fence's own census is the truth of "Paused": reviewers already
             # launched finish separately and never keep the tree Pausing.
@@ -679,9 +678,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
             elif (facts.get("finalizing") or post_task_synthesis_in_flight(drive_root, root_id)
                   or task_has_live_review_operation(drive_root, root_id, sent_only=True)):
                 phase = "budget_pausing"
-            elif (task_has_live_review_operation(drive_root, root_id)
-                  or paused_acceptance_preparations(drive_root, root_id, str(latch.get('fence_id') or ''))):
-                phase = "budget_paused"  # an unsent late review deferred until Resume
+            elif task_has_live_review_operation(drive_root, root_id):
+                phase = "budget_paused"  # an unsent review operation deferred until Resume
             else:
                 continue
             row = dict(facts.get("row") or {})

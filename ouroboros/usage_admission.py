@@ -66,46 +66,14 @@ def authority_unavailable(kind: str, root_task_id: str, cause: str) -> BillingAu
 
 def effective_billing_fields(budget_root: Any, root_id: str, fields: Dict[str, Any],
                              *, non_task_operation: bool = False) -> Dict[str, Any]:
-    """Overlay canonical owner amendments on the original binding, never spend.
+    """The binding as recorded, as a copy: no owner amendment overlays it any more.
 
-    Only the group's own root can amend its total allowance. A successor's
-    root amendment leaves the original group ceiling independent. The historical
-    source-bound writer owns authorization; old ledger rows remain immutable.
+    The only amendment writer was the historical review of the deleted task-acceptance
+    machine (``acceptance_root_cap_amendments`` on the root's row); rows that carry one
+    keep it as history and it no longer widens the allowance. Kept for its callers.
     """
-    from ouroboros.task_results import load_task_result
-
-    result = dict(fields)
-    group = str(fields.get("billing_group_id") or root_id)
-    # Host operations explicitly bind a non-task scope. They still pay through
-    # the same ledger/global cap, but have no task-result amendment authority.
-    # A task or a carried foreign group never gains this exemption from its ID.
-    if non_task_operation and group == root_id:
-        return result
-    if not budget_root or not group:
-        return result
-    try:
-        for tid in dict.fromkeys((root_id, group)):
-            row = load_task_result(pathlib.Path(budget_root), tid, strict=True) or {}
-            amendments = row.get("acceptance_root_cap_amendments") or []
-            if not amendments:
-                continue
-            last = amendments[-1]
-            cap = last.get("new_cap_usd")
-            if (last.get("accounting_root_task_id") != tid or not last.get("source_identity")
-                    or not last.get("source_ref") or not last.get("recorded_at")
-                    or type(cap) not in (int, float) or not math.isfinite(cap) or cap <= 0):
-                raise ValueError("invalid_group_cap_amendment")
-            if tid == root_id:
-                result.update(root_limit_usd=cap, root_limit_source="owner_amendment", root_limit_revision=last["source_identity"])
-            if tid == group:
-                result.update(billing_group_limit_usd=cap, billing_group_limit_source="owner_amendment",
-                              billing_group_limit_revision=last["source_identity"])
-        return result
-    except StoreBusy:
-        raise
-    except Exception as exc:
-        log.warning("Effective billing authority unavailable for %s", group, exc_info=True)
-        raise authority_unavailable("unreadable", group, f"amendment_unreadable:{type(exc).__name__}") from exc
+    del budget_root, root_id, non_task_operation
+    return dict(fields)
 
 
 def ledger_billing_binding(budget_root: Any, root_task_id: str) -> Dict[str, Any]:

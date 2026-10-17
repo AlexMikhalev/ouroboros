@@ -38,6 +38,14 @@ from ouroboros.task_result_schema import (  # noqa: F401
 )
 
 
+# The paid-cycle wallet of the deleted task-acceptance review (``task_acceptance_review_accounting``
+# on the root's row): the functions from here to ``project_task_acceptance_review_capacity`` and the
+# block from ``TASK_ACCEPTANCE_REVIEW_STATE_KEY`` to ``claim_task_acceptance_review_cycle`` further
+# down. Nothing in the task lifecycle reads or writes it any more: its remaining callers are
+# acceptance-only code of the review engine (``review_dispatch``, ``review_operation``,
+# ``review_substrate``/``review_projection`` for ``review_binding_hash``) that the same fold
+# deletes, and this wallet goes with them. Old rows keep the field as history; no task-result read
+# validates or interprets it.
 def review_binding_hash(
     *, candidate_hash: str, evidence_revision: str, fence_hash: str,
 ) -> str:
@@ -118,11 +126,7 @@ def _root_task_acceptance_review_cap(
 
 
 def task_acceptance_required_blocking() -> bool:
-    """Shared Required+Blocking predicate for the cap and capacity readers.
-    It matches ``loop_acceptance``: ``ctx.mode == 'required'`` (captured from
-    ``config.get_task_review_mode()`` at ``_run_task_acceptance_review_once``)
-    and ``loop.get_review_enforcement() == 'blocking'``. That getter is the
-    same config getter used here, so these projections cannot drift apart."""
+    """The Required+Blocking predicate the wallet cap was resolved under."""
     from ouroboros import config
 
     return bool(
@@ -159,13 +163,8 @@ def project_task_acceptance_review_capacity(
     malformed canonical result is UNKNOWN for them; a live root may begin with
     the known empty state. The atomic claim remains dispatch authority.
 
-    WALLET AND CANCELLATION ONLY (owner R52). The TIME axis is not projected:
-    the launch rule (``task_pacing.review_launch_allowed``) is evaluated once,
-    at loop admission (owner R55; the paid claim inside the dispatch stamp
-    checks cancellation and the wallet only), and a descendant reading this
-    reads its own deadline window from the adjacent coordination ``time``
-    fact. So no budget profile, no snapshot and no duration prediction is read
-    here, and the answer cannot drift from the rule it used to imitate.
+    WALLET AND CANCELLATION ONLY (owner R52): no budget profile, no snapshot
+    and no duration prediction is read here.
     """
 
     from ouroboros import config
@@ -887,8 +886,6 @@ def write_task_result(
             if "rollup" not in prepared:
                 raise Reprepare("rollup")
             prepared_fields["swarm_fanout_rollup"] = prepared["rollup"]
-        from ouroboros.acceptance_history import preserve_acceptance_history
-        prepared_fields = preserve_acceptance_history(existing, prepared_fields)
         if "review_projection" in prepared_fields:
             prepared_fields["review_projection"] = merge_review_projection(
                 existing.get("review_projection"), prepared_fields["review_projection"],
