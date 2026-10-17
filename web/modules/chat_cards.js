@@ -7,7 +7,7 @@
 //   widget     → the live skill's tab from `GET /api/widgets`, inline: declarative through the Widgets page's own
 //                declarative host, module/iframe in a frame under the message's size policy; never registered on
 //                the Widgets page, so leaving that page disposes nothing here: the feed disposes it with its row;
-//   app        → card_frames.js, an opaque frame without network whose submit fills the owner's draft.
+//   app        → card_frames.js, an opaque frame that cannot fetch or load; its submit fills the owner's draft.
 // Frames mount lazily near the viewport, at most three live at once; a far one becomes a static face with Open.
 import { apiClient, fetchJson } from './api_client.js';
 import { createCardPresses, mountCardComponents, setCardPinned } from './card_components.js';
