@@ -605,7 +605,11 @@ def wave_facts(ctx: ToolContext, wave: _Wave, *, outcome: Dict[str, Any], forens
         "dispute_input": forensic.get("dispute_input"),
         "enforcement_blocks": wave.layer == "body" and bool(review_enforcement_blocks(wave.enforcement)),
         "structured": structured, "slot_executions": executions, "triad_raw": triad_raw,
-        "blocked": bool(outcome.get("blocked")), "block_reason": str(outcome.get("block_reason") or ""),
+        # The wave's "pending" block counts a lost seat as still owed; once no seat can still answer
+        # (``_open_seats``), the record is decided by its answers, never held by that block.
+        "blocked": bool(outcome.get("blocked")) and not (
+            str(outcome.get("block_reason") or "") == "review_late_result_pending" and not _seats_open(forensic)),
+        "block_reason": str(outcome.get("block_reason") or ""),
         "dispatch_refusal": refusal, "pending": _seats_open(forensic), "degraded_reasons": degraded,
         "critical_findings": critical, "advisory_findings": advisory, "additional_findings": additional,
         "tests": {"policy": "NOT_RUN", "result": "unknown"},
