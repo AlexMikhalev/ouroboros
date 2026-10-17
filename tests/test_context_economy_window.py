@@ -199,7 +199,7 @@ def _wire(monkeypatch, messages):
     return [m for m in payload["messages"] if m["role"] == "system"]
 
 
-def _rebind(monkeypatch, root, plan, messages, *, window, ratio=1.0, status="asserted"):
+def _rebind(monkeypatch, root, plan, messages, *, window, ratio=1.0, status="asserted", usage=None):
     import ouroboros.context
     from ouroboros import context_fit
     from ouroboros.loop_model_call import _rebind_context_fit_plan
@@ -207,6 +207,7 @@ def _rebind(monkeypatch, root, plan, messages, *, window, ratio=1.0, status="ass
 
     root.mkdir(parents=True, exist_ok=True)
     registry = ToolRegistry(repo_dir=root, drive_root=root)
+    registry._ctx._accumulated_usage = usage
     evidence = SimpleNamespace(route_fp=f"r-{window}", status=status, stale=status != "asserted", window_tokens=window)
     monkeypatch.setattr(ouroboros.context, "_context_fit_route", lambda *_a, **_kw: ({"model": "m2", "provider": "p"}, evidence))
     monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a: ratio)
@@ -262,6 +263,28 @@ def test_a_rebind_narrows_a_view_the_window_cannot_hold_from_its_own_level_by_th
     assert floor["by_budget"] == old["by_budget"] and floor["budget_allowance_tokens"] is None  # no target refold
     assert floor["allowance_tokens"] == floor["physical_allowance_tokens"]  # no working margin reapplied
     assert messages[1:] == _long_tail(low)[1:]  # the actual tail is never touched
+
+
+def test_a_rebind_never_recuts_by_a_window_this_model_already_exceeded_here(tmp_path, monkeypatch):
+    """Review r1 (17.10): an account rotation re-cut memory by a catalogue window the task had already
+    disproved (Codex: 872k stated, 921,840 accepted). The model's accepted floor makes that window
+    unknown, so the sent view stays; without the floor the same window narrows it (the test above)."""
+    from ouroboros.context_anchor import record_input_anchor
+    from tests.test_memory_view_modes import _built
+
+    _core, plan = _built(tmp_path / "w", monkeypatch)
+    low = plan(1_000_000, preferred="low", tool_schemas=[])
+    messages = _long_tail(low)
+    measured = low.reproject_for_route(window_tokens=1_000_000, known_window=True, ratio=1.0, output_reserve=65_536,
+                                       tool_schemas=[], start_mode="low", current_messages=messages)
+    tight = measured.projection("low").estimated_tokens + low.output_reserve_tokens - 1
+    usage = {"_last_round_cache_usage": {"prompt_tokens": tight + 50_000, "provider": "p"},
+             "_context_raw_input_tokens": tight + 50_000}
+    record_input_anchor(usage, SimpleNamespace(model="m2", provider="p"), round_idx=7)
+    old = low.projection("low").memory_facts["floor"]
+    rebound, mode, event = _rebind(monkeypatch, tmp_path / "n", low, messages, window=tight, usage=usage)
+    assert mode == "low" and event["view_kept"] is True
+    assert rebound.projection("low").memory_facts["floor"]["steps"] == old["steps"]  # nothing re-cut
 
 
 @pytest.mark.parametrize("owner,ran,mode", [

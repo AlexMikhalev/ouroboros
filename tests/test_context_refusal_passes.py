@@ -17,7 +17,8 @@ from ouroboros.context_anchor import REFUSED_INPUTS_KEY
 def _fit(estimate, *, anchor=874_829, accepted=921_840, reply=65_536):
     return SimpleNamespace(measurement=SimpleNamespace(
         estimated_input_tokens=estimate, anchor_input_tokens=anchor, accepted_input_tokens=accepted,
-        capacity_total_tokens=None, window_reading_tokens=None, reply_allowance_tokens=reply))
+        capacity_total_tokens=None, window_reading_tokens=None, reply_allowance_tokens=reply,
+        capacity_deficit_tokens=None))
 
 
 def _ctx(message=""):
@@ -77,14 +78,27 @@ def test_memory_narrowed_enough_addresses_no_unseen_body(monkeypatch):
     monkeypatch.setattr(lmc, "_run_emergency_address_pass", lambda _ctx, _fit, *, rung, goal_tokens=None: (
         calls.append((rung, goal_tokens)) or SimpleNamespace(status="applied", reclaimed_tokens=goal_tokens)))
     second = ("floor", "unseen_bodies")
+    unsized = _fit(900_000, accepted=None)  # no window reading anywhere: no slack, the whole target is excess
     sizes[:] = [800_000]
-    assert lmc._apply_refusal_pass(_ctx(), second, _fit(900_000), 80_000) is True
+    assert lmc._apply_refusal_pass(_ctx(), second, unsized, 80_000) is True
     assert calls == [("floor", 80_000)]  # memory alone saved it: books stay, no unseen body leaves
     calls.clear()
     sizes[:] = [800_000, 760_000]
-    assert lmc._apply_refusal_pass(_ctx(), second, _fit(900_000), 150_000) is True
+    assert lmc._apply_refusal_pass(_ctx(), second, unsized, 150_000) is True
     assert calls == [("floor", 150_000), ("books",), ("unseen_bodies", 10_000)]  # books, then only the rest
     calls.clear()
     sizes[:] = [800_000, 760_000]
-    assert lmc._apply_refusal_pass(_ctx(), second, _fit(900_000), None) is True
+    assert lmc._apply_refusal_pass(_ctx(), second, unsized, None) is True
     assert calls == [("floor", lmc.WHOLE_CATEGORY), ("books",), ("unseen_bodies", None)]  # unknown: each whole
+    calls.clear()
+    sizes[:] = [800_000, 760_000]
+    known = SimpleNamespace(measurement=SimpleNamespace(**{**vars(unsized.measurement), "capacity_deficit_tokens": 18_887}))
+    assert lmc._apply_refusal_pass(_ctx(), second, known, None) is True
+    assert calls[0] == ("floor", 18_887)  # no target, but a known window's deficit sizes memory, not "everything"
+    # Memory narrows by the measured excess only; the return-after-fold slack falls to books and sources
+    # (review r1, 17.10: narrowing memory for slack showed this room's own rows by address).
+    calls.clear()
+    sizes[:] = [880_000, 700_000]
+    stated = _ctx("This model's maximum context length is 400,000 tokens.")  # slack 50,000
+    assert lmc._apply_refusal_pass(stated, second, _fit(900_000, accepted=None), 70_000) is True
+    assert calls == [("floor", 20_000), ("books",)]  # 70,000 = 20,000 excess + 50,000 slack; books met the rest

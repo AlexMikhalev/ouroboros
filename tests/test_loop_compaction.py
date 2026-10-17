@@ -426,8 +426,9 @@ def test_a_fallback_candidate_in_the_same_round_walks_no_pass_again(tmp_path, mo
 
 @pytest.mark.parametrize("saved", [True, False])
 def test_the_floor_keeps_books_when_memory_alone_saved_the_target_and_drops_them_when_it_did_not(tmp_path, monkeypatch, saved):
-    """Both directions of the owner's books-last order: the floor narrows memory by the measured target; when the
-    narrowed view saved it, Max keeps its books; otherwise they become navigation (task-local Low)."""
+    """Both directions of the owner's books-last order: the floor narrows memory by the measured excess (the target
+    without its return-after-fold slack, review r1 17.10); when the narrowed view saved the whole target, Max keeps
+    its books; otherwise they become navigation (task-local Low)."""
     from ouroboros import loop, loop_model_call
 
     context = _ctx(tmp_path)
@@ -457,7 +458,7 @@ def test_the_floor_keeps_books_when_memory_alone_saved_the_target_and_drops_them
     monkeypatch.setattr(loop, "last_physical_attempt_capture", lambda: _failed_capture())
     msg, _cost, mode = loop._call_round_model(context)
     assert msg["content"] == "fits" and len(sends) == 2
-    assert coarsened == [target]  # memory narrows by the target, from the level it shows
+    assert coarsened == [target - SLACK]  # memory narrows by the measured excess, from the level it shows
     if saved:
         assert mode == "max" and context.messages[0]["content"] == "MAX_SYSTEM"
         context.context_fit_plan.reproject_for_route.assert_not_called()

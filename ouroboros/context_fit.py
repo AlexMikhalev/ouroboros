@@ -633,8 +633,11 @@ def measure_main_fit(
     total = estimated_input + reserve
     target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
               else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
+    from ouroboros.context_anchor import floored_window
+
     reading = int(plan.window_tokens or 0) if is_known(plan, require_fresh=True) else None
-    capacity = None if reading is not None and accepted_input_tokens and accepted_input_tokens > reading else reading
+    floored, known = floored_window(reading, reading is not None, accepted_input_tokens)
+    capacity = floored if known else None
     target_deficit = max(0, total - target) if target is not None else None
     capacity_deficit = max(0, total - capacity) if capacity is not None else None
     deficit = max(

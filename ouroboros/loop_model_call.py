@@ -606,8 +606,11 @@ def _rebind_context_fit_plan(
         str(getattr(evidence, "route_fp", "") or ""),
         str(route.get("model") or model),
     )
-    known_window = is_known(evidence, require_fresh=True)
-    window_tokens = int(getattr(evidence, "window_tokens", 0) or 0)
+    from ouroboros.context_anchor import floored_window
+
+    # A window this model already exceeded in this conversation is no window: a rotation never re-cuts by it.
+    window_tokens, known_window = floored_window(
+        int(getattr(evidence, "window_tokens", 0) or 0), is_known(evidence, require_fresh=True), _accepted)
     output_reserve = main_output_reserve_tokens(use_local=bool(route.get("use_local", use_local)), evidence=evidence)
     preferred = preferred_mode or getattr(plan, "preferred_mode", "")
     preferred = preferred if preferred in {"low", "max", "nano"} else "max"
@@ -1093,10 +1096,13 @@ def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
     if ctx.active_context_mode != "max" or ctx.context_fit_plan is None:
         return
     from ouroboros.capability_evidence import is_known
+    from ouroboros.context_anchor import floored_window, main_input_anchor
 
     plan = ctx.context_fit_plan
+    window, known = floored_window(int(plan.window_tokens or 0), is_known(plan, require_fresh=True),
+                                   main_input_anchor(ctx.accumulated_usage, plan)[1])
     ctx.context_fit_plan = ctx.tools._ctx.context_fit_plan = plan.reproject_for_route(
-        window_tokens=int(plan.window_tokens or 0), known_window=is_known(plan, require_fresh=True),
+        window_tokens=window, known_window=known,
         ratio=float(plan.projection("max").calibration_ratio or 1.0), output_reserve=int(plan.output_reserve_tokens),
         tool_schemas=ctx.tool_schemas, start_mode="max", current_messages=ctx.messages, select_mode="low")
     ctx.messages[:] = ctx.context_fit_plan.reproject_transcript(ctx.messages, "low")
@@ -1389,33 +1395,44 @@ WHOLE_CATEGORY = 2**31 - 1  # an unknown target: the step takes everything its c
 CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 
 
-def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Optional[int]:
-    """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
+def _refusal_window(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Tuple[Optional[int], int, int]:
+    """``(stated limit or None, the refused size, the return-after-fold slack)`` of this refusal.
 
-    A provider that states its limit L gives ``E + reply - L`` whatever E's basis (the limit is the
-    measurement; a cold E still names its excess); a local serving instance that refused before sending
-    (``refused``: its exact ``input_tokens`` and ``context_window_tokens``) gives the same with its own
-    counts. Without a stated limit, the anchored estimate E over the largest input this model accepted
-    here, A, gives ``E - A``; E at or below A contradicts the reading, and a cold E compares with nothing:
-    unknown. All add the owner's return-after-fold eighth of the window (L33 2=A). The refused size is
-    recorded, so the facts state no optimistic room for this model again.
+    A provider's stated limit, or a local serving instance's own exact window and input (``refused``:
+    its pre-send ``context_window_tokens`` and ``input_tokens``), measure it; otherwise the refused
+    estimate stands. The slack is the owner's return-after-fold eighth (L33 2=A) of the stated window,
+    else of the known window, else of the larger of the reading and the largest input accepted here.
     """
     from ouroboros.capability_evidence import _parse_ctx_limit_number
-    from ouroboros.context_anchor import record_refused_input
     from ouroboros.context_fit import reclaim_low_water_margin
 
     measurement = fit.measurement
-    record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, measurement.estimated_input_tokens)
-    stated = _parse_ctx_limit_number(str(ctx.accumulated_usage.get("_last_llm_provider_message") or ""))
-    estimate = measurement.estimated_input_tokens
+    stated = _parse_ctx_limit_number(str(ctx.accumulated_usage.get("_last_llm_provider_message") or "")) or None
+    size = measurement.estimated_input_tokens
     exact_window, exact_input = (int(getattr(refused, key, 0) or 0) for key in ("context_window_tokens", "input_tokens"))
     if exact_window and exact_input:
-        stated, estimate = exact_window, exact_input
-    window = (stated or measurement.capacity_total_tokens or measurement.window_reading_tokens
-              or measurement.accepted_input_tokens)
-    slack = reclaim_low_water_margin(None, window) if window else 0
+        stated, size = exact_window, exact_input
+    window = stated or measurement.capacity_total_tokens or max(
+        measurement.window_reading_tokens or 0, measurement.accepted_input_tokens or 0) or None
+    return stated, size, reclaim_low_water_margin(None, window) if window else 0
+
+
+def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Optional[int]:
+    """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
+
+    A stated limit L (``_refusal_window``) gives ``size + reply - L`` whatever the estimate's basis (the
+    limit is the measurement; a cold estimate still names its excess). Without one, the anchored estimate E
+    over the largest input this model accepted here, A, gives ``E - A``; E at or below A contradicts the
+    reading, and a cold E compares with nothing: unknown. Both add the return-after-fold slack. The refused
+    size is recorded, so the facts state no optimistic room for this model again.
+    """
+    from ouroboros.context_anchor import record_refused_input
+
+    measurement = fit.measurement
+    record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, measurement.estimated_input_tokens)
+    stated, size, slack = _refusal_window(ctx, fit, refused)
     if stated:
-        return max(0, estimate + measurement.reply_allowance_tokens - stated) + slack
+        return max(0, size + measurement.reply_allowance_tokens - stated) + slack
     if measurement.anchor_input_tokens is None:
         return None
     accepted = measurement.accepted_input_tokens
@@ -1502,9 +1519,12 @@ def _apply_refusal_pass(ctx: _RoundModelCallContext, steps: Tuple[str, ...], fit
 def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target: Optional[int]) -> Optional[int]:
     """Apply one step of a refusal pass to the live transcript: the tokens it shed, None when unchanged.
 
-    Bodies are addressed oldest first until ``target`` (the whole category when it is unknown); the
-    floor narrows memory by the target and leaves books in place when memory alone saved it (the
-    owner's books-last order), otherwise books become their navigation form for the rest of the task.
+    Bodies are addressed oldest first until ``target`` (the whole category when it is unknown). The floor
+    narrows memory by the measured excess only, never by the return-after-fold slack: memory is continuity
+    (BIBLE P1), and narrowing it for slack showed this room's own rows by address. Without a target it
+    narrows by the deficit against a known window, and only with neither by everything it can give. Books
+    stay when memory alone met the target (the owner's books-last order), otherwise they become their
+    navigation form for the rest of the task, and the remaining slack falls to re-readable sources.
     """
     if step in ("host_copies", "bodies", "unseen_bodies"):
         goal = None if step == "host_copies" else target
@@ -1518,7 +1538,10 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
         after = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
         return max(0, before - after.measurement.estimated_input_tokens) if after is not None else default
 
-    coarsened = _coarsen_memory_view(ctx, fit, saving=target or WHOLE_CATEGORY)
+    # The measured excess, else the deficit against a known window, else everything memory can give.
+    excess = max(1, target - _refusal_window(ctx, fit)[2]) if target else (
+        fit.measurement.capacity_deficit_tokens or WHOLE_CATEGORY)
+    coarsened = _coarsen_memory_view(ctx, fit, saving=excess)
     saved = shed_since_before(0) if coarsened else 0
     if target and saved >= target:
         return saved
