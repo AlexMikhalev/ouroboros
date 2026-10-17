@@ -584,7 +584,10 @@ def _quiz_host_facts(ctx: ToolContext, canonical_root: pathlib.Path, task_id: st
             if last is not None:
                 break
             before = entry.seq
-        ds.require_complete(canonical_root, "chat", lower=entry.seq if entry else 0)
+        lower = entry.seq if entry else 0
+        ds.require_imported(canonical_root, "chat", lower=lower)
+        if ds.range_coverage(canonical_root, "chat", lower=lower)["gaps"]:  # a later message may be unreadable
+            raise ds.StoreError("Dialogue history has recorded invalid intervals")
     except ds.StoreMigrating:
         last, coverage = None, " (history is still importing)"
     except ds.StoreError as exc:

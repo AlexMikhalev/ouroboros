@@ -942,16 +942,3 @@ def last_legacy_generation(root: Any, *, gen: str = "", name: str = "") -> Optio
     return None if record is None else dict(record)
 
 
-def require_complete(root: Any, stream: str, *, lower: int = 0, upper: Optional[int] = None) -> None:
-    """Appended read function (Q1b2 M): prove absence or a complete fold, including invalid intervals.
-
-    Consumers with their own coverage field can return readable rows alongside
-    gaps. An absence-only answer cannot represent those gaps and raises instead.
-    """
-    coverage = range_coverage(root, stream, lower=lower, upper=upper)
-    if coverage["mismatch"]:
-        raise StoreError("Dialogue history: a segment could not be imported")
-    if coverage["pending"]:
-        raise StoreMigrating("Dialogue history is still importing")
-    if coverage["gaps"]:
-        raise StoreError("Dialogue history has recorded invalid intervals")

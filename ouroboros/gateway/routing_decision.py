@@ -66,7 +66,7 @@ def _origin_message(drive_root: pathlib.Path, client_message_id: str) -> Dict[st
         for entry in ds.iter_probes(drive_root, "chat", [("client_message_id", target)], newest_first=True):
             if entry.row.get("direction") == "in":
                 return entry.row
-        ds.require_complete(drive_root, "chat")
+        ds.require_imported(drive_root, "chat")
     except ds.StoreError:
         raise
     except Exception:

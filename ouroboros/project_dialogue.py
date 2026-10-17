@@ -392,7 +392,7 @@ def resolve_owner_message_source(drive_root: Any, ref: Dict[str, Any]) -> Option
     for entry in candidates:
         if ref_key in _entry_source_identities(entry.row):
             return dict(entry.row)
-    ds.require_complete(drive_root, "chat")
+    ds.require_imported(drive_root, "chat")
     return None
 
 
@@ -1029,7 +1029,7 @@ def resolve_legacy_continuation_narrative(
             },
             "written_at": str(row.get("ts") or ""),
         }
-    ds.require_complete(drive_root, "chat")
+    ds.require_imported(drive_root, "chat")
     return None
 
 

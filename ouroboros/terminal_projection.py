@@ -293,7 +293,7 @@ def _already_in_chat(root: Any, row: dict, *, since_ts: str = "") -> dict | None
         if (entry.row.get("summary_id") == row["summary_id"]
                 and entry.row.get("terminal_projection_token") == row.get("terminal_projection_token")):
             return entry.row
-    ds.require_complete(root, "chat")
+    ds.require_imported(root, "chat")
     return None
 
 

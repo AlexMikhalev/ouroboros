@@ -151,7 +151,7 @@ def _inbound_rows(drive_root: Any, client_ids: Mapping[str, str]) -> List[Dict[s
     """Owner rows addressed by client message id, in canonical order."""
     from ouroboros import dialogue_store as ds
 
-    ds.require_complete(drive_root, "chat")
+    ds.require_imported(drive_root, "chat")
     return [entry.row for entry in ds.iter_probes(drive_root, "chat", [("client_message_id", key) for key in client_ids])
             if _owner_row(entry.row)]
 

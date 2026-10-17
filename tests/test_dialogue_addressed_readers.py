@@ -111,7 +111,11 @@ def test_notice_import_does_not_block_current_store_and_late_receipts_are_found(
 
 
 @pytest.mark.parametrize("reader", ["owner", "routing", "words", "notices", "publication", "narrative"])
-def test_absence_readers_disclose_invalid_intervals_but_keep_positive_receipts(tmp_path, reader):
+def test_absence_readers_answer_over_the_readable_rows_of_a_root_with_a_torn_line(tmp_path, reader):
+    """A line the import could not read is an unreadable old row, as it was for the chain readers:
+    absence-only answers are given over the readable rows, so one torn line in the archive never
+    makes a reader refuse forever (a finished task's Done card, an owed notice, a routing click).
+    Readers with a coverage field disclose the interval (``range_coverage``)."""
     from ouroboros.terminal_projection import _already_in_chat
 
     def result_ref(task_id):
@@ -136,19 +140,12 @@ def test_absence_readers_disclose_invalid_intervals_but_keep_positive_receipts(t
                                                                 "summary_id": f"task-narrative:{key}"}),
             "narrative": lambda key: resolve_legacy_continuation_narrative(root, key, result_ref(key)),
         }
-        if gapped and reader == "words":  # a full fold has no field in which to return its gaps
-            with pytest.raises(ds.StoreError, match="invalid intervals"):
-                reads[reader]("selected")
-        else:
-            assert reads[reader]("selected")
-        if gapped:
-            with pytest.raises(ds.StoreError, match="invalid intervals"):
-                reads[reader]("absent")
-        else:
-            assert not reads[reader]("absent")
+        assert reads[reader]("selected")
+        assert not reads[reader]("absent")
+        assert bool(ds.range_coverage(root, "chat")["gaps"]) is gapped, "the torn line stays disclosed by coverage"
 
 
-def test_invalid_import_keeps_the_routing_card_open_until_its_source_is_readable(tmp_path, monkeypatch):
+def test_a_torn_line_leaves_the_routing_card_open_until_its_source_is_readable(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from ouroboros import project_dialogue as pd, routing_wait
     from supervisor import workers
@@ -165,8 +162,8 @@ def test_invalid_import_keeps_the_routing_card_open_until_its_source_is_readable
     assert before["owner-one"]["status"] == "needs_manual_target"
     request = {"request_id": "click-one", "decision_id": "routing:owner-one:route-one", "option_index": 0}
     status, payload = handle_routing_decision(tmp_path, **request)
-    assert status == 503 and payload["error"] == "history_unavailable" and payload["state"] == "open"
-    assert "invalid intervals" in payload["reason"]
+    # Over the readable rows the origin is not there: the card says so and stays open, never a 503 forever.
+    assert status == 409 and payload["error"] == "origin_text_unavailable" and payload["state"] == "open"
     assert latest_chat_annotations(tmp_path) == before and dispatched == []
     ds.append(tmp_path, "chat", owner())
     status, payload = handle_routing_decision(tmp_path, **request)
