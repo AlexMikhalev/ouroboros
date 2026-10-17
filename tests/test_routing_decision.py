@@ -16,6 +16,7 @@ from ouroboros.project_dialogue import (
     append_chat_annotation,
     chat_annotation_receipt,
 )
+from tests import _dialogue as dialogue_test
 
 OPTIONS = [
     {"action": "steer_task", "task_id": "t-live", "label": "Fix CI"},
@@ -303,8 +304,7 @@ def test_existing_task_picker_click_does_not_apply_or_report_new_root_effort(tmp
     assert "reasoning_effort" not in replay.json()
     assert len(queue.events) == 2 and len(mailbox.read_text().splitlines()) == 1
     # One visible relay row in the work's room, even after the replay (K4).
-    chat_rows = [json.loads(line) for line in (tmp_path / "logs" / "chat.jsonl").read_text().splitlines()]
-    [relay_row] = [row for row in chat_rows if row.get("type") == "relay_entry"]
+    [relay_row] = [row for row in dialogue_test.chat_rows(tmp_path) if row.get("type") == "relay_entry"]
     assert relay_row["task_id"] == "t-live" and relay_row["relay"]["quotes"][0]["text"] == "original owner words"
 
 

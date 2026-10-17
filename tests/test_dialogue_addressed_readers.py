@@ -171,7 +171,8 @@ def test_invalid_import_keeps_the_routing_card_open_until_its_source_is_readable
     ds.append(tmp_path, "chat", owner())
     status, payload = handle_routing_decision(tmp_path, **request)
     assert status == 200 and payload["dispatched"] == "delivered"
-    assert [event["message"] for event in dispatched] == [owner()["text"]]
+    # The owner's words travel as his verified quote; the steer note is only his (absent) comment.
+    assert [event["quotes"][0]["text"] for event in dispatched] == [owner()["text"]]
     assert latest_chat_annotations(tmp_path)["owner-one"]["status"] == "delivered"
 
 
