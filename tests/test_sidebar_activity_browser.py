@@ -474,13 +474,13 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
     reference = assert_rail(page, rail_rows(page), states)
     capture('default')
 
-    # Hovering a row reveals its sibling kebab and brightens the title; the dots follow the title ink.
+    # Hovering a row reveals its sibling kebab and brightens the title; the working dots keep the crimson live ink.
     plain = rail_rows(page)['p-w']['rowColor']
     page.locator('[data-project-id="p-w"]').hover()
     page.wait_for_function("() => getComputedStyle(document.querySelector('[data-project-id=\"p-w\"] ~ .nav-project-kebab')).opacity === '1'")
     settled('p-w', '--text-primary')
     hovered = rail_rows(page)
-    assert hovered['p-w']['rowColor'] != plain and hovered['p-w']['dotColor'] == hovered['p-w']['rowColor']
+    assert hovered['p-w']['rowColor'] != plain and hovered['p-w']['dotColor'] == token_color(page, 'p-w', '--accent')
     same_rail(reference, assert_rail(page, hovered, states))
     capture('hover')
     page.mouse.move(width / 2, 600)

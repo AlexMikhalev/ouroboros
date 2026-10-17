@@ -74,10 +74,13 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
 # spelling: with the note's words hidden, its box must paint the same while the messages beneath it
 # move by half a row; the words themselves keep the contrast floor on that backing.
 # Every layer the header paints itself with: its reading backing, and the light theme's own fill.
-_NO_HEADER_BACKING = """#page-chat .chat-page-header, #page-chat .chat-page-header::before {
+# Main's history note floats in its own strip under the bar (.chat-page-note, page_header lane L1), with the
+# bar's reading backing; the falsifier strips the backing of both the bar and the strip.
+_NO_HEADER_BACKING = """#page-chat .chat-page-header, #page-chat .chat-page-header::before,
+    #page-chat .chat-page-note, #page-chat .chat-page-note::before {
     background: transparent !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }"""
 _NOTE_GEOMETRY = """note => {
-    const feed = document.querySelector('#chat-messages'), header = note.closest('.chat-page-header');
+    const feed = document.querySelector('#chat-messages'), header = note.closest('.chat-page-note, .chat-page-header');
     const box = r => ({x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom});
     const n = note.getBoundingClientRect(), h = header.getBoundingClientRect();
     const middle = n.top + n.height / 2;
@@ -149,7 +152,7 @@ def _assert_note_readable(facts):
     assert facts['backingContent'] not in ('none', 'normal') and facts['backingAlpha'] == 1, (
         'history note reading backing: the header paints opaque page ink', facts)
     assert header['y'] - 0.5 <= note['y'] and note['bottom'] <= header['bottom'] + 0.5, (
-        'history note reading backing: the note lies inside the backed header', facts)
+        'history note reading backing: the note lies inside its backed strip', facts)
     assert facts['showThrough'] <= 0.002, ('history note reading backing: moving messages show through the note', facts)
     assert facts['contrast'] >= 4.5, ('history note words keep the contrast floor on their backing', facts)
 
