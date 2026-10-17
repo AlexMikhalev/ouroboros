@@ -177,7 +177,12 @@ def switch_or_reset(root: Any, repo_dir: Any, *, target_sha: str, target_ref: st
     if refusal:
         store.forget_handoffs()
         return False, f"switch refused: a store could not be handed off ({refusal})", False
-    ok, message = reset()
+    try:
+        ok, message = reset()
+    except BaseException as exc:
+        if getattr(exc, "before_tree_effects", False):  # the reset changed nothing: this process keeps its stores
+            store.forget_handoffs()
+        raise
     return ok, message, False
 
 

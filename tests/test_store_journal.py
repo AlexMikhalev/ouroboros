@@ -223,6 +223,39 @@ def test_a_door_reset_hands_every_store_off_out_of_wal_first(tmp_path, monkeypat
         assert txn.meta("retained") == 1
 
 
+@pytest.mark.parametrize("outcome", ["refused_before_tree_effects", "failed", "raised"])
+def test_a_reset_that_changed_nothing_hands_the_stores_back(tmp_path, monkeypatch, outcome):
+    """After a successful hand-off: a reset refused before any tree effect leaves this process running
+    on its own stores, which choose their journal again; any other failure may already have moved
+    the checkout, so the stores stay handed off."""
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
+    monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")
+    publish(tmp_path)
+    with store.open_store(tmp_path, write=True) as txn:
+        txn.set_meta("retained", 1)
+    monkeypatch.setattr(store_switch, "switch_needs", lambda *_: {"facts": False, "money": False})
+    handed = os.path.abspath(store.store_path(tmp_path))
+
+    class Refused(Exception):
+        before_tree_effects = outcome == "refused_before_tree_effects"
+
+    def reset():
+        assert handed in store._HANDED_OFF
+        if outcome == "failed":
+            return False, "the reset failed"
+        raise Refused("git refused the reset")
+
+    if outcome == "failed":
+        assert store_switch.switch_or_reset(tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="t",
+                                            door="ui_rollback", reset=reset) == (False, "the reset failed", False)
+    else:
+        with pytest.raises(Refused):
+            store_switch.switch_or_reset(tmp_path, tmp_path, target_sha="0" * 40, target_ref="v-old", reason="t",
+                                         door="ui_rollback", reset=reset)
+    assert (handed in store._HANDED_OFF) is (outcome != "refused_before_tree_effects")
+    store.forget_handoffs()
+
+
 def test_a_store_that_cannot_hand_off_refuses_the_door_reset(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 53, 1))
     monkeypatch.setattr(store, "_filesystem_type", lambda _path: "apfs")

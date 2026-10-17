@@ -128,8 +128,11 @@ def test_quickstart_waits_on_the_server_only_while_its_process_lives():
     [call] = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
               and getattr(node.func, "id", "") == "ensure_native_telegram_live"]
     alive = {keyword.arg: keyword.value for keyword in call.keywords}["alive"]
-    poll = alive.body.left if isinstance(alive, ast.Lambda) else None  # lambda: server.poll() is None
-    assert isinstance(poll, ast.Call) and ast.unparse(poll.func) == "server.poll"
+    scope = {}
+    predicate = eval(compile(ast.Expression(alive), "colab_quickstart.py", "eval"), scope)  # noqa: S307 -- the repo's own source
+    for returncode, lives in ((None, True), (0, False), (1, False)):
+        scope["server"] = type("Process", (), {"poll": staticmethod(lambda code=returncode: code)})
+        assert predicate() is lives, (returncode, lives)
 
 
 def test_quickstart_uses_clone_or_update_repo_helper():
