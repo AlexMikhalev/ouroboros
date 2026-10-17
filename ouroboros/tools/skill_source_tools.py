@@ -242,23 +242,23 @@ _SCHEMAS = {
         "required": ["name", "mode"],
     },
 }
-_HANDLERS = {"skill_sources": _handle_skill_sources, "skill_search": _handle_skill_search,
-             "skill_install": _handle_skill_install, "skill_update": _handle_skill_update}
-_TIMEOUTS = {"skill_sources": 300, "skill_search": 300, "skill_install": 1800, "skill_update": 1800}
+def _schema(name: str) -> Dict[str, Any]:
+    spec = _SCHEMAS[name]
+    return {"name": name, "description": spec["description"],
+            "parameters": {"type": "object", "properties": spec["properties"],
+                           "required": spec.get("required", [])}}
 
 
 def get_tools() -> List[ToolEntry]:
     return [
-        ToolEntry(
-            name=name,
-            schema={"name": name, "description": spec["description"],
-                    "parameters": {"type": "object", "properties": spec["properties"],
-                                   "required": spec.get("required", [])}},
-            handler=_HANDLERS[name],
-            is_code_tool=False,
-            timeout_sec=_TIMEOUTS[name],
-        )
-        for name, spec in _SCHEMAS.items()
+        ToolEntry("skill_sources", _schema("skill_sources"), _handle_skill_sources,
+                  is_code_tool=False, timeout_sec=300, safety_policy="check"),
+        ToolEntry("skill_search", _schema("skill_search"), _handle_skill_search,
+                  is_code_tool=False, timeout_sec=300, safety_policy="skip"),
+        ToolEntry("skill_install", _schema("skill_install"), _handle_skill_install,
+                  is_code_tool=False, timeout_sec=1800, safety_policy="check"),
+        ToolEntry("skill_update", _schema("skill_update"), _handle_skill_update,
+                  is_code_tool=False, timeout_sec=1800, safety_policy="check"),
     ]
 
 

@@ -43,6 +43,9 @@ def test_the_four_tools_are_registered_with_schemas():
     names = {entry.name: entry for entry in tools.get_tools()}
     assert set(names) == {"skill_sources", "skill_search", "skill_install", "skill_update"}
     assert names["skill_install"].schema["parameters"]["required"] == ["id", "reason"]
+    assert {name: entry.safety_policy for name, entry in names.items()} == {
+        "skill_sources": "check", "skill_search": "skip", "skill_install": "check", "skill_update": "check",
+    }
 
 
 def test_search_reads_a_new_source_once_and_returns_catalog_ids(ctx):
