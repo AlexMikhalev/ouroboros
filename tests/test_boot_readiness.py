@@ -10,8 +10,6 @@ through an explicit event, not by blocking HTTP.
 
 from __future__ import annotations
 
-import json
-import pathlib
 import threading
 import time
 
