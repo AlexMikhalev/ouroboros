@@ -235,7 +235,9 @@ def test_catalog_and_payload_use_exact_snapshot_bytes():
     files = skill_publish._payload_files(snapshot)
     assert [row["path"] for row in files] == ["skill.json", "SKILL.md"]
     assert files[1]["size"] == len(b"# exact captured body\n")
-    entry = skill_publish._catalog_entry("demo", snapshot, files)
+    from ouroboros.skill_publish_destination import catalog_row
+
+    entry = catalog_row("demo", snapshot, files)
     assert entry["version"] == "1.0.0"
     assert entry["files"][1]["sha256"] == snapshot.public_files[1].sha256
 

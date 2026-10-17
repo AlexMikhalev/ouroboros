@@ -22,7 +22,7 @@ from starlette.routing import Route
 from ouroboros.betterleaks_runtime import resolve_betterleaks
 from ouroboros.config import get_runtime_mode, get_skills_repo_path
 from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
-from ouroboros.gateway._helpers import request_drive_root
+from ouroboros.gateway._helpers import request_drive_root, request_json_or
 from ouroboros.gateway.contracts import SkillPublishPreflightResponse
 from ouroboros.skill_loader import (
     _sanitize_skill_name,
@@ -311,6 +311,7 @@ def build_skill_publish_preflight(
     catalog_url: str | None = None,
     github_token_configured: bool | None = None,
     admission_problem: tuple[int, str, str] | None = None,
+    destination: Any = None,
 ) -> SkillPublishPreflightOutcome:
     """Resolve, capture, scan, cache, and classify one selected skill."""
 
@@ -324,7 +325,7 @@ def build_skill_publish_preflight(
         else:
             from ouroboros.skill_publish_destination import resolve_publish_destination
 
-            repository = resolve_publish_destination(drive_root, safe_skill).repository
+            repository = resolve_publish_destination(drive_root, safe_skill, destination).repository
     except SkillPublishDestinationError as exc:
         return _hard_block(
             skill=safe_skill if safe_skill != "_unnamed" else "",
@@ -581,11 +582,14 @@ async def api_skill_publish_preflight(request: Request) -> JSONResponse:
     """POST selected-skill preflight without creating a task or remote effect."""
 
     skill_name = str(request.path_params.get("skill") or "")
+    body = await request_json_or(request, {}, exceptions=(Exception,))
+    destination = body.get("destination") if isinstance(body, dict) else None
     outcome = await asyncio.to_thread(
         build_skill_publish_preflight,
         request_drive_root(request),
         skill_name,
         admission_problem=_task_admission_problem(request),
+        destination=destination if isinstance(destination, (dict, str)) else None,
     )
     return JSONResponse(outcome.payload, status_code=outcome.status_code)
 

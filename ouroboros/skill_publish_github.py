@@ -128,15 +128,22 @@ def github_login(ctx: ToolContext) -> str:
     return raw
 
 
+def fetch_repository(ctx: ToolContext, owner: str, repo: str) -> Dict[str, Any]:
+    """``{default_branch, can_push}`` of the destination for the authenticated account."""
+    info = _json_object(ctx, ["api", f"/repos/{owner}/{repo}"], reason_code="upstream_read_failed",
+                        operation="repos", repository=f"{owner}/{repo}")
+    branch = str(info.get("default_branch") or "")
+    if not branch:
+        raise SkillPublishGitHubError("upstream_read_failed", "Inspect the destination repository, then retry.",
+                                      detail=json.dumps(info)[:600], operation="repos")
+    permissions = info.get("permissions") if isinstance(info.get("permissions"), dict) else {}
+    return {"default_branch": branch, "can_push": permissions.get("push") is True}
+
+
 def fetch_branch_head(ctx: ToolContext, owner: str, repo: str, branch: str) -> Tuple[str, str]:
     """``(head commit, branch)`` of the destination; an empty branch is the repository's default."""
     if not branch:
-        info = _json_object(ctx, ["api", f"/repos/{owner}/{repo}"], reason_code="upstream_read_failed",
-                            operation="repos", repository=f"{owner}/{repo}")
-        branch = str(info.get("default_branch") or "")
-        if not branch:
-            raise SkillPublishGitHubError("upstream_read_failed", "Inspect the destination repository, then retry.",
-                                          detail=json.dumps(info)[:600], operation="repos")
+        branch = fetch_repository(ctx, owner, repo)["default_branch"]
     ref = _json_object(
         ctx,
         ["api", f"/repos/{owner}/{repo}/git/refs/heads/{branch}"],
@@ -353,6 +360,22 @@ mutation($input: CreateCommitOnBranchInput!) {
     return commit_sha.lower(), commit_url[:360]
 
 
+def merge_pull_request(ctx: ToolContext, owner: str, repo: str, number: int, head_sha: str) -> Dict[str, Any]:
+    """Merge the publication's own pull request at its exact head (a destination this account may push
+    to publishes at once). Never raises: a refused merge leaves the open request as the result."""
+    result = _gh_run(["api", "-X", "PUT", f"/repos/{owner}/{repo}/pulls/{int(number)}/merge",
+                      "-f", f"sha={head_sha}", "-f", "merge_method=squash"], ctx, timeout=60)
+    try:
+        data = json.loads(result.text) if result.ok and result.text else {}
+    except json.JSONDecodeError:
+        data = {}
+    merged_sha = str(data.get("sha") or "") if isinstance(data, dict) else ""
+    if result.ok and data.get("merged") is True and _HEX_OID_RE.fullmatch(merged_sha):
+        return {"merged": True, "commit": merged_sha.lower()}
+    detail = truncate_within_limit(redact_known_values(result.text or "", [github_token_from_env_or_settings()]), 400)
+    return {"merged": False, "error": detail or "GitHub did not merge the request", "http_status": result.http_status}
+
+
 def _receipt_from_url(
     url: str,
     *,
@@ -536,10 +559,12 @@ __all__ = [
     "create_pr_receipt",
     "ensure_branch",
     "fetch_branch_head",
+    "fetch_repository",
     "fetch_tree_paths",
     "fetch_upstream_catalog",
     "fetch_upstream_file",
     "github_login",
     "github_repair_hint",
+    "merge_pull_request",
     "prepare_publish_repository",
 ]

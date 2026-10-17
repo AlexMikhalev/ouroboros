@@ -27,17 +27,27 @@ from ouroboros.marketplace.provenance import write_publication_record
 from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.skill_loader import SkillPayloadUnreadable, _sanitize_skill_name
 from ouroboros.skill_publish_eligibility import PUBLISHABLE_STATUSES
-from ouroboros.skill_publish_destination import captured_release_digest, hub_entry, resolve_publish_destination
+from ouroboros.skill_publish_destination import (
+    PublishListingError,
+    captured_release_digest,
+    catalog_row,
+    hub_entry_listing,
+    resolve_publish_destination,
+    task_destination,
+    update_catalog,
+)
 from ouroboros.skill_publish_github import (
     SkillPublishGitHubError,
     commit_payload,
     create_pr_receipt,
     ensure_branch,
     fetch_branch_head,
+    fetch_repository,
     fetch_tree_paths,
     fetch_upstream_catalog,
     fetch_upstream_file,
     github_login,
+    merge_pull_request,
     prepare_publish_repository,
 )
 from ouroboros.skill_publish_result import (
@@ -241,105 +251,6 @@ def _payload_files(snapshot: SkillPublishSnapshot) -> List[Dict[str, Any]]:
     ]
 
 
-def _catalog_entry(
-    skill: str,
-    snapshot: SkillPublishSnapshot,
-    payload_files: Sequence[Mapping[str, Any]],
-) -> Dict[str, Any]:
-    manifest = snapshot.manifest
-    entry: Dict[str, Any] = {
-        "slug": skill,
-        "name": manifest.name or skill,
-        "description": manifest.description,
-        "version": manifest.version,
-        "type": manifest.skill_type,
-        "files": [
-            {
-                "path": str(item["path"]),
-                "sha256": str(item["sha256"]),
-                "size": int(item["size"]),
-            }
-            for item in payload_files
-        ],
-    }
-    install_specs = manifest.install_specs()
-    if install_specs:
-        entry["install_specs"] = install_specs
-    if manifest.when_to_use:
-        entry["when_to_use"] = manifest.when_to_use
-    return entry
-
-
-def _catalog_file_paths(entry: Mapping[str, Any]) -> set[str]:
-    files = entry.get("files")
-    if files is None:
-        return set()
-    if not isinstance(files, list):
-        raise _PublishFailure(
-            "upstream_catalog_invalid",
-            "Repair the upstream Hub catalog, then retry.",
-        )
-    paths: set[str] = set()
-    for item in files:
-        raw = item.get("path") if isinstance(item, Mapping) else None
-        path = str(raw or "")
-        pure = pathlib.PurePosixPath(path)
-        if (
-            not path
-            or pure.is_absolute()
-            or path != pure.as_posix()
-            or any(part in {"", ".", ".."} for part in pure.parts)
-            or path in paths
-        ):
-            raise _PublishFailure(
-                "upstream_catalog_invalid",
-                "Repair the upstream Hub catalog, then retry.",
-            )
-        paths.add(path)
-    return paths
-
-
-def _update_catalog(
-    catalog: Dict[str, Any],
-    entry: Dict[str, Any],
-) -> Tuple[str, Dict[str, Any], Tuple[str, ...], str | None]:
-    skills = catalog.get("skills")
-    if not isinstance(skills, list):
-        raise _PublishFailure(
-            "upstream_catalog_invalid",
-            "Repair the upstream Hub catalog, then retry.",
-        )
-    slug = str(entry.get("slug") or "")
-    matching_indexes = [
-        index for index, item in enumerate(skills) if isinstance(item, dict) and item.get("slug") == slug
-    ]
-    if len(matching_indexes) > 1:
-        raise _PublishFailure(
-            "upstream_catalog_invalid",
-            "Repair the upstream Hub catalog, then retry.",
-        )
-    existing_index = matching_indexes[0] if matching_indexes else None
-    previous_version = None
-    if existing_index is None:
-        mode = "add"
-        obsolete_paths: Tuple[str, ...] = ()
-        skills.append(entry)
-    else:
-        existing = skills[existing_index]
-        previous_version = str(existing.get("version") or "")
-        if str(existing.get("version") or "") == str(entry.get("version") or ""):
-            raise _PublishFailure(
-                "catalog_version_exists",
-                "Bump the skill version, run a fresh review, then retry.",
-            )
-        mode = "update"
-        obsolete_paths = tuple(sorted(_catalog_file_paths(existing) - _catalog_file_paths(entry)))
-        skills[existing_index] = entry
-    skills.sort(key=lambda item: str(item.get("slug") or "") if isinstance(item, dict) else "")
-    catalog["skills"] = skills
-    return mode, catalog, obsolete_paths, previous_version
-
-
 def _captured_control_json(snapshot: SkillPublishSnapshot, filename: str) -> Dict[str, Any] | None:
     item = snapshot.file(filename)
     if item is None:
@@ -477,7 +388,12 @@ def _close_unterminated_fence(body: str) -> str:
     return f"{body}{separator}{fence[0] * fence[1]}\n"
 
 
-def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
+_PR_ONLY_EFFECT = "The pull request is the only requested public effect."
+_MERGED_EFFECT = ("This account can push to the destination: the pull request is merged at once and is the only "
+                  "requested public effect.")
+
+
+def _author_checklist(review: Any, snapshot_hash: str = "", effect: str = _PR_ONLY_EFFECT) -> str:
     author = publication_author_acceptance(review, snapshot_hash)
     if author:
         reference = author.get("review_reference") or {}
@@ -494,7 +410,7 @@ def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
             f"- Author-accepted and published snapshot: {snapshot_hash}.\n"
             "- Author acceptance does not represent another independent critic review.\n"
             f"- Author rationale: {rationale}\n"
-            "- The pull request is the only requested public effect.\n"
+            f"- {effect}\n"
         )
     if mode_has_unrestricted_agency(get_runtime_mode()):
         reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
@@ -504,7 +420,7 @@ def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
             f"- Local review status: {review.status}; profile: {review.review_profile or 'none'}.\n"
             f"- Reviewed hash: {reviewed_hash or 'unavailable'}; published snapshot: {snapshot_hash}.\n"
             "- Published bytes match the captured snapshot; no clean or fresh review is inferred.\n"
-            "- The pull request is the only requested public effect.\n"
+            f"- {effect}\n"
         )
     advisory = bool(_advisory_findings_section(review))
     review_line = (
@@ -516,7 +432,7 @@ def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
         "## Author Checklist\n"
         f"{review_line}\n"
         "- Published bytes match the immutable reviewed snapshot.\n"
-        "- The pull request is the only requested public effect.\n"
+        f"- {effect}\n"
     )
 
 
@@ -722,6 +638,7 @@ def _render_pr_body(
     note: str,
     provenance: str,
     review: Any,
+    effect: str = _PR_ONLY_EFFECT,
 ) -> str:
     core = _select_optional_pr_core(
         ctx,
@@ -742,7 +659,7 @@ def _render_pr_body(
     prefix_parts.append(_close_unterminated_fence(core.strip()).rstrip())
     selected = "\n\n".join(prefix_parts) + "\n"
     selected = _strip_generated_h2_sections(selected, _GENERATED_H2_HEADINGS).rstrip()
-    host_sections = [_author_checklist(review, snapshot.content_hash).strip()]
+    host_sections = [_author_checklist(review, snapshot.content_hash, effect).strip()]
     if attempt.version_change:
         before = json.dumps(attempt.version_change["catalog_version"], ensure_ascii=False)
         after = json.dumps(attempt.version_change["proposed_version"], ensure_ascii=False)
@@ -808,29 +725,70 @@ def _annotate_publication_recorded(serialized: str, recorded: bool, record_error
         return serialized
 
 
-def _hub_listing_files(ctx: ToolContext, snapshot: SkillPublishSnapshot, *, skill: str, owner: str, repo: str,
-                       base_sha: str, login: str, category: Any) -> Dict[str, bytes]:
-    """The one-entry hub record of a hosted skill when the destination is a hub (``hub.json``)."""
+def _destination_listing(ctx: ToolContext, attempt: _PublishAttempt, target: Any, snapshot: SkillPublishSnapshot,
+                         payload_files: List[Dict[str, Any]], *, skill: str, folder: str, login: str,
+                         category: Any) -> Tuple[Dict[str, bytes], Tuple[str, ...], str, str, str, bool]:
+    """``(listing files, obsolete paths, mode, base sha, base branch, can push)`` of one destination."""
+    owner, repo, base_branch = target.owner, target.repo, target.branch
+    sent = {str(item["path"]) for item in payload_files}
+    listing: Dict[str, bytes] = {}
+    can_push = False
+    if target.kind == "git":
+        facts = fetch_repository(ctx, owner, repo)
+        can_push = bool(facts["can_push"])
+        base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch or facts["default_branch"])
+        if not folder:  # a skill at the repository root shares it with the repository's own files: never delete
+            return listing, (), "update", base_sha, base_branch, can_push
+        present = fetch_tree_paths(ctx, owner, repo, base_sha, folder)
+        return listing, tuple(sorted(set(present) - sent)), "update" if present else "add", base_sha, base_branch, can_push
+    base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch)
     if fetch_upstream_file(ctx, owner, repo, base_sha, "hub.json") is None:
-        return {}  # an older hub lists by its catalog row alone
-    raw = fetch_upstream_file(ctx, owner, repo, base_sha, f"entries/{skill}.json")
-    try:
-        existing = json.loads(raw.decode("utf-8")) if raw else None
-        known = json.loads((fetch_upstream_file(ctx, owner, repo, base_sha, "categories.json") or b"{}").decode("utf-8"))
-    except (UnicodeError, ValueError) as exc:
-        raise _PublishFailure("upstream_catalog_invalid", "Repair the upstream Hub entry files, then retry.") from exc
-    if isinstance(existing, dict) and (existing.get("source") or {}).get("kind") == "git":
-        raise _PublishFailure("pointer_entry", "The hub lists this skill from its author's repository; publish to "
-                                               "that repository (destination), then update the entry's commit.")
-    ids = [str(item.get("id")) for item in (known.get("categories") or []) if isinstance(item, dict)]
-    chosen = [str(item) for item in (category if isinstance(category, list) else [category] if category else [])][:2]
-    if ids and any(item not in ids for item in chosen):
-        raise _PublishFailure("category_unknown", f"Use hub category ids ({', '.join(ids)}), then retry.")
-    entry = hub_entry(skill, snapshot, login=login, digest=captured_release_digest(snapshot),
-                      existing=existing if isinstance(existing, dict) else None, category=chosen)
-    if ids and not entry["category"]:
-        raise _PublishFailure("category_required", f"Name one or two categories ({', '.join(ids)}), then retry.")
-    return {f"entries/{skill}.json": (json.dumps(entry, ensure_ascii=False, indent=2) + "\n").encode("utf-8")}
+        # An older hub lists a skill by its v1 catalog row alone.
+        catalog, base_sha = fetch_upstream_catalog(ctx, owner, repo, base_branch)
+        try:
+            mode, updated_catalog, obsolete_paths, previous_version = update_catalog(
+                catalog, catalog_row(skill, snapshot, payload_files))
+            listing["catalog.json"] = json.dumps(
+                updated_catalog, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False,
+            ).encode("utf-8")
+        except PublishListingError as exc:
+            raise _PublishFailure(exc.reason_code, exc.repair_hint) from exc
+        except (TypeError, ValueError) as exc:
+            raise _PublishFailure("upstream_catalog_invalid", "Repair the upstream Hub catalog, then retry.") from exc
+    else:
+        try:
+            listing, previous_version = hub_entry_listing(
+                lambda path: fetch_upstream_file(ctx, owner, repo, base_sha, path), snapshot, skill=skill,
+                login=login, category=category, new_entry=target.new_entry)
+        except PublishListingError as exc:
+            raise _PublishFailure(exc.reason_code, exc.repair_hint) from exc
+        obsolete_paths = tuple(sorted(set(fetch_tree_paths(ctx, owner, repo, base_sha, folder)) - sent))
+        mode = "add" if previous_version is None else "update"
+    if previous_version is not None:
+        attempt.version_change = {"catalog_version": previous_version, "proposed_version": snapshot.manifest.version}
+    return listing, obsolete_paths, mode, base_sha, base_branch, can_push
+
+
+def _publish_outcome(ctx: ToolContext, attempt: _PublishAttempt, target: Any, receipt: Mapping[str, Any], *,
+                     can_push: bool, commit_sha: str, folder: str, digest: str) -> None:
+    """Record what reached the repository and what lists it; a push-able git destination merges now."""
+    attempt.advice.update({"files_published": "pull_request", "release_digest": digest})
+    merged = False
+    if target.kind == "git" and can_push:
+        outcome = merge_pull_request(ctx, target.owner, target.repo, int(receipt["number"]), commit_sha)
+        merged = bool(outcome["merged"])
+        if merged:
+            attempt.advice.update({"files_published": "merged", "merged_commit": outcome["commit"]})
+        else:
+            attempt.advice["merge_error"] = str(outcome.get("error") or "")[:400]
+    if target.kind == "hub":
+        attempt.advice["listed"] = "when_merged"
+    elif target.pointer:
+        # The hub entry pins a commit of the author's repository: its own one-entry change moves it.
+        attempt.advice.update({"listed": "needs_entry_update", "entry_path": folder,
+                               "entry_repo": f"https://github.com/{target.repository}"})
+    else:
+        attempt.advice["listed"] = "listed" if merged else "when_merged"
 
 
 def _submit_skill_to_hub(
@@ -855,7 +813,8 @@ def _submit_skill_to_hub(
         attempt.skill = safe_skill
         attempt.mark("local_validation")
         try:
-            target = resolve_publish_destination(canonical_data_root(ctx), safe_skill, destination)
+            target = resolve_publish_destination(canonical_data_root(ctx), safe_skill,
+                                                 destination or task_destination(ctx))
         except SkillPublishDestinationError as exc:
             raise _PublishFailure(
                 exc.reason_code,
@@ -930,34 +889,10 @@ def _submit_skill_to_hub(
         attempt.mark("local_preflight")
         login = github_login(ctx)
         payload_files = _payload_files(snapshot)
-        listing: Dict[str, bytes] = {}
-        if target.kind == "hub":
-            catalog, base_sha = fetch_upstream_catalog(ctx, owner, repo, base_branch)
-            entry = _catalog_entry(safe_skill, snapshot, payload_files)
-            mode, updated_catalog, obsolete_paths, previous_version = _update_catalog(catalog, entry)
-            if previous_version is not None:
-                attempt.version_change = {"catalog_version": previous_version,
-                                          "proposed_version": snapshot.manifest.version}
-            try:
-                listing["catalog.json"] = json.dumps(
-                    updated_catalog, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False,
-                ).encode("utf-8")
-            except (TypeError, ValueError) as exc:
-                raise _PublishFailure(
-                    "upstream_catalog_invalid",
-                    "Repair the upstream Hub catalog, then retry.",
-                ) from exc
-            listing.update(_hub_listing_files(ctx, snapshot, skill=safe_skill, owner=owner, repo=repo,
-                                              base_sha=base_sha, login=login, category=category))
-            attempt.advice["listed"] = "in_pull_request"
-        else:
-            base_sha, base_branch = fetch_branch_head(ctx, owner, repo, base_branch)
-            present = fetch_tree_paths(ctx, owner, repo, base_sha, folder)
-            obsolete_paths = tuple(sorted(set(present) - {str(item["path"]) for item in payload_files}))
-            mode = "update" if present else "add"
-            # A plain repository lists every skill folder; a hub entry that points here needs its own update.
-            attempt.advice["listed"] = "needs_entry_update" if target.pointer else "not_applicable"
-        attempt.advice["files_published"] = "pull_request"
+        listing, obsolete_paths, mode, base_sha, base_branch, can_push = _destination_listing(
+            ctx, attempt, target, snapshot, payload_files, skill=safe_skill, folder=folder, login=login,
+            category=category)
+        effect = _MERGED_EFFECT if target.kind == "git" and can_push else _PR_ONLY_EFFECT
         title = f"{mode.title()} skill: {safe_skill} v{snapshot.manifest.version}"
         branch_version = _BRANCH_SEGMENT_RE.sub("-", snapshot.manifest.version).strip("-") or "unknown"
         branch = f"submit/{safe_skill}-v{branch_version}"
@@ -984,6 +919,7 @@ def _submit_skill_to_hub(
             note=note,
             provenance=provenance,
             review=loaded.review,
+            effect=effect,
         )
         prepare_publish_repository(
             ctx,
@@ -1053,6 +989,8 @@ def _submit_skill_to_hub(
             branch=branch,
             commit_sha=commit_sha,
         )
+        _publish_outcome(ctx, attempt, target, receipt, can_push=can_push, commit_sha=commit_sha, folder=folder,
+                         digest=captured_release_digest(snapshot))
         serialized = attempt.result(
             ok=True,
             status="pr_opened",
@@ -1138,9 +1076,11 @@ _PUBLISH_SCHEMA = {
     "description": (
         "Publish one immutable skill snapshot by opening a GitHub pull request: to the skill's origin "
         "source when it came from one (the hub, the author's repository a hub entry points at, or a git "
-        "source), otherwise to the hub as one entry with its files. files_published and listed report "
-        "separately. A failed result is repair evidence for the next agent turn; success contains a "
-        "validated PR receipt."
+        "source), otherwise to the hub as one entry with its files, or to a git source the owner names. "
+        "A git destination this account may push to is merged at once. The result reports separately "
+        "files_published (pull_request | merged) and listed (when_merged | listed | needs_entry_update: a "
+        "hub entry pointing at the author's repository moves to the new commit in its own hub change). A "
+        "failed result is repair evidence for the next agent turn; success contains a validated PR receipt."
     ),
     "parameters": {
         "type": "object",
@@ -1158,12 +1098,15 @@ _PUBLISH_SCHEMA = {
                 "type": "boolean",
                 "description": (
                     "Required outside Cyber Pro: confirms the human approved "
-                    "this public OuroborosHub submission. Cyber Pro may proceed without it."
+                    "this public submission. Cyber Pro may proceed without it."
                 ),
             },
             "destination": {
                 "type": "string",
-                "description": "Optional: 'hub', or the id of a git source; default the skill's origin, else the hub.",
+                "description": (
+                    "Optional: 'hub' or the id of a hub or git source. Default: the destination the owner chose "
+                    "for this publish task, else the skill's origin, else the hub."
+                ),
             },
             "category": {
                 "type": "array", "items": {"type": "string"},

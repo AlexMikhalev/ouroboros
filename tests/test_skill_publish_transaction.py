@@ -139,6 +139,14 @@ def _install_transaction_fakes(
     monkeypatch.setattr(skill_publish, "resolve_publish_destination", lambda *_a, **_k: PublishDestination(
         "hub", "hub", "project", "main", "skills", "ouroboros", "Ouroboros"))
     monkeypatch.setattr(skill_publish, "fetch_upstream_file", lambda *_a, **_k: None)  # an older hub: no hub.json
+    monkeypatch.setattr(skill_publish, "fetch_branch_head", lambda _ctx, _owner, _repo, branch: (BASE_SHA, branch or "main"))
+    monkeypatch.setattr(skill_publish, "fetch_repository", lambda *_a: {"default_branch": "main", "can_push": False})
+    monkeypatch.setattr(skill_publish, "fetch_tree_paths", lambda *_a: [])
+
+    def no_merge(*_args):
+        raise AssertionError("only a git destination this account may push to merges its request")
+
+    monkeypatch.setattr(skill_publish, "merge_pull_request", no_merge)
     monkeypatch.setattr(skill_publish, "capture_skill_publish_snapshot", lambda _loaded: snapshot)
     monkeypatch.setattr(
         skill_publish,

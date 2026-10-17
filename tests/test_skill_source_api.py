@@ -89,13 +89,16 @@ def test_catalog_search_and_detail(env):
     assert missing.status_code == 404
 
 
-def test_install_answers_the_job_at_once_and_refuses_a_taken_name(env):
+def test_install_answers_the_job_at_once_and_refuses_a_taken_name(env, monkeypatch):
     client, drive, _hub, _tmp = env
+    reviews = []
+    monkeypatch.setattr("ouroboros.skill_source_install.start_review", lambda _d, name, **_k: reviews.append(name))
     answer = client.post("/api/skill-catalog/install", json={"id": "ouroboros-community/notes"})
     assert assert_bound("POST /api/skill-catalog/install", answer) == "SkillCatalogInstallResponse"
     body = answer.json()
     assert body["ok"] and body["job_id"].startswith("skill-job-") and body["basis"] == "review"
     assert _wait(lambda: read_install_record(drive, "notes") is not None)
+    assert _wait(lambda: reviews == ["notes"])  # a review install starts its review after landing
     write_skill(drive / "skills" / "external", "weather")
     taken = client.post("/api/skill-catalog/install", json={"id": "ouroboros/weather"})
     assert taken.status_code == 409 and taken.json()["code"] == "name_taken"
@@ -164,3 +167,19 @@ def test_retired_hub_routes_are_gone_and_the_receipt_clear_moved(env):
     write_publication_record(drive, "demo", shown)
     cleared = client.post("/api/skills/demo/publication/clear", json={"expected_published": shown})
     assert assert_bound("POST /api/skills/{skill}/publication/clear", cleared) and cleared.json()["publication_cleared"]
+
+
+def test_publish_preflight_binds_the_destination_the_owner_chose(env, monkeypatch):
+    client, drive, hub, _tmp = env
+    rows = hub.rows() + [{"id": "mine", "name": "Mine", "kind": "git", "url": "https://github.com/alice/skills",
+                          "ref": "main", "trust": "trusted", "confirmed": True}]
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
+    write_skill(drive / "skills" / "external", "demo")
+    chosen = client.post("/api/skills/demo/publish-preflight", json={"destination": {"source_id": "mine",
+                                                                                     "mode": "entry"}})
+    assert assert_bound("POST /api/skills/{skill}/publish-preflight", chosen) == "SkillPublishPreflightResponse"
+    assert chosen.json()["repository"] == "alice/skills"
+    unknown = client.post("/api/skills/demo/publish-preflight", json={"destination": {"source_id": "nope",
+                                                                                      "mode": "entry"}})
+    assert unknown.json()["state"] == "hard_block" and unknown.json()["reason_code"] == "destination_unknown"
+    assert assert_bound("POST /api/skills/{skill}/publish-preflight", unknown)

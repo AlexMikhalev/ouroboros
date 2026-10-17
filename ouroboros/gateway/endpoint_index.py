@@ -256,8 +256,9 @@ HTTP_SHAPES: dict[str, Shape] = {
         "409:SkillActionRefusal|ErrorResponse", "OwnerSkillPresenceRuntimeRequest",
         note="compare-and-set on expected_state_fingerprint (409 presence_state_conflict when it moved)"),
     "POST /api/skills/{skill}/publish-preflight": Shape(
-        "200,400,404,409,503:SkillPublishPreflightResponse",
-        note="read-only; every status carries the same shape; state hard_block is a refusal"),
+        "200,400,404,409,503:SkillPublishPreflightResponse", "SkillPublishPreflightRequest",
+        note="read-only; every status carries the same shape; state hard_block is a refusal; destination "
+             "{source_id, mode} picks where it would go (default: the skill's origin, else the hub)"),
     "GET /api/model-catalog": Shape("200:ModelCatalogResponse 400:ErrorResponse", query="source_id credential_profile_id",
                                     note="read-only; a provider that failed is an errors row, not a failed read"),
     "POST /api/providers/test": Shape("200:ProviderTestResponse 400:ErrorResponse", "ProviderTestRequest",

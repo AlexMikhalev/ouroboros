@@ -175,6 +175,21 @@ class SkillCatalogInstallResponse(TypedDict, total=False):
     occupant: Dict[str, Any]  # name_taken: {name, source, locations}
 
 
+class SkillPublishDestinationChoice(TypedDict):
+    """Where the owner publishes a skill: a source id (``hub`` = the hub) and ``mode`` origin (where it
+    came from), entry (that source; the hub lists it as an entry) or new_entry (a new name in the hub)."""
+
+    source_id: str
+    mode: str
+
+
+class SkillPublishPreflightRequest(TypedDict, total=False):
+    """``POST /api/skills/{skill}/publish-preflight``: an optional destination; without one the skill's
+    origin, else the hub. The answer's ``repository`` is the destination the publish task binds."""
+
+    destination: SkillPublishDestinationChoice
+
+
 class SkillUpdateRequest(TypedDict, total=False):
     """``POST /api/skills/{skill}/update``: ``mode`` replace | keep | merge, ``digest`` the candidate
     the dialog showed, ``local_digest`` the local revision it showed (a change refuses)."""
@@ -223,7 +238,8 @@ class StarterSkillsResponse(TypedDict):
 
 __all__ = [
     "SkillCatalogInstallRequest", "SkillCatalogInstallResponse", "SkillCatalogItem", "SkillCatalogItemDetailResponse",
-    "SkillCatalogResponse", "SkillCatalogSearchResponse", "SkillSourceAddRequest", "SkillSourceChangeRequest",
+    "SkillCatalogResponse", "SkillCatalogSearchResponse", "SkillPublishDestinationChoice",
+    "SkillPublishPreflightRequest", "SkillSourceAddRequest", "SkillSourceChangeRequest",
     "SkillSourceChangeResponse", "SkillSourceProbeRequest", "SkillSourceProbeResponse", "SkillSourceRow",
     "SkillSourcesResponse", "SkillUninstallResponse", "SkillUpdateRequest", "SkillUpdateResponse",
     "StarterSkillsResponse",

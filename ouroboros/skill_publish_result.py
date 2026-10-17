@@ -62,9 +62,11 @@ _EFFECT_TEXT_LIMITS = {
 
 
 class SkillPublishDestinationError(ValueError):
-    """Closed failure for an unsupported configured Hub catalog URL."""
+    """Closed failure for a destination this install cannot publish to (the reason is the message)."""
 
-    reason_code = "hub_destination_invalid"
+    def __init__(self, reason_code: str = "hub_destination_invalid") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 def parse_skill_publish_destination(catalog_url: str) -> tuple[str, str, str]:
@@ -504,6 +506,9 @@ def extract_skill_publish_result_metadata(result: Any) -> Dict[str, Any]:
         for key, limit in (
             ("scanner_status", 32), ("scanner_errors", 2400), ("review_status", 80),
             ("review_profile", 80), ("reviewed_content_hash", 64), ("review_record", 1024),
+            # Where the files went and what lists them are separate facts of one publication.
+            ("destination_kind", 16), ("destination_source", 80), ("destination_folder", 240),
+            ("files_published", 32), ("listed", 32), ("merged_commit", 64), ("release_digest", 64),
         ):
             if key in payload:
                 attempt[key] = _bounded_text(payload[key], limit)
