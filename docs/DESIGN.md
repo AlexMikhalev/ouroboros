@@ -1477,8 +1477,7 @@ started) skips them all next time and says so, with Start with plugins;
 `?plugins=off` starts without them on purpose and offers Restart with plugins.
 Main's More menu offers Restart without plugins on every surface, the macOS
 app's Help menu Start without plugins; a page that a module froze is left
-through that menu or by reopening it within five minutes, which then starts
-without them.
+through that menu or by reopening it, which then starts without them.
 
 ### Voice controls
 

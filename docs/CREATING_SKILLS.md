@@ -357,9 +357,9 @@ until the page reloads or the skill's revision changes; the other modules and
 the page keep working.
 
 Recovery never depends on the modules. While modules start, the host keeps a
-boot marker in the page's storage; a page that finds one younger than five
-minutes (the last start froze or crashed) starts without page modules and
-offers Start with plugins. Opening the page with `?plugins=off` does the same
+boot marker in the page's storage; a page that finds one (the last start froze
+or crashed, however long ago) starts without page modules and offers Start
+with plugins, which alone clears it. Opening the page with `?plugins=off` does the same
 on purpose; Main's More menu (Restart without plugins) and the macOS app's
 Help menu (Start without plugins) reload it that way. Declarative contributions
 stay available in both cases.

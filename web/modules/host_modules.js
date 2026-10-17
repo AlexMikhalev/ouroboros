@@ -6,9 +6,10 @@
 // skill leaves or changes revision, on Panic and when the page goes away.
 //
 // Recovery never depends on the modules. A boot marker stands in storage while modules mount; a page that finds one
-// younger than five minutes (the last start did not finish: a frozen or crashed page) starts without them, and so
-// does a page opened with `?plugins=off`. Either start says so and offers the way back. The chat header's More menu
-// (every surface) and the macOS app menu reload the page with `?plugins=off`.
+// (the last start did not finish: a frozen or crashed page, however long ago) starts without them, and so does a page
+// opened with `?plugins=off`. Either start says so and offers the way back; only Start with plugins or a start that
+// finishes clears the marker. The chat header's More menu (every surface) and the macOS app menu reload the page
+// with `?plugins=off`.
 import { fmt, tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { boundedText } from './utils.js';
@@ -16,7 +17,6 @@ import { WIDGET_REQUEST_TIMEOUT_MS } from './widget_job.js';
 
 export const HOST_MODULE_API = 1;
 export const BOOT_MARKER_KEY = 'ouroboros.hostModules.boot';
-const BOOT_MARKER_FRESH_MS = 5 * 60 * 1000;
 const PLUGINS_PARAM = 'plugins';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -250,13 +250,12 @@ export function createHostModules({ store, draft = null, win = globalThis.window
                 notice(tr('host_modules.off', 'Started without plugins.'), 'info', { ttl: 0,
                     action: { label: tr('host_modules.restart_with', 'Restart with plugins'), run: restartWithPlugins } });
             } else {
-                const found = marker.read();
-                if (found && now() - found.at < BOOT_MARKER_FRESH_MS) {
+                // Age is no proof the frozen module was fixed: a phone or mini app reopened hours later skips too.
+                if (marker.read()) {
                     mode = 'skipped';
                     notice(tr('host_modules.skipped', 'Plugins were skipped because the last start did not finish.'), 'warn',
                         { ttl: 0, action: { label: tr('host_modules.start_with', 'Start with plugins'), run: restartWithPlugins } });
                 } else {
-                    if (found) marker.clear();
                     mode = 'running';
                 }
             }

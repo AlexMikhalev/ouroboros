@@ -198,7 +198,7 @@ test('the boot marker stands before the first import of a batch and goes once th
     assert.equal(h.local.map.has(BOOT_MARKER_KEY), false, 'a batch that mounted or failed cleanly leaves no marker');
 });
 
-test('a start that did not finish skips every module next time, with the way back; an old marker is ignored', async () => {
+test('a start that did not finish skips every module next time, however long ago, with the way back', async () => {
     const one = hostItem('one:x');
     const modules = { [one.render.url]: { mount: () => ({ dispose() {} }) } };
     const local = storage();
@@ -216,12 +216,15 @@ test('a start that did not finish skips every module next time, with the way bac
     skipped.action.run();
     assert.equal(local.map.has(BOOT_MARKER_KEY), false);
     assert.deepEqual(h.win.navigations, ['http://127.0.0.1:8765/?x=1#chat'], 'the same page, plugins on');
-    const stale = storage();
-    stale.setItem(BOOT_MARKER_KEY, JSON.stringify({ at: 1_000_000 - 6 * 60_000, keys: ['one:x'] }));
-    const later = await setup({ items: [one], modules, local: stale });
-    assert.equal(later.runtime.mode(), 'running');
-    assert.deepEqual(later.runtime.mounted(), ['one:x'], 'a marker older than five minutes is not this start\'s business');
-    assert.deepEqual(later.notices, []);
+    const old = storage();
+    old.setItem(BOOT_MARKER_KEY, JSON.stringify({ at: 1_000_000 - 6 * 60 * 60_000, keys: ['one:x'] }));
+    const reopened = await setup({ items: [one], modules, local: old });
+    assert.equal(reopened.runtime.mode(), 'skipped', 'a phone reopened hours after a freeze skips the frozen module too');
+    assert.deepEqual(reopened.imported, []);
+    const clean = await setup({ items: [one], modules, local: storage() });
+    assert.equal(clean.runtime.mode(), 'running', 'no marker: page code runs');
+    assert.deepEqual(clean.runtime.mounted(), ['one:x']);
+    assert.deepEqual(clean.notices, []);
 });
 
 test('?plugins=off starts without page code and says so; the More menu door reloads that way', async () => {
