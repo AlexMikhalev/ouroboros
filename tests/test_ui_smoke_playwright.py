@@ -3627,7 +3627,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     """v6.82 P5 / S3 Q2: the stop control renders ONLY on live marker-attested
     root cards (never marker-less direct-turn cards, subagent children, or the
     reusable background slot), opens the dropdown, and a cancelled root
-    replays as an honest warn-toned "Cancelled" — never a generic "Done"."""
+    replays as an honest warn-toned "Stopped" — never a generic "Done"."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
@@ -3696,11 +3696,11 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                     card = page.locator(f'.chat-live-card[data-task-id="{absent_id}"]')
                     card.wait_for(state="attached", timeout=30_000)
                     assert card.locator('[data-cancel-run]').count() == 0, absent_id
-                # The cancelled root replays as an honest Cancelled state.
+                # The cancelled root replays as an honest Stopped state.
                 gone_phase = page.locator('.chat-live-card[data-task-id="gone-root"] [data-live-phase]')
                 page.wait_for_function(
                     "() => document.querySelector('.chat-live-card[data-task-id=\"gone-root\"]"
-                    " [data-live-phase]')?.textContent === 'Cancelled'",
+                    " [data-live-phase]')?.textContent === 'Stopped'",
                     timeout=30_000,
                 )
                 assert "cancelled" in (gone_phase.get_attribute("class") or "")

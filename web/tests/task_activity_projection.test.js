@@ -94,7 +94,7 @@ for (const [phase, text, motion, detail] of [
         assert.equal(computeDerivedChatStatus(counts).text, 'Cancelling…');
         full.finished = true;
         assert.equal(syncParkedPhase(full, 'working', row), false);
-        assert.equal(desiredLiveCardPhase(full, 'cancelled').text, 'Cancelled');
+        assert.equal(desiredLiveCardPhase(full, 'cancelled').text, 'Stopped');
     });
 }
 

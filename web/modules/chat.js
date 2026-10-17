@@ -2535,7 +2535,7 @@ export function createChatInstance({
                 // Persisted terminals without task_summary (crash/timeout/cancel) also settle
                 // progress-only cards, or reload revives them as Working. A child's terminal
                 // resolves the child card, never its parent; a root's uses the shared terminal
-                // mapping (P5: a cancelled root replays as "Cancelled", never a generic "Done").
+                // mapping (P5: a cancelled root replays as "Stopped", never a generic "Done").
                 const settleReplayedTerminal = (tid, terminalRecord, phase, summary = false) => {
                     if (!taskDoneIsTerminal(terminalRecord)) return;
                     if (subagentChildParents.has(tid)) return routeSubagentTerminalToCard(tid, terminalRecord);

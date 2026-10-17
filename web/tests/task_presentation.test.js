@@ -40,7 +40,7 @@ const terminalCases = [
         status: 'failed', reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1'],
     }, { phase: 'error', headline: 'Failed' }],
-    ['Cancelled', { status: 'cancelled' }, { phase: 'cancelled', headline: 'Cancelled' }],
+    ['Stopped', { status: 'cancelled' }, { phase: 'cancelled', headline: 'Stopped' }],
 ];
 
 test('factual task presentation uses the approved five-word family', () => {

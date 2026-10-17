@@ -171,7 +171,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher",
                   status="cancelled")
             page.wait_for_function("() => document.querySelector('.chat-live-card[data-task-id=held]')?.dataset.finished === '1'")
-            assert child_card.locator('[data-live-phase]').inner_text() == "Cancelled"
+            assert child_card.locator('[data-live-phase]').inner_text() == "Stopped"
             assert not child_card.locator('[data-live-typing]').is_visible()
             shot(page, "cancelled-narrow")
             assert not errors, errors

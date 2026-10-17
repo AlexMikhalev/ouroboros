@@ -66,7 +66,7 @@ test('the census phase (a Main portal\'s chip source) keeps a budget pause besid
     assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).text, `Pausing… · ${hold.label}`);
     assert.equal(censusTaskPhase({ ...held, phase: 'budget_pausing' }, null).motion, false);
     assert.equal(censusTaskPhase(held, null).text, hold.label);
-    assert.equal(censusTaskPhase(paused, { status: 'cancelled' }).text, 'Cancelled');
+    assert.equal(censusTaskPhase(paused, { status: 'cancelled' }).text, 'Stopped');
 });
 
 test('a held card with retained progress waits statically; Stop, terminal and same-ID recovery outrank it', () => {
