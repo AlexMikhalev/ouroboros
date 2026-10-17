@@ -1067,7 +1067,8 @@ holds three still ones, a wait or a pause shows one, unconfirmed state a hollow
 ring. The mark turns amber while something waits for the owner (moving if work
 runs), unless the word already says so; a Pause is not the owner's turn. Only
 what the client alone knows lies over it: `Reconnecting…`, the owner's own
-unconfirmed send, `Starting…` and the owner's own Stop press. The title
+unconfirmed send, `Starting…` with the boot phases that refine it, and the
+owner's own Stop press. The title
 ellipsizes first, and a new word never moves a neighbour or resizes the bar.
 When there is work to show, pressing the status, or ↓/↑ on it, unfolds that
 room's work and only that room's as one Shade under the bar, the same in every
