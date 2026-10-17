@@ -34,6 +34,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/skills/{skill}/reconcile` | |
 | GET | `/api/marketplace/clawhub/search` | |
 | GET | `/api/marketplace/clawhub/installed` | |
+| GET | `/api/marketplace/ouroboroshub/installed` | frozen hub listing |
 | GET | `/api/marketplace/clawhub/info/{slug:path}` | |
 | GET | `/api/marketplace/clawhub/preview/{slug:path}` | |
 | POST | `/api/marketplace/clawhub/install` | |

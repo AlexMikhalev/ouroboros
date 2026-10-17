@@ -914,18 +914,6 @@
  */
 
 /**
- * One `/api/marketplace/ouroboroshub/catalog` result row (additive hubflow fields).
- * `POST /api/marketplace/ouroboroshub/install` additionally accepts the adopt
- * body fields `{adopt: true, expected_content_hash: string}` (64 lowercase hex;
- * adopt forces auto_review and conflicts with overwrite).
- * @typedef {Object} HubCatalogRow
- * @property {string} slug
- * @property {string} sanitized_name
- * @property {string} latest_version
- * @property {boolean} identity_conflict
- */
-
-/**
  * @typedef {Object} SkillPublishFinding
  * @property {string} path
  * @property {number} line
