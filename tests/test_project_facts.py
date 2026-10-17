@@ -5,6 +5,8 @@ from __future__ import annotations
 import pathlib
 import types
 
+import pytest
+
 import ouroboros.config as cfg
 from ouroboros.project_facts import (
     project_knowledge_dir,
@@ -161,6 +163,86 @@ def test_generic_tools_deny_project_store_live(tmp_path, monkeypatch):
     assert "ACCESS_DENIED" in core._data_read(ctx, "memory/../projects/proj_x/knowledge/secret.md")
     assert "ACCESS_DENIED" in core._data_list(ctx, "projects")
     assert "ACCESS_DENIED" in core._data_write(ctx, "projects/proj_x/k.md", "data")
+
+
+@pytest.mark.parametrize(("path", "hint", "wrong"), [
+    ("projects/proj_x/workpad.md", "workpad_read(project_id='proj_x') reads it and "
+     "workpad_write(project_id='proj_x', content=...) replaces it", "knowledge_read"),
+    ("projects/proj_x/journal.jsonl", "journal_read(project_id='proj_x') reads it and "
+     "journal_write(project_id='proj_x', kind=..., text=...) appends to it", "knowledge_read"),
+    ("projects/proj_x/logs/task_reflections.jsonl",
+     "journal_read(project_id='proj_x', source='reflections') reads it", "it writes it"),
+    ("projects/proj_x/knowledge/notes/arch.md",
+     "knowledge_read(topic='notes/arch', scope='project:proj_x') reads it and "
+     "knowledge_write(topic='notes/arch', scope='project:proj_x', content=...) writes it", "root task"),
+    ("projects/proj_x/knowledge", "knowledge_list(scope='project:proj_x') lists it", "workpad_read"),
+    ("projects/proj_x/knowledge/index-full.md", "knowledge_list(scope='project:proj_x') lists it", "topic="),
+    ("projects/proj_x/.project.json", "No scoped reader or writer addresses this path", "reads it"),
+    ("projects/proj_x/notes/plan.md", "No scoped reader or writer addresses this path", "reads it"),
+    ("projects/Not An Id/workpad.md", "No scoped reader or writer addresses this path", "reads it"),
+])
+def test_project_store_refusal_names_only_tools_that_address_the_path(path, hint, wrong):
+    """#1612: the refusal stays, but its next step is the read/write pair whose address
+    space holds this path — never the knowledge shelf for a workpad, journal or other file."""
+    from ouroboros.project_facts import project_store_access_block
+
+    message = project_store_access_block(path)
+    assert message.startswith("⚠️ ACCESS_DENIED: the per-project facts store (projects/<id>/)")
+    assert hint in message and wrong not in message
+
+
+def test_project_store_refusal_hint_reaches_the_target_only_within_existing_authority(tmp_path, monkeypatch):
+    """#1612: following the named reader reaches the denied workpad for a root task, and
+    a restricted child gets the refusal the hint announces; no access is widened."""
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path / "data")
+    from ouroboros.tools import core
+    from ouroboros.tools.project_journal import _workpad_read
+    from ouroboros.tools.registry import ToolContext
+
+    store = cfg.DATA_DIR / "projects" / "proj_x"
+    store.mkdir(parents=True)
+    (store / "workpad.md").write_text("WORKPADMARKER", encoding="utf-8")
+    ctx = ToolContext(repo_dir=tmp_path / "repo", drive_root=cfg.DATA_DIR)
+
+    refusal = core._data_read(ctx, "projects/proj_x/workpad.md")
+    assert "WORKPADMARKER" not in refusal
+    assert "knowledge_read" not in refusal
+    assert "workpad_read(project_id='proj_x') reads it" in refusal
+    assert "Outside its own project a task reads it only as a root task" in refusal
+    root = types.SimpleNamespace(task_id="root", drive_root=cfg.DATA_DIR, project_id="mine",
+                                 task_metadata={"root_task_id": "root"})
+    assert "WORKPADMARKER" in _workpad_read(root, "proj_x")
+    child = types.SimpleNamespace(task_id="child", drive_root=cfg.DATA_DIR, project_id="",
+                                  task_metadata={"delegation_role": "subagent"})
+    assert _workpad_read(child, "proj_x").startswith("⚠️ TOOL_FORBIDDEN")
+
+
+def test_project_store_write_refusal_names_the_writer_and_its_current_project_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path / "data")
+    from ouroboros.tools import core
+    from ouroboros.tools.project_journal import _workpad_read, _workpad_write
+    from ouroboros.tools.registry import ToolContext
+
+    ctx = ToolContext(repo_dir=tmp_path / "repo", drive_root=cfg.DATA_DIR)
+    refusal = core._data_write(ctx, "projects/proj_x/workpad.md", "OVERWRITE")
+    assert "ACCESS_DENIED" in refusal and "knowledge_write" not in refusal
+    assert "workpad_write(project_id='proj_x', content=...) replaces it" in refusal
+    assert "it writes it only as a root task placed in no project (such as Main)" in refusal
+    assert not (cfg.DATA_DIR / "projects" / "proj_x" / "workpad.md").exists()
+    # The named writer behaves as announced: its own project and an unplaced root write it;
+    # a root placed in another project and a restricted child never do.
+    own = types.SimpleNamespace(task_id="t", drive_root=cfg.DATA_DIR, project_id="proj_x", task_metadata={})
+    assert _workpad_write(own, "PLAN").startswith("OK:") and _workpad_read(own) == "PLAN"
+    main = types.SimpleNamespace(task_id="main", drive_root=cfg.DATA_DIR, project_id="",
+                                 task_metadata={"root_task_id": "main"})
+    assert _workpad_write(main, "MAIN PLAN", "proj_x").startswith("OK:") and _workpad_read(own) == "MAIN PLAN"
+    placed = types.SimpleNamespace(task_id="root", drive_root=cfg.DATA_DIR, project_id="mine",
+                                   task_metadata={"root_task_id": "root"})
+    child = types.SimpleNamespace(task_id="child", drive_root=cfg.DATA_DIR, project_id="",
+                                  task_metadata={"delegation_role": "subagent"})
+    assert _workpad_write(placed, "FOREIGN", "proj_x").startswith("⚠️ TOOL_FORBIDDEN")
+    assert _workpad_write(child, "FOREIGN", "proj_x").startswith("⚠️ TOOL_FORBIDDEN")
+    assert _workpad_read(own) == "MAIN PLAN"
 
 
 def test_explicit_project_id_strict_validation():
