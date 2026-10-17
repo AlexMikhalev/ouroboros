@@ -34,7 +34,7 @@ Material 3 tonal colour; no gradient behind content, and no glows, textures, out
    one step off it. Never a gradient, glow, wash, texture or animation behind content.
 2. **Objects rest; they are not outlined.** A bubble, card or group is a filled shape
    on the *rest* shadow. What floats over moving content (the Shade, menus, the
-   composer field, dialogs, ↓ latest) takes the *float* shadow. Inside an object a
+   composer field, dialogs, the drawer, ↓ latest) takes the *float* shadow. Inside an object a
    group or row is a *tray*, a soft neutral fill without a shadow, and fills never
    stack. Only fields keep a hairline, because an editable box must read as editable;
    the composer's field floats instead, and focus gives it the field's ring. On a dark
@@ -704,14 +704,16 @@ this Project" came to be drawn six ways. The rule is therefore about intents.
   activity (the work card's chip does). Its accessible name says in words what
   the glyph and the arrow say in pixels (`Open project <name>`); nothing depends
   on hover.
-- **Its form follows the surface's job.** It is a bound work card's wide footer
-  (the body stays the work's); under a mirrored answer or a System lifecycle
-  row, a reading-size capsule in the shared `createSystemMessageActions` row
-  (token spacing, wrapping, focus-ring clearance, never a clipped line: a
-  composition, not a card framework or global button-margin rule); the same
-  capsule at the end of the owner's routed message's one receipt line ("Passed
-  on to «work» in", "Started as a task in"); a meta capsule in a question head.
-  Long names: two lines in the footer, ellipsis in capsules, no smaller type;
+- **Two forms, one recipe.** The reference is the full-width strip that closes a
+  work card bound to a Project (the body stays the work's), and a capsule
+  everywhere else: under a mirrored answer or a System lifecycle row (in the
+  shared `createSystemMessageActions` row, token spacing, wrapping, focus-ring
+  clearance), at the end of the owner's routed message's one receipt line
+  ("Passed on to «work» in", "Started as a task in"), and in a question head,
+  where the Project is named before the options. The whole capsule is the
+  target, with one fill whose hover and press deepen the whole capsule; no
+  border, ring or hairline, and no width that depends on where it sits. Long
+  names: two lines in the strip, ellipsis in the capsule, no smaller type;
   accessible names stay whole.
 - A **command** is a button: it changes or confirms something, or goes to a
   place that is not such a reference (`Load older messages`, `Open widgets`).
@@ -1405,9 +1407,10 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
 ### Replies
 
 A reply is a reference: the owner says which row he means, Ouroboros decides
-what to do, and nothing routes by it. Every saved row offers Reply (beside Copy
-on a bubble, first in a root work card's action row, in the row menu), never on
-hover only. Reply stages one strip above the composer (`Replying to`, the quoted
+what to do, and nothing routes by it. Every saved row offers Reply: the small
+arrow beside Copy on a bubble, and the row menu everywhere; a work card's action
+row holds only commands over the work, so a work card offers Reply in its row
+menu. Never on hover only. Reply stages one strip above the composer (`Replying to`, the quoted
 author, one line, ×; Esc cancels); the sent message carries only the row's
 address, and the host makes the snippet. An answerable question card answers in
 its own field. The quote panel is one component (bubble, strip, relay): above
@@ -2096,3 +2099,95 @@ notifications need the current app.
   notification settings, and a Linux server's optional actions (without them a
   click cannot open the source) and sound (without it the alert is silent);
   Settings names what that server lacks.
+
+## 10. Shell
+
+One interface serves the desktop window, browsers, phones and the Telegram Mini
+App. The phone layout is the same elements arranged by one rule, never a second
+set of screens, so a page added for the desktop works on a phone without phone
+code of its own.
+
+**One layout switch.** The shell has two layouts: *docked*, when the window is at
+least 720 px wide, with the navigation column beside the content, and *stack*,
+narrower, where the column becomes a drawer. `html[data-layout]` carries the
+choice, set before first paint from the one constant `web/theme.js` exposes and
+`web/modules/layout.js` reads; shell rules key off the attribute, components adapt
+to their own box with container queries, and no page adds a width breakpoint of
+its own. The surface fact sent with a message reads the same switch. On docked,
+the Project panel is a frosted overlay of the content area; when Main would keep
+less than 360 px beside it, the panel takes the whole content area.
+
+**Navigation.** Places come from one registry (`web/modules/pages.js`): it renders
+the navigation rows, names the titles and feeds the shell gate, so a new page is
+one registry row and is checked at phone widths with no further work. The column
+has three zones: a pinned head (Main Chat), one scrolling collection (Projects,
+the column's only scroller) and a pinned foot (Files, Skills, Widgets, Dashboard,
+Settings, then the version and the update). The order follows §5; no label is set
+in capitals. A short window first compacts rows (fine pointer only), then lets the
+whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
+place is chosen at a time, and pressing a place opens it, never closes it.
+
+**The drawer.** In the stack layout the same column slides over the room from the
+left and leaves a strip of the room visible. ☰ sits in the leading slot of every
+header, an open Project's included, and the drawer's × takes its place. The scrim,
+×, Escape, Back and choosing a place close it. A drag only speeds this up: a
+horizontal drag across the room, never from the screen's edge and never on a
+field, a control, selected text or anything that scrolls sideways, pulls the
+drawer with the finger, and dragging it back closes it (`web/modules/drawer_drag.js`,
+switched off by one constant). Every gesture has a visible control.
+
+**Layers and dismissal.** What opens over the room — the drawer, the Project
+panel, a dialog, a menu, the Shade — is a layer in one stack
+(`web/modules/layers.js`). Escape, ×, a press on the scrim, the system or browser
+Back and Telegram's Back close the topmost layer and only it. While a layer is
+open the page holds exactly one same-address history entry, so Back closes it
+instead of leaving the app; navigation itself is still never written into the
+address. A modal layer makes the rest inert and returns focus to its opener on
+close. The interface draws one close glyph and one More glyph
+(`web/modules/page_icons.js`).
+
+**Page header.** One component (`web/modules/page_header.js`) draws every page's
+header and the Project panel's, as one row that never wraps. No decorative icon.
+On docked, a page the column already names shows no title; status, actions and
+tabs remain, and a header with nothing to show draws no bar. A Project shows its
+name. In the stack layout the row is at most 56 px: ☰, the place's name, its
+status, then Panic and ⋯; the name wins over the status word, which yields to its
+dot first. Whenever the bar itself is narrow, on a phone or in a narrow window,
+Restart and the budget move into ⋯ — the same controls, placed by the bar's
+width. Tabs sit under the row; a page's description is its first paragraph, and a
+history note hangs under the bar, neither inside it.
+
+**Doors and containers.** An object whose only job is to take you somewhere is a
+door: the whole object is the target and one state layer covers all of it (a file
+card, a Files row, a navigation row, a Project reference). An object that carries
+reading content or several actions is a container: its body is text and never a
+target, and only its own controls react — a message, a question, a Working card
+whose "Show details" is its one disclosure, a work card bound to a Project whose
+footer strip is its door. Hover never tints part of an object, and hover paint
+applies only where a pointer can hover (`@media (hover: hover)`).
+
+**Touch and containment.** Under a coarse pointer every target is at least 44 px
+(`--touch-target-min`); a control whose look is smaller keeps its look and gains
+the invisible hit area of the one `.ui-hit-area` recipe in `web/ui.css`. Nothing
+that acts is hidden until hover. No page scrolls sideways at any width; only
+code, tables and tab strips scroll sideways, inside themselves, with a fade where
+content hides. Text wraps before it widens a column.
+
+**Telegram.** Inside the Telegram Mini App the page tells Telegram it is ready,
+fills the screen, turns off Telegram's swipe-down so lists scroll, shows
+Telegram's Back while a layer is open and its Close otherwise, gives Telegram's
+header and bottom bar the room's colour, follows Telegram's light or dark as the
+System appearance, and respects Telegram's safe areas
+(`web/modules/host_telegram.js`). Everything else is the same page.
+
+Enforcement: `tests/test_design_system_gate_browser.py` visits every registered
+page and every Settings tab in WebKit and Chromium at 360, 390, a Telegram-like
+390 × 780, 719, 720, 721, 1280 and short windows (no page scrolls sideways, coarse
+targets reach 44 px, header bars stay one row, one scroller per sidebar, Projects
+scroll by touch); `tests/test_shell_layout_static.py`,
+`tests/test_shell_header_static.py`, `tests/test_shell_drawer_static.py`,
+`tests/test_shell_tokens_static.py`, `tests/test_pages_registry_static.py` and
+`tests/test_design_system_css_static.py` keep the one switch, the registry, the
+glyph set, the breakpoint ratchet and sentence case; `web/tests/layers.test.js`,
+`web/tests/drawer_drag.test.js` and `web/tests/host_telegram.test.js` pin the
+behaviour.
