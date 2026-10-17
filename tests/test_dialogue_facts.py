@@ -335,3 +335,71 @@ def test_rows_whose_only_task_identifier_is_subagent_task_id_are_found_by_the_ta
         assert [row.seq for row in ds.probe_rows(tmp_path, "progress", [("subagent_task_id", "selected")])] == [alias.seq]
     details = plans(tmp_path, counts["statements"])
     assert any("dialogue_subagent" in detail for detail in details) and not any(detail.startswith("SCAN") for detail in details), details
+
+
+# ---- fact 5: room revision continuity ------------------------------------------------------------
+
+def test_room_revision_continues_from_the_projects_visible_revision_at_every_cutover(tmp_path):
+    from ouroboros.projects_registry import create_project, increment_project_visible_revision
+
+    project = create_project(tmp_path, "unread-proof", name="Unread proof")
+    quiet = create_project(tmp_path, "quiet", name="Quiet")
+    chat_id = project["chat_id"]
+    for _ in range(3):
+        kept = increment_project_visible_revision(tmp_path, chat_id=chat_id)
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner("archived", chat_id=chat_id)]},
+         live={"chat": [owner("live", chat_id=quiet["chat_id"])]})
+    report = di.cutover(tmp_path)
+    assert kept["visible_revision"] == 3 and ds.room(tmp_path, chat_id)["revision"] == 3 and report["rooms"] == {chat_id: 3}
+    assert ds.room(tmp_path, quiet["chat_id"])["revision"] == 0, "a project without unread arrivals keeps 0"
+    di.run_dialogue_import(tmp_path)
+    assert ds.room(tmp_path, chat_id)["revision"] == 3, "imported rows do not count as unread"
+    ds.append(tmp_path, "chat", {"direction": "out", "chat_id": chat_id, "text": "new arrival"}, feed=True)
+    assert ds.room(tmp_path, chat_id)["revision"] == 4
+    assert ds.mark_room_read(tmp_path, chat_id, 4)["read_revision"] == 4
+    increment_project_visible_revision(tmp_path, chat_id=chat_id)
+    increment_project_visible_revision(tmp_path, chat_id=chat_id)  # an older body advanced the registry's counter to 5
+    assert di.cutover(tmp_path)["rooms"] == {chat_id: 5} and ds.room(tmp_path, chat_id)["revision"] == 5
+    ds.append(tmp_path, "chat", {"direction": "out", "chat_id": chat_id, "text": "another"}, feed=True)
+    assert di.cutover(tmp_path)["rooms"] == {chat_id: 5} and ds.room(tmp_path, chat_id)["revision"] == 6, "never backwards"
+    assert ds.room(tmp_path, chat_id)["read_revision"] == 4
+
+
+# ---- the schema gate and the probes' plans -------------------------------------------------------
+
+def test_a_store_of_another_schema_version_is_refused_and_never_replaced(tmp_path):
+    ds.append(tmp_path, "chat", owner("kept"))
+    store.close_connections()
+    with contextlib.closing(sqlite3.connect(ds.path(tmp_path))) as raw:
+        raw.execute("PRAGMA user_version = 1")
+    before = ds.path(tmp_path).read_bytes()
+    with pytest.raises(ds.StoreLost, match="schema 1"):
+        ds.newest(tmp_path, "chat", limit=1)
+    assert ds.path(tmp_path).read_bytes() == before and ds.present(tmp_path)
+    with contextlib.closing(sqlite3.connect(ds.path(tmp_path))) as raw:
+        raw.execute(f"PRAGMA user_version = {ds.SCHEMA_VERSION}")
+    store.close_connections()
+    assert ds.newest(tmp_path, "chat", limit=1)[0].row == owner("kept") and ds.meta(tmp_path, "schema_version") == ds.SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("read", [
+    lambda root, row: dp.ordinal_at(root, "chat", row.seq),
+    lambda root, row: dp.row_at_position(root, dp.ordinal_at(root, "chat", row.seq).pos),
+    lambda root, row: dp.row_at_ordinal(root, "chat", dp.ordinal_at(root, "chat", row.seq).ordinal),
+    lambda root, row: dp.generation_row(root, gen_of(root, "chat_20261016T000000.jsonl"), 0),
+    lambda root, row: dp.skipped_between(root, "chat", lower=row.seq),
+    lambda root, row: ds.resolve_legacy(root, gen_of(root, "chat_20261016T000000.jsonl"), 1),
+])
+def test_count_and_address_probes_are_indexed_and_cost_the_same_with_thirty_rooms(tmp_path, monkeypatch, read):
+    results, statements = {}, []
+    for rooms in (1, 30):
+        root = tmp_path / str(rooms)
+        row = imported_rooms(root, rooms)
+        warm = read(root, row)
+        with traced(monkeypatch) as counts:
+            assert read(root, row) == warm
+        results[rooms] = (len(counts["statements"]), counts["steps"])
+        statements = counts["statements"]
+    assert results[1] == results[30] and results[1][1] > 0, results
+    details = plans(root, statements)
+    assert not any(detail.startswith("SCAN") for detail in details), details
