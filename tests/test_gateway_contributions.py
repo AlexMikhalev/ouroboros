@@ -63,7 +63,7 @@ def test_live_projection_instruction_review_and_disabled_offers(tmp_path, monkey
     installed(tmp_path, "off", kind="instruction", enabled=False)
     installed(tmp_path, "pending", kind="instruction", reviewed=False)
     installed(tmp_path, "unloaded", entries=[STT])
-    installed(tmp_path, "browser", entries=[{**CLIENT, "provides": "stt"}],
+    installed(tmp_path, "browser", entries=[{**CLIENT, "provides": "stt", "title": "Chrome sends audio to Google"}],
               permissions=["page_module"], enabled=False)
     assert extension_loader.load_extension(live, lambda: {}, drive_root=tmp_path) is None
     with client(tmp_path, monkeypatch) as http:
@@ -81,6 +81,9 @@ def test_live_projection_instruction_review_and_disabled_offers(tmp_path, monkey
         assert "sparkle" in payload["icons"]
         assert {item["skill"] for item in payload["offers"]["stt"]} == {"browser", "unloaded"}
         assert all(item["enabled"] is False for item in payload["offers"]["stt"])
+        # An offer carries its skill's own words on where audio goes, for the chooser before the engine runs.
+        assert {item["skill"]: item["title"] for item in payload["offers"]["stt"]} == {
+            "browser": "Chrome sends audio to Google", "unloaded": ""}
         index = http.get("/api/extensions").json()
         assert index["contributions"] == payload["contributions"]
         assert index["live"]["contributions"] == extension_loader.snapshot()["contributions"]
@@ -184,7 +187,11 @@ def test_preferences_merge_and_missing_provider_stays_selected(tmp_path, monkeyp
     assert extension_loader.load_extension(live, lambda: {}, drive_root=tmp_path) is None
     with client(tmp_path, monkeypatch) as http:
         assert http.post("/api/ui/preferences", json={"voice": {"stt": "demo:speech"}}).status_code == 200
-        assert http.post("/api/ui/preferences", json={"voice": {"tts": "missing:voice"}}).json()["voice"] == {"stt": "demo:speech", "tts": "missing:voice"}
+        assert http.post("/api/ui/preferences", json={"voice": {"tts": "missing:voice"}}).json()["voice"] == {"stt": "demo:speech", "tts": "missing:voice", "tts_voice": ""}
+        # The chosen voice id merges beside the engine choice and is never read as a provider kind.
+        saved = http.post("/api/ui/preferences", json={"voice": {"tts_voice": "com.apple.voice.Milena"}}).json()["voice"]
+        assert saved == {"stt": "demo:speech", "tts": "missing:voice", "tts_voice": "com.apple.voice.Milena"}
+        assert sorted(http.get("/api/ui/contributions").json()["voice"]) == ["stt", "tts"]
         assert http.post("/api/ui/preferences", json={"contributions": {"hidden": ["demo:speech"]}}).status_code == 200
         assert http.post("/api/ui/preferences", json={"contributions": {"order": ["gone:key"]}}).json()["contributions"] == {"hidden": ["demo:speech"], "order": ["gone:key"]}
         assert http.get("/api/ui/contributions").json()["voice"]["stt"]["available"] is True
@@ -193,6 +200,7 @@ def test_preferences_merge_and_missing_provider_stays_selected(tmp_path, monkeyp
         assert choice == {"key": "demo:speech", "available": False, "reason": "provider_unavailable"}
         assert http.get("/api/ui/preferences").json()["voice"]["stt"] == "demo:speech"
         for bad in ({"voice": {"stt": "x" * 121}}, {"voice": {"tts": False}}, {"voice": {"other": "x"}},
+                    {"voice": {"tts_voice": "x" * 121}}, {"voice": {"tts_voice": None}},
                     {"contributions": {"hidden": ["x"] * 65}}, {"contributions": {"order": [3]}},
                     {"contributions": {"order": ["x" * 121]}}):
             assert http.post("/api/ui/preferences", json=bad).status_code == 400

@@ -547,7 +547,8 @@ type, with no-store and nosniff. Example entry:
 revision. Missing, non-UI, unsupported, unloaded or stale paths answer 404.
 These modules are distinct from the opaque-origin widget frame protocol.
 
-`GET`/`POST /api/ui/preferences` persist `voice: {stt:"", tts:""}` and
+`GET`/`POST /api/ui/preferences` persist `voice: {stt:"", tts:"", tts_voice:""}`
+(`tts_voice`: the chosen tts provider's voice id, empty for its own pick) and
 `contributions: {hidden:[], order:[]}` in the install-wide preference file.
 POST merges named nested keys, replaces each supplied list, and rejects unknown
 nested keys, non-string keys, strings over 120 characters and lists over 64 items

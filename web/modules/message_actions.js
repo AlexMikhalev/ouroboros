@@ -13,8 +13,8 @@ const ROLE_NAMES = ['user', 'assistant', 'system'];
 const defaultNotice = (text, tone = 'info') => showToast(text, tone);
 
 /**
- * An action is `{key, label, icon?, title?, order?, applies?(row), run(row, ctx), state?(row)}`. `row` is
- * `messageRow(bubble)`; `ctx` is `{anchor, notice(text, tone)}`. `state(row)` may answer `{label, icon, title,
+ * An action is `{key, label, icon?, title?, order?, surface?, applies?(row), run(row, ctx), state?(row)}`. `row` is
+ * `messageRow(bubble)`; `ctx` is `{anchor, notice(text, tone)}`; `surface: 'menu'` keeps an action to the row menu. `state(row)` may answer `{label, icon, title,
  * pressed}` for an action whose face follows its own state (Read aloud says Stop while it speaks): its owner calls
  * `changed(key)` when that state moves and every drawn control redraws. Lower `order` comes first, then registration.
  */
@@ -142,7 +142,8 @@ export function bindBubbleActions({ feed, registry = getMessageActions(), notice
         const strip = bubble?.querySelector?.(':scope > .chat-message-actions');
         const row = strip ? messageRow(bubble) : null;
         if (!row) return false;
-        const wanted = registry.actionsFor(row).map((action) => [action, presentAction(action, row)]);
+        const wanted = registry.actionsFor(row).filter((action) => action.surface !== 'menu')
+            .map((action) => [action, presentAction(action, row)]);
         const signature = JSON.stringify(wanted.map(([action, face]) => [action.key, face]));
         if ((strip.dataset.actionsSignature || '[]') === signature) return false;
         strip.dataset.actionsSignature = signature;

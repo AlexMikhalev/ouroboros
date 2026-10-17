@@ -1,6 +1,6 @@
 """Owner-local UI preference endpoints, stored in ``state/ui_preferences.json``.
 
-Keys: ``widget_order``, ``widget_size``, ``widget_start_mode`` (values from
+Keys: ``voice`` (``stt``, ``tts``, ``tts_voice``), ``contributions``, ``widget_order``, ``widget_size``, ``widget_start_mode`` (values from
 ``extension_ui_validation.WIDGET_START_MODES``), ``nested_subagents_expanded``, the
 empty-Main ``welcome`` copy, the two side-section widths and ``project_seen_revision``.
 A POST may carry any subset of keys; an unknown key answers 400.
@@ -21,7 +21,9 @@ from ouroboros.utils import atomic_write_json, read_json_dict
 
 DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     "widget_order": [],
-    "voice": {"stt": "", "tts": ""},
+    # Engine choices are contribution keys; tts_voice is the chosen provider's voice id
+    # (empty = the provider's own pick, a voice on this device first).
+    "voice": {"stt": "", "tts": "", "tts_voice": ""},
     "contributions": {"hidden": [], "order": []},
     # Owner override of a widget card's launch policy, keyed "<skill>:<tab_id>" with a
     # value from the validator's WIDGET_START_MODES. Bounds only: keys are never
@@ -116,7 +118,7 @@ def _normalize_preferences(
     prefs = copy.deepcopy(DEFAULT_UI_PREFERENCES) if fill_defaults else {}
     if not isinstance(raw, dict):
         return prefs
-    for group, keys in (("voice", ("stt", "tts")), ("contributions", ("hidden", "order"))):
+    for group, keys in (("voice", ("stt", "tts", "tts_voice")), ("contributions", ("hidden", "order"))):
         if group not in raw:
             continue
         value = raw[group]

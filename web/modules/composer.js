@@ -17,6 +17,7 @@ import { attachChatInputSizing } from './chat_input_sizing.js';
 import { showToast } from './toast.js';
 import { bindComposerPlus } from './composer_plus.js';
 import { bindComposerChips } from './composer_chips.js';
+import { bindVoiceControls } from './voice_controls.js';
 
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
@@ -445,6 +446,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
             inputSizing.dispose();
         },
     };
-    const contributed = [bindComposerPlus({ composer }), bindComposerChips({ composer, menu: createPlusMenu })];
+    const contributed = [bindComposerPlus({ composer }), bindComposerChips({ composer, menu: createPlusMenu }),
+        bindVoiceControls({ composer })];
     return composer;
 }

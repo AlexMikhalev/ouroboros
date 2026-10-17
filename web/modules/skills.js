@@ -1081,6 +1081,36 @@ export function initSkills(ctx) {
         }
     };
     window.addEventListener('ouro:page-shown', onPageShown);
+
+    // Another surface asks for one installed skill's entry ({skill}) or an OuroborosHub search ({query}): the
+    // dictation chooser's Whisper (dictation_chooser.js).
+    const onOpenSkills = async (event) => {
+        const { skill = '', query = '' } = event?.detail || {};
+        const tab = skill ? 'installed' : 'ouroboroshub';
+        const shown = document.getElementById('page-skills')?.classList.contains('active');
+        actions.closeMenus();
+        activeTab = tab;  // the page-shown handler selects and reads it
+        activateTab(tab);
+        if (!await ctx.showPage?.('skills')) return;
+        if (shown) { tabs.select(tab); refreshActive(); }
+        const found = () => (skill ? container.querySelector(`.skills-card[data-skill="${CSS.escape(skill)}"]`)
+            : document.getElementById('oh-query'));
+        const reveal = (node) => {
+            if (skill) { node.scrollIntoView({ block: 'nearest' }); return; }
+            node.value = query;
+            node.dispatchEvent(new Event('input', { bubbles: true }));  // the pane filters its catalog by it
+            node.focus({ preventScroll: true });
+        };
+        if (found()) return reveal(found());
+        const observer = new MutationObserver(() => {
+            if (!found()) return;
+            observer.disconnect();
+            reveal(found());
+        });
+        observer.observe(document.getElementById('page-skills'), { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 10000);  // an entry that never comes leaves the page as it is
+    };
+    window.addEventListener('ouro:open-skills', onOpenSkills);
     return { destroy() {
         destroyed = true;
         refreshGeneration += 1;
@@ -1091,5 +1121,6 @@ export function initSkills(ctx) {
         tabs.destroy();
         refreshBtn.removeEventListener('click', refreshActive);
         window.removeEventListener('ouro:page-shown', onPageShown);
+        window.removeEventListener('ouro:open-skills', onOpenSkills);
     } };
 }

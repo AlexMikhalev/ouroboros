@@ -78,12 +78,13 @@ def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) 
             live_names.add(skill.name)
         if skill.source == "native" and skill.name not in live_names:
             offers.extend({"skill": skill.name, "skill_label": skill.manifest.name, "id": item["id"],
-                           "label": item["label"], "destination": item["destination"],
+                           "label": item["label"], "title": item["title"], "destination": item["destination"],
                            "install_size": item.get("install_size", ""), "enabled": False}
                           for item in clean if item.get("provides") == "stt")
     prefs = _stored_preferences(drive_root / "state" / "ui_preferences.json")
     voice = {}
-    for kind, key in prefs["voice"].items():
+    for kind in ("stt", "tts"):
+        key = prefs["voice"][kind]
         available = any(row["key"] == key and row.get("provides") == kind for row in rows)
         voice[kind] = {"key": key, "available": available,
                        "reason": "" if available else ("provider_unavailable" if key else "not_selected")}

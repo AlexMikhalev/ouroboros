@@ -1,7 +1,7 @@
 // The composer's "+" menu filled from skills' contributions (docs/DESIGN.md "Composer owner controls", "Skills in the
 // page"): after the host's Attach file, one section per skill under its label with its `composer.plus` items in the
-// owner's arrangement, then the host's own items: "Add dictation…" while no speech engine is chosen, once the voice
-// controls have offered their chooser, and "Make a button with Ouroboros…", which starts a request in the draft for
+// owner's arrangement, then the host's own items: "Add dictation…" while no speech engine can dictate here, once the
+// voice controls have offered their chooser, and "Make a button with Ouroboros…", which starts a request in the draft for
 // the owner to finish and send. Every item does its contribution's verb on this room's draft; none sends a message.
 import { tr } from './i18n.js';
 import { draftPort, getContributions, runContributionAction } from './contributions.js';
