@@ -560,6 +560,8 @@ export function initSkills(ctx = {}) {
         const skill = await currentSkill(name);
         if (!skill.content_hash) throw new Error('Skill revision is unavailable. Refresh and retry.');
         const blocked = skill.review_status === 'blockers' && !reviewReady(skill);
+        // The author is the catalog entry's (the host's cache, never the network).
+        if (skill.install?.source?.id && !catalogEntry(skill)) await store.catalog().catch(() => null);
         const ok = await openSkipReviewDialog({
             name, sourceName: installedSourceLabel(skill), owner: catalogEntry(skill)?.owner || '',
             permissions: skill.permissions || [], label: blocked ? 'Turn on anyway' : 'Skip review',
@@ -828,11 +830,15 @@ export function initSkills(ctx = {}) {
         const roundsValue = reset ? '' : String(form.elements.inline_max_rounds?.value || '').trim();
         const rounds = roundsValue === '' ? null : Number(roundsValue);
         if (rounds !== null && (!Number.isInteger(rounds) || rounds < 1)) throw new Error('Inline rounds must be a positive whole number.');
-        await apiClient.savePresenceRuntime(name, {
+        const result = await apiClient.savePresenceRuntime(name, {
             expected_state_fingerprint: expected,
             runtime_overrides: { model_slot: modelValue || null, inline_max_rounds: rounds },
             ...(!reset ? { workspace_root: String(form.elements.workspace_root?.value || '').trim() } : {}),
         });
+        // Cards are patched in place, so the open form takes the saved state's fingerprint from the answer;
+        // a later re-read never touches it, and a change made elsewhere still refuses this form's next save.
+        const saved = String(result?.presence_runtime?.state_fingerprint || '');
+        if (saved) form.dataset.stateFingerprint = saved;
         showToast(`${name}: Presence runtime ${reset ? 'reset' : 'saved'} for new turns`, 'ok');
     }
 

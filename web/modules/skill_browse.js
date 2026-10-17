@@ -186,7 +186,9 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         pending: new Map(), failures: new Map(), sheet: null,
     };
     let destroyed = false;
-    let generation = 0;
+    // A catalog read and a registry search each keep only their own newest answer.
+    let loadGeneration = 0;
+    let searchGeneration = 0;
     const disposers = [];
     chrome.innerHTML = `<div class="skills-browse-controls">
             <input type="search" class="ui-control skills-search" data-browse-search placeholder="Search skills" aria-label="Search skills" autocomplete="off" enterkeyhint="search">
@@ -322,14 +324,14 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         statusEl.dataset.tone = state.catalogError && !state.catalog ? 'danger' : 'muted';
         const official = state.sources.find((source) => source.kind === 'hub' && source.part === 'official');
         const shelf = shelfItems(state.catalog, host.installedByName(), state);
-        const shelfKey = shelf.map((item) => item.id).sort().join(',');
-        const showShelf = shelf.length > 0 && readHiddenShelf() !== shelfKey;
+        // Shown once: Hide dismisses the shelf on this device for good (SPEC §8.2).
+        const showShelf = shelf.length > 0 && !readHiddenShelf();
         let html = '';
         if (showShelf) {
             const copy = official?.trust === 'trusted'
                 ? `Picked by ${escapeHtml(official.name)}. They install without review — you trust ${escapeHtml(official.name)}.`
                 : `Picked by ${escapeHtml(official?.name || 'Ouroboros')}. Ouroboros reviews each one before it runs.`;
-            html += groupHeadHtml('Recommended to start', { copy, actions: `${buttonHtml(`Install all ${shelf.length}`, { tone: 'primary', attrs: 'data-browse-action="install_all"' })}${buttonHtml('Hide', { tone: 'ghost', attrs: `data-browse-action="hide_shelf" data-shelf="${escapeHtml(shelfKey)}"` })}` });
+            html += groupHeadHtml('Recommended to start', { copy, actions: `${buttonHtml(`Install all ${shelf.length}`, { tone: 'primary', attrs: 'data-browse-action="install_all"' })}${buttonHtml('Hide', { tone: 'ghost', attrs: 'data-browse-action="hide_shelf"' })}` });
             html += gridHtml(sortCatalogItems(shelf, 'popular'), 'recommended', state.category === 'all');
             const shown = new Set(shelf.map((item) => item.id));
             html += groupHeadHtml('All skills');
@@ -375,9 +377,9 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
     }
 
     async function load({ refresh = false } = {}) {
-        const current = ++generation;
+        const current = ++loadGeneration;
         const [catalog, sources] = await Promise.allSettled([host.catalog({ refresh }), host.sources(refresh)]);
-        if (destroyed || current !== generation) return;
+        if (destroyed || current !== loadGeneration) return;
         if (catalog.status === 'fulfilled') { state.catalog = catalog.value; state.catalogError = ''; }
         else state.catalogError = catalog.reason?.message || String(catalog.reason);
         if (sources.status === 'fulfilled') state.sources = Array.isArray(sources.value) ? sources.value : [];
@@ -387,19 +389,19 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
     async function searchRegistry() {
         const query = state.query;
         if (!query || !registry()) return;
-        const current = ++generation;
+        const current = ++searchGeneration;
         state.searching = true;
         state.searchError = '';
         render();
         try {
             const result = await api.search({ q: query, source: state.source === 'all' ? '' : state.source });
-            if (destroyed || current !== generation || query !== state.query) return;
+            if (destroyed || current !== searchGeneration || query !== state.query) return;
             state.search = result && typeof result === 'object' ? result : { items: [] };
         } catch (err) {
-            if (destroyed || current !== generation) return;
+            if (destroyed || current !== searchGeneration) return;
             state.searchError = err?.message || String(err);
         } finally {
-            if (!destroyed && current === generation) { state.searching = false; render(); }
+            if (!destroyed && current === searchGeneration) { state.searching = false; render(); }
         }
     }
 
@@ -454,7 +456,7 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
 
     async function act(action, node) {
         const item = allKnownItems().get(node?.dataset?.item || '');
-        if (action === 'hide_shelf') { writeHiddenShelf(node.dataset.shelf || ''); render(); return; }
+        if (action === 'hide_shelf') { writeHiddenShelf('1'); render(); return; }
         if (action === 'install_all') {
             const missing = shelfItems(state.catalog, host.installedByName(), state);
             await host.confirmFirstStart?.();
@@ -518,11 +520,21 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
     sortSelect.addEventListener('change', onSort);
     officialToggle.addEventListener('change', onOfficial);
 
+    // The newest read of the catalogs and sources: a search waits for it to know which registry to ask.
+    let loaded = Promise.resolve();
     return {
-        show: (options) => load(options),
-        refresh: () => load({ refresh: true }),
+        show: (options) => (loaded = load(options)),
+        refresh: () => (loaded = load({ refresh: true })),
         repaintStates,
-        searchFor(name) { searchInput.value = name; state.query = name; state.search = null; render(); searchRegistry(); },
+        async searchFor(name) {
+            searchInput.value = name;
+            state.query = name;
+            state.search = null;
+            state.sort = 'best';
+            render();
+            await loaded;
+            searchRegistry();
+        },
         itemFor(sourceId, name) { return catalogItems().find((item) => item.source_id === sourceId && item.name === name) || null; },
         catalogItems,
         destroy() {

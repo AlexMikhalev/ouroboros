@@ -111,8 +111,10 @@ export function openSkillDetailSheet({ item, installed = null, source = null, ac
         if (closed) return;
         closed = true;
         controller?.abort();
-        disposeFocus?.();
+        // Close the modal first: WebKit's own close moves focus to what was focused before it opened
+        // (a pressed button is not focused there), and the restore below then returns it to the opener.
         if (dialog.open && typeof dialog.close === 'function') dialog.close();
+        disposeFocus?.();
         dialog.remove();
     };
     const paint = (detail, { reading = false, error = '' } = {}) => {
