@@ -5,6 +5,8 @@ fixtures. Every browser consumes the actual gateway and SPA. Diagnostics use the
 managed evidence channel; OUROBOROS_BROWSER_EVIDENCE_OUT overrides the destination.
 """
 
+from tests import _dialogue as dialogue_test
+
 
 import json
 import uuid
@@ -880,7 +882,7 @@ def test_main_removes_an_unknown_late_answer_across_clients_without_resend(wait_
              drive_root=data_root, require_write=True)
     record_quiz_delivery_failure(data_root, task_id, quiz_id, "late_answer_delivery_unknown")
     def own_rows():
-        rows = [json.loads(line) for line in (data_root / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines() if line]
+        rows = dialogue_test.log_rows(data_root / "logs" / "chat.jsonl")
         # This question's rows (its ask, answer, the owner's message), not the task's own terminal summary.
         return [row for row in rows if (row.get("quiz") or {}).get("quiz_id") == quiz_id
                 or quiz_id in str(row.get("client_message_id") or "")]

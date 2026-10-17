@@ -1,7 +1,8 @@
 """Descriptive Chat history response and its rows, re-exported by the gateway facade.
 
-``GET /api/chat/history`` projects stored ``chat.jsonl``/``progress.jsonl`` rows plus a few
-synthesized ones (``gateway/history.py``). The JSDoc twin is ``web/modules/client_contract_types.js``.
+``GET /api/chat/history`` projects the dialogue store's stored chat and progress rows
+(``state/dialog.sqlite``) plus a few synthesized ones (``gateway/history.py``). The JSDoc twin is
+``web/modules/client_contract_types.js``.
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility.
 
 
 class ChatHistoryPosition(TypedDict):
-    """Where a stored row lies: its stream and the row's byte offset in that stream's retained
-    chain. It names a stored record, never current task or review authority."""
+    """Where a stored row lies: its stream and the row's chain coordinate in the dialogue store (the
+    byte offset the row has in the frozen archive plus the rows appended since). It names a stored
+    record, never current task or review authority."""
 
     source: Literal["chat", "progress"]
     offset: int
@@ -74,7 +76,6 @@ class ChatHistoryMessage(TypedDict, total=False):
     ingress_accepted: bool
     ingress_dispatched: bool
     ingress_pending: bool
-    ingress_undispatched: bool
     attachments: List[ChatAttachmentView]
     text_placeholder: bool
     chat_annotation: Dict[str, Any]  # the routing outcome shown on an owner message
@@ -130,10 +131,11 @@ class ChatHistoryMessage(TypedDict, total=False):
 
 
 class ChatHistoryCoverage(TypedDict):
-    """``coverage`` v1: which stored bytes this response delivered, per stream. A span is
-    ``{from, to, chain, gaps}``: the byte range ``[from, to)`` of the stream's retained chain,
-    that chain's witness and the read gaps inside it; null when the stream was not read or is
-    unreadable. Coverage is byte delivery, never chronology or proof of the conversation's start."""
+    """``coverage`` v1: which stored coordinates this response delivered, per stream. A span is
+    ``{from, to, chain, gaps}``: the coordinate range ``[from, to)`` of the stream, the chain
+    witness (one constant: the store's coordinates are durable) and the gaps inside it (a line the
+    import could not store, a segment it could not import); null when the stream was not read.
+    Coverage is delivery, never chronology or proof of the conversation's start."""
 
     v: int
     view: str
@@ -142,9 +144,11 @@ class ChatHistoryCoverage(TypedDict):
 
 
 class ChatHistoryWindow(TypedDict, total=False):
-    """Bounds of this response. ``complete`` is true only when no quota, page, cap or read gap
-    bounded it; ``truncated_by`` names each cause (quota, page, lineage_cap, or ``<stream>_<gap>``
-    such as chat_source_unavailable). ``latest_message`` (Project rooms) names the latest eligible
+    """Bounds of this response. ``complete`` is true only when no quota, page, cap, gap or the
+    archive import bounded it; ``truncated_by`` names each cause (quota, page, lineage_cap,
+    ``<stream>_<gap>`` such as chat_malformed_jsonl, or ``<stream>_importing``: older rows exist
+    below the archive import's frontier and are not readable yet; the older page that would cross
+    it answers 503 migrating). ``latest_message`` (Project rooms) names the latest eligible
     non-owner standalone message by stored arrival, excluding card content; null means unknown.
     Its ``out_of_order`` flag means it sorts
     above earlier arrivals or before the recent read. With a null message, ``latest_before`` says

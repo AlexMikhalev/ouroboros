@@ -61,7 +61,7 @@ class _Race:
     def __init__(self, browser, server, monkeypatch, project_id, question=False):
         self.data, self.monkeypatch, self.project_id = server["data_dir"], monkeypatch, project_id
         self.candidate = server["candidate_identity"]
-        self.chat_id, _log, self.initial = _backlog(self.data, project_id)
+        self.chat_id, self.initial = _backlog(self.data, project_id)
         self.question = _question(self.data, project_id, self.chat_id) if question else None
         self.room = opening._Room(browser, server["url"], project_id, hold=5,
                                   init=(opening._read_receipts(LATEST),))
@@ -92,9 +92,9 @@ class _Race:
         self.room.page.on("response", record)
 
     def admit(self, kind="named"):
-        """``named``: 160 child words; the reconnect's fresh read names the reply. ``searched``: 610 (460
-        archived and long, the reviewed counterexample): its bounded search runs out first. ``arrived``:
-        160 child words read by a state refresh, whose read of the arrivals holds the reply."""
+        """``named``: 160 child words; the reconnect's fresh read names the reply. ``searched``: 1310, more
+        than the recent read's window and its search past it cover: its bounded search runs out first.
+        ``arrived``: 160 child words read by a state refresh, whose read of the arrivals holds the reply."""
         room = self.room
         room.open()
         assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=250), room.older
@@ -104,8 +104,7 @@ class _Race:
         assert room.messages.locator(".chat-bubble").filter(has_text="Owner backlog note 1099:").count() == 1
         self.monkeypatch.setattr(opening, "REPLY", LATEST)
         _chat, self.revision = opening._buried_room(
-            self.data, self.monkeypatch, self.project_id, *((610, 130) if kind == "searched" else (160, 0)),
-            chat_id=self.chat_id)
+            self.data, self.monkeypatch, self.project_id, 1310 if kind == "searched" else 160, chat_id=self.chat_id)
         before, arrived = len(self.recent), len(self.arrivals)
         if kind == "arrived":
             # The refresh's read of the arrivals; one that found nothing yet names no message.

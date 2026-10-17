@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 from tests._shared import producer_evidence_dir
 from tests.test_project_admission_refusal_browser import _producers
@@ -32,7 +33,6 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     from ouroboros.gateway.tasks import _tasks_list_payload
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result, write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor import queue, workers
 
     server = direct_server_with_data
@@ -78,7 +78,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     def frame(page, tid, **fields):
         row = {"type": "chat", "role": "assistant", "is_progress": True,
                "chat_id": 1, "task_id": tid, "ts": "2026-09-30T10:00:00Z", **fields}
-        append_jsonl(server["data_dir"] / "logs" / "progress.jsonl", row)
+        dialogue_store.append(server["data_dir"], "progress", row)
         _emit_ws_frame(page, row)
 
     def shot(page, name):
@@ -192,7 +192,6 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
     from ouroboros.gateway.tasks import _tasks_list_payload
     from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result, write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor import queue, workers
 
     server = direct_server_with_data
@@ -257,7 +256,7 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
     def frame(page, tid, **fields):
         row = {"type": "chat", "role": "assistant", "is_progress": True,
                "chat_id": 1, "task_id": tid, "ts": "2026-09-30T10:00:00Z", **fields}
-        append_jsonl(server["data_dir"] / "logs" / "progress.jsonl", row)
+        dialogue_store.append(server["data_dir"], "progress", row)
         _emit_ws_frame(page, row)
 
     def shot(page, name):

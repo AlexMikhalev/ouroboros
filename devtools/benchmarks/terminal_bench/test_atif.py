@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 
 from devtools.benchmarks.terminal_bench.atif import build_trajectory, write_trajectory
 
@@ -61,6 +62,8 @@ def _make_agent_dir(tmp_path: Path) -> Path:
     (agent / "ouroboros-run-summary.json").write_text(
         json.dumps({"cost_usd": 0.5}), encoding="utf-8"
     )
+    from tests._dialogue import import_all
+    import_all(agent / "ouroboros-data")
     return agent
 
 
@@ -139,7 +142,7 @@ def test_rotated_events_and_tools_stay_in_the_trajectory(tmp_path: Path) -> None
     logs = data_dir / "logs"
     archive = data_dir / "archive"
     # Rotation moves what the live files held; the live files keep the tail.
-    archive.mkdir(parents=True)
+    archive.mkdir(parents=True, exist_ok=True)
     (archive / "tools_20260704T180000.jsonl").write_text(
         (logs / "tools.jsonl").read_text(encoding="utf-8"), encoding="utf-8",
     )
@@ -207,6 +210,40 @@ def test_build_trajectory_minimal_dir(tmp_path: Path) -> None:
     assert [s["step_id"] for s in steps] == list(range(1, len(steps) + 1))
     assert steps[0]["source"] == "user" and steps[0]["message"]
     assert steps[-1]["message"]  # message is required non-absent by schema
+
+
+def test_dialogue_sql_appends_are_visible_without_changing_the_source(tmp_path):
+    from ouroboros import dialogue_store as ds
+
+    agent = _make_agent_dir(tmp_path)
+    data = agent / "ouroboros-data"
+    ds.append(data, "chat", {"direction": "out", "text": "SQL-only answer"})
+    before = ds.path(data).read_bytes()
+    assert build_trajectory(agent)["steps"][-1]["message"].endswith("SQL-only answer")
+    assert ds.path(data).read_bytes() == before
+
+
+@pytest.mark.parametrize("problem", ["unimported", "pending", "mismatch", "invalid"])
+def test_incomplete_dialogue_refuses_a_certified_trajectory(tmp_path, problem):
+    from ouroboros import dialogue_store as ds, dialogue_import as di
+    from tests._dialogue import seed
+
+    agent, data = tmp_path / "agent", tmp_path / "agent/ouroboros-data"
+    rows = [{"direction": "out", "text": "known answer"}]
+    seed(data, archives={"chat_20261016T000000.jsonl": rows + (["{invalid\n"] if problem == "invalid" else [])})
+    if problem != "unimported":
+        ds.ensure(data)
+    if problem == "mismatch":
+        (data / "archive/chat_20261016T000000.jsonl").write_text("changed\n", encoding="utf-8")
+    if problem in {"mismatch", "invalid"}:
+        di.run_dialogue_import(data)
+    with pytest.raises(RuntimeError, match={"unimported": "not imported", "pending": "still importing",
+                                          "mismatch": "could not be imported", "invalid": "invalid intervals"}[problem]):
+        build_trajectory(agent)
+    assert not (agent / "trajectory.json").exists()
+    if problem in {"unimported", "pending"}:
+        di.run_dialogue_import(data)
+        assert build_trajectory(agent)["steps"][-1]["message"] == "known answer"
 
 
 def test_physical_ledger_unifies_subtree_tokens_cost_and_run_summary(tmp_path: Path) -> None:
