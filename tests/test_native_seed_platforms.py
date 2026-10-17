@@ -102,7 +102,10 @@ def earlier_install(data_root, *, unix_marker=True) -> pathlib.Path:
     (native / ".bootstrap-seed-complete").write_text("earlier release\n", encoding="utf-8")
     for name in ("telegram", UNIX):
         (native / f".post-bootstrap-seed-{name}").write_text("offered\n", encoding="utf-8")
-    git_payload(BASE, "skills/telegram", native / "telegram")
+    # Telegram has its own release cadence; its current payload keeps the
+    # resync counts below about the computer-use skills only.
+    shutil.copytree(SEEDS / "telegram", native / "telegram",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     (native / "telegram" / ".seed-origin").write_text(f"seeded_from={BASE}\n", encoding="utf-8")
     git_payload(UNIX_043, f"skills/{UNIX}", native / UNIX)
     if unix_marker:
