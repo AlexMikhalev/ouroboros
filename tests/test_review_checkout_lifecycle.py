@@ -41,11 +41,16 @@ def _work(area: Path) -> None:
     (area / rc.EVIDENCE_DIRNAME / "out.log").write_bytes(LOG)
 
 
+def directory_source(folder: Path, data_root: Path) -> dict:
+    """A retained folder view: what a writable skill seat copies (an ordinary folder is read in place)."""
+    return {"kind": "directory", "root": str(folder), "view": str(rc._retained_view(folder, data_root))}
+
+
 def _frozen(tmp_path: Path):
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "check.py").write_bytes(b"# candidate\n")
-    return root, rc.freeze_checking_source(subject, data_root=root)
+    return root, directory_source(subject, root)
 
 
 def _seat(root: Path, source, operation: str, task: str = TASK) -> Path:
@@ -122,10 +127,10 @@ def test_a_new_thread_turn_captures_an_unobserved_previous_turn(tmp_path):
     root, subject = tmp_path / "data", tmp_path / "subject"
     subject.mkdir()
     (subject / "check.py").write_bytes(b"# v1\n")
-    area = _thread(root, rc.freeze_checking_source(subject, data_root=root), "turn-1")
+    area = _thread(root, directory_source(subject, root), "turn-1")
     _work(area)
     (subject / "check.py").write_bytes(b"# v2\n")
-    assert _thread(root, rc.freeze_checking_source(subject, data_root=root), "turn-2") == area
+    assert _thread(root, directory_source(subject, root), "turn-2") == area
     assert (area / "check.py").read_bytes() == b"# v2\n" and not (area / rc.EVIDENCE_DIRNAME).exists()
     receipt = rc._receipt(root, TASK, "turn-1")
     assert receipt["status"] == "retained"
@@ -355,3 +360,19 @@ def test_deletion_changes_no_mode_above_the_tree(tmp_path):
         assert stat.S_IMODE(above.stat().st_mode) == 0o555 and not (tree / "sub").exists()
     finally:
         above.chmod(0o755)
+
+
+def test_a_workspace_thread_turn_starts_empty_and_keeps_the_previous_turns_evidence(tmp_path):
+    root, subject = tmp_path / "data", tmp_path / "subject"
+    subject.mkdir()
+    (subject / "notes.txt").write_bytes(b"the live folder\n")
+    source = rc.freeze_checking_source(subject, data_root=root)
+    area = _thread(root, source, "turn-1")
+    assert source == {"kind": "workspace", "root": str(subject)} and not any(area.iterdir())
+    _work(area)
+    assert _thread(root, source, "turn-2") == area and not any(area.iterdir())
+    receipt = rc._receipt(root, TASK, "turn-1")
+    kept = Path(receipt["evidence_dir"]) / "files"
+    assert receipt["status"] == "retained" and (kept / rc.EVIDENCE_DIRNAME / "out.log").read_bytes() == LOG
+    assert not (kept / "check.py").exists() and (subject / "notes.txt").read_bytes() == b"the live folder\n"
+    assert not (root / "state" / "review_checkouts" / "views").exists()
