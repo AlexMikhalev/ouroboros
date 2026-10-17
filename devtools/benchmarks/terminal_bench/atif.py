@@ -6,7 +6,8 @@ an honest trajectory from the artifacts the installed adapter already writes:
 
 - ``agent/instruction.txt``                        -> the user step
 - ``agent/ouroboros-data/logs/tools.jsonl``        -> tool calls + observations
-- ``agent/ouroboros-data/logs/progress.jsonl``     -> agent narration between calls
+- ``agent/ouroboros-data/logs/progress.jsonl``     -> agent narration between calls;
+  host notes as ``system`` steps
 - ``agent/ouroboros-data/logs/chat.jsonl``         -> final answer
 - ``agent/ouroboros-task-result.json``             -> final answer fallback
 - ``agent/ouroboros-data/state/usage.sqlite``     -> physical subtree totals
@@ -22,7 +23,7 @@ ATIF constraints honored (see harbor ``models/trajectories``):
 - ``step_id`` strictly sequential starting at 1;
 - ``observation.results[].source_call_id`` only references a ``tool_call`` of
   the SAME step;
-- agent-only fields never appear on user steps;
+- agent-only fields never appear on user or system steps;
 - no extra keys (harbor models are ``extra="forbid"``).
 """
 
@@ -317,6 +318,19 @@ def _tool_call_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _host_authored(row: dict[str, Any]) -> bool:
+    """A progress note the host wrote about the run, not the model's own speech.
+
+    ``narration`` is the note's typed voice: the worker stamps it on every frame,
+    ``True`` only for the model's round narration, and the send seam defaults
+    every other sender to ``False`` (the supervisor's HOST_NARRATION toasts
+    included). A row written before that fact falls back to its typed ``role``;
+    an untyped legacy row keeps the agent reading."""
+    if "narration" in row:
+        return row.get("narration") is not True
+    return row.get("role") == "system"
+
+
 def build_trajectory(
     agent_dir: Path,
     *,
@@ -358,6 +372,13 @@ def build_trajectory(
     call_counter = 0
     pending_narration: list[str] = []
     for ts, kind, row in merged:
+        if kind == "narration" and _host_authored(row):
+            # Kept where it happened, as the host's line: never the model's message.
+            note: dict[str, Any] = {"step_id": len(steps) + 1, "source": "system", "message": _clip(row["text"])}
+            if ts:
+                note["timestamp"] = ts
+            steps.append(note)
+            continue
         if kind == "narration":
             pending_narration.append(row["text"])
             continue

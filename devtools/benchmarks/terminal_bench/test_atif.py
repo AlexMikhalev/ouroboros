@@ -199,6 +199,39 @@ def test_each_logical_call_is_one_step_with_what_the_model_saw(tmp_path: Path) -
     assert seen[2].startswith("[status=unknown is_error=False]") and "no outcome recorded" in seen[2]
 
 
+def test_host_notes_stay_in_place_as_system_steps_never_the_models_message(tmp_path: Path) -> None:
+    """#539: the supervisor's finalization toast reached the trajectory as agent speech.
+
+    A row's typed voice decides (``narration``, else the pre-voice ``role``); only
+    an untyped legacy row keeps the agent reading. Host lines keep their text and
+    position, and carry no agent-only field."""
+    agent = _make_agent_dir(tmp_path)
+    toast = "⏳ Task t1: The task made no progress for too long. Finalize artifacts/results now."
+    _write_jsonl(agent / "ouroboros-data/logs/progress.jsonl", [
+        {"ts": "2026-07-04T18:01:00+00:00", "type": "send_message", "text": "💬 Planning.",
+         "role": "assistant", "narration": True},
+        {"ts": "2026-07-04T18:01:30+00:00", "type": "send_message", "text": toast,
+         "role": "system", "system_type": "finalization_notice", "narration": False},
+        {"ts": "2026-07-04T18:02:30+00:00", "type": "send_message", "text": "💬 Checkpoint 3 at round 12",
+         "role": "system", "system_type": "host_progress", "narration": False},
+        {"ts": "2026-07-04T18:02:40+00:00", "type": "send_message", "text": "Older typed notice.", "role": "system"},
+        {"ts": "2026-07-04T18:03:00+00:00", "type": "send_message", "text": "Wrapping up."},
+    ])
+    steps = build_trajectory(agent)["steps"]
+
+    assert [s["step_id"] for s in steps] == list(range(1, len(steps) + 1))
+    assert [s["source"] for s in steps] == ["user", "system", "agent", "system", "system", "agent"]
+    host = [s for s in steps if s["source"] == "system"]
+    assert [(s["message"], s["timestamp"]) for s in host] == [
+        (toast, "2026-07-04T18:01:30+00:00"),
+        ("💬 Checkpoint 3 at round 12", "2026-07-04T18:02:30+00:00"),
+        ("Older typed notice.", "2026-07-04T18:02:40+00:00"),
+    ]
+    assert all(set(s) == {"step_id", "source", "message", "timestamp"} for s in host)
+    assert steps[2]["message"] == "💬 Planning." and steps[2]["tool_calls"]
+    assert steps[-1]["message"] == "Wrapping up.\n\nDone: created the file."
+
+
 def test_build_trajectory_minimal_dir(tmp_path: Path) -> None:
     agent = tmp_path / "agent"
     agent.mkdir()
