@@ -11,7 +11,9 @@ from ouroboros import skill_source_catalog as catalog
 from ouroboros import skill_source_install as installer
 from ouroboros.skill_install_record import read_install_record, write_install_record
 from ouroboros.skill_loader import SkillReviewState, save_enabled, save_skill_grants, skill_state_dir
-from tests._skill_source_fixtures import HubFixture, author_repo, builtin_repo, commit_all, git, publish, write_skill
+from tests._skill_source_fixtures import (
+    HubFixture, author_repo, builtin_repo, commit_all, git, join_source_refreshes, publish, write_skill,
+)
 
 
 @pytest.fixture
@@ -19,7 +21,8 @@ def drive(tmp_path, monkeypatch):
     root = tmp_path / "data"
     (root / "skills").mkdir(parents=True)
     monkeypatch.delenv("OUROBOROS_SKILLS_REPO_PATH", raising=False)
-    return root
+    yield root
+    join_source_refreshes()
 
 
 @pytest.fixture

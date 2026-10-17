@@ -8,7 +8,7 @@ import pytest
 
 from ouroboros import skill_starter
 from ouroboros.skill_install_record import read_install_record
-from tests._skill_source_fixtures import HubFixture, builtin_repo
+from tests._skill_source_fixtures import HubFixture, builtin_repo, join_source_refreshes
 
 
 @pytest.fixture
@@ -23,7 +23,8 @@ def setup(tmp_path, monkeypatch):
     hub.commit()
     monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(hub.rows()))
     monkeypatch.delenv("OUROBOROS_STARTER_SKILLS", raising=False)
-    return drive, hub, builtin_repo(tmp_path)
+    yield drive, hub, builtin_repo(tmp_path)
+    join_source_refreshes()
 
 
 def test_default_list_is_the_recommended_builtin_and_official_skills(setup):

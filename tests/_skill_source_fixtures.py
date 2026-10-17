@@ -136,6 +136,16 @@ def author_repo(root: pathlib.Path, name: str, version: str = "2.0.0") -> tuple[
     return bare, commit, tree_release_digest(work)
 
 
+def join_source_refreshes(timeout: float = 60.0) -> None:
+    """Wait for the background source refreshes a test started (catalog reads start them by design)."""
+    from ouroboros import skill_source_git
+
+    with skill_source_git._THREADS_LOCK:
+        threads = list(skill_source_git._THREADS.values())
+    for thread in threads:
+        thread.join(timeout)
+
+
 def builtin_repo(root: pathlib.Path) -> pathlib.Path:
     """A fake app checkout whose ``skills/`` is the built-in source."""
     repo = root / "app"

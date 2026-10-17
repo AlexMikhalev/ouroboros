@@ -9,7 +9,7 @@ import pytest
 from ouroboros.skill_install_record import read_install_record
 from ouroboros.tools import skill_source_tools as tools
 from ouroboros.tools.registry import ToolContext
-from tests._skill_source_fixtures import HubFixture, builtin_repo
+from tests._skill_source_fixtures import HubFixture, builtin_repo, join_source_refreshes
 
 
 @pytest.fixture
@@ -30,7 +30,8 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.skill_source_install.start_review", lambda d, name, **k: reviews.append(name))
     context = ToolContext(repo_dir=tmp_path, drive_root=drive)
     context.task_id = "task-1"
-    return context, drive, reviews, hub
+    yield context, drive, reviews, hub
+    join_source_refreshes()
 
 
 def _call(tool, ctx, **kwargs):

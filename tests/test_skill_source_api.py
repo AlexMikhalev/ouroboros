@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from ouroboros.gateway.router import collect_routes
 from ouroboros.skill_install_record import read_install_record
-from tests._skill_source_fixtures import HubFixture, builtin_repo, write_skill
+from tests._skill_source_fixtures import HubFixture, builtin_repo, join_source_refreshes, write_skill
 from tests.test_client_contract_bindings import assert_bound
 
 
@@ -34,8 +34,11 @@ def env(tmp_path, monkeypatch):
     app = Starlette(routes=collect_routes(data_dir=drive))
     app.state.drive_root = drive
     app.state.repo_dir = builtin_repo(tmp_path)
-    with TestClient(app) as client:
-        yield client, drive, hub, tmp_path
+    try:
+        with TestClient(app) as client:
+            yield client, drive, hub, tmp_path
+    finally:
+        join_source_refreshes()
 
 
 def _wait(predicate, timeout=30.0):
