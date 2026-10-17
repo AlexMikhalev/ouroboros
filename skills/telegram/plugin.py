@@ -177,10 +177,8 @@ def _build_menu_mind(command_mode: str, lang: str = "en", bg_enabled: bool = Fal
 
 
 def _load_recent_thoughts(api) -> str:
-    """Read the last few blocks from progress.jsonl and build a text snapshot."""
+    """Read the last few SQL progress rows and build a text snapshot."""
     progress_file = _data_dir(api) / "logs" / "progress.jsonl"
-    if not progress_file.exists():
-        return "_No thoughts log created yet._"
     try:
         entries, _prefix_omitted = _jsonl_tail(
             progress_file,
@@ -197,7 +195,7 @@ def _load_recent_thoughts(api) -> str:
             timestamp = str(elem.get("ts") or elem.get("timestamp") or elem.get("created_at") or "")
             task_id = str(elem.get("task_id") or "").strip()
             if preview != text:
-                ref = "data/logs/progress.jsonl"
+                ref = "data/state/dialog.sqlite (progress)"
                 if timestamp:
                     ref += f" @ {timestamp}"
                 if task_id:
@@ -213,7 +211,7 @@ def _load_recent_thoughts(api) -> str:
                 break
         if not recent:
             return "_Thoughts log is empty or waiting for next cycle._"
-        return "\n".join(recent) + "\n\nShowing up to 4 recent entries. Full source: data/logs/progress.jsonl"
+        return "\n".join(recent) + "\n\nShowing up to 4 recent entries. Full source: data/state/dialog.sqlite (progress)"
     except Exception as exc:
         return f"_Failed to read log: {exc}_"
 

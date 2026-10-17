@@ -2,6 +2,7 @@ import asyncio, importlib.util, json, sys, types
 from pathlib import Path
 
 import pytest
+from ouroboros import dialogue_store as ds
 
 
 def _load():
@@ -104,9 +105,8 @@ def _root(tid, phase, **fields):
 
 
 def _write_rows(data, rows):
-    with open(data / "logs" / "chat.jsonl", "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    for row in rows:
+        ds.append(data, "chat", row)
 
 
 def test_off_suppresses_every_phase_and_consumes_every_id(tmp_path, monkeypatch):
@@ -197,7 +197,7 @@ def test_enabling_task_notifications_later_never_blasts_the_backlog(tmp_path, mo
     asyncio.run(nt._check_tasks_notify(api, {}, 42, state, "en"))  # toggle off: seen, unsent
     asyncio.run(nt._check_tasks_notify(api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, state, "en"))
     assert _Rec.sent == [] and set(state["notified_task_ids"]) == {"ok1", "ok2", "ok3"}
-    _write_rows(data, [_root("ok1", "done"), _root("ok2", "done"), _root("ok3", "done"), _root("ok4", "done")])
+    _write_rows(data, [_root("ok4", "done")])
     asyncio.run(nt._check_tasks_notify(api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, state, "en"))
     assert [text for _chat, text in _Rec.sent] == ["✅ Task ok4 done"]
 
@@ -242,9 +242,8 @@ def test_tasks_notify_primes_then_fires(tmp_path, monkeypatch):
     settings = {"TELEGRAM_NOTIFY_TASKS": "on"}; state = {}
     asyncio.run(nt._check_tasks_notify(api, settings, 42, state, "en"))   # primes, no send
     assert _Rec.sent == [] and "old1" in state["notified_task_ids"]
-    with open(chat, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"type": "task_summary", **_OWNER_ROOT, "task_id": "new1", "rounds": 5,
-                            "outcome_axes": {"lifecycle": "completed"}}) + "\n")
+    ds.append(data, "chat", {"type": "task_summary", **_OWNER_ROOT, "task_id": "new1", "rounds": 5,
+                             "outcome_axes": {"lifecycle": "completed"}})
     asyncio.run(nt._check_tasks_notify(api, settings, 42, state, "en"))
     assert len(_Rec.sent) == 1 and "new1" in _Rec.sent[0][1] and "5r" in _Rec.sent[0][1]
 
@@ -263,6 +262,33 @@ def test_task_summary_scan_uses_bounded_live_tail(tmp_path, monkeypatch):
 
     assert rows == [("bounded", {"type": "task_summary", "task_id": "bounded"})]
     assert seen == {"path": path, "max_entries": 123, "tail_bytes": 256 * 1024}
+
+
+@pytest.mark.parametrize("problem", ["pending", "mismatch", "invalid"])
+def test_unknown_dialogue_coverage_never_advances_notified_ids(tmp_path, problem):
+    from ouroboros import dialogue_import as di
+    from tests._dialogue import seed
+
+    nt = _load()
+    api, data = _api(tmp_path)
+    row = _root("older", "done")
+    if problem == "invalid":
+        seed(data, live={"chat": [row, "{invalid\n"]})
+    else:
+        seed(data, archives={"chat_20261016T000000.jsonl": [row]})
+    ds.ensure(data)
+    if problem == "mismatch":
+        (data / "archive/chat_20261016T000000.jsonl").write_text("changed\n", encoding="utf-8")
+        di.run_dialogue_import(data)
+    state = {}
+    error, delivered = asyncio.run(nt._check_tasks_notify(api, {}, 42, state, "en"))
+    assert isinstance(error, ds.StoreError) and not delivered and state == {}
+    assert {"pending": "still importing", "mismatch": "could not be imported",
+            "invalid": "invalid intervals"}[problem] in str(error)
+    if problem == "pending":
+        di.run_dialogue_import(data)
+        assert asyncio.run(nt._check_tasks_notify(api, {}, 42, state, "en")) == (None, False)
+        assert state == {"notified_task_ids": ["older"]}
 
 
 def test_tasks_notify_waits_for_latest_final_summary_for_each_task(tmp_path, monkeypatch):
@@ -290,8 +316,7 @@ def test_tasks_notify_waits_for_latest_final_summary_for_each_task(tmp_path, mon
                          "execution": {"status": "ok"},
                          "review": {"status": "degraded"}},
     }
-    with open(chat, "a", encoding="utf-8") as f:
-        f.write(json.dumps(terminal) + "\n")
+    ds.append(data, "chat", terminal)
 
     asyncio.run(nt._check_tasks_notify(
         api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, state, "en",

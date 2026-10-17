@@ -22,17 +22,16 @@ pytestmark = [pytest.mark.serial, pytest.mark.browser]
 
 def _seed_history(root):
     """Use production result/chat producers; only reviewer/model facts are fixtures."""
-    from ouroboros import agent_task_pipeline as pipeline
+    from ouroboros import agent_task_pipeline as pipeline, dialogue_store
     from ouroboros.project_dialogue import append_terminal_task_projection
     from ouroboros.task_results import load_task_result, task_results_dir, write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor.message_bus import log_chat
     from tests.test_delivery_forced_finalization import _forced_test_context, _bind_host_pass
 
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     for task_id in ("old-cancelled", "old-unknown"):
-        append_jsonl(logs / "progress.jsonl", {"task_id": task_id, "chat_id": 1,
+        dialogue_store.append(root, "progress", {"task_id": task_id, "chat_id": 1,
             "content": f"Inspecting retained history for {task_id}", "ts": "2026-09-08T10:00:00Z"})
     task = {"id": "old-cancelled", "chat_id": 1, "root_task_id": "old-cancelled", "delegation_role": "root"}
     result = write_task_result(root, task["id"], "cancelled", result="Retained cancellation")
@@ -52,7 +51,7 @@ def _seed_history(root):
     stored = load_task_result(root, "parent1")
     assert stored["outcome_axes"]["objective"]["status"] == "pass"
     assert stored["outcome_axes"]["execution"]["status"] == "degraded"
-    append_jsonl(logs / "progress.jsonl", {"task_id": "parent1", "chat_id": 1,
+    dialogue_store.append(root, "progress", {"task_id": "parent1", "chat_id": 1,
         "content": "Verifying the report", "ts": "2026-09-08T10:01:00Z"})
     log_chat("out", 1, 1, "The accepted report is available.", task_id="parent1", drive_root=root)
 
@@ -76,10 +75,9 @@ def _seed_history(root):
 
 
 def _seed_early_failure(root):
+    from ouroboros import dialogue_store
     from ouroboros.task_results import write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor.message_bus import log_chat
-    logs = root / "logs"
     from ouroboros.task_finalization import stamp_root_final_phase
 
     early = {"type": "send_message", "progress_meta": {"outcome_axes": {"execution": {"status": "infra_failed"}}}}
@@ -87,7 +85,7 @@ def _seed_early_failure(root):
     write_task_result(root, "known-failure", "failed", title="Known failed work",
                       root_phase_checkpoint={"post_task_synthesis": "running"},
                       outcome_axes={"execution": {"status": "infra_failed"}})
-    append_jsonl(logs / "progress.jsonl", {"task_id": "known-failure", "chat_id": 1,
+    dialogue_store.append(root, "progress", {"task_id": "known-failure", "chat_id": 1,
         "content": "Checking the requested result", "ts": "2026-09-08T10:00:00Z"})
     log_chat("out", 1, 1, "The provider failed; retained work remains available.",
              task_id="known-failure", message_meta=early["progress_meta"], drive_root=root)

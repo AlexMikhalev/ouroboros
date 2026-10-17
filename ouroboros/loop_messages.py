@@ -58,8 +58,8 @@ def _emit_checkpoint_event(
     """Emit one checkpoint: the producer's own durable rows first, then the one live frame.
 
     The worker writes its intermediate logs itself (owner decision 1A(3), 14 Oct
-    2026): the row lands in ``events.jsonl`` — and in ``progress.jsonl`` when it
-    is an explicit System row (``system_type == "task_checkpoint"``), which is
+    2026): the row lands in ``events.jsonl`` — and in the dialogue store (the
+    progress stream) when it is an explicit System row (``system_type == "task_checkpoint"``), which is
     what projects it into chat history — with the producer's own ``ts``, before
     the live ``log_event`` frame is queued. The supervisor's nested log branch
     only addresses and pushes that frame; the worker log sink suppresses the
@@ -70,6 +70,7 @@ def _emit_checkpoint_event(
     logged and the frame still goes out: the owner sees the fact, the file
     does not.
     """
+    from ouroboros import dialogue_store
     from ouroboros.utils import append_jsonl, utc_now_iso
 
     payload = {"ts": utc_now_iso(), "type": "task_checkpoint", "task_id": task_id, **data}
@@ -80,7 +81,7 @@ def _emit_checkpoint_event(
         try:
             append_jsonl(drive_logs / "events.jsonl", payload)
             if payload.get("system_type") == "task_checkpoint":
-                append_jsonl(drive_logs / "progress.jsonl", payload)
+                dialogue_store.append_quietly(drive_logs.parent, "progress", payload)
         except Exception:
             log.debug("Checkpoint row of %s not written; the live frame still goes out", task_id, exc_info=True)
     if event_queue is not None:
@@ -164,6 +165,7 @@ def _append_or_merge_user_content(
     proves the tail absent; an unknown or sent tail stays intact.
     """
     from ouroboros.transcript_prefix import unsent_in_previous_send
+    from ouroboros.review_history_view import REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY
 
     if isinstance(content, list):
         incoming_images = sum(
@@ -172,8 +174,10 @@ def _append_or_merge_user_content(
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
-    if not (messages and unsent_in_previous_send(slot, messages[-1])):
-        # Unknown or sent content stays intact, including slot-less producers.
+    if not (messages and unsent_in_previous_send(slot, messages[-1]) and not any(
+        key in messages[-1] for key in (HOST_CONTEXT_KIND_KEY, REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY)
+    )):
+        # Unknown/sent rows and typed host/review data keep their framing intact.
         messages.append({"role": "user", "content": content})
         return
     if messages and messages[-1].get("role") == "user":

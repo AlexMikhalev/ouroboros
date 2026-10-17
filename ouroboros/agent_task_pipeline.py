@@ -410,20 +410,23 @@ def recover_pending_root_post_task_synthesis(
     queue's tri-state physical liveness and settlement interlock. A saved Pause
     never auto-runs; only startup revokes its unconsumed Resume grant. Paid or
     unknown legacy pending_once is indeterminate, just like a lost running phase.
+    A member that waits on its owner's Resume or on a recorded projection cause
+    rests (``obligations.DutyRest``); startup still visits paused members.
     """
     from types import SimpleNamespace
     from ouroboros.post_task_synthesis import resume_paused_late_phase, revoke_late_phase_grant
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
-    from ouroboros.obligations import result_rows
-    from ouroboros.terminal_projection import terminal_projection_owed
+    from ouroboros.obligations import DutyRest, result_rows
+    from ouroboros.terminal_projection import delivery_registry_stamp, rest_deferral, terminal_projection_owed
 
     root = pathlib.Path(drive_root).resolve(strict=False)
     if resume_task_id:
         return int(resume_paused_late_phase(root, repo_dir or root.parent, str(resume_task_id)))
     if not startup and owner_liveness is None:
         return 0  # An empty/foreign process-local map cannot prove physical absence.
-    recovered = 0
-    for stored in result_rows(root, "synthesis", exclude=exclude_task_ids):
+    recovered, rest = 0, DutyRest(root, "synthesis_recovery", name="synthesis", wake=("owner_resume",) if startup else (),
+                                  inputs={"terminal_deliveries": delivery_registry_stamp(root)})
+    for stored in result_rows(root, "synthesis", exclude=exclude_task_ids, ids=rest.examine):
         if stop_requested and stop_requested():
             break
         task_id = str(stored.get("task_id") or stored.get("id") or "")
@@ -437,23 +440,28 @@ def recover_pending_root_post_task_synthesis(
             governing_root = _root_checkpoint_roots(env, task)[0]
             authority = (load_task_result(governing_root, task_id, strict=True) or {}
                          if governing_root != root else stored)
+            here = rest if governing_root == root else None  # a rest keys on this root's row
             if post_task_synthesis_in_flight(governing_root, task_id):
                 continue
             checkpoint = (authority or stored).get("root_phase_checkpoint") or {}
             phase = str(checkpoint.get("post_task_synthesis") or "")
             if not _post_task_synthesis_is_open(phase):
-                if terminal_projection_owed(task_id, authority):
-                    _settle_terminal_projection(governing_root, task_id, task=task, event_queue=event_queue)
+                waits = {} if terminal_projection_owed(task_id, authority) else {"on": "nothing_owed"}
+                if not waits:
+                    _settle_terminal_projection(governing_root, task_id, task=task, event_queue=event_queue, waits=waits)
+                rest_deferral(here, task_id, waits)
                 continue
             if phase == "paused":
                 if startup:
                     revoke_late_phase_grant(governing_root, task_id, reason="restart_no_resume")
                     from supervisor.owner_pause_control import retain_late_phase_latch
                     retain_late_phase_latch(governing_root, task_id)
+                rest_deferral(here, task_id, {"on": "owner_resume"})
                 continue
             if owner_liveness is not None and owner_liveness(task_id) is not False:
                 continue
             if not _is_root_post_task(task):
+                rest_deferral(here, task_id, {"on": "not_root_post_task"})
                 continue
             dispatched = phase == "running" or post_task_dispatch_evidence(governing_root, task_id, authority)
             if dispatched:
@@ -488,6 +496,7 @@ def recover_pending_root_post_task_synthesis(
             continue  # A newer Pause, completed result or task attempt owns the phase.
         except Exception:
             log.warning("Post-task recovery remains owed for %s", task_id, exc_info=True)
+    rest.commit()
     return recovered
 
 

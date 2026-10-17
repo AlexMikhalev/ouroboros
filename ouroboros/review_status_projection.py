@@ -3,9 +3,8 @@
 Boundary: this leaf reads ``review_state`` records (runs, commit attempts,
 obligations, commit-readiness debts) and renders the semantic read-model plus the
 human-facing ``review_status`` payload and one-line message. It knows nothing
-about task-acceptance packets and must never import ``ouroboros.review_evidence``
-— the dependency runs the other way, which keeps the module a leaf like
-``review_evidence_refs``. It also owns the read-only join of a split-drive task's
+about other evidence and must never import ``ouroboros.review_evidence`` — the
+dependency runs the other way, which keeps the module a leaf. It also owns the read-only join of a split-drive task's
 canonically held ``review_change`` attempts that ``review_evidence`` shares.
 """
 

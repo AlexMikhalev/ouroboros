@@ -134,9 +134,10 @@ def test_legacy_declared_reference_keeps_unknown_omission_sizes_and_cannot_regai
     assert project_helper_predecessor_authority(brief, declared=True) == brief
 
 
-def test_a_stored_authored_narrative_wins_without_chat_access(tmp_path):
+def test_a_stored_authored_narrative_wins_without_chat_access(tmp_path, monkeypatch):
     # Nothing writes an authored narrative any more; the readers keep serving the
     # ones earlier versions stored beside a task result and in the chat log.
+    from ouroboros import dialogue_store
     from ouroboros.task_results import load_task_result, write_task_result
 
     task_id = "narrative-root"
@@ -160,7 +161,10 @@ def test_a_stored_authored_narrative_wins_without_chat_access(tmp_path):
         "result": "R" * 200001, "task_contract": {"objective": "old"},
         **{key: stored[key] for key in ("continuation_narrative",)},
     }
-    (tmp_path / "logs" / "chat.jsonl").unlink()
+    def replayed(*_args, **_kwargs):
+        raise AssertionError("the stored narrative was projected by replaying dialogue history")
+
+    monkeypatch.setattr(dialogue_store, "transaction", replayed)  # the stored narrative needs no chat access
     projected = project_main_task_authority(
         {"id": "next", "predecessor_authority": authority}, drive_root=tmp_path,
     )["predecessor_authority"]
