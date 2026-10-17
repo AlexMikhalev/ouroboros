@@ -445,9 +445,11 @@ def _compact_annotations_locked(drive_root: Any, path: pathlib.Path) -> None:
     from ouroboros import dialogue_store as ds
 
     # Incomplete history cannot prove an annotation's source is absent. Leave the
-    # sidecar intact until its retained-message decisions can be made truthfully.
+    # sidecar intact until its retained-message decisions can be made truthfully;
+    # over an unreadable line (a gap) no source is proven absent, but the newest
+    # act per message still replaces the older ones.
     coverage = ds.range_coverage(drive_root, "chat")
-    if not coverage["imported"] or coverage["gaps"]:
+    if not coverage["imported"]:
         return
     latest = _latest_annotations(path)
     kept_receipts = set(sorted(
@@ -455,7 +457,7 @@ def _compact_annotations_locked(drive_root: Any, path: pathlib.Path) -> None:
         key=lambda message_id: str(latest[message_id].get("ts") or ""),
     )[-_RETAINED_AGENT_RECEIPTS:])
     retained_ids = {message_id for message_id in latest if not message_id.startswith(AGENT_RECEIPT_ID_PREFIX)
-                    and ds.rows_by_client_id(drive_root, message_id, limit=1)}
+                    and (coverage["gaps"] or ds.rows_by_client_id(drive_root, message_id, limit=1))}
     # Retained per (message, token): an older act's receipt under a message that
     # is still in the chat survives beside the message's newest act.
     rows = [

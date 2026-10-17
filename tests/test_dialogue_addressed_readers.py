@@ -215,6 +215,22 @@ def test_annotation_compaction_uses_stored_ids_and_keeps_pending_import(tmp_path
     assert set(latest_chat_annotations(tmp_path)) == {"owner-one"}
 
 
+def test_annotation_compaction_over_a_torn_line_keeps_every_source_and_the_newest_act(tmp_path, monkeypatch):
+    """A gap cannot prove an annotation's source absent, so nothing is dropped for it; the sidecar
+    still compacts to the newest act per message instead of growing without bound."""
+    from ouroboros import project_dialogue as pd
+
+    seed(tmp_path, live={"chat": ["{broken\n"]})
+    ds.ensure(tmp_path)
+    monkeypatch.setattr(pd, "_COMPACT_AT_BYTES", 1)
+    for status in ("queued", "delivering", "delivered"):
+        append_chat_annotation(tmp_path, "unreadable-source", action="steer_task", status=status)
+    assert ds.range_coverage(tmp_path, "chat")["gaps"]
+    assert latest_chat_annotations(tmp_path)["unreadable-source"]["status"] == "delivered"
+    sidecar = tmp_path / "logs" / "chat_annotations.jsonl"
+    assert len(sidecar.read_text(encoding="utf-8").splitlines()) == 1, "compacted to the newest act"
+
+
 def test_continuation_narrative_is_addressed_to_its_task_and_checks_result_identity(tmp_path):
     result_ref = {"kind": "task_result", "task_id": "selected", "reader": "get_task_result"}
     summary = {"task_id": "selected", "chat_id": 1, "type": "task_summary",
