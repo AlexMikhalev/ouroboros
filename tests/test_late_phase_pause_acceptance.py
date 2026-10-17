@@ -1,4 +1,4 @@
-"""Owner D10: Pause of an answered root while its retained late acceptance is live.
+"""The owner's Pause of an answered root while its retained late acceptance is live.
 
 The real historical review owner, its retained operation and settlement, the
 owner's Pause ingress, the assignment tick's Pause census and the Resume seam.
@@ -281,8 +281,8 @@ def test_resume_opening_the_fence_inside_a_restored_control_read_still_runs_the_
 
 def test_root_budget_fence_that_is_not_the_owner_pause_still_refuses_unsent_late_work(
         late, tmp_path, monkeypatch):  # noqa: F811
-    """Only the owner's closed Pause makes unsent late work wait (D10); a root budget
-    fence read with that Pause open on both sides refuses at once and buys nothing."""
+    """Only the owner's closed Pause makes unsent late work wait; a root budget fence
+    read with that Pause open on both sides refuses at once and buys nothing."""
     from ouroboros.acceptance_late import run_historical_acceptance
     from supervisor.events_budget import _set_root_budget_pause_locked
     from tests._budget_pause_exact_helpers import _install_queue

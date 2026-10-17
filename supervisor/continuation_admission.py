@@ -133,9 +133,8 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     root's closed fence they just read; while its queue latch is not projected
     (``latch_pending``, or a park that could not read it) that durable fence alone
     refuses every launch of the tree, so it stands in for the latch. The answered
-    predecessor's own late phase (D10) is custody too: running or open, or
-    paused (Resume would write again) — the Pause's own census alone reads its
-    saved pause as settled.
+    predecessor's own late phase is custody too while it runs or its state is
+    unreadable; a Pause ends it at once and saves nothing that could write again.
     ``purpose=CONTINUE_PURPOSE`` is the owner's Continue (#1572): a delegated
     run or unbound start the observation projects as ``independent_review``
     (a review surface registered it and it has no candidate-apply possibility),
@@ -180,7 +179,7 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     from ouroboros.post_task_checkpoint import late_phase_state
 
     late = late_phase_state(custody_root, predecessor)
-    if late and not (late == "paused" and owner_pause_fence_id):
+    if late:
         blockers.append({"kind": f"late_phase_{late}", "task_id": predecessor})
     for task in pending:
         tid = str(task.get("id") or "")

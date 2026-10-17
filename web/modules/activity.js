@@ -54,8 +54,8 @@ export function ownOutcomePhase(activity, queueFact = null) {
         ? { ...view, secondary: queueFact, secondaryMotion: false } : view;
 }
 
-/** An answered root whose late work remains (D10) names its own work, when it answered,
- * and that only the work left after the delivered answer waits — never a generic turn. */
+/** An answered root whose late work remains (its upkeep, or a review its Pause deferred) names
+ * its own work, when it answered, and that only the work after the answer waits — never a generic turn. */
 function lateWorkHtml(a, late) {
     const at = new Date(String(late.answered_at || ''));
     const iso = Number.isNaN(at.getTime()) ? '' : at.toISOString();
@@ -66,8 +66,8 @@ function lateWorkHtml(a, late) {
     return { name: esc(late.title || 'Answered task'), sub: `Remaining work ${state} · answer delivered${when}` };
 }
 
-/** A census-only live root (a direct turn, or an answered root whose late work the owner
- * paused, D10): its phase, and the shared control — Resume once the census says Paused.
+/** A census-only live root (a direct turn, or an answered root whose late work remains):
+ * its phase, and the shared control — Resume once the census says Paused.
  * `slot` marks where the caller paints a known outcome (`ownOutcomePhase`). */
 export function liveActivityRowHtml(a, nowMs = Date.now(), slot = null) {
     const names = { direct_chat: 'Direct turn', managed_task: 'Managed task' };
