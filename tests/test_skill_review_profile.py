@@ -28,15 +28,13 @@ def test_official_hub_profile_downgrades_severity_driven_to_warnings():
 def test_new_reviews_mint_no_hub_profile_and_never_read_the_hub(tmp_path, monkeypatch):
     """A review of a hub payload gets the ordinary aggregation (no profile) and the
     gate consults no catalog; persisted official_hub verdicts keep theirs (below)."""
+    import importlib.util
     import types
 
     from ouroboros import skill_review
-    from ouroboros.marketplace import ouroboroshub
 
-    def _no_catalog(*_a, **_k):
-        raise AssertionError("review must not read the hub catalog")
-
-    monkeypatch.setattr(ouroboroshub, "info", _no_catalog, raising=False)
+    # The raw-HTTP hub client is retired (the hub is a git source): there is no catalog to read.
+    assert importlib.util.find_spec("ouroboros.marketplace.ouroboroshub") is None
     skill_dir = tmp_path / "skills" / "ouroboroshub" / "weather"
     skill_dir.mkdir(parents=True)
     (skill_dir / ".ouroboroshub.json").write_text(json.dumps({"source": "ouroboroshub", "slug": "weather",

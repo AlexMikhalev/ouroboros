@@ -1320,8 +1320,8 @@ async def lifespan(app):
         if pytest_default_real_data_dir:
             log.info("Skipping native skills bootstrap against real DATA_DIR during pytest")
         else:
-            from ouroboros.launcher_bootstrap import ensure_data_skills_seeded
-            ensure_data_skills_seeded()
+            from ouroboros.skill_starter import skills_startup
+            skills_startup(lifespan_drive_root, settings, provider_ready=has_startup_ready_provider(settings))
     except Exception:
         log.warning("Native skills bootstrap failed", exc_info=True)
 

@@ -773,7 +773,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 378 -> 379 (review copies' lifetime): the prune walks ``state/review_checkouts`` itself
 # (``ouroboros/review_checking_prune.py``; the existing seats and views rows).
 # 379 -> 380: test_evidence stores full gate sources/results below source_handles/test-evidence.
-EXPECTED_SCAN_PATHS = 386
+# 386 -> 401 (skill sources): the git transport's caches under ``state/skill_sources`` (repository
+# and pointer clones, their locks, meta and snapshots, probe/merge scratch), the starter marker
+# ``state/skill_starter.json`` and the per-bucket install staging ``skills/*/.staging/*-*``.
+EXPECTED_SCAN_PATHS = 401
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -824,8 +827,8 @@ UNRESOLVED_SPELLINGS = frozenset({
     "logs/*",
     # skill payload roots resolved from a validated relpath (bucket + name):
     # config.py, contracts/skill_payload_policy.py, skill_payload_binding.py,
-    # tools/core.py — the `skills/<source>/<name>/**` row owns them.
-    "skills/*",
+    # tools/core.py — the `skills/<source>/<name>/**` row owns them. (`skills/*`
+    # itself is named by that row's per-bucket install staging spelling.)
     "skills/*/*",
 })
 

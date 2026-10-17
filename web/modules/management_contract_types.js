@@ -45,6 +45,8 @@
  * @property {Object=} presence_runtime
  * @property {Object=} provenance
  * @property {boolean=} identity_collision
+ * @property {?Object=} install  // source, official, release, basis, base_known, modified, update_available, withdrawn, left_source, turn_on_when_ready, installed_by, installed_at
+ * @property {string[]=} category
  */
 
 /**
@@ -250,8 +252,6 @@
  * @property {string=} version
  * @property {boolean=} auto_review
  * @property {boolean=} overwrite
- * @property {boolean=} adopt
- * @property {string=} expected_content_hash
  */
 
 /**
@@ -260,12 +260,11 @@
  */
 
 /**
- * Install, update or adopt result; `ok` stays true when review finds blockers.
+ * ClawHub install or update result; `ok` stays true when review finds blockers.
  * @typedef {Object} MarketplaceInstallResponse
  * @property {boolean} ok
  * @property {string=} sanitized_name
  * @property {?string=} error
- * @property {string=} code
  * @property {string=} target_dir
  * @property {?MarketplaceSkillSummary=} summary
  * @property {Object=} archive
@@ -277,15 +276,6 @@
  * @property {string=} deps_error
  * @property {string=} deps_fingerprint
  * @property {Object=} provenance
- * @property {boolean=} adopted
- * @property {*=} pre_adopt_retained
- * @property {string=} retention_error
- * @property {string=} live_content_hash
- * @property {string=} reason
- * @property {?string=} extension_action
- * @property {?string=} extension_reason
- * @property {boolean=} rolled_back
- * @property {string[]=} rollback_errors
  */
 
 /**
@@ -317,19 +307,6 @@
  * @typedef {Object} MarketplaceInstalledResponse
  * @property {number} count
  * @property {MarketplaceInstalledSkill[]} skills
- */
-
-/**
- * @typedef {Object} HubCatalogResponse
- * @property {string} query
- * @property {number} count
- * @property {MarketplaceSkillSummary[]} results
- */
-
-/**
- * @typedef {Object} HubPreviewResponse
- * @property {MarketplaceSkillSummary} summary
- * @property {Object[]} files
  */
 
 /**

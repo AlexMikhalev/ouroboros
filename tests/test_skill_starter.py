@@ -1,0 +1,122 @@
+"""The one-time starter installer: default list, first-start classification, offline builtins, retries."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from ouroboros import skill_starter
+from ouroboros.skill_install_record import read_install_record
+from tests._skill_source_fixtures import HubFixture, builtin_repo, join_source_refreshes
+
+
+@pytest.fixture
+def setup(tmp_path, monkeypatch):
+    drive = tmp_path / "data"
+    (drive / "skills").mkdir(parents=True)
+    monkeypatch.delenv("OUROBOROS_SKILLS_REPO_PATH", raising=False)
+    hub = HubFixture(tmp_path / "remote")
+    hub.add_hosted("duckduckgo", official=True, recommended=True, category=["city"])
+    hub.add_hosted("weather", official=True, category=["city"])
+    hub.add_hosted("notes", category=["writing"])
+    hub.commit()
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(hub.rows()))
+    monkeypatch.delenv("OUROBOROS_STARTER_SKILLS", raising=False)
+    yield drive, hub, builtin_repo(tmp_path)
+    join_source_refreshes()
+
+
+def test_default_list_is_the_recommended_builtin_and_official_skills(setup):
+    drive, hub, repo = setup
+    from ouroboros.skill_source_catalog import refresh_source
+
+    refresh_source(drive, hub.rows()[1])
+    assert skill_starter.default_starter_ids(drive, repo_dir=repo) == ["builtin/telegram", "ouroboros/duckduckgo"]
+    configured = {"OUROBOROS_STARTER_SKILLS": json.dumps(["ouroboros/weather"])}
+    assert skill_starter.starter_ids(drive, configured, repo_dir=repo) == ["ouroboros/weather"]
+    assert skill_starter.starter_ids(drive, {"OUROBOROS_STARTER_SKILLS": "not json"}, repo_dir=repo) == [
+        "builtin/telegram", "ouroboros/duckduckgo"]
+
+
+def test_first_start_classification_separates_new_installs_from_upgrades(tmp_path):
+    fresh, upgraded, onboarded = (tmp_path / name for name in ("fresh", "upgraded", "onboarded"))
+    for root in (fresh, upgraded, onboarded):
+        root.mkdir()
+    (upgraded / "skills" / "native").mkdir(parents=True)
+    (upgraded / "skills" / "native" / ".bootstrap-seed-complete").write_text("done")
+    assert skill_starter.classify_first_start(fresh, {}) == "fresh"
+    assert skill_starter.classify_first_start(upgraded, {}) == "upgrade"
+    assert skill_starter.classify_first_start(onboarded, {"OUROBOROS_ONBOARDING_COMPLETED_AT": "x"}) == "upgrade"
+    # The decision is durable: the seeding that follows cannot turn a new install into an "upgrade".
+    (fresh / "skills" / "native").mkdir(parents=True)
+    (fresh / "skills" / "native" / ".bootstrap-seed-complete").write_text("done")
+    assert skill_starter.classify_first_start(fresh, {}) == "fresh"
+
+
+def test_upgrades_install_nothing_and_new_headless_installs_start(setup, monkeypatch):
+    drive, _hub, repo = setup
+    scheduled = []
+    monkeypatch.setattr(skill_starter, "schedule_starter",
+                        lambda d, ids, origin, repo_dir=None: scheduled.append((ids, origin)))
+    skill_starter._write_marker(drive, state="upgrade")
+    assert skill_starter.at_startup(drive, {}, provider_ready=True, repo_dir=repo) == "upgrade" and not scheduled
+    skill_starter.marker_path(drive).unlink()
+    skill_starter._write_marker(drive, state="fresh")
+    assert skill_starter.at_startup(drive, {}, provider_ready=False, repo_dir=repo) == "fresh" and not scheduled
+    assert skill_starter.at_startup(drive, {}, provider_ready=True, repo_dir=repo) == "scheduled"
+    assert scheduled == [(None, "first_start")]
+
+
+def test_run_installs_builtins_offline_and_retries_an_unread_hub_later(setup, monkeypatch):
+    drive, hub, repo = setup
+    rows = hub.rows()
+    rows[1]["url"] = rows[2]["url"] = str(hub.root / "unreachable.git")
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
+    monkeypatch.setattr("ouroboros.skill_source_install.start_review", lambda *a, **k: None)
+    marker = skill_starter.run_starter(drive, ["builtin/telegram", "ouroboros/duckduckgo"], origin="onboarding",
+                                       repo_dir=repo)
+    assert marker["state"] == "pending"
+    assert marker["results"]["builtin/telegram"]["status"] == "installed"
+    assert marker["results"]["ouroboros/duckduckgo"]["code"] == "source_unread"
+    assert read_install_record(drive, "telegram")["source"]["id"] == "builtin"
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(hub.rows()))
+    marker = skill_starter.run_starter(drive, marker["requested"], origin="retry", repo_dir=repo)
+    assert marker["state"] == "done" and marker["results"]["ouroboros/duckduckgo"]["status"] == "installed"
+    assert read_install_record(drive, "duckduckgo")["basis"] == "trusted"
+    assert skill_starter.after_onboarding(drive, ["builtin/unix_computer_use"]) == "done"  # never runs twice
+
+
+def test_review_items_start_their_review_and_an_empty_choice_finishes(setup, monkeypatch):
+    drive, hub, repo = setup
+    reviews = []
+    monkeypatch.setattr("ouroboros.skill_source_install.start_review", lambda d, name, **k: reviews.append(name))
+    marker = skill_starter.run_starter(drive, ["ouroboros-community/notes"], origin="onboarding", repo_dir=repo)
+    assert marker["results"]["ouroboros-community/notes"]["basis"] == "review" and reviews == ["notes"]
+    other = drive.parent / "other"
+    other.mkdir()
+    assert skill_starter.after_onboarding(other, []) == "done"
+    assert skill_starter.read_marker(other)["requested"] == []
+
+
+def test_onboarding_choices_confirm_hub_rows_and_refuse_malformed_input(setup):
+    _drive, hub, _repo = setup
+    settings = {"OUROBOROS_SKILL_SOURCES": json.dumps(hub.rows())}
+    out = skill_starter.onboarding_skill_choices({"skill_source_trust": {"ouroboros-community": "trusted"}}, settings)
+    rows = {row["id"]: row for row in json.loads(out["OUROBOROS_SKILL_SOURCES"])}
+    assert rows["ouroboros-community"]["trust"] == "trusted" and rows["ouroboros-community"]["confirmed"]
+    assert skill_starter.onboarding_skill_choices({"starter_skills": ["a/b"]}, settings) == {}
+    for bad in ({"starter_skills": [1]}, {"skill_source_trust": {"ouroboros": "maybe"}},
+                {"skill_source_trust": {"missing": "review"}}, {"skill_source_trust": ["x"]}):
+        with pytest.raises(ValueError):
+            skill_starter.onboarding_skill_choices(bad, settings)
+
+
+def test_startup_classifies_the_data_root_before_the_builtin_startup_work(tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr("ouroboros.launcher_bootstrap.ensure_data_skills_seeded",
+                        lambda: order.append(("builtins", skill_starter.read_marker(tmp_path).get("state"))))
+    monkeypatch.setattr(skill_starter, "at_startup",
+                        lambda _drive, _settings, provider_ready: order.append(("sources", provider_ready)) or "fresh")
+    assert skill_starter.skills_startup(tmp_path, {}, provider_ready=True) == "fresh"
+    assert order == [("builtins", "fresh"), ("sources", True)]

@@ -157,8 +157,8 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_PREFLIGHT_TIMEOUT_SEC | 1800 | Env-only: total wall-clock budget of the hermetic test preflight (`preflight_runner.py`); the Android entry defaults to 3600 |
 | OUROBOROS_PREFLIGHT_SERIAL | unset | Env-only: `1` selects one serial pytest pass; scrubbed from the candidate environment |
 | OUROBOROS_PREFLIGHT_TEST_WORKERS | unset | Env-only: xdist workers for the parallel pass (floor 2, else `os.cpu_count()`); scrubbed from the candidate |
-| OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS | true | Auto-grant manifest-declared permissions to cleanly reviewed skills (hash-bound; blocking findings never grant) |
-| OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS | true | Launcher seed/resync writes hash-pinned `native_seed` verdicts; no runtime grant endpoint |
+| OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS | true | Auto-grant manifest requests to accepted bytes (clean review or trusted install; hash-bound) |
+| OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS | true | Built-in source trust (`false`: reviewed) |
 | OUROBOROS_CONTEXT_MODE | max | Main's `nano`/`low`/`max` and initial project copy; owner-selected outside Cyber. Review remains independent (§6 Context fitting) |
 | OUROBOROS_CONTEXT_MODE_AUTO_LOW | false | Provenance tombstone, not a toggle: normalization writes `false`; a persisted `low` is honoured only beside it (`context_mode_compat.py`) |
 | OUROBOROS_RUNTIME_MODE | advanced | Effective Access light/advanced/pro/cyber_pro, persisted as the next-boot value (§6 Safety and runtime mode) |
@@ -166,8 +166,10 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | MCP_ENABLED | false | MCP client toggle (§6 MCP and browser-facing external tools) |
 | MCP_SERVERS | [] | MCP server list; persisted in settings, never env-exported |
 | MCP_TOOL_TIMEOUT_SEC | 60 | Per-MCP-tool timeout |
-| OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | OuroborosHub catalog URL (automatic fetch limited to catalog JSON; installs verify SHA-256) |
+| OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | Public hub: its two derived source rows; publication fallback |
 | OUROBOROS_CLAWHUB_REGISTRY_URL | `https://clawhub.ai/api/v1` | ClawHub registry URL |
+| OUROBOROS_SKILL_SOURCES | "" | Skill source list (§13); empty = derived from the keys above, unwritten |
+| OUROBOROS_STARTER_SKILLS | "" | Catalog ids installed once on a new install; empty = the recommended ones |
 | OUROBOROS_PROMPT_CACHE_TTL | 1h | Prompt-cache tier default/5m/1h for Anthropic-family cache markers, applied at the send boundary and recorded in usage |
 | OUROBOROS_EFFORT_MIN | low | Main helper floor; project composers save their own copy (`settings_scales.effort_range`) |
 | OUROBOROS_EFFORT_TASK | medium | Main primary; project copy sets its roots' primary; Auto helpers clamp it into their bounds |

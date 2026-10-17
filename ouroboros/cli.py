@@ -484,17 +484,22 @@ def _marketplace_command(args: argparse.Namespace) -> int:
             "update": f"/api/marketplace/clawhub/update/{urllib.parse.quote(args.name)}",
             "uninstall": f"/api/marketplace/clawhub/uninstall/{urllib.parse.quote(args.name)}",
         }
-    else:
+    else:  # every connected skill source; a slug is a catalog id <source>/<name>
+        item = urllib.parse.quote(getattr(args, "slug", "") or "", safe="/")
         paths = {
-            "search": f"/api/marketplace/ouroboroshub/catalog?q={urllib.parse.quote(args.query or '')}",
-            "installed": "/api/marketplace/ouroboroshub/installed",
-            "preview": f"/api/marketplace/ouroboroshub/preview/{urllib.parse.quote(args.slug)}",
-            "install": "/api/marketplace/ouroboroshub/install",
-            "update": f"/api/marketplace/ouroboroshub/update/{urllib.parse.quote(args.name)}",
-            "uninstall": f"/api/marketplace/ouroboroshub/uninstall/{urllib.parse.quote(args.name)}",
+            "search": f"/api/skill-catalog/search?q={urllib.parse.quote(args.query or '')}",
+            "installed": "/api/extensions",
+            "preview": f"/api/skill-catalog/item/{item}",
+            "install": "/api/skill-catalog/install",
+            "update": f"/api/skills/{urllib.parse.quote(getattr(args, 'name', '') or '')}/update",
+            "uninstall": f"/api/skills/{urllib.parse.quote(getattr(args, 'name', '') or '')}/uninstall",
         }
     method = "GET" if args.marketplace_command in {"search", "installed", "preview"} else "POST"
-    body = {"slug": getattr(args, "slug", "")} if args.marketplace_command == "install" else {}
+    body: dict = {}
+    if args.marketplace_command == "install":
+        body = {"slug": args.slug} if hub == "clawhub" else {"id": args.slug}
+    elif args.marketplace_command == "update" and hub != "clawhub":
+        body = {"mode": "replace"}
     _print_json(client.request(method, paths[args.marketplace_command], body if method == "POST" else None))
     return 0
 
@@ -688,7 +693,7 @@ def _add_skills_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def _add_marketplace_parser(subparsers: argparse._SubParsersAction) -> None:
     market = subparsers.add_parser("marketplace", help="marketplace wrappers")
-    market.add_argument("hub", choices=["clawhub", "ouroboroshub"])
+    market.add_argument("hub", choices=["clawhub", "sources"])
     sub = market.add_subparsers(dest="marketplace_command", required=True)
     search = sub.add_parser("search")
     search.add_argument("query", nargs="?")

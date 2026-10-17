@@ -318,7 +318,7 @@ ouroboros/ — agent core and shared runtime (§6)
   skill_repair_admission.py — Selected-skill development admission: immutable `base_content_hash` against observed `expected_content_hash` before each payload operation; no long shell lock or rollback (§6 Skills and extensions)
   skill_owner_attestation.py — Skip review / Turn on anyway: the owner accepts any skill's exact bytes without the LLM review (§13)
   skill_identity.py, skill_install_record.py, skill_acceptance.py, skill_builtin.py — Release digest and record conversion; install record; install-basis/owner-edit acceptance; the built-in source (§13)
-  skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_eligibility.py — Publication leaves: captured-byte authority, exact-byte Betterleaks evidence, typed attempt/receipt, GitHub transport after the local gates, author publication authority (§6 Skill publication)
+  skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_eligibility.py, skill_publish_destination.py — Publication leaves: captured bytes, Betterleaks evidence, typed attempt/receipt, GitHub transport, author authority, destination and hub entry (§6 Skill publication)
   skill_review_status.py — The review gate → `executable_review` (§13): verdicts, Advisory author acceptance, install-basis and owner facts
   skill_review_passes.py, skill_review_collect.py — One multi-model pass or chunked quorum, reserving the complete operation roster before dispatch; exact-wave collection without paid dispatch
   skill_review.py — Skill review: deterministic preflight, then the review pool against the Skill Review Checklist and CREATING_SKILLS
@@ -333,8 +333,9 @@ ouroboros/ — agent core and shared runtime (§6)
   extension_health.py — Durable process-qualified per-skill health at `data/state/skills/<name>/health.json`; server observation is authoritative, worker observation a handoff-qualified view
   extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — The extension runtime's leaves: the `PluginAPI` handed to `register(api)`, live-surface registries, liveness, child-catalog validation, staged import trees, provider-safe surface naming
   skill_token.py — Opaque Host Service token minting/validation (§12)
-  marketplace/ — ClawHub and OuroborosHub (§13)
-    clawhub.py, ouroboroshub.py, fetcher.py, adapter.py, install.py, install_specs.py, isolated_deps.py, provenance.py — Registry clients (the hub update is an adopt transaction with verified rollback), fetch, manifest adaptation, install and dependency metadata, isolated deps, provenance and the publication receipt
+  skill_sources.py, skill_source_git.py, skill_source_catalog.py, skill_source_install.py, skill_starter.py — Sources, git caches, catalogs, install lifecycle, starter (§13)
+  marketplace/ — ClawHub and install substrate (§13)
+    clawhub.py, fetcher.py, adapter.py, install.py, install_specs.py, isolated_deps.py, provenance.py — Registry, fetch, adaptation, install specs, isolated deps, receipts
   skill_lifecycle_queue.py — Single FIFO skill-mutation lane (a review panel lends it out) and event snapshot (§13)
   skill_lifecycle_actions.py — Shared grant/toggle/turn-on-when-ready effects and owner-action admission for every adapter
   skill_uninstall_state.py — Marketplace-uninstall tombstones and explicitly authorized local payload/state deletion, with separate retention contracts
@@ -425,7 +426,7 @@ ouroboros/ — agent core and shared runtime (§6)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
     widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot, with no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts contracts.py re-exports
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
-    marketplace.py — ClawHub and OuroborosHub HTTP surface
+    marketplace.py, skill_sources.py — ClawHub; sources, catalog, installs
     mcp.py — MCP HTTP surface over the shared MCPManager
     claudexor_accounts.py — Thin owned-daemon status/login/account proxies; no auth logic or browser token. `reads` classifies catalog/accounts/quota, `resource_capabilities_read` operations; only a successful read proves absence (§3 Agent accounts; §4)
     claudexor_passive.py, claudexor_contracts.py — passive quota read and envelope types (docs/PASSIVE_QUOTA_READ.md)
@@ -514,7 +515,7 @@ ouroboros/ — agent core and shared runtime (§6)
     scope_required_sources.py — Change-relative protected/prompt/contract sources, derived families and twins; the final manifest hash and policy version bind review replay
     services.py — Service mini-manager with process-group cleanup
     skill_exec.py — list_skills/skill_review/toggle_skill/skill_owner_action/skill_exec over a fixed interpreter allowlist; gated by enablement, fresh review and hash
-    skill_publish.py — Thin publish transaction over the four leaves; success is PR-receipt-gated
+    skill_publish.py, skill_source_tools.py — PR-receipt-gated publish; source/search/install/update tools
     skill_preflight.py — Read-only skill preflight; a module widget's `render.entry` is containment-checked and parsed as a classic script: the widget frame runs it inline
     project_journal.py — journal_write/read, workpad_read/write, `update_focus`, journal_tail_digest; foreign project reads honoured for roots, foreign writes refused; owns `mirror_tree_coordination_to_journal`
     presence.py — configure_presence, initiate_presence, typed completion/cancel

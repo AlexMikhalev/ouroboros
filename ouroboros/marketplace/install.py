@@ -103,7 +103,7 @@ class PayloadRollbackSnapshot:
 # Only state that install/review/dependency reconciliation may replace. Owner
 # enable/disable intent and append-only history are never rolled back.
 LIFECYCLE_SNAPSHOT_FILENAMES = (
-    "review.json", "review_job.json", "deps.json", "grants.json", "accepted_rebuttals.json",
+    "review.json", "review_job.json", "deps.json", "grants.json", "accepted_rebuttals.json", "install.json",
 )
 
 
@@ -412,11 +412,14 @@ def install_skill(
     overwrite: bool = False,
     progress_callback: Optional[Callable[[str], None]] = None,
     target_name_override: str = "",
+    install_record: Optional[Dict[str, Any]] = None,
 ) -> InstallResult:
     """Install one skill; ``overwrite=True`` is required for replacement.
 
     ``target_name_override`` pins the landed directory name (used by updates so a
     re-install stays in its existing directory instead of re-deriving via dedupe).
+    ``install_record`` carries the source fields of the install record written after
+    landing; without it the ClawHub source row of the current list supplies them.
 
     ``progress_callback`` receives worker-thread stage labels for the UI and
     must stay cheap/non-throwing.
@@ -612,6 +615,14 @@ def install_skill(
         write_provenance(drive_root, adapter_result.sanitized_name, provenance)
     except Exception:
         log.warning("Failed to persist provenance for %s", adapter_result.sanitized_name, exc_info=True)
+    try:
+        _write_registry_install_record(drive_root, adapter_result.sanitized_name, target_dir,
+                                       slug=cleaned_slug, version=target_version, record=install_record)
+    except Exception as exc:
+        restore_payload_state(rollback_snapshot, restore_state_provenance=True)
+        staged.cleanup()
+        return fail(f"Could not record the install of the landed skill: {exc}", sanitized_name=adapter_result.sanitized_name,
+                    summary=summary, archive=archive, staged=staged, adapter=adapter_result)
 
     # Seed grants.json for core settings so the owner-grant bridge has one file.
     try:
@@ -693,6 +704,26 @@ def install_skill(
     )
 
 
+def _write_registry_install_record(drive_root: pathlib.Path, name: str, target_dir: pathlib.Path, *,
+                                   slug: str, version: str, record: Optional[Dict[str, Any]]) -> None:
+    """The install record of a registry install: the landed (adapted) payload is the release."""
+    from ouroboros.skill_install_record import write_install_record
+    from ouroboros.skill_source_catalog import tree_release_digest
+
+    fields = dict(record or {})
+    if not fields:
+        from ouroboros.skill_sources import load_sources
+
+        row = next((r for r in load_sources() if r["kind"] == "registry"), None) or {
+            "id": "clawhub", "kind": "registry", "name": "ClawHub", "trust": "review"}
+        fields = {"source": {key: row[key] for key in ("id", "kind", "name", "url") if row.get(key)},
+                  "basis": row["trust"], "official": False, "installed_by": "owner", "turn_on_when_ready": False}
+    digest = tree_release_digest(target_dir)
+    fields.update(entry=slug, release={"version": version, "digest": digest}, base_digest=digest)
+    fields.pop("installed_at", None)
+    write_install_record(drive_root, name, fields)
+
+
 def uninstall_skill(
     drive_root: pathlib.Path,
     *,
@@ -756,6 +787,9 @@ def uninstall_skill(
     except Exception:
         log.debug("failed to clear deps state for %s", cleaned, exc_info=True)
     delete_provenance(drive_root, cleaned)
+    from ouroboros.skill_install_record import clear_install_record
+
+    clear_install_record(drive_root, cleaned)
     # CPL4-C11: mark payload-gone so the startup sweep clears the rest of the
     # owner state (grants preserved as owner authority).
     from ouroboros.skill_uninstall_state import write_uninstall_tombstone
@@ -771,8 +805,12 @@ def update_skill(
     sanitized_name: str,
     version: Optional[str] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
+    auto_review: bool = True,
 ) -> InstallResult:
-    """Reinstall by resolving the original slug from persisted provenance."""
+    """Reinstall by resolving the original slug from persisted provenance.
+
+    The install record keeps its source fields; the new release and the source's current trust
+    replace the old ones. ``auto_review=False`` leaves the review to the caller."""
     from ouroboros.skill_loader import _skill_location_conflict_error
 
     expected_target = _clawhub_skills_root(drive_root) / sanitized_name
@@ -815,15 +853,26 @@ def update_skill(
         unload_extension(sanitized_name)
     except Exception:  # pragma: no cover — defensive
         log.debug("pre-update unload failed for %s", sanitized_name, exc_info=True)
+    from ouroboros.skill_install_record import read_install_record
+
+    previous = read_install_record(drive_root, sanitized_name) or {}
+    carried = {key: previous[key] for key in ("source", "official", "installed_by", "turn_on_when_ready",
+                                               "reason", "task_id") if key in previous}
+    if carried.get("source"):
+        from ouroboros.skill_sources import load_sources
+
+        row = next((r for r in load_sources() if r["id"] == carried["source"].get("id")), None)
+        carried["basis"] = row["trust"] if row else str(previous.get("basis") or "review")
     result = install_skill(
         drive_root,
         repo_dir,
         slug=slug,
         version=version,
-        auto_review=True,
+        auto_review=auto_review,
         overwrite=True,
         progress_callback=progress_callback,
         target_name_override=sanitized_name,
+        install_record=carried if carried.get("source") else None,
     )
     if was_live and (
         not getattr(result, "ok", False)

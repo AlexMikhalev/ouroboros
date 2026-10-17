@@ -572,14 +572,8 @@ def resolve_data_skills_dir(data_dir: pathlib.Path) -> Optional[pathlib.Path]:
 
 
 def get_ouroboroshub_catalog_url() -> str:
-    """Return the official OuroborosHub static catalog URL."""
+    """The public hub's v1 catalog URL: the derived hub source rows and the publish fallback read it."""
     return str(runtime_settings().get("OUROBOROS_HUB_CATALOG_URL") or SETTINGS_DEFAULTS["OUROBOROS_HUB_CATALOG_URL"]).strip()
-
-
-def get_ouroboroshub_skills_dir() -> pathlib.Path:
-    """Return ``<DATA_DIR>/skills/ouroboroshub/`` (created on demand by
-    ``ensure_data_skills_dir``, which makes every source subdir)."""
-    return ensure_data_skills_dir(DATA_DIR) / SKILL_SOURCE_OUROBOROSHUB
 
 
 def get_clawhub_registry_url() -> str:
