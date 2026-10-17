@@ -36,7 +36,6 @@ from ouroboros.skill_loader import (
     SkillPayloadUnreadable,
     compute_content_hash,
     find_skill,
-    review_status_allows_execution,
     save_enabled,
     skill_identity_collision_names,
     skill_review_gate,
@@ -700,8 +699,10 @@ def _skill_content_hash(
 
 
 def _review_dedupe_key(skill_name: str, content_hash: str) -> str:
-    suffix = content_hash or "unknown"
-    return f"review:{skill_name}:{suffix}"
+    """One review per skill at a time: the panel lends the lifecycle lane out, so a
+    second review of the same skill (other bytes) gets a pointer, not a race on its
+    job record."""
+    return f"review:{skill_name}"
 
 
 def _call_review_with_lifecycle_guard(
@@ -950,6 +951,8 @@ def _outcome_payload(
     }
     if getattr(outcome, "dispatch_refusal_code", ""):
         payload["dispatch_refusal_code"] = outcome.dispatch_refusal_code
+    if getattr(outcome, "turn_on_when_ready", ""):
+        payload["turn_on_when_ready"] = outcome.turn_on_when_ready
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
     if job is not None:
@@ -1217,7 +1220,7 @@ def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJ
         "content_hash": content_hash,
         "reviewer_models": [],
         "findings": [],
-        "error": f"review already {duplicate.status} for this skill/content hash",
+        "error": f"review already {duplicate.status} for this skill",
         "review_gate": gate,
         "executable_review": gate["executable_review"],
         "deps_status": "not_required",
@@ -1383,7 +1386,15 @@ def run_skill_review_lifecycle_blocking(
             )
             deps_status = "not_required"
             deps_error = ""
-            executable_review = review_status_allows_execution(getattr(outcome, "status", ""))
+            reviewed = _load_binding_skill(binding) if binding is not None else find_skill(
+                drive_root, skill_name, repo_path=repo_path,
+            )
+            # The verdict just produced under this skill's acceptance facts (a source
+            # that reviews each skill keeps blockers off): deps only for runnable bytes.
+            executable_review = skill_review_gate(
+                getattr(outcome, "status", ""), current_hash=str(getattr(outcome, "content_hash", "") or ""),
+                acceptance=reviewed.review.acceptance if reviewed is not None else None,
+            )["executable_review"]
             if executable_review:
                 progress.set("Installing dependencies…")
                 deps_status, deps_error = _reconcile_deps_after_pass_review(
@@ -1411,6 +1422,12 @@ def run_skill_review_lifecycle_blocking(
             )
             if just_auto_enabled:
                 save_enabled(drive_root, skill_name, True, actor="review_auto_enable")
+            else:
+                from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+
+                turn_on = reconcile_turn_on_when_ready(drive_root, skill_name, repo_path=repo_path,
+                                                       reason="review finished")
+                setattr(outcome, "turn_on_when_ready", turn_on["action"])
             progress.set("Reloading extension…")
             reconcile = _reconcile_extension_payload(
                 ctx,

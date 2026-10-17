@@ -43,7 +43,6 @@ class InstalledSkill(TypedDict, total=False):
     reviewed_content_hash: str
     executable_review: bool
     review_profile: str
-    official_hub_verified: Optional[bool]  # null: no fresh hub catalog view yet
     owner_attestable: Optional[bool]
     submit_hub: Dict[str, Any]
     conflict: Optional[Dict[str, Any]]  # {code: "skill_conflict", skills, omitted}
@@ -96,7 +95,6 @@ class ExtensionManifestResponse(TypedDict, total=False):
     reviewed_content_hash: str
     executable_review: bool
     review_profile: str
-    official_hub_verified: Optional[bool]
     owner_attestable: Optional[bool]
     submit_hub: Dict[str, Any]
 
