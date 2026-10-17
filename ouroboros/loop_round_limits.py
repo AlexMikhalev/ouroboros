@@ -976,11 +976,13 @@ def _finalize_limit_ctx(
 # ---------------------------------------------------------------------------
 
 
-def _publish_reclaimed_transcript(ctx: Any, rebuilt: list) -> None:
-    """Publish a reclaim candidate as the live transcript (the same seams every pass uses)."""
+def _publish_reclaimed_transcript(ctx: Any, rebuilt: list, *, by: str = "compaction") -> None:
+    """Publish a reclaim candidate as the live transcript (the same seams every pass uses).
+
+    ``by`` names the rewrite for the next send's prefix record: a refusal pass or a renewal is no fold."""
     invalidate_task_cache_splits(ctx.task_id)
     ctx.messages[:] = rebuilt
-    sanction_rewrite(ctx.tools._ctx, "compaction")
+    sanction_rewrite(ctx.tools._ctx, by)
     ctx.tools._ctx.messages = ctx.messages
     _loop().seal_task_transcript(ctx.messages)
     prune_reclaim_trace_refs(ctx.tools._ctx, ctx.messages)
@@ -1028,7 +1030,7 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str, goal_t
         drive_root=pathlib.Path(ctx.drive_root or ctx.drive_logs.parent), task_id=ctx.task_id,
     )
     if receipt.status == "applied":
-        _publish_reclaimed_transcript(ctx, rebuilt)
+        _publish_reclaimed_transcript(ctx, rebuilt, by=f"refusal_pass:{rung}")
     _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
         "type": "context_reclaim", "checkpoint_kind": "context_reclaim_emergency", "rung": rung,
         "round": ctx.round_idx, "route_fp": measurement.route_fp, "round_id": measurement.round_id,

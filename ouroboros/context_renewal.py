@@ -111,7 +111,8 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
     schemas = getattr(limit_ctx, "tool_schemas", None)
     if estimate_context_prompt_tokens(seed, schemas) >= estimate_context_prompt_tokens(messages, schemas):
         return _cannot_help(limit_ctx)  # never send a candidate that is not smaller than the refused one
-    _publish_reclaimed_transcript(SimpleNamespace(messages=messages, task_id=limit_ctx.task_id, tools=tools), seed)
+    _publish_reclaimed_transcript(SimpleNamespace(messages=messages, task_id=limit_ctx.task_id, tools=tools), seed,
+                                  by="renewal")
     from ouroboros.loop import _emit_checkpoint_event
 
     _emit_checkpoint_event(limit_ctx.event_queue, limit_ctx.task_id, limit_ctx.drive_logs, {

@@ -138,7 +138,7 @@ def test_actual_refusal_runs_the_host_copies_step_first(tmp_path, monkeypatch):
     assert _owner(OWNER) in sends[1] and _owner("A") in sends[1]  # the owner's rows stay whole
     assert sends[1][2:4] == _tool("one")  # bodies: a later rung
     assert any(_EMERGENCY_LABELS["host_copies"] in json.dumps(m.get("content")) for m in sends[1])
-    assert inner.messages is context.messages and inner._transcript_rewrite_sanctioned == "compaction"
+    assert inner.messages is context.messages and inner._transcript_rewrite_sanctioned == "refusal_pass:host_copies"
     emergency = [e for e in events if e.get("checkpoint_kind") == "context_reclaim_emergency"]
     assert [(e["rung"], e["status"]) for e in emergency] == [("host_copies", "applied"), ("bodies", "no_eligible")]
     assert inner._context_overflow_retries == {("exec:round:1", "host_copies+bodies")}  # once per round, whatever the route
