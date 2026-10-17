@@ -14,22 +14,22 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 try:
-    from typing import NotRequired
+    from typing import NotRequired, Required
 except ImportError:  # pragma: no cover
-    from typing_extensions import NotRequired
+    from typing_extensions import NotRequired, Required
 
 
 class UiContribution(TypedDict, total=False):
-    key: str
-    skill: str
-    skill_label: str
-    id: str
+    key: Required[str]
+    skill: Required[str]
+    skill_label: Required[str]
+    id: Required[str]
     placement: str
     provides: str
-    label: str
-    title: str
-    icon: str
-    order: int
+    label: Required[str]
+    title: Required[str]
+    icon: Required[str]
+    order: Required[int]
     action: Dict[str, Any]
     source: Dict[str, Any]
     runtime: str
@@ -40,8 +40,8 @@ class UiContribution(TypedDict, total=False):
     install_size: str
     max_bytes: int
     max_seconds: int
-    render: Dict[str, str]
-    revision: str
+    render: Required[Dict[str, str]]
+    revision: Required[str]
 
 
 class UiContributionsResponse(TypedDict):
@@ -75,6 +75,7 @@ def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) 
                 and skill.review.gate_for(skill.content_hash)["executable_review"]
                 and not skill_conflict_status(skill, skills)):
             rows.extend(project_contributions(skill.name, clean, skill.content_hash, skill.manifest.name))
+            live_names.add(skill.name)
         if skill.source == "native" and skill.name not in live_names:
             offers.extend({"skill": skill.name, "skill_label": skill.manifest.name, "id": item["id"],
                            "label": item["label"], "destination": item["destination"],

@@ -796,16 +796,16 @@
 /**
  * Manifest contribution, projected from one live revision. Optional provider fields stay absent.
  * @typedef {Object} UiContribution
- * @property {string=} key
- * @property {string=} skill
- * @property {string=} skill_label
- * @property {string=} id
+ * @property {string} key
+ * @property {string} skill
+ * @property {string} skill_label
+ * @property {string} id
  * @property {string=} placement
  * @property {string=} provides
- * @property {string=} label
- * @property {string=} title
- * @property {string=} icon
- * @property {number=} order
+ * @property {string} label
+ * @property {string} title
+ * @property {string} icon
+ * @property {number} order
  * @property {Object=} action
  * @property {{url:string,refresh_s:number}=} source
  * @property {string=} runtime
@@ -816,7 +816,7 @@
  * @property {string=} install_size
  * @property {number=} max_bytes
  * @property {number=} max_seconds
- * @property {{kind:string,url:string}=} render
+ * @property {{kind:string,url:string}} render
  * @property {string=} revision
  */
 /**

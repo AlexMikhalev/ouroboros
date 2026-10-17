@@ -259,3 +259,15 @@ def test_chunked_speech_upload_has_no_cap_exception():
     assert len(asyncio.run(read(524288))) == 524288
     with pytest.raises(ValueError, match="too large"):
         asyncio.run(read(524289))
+
+
+def test_live_instruction_provider_is_not_a_disabled_offer(tmp_path, monkeypatch):
+    installed(tmp_path, kind="instruction", entries=[STT])
+    with client(tmp_path, monkeypatch) as http:
+        payload = http.get("/api/ui/contributions").json()
+        assert [row["key"] for row in payload["contributions"]] == ["demo:speech"]
+        assert payload["offers"]["stt"] == []
+        save_enabled(tmp_path, "demo", False)
+        payload = http.get("/api/ui/contributions").json()
+        assert payload["contributions"] == []
+        assert payload["offers"]["stt"][0]["skill"] == "demo"

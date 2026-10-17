@@ -185,11 +185,7 @@ def collect_routes(
         Route("/api/extensions/{skill}/manifest", endpoint=api_extension_manifest, methods=["GET"]),
         Route("/api/extensions/{skill}/module/{entry:path}", endpoint=api_extension_module, methods=["GET"]),
         Route("/api/extensions/{skill}/ui/{revision}/{path:path}", endpoint=api_extension_host_asset, methods=["GET"]),
-        Route(
-            "/api/extensions/{skill}/settings_section",
-            endpoint=api_extension_settings_section,
-            methods=["GET"],
-        ),
+        Route("/api/extensions/{skill}/settings_section", endpoint=api_extension_settings_section, methods=["GET"]),
         Route(
             "/api/extensions/{skill}/{rest:path}",
             endpoint=api_extension_dispatch,
