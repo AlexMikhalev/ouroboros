@@ -21,6 +21,8 @@ test('#931 every typed checkpoint kind names itself; only a kindless one is peri
         ['context_reclaim_manual', 'Context reclaimed on request'],
         ['context_reclaim_automatic', 'Context reclaimed automatically'],
         ['context_view', 'Context inspected'],
+        ['context_view_renewed', 'Working view renewed: same task, fresh window'],
+        ['context_reclaim_emergency', 'Context shrunk after a size refusal (no model)'],
         ['prompt_prefix_break', 'Prompt prefix rebuilt'],
         ['cost_budget_milestone', 'Cost budget milestone'],
         ['cost_budget_wrapup', 'Cost budget wrap-up'],
@@ -37,6 +39,11 @@ test('#931 every typed checkpoint kind names itself; only a kindless one is peri
         assert.equal(taskCheckpointLabel({ checkpoint_kind: kind, round: 30 }), label);
         assert.equal(summarizeLogEvent({ type: 'task_checkpoint', checkpoint_kind: kind, round: 30 }).headline, label);
     }
+    // The mind's applied fold names what it saved; an inspection or a no-op stays an inspection.
+    assert.equal(taskCheckpointLabel({ checkpoint_kind: 'context_view', status: 'applied', reclaimed_tokens: 129000 }),
+        'Ouroboros folded its context (−129,000 tokens)');
+    assert.equal(taskCheckpointLabel({ checkpoint_kind: 'context_view', status: 'no_op', reclaimed_tokens: 0 }),
+        'Context inspected');
     // An unknown kind names ITSELF rather than borrowing the periodic sentence.
     assert.equal(taskCheckpointLabel({ checkpoint_kind: 'brand_new_kind', round: 30 }),
         'Checkpoint · brand_new_kind');

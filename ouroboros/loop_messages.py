@@ -682,6 +682,10 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     components = _context_components(ctx, measured=measured)
     if components:
         parts.append("largest " + ", ".join(f"{label} ~{tokens:,}" for label, tokens in components))
+    from ouroboros.context_compaction import _capsule_metadata
+
+    # The mind's own folds stay countable to it (17.10.2026: after 42 folds it told the owner it never folded).
+    parts.append(f"own notes in view {sum(1 for row in ctx.messages if (_capsule_metadata(row)[1] or {}).get('authorship') == 'actor')}")
     previous = usage.get("_last_round_cache_usage") or {}
     read, total = previous.get("cached_tokens"), previous.get("prompt_tokens")
     share = (f"{int(read):,}/{int(total):,} tokens ({100 * read / total:.1f}%)"

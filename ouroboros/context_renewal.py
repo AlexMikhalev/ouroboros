@@ -79,7 +79,7 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
     before = len(messages)
     seed, left = renewal_seed(messages)
     if not (left["tool_rows"] or left["covered_replies"]):
-        return False  # only host rows would leave: a renewal cannot make this conversation fit
+        return _cannot_help(limit_ctx)  # only host rows would leave: a renewal cannot make this conversation fit
     raw = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     try:
         source = store_actor_source_bytes(limit_ctx.drive_root or limit_ctx.drive_logs.parent, limit_ctx.task_id,
@@ -96,7 +96,7 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
         f"{json.dumps(source, ensure_ascii=False, sort_keys=True)}.")))
     schemas = getattr(limit_ctx, "tool_schemas", None)
     if estimate_context_prompt_tokens(seed, schemas) >= estimate_context_prompt_tokens(messages, schemas):
-        return False  # never send a candidate that is not smaller than the refused one
+        return _cannot_help(limit_ctx)  # never send a candidate that is not smaller than the refused one
     _publish_reclaimed_transcript(SimpleNamespace(messages=messages, task_id=limit_ctx.task_id, tools=tools), seed)
     from ouroboros.loop import _emit_checkpoint_event
 
@@ -104,3 +104,17 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
         "checkpoint_kind": "context_view_renewed", "round": limit_ctx.round_idx, "owner_visible": True,
         "source": source, "rows_before": before, "rows_after": len(seed), **left})
     return True
+
+
+def _cannot_help(limit_ctx: Any) -> bool:
+    """Name the frame's largest parts for the named refusal (``loop_transport``), then decline."""
+    from ouroboros.loop_messages import _context_components
+
+    view = SimpleNamespace(messages=limit_ctx.messages, tool_schemas=getattr(limit_ctx, "tool_schemas", None) or [],
+                           accumulated_usage=limit_ctx.accumulated_usage)
+    try:
+        limit_ctx.accumulated_usage["_context_refusal_frame"] = [list(part) for part in _context_components(
+            view, measured=False)]
+    except Exception:  # the refusal text is facts only; an unreadable frame stays unnamed
+        pass
+    return False
