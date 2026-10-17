@@ -82,13 +82,32 @@ def test_origin_and_notice_import_never_claim_absence_while_import_is_pending(tm
                                             decision_id="routing:owner-one:route-one", option_index=0)
     assert status == 503 and payload["error"] == "history_importing"
     assert "still importing" in payload["reason"]
+    assert notice_receipts.import_upgrade_receipts(tmp_path) == {}
+    from ouroboros.startup_migrations import prepare_startup_state
+    assert prepare_startup_state(tmp_path)["imported"]
     with pytest.raises(ds.StoreMigrating):
-        notice_receipts.import_upgrade_receipts(tmp_path)
+        notice_receipts.recorded(tmp_path, 1, "legacy_memory_notice")
     [segment] = di.pending_segments(tmp_path)
     di.import_segment(tmp_path, "chat", segment["name"])
     assert _origin_message(tmp_path, "owner-one") == owner()
     assert _origin_message(tmp_path, "absent") == {}
     assert notice_receipts.import_upgrade_receipts(tmp_path) == {}
+    assert not notice_receipts.recorded(tmp_path, 1, "legacy_memory_notice")
+
+
+def test_notice_import_does_not_block_current_store_and_late_receipts_are_found(tmp_path):
+    from ouroboros.startup_migrations import prepare_startup_state
+
+    row = {"chat_id": 1, "direction": "system", "type": "legacy_memory_notice"}
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [row]}, live={"chat": [{**row, "chat_id": 2}]})
+    assert prepare_startup_state(tmp_path)["imported"]
+    assert notice_receipts.recorded(tmp_path, 2, row["type"])
+    with pytest.raises(ds.StoreMigrating):
+        notice_receipts.recorded(tmp_path, 1, row["type"])
+    [segment] = di.pending_segments(tmp_path)
+    di.import_segment(tmp_path, "chat", segment["name"])
+    assert notice_receipts.recorded(tmp_path, 1, row["type"])
+    assert not notice_receipts.recorded(tmp_path, 3, row["type"])
 
 
 @pytest.mark.parametrize("reader", ["owner", "routing", "words", "notices"])
