@@ -222,7 +222,8 @@ test('controls group by action with exact targets; Resume is a button, a pending
     assert.equal(paused.resume, 'o');
     assert.deepEqual(workMenuActions(paused), [ACTION_STOP_NOW], 'Resume stands as its own button');
     assert.deepEqual(workMenuActions(paused, { resume: true }), [ACTION_RESUME, ACTION_STOP_NOW]);
-    assert.deepEqual(workMenuActions(workControls(work('direct_question'))), [ACTION_STOP_NOW], 'a direct turn only stops');
+    assert.deepEqual(workMenuActions(workControls(work('direct_question'))), [ACTION_PAUSE, ACTION_STOP_NOW],
+        'a direct turn waiting for its answer can be paused and stopped, as its doors take it');
     assert.deepEqual(workControls({ controls: [{ action: 'teleport', target: 'x' }, { action: 'stop', target: '' }] }),
         { stop: [], stopEarlier: [], pause: '', resume: '', hurry: '', wrapUp: '' }, 'unknown or targetless actions are not offered');
     assert.deepEqual([...resumeTargets(body('paused_by_owner'))], ['o']);

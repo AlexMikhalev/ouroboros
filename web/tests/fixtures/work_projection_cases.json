@@ -211,6 +211,10 @@
      "since": 100.0,
      "controls": [
       {
+       "action": "pause",
+       "target": "d"
+      },
+      {
        "action": "stop",
        "target": "d",
        "scope": "cascade"
@@ -736,6 +740,10 @@
      "project_id": "",
      "since": 100.0,
      "controls": [
+      {
+       "action": "pause",
+       "target": "f"
+      },
       {
        "action": "stop",
        "target": "f",

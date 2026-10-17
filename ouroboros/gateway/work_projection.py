@@ -3,7 +3,7 @@
 ``works_snapshot`` turns the census builder's full activity set (``decision_owners``:
 roots, children, answered roots finishing, post-task waiters) plus the queue facts the
 census rows drop into ``/api/state`` ``works``/``rooms``/``work_summary``. It adds the
-members no queue row names: retained delegated runs and answer upkeep a direct turn
+members no queue row names: delegated runs still working and answer upkeep a direct turn
 still runs after its actor left. Reads are display reads; a failed read is a disclosed
 gap, never an empty room. Nothing here writes, repairs or wakes anything.
 """
@@ -109,6 +109,14 @@ def _work_of(root_id: str, raw: Mapping[str, Mapping[str, Any]], obs: _Observati
     for task_id in chain:
         memo[task_id] = (work_id or root_id, name)
     return memo[root_id]
+
+
+def _episode_row(row: Mapping[str, Any], raw: Mapping[str, Any], root_id: str) -> bool:
+    """A live episode root: a non-child row that is its root, or a retry attempt standing for that root."""
+    if row.get("parent_task_id") or raw.get("parent_task_id"):
+        return False
+    original = str(row.get("original_task_id") or raw.get("original_task_id") or "")
+    return str(row.get("activity_id") or "") == root_id or original == root_id
 
 
 def _root_of(row: Mapping[str, Any], raw: Mapping[str, Any]) -> str:
@@ -230,12 +238,13 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             member = ws.classify_member(row, _member_raw(row, facts, obs, root_id))
             members.append(member)
             owners_by_root.setdefault(root_id, []).append(member)
-            if row["activity_id"] == root_id and not (row.get("parent_task_id") or facts.get("parent_task_id")):
-                live_roots.append((row, facts, member))
+            if _episode_row(row, facts, root_id):
+                live_roots.append((row, facts, member, root_id))
         delegated = entry["delegated"] if not any(member["activity"] == "working" for member in members) else 0
         current_row = current_state = None
+        current_root = ""
         if live_roots:
-            row, facts, member = max(live_roots, key=lambda item: float(item[0].get("started_at") or 0.0))
+            row, facts, member, current_root = max(live_roots, key=lambda item: float(item[0].get("started_at") or 0.0))
             episode = {"task_id": row["activity_id"], "state": member}
             outcome = ws._outcome(row) if row.get("phase") == "finalizing" else ""
             room_row, current_row, current_state = row, row, member
@@ -254,9 +263,17 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         # Working helpers say the reason and keep the call's word; the count of runs is still the work's fact.
         work["members"]["delegated"] = int(entry["delegated"])
         current_id = str(episode["task_id"])
-        # Every other episode root that still owns a live member (or retained run) is the earlier attempt.
-        earlier = sorted(root for root in entry["roots"] if root != current_id and (
+        # Every other episode root that still owns a live member (or a running delegated run) is the earlier
+        # attempt; a retry attempt's own original stands for the same episode, never an earlier one.
+        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root} and (
             any(member["activity"] != "unknown" for member in owners_by_root.get(root, ())) or root in held))
+        if current_state is not None and any(entry_reason.get("code") == "earlier_work_unconfirmed"
+                                             for entry_reason in current_state.get("reasons") or ()):
+            # A Continue held for its earlier attempt's writers: that attempt keeps its Stop even when no queue
+            # row or run stands for its writer (an unbound start, a handoff, an owned process).
+            predecessor = str(_continuation(facts or {}).get("predecessor_task_id") or "")
+            if predecessor and predecessor not in earlier and predecessor not in {current_id, current_root}:
+                earlier.append(predecessor)
         controls = ws.controls_for(current_state, current_row, earlier_live=earlier,
                                    live_roots=([] if current_state is not None else [current_id]) + earlier)
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",

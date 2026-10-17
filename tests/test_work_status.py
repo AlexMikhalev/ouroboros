@@ -310,14 +310,49 @@ def test_held_continue_offers_stop_and_stop_earlier_never_resume_or_pause():
     assert not {"resume", "pause"} & {entry["action"] for entry in controls}
 
 
-def test_working_managed_root_offers_wrap_up_hurry_pause_stop_and_a_direct_turn_only_stop():
-    working = row("t")
+@pytest.mark.parametrize("kind", ["managed_task", "direct_chat"])
+def test_a_live_root_offers_wrap_up_hurry_pause_and_stop_managed_or_direct(kind):
+    working = row("t", kind=kind)
     controls = ws.controls_for(ws.classify_member(working), working)
     assert [entry["action"] for entry in controls] == ["wrap_up", "hurry", "pause", "stop"]
-    direct = row("d", kind="direct_chat")
-    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(direct), direct)] == ["stop"]
-    finishing = row("f", "finalizing")
-    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(finishing), finishing)] == ["stop"]
+    held = row("c", "budget_paused", kind=kind, pause_cause="unknown", can_resume=False)
+    state = ws.classify_member(held, {"hold": {"reason": "continuation_writer_unsettled"}})
+    assert [entry["action"] for entry in ws.controls_for(state, held)] == ["stop"], "held: only Stop"
+
+
+@pytest.mark.parametrize("kind", ["managed_task", "direct_chat"])
+def test_post_answer_upkeep_offers_the_pause_that_ends_it_and_a_pausing_one_does_not(kind):
+    finishing = row("f", "finalizing", kind=kind)
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(finishing), finishing)] == ["pause", "stop"]
+    pausing = row("f", "budget_pausing", kind=kind, pause_cause="owner")
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(pausing), pausing)] == ["stop"]
+
+
+def test_a_live_retry_is_the_current_episode_of_its_original(stored, tmp_path):
+    """A timeout retry carries its original's identity: it is that work's live episode, at its own id."""
+    stored["held"] = {"task_id": "held", "status": "interrupted", "chat_id": 1}
+    retry = row("t-retry", "budget_paused", pause_cause="owner", can_resume=True, original_task_id="held")
+    snap = wp.works_snapshot(tmp_path, [retry], {"t-retry": {"_budget_pause": {"reason": "owner"}}})
+    [work] = snap["works"]
+    assert work["work_id"] == "held" and work["episode"] == {"task_id": "t-retry", "live": True}
+    assert work["activity"] == "paused" and work["room"] == 42
+    actions = [(entry["action"], entry["target"]) for entry in work["controls"]]
+    assert ("resume", "t-retry") in actions and ("stop", "t-retry") in actions
+    assert not any(action == "stop_earlier" for action, _ in actions)
+
+
+def test_a_held_continue_keeps_its_earlier_attempt_stop_without_a_live_member(stored, tmp_path):
+    """Its writer may be an unbound start, a handoff or a process no queue row or run names."""
+    stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
+    held = row("c", "budget_paused", pause_cause="unknown", can_resume=False)
+    snap = wp.works_snapshot(tmp_path, [held], {"c": {"_budget_pause_hold": {"reason": "continuation_writer_unsettled"},
+                                                       "continuation": {"predecessor_task_id": "p"}}})
+    [work] = snap["works"]
+    assert [(entry["action"], entry["target"]) for entry in work["controls"]] == [
+        ("stop", "c"), ("stop", "p"), ("stop_earlier", "p")]
+    plain = wp.works_snapshot(tmp_path, [row("c2", "queued")], {"c2": {"continuation": {"predecessor_task_id": "p"}}})
+    assert [(entry["action"], entry["target"]) for entry in plain["works"][0]["controls"]] == [
+        ("pause", "c2"), ("stop", "c2")], "a Continue that is not held names no earlier attempt"
 
 
 @pytest.mark.parametrize("cause, raw, resumable", [

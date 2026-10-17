@@ -1,7 +1,7 @@
 """One work, one status: the pure classification behind ``/api/state`` ``works``.
 
 A work is one request — the owner's or Ouroboros's own — together with every
-Continue episode and every live member (helper tasks, retained delegated runs,
+Continue episode and every live member (helper tasks, delegated runs still working,
 answer upkeep still in flight). The census (``gateway/state.py``) keeps its
 frozen per-root rows; this module groups the same facts into works and gives
 each work one state: an activity word from a closed set, typed reasons with one
@@ -262,12 +262,12 @@ def controls_for(current: Optional[Mapping[str, Any]], current_row: Optional[Map
     if current is not None and current_row is not None:
         target = str(current.get("task_id") or "")
         phase = str(current_row.get("phase") or "")
-        managed = str(current_row.get("kind") or "") == "managed_task"
         codes = {entry.get("code") for entry in current.get("reasons") or ()}
-        if current["activity"] == "working" and current.get("transition") == "none" and managed \
-                and phase in _RUNNING_PHASES:
+        # A live root, managed or a direct turn: the hurry, stop and Pause doors take both.
+        if current["activity"] == "working" and current.get("transition") == "none" and phase in _RUNNING_PHASES:
             controls += [{"action": "wrap_up", "target": target}, {"action": "hurry", "target": target}]
-        if managed and current["activity"] in {"working", "queued", "waiting"} and current.get("transition") == "none" \
+        # The Pause door takes a live root and an answered root's post-answer upkeep (it ends that upkeep at once).
+        if current.get("transition") in {"none", "finalizing"} and current["activity"] in {"working", "queued", "waiting"} \
                 and "earlier_work_unconfirmed" not in codes and phase not in {"budget_paused", "budget_pausing"}:
             controls.append({"action": "pause", "target": target})
         if current["activity"] == "paused" and phase == "budget_paused" and codes & _RESUMABLE_CODES:
