@@ -108,9 +108,11 @@ def _lock_tier(root: pathlib.Path, recorded: Any = None) -> dict:
 def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -> bool:
     """Read the previous body's stamp BEFORE supervisor git bootstrap overwrites it.
     server._run_supervisor calls require_published before _bootstrap_supervisor_repo.
-    One reconcile per observation: a bootstrap that never stamps ``current_sha`` (the local-dev
-    start of Docker images, Colab and source checkouts) shows every boot the same unknown or stale
-    stamp, and a job already recorded for it, finished included, is not scheduled again."""
+    One reconcile per observation, the observation being the stamp's change: a bootstrap that
+    never stamps ``current_sha`` (the local-dev start of Docker images, Colab and source checkouts)
+    shows every boot the same unknown or stale stamp, and a job already recorded for it, finished
+    included, is not scheduled again; once a boot saw another stamp (``last_observed``, written only
+    when it changes), a return to an older body's stamp is a new excursion and is reconciled."""
     from ouroboros import maintenance_jobs
 
     try:
@@ -120,12 +122,17 @@ def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -
     reason = ("state_unreadable" if not isinstance(previous, str) or not previous else
               "last_store_body_missing" if not last.get("sha") else
               "body_changed" if previous != last["sha"] else "")
-    if reason and not (job.get("state") in {"pending", "running", "failed", "done"} and job.get("observed_sha") == previous):
-        maintenance_jobs.record(root, "legacy_reconcile", state="pending", reason=reason,
-                                observed_sha=previous, body_sha=body_sha, cursor=None, done=0, total=None,
-                                error=None, waiting_on=None)
-        return True
-    return job.get("state") in {"pending", "running"}
+    seen = job.get("last_observed", job.get("observed_sha"))
+    if not reason:
+        if job.get("observed_sha") and seen != previous:  # the current body's own stamp after an older
+            maintenance_jobs.record(root, "legacy_reconcile", last_observed=previous)  # one: its return is new
+        return job.get("state") in {"pending", "running"}
+    if job.get("state") in {"pending", "running", "failed", "done"} and job.get("observed_sha") == previous == seen:
+        return job.get("state") in {"pending", "running"}
+    maintenance_jobs.record(root, "legacy_reconcile", state="pending", reason=reason,
+                            observed_sha=previous, last_observed=previous, body_sha=body_sha, cursor=None, done=0,
+                            total=None, error=None, waiting_on=None)
+    return True
 
 
 def ensure_current_store(root: Any, *, with_children: bool = True, rederive: bool = False,

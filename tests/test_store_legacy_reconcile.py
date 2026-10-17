@@ -75,6 +75,25 @@ def test_a_bootstrap_that_never_stamps_reconciles_once_not_every_boot(tmp_path, 
     assert maintenance_jobs.job(tmp_path, "legacy_reconcile")["observed_sha"] == "old-body"
 
 
+def test_a_second_excursion_to_the_same_older_body_is_reconciled_too(tmp_path):
+    """Older body X runs, the store body reconciles it and stamps itself, then X runs again: the
+    second visit is a new excursion (the stamp changed in between), not the observation the first
+    reconcile covered."""
+    write_result(tmp_path, result("task", note="initial"))
+    _published(tmp_path)
+    for visit in (1, 2):
+        write_result(tmp_path, result("task", note=f"older body visit {visit}"))
+        _body(tmp_path, "old-body")
+        assert store_import.ensure_current_store(tmp_path, body_sha="store-head")["legacy_reconcile"] == "scheduled"
+        assert store_import.run_legacy_reconcile(tmp_path)["state"] == "done"
+        assert load(tmp_path, "task")["note"] == f"older body visit {visit}"
+        _body(tmp_path, "store-head")  # the store body's own bootstrap stamps itself
+        assert store_import.ensure_current_store(tmp_path, body_sha="store-head")["legacy_reconcile"] == "not_needed"
+        before = maintenance_jobs.job(tmp_path, "legacy_reconcile")
+        assert store_import.ensure_current_store(tmp_path, body_sha="store-head")["legacy_reconcile"] == "not_needed"
+        assert maintenance_jobs.job(tmp_path, "legacy_reconcile") == before, "a steady boot writes no job row"
+
+
 def test_regular_update_changes_body_stamp_without_scheduling_legacy(tmp_path):
     _published(tmp_path)
     report = store_import.ensure_current_store(tmp_path, body_sha="new-store-head")
