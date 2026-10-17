@@ -32,6 +32,7 @@ import { SHELL_ICONS, hydrateNavIcons } from './modules/page_icons.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
+import { DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -264,6 +265,12 @@ document.addEventListener('click', (event) => {
     setMobileDrawerOpen(!navState.mobileDrawerOpen);
 });
 navDrawerBackdrop?.addEventListener('click', () => setMobileDrawerOpen(false));
+// The drawer follows a finger (drawer_drag.js; DRAWER_DRAG switches it off); ☰ and × remain its controls.
+const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
+    sidebar: primarySidebar, scrim: navDrawerBackdrop, layers,
+    isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
+    isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
+}) : () => {};
 const navDrawerClose = document.getElementById('nav-drawer-close');
 if (navDrawerClose) {
     navDrawerClose.innerHTML = SHELL_ICONS.close;
@@ -989,6 +996,7 @@ window.addEventListener('pagehide', (event) => {
     disposeStorage?.destroy();
     disposeScrollFades.forEach((dispose) => dispose());
     telegramHost.dispose();
+    disposeDrawerDrag();
 });
 loadVersion();
 syncNavigationState();

@@ -3585,8 +3585,9 @@ html[data-layout="stack"] #primary-sidebar {
     z-index: 70;
     width: min(100vw - 48px, 360px);
     transform: translateX(-105%);
-    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 200ms ease;
     padding-bottom: calc(var(--space-3) + var(--inset-bottom));
+    touch-action: pan-y;  /* a sideways finger is the drawer's (drawer_drag.js); up and down scroll the list */
 }
 html[data-layout="stack"] .sidebar-head {
     padding-top: 0;
@@ -3601,6 +3602,21 @@ html[data-layout="stack"] .drawer-head {
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
     box-shadow: var(--elev-float);
+}
+/* Under a finger (drawer_drag.js) the layer moves by one number, --drawer-p (0 closed … 1 open), with no
+   transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the transition
+   springs the drawer the rest of the way; reduced motion keeps the finger tracking and drops the spring. */
+html[data-layout="stack"] #primary-sidebar.dragging {
+    transition: none;
+    will-change: transform;
+    transform: translate3d(calc((var(--drawer-p, 0) - 1) * 100%), 0, 0);
+    box-shadow: var(--elev-float);
+}
+html[data-layout="stack"] .nav-drawer-backdrop.dragging {
+    opacity: var(--drawer-p, 0);
+}
+@media (prefers-reduced-motion: reduce) {
+    html[data-layout="stack"] #primary-sidebar { transition: none; }
 }
 html[data-layout="stack"] .unread-badge {
     top: 2px;
