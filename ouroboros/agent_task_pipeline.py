@@ -709,6 +709,7 @@ def _collect_review_evidence_bundle(
             env.drive_root,
             task_id=str(task.get("id") or ""),
             repo_dir=getattr(env, "repo_dir", None),
+            canonical_root=task.get("budget_drive_root"),
         )
     except Exception:
         log.debug("Failed to collect review evidence", exc_info=True)

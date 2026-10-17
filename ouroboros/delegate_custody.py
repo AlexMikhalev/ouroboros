@@ -1225,14 +1225,19 @@ def open_containment_faults(drive_root: Any) -> List[Dict[str, Any]]:
             if custody.containment_fault]
 
 
+def output_unread(custody: RunCustody) -> bool:
+    """Staged in full and never read to EOF, whatever the money's state: continuation
+    advice keys on the observed terminal, not on settlement (#1969)."""
+    return bool(custody.output_artifact and custody.output_complete and not custody.output_consumed)
+
+
 def settled_output_unread(custody: RunCustody) -> bool:
     """One predicate for "settled, staged in full, and never read to EOF".
 
     Shared by the settlement row, the parent-facing payload and the health invariant so
     the three cannot drift into disagreeing about the same run.
     """
-    return bool(custody.settled and custody.output_artifact
-                and custody.output_complete and not custody.output_consumed)
+    return bool(custody.settled and output_unread(custody))
 
 
 def record_settled_unread(drive_root: Any, custody: RunCustody) -> bool:

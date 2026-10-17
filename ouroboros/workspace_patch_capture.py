@@ -345,12 +345,15 @@ def write_workspace_patch_artifacts(
         "errors": errors,
     }
     atomic_write_json(manifest_path, manifest, trailing_newline=True)
+    from ouroboros.artifacts import stream_artifact_file
+
+    # Published with its measured identity, like the patch beside it (#1969).
     artifacts = [
         {
             "kind": "workspace_patch_manifest",
             "name": "workspace_patch.json",
             "path": str(manifest_path),
-            "size": manifest_path.stat().st_size if manifest_path.exists() else 0,
+            **stream_artifact_file(manifest_path),
             "workspace_root": str(root),
         }
     ]
