@@ -194,7 +194,7 @@ HTTP_SHAPES: dict[str, Shape] = {
     "GET /api/health": Shape("200:HealthResponse"),
     "GET /api/contract": Shape("200:GatewayContractResponse"),
     "GET /api/state": Shape("200:StateResponse 500:ErrorResponse"),
-    "GET /onboarding": Shape("200:html", note="the builtin wizard page; its assets load from /onboarding/static"),
+    "GET /onboarding": Shape("200:html", query="builtin", note="selected setup or builtin wizard; builtin=1 forces builtin"),
     "GET /api/onboarding": Shape("200:html 204:empty", note="204: a ready provider exists, no setup needed"),
     "GET /api/onboarding/bootstrap": Shape("200:OnboardingBootstrapResponse", note="read-only; writes nothing"),
     "POST /api/onboarding/subagents/preview": Shape(
@@ -436,7 +436,7 @@ HTTP_SHAPES: dict[str, Shape] = {
 # Middleware-owned routes: ``server_auth.NetworkAuthGate`` answers them itself, and only while it
 # enforces a configured network password for a non-loopback peer (otherwise they are not mounted).
 AUTH_ENDPOINTS: dict[str, Shape] = {
-    "GET /auth/login": Shape("200:html", query="next", note="the login form; next is a same-origin path"),
+    "GET /auth/login": Shape("200:html", query="next builtin", note="selected login or builtin form; builtin=1 forces builtin; next is a same-origin path"),
     "POST /auth/login": Shape(
         "200:AuthLoginResponse 303:empty 401:ErrorResponse|html", "AuthLoginRequest|form",
         note="JSON answers 200 with the session cookie; a form answers 303 to next"),

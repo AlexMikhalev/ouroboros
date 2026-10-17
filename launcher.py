@@ -57,6 +57,7 @@ from ouroboros.runtime_venv import PREPARATION_DEPS_TIMEOUT_SEC, RuntimeVenvRefu
 from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
+    setup_recovery_menu,
 )
 from ouroboros.launcher_background import (Background, DesktopApi, activate_running_instance, background_env,
                                            request_tray_cleanup, stop_tray_before_exit)
@@ -1359,7 +1360,7 @@ def main(argv=()):
         # supervisor — the supported state that lets the wizard reach /api/*.
         onboarding = _present_first_run_onboarding(
             onboarding_settings, actual_port, headless=_headless,
-            open_external_url=_open_external_url,
+            open_external_url=_open_external_url, read_port=lambda: _generation_port,
         )
         if not onboarding["saved"]:
             log.info(
@@ -1574,7 +1575,8 @@ def main(argv=()):
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
     _webview_window = background.attach(window)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
-    webview.start(func=background.run, debug=False, private_mode=False)
+    webview.start(func=background.run, debug=False, private_mode=False,
+                  menu=setup_recovery_menu(window, lambda: _generation_port))
 
 
 if __name__ == "__main__":
