@@ -19,7 +19,8 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     work_portal.js, task_episodes.js, project_handoff.js — one Main card per work: the portal of a work in a Project room and every binding source; Continue episodes on one card; the binding receipt's words (§3 Project handoff receipts)
     chat_reply.js, chat_reply_quote.js, chat_row_menu.js, routing_receipt.js, text_fit.js — replies (Reply controls, composer strip, host-derived quotes, relay panel), the row menu, the owner message's routing receipt line, word-cut fitting (§3 Chat and Projects; DESIGN "Replies")
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
-    project_activity.js — `active_chat_activities` census projection for Project dots (§3 Liveness census)
+    project_activity.js — Project dots from the server's `rooms` projection (§3 Liveness census)
+    work_status.js, work_types.js — readers and presenters of `/api/state` `works`/`rooms`, and the typedef twin of `gateway/work_contracts.py` (§3 Liveness census)
     room_work.js, project_read_state.js — a room's header work list without execution authority; its read receipt (§3 Project rooms)
     model_wait.js — model-wait views and owner actions inside chat cards (§6 Quota and auth waits)
     task_checkpoints.js, cancel_presentation.js — typed checkpoints and cancellation-cause text shared by Chat and Logs (§3)
@@ -402,6 +403,7 @@ ouroboros/ — agent core and shared runtime (§6)
     task_pause.py — POST owner Pause `{request_id}`; answers after the durable root fence (owner_pause.py; §6 Owner Pause)
     task_continue.py — POST owner Continue `{action_nonce}`; one nonce answers one admission (owner_continue.py; §6 Owner Continue)
     main_decisions.py — Main's current questions and human-required controls, gaps explicit (§3)
+    work_status.py, work_projection.py, work_contracts.py — one work, one status: the pure classification of each request with its Continue episodes and live members (activity word, typed reasons with one sentence each, whose turn it is, what releases it, the controls its doors accept), the server observations that feed it, and the `/api/state` contract every surface and Ouroboros's roster read (§3 Liveness census)
     task_decision.py — The one `POST /api/decisions` ingress with family-parsed ids (`quiz:` here, `routing:` → routing_decision.py, `interaction:` reserved); writes `KIND_QUIZ_ANSWER` (owner_quiz.py; §11.1)
     task_model_wait.py — Shared model-wait decision effects over the existing mailbox, with live-owner/revision checks
     routing_decision.py — Resolves a click on a persisted `needs_manual_target` card (no new ones are produced), recovers the original text, dispatches the internal steer/promote events, confirms through routing_wait receipts
