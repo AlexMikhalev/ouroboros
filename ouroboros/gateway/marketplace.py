@@ -1,4 +1,4 @@
-"""HTTP surface for the ClawHub registry routes and the local publication receipt.
+"""ClawHub routes, the frozen hub-installed listing and the local publication receipt.
 
 Skills from connected sources (the hub among them) install through ``gateway/skill_sources.py``;
 these routes keep the ClawHub registry's own browse/install/update/uninstall surface. No route here
@@ -396,11 +396,17 @@ def _installed_skill_payload(skill: Any, drive_root: pathlib.Path, *, provenance
 
 def _installed_skills_for_source(drive_root: pathlib.Path, source: str) -> list[Dict[str, Any]]:
     from ouroboros.config import get_skills_repo_path
+    from ouroboros.skill_install_record import read_install_record
     from ouroboros.skill_loader import discover_skills
 
     out: list[Dict[str, Any]] = []
     for skill in discover_skills(drive_root, repo_path=get_skills_repo_path()):
-        if skill.source != source:
+        hub_record = None
+        if source == "ouroboroshub" and not skill.identity_collision:
+            hub_record = read_install_record(drive_root, skill.name)
+        from_hub = source == "ouroboroshub" and (skill.location == source or
+                    ((hub_record or {}).get("source") or {}).get("kind") == "hub")
+        if skill.source != source and not from_hub:
             continue
         provenance = None
         if source == "clawhub":
@@ -456,6 +462,12 @@ async def api_marketplace_installed(request: Request) -> JSONResponse:
     out = _installed_skills_for_source(drive_root, "clawhub")
     return JSONResponse({"count": len(out), "skills": out})
 
+
+async def api_hub_installed(request: Request) -> JSONResponse:
+    """Frozen compatibility list: hub-source installs and the legacy hub bucket, in the registry shape."""
+    out = await asyncio.to_thread(_installed_skills_for_source, _request_drive_root(request), "ouroboroshub")
+    return JSONResponse({"count": len(out), "skills": out})
+
 async def api_skill_publication_clear(request: Request) -> JSONResponse:
     """Forget the displayed publication receipt through its existing local receipt owner."""
     from ouroboros.marketplace.provenance import PublicationRecordChanged, clear_publication_record
@@ -486,5 +498,6 @@ __all__ = [
     "api_marketplace_update",
     "api_marketplace_uninstall",
     "api_marketplace_installed",
+    "api_hub_installed",
     "api_skill_publication_clear",
 ]

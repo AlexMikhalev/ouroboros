@@ -64,8 +64,8 @@ class InstalledSkill(TypedDict, total=False):
     provenance: Dict[str, Any]  # a ClawHub install record
     identity_collision: bool
     # The install record joined with the cached catalog of its source (skill_source_catalog.install_listing):
-    # source {id, name, kind, part}, official, release, basis, base_known, modified (null: base unknown),
-    # update_available {version, digest} | null, withdrawn, left_source, turn_on_when_ready, installed_by,
+    # source {id, name, kind, part}, official (exact endorsed bytes), release, basis, base_known, modified (null: base unknown),
+    # update_available {version, digest} | null, withdrawn ({reason, version} for a withdrawn release), left_source, turn_on_when_ready, installed_by,
     # installed_at, and reason and task_id when the record has them (an install Ouroboros made says why and in
     # which task). null: not installed from a source (made here, a local folder, a built-in seed).
     install: Optional[Dict[str, Any]]
@@ -425,7 +425,7 @@ class MarketplaceSearchResponse(TypedDict, total=False):
 
 
 class MarketplaceInstalledResponse(TypedDict):
-    """``GET /api/marketplace/clawhub/installed``."""
+    """``GET /api/marketplace/{clawhub|ouroboroshub}/installed`` (the hub route remains frozen)."""
 
     count: int
     skills: List[MarketplaceInstalledSkill]

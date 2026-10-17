@@ -776,7 +776,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 386 -> 401 (skill sources): the git transport's caches under ``state/skill_sources`` (repository
 # and pointer clones, their locks, meta and snapshots, probe/merge scratch), the starter marker
 # ``state/skill_starter.json`` and the per-bucket install staging ``skills/*/.staging/*-*``.
-EXPECTED_SCAN_PATHS = 401
+# 401 -> 402 (source views): ``state/skill_sources/repos/*/views/*`` holds per-path
+# snapshots; ``catalog.json`` now has either the repository root or a view as its parent.
+EXPECTED_SCAN_PATHS = 402
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

@@ -31,7 +31,7 @@ from ouroboros.skill_source_git import (
     last_changed,
     read_meta,
     refresh_in_background,
-    repo_cache_dir,
+    view_cache_dir,
     update_clone,
 )
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
@@ -41,7 +41,6 @@ log = logging.getLogger(__name__)
 SNAPSHOT_FILENAME = "catalog.json"
 SNAPSHOT_SCHEMA_VERSION = 1
 REFRESH_AFTER_SEC = 600  # a cache older than this is refreshed in the background when a catalog is shown
-_MAX_PLAIN_SKILLS = 500
 _MAX_ABOUT_CHARS = 20_000
 _SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".ouroboros_env", ".github"})
 _MEMO_LOCK = threading.Lock()
@@ -143,6 +142,7 @@ def _hub_entry(raw: Any, stem: str, clone: pathlib.Path) -> Dict[str, Any]:
         "name": name, "description": str(raw.get("description") or ""), "version": str(raw.get("version") or ""),
         "category": [str(item) for item in category][:2], "owner": str(raw.get("owner") or ""),
         "digest": digest, "withdrawn": withdrawn,
+        "withdrawn_releases": [item for item in raw.get("withdrawn_releases", []) if isinstance(item, dict)],
     }
     if raw.get("install_specs"):
         entry["install_specs"] = raw["install_specs"]
@@ -198,17 +198,12 @@ def _skill_folders(root: pathlib.Path) -> Iterable[pathlib.Path]:
     if has_manifest(root):
         yield root
         return
-    count = 0
     for child in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
         if child.name in _SKIP_DIRS:
             continue
         nested = [child] if has_manifest(child) else sorted(
             p for p in child.iterdir() if p.is_dir() and not p.name.startswith(".") and has_manifest(p))
-        for folder in nested:
-            count += 1
-            if count > _MAX_PLAIN_SKILLS:
-                return
-            yield folder
+        yield from nested
 
 
 def parse_plain_tree(root: pathlib.Path, *, repo_name: str = "") -> Dict[str, Any]:
@@ -271,7 +266,7 @@ def _date_entries(clone: pathlib.Path, snapshot: Dict[str, Any]) -> None:
 
 def refresh_source(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: float = 180) -> Dict[str, Any]:
     """Fetch a git-hosted source and write the snapshot of the fetched commit; returns its meta."""
-    cache = repo_cache_dir(drive_root, row)
+    cache = view_cache_dir(drive_root, row)
 
     def write_snapshot(clone: pathlib.Path, commit: str) -> None:
         base = _inside(clone, str(row.get("path") or "")) or clone
@@ -289,7 +284,7 @@ def refresh_source(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: f
 
 
 def read_snapshot(drive_root: pathlib.Path, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    data = read_json_dict(repo_cache_dir(drive_root, row) / SNAPSHOT_FILENAME)
+    data = read_json_dict(view_cache_dir(drive_root, row) / SNAPSHOT_FILENAME)
     return data if data and data.get("schema_version") == SNAPSHOT_SCHEMA_VERSION else None
 
 
@@ -308,6 +303,8 @@ def builtin_snapshot(repo_dir: pathlib.Path) -> Dict[str, Any]:
         mark = marks.get(entry["name"], {})
         entry["category"] = [str(item) for item in mark.get("category") or []][:2]
         entry["recommended"] = mark.get("recommended") is True
+        if entry.get("digest"):
+            snapshot["official"][entry["name"]] = {"digest": entry["digest"], "recommended": entry["recommended"]}
     snapshot["format"] = "builtin"
     with _MEMO_LOCK:
         _BUILTIN_MEMO[key] = snapshot
@@ -385,14 +382,14 @@ def items_for(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> List[D
         if row["kind"] == "hub" and not _in_part(row, entry, official):
             continue
         endorsed = official.get(entry["name"]) or {}
-        is_official = bool(endorsed and endorsed.get("digest") == entry.get("digest"))
+        is_official = _endorses_release(row, snapshot, entry["name"], entry.get("digest", ""))
         source = entry.get("source") or {}
         item = {
             "id": f"{row['id']}/{entry['name']}", "source_id": row["id"], "source_name": row["name"],
             "trust": row["trust"], "name": entry["name"], "description": entry.get("description", ""),
             "category": list(entry.get("category") or []), "version": entry.get("version", ""),
             "digest": entry.get("digest", ""), "official": is_official,
-            "recommended": bool(endorsed.get("recommended") if is_official else entry.get("recommended")),
+            "recommended": is_official and endorsed.get("recommended") is True,
             "owner": entry.get("owner", ""), "signals": _signals(snapshot, entry),
             "withdrawn": entry.get("withdrawn"), "type": entry.get("type", ""),
             "needs_keys": list(entry.get("needs_keys") or []), "permissions": list(entry.get("permissions") or []),
@@ -478,8 +475,20 @@ def update_state(record: Dict[str, Any], entry: Optional[Dict[str, Any]]) -> Dic
     release = record.get("release") or {}
     digest = str(entry.get("digest") or "")
     newer = bool(digest and digest != release.get("digest") and digest != record.get("skipped_release_digest"))
+    withdrawn = entry.get("withdrawn")
+    if not withdrawn:
+        withdrawn = next(({"reason": item.get("reason", ""), "version": item.get("version", "")}
+                          for item in entry.get("withdrawn_releases", []) if item.get("digest") == release.get("digest")), None)
     return {"update_available": {"version": entry.get("version", ""), "digest": digest} if newer else None,
-            "withdrawn": entry.get("withdrawn"), "left_source": False}
+            "withdrawn": withdrawn, "left_source": False}
+
+
+def _endorses_release(row: Dict[str, Any], snapshot: Dict[str, Any], name: str, digest: str) -> bool:
+    """Official names exact bytes endorsed by an Official hub view or the bundled release."""
+    eligible = row["kind"] == "builtin" or (row["kind"] == "hub" and row.get("part") == "official")
+    endorsement = (snapshot.get("official") or {}).get(name) or {}
+    return bool(eligible and digest and endorsement.get("digest") == digest and any(
+        e.get("name") == name and e.get("digest") == digest for e in snapshot.get("entries") or []))
 
 
 def _entry_for_record(record: Dict[str, Any], snapshots: Dict[str, tuple]) -> tuple[bool, Optional[Dict[str, Any]]]:
@@ -508,14 +517,18 @@ def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, 
         return {"install": None, "category": category}
     known, entry = _entry_for_record(record, snapshots)
     base = str(record.get("base_digest") or "")
-    current = installed_release_digest(loaded) if base else ""
+    current = installed_release_digest(loaded)
+    matching = [(row, snap) for row, snap in snapshots.values() if snap is not None and record_matches_row(record, row)]
+    official = any(_endorses_release(row, snap, str(record.get("entry") or ""), current) for row, snap in matching
+                   ) if matching else bool(record.get("official"))
+    official = bool(official and current and current == (record.get("release") or {}).get("digest"))
     facts = update_state(record, entry) if known else {"update_available": None, "withdrawn": None,
                                                          "left_source": False}
     category = list((entry or {}).get("category") or [])
     source = record.get("source") or {}
     return {"category": category, "install": {
         "source": {key: source[key] for key in ("id", "name", "kind", "part") if source.get(key)},
-        "official": bool(record.get("official")), "release": dict(record.get("release") or {}),
+        "official": official, "release": dict(record.get("release") or {}),
         "basis": record.get("basis"), "base_known": bool(base),
         "modified": (current != base) if base and current else None,
         "turn_on_when_ready": bool(record.get("turn_on_when_ready")),
@@ -696,6 +709,7 @@ def probe_source(drive_root: pathlib.Path, *, url: str = "", path: str = "") -> 
         url = validate_git_url(url)
     except SkillSourceError as exc:
         return {"error": str(exc)}
+    warning = {"warning": "not_encrypted"} if url.startswith("http://") else {}
     scratch = scratch_dir(drive_root, "probe")
     try:
         fetch_tree(scratch / "repo", url, "")
@@ -711,9 +725,9 @@ def probe_source(drive_root: pathlib.Path, *, url: str = "", path: str = "") -> 
             answer, owner = {"kind": "git", "suggested_name": stem}, repository_owner(url)
         if owner:
             answer["owner"] = owner
-        return {**answer, "found": [e["name"] for e in snapshot["entries"]]}
+        return {**answer, **warning, "found": [e["name"] for e in snapshot["entries"]]}
     except SkillSourceFetchError as exc:
-        return {"error": f"This computer could not read {url}: {exc}"}
+        return {**warning, "error": f"This computer could not read {url}: {exc}"}
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

@@ -175,7 +175,7 @@ def test_starter_skills_for_onboarding(env):
 
 def test_retired_hub_routes_are_gone_and_the_receipt_clear_moved(env):
     client, drive, _hub, _tmp = env
-    for path in ("/api/marketplace/ouroboroshub/catalog", "/api/marketplace/ouroboroshub/installed"):
+    for path in ("/api/marketplace/ouroboroshub/catalog", "/api/marketplace/ouroboroshub/preview/notes"):
         assert client.get(path).status_code == 404
     assert client.post("/api/marketplace/ouroboroshub/install", json={"slug": "x"}).status_code == 404
     from ouroboros.marketplace.provenance import write_publication_record
@@ -201,3 +201,36 @@ def test_publish_preflight_binds_the_destination_the_owner_chose(env, monkeypatc
                                                                                       "mode": "entry"}})
     assert unknown.json()["state"] == "hard_block" and unknown.json()["reason_code"] == "destination_unknown"
     assert assert_bound("POST /api/skills/{skill}/publish-preflight", unknown)
+
+
+def test_frozen_hub_installed_endpoint_includes_hub_records_and_legacy_bucket(env):
+    from ouroboros.marketplace.provenance import write_provenance
+    from ouroboros.skill_install_record import write_install_record
+    from ouroboros.skill_source_install import install_item
+
+    client, drive, hub, _tmp = env
+    install_item(drive, "ouroboros-community/notes", rows=hub.rows())
+    write_skill(drive / "skills" / "ouroboroshub", "legacy")
+    write_skill(drive / "skills" / "external", "other_hub")
+    write_install_record(drive, "other_hub", {"source": {"id": "elsewhere", "kind": "hub"},
+                                             "entry": "other_hub", "basis": "review", "release": {"digest": "1" * 64}})
+    write_skill(drive / "skills" / "external", "local")
+    registry_dir = write_skill(drive / "skills" / "clawhub", "registry")
+    (registry_dir / ".clawhub.json").write_text('{"source": "clawhub"}', encoding="utf-8")
+    write_provenance(drive, "registry", {"source": "clawhub", "slug": "registry"})
+    response = client.get("/api/marketplace/ouroboroshub/installed")
+    assert response.status_code == 200
+    assert assert_bound("GET /api/marketplace/ouroboroshub/installed", response) == "MarketplaceInstalledResponse"
+    assert response.json()["count"] == 3
+    assert {s["name"] for s in response.json()["skills"]} == {"notes", "legacy", "other_hub"}
+    registry = client.get("/api/marketplace/clawhub/installed").json()["skills"][0]
+    assert set(response.json()["skills"][0]) == set(registry) - {"provenance"}
+
+
+def test_http_source_probe_exposes_the_encryption_warning(env, monkeypatch):
+    client, _drive, _hub, _tmp = env
+    monkeypatch.setattr("ouroboros.skill_source_git.fetch_tree", lambda target, *_a: write_skill(target, "sample"))
+    response = client.post("/api/skill-sources/probe", json={"url": "http://git.example.invalid/team/skills"})
+    assert response.status_code == 200
+    assert assert_bound("POST /api/skill-sources/probe", response) == "SkillSourceProbeResponse"
+    assert response.json()["warning"] == "not_encrypted"

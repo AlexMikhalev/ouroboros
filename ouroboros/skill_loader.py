@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import pathlib
 import stat
 from dataclasses import asdict, dataclass, field
@@ -1136,30 +1137,26 @@ def _skill_location_inventory(
     *,
     selected_manifestless_name: str = "",
 ) -> tuple[_SkillLocationCandidate, ...]:
-    """Return deduplicated manifest locations without payload/state reads."""
+    """Inventory data buckets and connected local roots, using the projected settings without disk reads."""
     from ouroboros.config import SKILL_SOURCE_SUBDIRS
+    from ouroboros.skill_sources import load_sources
 
-    if repo_path is None:
-        from ouroboros.config import get_skills_repo_path
-
-        repo_path = get_skills_repo_path()
-    repo_path = str(repo_path or "").strip()
-
+    settings = dict(os.environ)
+    if repo_path is not None:
+        settings["OUROBOROS_SKILLS_REPO_PATH"] = repo_path
     data_skills_root = _resolve_data_skills_dir(drive_root)
-    user_repo_root: Optional[pathlib.Path] = None
-    if repo_path:
-        try:
-            candidate = pathlib.Path(repo_path).expanduser().resolve()
-        except OSError:
-            candidate = None
-        if candidate is not None and candidate.is_dir():
-            user_repo_root = candidate
-
     roots: List[tuple[pathlib.Path, bool]] = []
     if data_skills_root is not None:
         roots.append((data_skills_root, False))
-    if user_repo_root is not None:
-        roots.append((user_repo_root, True))
+    for row in load_sources(settings):
+        if row["kind"] != "local":
+            continue
+        try:
+            candidate = pathlib.Path(row["path"]).expanduser().resolve()
+        except OSError:
+            continue
+        if candidate.is_dir():
+            roots.append((candidate, True))
 
     inventory: List[_SkillLocationCandidate] = []
     seen_dirs: set[pathlib.Path] = set()
@@ -1186,7 +1183,7 @@ def _skill_location_inventory(
                 location = _classify_skill_location(
                     resolved,
                     data_skills_root=data_skills_root,
-                    user_repo_root=user_repo_root,
+                    user_repo_root=root if include_manifestless_root else None,
                 )
             except OSError:
                 continue
