@@ -32,9 +32,12 @@ BOOT_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs"
 DUTY_SETS = ("nonterminal", "synthesis", "terminal_projection", "delegated_runs", "promotions", "custody_open",
              "pending_drives", "unknowns", "pause_notices", "local_custody_witnesses", "owner_questions",
              "late_review_marks")
-# Kept facts, never owed: chat notice receipts, custody marks, definite start refusals, duty rests.
+# Kept facts, never owed: chat notice receipts, custody marks, definite start refusals, duty rests and the
+# delegated invocation records (``delegate_invocation``: an invocation's first request and last start, the
+# first request of an operation/slot, each custody event's order); owed custody work is ``custody_open``.
 REST_SET = "duty_rest"
-RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused", REST_SET)
+RECORD_SETS = ("upgrade_notices", "pause_notice_receipts", "custody_marks", "custody_refused", REST_SET,
+               "custody_invocations", "custody_operation_invocations", "custody_event_ordinals")
 ObligationsUnavailable = store.StoreError  # the sets are rows: unavailable exactly when the store is
 _FACT_COLUMNS = ("task_id", "headless_child_drive_root", "child_drive_root", "drive_root")
 

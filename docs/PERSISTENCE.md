@@ -38,7 +38,7 @@ row here, count-anchored both ways.
   result/owner duties clear, reviews/debt/late receipts closed, money known and
   resolved; no timer. Every obligation set is owed, an undeclared one too,
   except the declared records (`obligations.RECORD_SETS`: notice receipts,
-  custody marks, refusals, duty rests). The maintenance child (`ouroboros/maintenance.py`, job
+  custody marks, refusals, duty rests, delegated invocation records). The maintenance child (`ouroboros/maintenance.py`, job
   `evidence_packing`, passes in `ouroboros/evidence_packer.py`; never at boot) writes per-task
   xz streams, checkpoints first. The inventory row owns
   publication, revalidation, retention and recovery. Loose placements go; bytes

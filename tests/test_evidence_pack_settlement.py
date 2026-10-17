@@ -165,7 +165,8 @@ def test_every_set_the_real_producers_store_is_classified(root):
     with store.open_store(root, write=False) as txn:
         names |= set(txn.set_names())
     assert {"custody_open", "custody_refused", "custody_marks", "delegated_runs", "upgrade_notices",
-            "pause_notice_receipts", "local_custody_witnesses", "pending_drives"} <= names
+            "pause_notice_receipts", "local_custody_witnesses", "pending_drives", "custody_invocations",
+            "custody_operation_invocations", "custody_event_ordinals"} <= names
     assert _unclassified(names) == set()
 
 
@@ -180,6 +181,25 @@ def test_a_record_row_never_blocks_settlement_but_a_duty_row_does(root, record):
     obligations.add(root, record, "owed", {"task_id": "owed"})
     assert not packs.task_settled(root, "owed") and packer.run_pass(root)["packed"] == 0
     assert pathlib.Path(refs[0]["path"]).exists()
+
+
+def test_an_answered_delegated_start_settles_its_task_beside_the_invocation_records(root):
+    """The custody reducer keeps an invocation's first request (naming its task), the operation's first request
+    and each event's order as kept facts: once the start is answered they hold nothing, and the task packs.
+    While the request is open, ``custody_open`` owes it."""
+    from ouroboros import delegate_custody as custody
+
+    refs, _ = _task(root, "asker", blobs=1)
+    assert custody.emit(root, custody.START_REQUESTED, {"invocation_id": "inv-1", "operation_id": "op-1",
+                                                        "slot_id": "slot-1", "task_id": "asker", "root_task_id": "asker"})
+    assert not packs.task_settled(root, "asker") and packer.run_pass(root)["packed"] == 0
+    assert custody.emit(root, custody.START_FAILED, {"invocation_id": "inv-1", "task_id": "asker", "definite": True})
+    with store.open_store(root, write=False) as txn:
+        assert txn.get_row("custody_open", "invocation:inv-1") is None
+        assert txn.get_row("custody_invocations", "inv-1")["request"]["task_id"] == "asker"
+        assert {"custody_operation_invocations", "custody_event_ordinals"} <= set(txn.set_names())
+    assert packs.task_settled(root, "asker")
+    assert packer.run_pass(root)["packed"] == 1 and not pathlib.Path(refs[0]["path"]).exists()
 
 
 UNDECLARED = "future_body_duty"  # declared in neither tuple: an older or newer body's own duty
