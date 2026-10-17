@@ -69,6 +69,16 @@ def test_navigation_state_and_mobile_drawer_are_first_class():
     assert "document.getElementById(`page-${name}`)" in app_js
     assert "hashchange" not in app_js
     assert "replaceState" not in app_js
+    assert "pushState" not in app_js
+    # The one history write is the layer stack's same-URL sentinel: pushed only while a layer is
+    # open, popped by Back, consumed by a programmatic close (web/tests/layers.test.js).
+    layers_js = _read("web/modules/layers.js")
+    assert "history.pushState(LAYER_STATE, '')" in layers_js
+    assert layers_js.count("pushState(") == 1
+    assert "if (stack.length && !hist.armed)" in layers_js
+    assert "replaceState" not in layers_js and "hashchange" not in layers_js and "location." not in layers_js
+    assert "const layers = createLayerStack();" in app_js
+    assert "layers.push({ id: 'drawer'" in app_js and "layers.push({ id: 'project'" in app_js
     assert ".mobile-nav-toggle {\n        position: fixed" not in css
     assert "flex: 0 0 44px;" in css
 

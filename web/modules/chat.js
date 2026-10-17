@@ -3092,16 +3092,19 @@ export function createChatInstance({
     let documentKeydownHandler = null;
     if (!asPanel) {
         const collapseHeaderMenus = (predicate) => {
+            let collapsed = false;
             page.querySelectorAll('details.chat-header-more[open]').forEach((details) => {
-                if (predicate(details)) details.removeAttribute('open');
+                if (predicate(details)) { details.removeAttribute('open'); collapsed = true; }
             });
+            return collapsed;
         };
         documentClickHandler = (event) => {
             collapseHeaderMenus((details) => !details.contains(event.target));
         };
         document.addEventListener('click', documentClickHandler);
         documentKeydownHandler = (event) => {
-            if (event.key === 'Escape') collapseHeaderMenus(() => true);
+            // An open menu owns its Escape: the layer beneath it (layers.js) must not close on the same key.
+            if (event.key === 'Escape' && !event.defaultPrevented && collapseHeaderMenus(() => true)) event.preventDefault();
         };
         document.addEventListener('keydown', documentKeydownHandler);
     }

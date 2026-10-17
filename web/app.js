@@ -30,6 +30,7 @@ import { initDashboard } from './modules/dashboard.js';
 import { initStorage } from './modules/storage.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
+import { createLayerStack } from './modules/layers.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -64,6 +65,11 @@ const navState = {
     projectsExpanded: true,
     mobileDrawerOpen: false,
 };
+// The one stack of layers over the room (layers.js): the drawer and the Project panel register here, so Escape,
+// the scrim, ×, the system Back and Telegram's Back all close exactly one layer, the top one.
+const layers = createLayerStack();
+// Loopback-only debug hook, like __ouroWs: browser tests read the stack through it.
+window.__ouroLayers = layers;
 const primarySidebar = document.getElementById('primary-sidebar');
 const navDrawerBackdrop = document.getElementById('nav-drawer-backdrop');
 const projectPanelBackdrop = document.getElementById('project-panel-backdrop');
@@ -170,6 +176,11 @@ function syncNavigationState() {
         button.setAttribute('aria-expanded', drawerOpen ? 'true' : 'false');
     });
     if (navDrawerBackdrop) navDrawerBackdrop.hidden = !drawerOpen;
+    // The drawer is a modal layer; the Project panel is one too, modal only where it covers the room (stack).
+    if (drawerOpen) layers.push({ id: 'drawer', el: primarySidebar, modal: true, onClose: () => setMobileDrawerOpen(false) });
+    else layers.remove('drawer');
+    if (activeProjectId) layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), onClose: () => closeProjectPanel() });
+    else layers.remove('project');
 
     document.querySelectorAll('[data-nav-page]').forEach((button) => {
         const isActive = !activeProjectId && button.dataset.navPage === state.activePage;
@@ -227,7 +238,12 @@ function syncProjectPanelFill() {
     root.toggleAttribute('data-project-fill', fills);
 }
 window.addEventListener('resize', syncProjectPanelFill);
-onLayoutChange(() => { syncProjectPanelFill(); syncNavigationState(); });
+// Crossing the switch: a drawer has no place in the docked layout; the Project layer changes its modality.
+onLayoutChange((layout) => {
+    if (layout === 'docked') navState.mobileDrawerOpen = false;
+    syncProjectPanelFill();
+    syncNavigationState();
+});
 
 document.querySelectorAll('[data-nav-page]').forEach(btn => {
     btn.addEventListener('click', () => {
