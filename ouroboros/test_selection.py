@@ -104,6 +104,8 @@ def _release_versions(repo: Path, base: str) -> set[str]:
 def _version_only_change(repo: Path, base: str, path: str, versions: set[str]) -> bool:
     try:
         old = _git(repo, "show", f"{base}:{path}").decode("utf-8")
+        # Match read_text's universal newlines: Git blobs may retain CRLF.
+        old = old.replace("\r\n", "\n").replace("\r", "\n")
         new = (repo / path).read_text(encoding="utf-8")
     except (OSError, UnicodeError, subprocess.SubprocessError):
         return False

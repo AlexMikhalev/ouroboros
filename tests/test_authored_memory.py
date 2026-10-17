@@ -614,9 +614,13 @@ def test_the_chooser_reads_the_sealed_outcome_bounded_with_its_cut_named(tmp_pat
 def test_a_missing_backlog_is_named_and_an_unreadable_one_stays_unknown(tmp_path, monkeypatch):
     prompt = _chooser_prompt(tmp_path, monkeypatch, {"id": "t", "text": "x"})
     assert "No improvement-backlog note has been written yet" in prompt
-    _address(tmp_path, BACKLOG).path.mkdir(parents=True)  # unreadable as a file
+    path = _address(tmp_path, BACKLOG).path
+    path.mkdir(parents=True)  # unreadable as a file; Windows reports PermissionError
+    with pytest.raises(OSError) as failure:
+        path.read_text(encoding="utf-8")
     prompt = _chooser_prompt(tmp_path, monkeypatch, {"id": "t", "text": "x"})
-    assert "Improvement-backlog source unavailable (IsADirectoryError); it is unknown, not empty" in prompt
+    assert (f"Improvement-backlog source unavailable ({type(failure.value).__name__}); "
+            "it is unknown, not empty") in prompt
 
 
 # --- contexts: the full register where it lived, dated pointers, whole late criticism -------------

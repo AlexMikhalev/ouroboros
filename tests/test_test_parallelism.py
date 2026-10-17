@@ -110,7 +110,7 @@ def test_local_node_lane_uses_the_same_cpu_and_memory_budget(tmp_path, monkeypat
 ])
 def test_shared_child_spawn_keeps_containment_and_bounds_nested_runners(monkeypatch, argv, slots, expected):
     seen = {}
-    token = "OURO_PROC_CONTAINER_1234567890abcdef"
+    token = "OURO_PROC_CONTAINER_1234567890ABCDEF"  # Windows folds environment names to upper case
     monkeypatch.setenv(token, "1")
     monkeypatch.setattr(conftest, "_ORIGINAL_POPEN_INIT", lambda self, args, **kwargs: seen.update(args=args, **kwargs))
     env = {} if slots is None else {budget.NESTED_WORKERS_ENV: slots}
@@ -170,9 +170,17 @@ def test_a_cgroup_limit_bounds_physical_memory_and_credits_reclaimable_cache(mon
              "/sys/fs/cgroup/memory.stat": f"anon {2 * gib}\ninactive_file {gib}\n"}
     read_text, is_file = Path.read_text, Path.is_file
     monkeypatch.setattr(budget, "sys", SimpleNamespace(platform="linux"))
-    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: files[str(self)] if str(self) in files
-                        else read_text(self, *a, **k))
-    monkeypatch.setattr(Path, "is_file", lambda self: str(self) in files or is_file(self))
+    modeled_paths = set(files)
+
+    def read_modeled(self, *args, **kwargs):
+        if self.as_posix() in modeled_paths:
+            if self.as_posix() not in files:
+                raise FileNotFoundError(self.as_posix())
+            return files[self.as_posix()]
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_modeled)
+    monkeypatch.setattr(Path, "is_file", lambda self: self.as_posix() in files or is_file(self))
     memory = budget.physical_memory()
     assert (memory.total_bytes, memory.available_bytes) == (4 * gib, 2 * gib)  # the cap, minus anon only
     del files["/sys/fs/cgroup/memory.stat"]  # without the stat file the cache is not credited
@@ -238,7 +246,8 @@ def test_worker_death_ends_pass_with_crash_and_unfinished_evidence(tmp_path, fau
     assert data["worker_crash"]["unfinished"] == [
         "test_1_running.py::test_running", "test_2_pending.py::test_pending"]
     pid, born = json.loads(child_identity.read_text(encoding="utf-8"))
-    assert pl.process_start_time(pid) != born or pid_is_zombie(pid), output
+    # Windows still reads an exited process's birth while any handle to it is open: liveness is asked too.
+    assert pl.pid_provably_gone(pid) or pl.process_start_time(pid) != born or pid_is_zombie(pid), output
 
 
 def test_unowned_worker_death_lets_running_tests_finish(tmp_path, monkeypatch):

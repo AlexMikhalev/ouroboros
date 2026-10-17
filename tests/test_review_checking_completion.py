@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 
 import pytest
@@ -247,7 +248,8 @@ def _unlock(path):
 def _incomplete(receipt, path):
     """Explicitly incomplete and naming ``path``: never a complete receipt beside skipped bytes."""
     assert receipt["status"] in {"partial", "capture_failed"}, f"{path} was skipped behind a complete capture: {receipt}"
-    assert path in json.dumps([receipt.get("gaps"), receipt.get("error")]), receipt
+    # A native Windows error names it with (JSON-escaped) backslashes: compare one separator.
+    assert path in re.sub(r"\\+", "/", json.dumps([receipt.get("gaps"), receipt.get("error")])), receipt
 
 
 @_LOCKABLE

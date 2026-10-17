@@ -38,8 +38,18 @@ def _identity(pid):
 
 
 def _live(identity):
+    # Windows still reads an exited process's birth while any handle to it (a waited Popen's) is open.
     pid, birth = identity
-    return pl.process_start_time(pid) == birth and not pid_is_zombie(pid)
+    return not pl.pid_provably_gone(pid) and pl.process_start_time(pid) == birth and not pid_is_zombie(pid)
+
+
+@pytest.mark.parametrize("state", ["running", "exited", "unreadable", "denied", "no_such_pid", "error"])
+def test_windows_presence_errors_do_not_certify_cleanup(monkeypatch, state):
+    monkeypatch.setattr(pl, "IS_WINDOWS", True)
+    monkeypatch.setattr(pl, "_windows_process_state", lambda pid: state)
+    monkeypatch.setattr(pl, "process_start_time", lambda pid: "recorded-birth")
+    monkeypatch.setattr(sys.modules[__name__], "pid_is_zombie", lambda pid: False)
+    assert _live((100, "recorded-birth")) is (state not in {"no_such_pid", "exited"})
 
 
 def _read(path):

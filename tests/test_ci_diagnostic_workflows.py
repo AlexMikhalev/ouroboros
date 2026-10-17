@@ -515,16 +515,26 @@ def test_every_shard_installs_the_digest_pinned_official_caddy_its_lane_needs(tm
             archive.addfile(member, io.BytesIO(data))
     runner, output = tmp_path / "runner", tmp_path / "github-output"
     runner.mkdir()
+
+    def shell_path(path):
+        # The Ubuntu runner hands the step POSIX paths. A Windows (MSYS) bash stand-in gets the
+        # same spelling from its own cygpath: GNU tar reads a native `C:\...` as a remote host.
+        if os.name != "nt":
+            return str(path)
+        return subprocess.run([bash, "-c", 'cygpath -u "$1"', "_", str(path)], capture_output=True,
+                              text=True, encoding="utf-8", timeout=10, check=True).stdout.strip()
+
     stub = 'curl() { cp "$STAND_IN_RELEASE" "${@: -1}"; }\npython() { "$PYTHON_BIN" "$@"; }\n'
-    env = {**os.environ, "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output), "CADDY_VERSION": "2.11.7",
+    env = {**os.environ, "RUNNER_TEMP": shell_path(runner), "GITHUB_OUTPUT": shell_path(output),
+           "CADDY_VERSION": "2.11.7",
            "CADDY_SHA256": hashlib.sha256(release.read_bytes()).hexdigest() if pinned else CADDY_SHA256,
-           "STAND_IN_RELEASE": str(release), "PYTHON_BIN": sys.executable}
+           "STAND_IN_RELEASE": shell_path(release), "PYTHON_BIN": sys.executable}
     done = subprocess.run([bash, "-e", "-o", "pipefail", "-c", stub + install["run"]], env=env,
                           capture_output=True, text=True, encoding="utf-8", timeout=30)
     binary = runner / "caddy-2.11.7" / "caddy"
     if pinned:
         assert done.returncode == 0, done.stderr
-        assert output.read_text(encoding="utf-8") == f"path={binary}\n"
+        assert output.read_text(encoding="utf-8") == f"path={shell_path(runner)}/caddy-2.11.7/caddy\n"
         assert [path.name for path in binary.parent.iterdir()] == ["caddy"]
     else:
         assert done.returncode != 0 and "Caddy digest mismatch" in done.stderr, done.stderr
