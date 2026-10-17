@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
-    browseCardState, categoryCounts, matchesQuery, recommendedMissing, renderBrowseCard, sortCatalogItems,
+    browseCardState, categoryCounts, matchesQuery, recommendedMissing, renderBrowseCard, shelfItems, sortCatalogItems,
 } from '../modules/skill_browse.js';
 
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/skills_v4/${name}`, import.meta.url), 'utf8'));
@@ -22,9 +22,9 @@ test('Popular sorts by votes with unknown counts last; Name and Recently updated
     assert.deepEqual(popular.slice(0, 4), ['duckduckgo', 'pdf_tools', 'weather', 'whoop-health']);
     assert.ok(popular.indexOf('happy_farm') < popular.indexOf('telegram'), 'a counted zero outranks an unknown count');
     assert.deepEqual(sortCatalogItems(items, 'name').slice(0, 2).map((entry) => entry.name), ['chess-3d', 'duckduckgo']);
-    const updated = sortCatalogItems(items, 'updated').map((entry) => entry.name);
-    assert.deepEqual(updated.slice(0, 3), ['scholion', 'slack-bridge', 'whoop-health']);
-    assert.equal(updated.at(-1), 'telegram', 'no date sorts last, by name');
+    // The host's items carry no date yet; when an entry has one, «Recently updated» orders by it.
+    const dated = [{ name: 'b', updated_at: '2026-10-15T10:00:00Z' }, { name: 'a' }, { name: 'c', updated_at: '2026-10-16T10:00:00Z' }];
+    assert.deepEqual(sortCatalogItems(dated, 'updated').map((entry) => entry.name), ['c', 'b', 'a'], 'no date sorts last, by name');
     assert.deepEqual(sortCatalogItems(items, 'best', 'weather').slice(0, 1).map((entry) => entry.name), ['weather']);
 });
 
@@ -48,6 +48,20 @@ test('the shelf offers only recommended skills the owner does not have', () => {
     const have = new Map(LISTING.map((skill) => [skill.name, skill]));
     assert.deepEqual(recommendedMissing(CATALOG.items, have).map((entry) => entry.name), ['duckduckgo', 'pdf_tools']);
     assert.deepEqual(recommendedMissing(CATALOG.items, new Map()).map((entry) => entry.name), ['telegram', 'duckduckgo', 'pdf_tools']);
+});
+
+test('the shelf is for an install that predates the starter skills, on the unfiltered board only', () => {
+    const have = new Map(LISTING.map((skill) => [skill.name, skill]));
+    assert.equal(CATALOG.starter.state, 'upgrade');
+    assert.deepEqual(shelfItems(CATALOG, have).map((entry) => entry.name), ['duckduckgo', 'pdf_tools']);
+    for (const state of ['done', 'pending', 'running', 'fresh', '']) {
+        assert.deepEqual(shelfItems({ ...CATALOG, starter: { state } }, have), [], `a ${state || 'missing'} marker shows no shelf`);
+    }
+    assert.deepEqual(shelfItems({ ...CATALOG, starter: {} }, have), [], 'a new install chose its ticks in the wizard');
+    assert.deepEqual(shelfItems(CATALOG, null), [], 'unknown installs: nothing is offered yet');
+    for (const filters of [{ query: 'pdf' }, { source: 'ouroboros' }, { category: 'search' }, { officialOnly: true }]) {
+        assert.deepEqual(shelfItems(CATALOG, have, filters), [], JSON.stringify(filters));
+    }
 });
 
 test('not installed: the trust of the source is the consequence sentence', () => {
@@ -100,9 +114,18 @@ test('one name, two sources: the card offers Compare… instead of a silent repl
     const state = browseCardState(claw, { installed: installed('weather') });
     assert.equal(text(state.status), 'You have another “weather” (from Ouroboros)');
     assert.match(state.action, /data-browse-action="compare"[^>]*>Compare…</);
-    const unsupported = search.items.find((entry) => entry.unsupported);
-    assert.equal(browseCardState(unsupported, {}).action, '');
     assert.match(text(browseCardState(item('ouroboros-community/old_tool'), {}).status), /^Withdrawn by Ouroboros Community$/);
+});
+
+test('before the installed listing is read, the catalog\'s own join says installed or taken, with no action', () => {
+    const early = browseCardState(item('ouroboros/weather'), { listed: false });
+    assert.equal(text(early.status), 'Installed · v0.3.1');
+    assert.equal(early.action, '', 'every action needs the listing row');
+    const taken = { ...item('ouroboros/duckduckgo'), installed: { state: 'name_taken', source_id: 'my-folder', source_name: 'My skills' } };
+    assert.equal(text(browseCardState(taken, { listed: false }).status), 'You have another “duckduckgo” (from My skills)');
+    assert.match(browseCardState(item('ouroboros/duckduckgo'), { listed: false, source: SOURCES.get('ouroboros') }).action, />Install</);
+    assert.equal(text(browseCardState(item('ouroboros/weather'), { listed: true }).status), 'Ouroboros reviews it before it runs',
+        'once read, the listing decides (here: not installed)');
 });
 
 test('a card: name opens the sheet, Official only on endorsed entries, unknown popularity is said, categories under All', () => {
@@ -117,7 +140,7 @@ test('a card: name opens the sheet, Official only on endorsed entries, unknown p
     const community = renderBrowseCard(item('ouroboros-community/whoop-health'), { state: { status: '', action: '' } });
     assert.doesNotMatch(community, /data-official-mark/);
     assert.match(community, /▲ 20 votes · needs 2 keys/);
-    assert.match(community, /Ouroboros Community · by kuznetsoffandrey · updated/);
+    assert.match(community, /Ouroboros Community · by kuznetsoffandrey</);
     assert.match(renderBrowseCard(item('ouroboros-community/old_tool'), { state: { status: '', action: '' } }), />No data</);
     assert.match(renderBrowseCard(item('ouroboros-community/happy_farm'), { state: { status: '', action: '' } }), />No votes yet</);
     const builtin = renderBrowseCard(item('builtin/telegram'), { state: { status: '', action: '' } });

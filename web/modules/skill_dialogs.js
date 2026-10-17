@@ -132,13 +132,18 @@ export function openSkipReviewDialog({ name, sourceName = '', owner = '', permis
     });
 }
 
-/** Update a skill that was changed here (B6): merge, replace or keep. Resolves the mode or null. */
-export function openUpdateDialog({ name, sourceName = '', update = {}, installedVersion = '', currentVersion = '', files = 0, baseKnown = true }) {
+/**
+ * Update a skill that was changed here, or whose installed original is unknown (B6,
+ * Astra A03): merge, replace or keep. `editedByOwner`: the host recorded the
+ * owner's edit of these files. Resolves the mode or null.
+ */
+export function openUpdateDialog({ name, sourceName = '', update = {}, installedVersion = '', currentVersion = '', baseKnown = true, editedByOwner = false }) {
     const v = versionText(update.version) || 'the new version';
-    const changed = files > 0 ? `${plural(files, 'file')} differ` : 'the files differ';
-    const lead = baseKnown
-        ? `You changed ${name} on this computer: ${changed} from ${versionText(installedVersion) || 'the version'} you installed${currentVersion && currentVersion !== installedVersion ? ` (your copy says ${versionText(currentVersion)})` : ''}.`
-        : `You changed ${name} on this computer. The original version is unknown, so Ouroboros can’t tell exactly which changes are yours.`;
+    const differ = `differ from ${versionText(installedVersion) || 'the version'} you installed${currentVersion && currentVersion !== installedVersion ? ` (your copy says ${versionText(currentVersion)})` : ''}`;
+    const lead = !baseKnown
+        ? `The original files of ${name} aren’t known, so Ouroboros can’t tell whether this copy was changed here.`
+        : editedByOwner ? `You changed ${name} on this computer: its files ${differ}.`
+            : `${name} was changed on this computer: its files ${differ}.`;
     return openChoiceDialog({
         title: `Update ${name} to ${v}?`,
         lead,
@@ -150,8 +155,9 @@ export function openUpdateDialog({ name, sourceName = '', update = {}, installed
                     : `Ouroboros compares your copy with ${v} and carries over what it can, then reviews the result. It tells you in chat what it could not keep.` },
             { value: 'replace', label: 'Update and replace my changes', confirmLabel: 'Replace my changes', tone: 'danger',
                 detail: `You get ${v} exactly as published${sourceName ? ` in ${sourceName}` : ''}. Your changed version is kept as a backup you can restore.` },
+            // The host records the skipped release: this one is not offered again, a newer one is.
             { value: 'keep', label: 'Keep my version', confirmLabel: 'Keep my version', tone: 'default',
-                detail: 'Stay on your changed copy. The update stays available.' },
+                detail: `Stay on your changed copy. ${versionText(update.version) || 'This version'} isn’t offered again; a newer version will be.` },
         ],
     });
 }

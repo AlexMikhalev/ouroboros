@@ -8,8 +8,8 @@ import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import { mountChatMarkdown } from './chat_markdown.js';
 import { reviewSentence } from './skill_card_renderer.js';
 import {
-    catalogWhoHtml, externalLinkHtml, officialMarkHtml, permissionWords, popularityText,
-    relativeAge, routeExternalLink, versionText,
+    catalogWhoHtml, displayAddress, externalLinkHtml, officialMarkHtml, permissionWords, popularityText,
+    relativeAge, repoLabel, routeExternalLink, versionText,
 } from './skill_presentation.js';
 
 function section(title, html) {
@@ -38,43 +38,43 @@ function versionsHtml(detail, item, installed) {
 }
 
 function usesHtml(detail, item) {
-    const uses = Array.isArray(detail?.uses) && detail.uses.length ? detail.uses : permissionWords(item.permissions);
-    const keys = Array.isArray(detail?.keys) && detail.keys.length
-        ? detail.keys.map((key) => (typeof key === 'string' ? key : [key.label || key.name, key.state].filter(Boolean).join(' — ')))
-        : (item.needs_keys || []);
-    const installs = Array.isArray(detail?.installs) ? detail.installs : [];
-    const facts = [`Your keys: ${keys.length ? keys.map(escapeHtml).join(', ') : 'none'}`];
-    if (installs.length) facts.push(`Installs: ${installs.map(escapeHtml).join('; ')}`);
-    return `<p>${uses.length ? uses.map(escapeHtml).join(' · ') : 'Nothing beyond its own folder'}</p>${note(facts.join(' · '))}`;
+    // The entry's own words come from its permission ids (the cards say the same);
+    // an id this page has no word for keeps the source's label.
+    const uses = Array.isArray(detail?.uses) ? detail.uses.filter((use) => use && typeof use === 'object') : null;
+    const permissions = uses ? uses.filter((use) => use.kind !== 'key') : (item.permissions || []).map((id) => ({ id }));
+    const words = [];
+    for (const use of permissions) {
+        const word = permissionWords([use.id])[0] || String(use.label || '');
+        if (word && !words.includes(word)) words.push(word);
+    }
+    const keys = uses ? uses.filter((use) => use.kind === 'key').map((use) => String(use.id || '')).filter(Boolean) : (item.needs_keys || []);
+    return `<p>${words.length ? words.map(escapeHtml).join(' · ') : 'Nothing beyond its own folder'}</p>${note(`Your keys: ${keys.length ? keys.map(escapeHtml).join(', ') : 'none'}`)}`;
 }
 
-function authorRepoHtml(detail, item) {
-    const repo = detail?.author_repo && typeof detail.author_repo === 'object' ? detail.author_repo
-        : (item.repo_url ? { url: item.repo_url, name: item.author_repo, stars: item.signals?.author_repo_stars } : null);
-    if (!repo?.url) return '';
-    const name = repo.name || item.author_repo || repo.url;
-    const parts = [externalLinkHtml(repo.url, name)];
-    if (typeof repo.stars === 'number') parts.push(`★ ${escapeHtml(String(repo.stars))} ${repo.stars === 1 ? 'star' : 'stars'} on ${escapeHtml(name)}`);
-    if (repo.release?.version) parts.push(`${escapeHtml(versionText(repo.release.version))} released ${escapeHtml(relativeAge(repo.release.date) || '')}`.trim());
+function authorRepoHtml(item) {
+    if (!item.author_repo) return '';
+    const parts = [externalLinkHtml(item.author_repo, repoLabel(item.author_repo))];
+    const stars = item.signals?.author_repo_stars;
+    if (typeof stars === 'number') parts.push(`★ ${escapeHtml(String(stars))} ${stars === 1 ? 'star' : 'stars'} on ${escapeHtml(repoLabel(item.author_repo))}`);
     return `<p>${parts.join(' · ')}</p>${note('The source keeps a pointer to this repository; the author keeps the stars, issues and releases.')}`;
 }
 
 function linksHtml(detail, item) {
-    const links = Array.isArray(detail?.links) && detail.links.length ? detail.links : [
-        item.repo_url ? { label: 'Author’s repository', url: item.repo_url } : null,
-        item.signals?.discussion_url ? { label: `Discussion${typeof item.signals.comments === 'number' ? ` (${item.signals.comments})` : ''}`, url: item.signals.discussion_url } : null,
-    ].filter(Boolean);
-    return links.length ? `<p>${links.map((link) => externalLinkHtml(link.url, link.label)).join(' · ')}</p>` : '';
+    const links = detail?.links && typeof detail.links === 'object' && !Array.isArray(detail.links) ? detail.links : {};
+    const comments = item.signals?.comments;
+    const rows = [
+        [links.author_repo || item.author_repo, 'Author’s repository'],
+        [links.discussion || item.signals?.discussion_url, `Discussion${typeof comments === 'number' ? ` (${comments})` : ''}`],
+        [links.repo || item.repo_url, `${item.source_name || 'Source'} repository`],
+    ].filter(([url]) => url);
+    return rows.length ? `<p>${rows.map(([url, label]) => externalLinkHtml(url, label)).join(' · ')}</p>` : '';
 }
 
-function detailsHtml(detail, item, installed) {
-    const facts = detail?.details && typeof detail.details === 'object' ? detail.details : {};
+function detailsHtml(item, installed) {
     const rows = [
-        ['Source', [item.source_name, facts.address].filter(Boolean).join(' · ')],
-        ['Exact version', [versionText(item.version), facts.commit ? `commit ${facts.commit}` : '', facts.digest || item.digest || ''].filter(Boolean).join(' · ')],
-        ['Files', facts.files ? String(facts.files) : ''],
+        ['Source', [item.source_name, displayAddress(item.repo_url)].filter(Boolean).join(' · ')],
+        ['Exact version', [versionText(item.version), item.digest || ''].filter(Boolean).join(' · ')],
         ['Installed folder', installed?.payload_root || ''],
-        ['Read from the source', relativeAge(facts.last_read_at)],
     ].filter(([, value]) => value);
     if (!rows.length) return '';
     return `<details class="skills-details skills-sheet-details"><summary>Details</summary><dl class="skills-sheet-facts">${rows.map(([label, value]) =>
@@ -117,17 +117,18 @@ export function openSkillDetailSheet({ item, installed = null, source = null, ac
     };
     const paint = (detail, { reading = false, error = '' } = {}) => {
         const about = String(detail?.about || item.description || '');
-        const when = detail?.when_to_use || item.when_to_use || '';
+        const aboutError = detail && !detail.about && detail.about_error
+            ? note(`Its SKILL.md couldn’t be read (${escapeHtml(detail.about_error)}); this is the catalog’s description.`) : '';
         body.innerHTML = [
             reading ? `<p class="skills-sheet-status" role="status">Reading ${escapeHtml(item.name)} from ${escapeHtml(item.source_name || 'its source')}…</p>` : '',
             error ? `<div class="skills-sheet-status is-error" role="alert"><p>Couldn’t read the full description from ${escapeHtml(item.source_name || 'its source')}: ${escapeHtml(error)}.</p><button type="button" class="btn btn-default btn-sm" data-sheet-retry>Try again</button></div>` : '',
-            `<section class="skills-sheet-section"><h3>About</h3><div class="skills-sheet-about" data-i18n-authored></div>${when ? `<p class="skills-sheet-note" data-i18n-authored>Ouroboros uses it when: ${escapeHtml(when)}</p>` : ''}</section>`,
+            `<section class="skills-sheet-section"><h3>About</h3><div class="skills-sheet-about" data-i18n-authored></div>${aboutError}</section>`,
             section('What it can use', usesHtml(detail, item)),
             section('Review', `<p>${escapeHtml(sheetReviewSentence(item, installed, source))}</p>`),
-            section('Author’s repository', authorRepoHtml(detail, item)),
+            section('Author’s repository', authorRepoHtml(item)),
             section('Versions', versionsHtml(detail, item, installed)),
             section('Links', linksHtml(detail, item)),
-            detailsHtml(detail, item, installed),
+            detailsHtml(item, installed),
         ].join('');
         mountChatMarkdown(body.querySelector('.skills-sheet-about'), about, { softBreaks: true });
     };

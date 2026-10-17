@@ -34,19 +34,25 @@ test('popularity: one number with its noun; counted zero, uncounted and unknown 
     assert.equal(popularityText({ signals: { comments: 3 } }), 'Votes not counted yet');
     assert.equal(popularityText({ signals: null }), 'No data');
     assert.equal(popularityText({ source_id: 'builtin', signals: null }), '', 'built-ins have no discussion to count');
-    assert.equal(popularityText({ signals: { stars: 429, downloads: 171800, comments: 6 } }), '★ 429 · 171.8k downloads · 6 comments');
-    assert.equal(popularityText({ signals: { stars: 0, downloads: 887 } }), 'No stars yet · 887 downloads');
+    // A registry hit carries the registry's own counts (stars, downloads), never votes.
+    assert.equal(popularityText({ signals: null, registry_stats: { stars: 429, downloads: 171800, comments: 6, installs: 6520 } }), '★ 429 · 171.8k downloads · 6 comments');
+    assert.equal(popularityText({ signals: null, registry_stats: { stars: 0, downloads: 887 } }), 'No stars yet · 887 downloads');
+    assert.equal(popularityText({ signals: null, registry_stats: {} }), 'No data', 'a registry hit without counts is unknown');
+    assert.equal(popularityText({ signals: { stars: 4 } }), 'Votes not counted yet', 'signals carry votes; stars there are not a vote count');
     assert.equal(factsText({ signals: { votes: 20 }, needs_keys: ['A', 'B'] }), '▲ 20 votes · needs 2 keys');
     assert.equal(factsText({ signals: { votes: 2 }, needs_keys: ['A'] }), '▲ 2 votes · needs a key');
 });
 
 test('the who line names source, author, the author repository and the update age', () => {
-    const html = catalogWhoHtml({ source_name: 'Ouroboros Community', owner: 'l1nkberry', repo_url: 'https://github.com/CrossRead/scholion',
-        author_repo: 'CrossRead/scholion', updated_at: new Date(Date.now() - 2 * 86400_000).toISOString() });
+    // A pointer entry's `author_repo` is the author's repository; `repo_url` is the source's own and stays out of the line.
+    const html = catalogWhoHtml({ source_name: 'Ouroboros Community', owner: 'l1nkberry', repo_url: 'https://github.com/razzant/OuroborosHub',
+        author_repo: 'https://github.com/CrossRead/scholion', updated_at: new Date(Date.now() - 2 * 86400_000).toISOString() });
     assert.match(html, /^Ouroboros Community · by l1nkberry · <a class="skills-link" href="https:\/\/github\.com\/CrossRead\/scholion" target="_blank" rel="noopener noreferrer" data-skill-external>CrossRead\/scholion ↗<\/a> · updated 2 days ago$/);
+    assert.equal(catalogWhoHtml({ source_name: 'Ouroboros', owner: 'razzant', repo_url: 'https://github.com/razzant/OuroborosHub' }), 'Ouroboros · by razzant',
+        'a hosted entry has no author repository; no date is said when the host gives none');
     assert.equal(catalogWhoHtml({ source_name: 'Ouroboros', owner: '' }), 'Ouroboros', 'an unknown author is omitted, never «by unknown»');
     assert.equal(catalogWhoHtml({ source_id: 'builtin' }), 'Comes with the app · updates with Ouroboros');
-    assert.doesNotMatch(catalogWhoHtml({ source_name: 'X', repo_url: 'javascript:alert(1)' }), /href/);
+    assert.doesNotMatch(catalogWhoHtml({ source_name: 'X', author_repo: 'javascript:alert(1)' }), /href/);
 });
 
 test('trust sentences and values say the consequence, from the row the owner set', () => {

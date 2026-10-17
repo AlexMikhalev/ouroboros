@@ -113,6 +113,11 @@ export function displayAddress(value) {
     return String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
 }
 
+/** A repository address as its short name: «CrossRead/scholion» for a GitHub address. */
+export function repoLabel(value) {
+    return displayAddress(value).replace(/^github\.com\//i, '');
+}
+
 /** An external link the page routes through the host bridge (desktop shell, Telegram, browser). */
 export function externalLinkHtml(url, label) {
     const target = safeExternalUrl(url);
@@ -177,15 +182,17 @@ export function grantPhrases(permissions = []) {
 
 /** One popularity fact with its noun; unknown is said, never a bare 0 (UX §2.4). */
 export function popularityText(item = {}) {
-    const signals = item.signals && typeof item.signals === 'object' ? item.signals : null;
-    if (!signals) return item.source_kind === 'builtin' || item.source_id === 'builtin' ? '' : 'No data';
-    if (typeof signals.stars === 'number' || typeof signals.downloads === 'number') {
+    const stats = item.registry_stats && typeof item.registry_stats === 'object' ? item.registry_stats : null;
+    if (stats && Object.values(stats).some((value) => typeof value === 'number')) {
+        // A registry (ClawHub) counts stars and downloads, not votes.
         const parts = [];
-        if (typeof signals.stars === 'number') parts.push(signals.stars > 0 ? `★ ${formatCompactNumber(signals.stars)}` : 'No stars yet');
-        if (typeof signals.downloads === 'number' && signals.downloads > 0) parts.push(`${formatCompactNumber(signals.downloads)} downloads`);
-        if (typeof signals.comments === 'number' && signals.comments > 0) parts.push(plural(signals.comments, 'comment'));
-        return parts.join(' · ');
+        if (typeof stats.stars === 'number') parts.push(stats.stars > 0 ? `★ ${formatCompactNumber(stats.stars)}` : 'No stars yet');
+        if (typeof stats.downloads === 'number' && stats.downloads > 0) parts.push(`${formatCompactNumber(stats.downloads)} downloads`);
+        if (typeof stats.comments === 'number' && stats.comments > 0) parts.push(plural(stats.comments, 'comment'));
+        return parts.join(' · ') || 'No data';
     }
+    const signals = item.signals && typeof item.signals === 'object' ? item.signals : null;
+    if (!signals) return item.source_id === 'builtin' ? '' : 'No data';
     if (typeof signals.votes !== 'number') return 'Votes not counted yet';
     return signals.votes > 0 ? `▲ ${plural(signals.votes, 'vote')}` : 'No votes yet';
 }
@@ -200,12 +207,13 @@ export function factsText(item = {}) {
     return parts.join(' · ');
 }
 
-/** «Ouroboros Community · by kuznetsoffandrey · CrossRead/scholion ↗ · updated 2 days ago». */
+/** «Ouroboros Community · by l1nkberry · CrossRead/scholion ↗ · updated 2 days ago». */
 export function catalogWhoHtml(item = {}, { version = false, now = Date.now() } = {}) {
     if (item.source_id === 'builtin') return 'Comes with the app · updates with Ouroboros';
     const parts = [escapeHtml(item.source_name || item.source_id || '')];
     if (item.owner) parts.push(`by ${escapeHtml(item.owner)}`);
-    if (item.repo_url) parts.push(externalLinkHtml(item.repo_url, item.author_repo || displayAddress(item.repo_url)));
+    // A pointer entry lives in its author's repository (SPEC §3.1): the who line links it.
+    if (item.author_repo) parts.push(externalLinkHtml(item.author_repo, repoLabel(item.author_repo)));
     if (version && item.version) parts.push(escapeHtml(versionText(item.version)));
     const updated = relativeAge(item.updated_at, now);
     if (updated) parts.push(`updated ${escapeHtml(updated)}`);

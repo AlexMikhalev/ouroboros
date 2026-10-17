@@ -63,7 +63,7 @@ test('each attention tray is one sentence with its own actions, visible without 
     assert.match(reviewing, />Skip review</);
 
     const otherEdit = traysOf(renderInstalledSkillCard(row('claudexor_quotas')));
-    assert.match(otherEdit, /Its files changed outside Ouroboros, so it stopped until it is reviewed\. Review it, or skip the review if you made the change yourself\./);
+    assert.match(otherEdit, /Its files changed here since it was installed, so it waits for a review\. Review it, or skip the review\./);
     assert.match(otherEdit, /data-skill-action="rereview"[^>]*>Review</);
 });
 
@@ -72,11 +72,17 @@ test('updates: one click for an unmodified skill, «Update…» asks what to kee
     assert.match(plain, /v0\.3\.2 is available\./);
     assert.match(plain, /data-skill-action="update"[^>]*>Update</);
     const modified = renderInstalledSkillCard(row('anime_studio'));
-    assert.match(traysOf(modified), /Ouroboros Community has v3\.2\.0\. You changed this skill here, so updating asks what to keep\./);
+    assert.match(traysOf(modified), /Ouroboros Community has v3\.2\.0\. This skill was changed here, so updating asks what to keep\./);
     assert.match(traysOf(modified), />Update…</);
-    assert.match(modified, /Modified · edited by you/);
-    assert.equal(installedWhoHtml(row('anime_studio')).split(' · ').slice(-1)[0], 'edited by you here: 9 files (now v3.3.0)');
+    assert.match(modified, /Modified · edited by you/, 'the host recorded the owner’s edit of these bytes');
+    assert.equal(installedWhoHtml(row('anime_studio')).split(' · ').slice(-1)[0], 'edited by you here (now v3.3.0)');
     assert.match(installedWhoHtml(row('anime_studio')), /^Ouroboros Community · installed v2\.12\.0 /);
+    const unrecorded = row('claudexor_quotas');
+    assert.match(renderInstalledSkillCard(unrecorded), /data-tone="neutral">Modified</, 'nobody recorded who changed it');
+    assert.equal(installedWhoHtml(unrecorded).split(' · ').slice(-1)[0], 'changed here');
+    const unknownBase = row('weather');
+    unknownBase.install.base_known = false;
+    assert.match(traysOf(renderInstalledSkillCard(unknownBase)), /Ouroboros has v0\.3\.2\. Its original files aren’t known, so updating asks what to keep\./);
     const sameLabel = row('weather');
     sameLabel.install.update_available.version = '0.3.1';
     assert.match(traysOf(renderInstalledSkillCard(sameLabel)), /changed the files of v0\.3\.1 \(same version label\)/);
@@ -161,14 +167,27 @@ test('Publish follows the host verdict: task_start_allowed decides, a missing to
 
 test('Details keep the record: review sentence and verdict, what it can use, the install record and live state', () => {
     const weather = renderInstalledSkillCard(row('weather'), new Set(), new Set(), LISTING.live);
-    assert.match(weather, /Reviewed on this computer · passed\./);
+    assert.match(weather, /Installed without review on 20 Sept? because you trust Ouroboros\./, 'the locale’s own month abbreviation');
+    assert.doesNotMatch(weather, /data-tone="ok">pending</, 'no «pending» verdict beside a skill that runs on its install basis');
     assert.match(weather, /Internet · A widget and a settings section · Its own pages inside Ouroboros/);
-    assert.match(weather, /installed without review — you trusted Ouroboros · by Ouroboros · in task t-weather/);
+    assert.match(weather, /v0\.3\.1 · <code>0305fd55a4c7786753043df9<\/code> · installed without review — you trusted Ouroboros · by Ouroboros</);
     assert.match(weather, />Loaded</);
-    const trusted = skill({ review_status: 'pending', review_gate: { executable_review: true },
-        install: { source: { id: 'ouroboros', name: 'Ouroboros' }, basis: 'trusted', installed_at: '2026-10-12T10:00:00Z', release: { version: '1.0.0' } } });
+    // The host's acceptance basis for these exact bytes decides the sentence, not the install basis alone.
+    const install = { source: { id: 'ouroboros', name: 'Ouroboros' }, basis: 'trusted', installed_at: '2026-10-12T10:00:00Z', release: { version: '1.0.0' } };
+    const trusted = skill({ review_status: 'pending', review_gate: { executable_review: true, reason: 'trusted_source' }, install });
     assert.equal(reviewSentence(trusted), 'Installed without review on 12 Oct because you trust Ouroboros.');
+    const changed = skill({ review_status: 'pending', review_gate: { executable_review: false, reason: 'review_pending' }, install });
+    assert.equal(reviewSentence(changed), 'Not reviewed for its current files.', 'a trusted install whose bytes changed is not «installed without review»');
+    const reviewed = skill({ review_status: 'clean', review_gate: { executable_review: true, reason: 'trusted_source' }, install });
+    assert.equal(reviewSentence(reviewed), 'Reviewed on this computer · passed.', 'a passed review of these bytes is said first');
+    assert.equal(reviewSentence(skill({ review_status: 'pending', review_gate: { executable_review: true, reason: 'owner_skip' } })),
+        'You skipped the review; it runs unreviewed.');
+    assert.equal(reviewSentence(row('anime_studio')), 'Edited by you here; it runs without a new review.');
     assert.equal(reviewSentence(skill({ review_profile: 'owner_attested' })), 'You skipped the review; it runs unreviewed.');
+    // A task and a reason are said when the host's listing carries them from the install record (B8).
+    const told = row('weather');
+    Object.assign(told.install, { task_id: 't-weather', reason: 'the owner asked for the forecast' });
+    assert.match(renderInstalledSkillCard(told), /· by Ouroboros · in task t-weather · because: the owner asked for the forecast</);
     const worker = renderInstalledSkillCard(skill({ enabled: true, live_loaded: true, dispatch_live: true, process: 'worker' }));
     assert.match(worker, />Loaded · worker</);
 });

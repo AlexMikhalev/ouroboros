@@ -189,7 +189,10 @@ export function skillPublishDialogModel(preflight = {}) {
     };
 }
 
-/** Build the exact ordinary managed-task request after explicit confirmation. */
+/**
+ * Build the exact ordinary managed-task request after explicit confirmation. `destination`
+ * is the source id the owner chose (null: the skill's origin, else the hub).
+ */
 export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, destination = null } = {}) {
     const { skill, repository } = targetFromPreflight(preflight);
     if (!validTaskStart(preflight)) {
@@ -224,7 +227,7 @@ export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, 
         type: 'skill_publish',
         expected_output: `Return only the validated GitHub pull-request URL opened in "${repository}" for the canonical skill "${skill}".`,
         constraints: `Public submission is authorized for the canonical skill "${skill}" and repository "${repository}". If the repository-pinned Betterleaks 1.8.1 runtime is reported missing or corrupt, this task may run only the repository-provided checksum-pinned Betterleaks 1.8.1 installer command: python -m ouroboros.betterleaks_runtime install. No other dependency or runtime change is authorized. No account or authentication change is authorized.`,
-        context: `The owner explicitly confirmed public submission of "${skill}" to "${repository}". Recoverable tool errors are evidence for the next LLM turn, not completion. Use the typed stage, completed external effects, redacted facts, and repair hint as context for the agent's own judgment. Selected-preflight evidence: ${JSON.stringify(evidence)}`,
+        context: `The owner explicitly confirmed public submission of "${skill}" to "${repository}".${destination ? ` The owner chose the destination source "${destination}": pass destination="${destination}" to submit_skill_to_hub.` : ''} Recoverable tool errors are evidence for the next LLM turn, not completion. Use the typed stage, completed external effects, redacted facts, and repair hint as context for the agent's own judgment. Selected-preflight evidence: ${JSON.stringify(evidence)}`,
         metadata: {
             skill_publish_target: { skill, repository, ...(destination ? { destination } : {}) },
         },

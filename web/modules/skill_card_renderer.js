@@ -46,18 +46,22 @@ export const isBuiltIn = (skill) => installFacts(skill)?.source?.kind === 'built
 /** Created on this computer (by the owner or Ouroboros), not installed from a source. */
 export const isMadeHere = (skill) => !installFacts(skill) && ['external', 'self_authored'].includes(sourceTag(skill));
 
-function modifiedFacts(skill) {
-    const modified = installFacts(skill)?.modified;
-    if (!modified) return null;
-    return typeof modified === 'object' ? modified : {};
-}
+// The host's acceptance basis for the current bytes (trusted_source, owner_skip, owner_edit).
+const acceptedAs = (skill) => String(skill?.review_gate?.reason || '');
 
-const EDITORS = { owner: 'you', ouroboros: 'Ouroboros', other: 'something other than you or Ouroboros' };
+// The files differ from the installed release (UX §5.3: a neutral fact). Who changed
+// them is known only when the owner's edit is recorded for these exact bytes.
+function modifiedFacts(skill) {
+    if (!installFacts(skill)?.modified) return null;
+    return { by: acceptedAs(skill) === 'owner_edit' ? 'owner' : '' };
+}
 
 function statusBadge(status, gate = null, profile = '') {
     // Owner-attested skills are executable but the LLM review was skipped; the
     // verdict word stays distinct from a reviewed one.
     if (profile === 'owner_attested') return chipHtml('review skipped by you', 'warn');
+    // Running on its install basis with no review of these bytes: the sentence says why; «pending» would not.
+    if ((status || 'pending') === 'pending' && ['trusted_source', 'owner_skip', 'owner_edit'].includes(String(gate?.reason || ''))) return '';
     const executable = gate && typeof gate.executable_review === 'boolean'
         ? gate.executable_review
         : ['clean', 'warnings'].includes(status);
@@ -251,8 +255,8 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
         if (!skill.lifecycle_pending) chip = chipHtml('Not reviewed yet', 'warn');
         needs = true;
         let sentence = 'Ouroboros hasn’t reviewed it yet. Review it before it runs, or skip the review.';
-        if (modified?.by === 'other' || (modified && install?.basis !== 'owner_edit')) {
-            sentence = 'Its files changed outside Ouroboros, so it stopped until it is reviewed. Review it, or skip the review if you made the change yourself.';
+        if (modified) {
+            sentence = 'Its files changed here since it was installed, so it waits for a review. Review it, or skip the review.';
         } else if (preflightFailedStale(skill)) {
             sentence = 'The last file check failed on earlier files. Review the current files, or ask Ouroboros to fix it.';
         } else if (isMadeHere(skill)) {
@@ -284,8 +288,8 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
             actions: smallButton('Uninstall', name, 'uninstall') }));
     } else if (update) {
         const v = escapeHtml(versionText(update.version) || 'A new version');
-        trays.push(modified
-            ? trayHtml({ sentence: `${escapeHtml(sourceName)} has ${v}. You changed this skill here, so updating asks what to keep.`,
+        trays.push(modified || install?.base_known === false
+            ? trayHtml({ sentence: `${escapeHtml(sourceName)} has ${v}. ${modified ? 'This skill was changed here' : 'Its original files aren’t known'}, so updating asks what to keep.`,
                 actions: smallButton('Update…', name, 'update') })
             : trayHtml({ sentence: update.version && update.version === install?.release?.version
                 ? `${escapeHtml(sourceName)} changed the files of ${v} (same version label).`
@@ -302,7 +306,7 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
     };
 }
 
-/** «Ouroboros Community · installed v2.12.0 3 months ago · edited by you here: 9 files (now v3.3.0)». */
+/** «Ouroboros Community · installed v2.12.0 3 months ago · edited by you here (now v3.3.0)». */
 export function installedWhoHtml(skill, model = installedSkillModel(skill)) {
     const parts = [escapeHtml(model.sourceName)];
     const installedVersion = model.install?.release?.version;
@@ -317,12 +321,8 @@ export function installedWhoHtml(skill, model = installedSkillModel(skill)) {
         else if (age) parts.push(`installed ${escapeHtml(age)}${model.install?.installed_by === 'ouroboros' ? ' by Ouroboros' : ''}`);
     }
     if (model.modified) {
-        const files = Number(model.modified.files);
-        const count = Number.isFinite(files) && files > 0 ? plural(files, 'file') : '';
         const now = versionMoved ? ` (now ${escapeHtml(versionText(skill.version))})` : '';
-        if (model.modified.by === 'other') parts.push(`${count ? `${count} changed` : 'changed'} here by something other than you or Ouroboros`);
-        else if (EDITORS[model.modified.by]) parts.push(`edited by ${escapeHtml(EDITORS[model.modified.by])} here${count ? `: ${count}` : ''}${now}`);
-        else parts.push(`changed here${count ? `: ${count}` : ''}${now}`);
+        parts.push(`${model.modified.by === 'owner' ? 'edited by you here' : 'changed here'}${now}`);
     }
     if (skill.published && typeof skill.published === 'object') {
         const sent = relativeAge(skill.published.submitted_at || skill.published.published_at);
@@ -417,14 +417,16 @@ function reviewHistory(skill) {
 export function reviewSentence(skill) {
     const install = installFacts(skill);
     const ready = reviewReady(skill);
-    if (skill.review_profile === 'owner_attested' && !skill.review_stale) return 'You skipped the review; it runs unreviewed.';
-    if (ready && install?.basis === 'trusted' && !['clean', 'warnings'].includes(skill.review_status)) {
-        const when = shortDate(install.installed_at || skill.installed_at);
+    // A passed review of these bytes is the strongest evidence; otherwise the host's acceptance basis says why it runs.
+    const accepted = ['clean', 'warnings'].includes(skill.review_status) && !skill.review_stale ? '' : acceptedAs(skill);
+    if ((skill.review_profile === 'owner_attested' && !skill.review_stale) || (ready && accepted === 'owner_skip')) {
+        return 'You skipped the review; it runs unreviewed.';
+    }
+    if (ready && accepted === 'trusted_source') {
+        const when = shortDate(install?.installed_at || skill.installed_at);
         return `Installed without review${when ? ` on ${when}` : ''} because you trust ${installedSourceLabel(skill)}.`;
     }
-    if (ready && install?.basis === 'owner_edit' && !['clean', 'warnings'].includes(skill.review_status)) {
-        return 'Edited by you here; it runs without a new review.';
-    }
+    if (ready && accepted === 'owner_edit') return 'Edited by you here; it runs without a new review.';
     if (ready && skill.review_profile === 'native_seed') return 'Comes with the app; it runs without a separate review.';
     if (ready && skill.review_status === 'warnings') return 'Reviewed on this computer · passed with notes.';
     if (ready) return 'Reviewed on this computer · passed.';

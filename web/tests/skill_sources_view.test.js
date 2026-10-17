@@ -38,14 +38,30 @@ test('trust is a setting on the right, marked suggested until the owner confirms
 });
 
 test('health is a status sentence: read, reading, couldn’t be read with Try again, registry on demand', () => {
-    assert.match(text(sourceHealthHtml(source('ouroboros'), { state: 'ready', last_read_at: new Date(Date.now() - 120_000).toISOString() })), /^read 2 min ago$/);
+    const ago = (ms) => new Date(Date.now() - ms).toISOString();
+    assert.match(text(sourceHealthHtml(source('ouroboros'), { state: 'ready', last_read_at: ago(120_000) })), /^read 2 min ago$/);
     assert.match(sourceHealthHtml(source('ouroboros'), { state: 'reading' }), /data-work/);
+    assert.equal(text(sourceHealthHtml(source('ouroboros'), { state: 'ready', last_read_at: ago(3_600_000 * 3), refreshing: true })),
+        'reading… (list from 3 h ago)', 'a refresh in flight keeps the age of the list shown');
+    // The host keeps the last list when a fetch fails: state ready, the failure in `error`.
     const failed = sourceHealthHtml(source('ouroboros-community'), health('ouroboros-community'));
     assert.match(failed, /data-tone="warn"/);
-    assert.match(text(failed), /couldn’t be read: GitHub didn&#39;t answer — showing the list from .* ago Try again/);
+    assert.match(text(failed), /couldn’t be read: GitHub didn&#39;t answer \(timed out after 60 s\) — showing the list from .* ago Try again/);
     assert.match(failed, /data-source-action="refresh" data-source-id="ouroboros-community"/);
-    assert.equal(text(sourceHealthHtml(source('clawhub'), { state: 'ready', last_read_at: null })), 'searched when you search');
+    const never = sourceHealthHtml(source('ouroboros'), { state: 'error', error: 'repository not found' });
+    assert.equal(text(never), 'couldn’t be read: repository not found Try again', 'no list was ever read: no age is claimed');
+    assert.equal(text(sourceHealthHtml(source('clawhub'), { state: 'search' })), 'searched when you search');
     assert.equal(text(sourceHealthHtml(source('ouroboros'), null)), 'not read yet');
+    assert.equal(sourceHealthHtml(source('builtin'), { state: 'ready' }), '', 'built-in skills ship with the app: nothing is read');
+});
+
+test('a row without the catalog read uses its own state; a count is said only for a list that was read', () => {
+    const own = renderSourceRow(source('my-folder'));
+    assert.match(text(own), /~\/ouroboros-skills · 0 skills · read .* ago/, 'a read folder with no skills has 0, a fact');
+    const unread = renderSourceRow({ ...source('ouroboros'), state: 'reading', last_read_at: '' });
+    assert.doesNotMatch(text(unread), /skills ·/, 'before the first read the count is unknown, never 0');
+    assert.match(unread, /data-work/);
+    assert.doesNotMatch(text(renderSourceRow(source('builtin'), { items: items('builtin') })), /read/);
 });
 
 test('the trust cards say what each choice costs: review sends files to review models, trust hands out keys', () => {

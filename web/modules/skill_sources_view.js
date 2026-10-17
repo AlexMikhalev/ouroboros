@@ -14,39 +14,51 @@ import {
     statusHtml, trayHtml, trustValueText,
 } from './skill_presentation.js';
 
-/** Health of one source as a status sentence (dot + words) from the catalog read. */
+/**
+ * Health of one source as a status sentence (dot + words): the host's read state
+ * (ready | reading | error | search) with the age of the list it has.
+ */
 export function sourceHealthHtml(source, health) {
-    if (!health) return source.kind === 'registry' ? statusHtml('searched when you search', 'muted') : statusHtml('not read yet', 'muted');
+    if (source.kind === 'builtin') return '';  // it ships with the app: nothing is read
+    if (!health?.state) return source.kind === 'registry' ? statusHtml('searched when you search', 'muted') : statusHtml('not read yet', 'muted');
     const age = relativeAge(health.last_read_at);
-    if (health.state === 'reading') return statusHtml('reading…', 'muted', { work: true });
-    if (health.state === 'off') return statusHtml('off', 'muted');
-    if (health.state === 'error') {
-        const shown = age ? ` — showing the list from ${escapeHtml(age)}` : '';
+    if (health.state === 'reading' || (health.refreshing && health.state !== 'error')) {
+        return statusHtml(age ? `reading… (list from ${escapeHtml(age)})` : 'reading…', 'muted', { work: true });
+    }
+    if (health.state === 'error' || health.error) {
+        const shown = health.state === 'ready' && age ? ` — showing the list from ${escapeHtml(age)}` : '';
         return `${statusHtml(`couldn’t be read: ${escapeHtml(health.error || 'no answer')}${shown}`, 'warn')} ${buttonHtml('Try again', { tone: 'ghost', attrs: `data-source-action="refresh" data-source-id="${escapeHtml(source.id)}"` })}`;
     }
-    if (source.kind === 'registry') return statusHtml(age ? `answered ${escapeHtml(age)}` : 'searched when you search', 'muted');
+    if (source.kind === 'registry' || health.state === 'search') return statusHtml('searched when you search', 'muted');
     return statusHtml(age ? `read ${escapeHtml(age)}` : 'read', 'muted');
 }
 
 /** Hub rows still waiting for the owner's one-time confirmation of their suggested trust. */
 export const unconfirmedHubRows = (sources = []) => sources.filter((source) => source.kind === 'hub' && source.confirmed === false);
 
-/** One source row: name and marks, trust value and ⋮, about and meta (DESIGN §6 row anatomy). */
+/**
+ * One source row: name and marks, trust value and ⋮, about and meta (DESIGN §6 row anatomy).
+ * `health` is the catalog read's state of this source; without it the row's own state is used.
+ */
 export function renderSourceRow(source, { items = [], health = null } = {}) {
     const id = escapeHtml(source.id);
     const marks = [
         source.kind === 'hub' && source.part === 'official' ? officialMarkHtml() : '',
         source.kind === 'local' ? chipHtml('Folder', 'neutral') : '',
+        // A row a build's settings supply (B9) — only when the host marks it so.
         source.managed ? chipHtml('Set by your organization', 'neutral') : '',
     ].join('');
     const meta = [];
+    const state = health || source;
     const address = displayAddress(source.url || source.path || '');
     if (address) meta.push(escapeHtml(address));
-    if (source.kind !== 'registry') {
+    // A count is a fact of a list that was read; before that it is unknown, never 0.
+    if (source.kind !== 'registry' && (state.state === 'ready' || items.length)) {
         const authors = new Set(items.map((item) => item.owner).filter(Boolean)).size;
         meta.push(`${plural(items.length, 'skill')}${source.kind === 'hub' && source.part !== 'official' && authors > 1 ? ` by ${plural(authors, 'author')}` : ''}`);
     }
-    meta.push(sourceHealthHtml(source, health));
+    const healthHtml = sourceHealthHtml(source, state);
+    if (healthHtml) meta.push(healthHtml);
     const suggested = source.confirmed === false;
     return `<div class="skills-source-row" data-source-row="${id}">
         <div class="skills-source-main"><strong>${escapeHtml(source.name)}</strong>${marks}</div>
@@ -62,7 +74,7 @@ export function renderSourceRow(source, { items = [], health = null } = {}) {
 }
 
 /**
- * Mount the Sources view. `host` = { sources(force), catalog({refresh}), installedSkills(): rows|null,
+ * Mount the Sources view. `host` = { sources(force), sourcesProblem(): string, catalog({refresh}), installedSkills(): rows|null,
  *   reloadAll(): Promise, toast(msg, tone), showMadeHere(), openBehaviorSettings() }.
  */
 export function createSkillSources({ pane, host, api = skillSourcesApi }) {
@@ -97,6 +109,7 @@ export function createSkillSources({ pane, host, api = skillSourcesApi }) {
                     ${buttonHtml('Add source', { attrs: 'data-source-action="add"' })}
                 </div>
                 <p class="skills-sources-copy">Skills come from these sources. For each one you chose once whether its skills install without review or are reviewed first.</p>
+                ${host.sourcesProblem?.() ? trayHtml({ sentence: `Your saved list of sources couldn’t be used (${escapeHtml(host.sourcesProblem())}), so the default sources are shown.` }) : ''}
                 ${pendingRows.length ? trayHtml({ sentence: 'Confirm how skills from the Ouroboros hub install. Suggested choices are shown until you do.',
                     actions: buttonHtml('Confirm…', { tone: 'primary', attrs: 'data-source-action="first_start"' }) }) : ''}
                 <div class="skills-source-rows">${sources.map((source) => renderSourceRow(source, { items: items.get(source.id) || [], health: health.get(source.id) })).join('')}</div>

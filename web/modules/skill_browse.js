@@ -27,9 +27,8 @@ function writeHiddenShelf(value) {
 }
 
 const votesOf = (item) => {
-    const signals = item?.signals || {};
-    if (typeof signals.votes === 'number') return signals.votes;
-    if (typeof signals.stars === 'number') return signals.stars;
+    if (typeof item?.signals?.votes === 'number') return item.signals.votes;
+    if (typeof item?.registry_stats?.stars === 'number') return item.registry_stats.stars;
     return -1;
 };
 const timeOf = (item) => Date.parse(item?.updated_at || '') || 0;
@@ -73,18 +72,28 @@ export function recommendedMissing(items, installedByName) {
     return items.filter((item) => item.recommended && !item.withdrawn && !installedByName.has(item.name));
 }
 
+/**
+ * The «Recommended to start» shelf: only for an install that predates the starter
+ * skills (the host's starter marker says `upgrade`; a new install chose its ticks
+ * in the wizard), on the unfiltered board, once the installed listing is known.
+ */
+export function shelfItems(catalog, installedByName, { query = '', source = 'all', category = 'all', officialOnly = false } = {}) {
+    if (catalog?.starter?.state !== 'upgrade' || !installedByName || query || source !== 'all' || category !== 'all' || officialOnly) return [];
+    return recommendedMissing(Array.isArray(catalog.items) ? catalog.items : [], installedByName);
+}
+
 function installedFrom(row) {
     return row?.install?.source?.id || '';
 }
 
 /**
  * One Browse card's action row: a consequence sentence and one action, from the
- * catalog item, its source, the installed listing and the installs started here.
+ * catalog item, its source, the installed listing (`listed`: it has been read)
+ * and the installs started here.
  */
-export function browseCardState(item, { source = null, installed = null, pending = null, failure = '', reviewing = false } = {}) {
+export function browseCardState(item, { source = null, installed = null, listed = true, pending = null, failure = '', reviewing = false } = {}) {
     const id = escapeHtml(item.id);
     const act = (label, action, tone = 'default', extra = '') => buttonHtml(label, { tone, attrs: `data-browse-action="${action}" data-item="${id}"${extra ? ` ${extra}` : ''}` });
-    if (item.unsupported) return { status: statusHtml(escapeHtml(item.unsupported), 'muted'), action: '' };
     if (pending && !installed?.lifecycle_virtual) {
         if (pending.phase === 'reviewing') {
             const age = relativeAge(pending.startedAt) || 'just now';
@@ -102,6 +111,12 @@ export function browseCardState(item, { source = null, installed = null, pending
             action: act('Try again', 'install'),
             note: `${escapeHtml(failure)} Nothing was installed.`,
         };
+    }
+    if (!listed && item.installed) {
+        // The catalog's own join, until the installed listing (which carries every action) has been read.
+        return item.installed.state === 'name_taken'
+            ? { status: statusHtml(`You have another “${escapeHtml(item.name)}” (from ${escapeHtml(item.installed.source_name || 'another source')})`, 'warn'), action: '' }
+            : { status: statusHtml(`Installed · ${escapeHtml(versionText(item.installed.version))}`, 'muted'), action: '' };
     }
     if (installed && !installed.lifecycle_virtual) {
         const fromHere = !installedFrom(installed) || installedFrom(installed) === item.source_id;
@@ -198,8 +213,10 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
     };
 
     function paintSortOptions() {
-        const options = state.query ? [['best', 'Best match'], ['popular', 'Popular'], ['name', 'Name'], ['updated', 'Recently updated']]
-            : [['popular', 'Popular'], ['name', 'Name'], ['updated', 'Recently updated']];
+        // «Recently updated» needs the entries' dates; a catalog without them offers no such sort.
+        const dated = [...allKnownItems().values()].some((item) => Date.parse(item.updated_at || ''));
+        const options = [...(state.query ? [['best', 'Best match']] : []), ['popular', 'Popular'], ['name', 'Name'],
+            ...(dated ? [['updated', 'Recently updated']] : [])];
         if (!options.some(([value]) => value === state.sort)) state.sort = options[0][0];
         sortSelect.innerHTML = options.map(([value, label]) => `<option value="${value}"${value === state.sort ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('');
     }
@@ -232,41 +249,47 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
             && (state.category === 'all' || (item.category || []).includes(state.category)));
     }
 
+    // The registry a search also asks (ClawHub by default); none connected, none asked.
+    const registry = () => state.sources.find((source) => source.kind === 'registry'
+        && (state.source === 'all' || state.source === source.id)) || null;
+
     function statusLine(count) {
         const parts = [];
         const sourceNames = new Set(visibleItems().map((item) => item.source_id));
+        const asked = escapeHtml(registry()?.name || '');
         if (!state.catalog && !state.catalogError) return 'Reading the catalogs…';
         if (state.catalogError && !state.catalog) return `Couldn’t read the catalogs: ${escapeHtml(state.catalogError)}. Refresh to try again.`;
+        if (state.catalogError) parts.push(`Couldn’t refresh the catalogs: ${escapeHtml(state.catalogError)}. Showing the earlier list`);
         if (state.query) {
             parts.push(`${plural(count, 'skill')} match “${escapeHtml(state.query)}”`);
-            if (state.searching) parts.push('asking ClawHub…');
-            else if (state.searchError) parts.push(`ClawHub couldn’t be searched: ${escapeHtml(state.searchError)}`);
-            else if (state.search) {
-                const registry = (state.search.sources || []).find((source) => source.state);
-                const answered = relativeAge(registry?.last_read_at);
-                parts.push(registry?.state === 'error' ? `ClawHub couldn’t be searched: ${escapeHtml(registry.error || 'no answer')}` : `ClawHub answered${answered ? ` ${escapeHtml(answered)}` : ''}`);
-            } else parts.push('press Enter to search ClawHub too');
+            if (state.searching) parts.push(`asking ${asked}…`);
+            else if (state.searchError) parts.push(`${asked} couldn’t be searched: ${escapeHtml(state.searchError)}`);
+            else if (state.search?.registry_error) parts.push(`couldn’t search ${escapeHtml(state.search.registry_error)}`);
+            else if (state.search) parts.push(`${asked} answered`);
+            else if (asked) parts.push(`press Enter to search ${asked} too`);
         } else if (state.category !== 'all') {
             parts.push(`${plural(count, 'skill')} in ${escapeHtml(categoryLabels().get(state.category) || state.category)}`);
         } else {
             parts.push(`${plural(count, 'skill')} from ${plural(sourceNames.size, 'source')}`);
-            if (state.sources.some((source) => source.kind === 'registry')) parts.push('ClawHub joins the list when you search');
+            if (asked) parts.push(`${asked} joins the list when you search`);
         }
+        // A failed fetch keeps the last list (state ready, the failure in `error`); the line says both.
         for (const source of state.catalog?.sources || []) {
-            if (source.state === 'error') {
-                const age = relativeAge(source.last_read_at);
-                parts.push(`${escapeHtml(source.name)} couldn’t be read just now (${escapeHtml(source.error || 'no answer')})${age ? `. Showing its skills from ${escapeHtml(age.replace(/ ago$/, ''))} ago` : ''}`);
+            if (source.state === 'error' || (source.state === 'ready' && source.error)) {
+                const age = source.state === 'ready' ? relativeAge(source.last_read_at) : '';
+                parts.push(`${escapeHtml(source.name)} couldn’t be read just now (${escapeHtml(source.error || 'no answer')})${age ? `. Showing its skills from ${escapeHtml(age)}` : ''}`);
             } else if (source.state === 'reading') parts.push(`reading ${escapeHtml(source.name)}…`);
         }
         return parts.join(' · ');
     }
 
     function stateFor(item) {
-        const installed = host.installedByName()?.get(item.name) || null;
+        const listing = host.installedByName();
         const pending = state.pending.get(item.id) || null;
         return browseCardState(item, {
             source: sourceById().get(item.source_id) || null,
-            installed, pending, failure: state.failures.get(item.id) || '',
+            installed: listing?.get(item.name) || null, listed: Boolean(listing),
+            pending, failure: state.failures.get(item.id) || '',
         });
     }
 
@@ -297,10 +320,8 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         const items = sortCatalogItems(visibleItems(), state.sort, state.query);
         statusEl.innerHTML = statusLine(items.length);
         statusEl.dataset.tone = state.catalogError && !state.catalog ? 'danger' : 'muted';
-        const installed = host.installedByName() || new Map();
         const official = state.sources.find((source) => source.kind === 'hub' && source.part === 'official');
-        const shelf = !state.query && state.source === 'all' && state.category === 'all' && !state.officialOnly && host.installedByName()
-            ? recommendedMissing(catalogItems(), installed) : [];
+        const shelf = shelfItems(state.catalog, host.installedByName(), state);
         const shelfKey = shelf.map((item) => item.id).sort().join(',');
         const showShelf = shelf.length > 0 && readHiddenShelf() !== shelfKey;
         let html = '';
@@ -365,7 +386,7 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
 
     async function searchRegistry() {
         const query = state.query;
-        if (!query) return;
+        if (!query || !registry()) return;
         const current = ++generation;
         state.searching = true;
         state.searchError = '';
@@ -382,21 +403,27 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         }
     }
 
-    async function install(item) {
+    async function install(item, { replace = false } = {}) {
         state.failures.delete(item.id);
         state.pending.set(item.id, { phase: 'installing', startedAt: Date.now() });
         repaintStates();
         try {
-            const result = await api.install(item.id, { turnOnWhenReady: true });
-            if (result?.ok === false) throw Object.assign(new Error(result.error || 'The source refused the install.'), { body: result });
-            state.pending.set(item.id, { phase: result?.basis === 'review' ? 'reviewing' : 'installing', startedAt: Date.now() });
-            host.toast(result?.basis === 'review'
-                ? `${item.name} is installed. Ouroboros reviews it before it runs.`
-                : `${item.name} is installing. It turns on as soon as it is ready.`, 'ok');
+            const result = await api.install(item.id, { turnOnWhenReady: true, replace });
+            if (result?.already_installed) {
+                state.pending.delete(item.id);
+                host.toast(`${item.name} is already installed from ${item.source_name || 'this source'}.`, 'muted');
+            } else {
+                state.pending.set(item.id, { phase: result?.basis === 'review' ? 'reviewing' : 'installing', startedAt: Date.now() });
+                host.toast(result?.basis === 'review'
+                    ? `${item.name} is installing. Ouroboros reviews it before it runs.`
+                    : `${item.name} is installing. It turns on as soon as it is ready.`, 'ok');
+            }
         } catch (err) {
             state.pending.delete(item.id);
-            const code = err?.body?.code || err?.payload?.code;
-            if (code === 'name_taken' || err?.status === 409) host.toast(`${item.name}: ${err.message || 'the name is taken'}. Use Compare… to choose one.`, 'warn');
+            // A typed refusal about what is already installed is said once; the card then shows
+            // Compare… or Update from the refreshed listing. Anything else failed this install.
+            const code = err?.body?.code || '';
+            if (['name_taken', 'name_collision', 'update_instead'].includes(code)) host.toast(`${item.name}: ${err.message}`, 'warn');
             else state.failures.set(item.id, err?.message || String(err));
         }
         repaintStates();
@@ -416,7 +443,9 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
             item, installed: host.installedByName()?.get(item.name) || null,
             source: sourceById().get(item.source_id) || null,
             actionsHtml: sheetActions(item),
-            readDetail: item.source_id === 'clawhub' ? null : ({ signal } = {}) => api.item(item.source_id, item.name, { signal }),
+            // A registry hit has no entry to read until it is installed; its card is all there is.
+            readDetail: sourceById().get(item.source_id)?.kind === 'registry' || item.registry_slug ? null
+                : ({ signal } = {}) => api.item(item.source_id, item.name, { signal }),
             onAction: (action, button) => act(action, button),
             returnFocus: opener,
         });
@@ -427,7 +456,8 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         const item = allKnownItems().get(node?.dataset?.item || '');
         if (action === 'hide_shelf') { writeHiddenShelf(node.dataset.shelf || ''); render(); return; }
         if (action === 'install_all') {
-            const missing = recommendedMissing(catalogItems(), host.installedByName() || new Map());
+            const missing = shelfItems(state.catalog, host.installedByName(), state);
+            await host.confirmFirstStart?.();
             for (const entry of missing) await install(entry);
             return;
         }
@@ -436,11 +466,8 @@ export function createSkillBrowse({ pane, chrome, host, api = skillSourcesApi })
         if (action === 'open') { openSheet(item, node); return; }
         if (action === 'install') { await host.confirmFirstStart?.(item.source_id); await install(item); return; }
         if (action === 'compare') {
-            const choice = await host.compare(item, installed);
-            if (choice === 'replace') {
-                await host.runInstalledAction(item.name, 'uninstall_quiet');
-                await install(item);
-            }
+            // Replace is one host operation: the other copy goes only when this one has landed.
+            if (await host.compare(item, installed) === 'replace') await install(item, { replace: true });
             return;
         }
         if (action === 'installed') { host.showInstalled(item.name); return; }

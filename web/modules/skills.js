@@ -20,7 +20,7 @@ import { openSkillDetailSheet } from './skill_detail_sheet.js';
 import {
     openCompareDialog, openOfficialExplanation, openPublishDestinationDialog, openSkipReviewDialog, openUpdateDialog,
 } from './skill_dialogs.js';
-import { plural, popularityText, routeExternalLink, versionText } from './skill_presentation.js';
+import { plural, popularityText, repoLabel, routeExternalLink, versionText } from './skill_presentation.js';
 import { runSkillPublishFlow } from './skill_publish_flow.js';
 import { installedTime } from './ui_helpers.js';
 import {
@@ -182,7 +182,7 @@ export function updateAllCandidates(skills, sources = null) {
     const trust = new Map((sources || []).map((source) => [source.id, source.trust]));
     return skills.filter((skill) => {
         const install = skill.install;
-        if (!install?.update_available?.digest || install.modified || install.withdrawn || skill.lifecycle_pending) return false;
+        if (!install?.update_available?.digest || install.modified || install.base_known === false || install.withdrawn || skill.lifecycle_pending) return false;
         if (install.basis !== 'trusted') return false;
         const rowTrust = trust.get(install.source?.id);
         return rowTrust === undefined || rowTrust === 'trusted';
@@ -190,38 +190,43 @@ export function updateAllCandidates(skills, sources = null) {
 }
 
 /**
- * Where a skill can be published (B10): back to where it came from, a git source
- * the owner added, or the public community catalog (as an update or a new skill).
+ * Where a skill can be published (B10): back to where it came from (a hub entry
+ * that points at its author's repository goes there), a git source the owner
+ * added, or the public hub's shared catalog.
  */
 export function publishDestinations(skill, sources = []) {
     const out = [];
     const origin = skill.install?.source;
     const originRow = sources.find((source) => source.id === origin?.id);
+    const authorRepo = String(skill.install?.release?.repo || '');
     if (origin?.id && ['hub', 'git'].includes(originRow?.kind || origin.kind)) {
-        out.push({ value: `origin:${origin.id}`, label: `Back to ${origin.name || originRow?.name} — where it came from`,
-            detail: 'Suggest your changes as a new version. The maintainers decide.' });
+        out.push(authorRepo
+            ? { value: 'origin', label: `Back to ${repoLabel(authorRepo)} — its author’s repository`,
+                detail: 'Suggest your changes to its author as a new version. The author decides.' }
+            : { value: 'origin', label: `Back to ${origin.name || originRow?.name} — where it came from`,
+                detail: 'Suggest your changes as a new version. The maintainers decide.' });
     }
     for (const source of sources.filter((row) => row.kind === 'git')) {
         if (source.id === origin?.id) continue;
         out.push({ value: `source:${source.id}`, label: `${source.name} — your own source`,
             detail: origin ? 'Publish your version now, under the same name, for your own installs.' : `Publish now. Every Ouroboros that reads ${source.name} gets it at once.` });
     }
+    // The hub's two rows are one repository: a skill from either half goes back there as its origin.
     const community = sources.find((row) => row.kind === 'hub' && row.part === 'community');
-    if (community && community.id !== origin?.id) {
+    if (community && (originRow?.kind || origin?.kind) !== 'hub') {
         out.push({ value: `source:${community.id}`, label: `${community.name} — share with everyone`,
             detail: 'Ask to list it in the shared catalog. New skills and new authors are read by the maintainer first.' });
-    } else if (community && origin?.id === community.id) {
-        out.push({ value: `new:${community.id}`, label: `${community.name} — as a new skill`,
-            detail: 'Ask to list it next to the original under another name.' });
     }
     return out;
 }
 
-/** A chosen destination in the form the publish preflight and task carry. */
+/**
+ * The publish `destination` the host takes: a source id, or null for the skill's
+ * origin (the host resolves it, a pointer entry to its author's repository).
+ */
 export function destinationFromChoice(value) {
     const [mode, sourceId] = String(value || '').split(':');
-    if (!sourceId) return null;
-    return { source_id: sourceId, mode: mode === 'origin' ? 'origin' : mode === 'new' ? 'new_entry' : 'entry' };
+    return mode === 'source' && sourceId ? sourceId : null;
 }
 
 export function buildHealPrompt(skill) {
@@ -294,13 +299,14 @@ export function initSkills(ctx = {}) {
     let firstStartAsked = false;
 
     // ---- shared reads (Browse and Sources reuse them) -------------------------------------------
-    const cache = { sources: null, sourcesValue: null, catalog: null, catalogValue: null };
+    const cache = { sources: null, sourcesValue: null, sourcesProblem: '', catalog: null, catalogValue: null };
     const store = {
         sources(force = false) {
             if (force || !cache.sources) {
                 cache.sources = skillSourcesApi.list().then((data) => {
                     const list = Array.isArray(data) ? data : (Array.isArray(data?.sources) ? data.sources : []);
                     cache.sourcesValue = list;
+                    cache.sourcesProblem = String(data?.problem || '');
                     return list;
                 }).catch((error) => { cache.sources = null; throw error; });
             }
@@ -318,6 +324,9 @@ export function initSkills(ctx = {}) {
         ? sortSkillsForDisplay(mergeLifecycleEvents(snapshot.rawSkills, lifecycleEventsFromQueue(snapshot.queue))) : []);
     const installedByName = () => (snapshot?.rawSkills ? new Map(projected().map((skill) => [skill.name, skill])) : null);
     const officialSource = () => (cache.sourcesValue || []).find((source) => source.kind === 'hub' && source.part === 'official') || null;
+    // The catalog entry an installed skill came from (its author, full text), when the catalog was read.
+    const catalogEntry = (skill) => (cache.catalogValue?.items || [])
+        .find((item) => item.source_id === skill?.install?.source?.id && item.name === skill?.name) || null;
     const cardOptions = () => ({ githubTokenConfigured: snapshot?.githubTokenConfigured });
 
     // ---- Installed view -------------------------------------------------------------------------
@@ -549,7 +558,7 @@ export function initSkills(ctx = {}) {
         if (!skill.content_hash) throw new Error('Skill revision is unavailable. Refresh and retry.');
         const blocked = skill.review_status === 'blockers' && !reviewReady(skill);
         const ok = await openSkipReviewDialog({
-            name, sourceName: installedSourceLabel(skill), owner: skill.install?.owner || '',
+            name, sourceName: installedSourceLabel(skill), owner: catalogEntry(skill)?.owner || '',
             permissions: skill.permissions || [], label: blocked ? 'Turn on anyway' : 'Skip review',
         });
         if (ok !== true) return false;
@@ -591,32 +600,34 @@ export function initSkills(ctx = {}) {
         const update = skill.install?.update_available;
         if (!update?.digest) throw new Error('No update is waiting for this skill.');
         let mode = 'replace';
-        if (skill.install?.modified) {
-            const files = Number(skill.install.modified?.files) || 0;
+        // A copy changed here, or one whose original is unknown, asks what to keep (SPEC §7, A03).
+        if (skill.install?.modified || skill.install?.base_known === false) {
             mode = await openUpdateDialog({
-                name, sourceName: installedSourceLabel(skill), update, files,
+                name, sourceName: installedSourceLabel(skill), update,
                 installedVersion: skill.install.release?.version, currentVersion: skill.version,
-                baseKnown: skill.install.modified?.base_known !== false && skill.install.base_known !== false,
+                baseKnown: skill.install.base_known !== false, editedByOwner: skill.review_gate?.reason === 'owner_edit',
             });
             if (!mode) return false;
         }
-        const result = await skillSourcesApi.updateSkill(name, mode, update.digest);
-        const words = { replace: `updating to ${versionText(update.version)}`, merge: 'Ouroboros is updating it and keeping your changes — see chat', keep: 'you keep your version' };
-        showToast(`${name}: ${words[mode] || 'updated'}`, result?.ok === false ? 'danger' : 'ok');
+        // The host refuses when the candidate or the local files changed since this card was read.
+        const result = await skillSourcesApi.updateSkill(name, mode, update.digest, skill.content_hash || '');
+        const merge = result?.base_available === false
+            ? 'Ouroboros is merging your changes into the update without the original version — see chat'
+            : 'Ouroboros is updating it and keeping your changes — see chat';
+        const words = { replace: `updating to ${versionText(update.version)}`, merge, keep: `you keep your version; ${versionText(update.version) || 'this version'} isn’t offered again` };
+        showToast(`${name}: ${words[mode] || 'updated'}`, 'ok');
         emitSkillLifecycle('update', name, result);
         return true;
     }
 
-    async function uninstall(name, { confirmed = false } = {}) {
+    async function uninstall(name) {
         const skill = installedByName()?.get(name);
-        if (!confirmed) {
-            const ok = await openConfirmDialog({
-                title: `Uninstall ${name}?`,
-                body: `Ouroboros loses ${name} and what it adds. Its settings and the keys you allowed are kept, so installing it again restores them.`,
-                confirmLabel: 'Uninstall', danger: true,
-            });
-            if (!ok) return false;
-        }
+        const ok = await openConfirmDialog({
+            title: `Uninstall ${name}?`,
+            body: `Ouroboros loses ${name} and what it adds. Its settings and the keys you allowed are kept, so installing it again restores them.`,
+            confirmLabel: 'Uninstall', danger: true,
+        });
+        if (!ok) return false;
         const result = await skillSourcesApi.uninstallSkill(name);
         if (result?.ok === false) throw new Error(result.error || 'Uninstall was refused.');
         showToast(`${name} uninstalled${skill?.install?.source?.name ? `; it is still in ${skill.install.source.name}` : ''}`, 'ok');
@@ -666,7 +677,7 @@ export function initSkills(ctx = {}) {
             confirmLabel: 'Forget the record',
         });
         if (!ok) return false;
-        await postWithFeedback(`/api/skills/${encodeURIComponent(name)}/publication/clear`, { published: skill.published || null });
+        await postWithFeedback(`/api/skills/${encodeURIComponent(name)}/publication/clear`, { expected_published: skill.published || {} });
         showToast(`${name}: publication record forgotten`, 'ok');
         return true;
     }
@@ -685,7 +696,7 @@ export function initSkills(ctx = {}) {
         const skill = installedByName()?.get(name);
         if (!skill) return;
         const source = (cache.sourcesValue || []).find((row) => row.id === skill.install?.source?.id) || null;
-        const catalogItem = (cache.catalogValue?.items || []).find((item) => item.source_id === skill.install?.source?.id && item.name === name);
+        const catalogItem = catalogEntry(skill);
         const item = catalogItem || {
             id: `installed/${name}`, source_id: skill.install?.source?.id || '', source_name: installedSourceLabel(skill),
             name, description: skill.description || '', version: skill.version, permissions: skill.permissions || [],
@@ -693,9 +704,11 @@ export function initSkills(ctx = {}) {
             category: skill.category || [],
         };
         sheet?.close();
+        // The source's entry has the full text; a registry install has no entry to read back.
+        const origin = skill.install?.source;
         sheet = openSkillDetailSheet({
             item, installed: skill, source, returnFocus: opener,
-            readDetail: skill.install?.source?.id ? ({ signal } = {}) => skillSourcesApi.item(skill.install.source.id, name, { signal }) : null,
+            readDetail: origin?.id && origin.kind !== 'registry' ? ({ signal } = {}) => skillSourcesApi.item(origin.id, name, { signal }) : null,
         });
     }
 
@@ -719,7 +732,6 @@ export function initSkills(ctx = {}) {
         if (action === 'repair') return repair(name);
         if (action === 'update') return updateSkill(name);
         if (action === 'uninstall') return uninstall(name);
-        if (action === 'uninstall_quiet') return uninstall(name, { confirmed: true });
         if (action === 'delete') return deleteLocal(name, options.payloadRoot);
         if (action === 'submit_hub') return publish(name);
         if (action === 'forget_publication') return forgetPublication(name);
@@ -752,7 +764,7 @@ export function initSkills(ctx = {}) {
         if (!ok) return;
         let failed = 0;
         for (const skill of candidates) {
-            try { await skillSourcesApi.updateSkill(skill.name, 'replace', skill.install.update_available.digest); }
+            try { await skillSourcesApi.updateSkill(skill.name, 'replace', skill.install.update_available.digest, skill.content_hash || ''); }
             catch (err) { failed += 1; showToast(`${skill.name}: ${err.message || err}`, 'danger'); }
         }
         showToast(failed ? `${candidates.length - failed} of ${candidates.length} updates started` : `${plural(candidates.length, 'update')} started`, failed ? 'warn' : 'ok');
@@ -866,6 +878,7 @@ export function initSkills(ctx = {}) {
         installedSkills: () => (snapshot?.rawSkills ? projected() : null),
         refreshInstalled: () => readInstalled({ quiet: true }),
         sources: (force) => store.sources(force),
+        sourcesProblem: () => cache.sourcesProblem,
         catalog: (options) => store.catalog(options),
         reloadAll: async () => { await store.sources(true).catch(() => null); },
         runInstalledAction: async (name, action) => {

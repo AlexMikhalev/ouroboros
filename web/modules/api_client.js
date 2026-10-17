@@ -128,11 +128,12 @@ export function cancelHarnessMaintenance(operationId) {
 
 /**
  * Run the read-only publication preflight for one selected skill and the
- * destination the owner chose ({source_id, mode}; omitted = the host's default).
+ * destination the owner chose (a source id or `hub`, as `submit_skill_to_hub`
+ * takes it; omitted = the skill's origin, else the hub).
  * Domain states, including repairable findings, remain successful JSON
  * responses; only transport/admission refusals reject through fetchJson.
  * @param {string} skill
- * @param {{source_id: string, mode: 'origin'|'entry'|'new_entry'}|null} [destination]
+ * @param {string|null} [destination]
  * @returns {Promise<import('./api_types.js').SkillPublishPreflightResponse>}
  */
 export function skillPublishPreflight(skill, destination = null) {
@@ -330,30 +331,59 @@ export function extensionRoutePath(skill, route, params = null) {
  * Skill sources and their catalogs (one lifecycle for every source kind). The
  * catalog is served from the host's per-source cache and never waits for the
  * network; `refresh` asks the host to re-read its sources in the background.
- * Shapes: web/tests/fixtures/skills_v4/*.json.
+ * Shapes: skill_source_contract_types.js (fixtures: web/tests/fixtures/skills_v4/).
  */
 const sourcePath = (id) => `/api/skill-sources/${encodeURIComponent(id)}`;
+// Writes answer {ok:false, code, error} on refusal; the callers read that as a thrown error
+// whose `body` keeps the typed refusal.
+const STRICT = { rejectOkFalse: true };
+/** @typedef {import('./skill_source_contract_types.js').SkillSourceChangeResponse} SkillSourceChangeResponse */
 export const skillSourcesApi = {
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillSourcesResponse>} */
     list: () => fetchJson('/api/skill-sources', { cache: 'no-store' }),
-    /** @param {{url?: string, path?: string}} target @returns {Promise<{kind: string, suggested_name: string, found: string[], error?: string}>} */
+    /**
+     * @param {import('./skill_source_contract_types.js').SkillSourceProbeRequest} target
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillSourceProbeResponse>}
+     */
     probe: (target) => jsonPost('/api/skill-sources/probe', target),
-    /** @param {{url?: string, path?: string, name: string, trust: 'trusted'|'review'}} source */
-    add: (source) => jsonPost('/api/skill-sources', source),
-    /** @param {{name?: string, trust?: 'trusted'|'review', confirmed?: boolean}} changes */
-    update: (id, changes) => jsonPost(sourcePath(id), changes),
-    remove: (id) => jsonPost(`${sourcePath(id)}/remove`, {}),
-    refresh: (id) => jsonPost(`${sourcePath(id)}/refresh`, {}),
+    /**
+     * @param {import('./skill_source_contract_types.js').SkillSourceAddRequest} source
+     * @returns {Promise<SkillSourceChangeResponse>}
+     */
+    add: (source) => jsonPost('/api/skill-sources', source, STRICT),
+    /**
+     * @param {string} id
+     * @param {import('./skill_source_contract_types.js').SkillSourceChangeRequest} changes
+     * @returns {Promise<SkillSourceChangeResponse>}
+     */
+    update: (id, changes) => jsonPost(sourcePath(id), changes, STRICT),
+    /** @returns {Promise<SkillSourceChangeResponse>} */
+    remove: (id) => jsonPost(`${sourcePath(id)}/remove`, {}, STRICT),
+    /** @returns {Promise<SkillSourceChangeResponse>} */
+    refresh: (id) => jsonPost(`${sourcePath(id)}/refresh`, {}, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogResponse>} */
     catalog: ({ refresh = false } = {}) => fetchJson(`/api/skill-catalog${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' }),
-    /** Loaded catalogs plus registry (ClawHub) hits for one query. */
-    search: ({ q = '', source = '' } = {}, init = {}) => fetchJson(
-        `/api/skill-catalog/search?${new URLSearchParams({ q, ...(source ? { source } : {}) })}`, { cache: 'no-store', ...init }),
-    item: (sourceId, name, init = {}) => fetchJson(
-        `/api/skill-catalog/item/${encodeURIComponent(sourceId)}/${encodeURIComponent(name)}`, { cache: 'no-store', ...init }),
-    /** @returns {Promise<{ok: boolean, job_id: string, name: string, basis: string, review_job_id?: string}>} */
-    install: (id, { turnOnWhenReady = true } = {}) => jsonPost('/api/skill-catalog/install', { id, turn_on_when_ready: turnOnWhenReady }),
-    /** The exact candidate the owner chose; the host confirms it against the current local digest. */
-    updateSkill: (name, mode, digest) => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`, { mode, digest }),
-    uninstallSkill: (name) => jsonPost(`/api/skills/${encodeURIComponent(name)}/uninstall`, {}),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogSearchResponse>} */
+    search: ({ q = '', source = '' } = {}, init = {}) => fetchJson(`/api/skill-catalog/search?${new URLSearchParams({ q, ...(source ? { source } : {}) })}`, { cache: 'no-store', ...init }),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogItemDetailResponse>} */
+    item: (sourceId, name, init = {}) => fetchJson(`/api/skill-catalog/item/${encodeURIComponent(sourceId)}/${encodeURIComponent(name)}`, { cache: 'no-store', ...init }),
+    /**
+     * `replace` confirms replacing the other skill of the same name.
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogInstallResponse>}
+     */
+    install: (id, { turnOnWhenReady = true, replace = false } = {}) => jsonPost('/api/skill-catalog/install',
+        { id, turn_on_when_ready: turnOnWhenReady, ...(replace ? { replace: true } : {}) }, STRICT),
+    /**
+     * The exact candidate the owner saw (`digest`) against the local revision it was shown with
+     * (`localDigest`): either one changing makes the host refuse instead of acting on a stale dialog.
+     * @param {'replace'|'keep'|'merge'} mode
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillUpdateResponse>}
+     */
+    updateSkill: (name, mode, digest, localDigest = '') => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`,
+        { mode, digest, ...(localDigest ? { local_digest: localDigest } : {}) }, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillUninstallResponse>} */
+    uninstallSkill: (name) => jsonPost(`/api/skills/${encodeURIComponent(name)}/uninstall`, {}, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').StarterSkillsResponse>} */
     starterSkills: () => fetchJson('/api/onboarding/starter-skills', { cache: 'no-store' }),
 };
 
