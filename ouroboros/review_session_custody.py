@@ -155,7 +155,12 @@ def checkpoint_pending_invocation(
     state: Dict[str, Any],
     on_failure: Callable[[], None],
 ) -> None:
-    """Bind a pending invocation to its durable slot before provider POST."""
+    """Bind a pending invocation to its durable slot before provider POST.
+
+    The binding waits out a busy review-state lock itself. A refusal names its cause: a reserved
+    slot that cannot take this token keeps its own reason (``review_custody_slot_refused``); a
+    review state that could not be written keeps its lock or I/O facts
+    (``review_custody_checkpoint_unwritable``)."""
     if not callable(checkpoint):
         return
     try:
@@ -163,6 +168,7 @@ def checkpoint_pending_invocation(
     except Exception as exc:
         from ouroboros.review_execution import ReviewRouteUnavailable
         from ouroboros.gateways.claudexor import run_failure_cause
+        from ouroboros.review_state import ReservedReviewSlotRefused
 
         cause = str(getattr(exc, "reported_cause", "") or f"{type(exc).__name__}: {exc}")
         try:
@@ -170,11 +176,16 @@ def checkpoint_pending_invocation(
         except Exception as cleanup_error:
             cause += f"; cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
         state.pop("pending_invocation_id", None)
-        refusal = ReviewRouteUnavailable(
-            "the delegated review invocation could not be bound to its durable "
-            "commit-review slot before dispatch; no run was started",
-            code="review_custody_checkpoint_unwritable",
-        )
+        if isinstance(exc, ReservedReviewSlotRefused):
+            refusal = ReviewRouteUnavailable(
+                f"the delegated review invocation was refused by its reserved commit-review slot ({exc}); "
+                "no run was started", code="review_custody_slot_refused")
+        else:
+            refusal = ReviewRouteUnavailable(
+                "the delegated review invocation could not be bound to its durable "
+                "commit-review slot before dispatch; no run was started",
+                code="review_custody_checkpoint_unwritable",
+            )
         refusal.reported_cause = run_failure_cause({"safeMessage": cause})
         raise refusal from exc
 
