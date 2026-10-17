@@ -1215,7 +1215,7 @@ def test_ci_step_outcome_references_resolve_to_prior_step_ids():
 def test_release_tags_and_manual_browser_runs_keep_unfiltered_entrypoints():
     import yaml
 
-    # The event matrix is owned by test_platform_ci_events; check the full-lane caller here.
+    # Event matrix: test_platform_ci_events; exact triggers: test_ci_diagnostic_workflows.
     push = yaml.safe_load((_REPO_PATH / ".github/workflows/ui-browser-push.yml").read_text(encoding="utf-8"))
     trigger = push.get("on", push.get(True))
     assert list(trigger) == ["workflow_dispatch"], "the UI-only entry is manual and adds no paid lane"
