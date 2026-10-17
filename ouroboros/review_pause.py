@@ -516,12 +516,20 @@ def _left_attempt(record: Dict[str, Any]) -> Any:
 
     surface, task_id, retry_key = str(record["surface"]), str(record["task_id"]), str(record["retry_key"])
     attempt_no = int(record.get("attempt") or 0)
-    attempt = next((row for row in reversed(load_state(pathlib.Path(record["drive_root"])).attempts)
+    # Change attempts moved to canonical custody. Still read a pre-move legacy
+    # row if this left wave has not yet re-entered through its author's context.
+    roots = dict.fromkeys((_left_review_root(record), pathlib.Path(record["drive_root"])))
+    attempt = next((row for root in roots for row in reversed(load_state(root).attempts)
                     if row.tool_name == _LEFT_TOOLS.get(surface) and row.task_id == task_id
                     and row.review_retry_key == retry_key and attempt_no in (0, int(row.attempt or 0))), None)
     if attempt is None:
         raise LookupError("its attempt row is not in the review state")
     return attempt
+
+
+def _left_review_root(record: Dict[str, Any]) -> pathlib.Path:
+    return pathlib.Path((record.get("canonical_root") if record.get("surface") == "change" else "")
+                        or record["drive_root"])
 
 
 def _left_rows(attempt: Any) -> Iterable[Tuple[str, str, Dict[str, Any]]]:
@@ -542,7 +550,7 @@ def _left_roster_settled(record: Dict[str, Any]) -> bool:
     from ouroboros.review_custody import _row_is_pending
     from ouroboros.review_operation import recorded_review_assignment, recover_review_producer
 
-    drive = pathlib.Path(record["drive_root"])
+    drive = _left_review_root(record)
     try:
         attempt = _left_attempt(record)
         for kind, _slot_id, row in _left_rows(attempt):
@@ -588,7 +596,7 @@ def _left_review_mark(record: Dict[str, Any]) -> Dict[str, Any]:
     from ouroboros.review_operation import collect_recorded_review_actor
 
     surface, task_id, retry_key = str(record["surface"]), str(record["task_id"]), str(record["retry_key"])
-    drive, attempt_no = pathlib.Path(record["drive_root"]), int(record.get("attempt") or 0)
+    drive, attempt_no = _left_review_root(record), int(record.get("attempt") or 0)
     attempt, seats, gap = None, [], ""
     try:
         attempt = _left_attempt(record)
