@@ -1229,8 +1229,8 @@ def register(api):
     )
 
     # HTTP routes — mounted at /api/extensions/<skill>/<path>. GET/HEAD under
-    # manifest, module/... and settings_section are host-owned (see "Loading
-    # more than one file").
+    # manifest, module/..., ui/<revision>/... and settings_section are
+    # host-owned (see "Loading more than one file").
     api.register_route("search", handler=http_search, methods=("POST",))
 
     # WebSocket message handlers (inbound) and broadcasts (outbound).

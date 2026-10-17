@@ -546,7 +546,8 @@ assets of that live revision: `.js` as `text/javascript`, CSS, JSON and images b
 type, with no-store and nosniff. Example entry:
 `/api/extensions/voice/ui/<revision>/ui/voice.js`; relative imports stay in that
 revision. Missing, non-UI, unsupported, unloaded or stale paths answer 404.
-These modules are distinct from the opaque-origin widget frame protocol.
+Like `module/`, a GET under `ui/<revision>/` is host-owned, never the skill's own
+route. These modules are distinct from the opaque-origin widget frame protocol.
 
 `GET`/`POST /api/ui/preferences` persist `voice: {stt:"", tts:"", tts_voice:""}`
 (`tts_voice`: the chosen tts provider's voice id, empty for its own pick) and

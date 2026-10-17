@@ -7,6 +7,7 @@ entry: plugin.py
 plugin_api: "2.0"
 runtime: python3
 os: any
+# net: the browser sends the owner's audio to its vendor; declaring it keeps this seed off until chosen.
 permissions: [page_module, net]
 when_to_use: The owner wants to dictate a draft using browser speech recognition.
 model_experience:
