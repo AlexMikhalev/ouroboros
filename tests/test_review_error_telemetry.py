@@ -114,7 +114,8 @@ def test_preflight_control_timeout_survives_the_existing_review_error_record(tmp
     assert calls == [("GET", "/v2/agent-capabilities")], "no reviewer POST follows failed preparation"
     assert actor.error == expected and actor.failure_code == "daemon_unreachable"
     assert actor.operation_state == "not_dispatched" and actor.http_status is None
-    assert actor.reported_cause == "" and actor.usage["delegated_start_unrequested"] is True
+    # Every failed seat keeps a short reason on itself (owner 17.10, Q3-2): here the error is its own cause.
+    assert actor.reported_cause == expected and actor.usage["delegated_start_unrequested"] is True
     manifest, payload, _ = read_call_payload(tmp_path, task_id="child", call_id=actor.operation_id + "_error")
     assert manifest["producer_complete"] is True
     assert payload["error"] == payload["producer_outcome"]["error"] == expected
@@ -441,6 +442,9 @@ def test_the_system_reviews_direct_failure_reaches_the_canonical_log(
     assert result["usage"]["reason_code"] == "deep_self_review_error"
     assert result["usage"]["execution_status"] == "infra_failed"
     assert result["report_delivered"] is False
+    [seat] = result["rows"]  # the failed seat keeps its reason on the record row itself
+    assert seat["status"] == "error" and seat["failure_code"] == "deep_self_review_error"
+    assert seat["reported_cause"].strip(), seat
     assert _rows(drive) == []  # a child's task drive is not the owner's canonical log
     [row] = _rows(canonical)
     assert row["type"] == "review_model_error" and row["source"] == "deep_self_review"

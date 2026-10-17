@@ -832,7 +832,7 @@ def run_system_review(ctx: ToolContext, *, reviewer: str = "", effort: str = "",
     from dataclasses import replace
 
     from ouroboros.deep_self_review import SystemReviewAsk, run_deep_self_review
-    from ouroboros.review_records import new_review_wave_id
+    from ouroboros.review_records import new_review_wave_id, review_failure_facts
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     row = system_review_row(reviewer, effort)
@@ -873,7 +873,10 @@ def run_system_review(ctx: ToolContext, *, reviewer: str = "", effort: str = "",
         "triad_raw": [] if refused else [{
             "slot_id": row.slot_id, "status": "error" if failed else "responded", "raw_text": "" if failed else report,
             "model_id": str(usage.get("resolved_model") or ""), "cost_usd": cost if isinstance(cost, (int, float)) else None,
-            "capability_delta": list(usage.get("capability_delta") or [])}],
+            "capability_delta": list(usage.get("capability_delta") or []),
+            # A failed /review keeps its reason on the row, before the report text can be pruned.
+            **(review_failure_facts({"status": "error", "error": report,
+                                     "failure_code": str(usage.get("reason_code") or "")}) if failed else {})}],
         "dispatch_refusal": {"kind": "reviewer_unavailable", "message": report} if refused else None,
         "degraded_reasons": degraded,
         "composition": "composed", "composition_reason": ask.reason, "chosen_by": "author" if reviewer else "owner",
