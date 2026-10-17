@@ -434,9 +434,9 @@ def _run_periodic_custody_sweep(stop_event: Any = None, latch: Any = None) -> No
                 _step_recovered(name)
         except Exception:
             _step_failed(step, "Periodic custody step %s failed")
-        # The working copies' retirers, after the delegated runs above settled: a server that stays up
-        # for weeks retires them too (each keeps what its task, its custody or its review still holds).
-        for prune in (_prune_worktrees, _prune_delegated_snapshots):
+        # The working copies' and old engine programs' retirers, after the delegated runs above settled: a
+        # server that stays up for weeks retires them too (each keeps what a task, custody, review or daemon holds).
+        for prune in (_prune_worktrees, _prune_delegated_snapshots, _prune_engine_runtimes):
             if not _stop_requested(stop_event):
                 prune()
         if not _stop_requested(stop_event):
@@ -746,6 +746,16 @@ def _prune_worktrees() -> None:
                      report=subagent_worktrees.prune_orphans(live=task_settlement_liveness))
     except Exception:
         log.debug("Subagent worktree prune failed", exc_info=True)
+
+
+def _prune_engine_runtimes() -> None:
+    """Engine program copies in ``state/cx`` neither pinned nor serving (owner Q6 = A), on the custody pass."""
+    try:
+        from ouroboros.claudexor_runtime_retention import prune_unpinned_runtimes
+
+        _prune_event("engine_runtime_prune", ("removed", "errors"), report=prune_unpinned_runtimes())
+    except Exception:
+        log.debug("Engine runtime prune failed", exc_info=True)
 
 
 def prune_agent_media_uploads(

@@ -244,6 +244,7 @@ def test_a_closed_generation_stops_the_sweep_before_its_next_mutation(quiet_tick
     monkeypatch.setattr(sm, "_cursor_refresh_settled_terminals", lambda live=None: done.append("cursor"))
     monkeypatch.setattr(sm, "_prune_worktrees", lambda: done.append("worktrees"))
     monkeypatch.setattr(sm, "_prune_delegated_snapshots", lambda: done.append("snapshots"))
+    monkeypatch.setattr(sm, "_prune_engine_runtimes", lambda: done.append("engine"))
     monkeypatch.setattr(sm, "_prune_review_checkouts", lambda stop_event=None: done.append("review_checkouts"))
 
     assert sm._CUSTODY_SWEEP_LOCK.acquire(blocking=False)
@@ -255,7 +256,7 @@ def test_a_closed_generation_stops_the_sweep_before_its_next_mutation(quiet_tick
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: done.append("reap") or [])
     assert sm._CUSTODY_SWEEP_LOCK.acquire(blocking=False)
     sm._run_periodic_custody_sweep(threading.Event())
-    assert done == ["reap", "reconcile", "cursor", "worktrees", "snapshots", "review_checkouts"], \
+    assert done == ["reap", "reconcile", "cursor", "worktrees", "snapshots", "engine", "review_checkouts"], \
         "an open generation runs every step, the working copies' retirers after the delegated runs"
 
     done.clear()
