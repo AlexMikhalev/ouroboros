@@ -77,6 +77,8 @@ Owner-source resolution and routing-picker origin reads address `state/dialog.sq
 
 The legacy continuation-narrative fallback reads the named task's rows newest first and checks the exact result reference. Its source identifies the SQLite row by `history_id`; unrelated rooms cannot evict an authored narrative from an arbitrary archive window.
 
+The Main routing manifest reads the newest 20 text-bearing dialogue rows from SQLite; its coverage names import gaps in that window. Owner-card host facts read the last timestamped inbound row through the chat's inbound index, preserving unknown/importing when the range cannot yet be observed.
+
 `project_handoff.py` owes Main a transfer receipt through the terminal outbox after durable binding. `handoff_id` binds captured ingress/Project: retries share it, independent requests do not. `RECEIPT_STATES`: `durable`/`already_delivered` prove Main owed/delivered; `origin_unproven` writes none, other states disclose gaps. Main is never default. `/api/projects/from-task` returns `handoff_receipt`/`handoff_id`; nondurability warns, inventing no history.
 
 `project_handoff.js` owns creation/transfer layout and free-area press (`isFreePress`), live or replayed, with `formatMsgTime`/Copy. Folding supplies the matching receipt time; anchors and task outcomes stay separate. Structured `task_name` follows producers, bus and history. `task_phase_chip.censusTaskPhase`/`paintTaskPhase` share outcome and motion with tasks and Project summaries (DESIGN "Project work entries"). Only explicit technical retry follows work; Continue is a new root; reconnect re-proves activity.

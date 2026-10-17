@@ -27,11 +27,10 @@ def _shown(iso: str) -> str:
 
 
 def _chat_rows(tmp_path, *rows):
-    path = tmp_path / "logs" / "chat.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row) + "\n")
+    from ouroboros import dialogue_store as ds
+
+    for row in rows:
+        ds.append(tmp_path, "chat", row)
 
 
 def _ask(ctx):

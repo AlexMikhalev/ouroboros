@@ -146,3 +146,59 @@ def test_continuation_narrative_is_addressed_to_its_task_and_checks_result_ident
     assert actual["text"] == "Kept answer" and actual["source"]["history_id"] == f"chat:{receipt.seq}"
     assert actual["source"]["path"] == str(ds.path(tmp_path))
     assert resolve_legacy_continuation_narrative(tmp_path, "foreign", result_ref) is None
+
+
+def test_quiz_last_inbound_keeps_older_valid_stamp_and_discloses_pending_import(tmp_path):
+    from types import SimpleNamespace
+    from ouroboros.tools.core_artifacts import _quiz_host_facts
+
+    ctx = SimpleNamespace(task_metadata={})
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner()]})
+    assert "history is still importing" in _quiz_host_facts(ctx, tmp_path, "asking", 1)
+    [segment] = di.pending_segments(tmp_path)
+    di.import_segment(tmp_path, "chat", segment["name"])
+    ds.append(tmp_path, "chat", owner("invalid-stamp", ts="invalid"))
+    ds.append(tmp_path, "chat", owner("foreign", chat_id=99))
+    facts = _quiz_host_facts(ctx, tmp_path, "asking", 1)
+    assert "2026-10-17 00:00 UTC" in facts and "still importing" not in facts
+    assert "your last message in this chat: unknown." in _quiz_host_facts(ctx, tmp_path, "asking", 22)
+
+
+def test_routing_recent_text_rows_report_only_missing_parts_of_the_window(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros import server_routing_context as routing
+
+    monkeypatch.setattr(routing, "_addressable_root_tasks", lambda *args: [])
+    monkeypatch.setattr(routing, "_recent_root_results", lambda *args: ([], {}))
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [owner("archive")]})
+    ds.ensure(tmp_path)
+    ds.append(tmp_path, "chat", owner())
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path)
+    partial = routing._main_routing_manifest(ctx)
+    assert partial["omissions"]["dialogue_gaps"] == ["history is still importing"]
+    assert partial["recent_canonical_dialogue"][0]["text"] == owner()["text"].strip()
+    for index in range(20):
+        ds.append(tmp_path, "chat", owner(f"recent-{index}"))
+        ds.append(tmp_path, "chat", {"chat_id": 1, "type": "task_summary"})
+    covered = routing._main_routing_manifest(ctx)
+    assert covered["omissions"]["dialogue_gaps"] == []
+    assert [row["client_message_id"] for row in covered["recent_canonical_dialogue"]] == [f"recent-{i}" for i in range(20)]
+
+
+def test_initialization_reads_existing_dialogue_evidence_and_never_creates_a_store(tmp_path):
+    from ouroboros import store
+    from supervisor.state_initialization import initialization_decision, supervisor_evidence
+
+    assert supervisor_evidence(tmp_path) == ("none", "")
+    assert not ds.present(tmp_path)
+    ds.create(tmp_path)
+    assert supervisor_evidence(tmp_path) == ("none", "")
+    ds.append(tmp_path, "progress", {"chat_id": 1, "text": "scaffolding alone is not owner history"})
+    assert supervisor_evidence(tmp_path) == ("none", "")
+    ds.append(tmp_path, "chat", owner())
+    assert supervisor_evidence(tmp_path) == ("present", "state/dialog.sqlite")
+    assert initialization_decision(tmp_path)["reason"] == "prior_history_without_state"
+    store.close_connections()
+    ds.path(tmp_path).write_bytes(b"unreadable dialogue store")
+    assert supervisor_evidence(tmp_path)[0] == "unknown"
+    assert initialization_decision(tmp_path)["reason"] == "initialization_evidence_unknown"
