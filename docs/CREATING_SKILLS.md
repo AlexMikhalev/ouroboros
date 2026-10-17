@@ -260,6 +260,59 @@ modules, distinct from sandboxed widget modules or model-written mini-apps.
 Ordinary external skills keep the existing review and owner grant policy;
 launcher-written native seeds can receive the hash-bound page grant automatically.
 
+### What placed controls do
+
+A `message.action` appears on Ouroboros's saved replies, never on the owner's
+own rows or on work cards: an icon control between the reply's Reply and Copy
+(its accessible name is `label`, its tooltip `title`) and an item in the row's
+menu, in words. Its `skill.request` with `with: message` POSTs JSON
+`{text, row_id}`: the reply's plain words and its row address. With
+`with: draft` it POSTs `{text}`, the visible room's draft; with `none`, `{}`.
+A 2xx answer may carry `{notice}`, shown as one line (otherwise "<label>:
+done."). A failure shows one line naming the label and keeps the draft;
+`then: clear_draft` clears the draft only after a 2xx and only while it still
+holds the words that were sent. `draft.insert` puts its text into the visible
+room's draft at the caret and never sends; `open.tab` opens the Widgets page at
+the skill's card; `notice` shows its text.
+
+### Page modules
+
+The host imports every live `render.kind: host` entry from its revision URL
+and calls the module's exported `mount(ctx)` once per contribution (several
+contributions may share one file). `mount` may return `{dispose()}`, directly
+or through a promise; the host calls `dispose` when the skill is disabled,
+updated or removed, on Panic and when the page goes away, and aborts
+`ctx.signal` at the same moment. The context is frozen and versioned; a
+capability a later version adds is absent from an older context, never a stub.
+
+| `ctx` field | Meaning |
+|---|---|
+| `api` | `1`, the context version. |
+| `skill`, `key` | The skill's directory name and this contribution's key (`<skill>:<id>`). |
+| `signal` | An `AbortSignal`, aborted when the module is disposed. |
+| `providers.register(kind, impl)` | Registers the client provider this contribution declares (`provides` equal to `kind`, `runtime: client`) and returns its unregister. Any other kind throws. |
+| `notice(text)` | One line in the page, prefixed with the skill's name. |
+| `draft.insert(text)` | Puts words into the visible room's draft at the caret, never sends; answers false when there is no draft. |
+| `theme.dark`, `theme.reducedMotion` | The painted theme and the motion preference, read when asked. |
+| `origin.secure`, `origin.loopback` | The page is a secure context; it is served from this computer. |
+
+There is no composer, feed or other page DOM in the context: placements are
+the way into those. A module that cannot be imported, throws or rejects in
+`mount`, does not start within the host's module bound
+(`WIDGET_REQUEST_TIMEOUT_MS`, `web/modules/widget_job.js`) or registers a
+provider it does not declare is off for that page: its providers are
+unregistered and the owner sees one notice naming the skill. It stays off
+until the page reloads or the skill's revision changes; the other modules and
+the page keep working.
+
+Recovery never depends on the modules. While modules start, the host keeps a
+boot marker in the page's storage; a page that finds one younger than five
+minutes (the last start froze or crashed) starts without page modules and
+offers Start with plugins. Opening the page with `?plugins=off` does the same
+on purpose; Main's More menu (Restart without plugins) and the macOS app's
+Help menu (Start without plugins) reload it that way. Declarative contributions
+stay available in both cases.
+
 ## Lifecycle: install → review → enable → execute
 
 ```mermaid

@@ -1416,7 +1416,28 @@ plain text); his Main message keeps its one receipt line. The row menu
 on touch) offers the row's own doors: Reply, Copy, Open project and, on a work
 card, Resume, Pause and Stop… exactly when the card does; Esc or an outside
 press closes it, focus returning to the row. Words the owner selected keep the
-browser's menu.
+browser's menu. A saved reply's registered actions (Read aloud, a skill's
+message action) come from one registry: icon controls named for their action
+between Reply and Copy, Copy keeping its corner, and items after the row's own
+doors in the row menu, in words. An action that is on now names its state
+(Stop while reading aloud) and wears the crimson ink; a work card offers none.
+
+### Skills in the page
+
+A skill adds controls only where the host opens a place (the composer's "+"
+menu and capsule row, a saved reply's actions), and the host draws them: the
+skill's label verbatim, one glyph from the host set, the host's capsule or
+icon control, never the skill's markup. A skill's trusted page module works
+only through its small context (its provider, a notice, words into the draft)
+and never draws into the composer or the feed. A module that fails is off for
+this page with one notice naming it; the rest of the page keeps working. A
+start that did not finish (the page froze or crashed while page modules
+started) skips them all next time and says so, with Start with plugins;
+`?plugins=off` starts without them on purpose and offers Restart with plugins.
+Main's More menu offers Restart without plugins on every surface, the macOS
+app's Help menu Start without plugins; a page that a module froze is left
+through that menu or by reopening it within five minutes, which then starts
+without them.
 
 ### Conversation activity block
 
