@@ -3,8 +3,8 @@
 Exactly one body per card: a declarative ``components`` tree the host draws (the
 CARD mode of ``extension_ui_validation``), an installed LIVE skill's ``widget``
 shown inline by reference, or a self-contained HTML ``app`` that runs in an opaque
-sandboxed frame that cannot fetch or load anything (a self-navigation is closed after
-its one request; ``docs/WIDGET_HOST_PROTOCOL.md`` §9). The record is stored first (``card_store``); the
+sandboxed frame whose policy blocks fetch and loads (``docs/WIDGET_HOST_PROTOCOL.md`` §9
+names what no page policy covers). The record is stored first (``card_store``); the
 ``send_card`` event then publishes the chat row (``supervisor/card_delivery.py``).
 A press on a host-drawn control is the owner's act and returns to the authoring
 task as ``card_input``; an app's result lands in the owner's draft and is sent
@@ -37,7 +37,7 @@ SHOW_CARD_TOOL_SCHEMA: Dict[str, Any] = {
         "audio, video, gallery, action, form; no routes); each action and form binds submit: {id, once?} "
         "and data fills the path-reading components. widget: {skill, tab_id, input?} shows an installed "
         "live skill's widget inline. app: {path} or {html} of a self-contained HTML page (at most 512 KiB) "
-        "that runs sandboxed: it cannot fetch or load anything, and navigating away closes it.\n\n"
+        "that runs sandboxed: it cannot fetch or load resources, and loading another page closes it.\n\n"
         "A press on an action or form comes back to you as a [Card input] message with its values (after "
         "your task ended, as the owner's message in this chat: the pressed label and values, as a reply to "
         "the card); once: true accepts only the first press. "

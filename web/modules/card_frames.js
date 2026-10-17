@@ -5,9 +5,9 @@
    An app is the HTML the host serves as inert text (`GET /api/cards/{id}/app`), put into a created iframe through
    the `srcdoc` property with sandbox `allow-scripts` ONLY — never the same-origin token, forms, popups, modals or
    downloads — under a document policy that blocks every fetch, WebSocket and load (nothing from any URL). No policy
-   stops a frame navigating itself (the host closes an app whose frame loads a second document, after that one
-   request has left) or governs WebRTC (WIDGET_HOST_PROTOCOL §9; the author is Ouroboros, which has the network
-   anyway). Its one channel is a nonce-bound three-message bridge, `window.OuroborosCard` inside the frame:
+   covers a frame navigating itself (the host closes an app whose frame loads a second document) or WebRTC
+   (WIDGET_HOST_PROTOCOL §9; the author is Ouroboros, which has the network anyway). Its one channel is a
+   nonce-bound three-message bridge, `window.OuroborosCard` inside the frame:
      resize(height)            the frame's content height (the bridge also reports it on its own);
      state.save(value)         JSON of at most 32 KiB, kept per card in this tab's sessionStorage and handed back
                                as `state.value` at the next mount;
