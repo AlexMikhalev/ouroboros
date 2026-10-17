@@ -55,6 +55,26 @@ def test_previous_body_detector_both_directions(tmp_path, monkeypatch, case):
     assert meta(tmp_path, "last_store_body")["sha"] == "store-head"
 
 
+@pytest.mark.parametrize("state_doc", [{"current_sha": None}, {}, {"current_sha": "stale-desktop-body"}])
+def test_a_bootstrap_that_never_stamps_reconciles_once_not_every_boot(tmp_path, state_doc):
+    """Docker images, Colab and source checkouts start without stamping ``current_sha``: every boot
+    shows the same unknown (or stale) stamp, and one finished reconcile covers it (owner answer Q2)."""
+    atomic_write_json(tmp_path / "state/state.json", {"session_id": "boot", **state_doc})
+    seen = []
+    for _boot in range(3):
+        report = store_import.ensure_current_store(tmp_path, body_sha="same-head")
+        seen.append(report["legacy_reconcile"])
+        if (maintenance_jobs.job(tmp_path, "legacy_reconcile") or {}).get("state") == "pending":
+            store_import.run_legacy_reconcile(tmp_path)
+    assert seen == ["scheduled", "not_needed", "not_needed"]
+    before = maintenance_jobs.job(tmp_path, "legacy_reconcile")
+    store_import.ensure_current_store(tmp_path, body_sha="same-head")
+    assert maintenance_jobs.job(tmp_path, "legacy_reconcile") == before, "a steady boot writes no job row"
+    _body(tmp_path, "old-body")  # a launcher-managed old body stamped its own SHA meanwhile
+    assert store_import.ensure_current_store(tmp_path, body_sha="same-head")["legacy_reconcile"] == "scheduled"
+    assert maintenance_jobs.job(tmp_path, "legacy_reconcile")["observed_sha"] == "old-body"
+
+
 def test_regular_update_changes_body_stamp_without_scheduling_legacy(tmp_path):
     _published(tmp_path)
     report = store_import.ensure_current_store(tmp_path, body_sha="new-store-head")

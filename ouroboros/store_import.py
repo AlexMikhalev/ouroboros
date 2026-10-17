@@ -4,7 +4,7 @@ First import builds a FULL-synchronous sibling, publishes by rename and director
 fsync, then stamps the generation. Reads never import; a missing stamped store is
 lost. Only a completed export permits a full rebuild. Boot reads metadata and the
 NULL-flag index without opening children or inspecting frozen result files. A
-changed/unknown previous body schedules ``legacy_reconcile``; the maintenance job
+changed/unknown previous body schedules ``legacy_reconcile`` once per observation; the maintenance job
 or ``python -m ouroboros.store_import --reconcile-legacy [--root PATH]`` runs it.
 
 Reconciliation retains the per-file size/mtime/hash baseline: changed files win,
@@ -107,7 +107,10 @@ def _lock_tier(root: pathlib.Path, recorded: Any = None) -> dict:
 
 def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -> bool:
     """Read the previous body's stamp BEFORE supervisor git bootstrap overwrites it.
-    server._run_supervisor calls require_published before _bootstrap_supervisor_repo."""
+    server._run_supervisor calls require_published before _bootstrap_supervisor_repo.
+    One reconcile per observation: a bootstrap that never stamps ``current_sha`` (the local-dev
+    start of Docker images, Colab and source checkouts) shows every boot the same unknown or stale
+    stamp, and a job already recorded for it, finished included, is not scheduled again."""
     from ouroboros import maintenance_jobs
 
     try:
@@ -117,7 +120,7 @@ def _schedule_legacy(root: pathlib.Path, last: dict, job: dict, body_sha: str) -
     reason = ("state_unreadable" if not isinstance(previous, str) or not previous else
               "last_store_body_missing" if not last.get("sha") else
               "body_changed" if previous != last["sha"] else "")
-    if reason and not (job.get("state") in {"pending", "running", "failed"} and job.get("observed_sha") == previous):
+    if reason and not (job.get("state") in {"pending", "running", "failed", "done"} and job.get("observed_sha") == previous):
         maintenance_jobs.record(root, "legacy_reconcile", state="pending", reason=reason,
                                 observed_sha=previous, body_sha=body_sha, cursor=None, done=0, total=None,
                                 error=None, waiting_on=None)
