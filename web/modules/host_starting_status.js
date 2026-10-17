@@ -7,7 +7,7 @@ export function supervisorReady(data) {
     return typeof data?.supervisor_ready === 'boolean' ? data.supervisor_ready : null;
 }
 
-// The host's boot phases (`/api/state.boot`, the same object as `/api/health.boot`), null
+// The host's boot phases (the `boot` object of /api/state, the same one /api/health carries), null
 // when the body states none: `phase`, `dialogue_ready`, `tasks_ready`, `steps`, `error`.
 export function bootPhase(data) {
     const boot = data?.boot;
