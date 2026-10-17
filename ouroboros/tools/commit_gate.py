@@ -495,16 +495,22 @@ def check_review_cycles_ceiling(
         return None
     if paid < cap:
         return None
-    message = (
+    head = (
         f"⚠️ REVIEW_CYCLES_EXHAUSTED: this task tree (root {root}) already spent "
         f"{paid} of {cap} paid review wave(s) "
         "(OUROBOROS_REVIEW_MAX_CYCLES). Refusing to buy another review.\n"
+    )
+    message = head + ((
         "Honest exits: finalize honestly with what is already reviewed and committed; "
         "escalate to the owner (the ceiling is the owner's Max Review Cycles setting — "
         "3/5/unlimited are one settings change away); or leave the remaining work to a "
         "follow-up task with its own budget. A rebuttal cannot buy past the ceiling — "
         "rebuttal cycles count toward it."
-    )
+    ) if review_enforcement_blocks() else (
+        "The paid review allowance is spent. Decide whether what was reviewed is enough: finish, "
+        "or land with a plain statement of what was not reviewed. If the reviewers do not work at "
+        "all and recovery fails, explain that to your human."
+    ))
     return {"message": message, "cycles_paid": paid, "cap": cap}
 
 

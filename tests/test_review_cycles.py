@@ -331,6 +331,23 @@ def _seed_paid_attempts(tmp_path, count, *, start=1, root="root-1", status="succ
     update_state(pathlib.Path(tmp_path), _mutate)
 
 
+@pytest.mark.parametrize("enforcement, mode, owner_menu", [
+    ("advisory", "pro", False), ("blocking", "cyber_pro", False), ("blocking", "pro", True),
+])
+def test_a_spent_allowance_leaves_the_decision_to_the_mind_unless_blocking(monkeypatch, tmp_path, enforcement, mode, owner_menu):
+    """Advisory (Cyber Pro included) decides itself whether what was reviewed is enough; only Blocking
+    names the owner's ceiling as the way on (owner 17.10, Q1-A)."""
+    from ouroboros.tools.commit_gate import check_review_cycles_ceiling
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", mode)
+    ctx = types.SimpleNamespace(repo_dir=tmp_path, drive_root=tmp_path, task_id="root-1")
+    _seed_paid_attempts(tmp_path, 2)
+    message = check_review_cycles_ceiling(ctx, root_task_id="root-1")["message"]
+    assert ("escalate to the owner" in message and "3/5/unlimited" in message) is owner_menu, message
+    assert ("Decide whether what was reviewed is enough" in message) is not owner_menu, message
+
+
 def test_commit_gate_ceiling_reads_live_setting(monkeypatch, tmp_path):
     from ouroboros.tools.commit_gate import (
         check_review_cycles_ceiling,

@@ -451,7 +451,7 @@ def _review_status_message(projection: Dict[str, Any]) -> str:
             "overlap_guard": "Another reviewed attempt is still active. Wait or expire it before retrying.",
             "attempt_cap_reached": "The same staged diff was review-blocked repeatedly. Change the diff or rebut via review_rebuttal.",
             "identical_diff_refused": "This exact staged diff was already review-blocked. Change the diff or supply a NEW review_rebuttal (identical bytes are never re-reviewed for pay).",
-            "review_cycles_exhausted": "This task tree spent its paid review cycles (OUROBOROS_REVIEW_MAX_CYCLES). Finalize honestly or ask the owner to raise the cap.",
+            "review_cycles_exhausted": "This task tree spent its paid review cycles (OUROBOROS_REVIEW_MAX_CYCLES). Under Advisory decide whether what was reviewed is enough; under Blocking only the owner may raise the cap.",
             "review_subject_binding_mismatch": "The reviewed managed subject is not the tree this commit would write. Re-stage the intended candidate and retry so review and commit describe the same tree.",
         }
         label = "BLOCKED" if ca.status == "blocked" else "FAILED"
