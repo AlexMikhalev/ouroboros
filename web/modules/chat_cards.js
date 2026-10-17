@@ -357,8 +357,10 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
     function lifecycle(msg) {
         if (msg?.skill === '_cards') {
             const record = records.get(String(msg.data?.card_id || ''));
-            if (record?.data?.kind === 'components') {
-                record.data = { ...record.data, pinned: msg.action === 'card_pinned' };
+            const pinned = msg.action === 'card_pinned';
+            // The echo of this room's own Keep / Undo changes nothing; another window's does.
+            if (record?.data?.kind === 'components' && record.data.pinned !== pinned) {
+                record.data = { ...record.data, pinned };
                 bodies.delete(record.id);
                 write(() => paintActions(record, false));
             }
