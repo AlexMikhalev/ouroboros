@@ -73,12 +73,17 @@ def _seed(data_dir) -> dict:
                         kind="widget", body={"widget": {"skill": widget_skill, "tab_id": "main"}})
     app = write_card(data_dir, chat_id=1, task_id="", title="Loan", fallback_text="A loan calculator",
                      kind="app", body={"app": store_app_bytes(data_dir, APP_HTML.encode("utf-8"))})
-    for index, record in enumerate((components, widget, app)):
-        append_jsonl(data_dir / "logs" / "chat.jsonl", {
-            "ts": f"2026-10-17T10:00:0{index}+00:00", "direction": "out", "chat_id": 1, "user_id": 0,
-            "text": record["fallback_text"], "type": "card", "task_id": "",
-            "card": {"card_id": record["card_id"], "kind": record["kind"], "title": record["title"], "revision": 1},
-        })
+    chat = data_dir / "logs" / "chat.jsonl"
+    row = lambda minute, **fields: {"ts": f"2026-10-17T10:{minute:02d}:00+00:00", "direction": "out", "chat_id": 1,
+                                    "user_id": 0, "task_id": "", **fields}
+    for minute, record in ((0, components), (1, widget)):
+        append_jsonl(chat, row(minute, text=record["fallback_text"], type="card", card={
+            "card_id": record["card_id"], "kind": record["kind"], "title": record["title"], "revision": 1}))
+    # Enough conversation between them that the app is far from view when the top of the chat is read.
+    for minute in range(2, 26):
+        append_jsonl(chat, row(minute, text=f"Note {minute}: a line of an ordinary answer.\n\nAnd its second paragraph."))
+    append_jsonl(chat, row(26, text=app["fallback_text"], type="card", card={
+        "card_id": app["card_id"], "kind": "app", "title": app["title"], "revision": 1}))
     return {"components": components["card_id"], "widget": widget["card_id"], "app": app["card_id"], "skill": widget_skill}
 
 
@@ -151,12 +156,24 @@ def test_living_cards_render_press_submit_and_keep(direct_server_with_data, engi
                     assert pressed[0]["decision_id"] == f"card:{ids['components']}:pick_pro", pressed
                     assert card.locator("[data-widget-action]").is_disabled(), "a once control locks"
 
+                    # Far from view the app is a face with Open; back in view it runs again.
+                    app_card = page.locator(f'.chat-card[data-card-id="{ids["app"]}"]')
+                    app_card.locator("[data-card-open]").wait_for(timeout=10_000)
+                    assert app_card.locator("iframe").count() == 0
+                    app_card.scroll_into_view_if_needed()
+                    app_card.locator("iframe.chat-card-frame").wait_for(timeout=10_000)
+
                     # The app's submit fills the owner's draft; nothing is sent.
                     page.fill("#chat-input", "")
                     inner.locator("#choose").click()
                     page.wait_for_function("() => document.querySelector('#chat-input').value.includes('From «Loan»')", timeout=10_000)
                     assert page.input_value("#chat-input") == 'From «Loan»: Pro plan {"plan":"pro"}', page.input_value("#chat-input")
                     assert page.locator("#page-chat .chat-bubble.user").count() == 0, "an app never sends"
+                    # What the app kept is handed back when it mounts again.
+                    card.scroll_into_view_if_needed()
+                    app_card.locator("[data-card-open]").wait_for(timeout=10_000)
+                    app_card.scroll_into_view_if_needed()
+                    inner.locator("#seen", has_text='kept {"chose":"pro"}').wait_for(timeout=10_000)
 
                     # Keep on Widgets: the card lands on the Widgets page; Remove takes it off.
                     card.locator("[data-card-pin]").click()
