@@ -7767,12 +7767,11 @@ html[data-layout="stack"] .project-panel.open {
     display: inline-block;
     padding: 1px 8px;
     border-radius: 999px;
-    border: 1px solid var(--divider);
+    /* A classification chip is a flat tint (DESIGN §4 "The tone primitive"): no outline, no tracking. */
     background: var(--status-neutral-bg);
     color: var(--status-neutral-fg);
     font-size: var(--type-meta);
     line-height: var(--line-meta);
-    letter-spacing: 0.04em;
 }
 .log-executor-chip {
     width: fit-content;
@@ -8139,7 +8138,6 @@ html[data-layout="stack"] .project-panel.open {
        between the chip and the next fact, so this boundary is spaced by the
        same flex gap as every other one. */
     vertical-align: middle;
-    opacity: 0.85;
 }
 /* The chip's detail sentence is card text only while the card is expanded;
    `contents` makes its separator and text ordinary parts of the meta line. */
