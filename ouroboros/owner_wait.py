@@ -211,7 +211,7 @@ def continuation_state(ctx: Any, messages: list, trace: dict, usage: dict,
             "_presence_completion_owner_revision", "_acceptance_observation",
             "_presence_forced_declaration", "_presence_forced_pending", "_presence_completion_accepted",
             "_presence_selection_seq", "_presence_released", "_presence_release",
-            "_task_acceptance_sealed_fence_token", "_task_acceptance_sealed_fence_generation",
+            "_task_acceptance_sealed_fence_token", "_task_acceptance_sealed_fence_generation", "_owner_reply_revision",
 
         ) if getattr(ctx, key, None) is not None},
         "acceptance": {
