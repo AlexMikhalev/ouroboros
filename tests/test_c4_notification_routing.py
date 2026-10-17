@@ -149,7 +149,6 @@ class TestLifecycleChatRouting:
 
 class TestInterruptedRowChat:
     def test_interrupted_row_carries_the_payload_chat(self, tmp_path):
-        import json
 
         from ouroboros.skill_review_runner import _append_interrupted_review_progress
 
@@ -160,7 +159,6 @@ class TestInterruptedRowChat:
         assert rows[-1]["chat_id"] == 17
 
     def test_interrupted_row_negative_chat_falls_back_to_panel(self, tmp_path):
-        import json
 
         from ouroboros.skill_review_runner import _append_interrupted_review_progress
 

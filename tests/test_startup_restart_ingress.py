@@ -2,7 +2,6 @@
 
 from tests import _dialogue as dialogue_test
 from types import SimpleNamespace
-import json
 import threading
 
 import pytest

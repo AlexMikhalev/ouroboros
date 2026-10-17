@@ -7,7 +7,6 @@ import pytest
 
 from ouroboros import agent_task_pipeline as pipeline
 from ouroboros.task_results import load_task_result, write_task_result
-from ouroboros.utils import iter_jsonl_objects
 from supervisor import message_bus, state
 from supervisor.events import _handle_send_message
 from tests.test_cancel_cascade_v664 import _fake_worker, _install_worker, _isolate_queue

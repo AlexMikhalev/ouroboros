@@ -355,7 +355,7 @@ def test_chat_chain_keeps_no_index_and_no_physical_locator():
 # --- the row stream ----------------------------------------------------------------------------
 
 def test_stream_positions_are_the_legacy_cursor_positions(tmp_path):
-    live = _chain(tmp_path)
+    _chain(tmp_path)
     streamed = list(cc.iter_rows(tmp_path))
     assert [pos for _a, _r, pos in streamed] == list(range(7))
     for unit in ds.generation_metadata(tmp_path, "chat"):

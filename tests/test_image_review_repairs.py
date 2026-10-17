@@ -19,7 +19,6 @@ from tests.test_vision_model_wait import child_fixture as child_fixture
 @pytest.mark.parametrize("delivery", ["named", "unnamed", "write_then_retry"])
 def test_host_attachment_only_accept_rejoin_and_real_server_dequeue(tmp_path, monkeypatch, kind, delivery):
     import server
-    from ouroboros.utils import iter_jsonl_objects
     from supervisor import message_bus
     from tests.test_chat_inject_attachments import _client, _skill_file
 

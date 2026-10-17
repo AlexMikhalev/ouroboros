@@ -5,7 +5,6 @@ from __future__ import annotations
 from tests import _dialogue as dialogue_test
 
 import copy
-import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 

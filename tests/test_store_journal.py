@@ -63,7 +63,7 @@ def test_overlay_requires_every_backing_directory_to_be_known_local(tmp_path, ba
              f"2 1 0:2 / {lower} rw - {backing} source rw\n"
              f"3 1 0:3 / {overlay} rw - overlay overlay rw,lowerdir={lower},upperdir={upper}\n")
     assert store._linux_filesystem(overlay / "store.sqlite", table) == ("overlay-local" if backing == "ext4" else None)
-    hidden = f"1 0 0:1 / / rw - overlay overlay rw,lowerdir=/host/invisible\n"
+    hidden = "1 0 0:1 / / rw - overlay overlay rw,lowerdir=/host/invisible\n"
     assert store._linux_filesystem(tmp_path, hidden) is None
 
 

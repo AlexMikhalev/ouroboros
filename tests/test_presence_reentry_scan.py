@@ -43,7 +43,7 @@ def test_matching_live_cursor_reads_new_rows_without_hashing_archive_headers(tmp
     _append(tmp_path, _row(KEY, "old archived row"))
     rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     assert list((tmp_path / "archive").glob("chat_*.jsonl"))
-    live = _append(tmp_path, _row(KEY, "before this park"))
+    _append(tmp_path, _row(KEY, "before this park"))
     cursor = pc._chat_cursor(tmp_path)
     _append(tmp_path, _row(OTHER, "another conversation"), _row(KEY, "after this park"))
     hashed, signature = [], utils.jsonl_generation_signature
@@ -59,7 +59,6 @@ def test_matching_live_cursor_reads_new_rows_without_hashing_archive_headers(tmp
 
 
 def test_frozen_actor_can_read_past_scan_budget_without_chat_history(tmp_path, monkeypatch):
-    from ouroboros.jsonl_tail import JsonlChainSnapshot
 
     registry, ctx = _actor(tmp_path)
     _append(tmp_path, _row(KEY, "before this park"))
@@ -142,7 +141,7 @@ def test_huge_unicode_row_pages_exact_json_through_the_real_tool_result_cap(tmp_
 def test_changed_history_is_unavailable_instead_of_an_empty_complete_page(tmp_path, change):
     registry, ctx = _actor(tmp_path)
     cursor = pc._chat_cursor(tmp_path)
-    path = _append(tmp_path, _row(KEY, "original source"))
+    _append(tmp_path, _row(KEY, "original source"))
     arguments = _reader(pc.reentry_note(_binding(tmp_path, cursor), ctx))
     source = json.loads(registry.execute("get_task_result", arguments))["presence_reentry_source"]
     # A corrupted canonical row fails its retained SQL identity. Frozen-file edits

@@ -6,7 +6,6 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -228,7 +227,6 @@ def test_receipt_after_torn_tail_starts_a_new_parseable_record(tmp_path):
 
 
 def test_required_writer_refusal_does_not_ack_or_fill_index(tmp_path, monkeypatch):
-    import supervisor.message_bus as bus
 
     client = _client(tmp_path)
     append = ds.append

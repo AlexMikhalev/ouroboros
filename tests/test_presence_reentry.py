@@ -131,12 +131,12 @@ def test_unavailable_source_after_scan_budget_names_chain_gap_offsets(tmp_path, 
             raise OSError("source unavailable")
         target = "store_actor_source_bytes" if failure == "write_failed" else "read_actor_source_bytes"
         monkeypatch.setattr(f"ouroboros.artifacts.{target}", fail)
-    archived = _append(tmp_path, _row(KEY, "archived before park"))
+    _append(tmp_path, _row(KEY, "archived before park"))
     rotate_jsonl_log_if_needed(tmp_path, "chat.jsonl", "chat", max_bytes=1)
     _append(tmp_path, _row(KEY, "before park"))
     cursor = pc._chat_cursor(tmp_path)
-    live = _append(tmp_path, _row("telegram:bot-1:elsewhere:0", "foreign " * 100),
-                   _row(KEY, "after scan budget"))
+    _append(tmp_path, _row("telegram:bot-1:elsewhere:0", "foreign " * 100),
+            _row(KEY, "after scan budget"))
     physical_offset = ds.stream_end(tmp_path, "chat")
     bad_rows = [(b"{broken\n", "a malformed line"), (b"[1,2]\n", "a non-object line"),
                 (b'{"partial":', "a malformed line")]

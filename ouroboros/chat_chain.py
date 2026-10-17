@@ -14,7 +14,7 @@ import heapq
 import json
 import pathlib
 import re
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
 from ouroboros import dialogue_store as ds, dialogue_positions as dp
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from tests import _dialogue as dialogue_test
 
-import json
 from dataclasses import replace
 
 import pytest

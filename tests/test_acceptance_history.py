@@ -21,7 +21,6 @@ from ouroboros.project_dialogue import build_owner_message_ref
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.tools.review import get_tools
-from ouroboros.utils import append_jsonl
 from tests._usage_store_testing import ledger_rows
 
 

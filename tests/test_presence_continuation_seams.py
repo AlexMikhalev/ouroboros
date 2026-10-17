@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
-import os
 import pathlib
 import threading
 import time

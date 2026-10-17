@@ -190,7 +190,6 @@ def test_startup_notice_matches_loaded_runtime_bounds_and_raw_presence(
         monkeypatch, tmp_path, document, launch_env, expected, origin, raw):
     from ouroboros import config as cfg, upgrade_notices as notices
     from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
-    from ouroboros.utils import iter_jsonl_chain_objects
     from supervisor import message_bus as bus, state as ss
 
     lifetime = "OUROBOROS_TASK_ABS_CEILING_SEC"

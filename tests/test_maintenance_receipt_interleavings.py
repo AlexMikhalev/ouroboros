@@ -12,7 +12,6 @@ from tests import _dialogue as dialogue_test
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import json
 from queue import Empty
 from threading import Event
 from types import SimpleNamespace

@@ -20,7 +20,7 @@ import pytest
 
 from ouroboros import upgrade_notices as notices
 from ouroboros.chronicle_store import ChronicleStore
-from ouroboros.utils import iter_jsonl_chain_objects, jsonl_generation_signature
+from ouroboros.utils import jsonl_generation_signature
 
 NOTICE = "legacy_memory_notice"
 
