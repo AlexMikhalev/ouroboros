@@ -14,6 +14,7 @@ import pytest
 from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 from tests._shared import producer_evidence_dir
+from tests._work_projection_shared import state_fields
 from tests.test_project_admission_refusal_browser import _producers
 from tests.test_project_authority_outages import _uncertain_child
 from tests.test_project_hold_recovery import worker
@@ -71,8 +72,8 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     def state_transport(route):
         response = route.fetch()
         body = response.json()
-        body.update(active_chat_activities=_chat_activities_snapshot_safe(root), active_chat_activities_complete=True,
-                    supervisor_ready=True, task_bindings={})
+        # This process's census and the server's own work projection of it.
+        body.update(**state_fields(root, {}), active_chat_activities_complete=True, supervisor_ready=True, task_bindings={})
         route.fulfill(response=response, json=body)
 
     def frame(page, tid, **fields):
@@ -248,8 +249,8 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             return
         response = route.fetch()
         body = response.json()
-        body.update(active_chat_activities=_chat_activities_snapshot_safe(root), active_chat_activities_complete=True,
-                    supervisor_ready=True, task_bindings={})
+        # This process's census and the server's own work projection of it.
+        body.update(**state_fields(root, {}), active_chat_activities_complete=True, supervisor_ready=True, task_bindings={})
         completed_states.append(body)
         route.fulfill(response=response, json=body)
 

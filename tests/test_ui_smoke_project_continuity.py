@@ -24,6 +24,7 @@ import json
 
 import pytest
 
+from tests._work_projection_shared import with_work_fields
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_chat_viewport_smoke import _OBSERVE_STATE_READS, _wait_state_reads_quiescent
 
@@ -288,7 +289,7 @@ def test_ui_smoke_late_open_chat_shows_managed_activity(direct_server_with_data)
                     )
                     route.fulfill(
                         content_type="application/json",
-                        body=json.dumps(payload),
+                        body=json.dumps(with_work_fields(payload)),
                     )
 
                 page.route("**/api/state*", _inject)
@@ -558,7 +559,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     payload = response.json()
                     payload["active_chat_activities"] = list(state["activities"])
                     payload["project_chat_ids"] = [9] if any(a.get("chat_id") == 9 for a in state["activities"]) else []
-                    route.fulfill(content_type="application/json", body=json.dumps(payload))
+                    route.fulfill(content_type="application/json", body=json.dumps(with_work_fields(payload)))
 
                 history = {"messages": []}
                 page.route("**/api/state*", _inject)
@@ -995,8 +996,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                 # in-flight page read; let it land before minting the card below.
                 _wait_state_reads_quiescent(page)
 
-                # A visible root card carries host-attested Stop authority and is
-                # what lights the panel header (typing frames are receipts only).
+                # A visible root card carries host-attested Stop authority. The panel's header says the
+                # server's room, which does not list this card's work: the card alone never lights it.
                 page.evaluate(
                     """(chatId) => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -1007,7 +1008,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     project_chat,
                 )
                 page.wait_for_selector(f"{card} [data-cancel-run]", timeout=10_000)
-                _panel_status_is(page, "Working")
+                _panel_status_is(page, "Online")
+                assert page.locator(f"{card} .chat-live-phase").inner_text().strip() == "Working"
 
                 # Early final prose does not conclude while post-task work runs.
                 page.evaluate(
@@ -1018,8 +1020,10 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     })""",
                     project_chat,
                 )
-                # The room's word is the card's own for post-task work (a finalizing root is not Online).
-                _panel_status_is(page, "Finalizing…")
+                # The card says its post-task work; the room still says what the server lists.
+                page.wait_for_function("(sel) => document.querySelector(sel + ' .chat-live-phase')?.textContent.trim()"
+                                       " === 'Finalizing…'", arg=card, timeout=10_000)
+                _panel_status_is(page, "Online")
                 # Make the next request barrier strictly newer than the live
                 # progress frame even on a millisecond-resolution browser clock.
                 page.wait_for_timeout(20)

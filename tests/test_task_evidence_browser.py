@@ -1,4 +1,4 @@
-"""Real Chat replay and controls over isolated durable logs, with a controlled census."""
+"""Real Chat replay and controls over isolated durable logs, with a controlled census and its work projection."""
 from __future__ import annotations
 
 from tests import _dialogue as dialogue_test
@@ -12,6 +12,7 @@ from ouroboros import dialogue_store
 
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests._store_shared import seed_result
+from tests._work_projection_shared import work_fields
 from ouroboros.test_evidence import diagnostic_directory
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -49,9 +50,10 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
 
     def state_route(route):
         data = dict(state)
-        data.update(active_chat_activities=[{"activity_id": task_id, "chat_id": 1,
-                    "kind": "direct_chat", **census}], active_chat_activities_complete=True,
-                    supervisor_ready=True)
+        rows = [{"activity_id": task_id, "chat_id": 1, "kind": "direct_chat", **census}]
+        # The server's own work projection of the controlled row: its word, reason and controls.
+        data.update(active_chat_activities=rows, active_chat_activities_complete=True,
+                    supervisor_ready=True, **work_fields(rows))
         route.fulfill(json=data)
 
     with sync_playwright() as pw:
@@ -80,7 +82,7 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 resume = card.locator("[data-resume-run]")
                 resume.wait_for(state="visible")
                 assert resume.inner_text() == "Resume"
-                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · owner pause"
+                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · by you"
                 assert card.locator("[data-live-title]").inner_text() == "Read source records"
                 assert page.locator("#chat-messages").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
                 assert resume.evaluate("el => { const r=el.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; }")
@@ -97,11 +99,11 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 assert "Only recent tool history was read." in card.locator(".chat-live-line-body").inner_text()
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"tool-history-bounded-{engine}-{width}.png"), full_page=True)
 
-                # The controlled census offers the door; the real server still
+                # The controlled projection offers the door; the real server still
                 # refuses a root with no resumable queue/fence authority.
                 resume.click()
                 page.locator(".toast", has_text="Resume refused").wait_for(state="visible")
-                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · owner pause"
+                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · by you"
                 assert card.locator("[data-live-phase]").inner_text() == "Done"
                 context.close()
         finally:
@@ -139,10 +141,11 @@ def test_pause_notice_translation_and_historical_wake_status(direct_server_with_
         browser = pw.chromium.launch(headless=True)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 900})
+            def rows():
+                return [{"activity_id": "with-card", "chat_id": 1, "kind": "managed_task",
+                         "phase": "working", "owner_wait": owner_wait, "required_question_unavailable": True}]
             page.route("**/api/state", lambda route: route.fulfill(json={**state, "bg_consciousness_enabled": True,
-                "active_chat_activities": [{"activity_id": "with-card", "chat_id": 1, "kind": "managed_task",
-                    "phase": "working", "owner_wait": owner_wait, "required_question_unavailable": True}],
-                "active_chat_activities_complete": True,
+                "active_chat_activities": rows(), "active_chat_activities_complete": True, **work_fields(rows()),
                 "bg_consciousness_state": {"status": status, "detail": details[status]}}))
             page.route("**/api/ui/i18n", lambda route: route.fulfill(json=payload))
             page.goto(fixture["url"], wait_until="domcontentloaded")

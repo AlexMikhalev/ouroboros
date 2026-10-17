@@ -24,6 +24,7 @@ from starlette.testclient import TestClient
 from tests.test_late_phase_pause_cut import ROOT, _join, _phase, _start, fit  # noqa: F401 — fixture
 from tests.test_late_phase_pause_cut import late as late  # noqa: F401 — fixture
 from tests.test_subscription_setup_browser import subscription_ui as subscription_ui  # noqa: F401 — fixture
+from tests._work_projection_shared import state_fields
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
@@ -51,7 +52,6 @@ def _history(root: pathlib.Path) -> None:
 
 def test_browser_pause_ends_the_upkeep_at_once_with_the_delivered_answer_intact(subscription_ui, late):
     from ouroboros.gateway.history import make_chat_history_endpoint
-    from ouroboros.gateway.state import _chat_activities_snapshot_safe
     from ouroboros.gateway.task_pause import api_task_pause
     from ouroboros.owner_pause import read_fence
     from ouroboros.task_results import load_task_result
@@ -80,9 +80,10 @@ def test_browser_pause_ends_the_upkeep_at_once_with_the_delivered_answer_intact(
 
             page.route("**/api/chat/history*", forward)
             page.route(f"**/api/tasks/{ROOT}/pause", forward)
+            # The real census and the server's own work projection of it, which the page reads.
             page.route("**/api/state", lambda route: route.fulfill(content_type="application/json", body=json.dumps({
                 "supervisor_ready": True, "projects": [], "active_chat_activities_complete": True,
-                "active_chat_activities": _chat_activities_snapshot_safe(f.root, {}, direct_turns=[])})))
+                **state_fields(f.root, {}, direct_turns=[])})))
             page.route(f"**/api/tasks/{ROOT}", lambda route: route.fulfill(
                 content_type="application/json", body=json.dumps(load_task_result(f.root, ROOT))))
             page.goto(ui["url"] + "/")
