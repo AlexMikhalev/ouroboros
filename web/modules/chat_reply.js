@@ -1,5 +1,5 @@
 // Replies of one chat instance (docs/DESIGN.md "Replies"): the Reply control beside Copy in a bubble's
-// control row, the quote above the replying bubble's text, the strip above the composer while the owner
+// control row (with the registered message actions between them, message_actions.js), the quote above the replying bubble's text, the strip above the composer while the owner
 // is replying, the jump from a quote to the message it quotes, and the owner's words a relay carries into a
 // work's room (one Ouroboros bubble: his words in a quote panel above the note). A reply is a reference the
 // host resolves: this module sends only the quoted row's address and never decides who reads the words.
@@ -8,6 +8,7 @@ import { showToast } from './toast.js';
 import { ensureLiveActionsEl } from './chat_activity.js';
 import { authorOf, createRelayQuote, createReplyQuote, normalizeReplyRef, replySnippet } from './chat_reply_quote.js';
 import { fullText } from './text_fit.js';
+import { bindBubbleActions } from './message_actions.js';
 
 const REPLY_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"'
     + ' stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
@@ -28,9 +29,11 @@ function rowAbove(node) {
 /**
  * `feed` holds the bubbles (each stamped `data-row-address`), `input` is the composer field (the strip goes before its
  * row), `key` names the sessionStorage slot of a staged reply. `reading()` is the room's reading-position owner,
- * resolved when a quote is pressed; `onDomWrite` is the instance's stable-viewport seam for a clamp's toggle.
+ * resolved when a quote is pressed; `onDomWrite` is the instance's stable-viewport seam for a clamp's toggle and the
+ * control rows' redraws; `actions` is the message-action registry (the page's own when omitted).
  */
-export function createChatReplies({ chatId, feed, input, key = '', reading, onDomWrite = (write) => write() }) {
+export function createChatReplies({ chatId, feed, input, key = '', reading, onDomWrite = (write) => write(),
+    actions = undefined }) {
     // The strip stands right before the field's row (below the pills); a bare field (a test fixture) takes it itself.
     const textRow = input.closest('.chat-text-row') || input;
     let storage = null;
@@ -39,6 +42,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, onDo
     let staged = null;
     let strip = null;
     let targetTimer = 0;
+    const bubbleActions = bindBubbleActions({ feed, registry: actions, onDomWrite });
 
     const remember = () => {
         if (!storage || !storageKey) return;
@@ -160,6 +164,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, onDo
         row.append(button);
         if (copy) row.append(copy);
         bubble.classList.add('has-reply');
+        bubbleActions.sync(bubble);
         return button;
     }
 
@@ -298,6 +303,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, onDo
         clear,
         destroy() {
             clearTimeout(targetTimer);
+            bubbleActions.destroy();
             keyHost?.removeEventListener('keydown', onKeydown);
             strip?.remove();
             strip = null;

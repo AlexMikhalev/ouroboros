@@ -8907,7 +8907,9 @@ textarea.chat-input {
 }
 
 /* D12: always-visible compact copy icon in the bubble's bottom-right corner. The Reply control joins it in
-   one control row (docs/DESIGN.md "Replies"): the same 24px square, ink and rhythm, one --space-2 gap. */
+   one control row (docs/DESIGN.md "Replies"), and so do the registered message actions between them
+   (message_actions.js): the same 24px square, ink and rhythm, one --space-2 gap. */
+.chat-message-action,
 .chat-message-copy,
 .chat-message-reply {
     display: inline-flex;
@@ -8938,12 +8940,19 @@ textarea.chat-input {
 }
 .chat-message-actions > .chat-message-copy { position: static; }
 
+.chat-message-action:hover,
+.chat-message-action:focus-visible,
+.chat-message-action[aria-pressed="true"],
 .chat-message-copy:hover,
 .chat-message-copy:focus-visible,
 .chat-message-reply:hover,
 .chat-message-reply:focus-visible { opacity: 1; }
+.chat-message-action:hover,
 .chat-message-copy:hover,
 .chat-message-reply:hover { background: var(--surface-control); }
+/* An action that is on now (Read aloud while it speaks) wears the crimson ink of a chosen control. */
+.chat-message-action[aria-pressed="true"] { color: var(--tone-crimson-ink); }
+.chat-message-action:focus-visible,
 .chat-message-copy:focus-visible,
 .chat-message-reply:focus-visible {
     outline: 2px solid var(--focus-accent-border);
@@ -8951,9 +8960,12 @@ textarea.chat-input {
 }
 
 /* Reserve a gutter so the timestamp never sits under the always-visible controls (Copy ends 32px from the
-   bubble's edge, Reply and Copy 64px; the bubble's own inset is --space-4, the gap to the time --space-2). */
+   bubble's edge, Reply and Copy 64px, each registered action one more square and gap; the bubble's own inset is
+   --space-4, the gap to the time --space-2). */
 .chat-bubble.has-copy .msg-time { margin-right: var(--space-5); }
-.chat-bubble.has-reply .msg-time { margin-right: calc(var(--space-5) * 2 + var(--space-2)); }
+.chat-bubble.has-reply .msg-time {
+    margin-right: calc((var(--space-5) + var(--space-2)) * (2 + var(--chat-message-extra-actions, 0)) - var(--space-2));
+}
 
 /* The message a quote points at: a calm ring for a moment, a keyboard ring while it holds focus. */
 @keyframes chat-quote-target {
