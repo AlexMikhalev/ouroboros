@@ -28,11 +28,12 @@ def recorded(root, chat_id, notice_type):
         return True
     from ouroboros import dialogue_store as ds
 
-    # Historical receipts can arrive after the lifecycle store was published.
-    for entry in ds.iter_probes(root, "chat", [("chat_id", int(chat_id))], newest_first=True):
+    # Historical receipts can arrive after the lifecycle store was published: the notice's own
+    # rows (its type is an indexed fact), never a walk of the owner's whole chat.
+    for entry in ds.iter_probes(root, "chat", [("kind", notice_type)], newest_first=True):
         row = entry.row
         if (row.get("direction") == "system" and row.get("type") == notice_type
-                and isinstance(row.get("chat_id"), int)):
+                and isinstance(row.get("chat_id"), int) and row["chat_id"] == int(chat_id)):
             return True
     ds.require_imported(root, "chat")
     return False
