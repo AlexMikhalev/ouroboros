@@ -268,8 +268,13 @@ async def _check_tasks_notify(
     *, trust_env: bool = False,
 ) -> Tuple[Optional[BaseException], bool]:
     """Returns (last transient send failure if any, whether a send was delivered)."""
+    from ouroboros.store import StoreError
+
     notify_all = _notify_enabled(settings, "TELEGRAM_NOTIFY_TASKS")
-    summaries = _summary_ids_in_tail(api)
+    try:
+        summaries = _summary_ids_in_tail(api)
+    except StoreError as exc:
+        return exc, False  # An unknown window cannot initialize or advance the seen ids.
     if "notified_task_ids" not in state:
         # First observation → treat the existing backlog as seen
         # so enabling the toggle doesn't blast a notification for every old task.

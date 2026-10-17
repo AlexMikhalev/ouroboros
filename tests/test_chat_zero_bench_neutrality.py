@@ -1,14 +1,16 @@
 """Closing the chat-id truthiness class must not move a benchmark's answer.
 
-Terminal-Bench reads a run's final answer straight out of ``chat.jsonl``: the
+Terminal-Bench reads a run's final answer from SQL chat rows: the
 LAST untyped row with ``direction == "out"`` (``atif._final_answer``). It ALSO
-reads ``progress.jsonl`` and publishes those rows as the agent's own narration
+reads SQL progress rows and publishes those rows as the agent's own narration
 (``atif.build_trajectory``). Headless benchmark roots run in the hidden partition
 (chat 0), which is exactly the partition the class fix stops dropping — so a
 notice that now reaches chat 0 must be a typed or system chat row (invisible to
 the answer reader), and a live host TOAST must not be written there at all, or a
 supervisor line would be published as something the model said.
 """
+
+from tests import _dialogue as dialogue_test
 
 import json
 import pathlib
@@ -31,13 +33,14 @@ def _agent_dir(tmp_path, chat_rows):
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in chat_rows),
         encoding="utf-8",
     )
+    dialogue_test.import_all(data)
     return tmp_path
 
 
 def test_progress_notices_never_enter_the_answer_stream(tmp_path):
     """The reaper/scheduler toasts the class fix un-drops are progress rows.
 
-    ``send_with_budget(is_progress=True)`` appends to progress.jsonl, so a
+    ``send_with_budget(is_progress=True)`` appends to SQL progress, so a
     grace toast for a hidden-partition root cannot be mistaken for its answer.
     """
     from types import SimpleNamespace
@@ -60,8 +63,8 @@ def test_progress_notices_never_enter_the_answer_stream(tmp_path):
     finally:
         monkey.undo()
     assert sent, "the notice still reaches the live bridge"
-    assert (data / "logs" / "progress.jsonl").exists()
-    assert not (data / "logs" / "chat.jsonl").exists()
+    assert dialogue_test.log_rows(data / "logs" / "progress.jsonl")
+    assert not dialogue_test.log_rows(data / "logs" / "chat.jsonl")
 
 
 def test_a_system_incident_row_is_not_read_as_the_answer(tmp_path):
@@ -162,8 +165,8 @@ def test_the_two_toasts_this_sprint_touched_stay_out_of_a_headless_progress_log(
     assert "if chat_id is None or chat_id == HIDDEN_CHAT_ID:" in admission
 
     atif = (REPO / "devtools/benchmarks/terminal_bench/atif.py").read_text(encoding="utf-8")
-    assert 'progress.jsonl' in atif and 'narration_rows' in atif, (
-        "if ATIF stops reading progress.jsonl this guard can be revisited"
+    assert '_dialogue_rows(data_dir, "progress"' in atif and 'narration_rows' in atif, (
+        "if ATIF stops reading progress rows this guard can be revisited"
     )
 
 
@@ -174,7 +177,7 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
 
     The other tests in this file state the extraction rule over hand-written
     rows. This one runs emit_task_results -> _handle_send_message ->
-    send_with_budget -> chat.jsonl -> atif._final_answer, so a change to WHICH
+    send_with_budget -> SQL chat -> atif._final_answer, so a change to WHICH
     rows the host writes, or to HOW they are authored and typed, is caught here
     instead of in a Terminal-Bench trajectory. Exactly one untyped outbound row
     may exist and it must be the model's own answer; every host disclosure has
@@ -211,7 +214,6 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
     monkeypatch.setattr(message_bus, "DATA_DIR", data)
     monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_kw: None)
     monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
     delivery._handle_send_message(event, SimpleNamespace(
@@ -219,8 +221,7 @@ def test_the_real_terminal_producer_leaves_the_model_answer_as_the_hidden_partit
         send_with_budget=message_bus.send_with_budget,
     ))
 
-    rows = [json.loads(line) for line
-            in (data / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = dialogue_test.log_rows(data / "logs" / "chat.jsonl")
     untyped_outbound = [row["text"] for row in rows
                         if row["direction"] == "out" and not row.get("type")]
     assert untyped_outbound == [answer]
