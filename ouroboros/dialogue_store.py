@@ -359,6 +359,22 @@ def _set_meta(conn: sqlite3.Connection, key: str, value: Any) -> None:
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, json.dumps(value, ensure_ascii=False)))
 
 
+_PLANNED: set = set()  # stores (by path) whose cutover fact this process has seen: it is never removed
+
+
+def _planned(conn: sqlite3.Connection, root: Any) -> bool:
+    """Whether the store holds its cutover fact: the chain files were planned and the live tail
+    stored. ``create`` publishes the store before that, so a cutover that failed after it leaves a
+    store whose coordinates are not planned yet (``append`` finishes it, readers say importing)."""
+    key = str(path(root))
+    if key in _PLANNED or not present(root):  # absent: a root without chain files, read in memory
+        return True
+    if _meta(conn, "cutover") is None:
+        return False
+    _PLANNED.add(key)
+    return True
+
+
 # --- the row's typed facts -------------------------------------------------------------------
 
 def facts(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -465,6 +481,13 @@ def append(root: Any, stream: str, row: Dict[str, Any], *, dispatch: Optional[Di
     root = pathlib.Path(root)
     length = len(body.encode("utf-8")) + 1
     counted = stream_row(stream, columns)
+    if str(path(root)) not in _PLANNED and present(root):
+        with transaction(root, write=False, wait_sec=wait_sec) as conn:
+            planned = _planned(conn, root)
+        if not planned:  # no row takes a coordinate before the plan places the chain files
+            from ouroboros.dialogue_import import cutover
+
+            cutover(root)
     with transaction(root, write=True, wait_sec=wait_sec) as conn:
         if named:
             existing = _existing_named(conn, columns["chat_id"], columns["client_message_id"])
@@ -896,8 +919,12 @@ def range_coverage(root: Any, stream: str, *, lower: int = 0,
             "WHERE stream=? AND state IN ('pending', 'mismatch') AND base<? AND base+size>? "
             "GROUP BY state", (stream, _bound(upper), lower))} if lower < _bound(upper) else {}
         gaps = _gaps(conn, stream, lower, _bound(upper))
+        planned = _planned(conn, root)
     pending, mismatch = int(counts.get("pending", 0)), int(counts.get("mismatch", 0))
-    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps}
+    if not planned:  # a cutover that failed after ``create``: the chain files are still to plan and import
+        pending = max(pending, 1)
+    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps,
+            **({} if planned else {"unplanned": True})}
 
 
 def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[int] = None) -> None:
@@ -917,7 +944,7 @@ def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[
                 "SELECT 1 FROM import_ledger INDEXED BY ledger_state WHERE stream=? AND state=? AND base<? "
                 "AND base+size>? LIMIT 1", (stream, state, bound, lower)).fetchone() is not None
 
-        mismatch, pending = holds("mismatch"), holds("pending")
+        mismatch, pending = holds("mismatch"), holds("pending") or not _planned(conn, root)
     if mismatch:
         raise StoreError("Dialogue history: a segment could not be imported")
     if pending:

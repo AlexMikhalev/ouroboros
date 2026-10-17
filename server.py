@@ -643,14 +643,15 @@ def _initialize_runtime_state(settings: dict, *, stop_requested=None) -> None:
 def _dialogue_cutover(root: pathlib.Path) -> None:
     """The dialogue store takes over the live chat/progress files once per root (recent client ids
     dedup before the first accepted message); a failure is this step's, and the dialogue still opens:
-    its writer seam needs no cutover and the next boot finishes it."""
+    its writer seam repeats an unfinished cutover before it stores a row, and readers answer
+    "still importing" until one completes."""
     from ouroboros.dialogue_import import cutover
 
     BOOT.step_started("dialogue_cutover")
     try:
         cutover(root)
     except Exception as exc:
-        log.warning("Dialogue cutover did not complete; the next boot repeats it", exc_info=True)
+        log.warning("Dialogue cutover did not complete; the first stored row repeats it", exc_info=True)
         BOOT.step_ended("dialogue_cutover", error=f"{type(exc).__name__}: {exc}")
         return
     BOOT.step_ended("dialogue_cutover")

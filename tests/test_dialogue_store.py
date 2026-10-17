@@ -264,6 +264,42 @@ def test_cutover_rotates_the_live_files_imports_them_and_keeps_every_chain_coord
     assert ds.meta(tmp_path, "cutover")["chat"]["cutover_seq"] == end
 
 
+def test_a_cutover_that_failed_after_create_is_finished_before_any_row_takes_a_coordinate(tmp_path, monkeypatch):
+    """The boot's first cutover can fail after ``create`` published the store (a held chain append lock,
+    Windows refusing to rename an open file) while the dialogue still opens: readers then say importing,
+    and the first stored row finishes the cutover, so it never takes a coordinate inside the archive's
+    space nor stores the live file's message a second time."""
+    seed(tmp_path, archives={"chat_20261001T000000.jsonl": [
+        chat(f"a{n}", f"archive {n}", ts=f"2026-10-01T00:00:{n:02d}+00:00") for n in range(3)]},
+        live={"chat": [chat("live-1", "live before the upgrade", ts="2026-10-03T00:00:00+00:00")]})
+    rotate, calls = di.rotate_final, []
+
+    def busy_once(root, stream):
+        calls.append(stream)
+        if len(calls) == 1:
+            raise ds.StoreBusy("the append lock of logs/chat.jsonl is held", reason="contention")
+        return rotate(root, stream)
+
+    monkeypatch.setattr(di, "rotate_final", busy_once)
+    with pytest.raises(ds.StoreBusy):
+        di.cutover(tmp_path)
+    assert ds.present(tmp_path) and ds.meta(tmp_path, "cutover") is None
+    assert di.coverage(tmp_path, "chat") == {"imported": False, "pending": 1, "mismatch": 0, "gaps": 0, "unplanned": True}
+    assert ds.range_coverage(tmp_path, "chat")["imported"] is False
+    with pytest.raises(ds.StoreMigrating):
+        ds.require_imported(tmp_path, "chat")
+    new = ds.append(tmp_path, "chat", chat("new-1", "accepted after the failed cutover", ts="2026-10-17T10:00:00+00:00"),
+                    dispatch={"text": "x"})
+    assert ds.meta(tmp_path, "cutover") is not None, "the first stored row finished the cutover"
+    redelivered = ds.append(tmp_path, "chat", chat("live-1", "live before the upgrade", ts="2026-10-03T00:00:00+00:00"),
+                            dispatch={"text": "x"})
+    assert redelivered.duplicate and redelivered.seq < new.seq, "the live file's message was stored by the cutover"
+    di.run_dialogue_import(tmp_path)
+    assert [row.row["text"] for row in ds.newest(tmp_path, "chat", limit=100)] == [
+        "archive 0", "archive 1", "archive 2", "live before the upgrade", "accepted after the failed cutover"]
+    assert di.coverage(tmp_path, "chat")["imported"] and "unplanned" not in ds.range_coverage(tmp_path, "chat")
+
+
 def test_the_archive_import_resumes_after_an_interruption_and_imports_every_row_once(tmp_path, monkeypatch):
     archives, live = _legacy_root(tmp_path)
     expected = {stream: chain_offsets(tmp_path, stream) for stream in ds.STREAMS}

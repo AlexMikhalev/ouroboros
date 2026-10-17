@@ -498,8 +498,12 @@ def coverage(root: Any, stream: str, seq: Optional[int] = None) -> Dict[str, Any
             "SELECT state, count(*) AS n FROM import_ledger WHERE stream=? AND state IN ('pending', 'mismatch') AND base<? "
             "GROUP BY state", (stream, bound))}
         gaps = ds._gaps(conn, stream, 0, bound)
+        planned = ds._planned(conn, root)
     pending, mismatch = int(counts.get("pending", 0)), int(counts.get("mismatch", 0))
-    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps}
+    if not planned:  # a cutover that failed after ``create``: the chain files are still to plan and import
+        pending = max(pending, 1)
+    return {"imported": not pending and not mismatch, "pending": pending, "mismatch": mismatch, "gaps": gaps,
+            **({} if planned else {"unplanned": True})}
 
 
 def import_status(root: Any) -> Dict[str, Any]:
