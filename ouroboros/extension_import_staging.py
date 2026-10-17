@@ -193,13 +193,12 @@ def _sweep_stale_extension_imports(
 ) -> None:
     """Remove orphan staged import trees without touching skill state/payload.
 
-    Per-PID safe: staged-tree leaves are named ``<owner_pid>-<uuid>`` (see
-    _stage_extension_import_tree), so under MAX_WORKERS>1 — where every worker stages
-    into this SHARED dir concurrently — a leaf is reaped ONLY when its owner process is
-    dead AND its mtime is past the spawn grace. A peer's still-loading tree (owner
-    alive, or fresh within grace) is left alone, so its exec_module never hits a
-    FileNotFoundError from a sibling's sweep. Legacy bare-uuid leaves (no parseable
-    owner) keep the prior keep-set-only behaviour."""
+    Content trees (``sha256-<identity>``, see _stage_extension_import_tree) are shared by
+    boots and workers: one is reaped only when no live extension keeps its content hash
+    AND every owner PID in its ``complete.json`` and ``owners/`` is dead. Per-PID leaves
+    of older bodies (``<owner_pid>-<uuid>``) are reaped only when their owner is dead AND
+    their mtime is past the spawn grace, so a peer still loading one is left alone;
+    legacy bare-uuid leaves keep the keep-set-only behaviour."""
     state_dir = skill_state_dir(drive_root, skill_name)
     root = state_dir / "__extension_imports"
     if not root.exists() or not root.is_dir():

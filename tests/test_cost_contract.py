@@ -146,11 +146,6 @@ def assert_flat(measured: Dict[Any, Any], tag: str) -> None:
 
 PREVIEW = "the wave-A preview (wu1+wu2a+wu2b+wu3a+wu3b+wu4+wu6+wu7 heads of 17.10)"
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU3a/WU2a: the lifespan runs projects_registry.reconcile_projects -> _backfill_thread_activity, which opens "
-    "every archive chat/progress segment before /api/health can answer (k=1 -> k=30: open:archive 5 -> 92, "
-    "read 0.18 -> 4.9 MB, json_loads 535 -> 13585). WU3a turns the scan into a one-time job; WU2a moves the step "
-    f"after the yield. Verified: XPASS on {PREVIEW}."))
 def test_b1_lifespan_before_health_is_flat(measured):
     assert_flat(measured, "B1")
     assert_flat(measured, "B1h")
@@ -164,28 +159,15 @@ def test_b1_boot_steps_after_the_yield_are_flat(measured):
     assert_flat(measured, "B1c")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU2a: four child processes run before the first /api/health answer at every size: git x2 "
-    "(extension_health.code_stamp during the extension reload) and ps x2 (record_service_binding of the host "
-    f"service; macOS reads process identity through ps). WU2a moves both after the yield. Verified: XPASS on {PREVIEW}."))
 def test_b1_no_child_process_before_health(measured):
     for k in (K_SMALL, measured["large"]):
         assert measured[k]["popen_before_health"] == 0, (k, measured[k]["B1"]["names"])
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU1: the boot import re-verifies history before the chat bus exists: store_import.ensure_current_store "
-    "stats every frozen task_results/*.json and opens and commits every child drive's store (k=1 -> k=30: "
-    "connect 15 -> 131 (child stores 4 -> 91), statements 150 -> 2006, stat under state/headless_tasks "
-    f"215 -> 4942, under task_results 12 -> 302). Verified: XPASS on wu1/startup 9f3a6d471 and on {PREVIEW}."))
 def test_b2_publication_to_dialogue_is_flat(measured):
     assert_flat(measured, "B2_dialogue")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "WU1: the same per-boot import walk precedes supervisor readiness (k=1 -> k=30: connect 70 -> 186, "
-    "statements 523 -> 2379, stat under state/headless_tasks 218 -> 4945). Verified: XPASS on wu1/startup 9f3a6d471 "
-    f"and on {PREVIEW}."))
 def test_b2_publication_to_supervisor_ready_is_flat(measured):
     assert_flat(measured, "B2_ready")
 
@@ -218,10 +200,6 @@ def test_b4_owner_message_on_a_warm_process_is_flat(measured):
     assert_flat(measured, "B4w")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Unassigned in wave A (R2_opus s6 commit 5, Stop by root/parent ids): the Stop cascade's digest "
-    "(_cascade_descendant_rows -> list_task_results) decodes every task body (k=1 -> k=30: json_chars "
-    "1.6 MB -> 44.8 MB, json_loads 108 -> 717, vm_steps 7000 -> 32700)."))
 def test_b5_stop_of_a_tree_is_flat(measured):
     assert_flat(measured, "B5")
 

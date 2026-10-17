@@ -72,10 +72,11 @@ def test_job_facts_read_nothing_from_an_unpublished_or_absent_store(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     maintenance_jobs.record(root, "legacy_reconcile", state="running", done=3, total=10)
-    assert job_facts(root) == {"legacy_reconcile": {"state": "running", "done": 3, "total": 10}}
+    recorded = {"state": "running", "done": 3, "total": 10}
+    assert job_facts(root)["legacy_reconcile"] == recorded  # beside the store's own import job
     store.begin_import(root)  # the import window: a read must neither wait nor import
     try:
-        assert job_facts(root) == {"legacy_reconcile": {"state": "running", "done": 3, "total": 10}} or job_facts(root) == {}
+        assert job_facts(root).get("legacy_reconcile", recorded) == recorded
     finally:
         store.end_import(root)
 

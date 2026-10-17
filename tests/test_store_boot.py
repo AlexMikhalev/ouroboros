@@ -64,8 +64,9 @@ def _boot_cost(root, monkeypatch):
         counts["lock_probes"] += int(".kernel-lock-probe." in str(path) and pathlib.Path(path).parent == root / "state")
         return opening(path, *args, **kwargs)
 
-    # Discard process-local probe state, as on a cold process start.
+    # Discard process-local probe state and cached connections, as on a cold process start.
     platform_layer._KERNEL_LOCK_TIER.clear()
+    store.close_connections()
     with monkeypatch.context() as patch:
         patch.setattr(sqlite3, "connect", measured_connect)
         patch.setattr(os, "stat", measured_stat)

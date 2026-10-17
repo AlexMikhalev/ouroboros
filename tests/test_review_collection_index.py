@@ -337,10 +337,14 @@ def test_classification_is_off_read_lock_batched_and_cas_preserves_current_write
         with monkeypatch.context() as patch:
             patch.setattr(obligations, "review_collection_pending", original)
             return classify(row)
-    real_commit = store.commit
+    real_commit, totals = store.commit, {}
     def commit(conn):
-        commits.append(conn.total_changes)
+        # total_changes is cumulative on a cached connection: this transaction's rows are the step.
+        total = conn.total_changes
+        commits.append(total - totals.get(id(conn), (conn, 0))[1])
+        totals[id(conn)] = (conn, total)
         return real_commit(conn)
+    store.close_connections()  # fresh connections count from zero
     monkeypatch.setattr(obligations, "review_collection_pending", classify_once)
     monkeypatch.setattr(store, "commit", commit)
     assert list(task_store.review_collection_candidates(tmp_path)) == []
