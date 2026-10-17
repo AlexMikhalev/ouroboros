@@ -308,6 +308,35 @@ def test_admitted_owner_task_edits_keep_running(tmp_path, owner_request, not_cyb
     assert later.review.gate_for(later.content_hash)["executable_review"] is False
 
 
+@pytest.mark.parametrize("stamp,owner_request", [
+    ({"source_ref": {"chat_id": 1, "client_message_id": "owner-1"}}, True),
+    ({"origin_suppressed": True}, True),
+    ({}, False),
+    ({"source_ref": {}, "origin_suppressed": "yes"}, False),
+])
+def test_promotion_admits_owner_edits_only_under_the_owner_door_stamp(tmp_path, monkeypatch, stamp, owner_request):
+    """The seam's input: a selected-skill task promoted from the owner's own message (the
+    door's ref, or its suppressed-origin stamp) records its revisions as owner edits; a
+    promotion without that stamp (a task, a schedule, a consciousness wake-up) does not."""
+    import types
+
+    import supervisor.workers as workers
+    from ouroboros.skill_repair_admission import load_repair_admission
+
+    _skill(tmp_path / "skills" / "external")
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    enqueued = []
+    ctx = types.SimpleNamespace(enqueue_task=enqueued.append, persist_queue_snapshot=lambda **_kwargs: True,
+                                load_state=lambda: {"owner_chat_id": 1})
+    result = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "repair01", "objective": "Fix probe as asked", "chat_id": 1,
+        "task_constraint": {"mode": "skill_repair", "skill_name": "probe", "payload_root": "skills/external/probe"},
+        **stamp,
+    }, ctx)
+    assert result["status"] == "scheduled" and len(enqueued) == 1
+    assert load_repair_admission(tmp_path, "probe")["owner_request"] is owner_request
+
+
 def test_owner_edit_rebinds_unchanged_grant_requests(tmp_path):
     from ouroboros.skill_acceptance import record_owner_edit
     from ouroboros.skill_loader import compute_content_hash, load_skill_grants, save_skill_grants
@@ -322,12 +351,31 @@ def test_owner_edit_rebinds_unchanged_grant_requests(tmp_path):
     assert load_skill_grants(drive_root, "probe")["content_hash"] != digest
 
 
-def test_owner_state_protects_the_acceptance_facts(tmp_path):
-    from ouroboros.contracts.skill_payload_policy import is_skill_owner_state_target
+def test_owner_state_protects_the_acceptance_facts(tmp_path, monkeypatch):
+    """Generic agent writes cannot forge the gate's acceptance facts: filename, stem and
+    every wrapper agree; a payload file of the same name stays ordinary payload."""
+    from ouroboros import config as cfg
+    from ouroboros.contracts.skill_payload_policy import (
+        SKILL_OWNER_STATE_FILENAMES,
+        SKILL_OWNER_STATE_STEMS,
+        is_skill_owner_state_target,
+    )
+    from ouroboros.gateway import files as gateway_files
+    from ouroboros.tools import core
 
-    for name in ("install.json", "owner_edit.json"):
-        target = tmp_path / "data" / "state" / "skills" / "probe" / name
-        assert is_skill_owner_state_target(target, tmp_path / "data") is True
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(cfg, "DATA_DIR", data_root, raising=True)
+    for stem in ("install", "owner_edit"):
+        assert f"{stem}.json" in SKILL_OWNER_STATE_FILENAMES and stem in SKILL_OWNER_STATE_STEMS
+        for parts in (("state", "skills"), ("State", "Skills")):
+            target = data_root.joinpath(*parts) / "probe" / f"{stem}.json"
+            assert is_skill_owner_state_target(target, data_root) is True
+            assert core._is_skill_owner_state_target(target, data_root) is True
+            assert gateway_files._is_skill_owner_state_target(target) is True
+            assert gateway_files._is_owner_only_file(target) is True
+        payload = data_root / "skills" / "external" / "probe" / f"{stem}.json"
+        assert is_skill_owner_state_target(payload, data_root) is False
+        assert gateway_files._is_skill_owner_state_target(payload) is False
 
 
 # --- turn on when ready -------------------------------------------------------------------
