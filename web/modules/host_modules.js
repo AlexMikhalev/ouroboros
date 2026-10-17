@@ -1,4 +1,4 @@
-// Skills' trusted page code (owner decision 1B; docs/CREATING_SKILLS.md, CLIENT_CONTRACT §11): every live contribution
+// Skills' trusted page code (docs/CREATING_SKILLS.md "Page modules", CLIENT_CONTRACT §11): every live contribution
 // with `render.kind: "host"` is imported from its revision URL and mounted with one small, versioned context, never
 // the composer or the feed (placements are the way into those). A module that fails to load, throws, rejects or does
 // not start within the host's module bound is off for this page: its providers are unregistered, one notice names
