@@ -853,7 +853,7 @@ export function createChatInstance({
     }
 
     // Main blocks with work offer conversion unless their origin is bound (the same /api/state fact app.js
-    // reads); titles use the same work predicate. Every root work card offers Reply first (never the primary).
+    // reads); titles use the same work predicate. Every root work card offers Reply in its row menu.
     function syncBlockChrome(record) {
         replies.syncCard(record, !record.isSubagent && (isPortal(record) || blockHasWork(record)));
         // A child is never a convertible unit (it inherits its root's Project by

@@ -2,7 +2,7 @@
  * One work, one card (FINAL_DESIGN D11; owner decision 16.10 Q1 = A): a Main card whose work lives in a
  * Project room is that work's PORTAL. It stays the same `.chat-live-card` node at the request's
  * position and only changes form: status chip + quiet fact, title, one latest narration line, the
- * meta line, the controls row ([Reply] [Resume] [Stop…]), and the Project reference as its footer.
+ * meta line, the controls row ([Resume] [Stop…]; Reply is the row menu's), and the Project reference as its footer.
  * The timeline, reviews and children live in the room's full card; nothing here appends rows, so Main
  * stays calm.
  *

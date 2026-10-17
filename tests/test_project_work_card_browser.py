@@ -161,13 +161,14 @@ def test_project_rows_bind_the_works_own_cards_never_an_entry(project_chat, tmp_
         expect(footer).to_have_attribute("aria-label", f"Open project {name}")
         assert card.evaluate("c => c.lastElementChild.classList.contains('chat-live-bound-pointer')"), "the footer closes the card"
     assert page.locator('.project-handoff, [data-system-type="project_started"], [data-system-type="project_handoff"]').count() == 0
-    # The room's present: chip, the latest line, tool calls and time; [Reply] [Stop…] while it runs.
+    # The room's present: chip, the latest line, tool calls and time; [Stop…] while it runs (Reply is the row menu's).
     expect(creation.locator('.chat-live-phase').first).to_have_text("Working")
     expect(creation.locator('[data-live-activity]')).to_contain_text("Comparing the reviewer verdicts")
     expect(creation.locator('[data-live-meta]')).to_contain_text("41 tool calls")
-    expect(creation.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
-    # A paused work: Resume is the one primary, beside Reply and Stop….
-    expect(transfer.locator('.chat-live-actions > button')).to_have_text(["Reply", "Resume", "Stop…"])
+    expect(creation.locator('.chat-live-actions > button')).to_have_text(["Stop…"])
+    assert creation.locator('[data-card-reply], .chat-live-actions > button', has_text="Reply").count() == 0
+    # A paused work: Resume is the one primary, beside Stop….
+    expect(transfer.locator('.chat-live-actions > button')).to_have_text(["Resume", "Stop…"])
     assert transfer.locator('.chat-live-actions > .btn-primary').all_text_contents() == ["Resume"]
     # The summary is reading content in a portal: no disclosure, no stop.
     assert creation.locator(':scope > [data-live-summary-button]').evaluate("e=>['role','tabindex','aria-expanded'].map(n=>e.getAttribute(n))") == [None, None, None]
@@ -268,8 +269,9 @@ def test_a_reply_sends_only_the_quoted_rows_address(project_chat, tmp_path):
     expect(strip).to_have_count(0)
     echo = page.locator(f'.chat-bubble.user[data-client-message-id="{frame["client_message_id"]}"]')
     expect(echo.locator('.chat-quote .chat-quote-author')).to_have_text("Ouroboros")
-    # The work card's own Reply quotes the work by its task address.
-    _card(page, "creation").locator('[data-card-reply]').click()
+    # A work card's Reply is its row menu's (owner 17.10, Q9 B); it quotes the work by its task address.
+    _card(page, "creation").locator('[data-live-title]').click(button="right")
+    page.locator('.chat-row-menu [data-row-action="reply"]').click()
     page.fill('#chat-input', "Stop after the third run")
     page.locator('#chat-send').click()
     assert page.evaluate("() => sentFrames.at(-1).reply_to") == "task:creation"
@@ -343,7 +345,7 @@ def test_main_portal_follows_a_continue_made_in_the_project_room(project_chat, j
     expect(card.locator('.chat-live-phase').first).to_have_text("Working")
     expect(card.locator('[data-live-activity]')).to_have_text("Continuing the audit")
     expect(card.locator('[data-live-meta]')).to_contain_text("3 tool calls")
-    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
+    expect(card.locator('.chat-live-actions > button')).to_have_text(["Stop…"])
     footer = card.locator(':scope > .chat-live-bound-pointer')
     expect(footer).to_have_attribute("aria-label", "Open project Project Alpha")
     assert card.evaluate("c => c.lastElementChild.classList.contains('chat-live-bound-pointer')"), "the footer closes the card"
@@ -416,7 +418,7 @@ def test_room_card_follows_a_continue_pressed_in_the_room(project_chat, chat_id,
         expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
         expect(card.locator('.chat-live-phase').first).to_have_text("Working")
         expect(card.locator('[data-live-activity]')).to_have_text("Continuing the audit")
-        expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply", "Stop…"])
+        expect(card.locator('.chat-live-actions > button')).to_have_text(["Stop…"])
         episodes = card.locator('.chat-live-episode')
         expect(episodes).to_have_count(2)
         expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
@@ -543,7 +545,7 @@ def test_main_portal_follows_a_successor_that_already_finished(project_chat, jou
     expect(card).to_have_attribute("data-portal", "1")
     expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
     expect(card.locator('.chat-live-phase').first).to_have_text("Done")
-    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply"])
+    expect(card.locator('.chat-live-actions > button')).to_have_count(0)
     footer = card.locator(':scope > .chat-live-bound-pointer')
     expect(footer).to_have_attribute("aria-label", "Open project Project Alpha")
     episodes = card.locator('.chat-live-episode')
@@ -594,7 +596,7 @@ def test_an_already_failed_portal_follows_a_later_fast_continue(project_chat, jo
     assert _visible_cards(page) == [later, "transfer"], "one card for the work, at its first place"
     expect(card.locator('[data-live-title]')).to_have_text("Review runner › integration")
     expect(card.locator('.chat-live-phase').first).to_have_text("Done")
-    expect(card.locator('.chat-live-actions > button')).to_have_text(["Reply"])
+    expect(card.locator('.chat-live-actions > button')).to_have_count(0)
     expect(card.locator(':scope > .chat-live-bound-pointer')).to_have_attribute("aria-label", "Open project Project Alpha")
     episodes = card.locator('.chat-live-episode')
     expect(episodes).to_have_count(2)
