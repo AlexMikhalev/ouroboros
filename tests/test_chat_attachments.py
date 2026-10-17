@@ -35,7 +35,6 @@ JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 60
 
 @pytest.fixture(autouse=True)
 def _fresh_pending():
-    from supervisor import message_bus
 
     chat_uploads._PENDING.clear()
     yield

@@ -22,6 +22,7 @@ from ouroboros.acceptance_preparation import incident_cause_clauses
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.review_records import recorded_author_stop
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
+from ouroboros import dialogue_store
 from ouroboros.utils import iter_jsonl_objects, jsonl_append_lock_path, replace_atomic, strip_markdown, utc_now_iso
 
 _ANNOTATIONS_NAME = "chat_annotations.jsonl"
@@ -921,8 +922,6 @@ def completion_status_label(result: Dict[str, Any], event: Dict[str, Any]) -> st
 
 def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any]) -> bool:
     """Append one task-summary row to the dialogue store (the one chat writer seam)."""
-    from ouroboros import dialogue_store
-
     if not str(row.get("summary_id") or "").strip():
         return False
     return dialogue_store.append_quietly(pathlib.Path(drive_root), "chat", dict(row)) is not None

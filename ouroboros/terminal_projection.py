@@ -14,12 +14,8 @@ The same rows are the source of a memory page's host stamp (``stamp_facts``,
 """
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-import os
 import pathlib
-import re
 import uuid
 from collections import Counter
 from contextlib import contextmanager
@@ -31,7 +27,7 @@ from ouroboros.task_results import (
     _TRULY_TERMINAL_STATUSES,
     is_reconciled_presence_placeholder, load_task_result, resolve_task_lineage, task_result_path, write_task_result,
 )
-from ouroboros.utils import JsonlChainUnreadable, jsonl_archive_segments, utc_now_iso
+from ouroboros.utils import utc_now_iso
 from ouroboros.store import StoreError
 
 log = logging.getLogger(__name__)
@@ -281,78 +277,20 @@ def _project_row(tid: str, row: dict, event: dict, ready: dict, *, delivery: dic
     return result
 
 
-_ARCHIVE_STAMP = re.compile(r"chat_(?P<stamp>\d{8}T\d{6})(?:_\d+)?\.jsonl")
+def _already_in_chat(root: Any, row: dict) -> dict | None:
+    """The row's own earlier publication (append/receipt crash): the task's chat rows in the
+    dialogue store (one indexed probe), the one carrying this summary id and readiness token.
+    Row timestamps never bound the lookup (a delayed worker row can sit behind a newer summary)."""
+    from ouroboros import dialogue_store
 
-
-def _rotation_stamp(ts: str) -> str:
-    """An ISO timestamp at second resolution in the rotator's archive-name spelling (UTC)."""
-    raw = str(ts or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return ""
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc)
-    return parsed.strftime("%Y%m%dT%H%M%S")
-
-
-def _already_in_chat(root: Any, row: dict, *, since_ts: str = "") -> dict | None:
-    """The row's own earlier publication (append/receipt crash), bounded by rotation time.
-
-    The live segment is always read in full. Archives are read newest first and only
-    while their rotation stamp is at or after the second the readiness was minted
-    (``since_ts``, inclusive): a row carrying this readiness token was appended after
-    the mint, so it can only sit in the live segment or in a segment rotated at or
-    after that second (the rotator takes its stamp under the append lock). An
-    unparsable archive name is read. Row timestamps are their writers' clocks and
-    never bound the scan (a delayed worker row can sit behind a newer summary).
-    """
-    path = pathlib.Path(root) / "logs" / "chat.jsonl"
-    cutoff = _rotation_stamp(since_ts)
-    with contextlib.ExitStack() as stack:
-        # Pin the live inode before enumerating archives: rotation between append
-        # and receipt persistence must not turn an existing row into an absence.
-        live_identity = None
-        segments: list = []
-        try:
-            live = stack.enter_context(path.open("rb"))
-            stat = os.fstat(live.fileno())
-            live_identity = (stat.st_dev, stat.st_ino)
-            segments.append((path, live))
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise JsonlChainUnreadable(f"cannot open {path}: {exc}") from exc
-        for segment in reversed(jsonl_archive_segments(path, strict=True)):
-            stamp_match = _ARCHIVE_STAMP.fullmatch(segment.name)
-            if cutoff and stamp_match and stamp_match.group("stamp") < cutoff:
-                break  # rotated before the readiness existed: no older segment can hold the row
-            try:
-                stat = segment.stat()
-                if live_identity is not None and (stat.st_dev, stat.st_ino) == live_identity:
-                    continue  # the live generation's renamed alias, already open above
-                segments.append((segment, stack.enter_context(segment.open("rb"))))
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise JsonlChainUnreadable(f"cannot read {segment}: {exc}") from exc
-        for segment, stream in segments:
-            for line_number, line in enumerate(stream, 1):
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    log.warning("Skipping malformed terminal projection history row at %s:%s", segment, line_number)
-                    continue
-                if not isinstance(entry, dict):
-                    log.warning("Skipping non-object terminal projection history row at %s:%s", segment, line_number)
-                    continue
-                if (entry.get("summary_id") == row["summary_id"]
-                        and entry.get("terminal_projection_token") == row.get("terminal_projection_token")):
-                    return entry
+    task_id = str(row.get("task_id") or "")
+    if not task_id:
+        return None
+    for stored in reversed(dialogue_store.task_rows(root, [task_id], stream="chat")):
+        entry = stored.row
+        if (entry.get("summary_id") == row["summary_id"]
+                and entry.get("terminal_projection_token") == row.get("terminal_projection_token")):
+            return entry
     return None
 
 
@@ -382,8 +320,7 @@ def _append_project(root: Any, tid: str, task: dict, event: dict, *,
                        delivery=delivery)
     appended = False
     # A readiness minted in this very call has no row yet: nothing to scan for.
-    existing_row = (None if minted_now or not is_root
-                    else _already_in_chat(root, row, since_ts=str(ready.get("task_done_ts") or "")))
+    existing_row = None if minted_now or not is_root else _already_in_chat(root, row)
     if existing_row:
         row = existing_row  # append/receipt crash: retain actual publication time
     else:
@@ -455,7 +392,6 @@ def claim_main_delivery(root: Any, event: dict) -> bool:
     This schedule survives outbox eviction, restart and five failed transport
     attempts. A failed queue put also consumes its slot, preventing busy loops.
     """
-    from datetime import datetime, timezone
 
     token = event.get("terminal_projection_token")
     if not token:

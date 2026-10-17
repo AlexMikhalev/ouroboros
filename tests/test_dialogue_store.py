@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import math
 import multiprocessing
-import os
 import pathlib
 import sqlite3
 
@@ -15,7 +14,7 @@ import pytest
 
 from ouroboros import chat_chain, dialogue_import as di, dialogue_store as ds, store
 from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles, jsonl_generation_signature
-from tests._dialogue import chat_rows, lines, progress_rows, rows, seed
+from tests._dialogue import chat_rows, lines, progress_rows, seed
 
 
 def chat(cmid="", text="hi", *, chat_id=1, direction="in", ts="2026-10-17T00:00:00+00:00", **extra):
