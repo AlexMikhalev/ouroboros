@@ -3,7 +3,8 @@
 On a real server in Chromium and WebKit, light and dark, at 1280 and 360 px: "+" stands where the paperclip
 stood, a 36 px target that keeps the text row's height; a pointer opens its menu above it without taking the
 field's focus, and Attach file opens the file chooser and stages the chosen file; by keyboard, Enter opens the
-menu onto Attach file, Esc closes it and returns focus to "+", Tab leaves it. The voice and chips slots take no
+menu onto Attach file, Esc closes it and returns focus to "+", Tab leaves it; a drop on the room and an image
+pasted into the field still stage files, and the menu fits a 320 px phone. The voice and chips slots take no
 room while empty; chips put into the capsule row stay on its one line, taking only the room the host capsules
 leave (one chip or six, at 320 and 360 px: no wrap, no horizontal page scroll), and step aside with the other
 controls while an owner capsule stands alone.
@@ -45,6 +46,25 @@ FACTS = """() => {
     };
 }"""
 TEXT_FILE = {"name": "plus-attach.txt", "mimeType": "text/plain", "buffer": b"staged through the plus menu\n"}
+# The two other routes a file takes into the composer, unchanged by "+": a drop anywhere on the room, an image
+# pasted into the field. An engine that cannot build the synthetic event says so (`*Supported`).
+DROP_AND_PASTE = """() => {
+    const page = document.querySelector('#page-chat');
+    const badges = () => page.querySelectorAll('#chat-attachment-preview .attach-badge').length;
+    const drop = new DataTransfer();
+    drop.items.add(new File(['dropped'], 'dropped.txt', { type: 'text/plain' }));
+    const dragSupported = Boolean(new DragEvent('drop', { dataTransfer: drop }).dataTransfer);
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+        page.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: drop }));
+    }
+    const dropped = badges();
+    const clip = new DataTransfer();
+    clip.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'pasted.png', { type: 'image/png' }));
+    const paste = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: clip });
+    const pasteSupported = Boolean(paste.clipboardData);
+    page.querySelector('#chat-input').dispatchEvent(paste);
+    return { dragSupported, dropped, pasteSupported, pasted: badges() - dropped };
+}"""
 
 
 def _facts(page) -> dict:
@@ -123,6 +143,15 @@ def test_plus_menu_attaches_by_pointer_and_keyboard_in_both_themes(direct_server
                         page.keyboard.press("Tab")
                         page.wait_for_selector(MENU, state="detached", timeout=5_000)
                         evidence[where] = {"closed": closed, "opened": opened}
+                        if theme == "light" and width == 360:
+                            routes = page.evaluate(DROP_AND_PASTE)
+                            evidence[where]["routes"] = routes
+                            if engine == "chromium":
+                                assert routes["dragSupported"] and routes["pasteSupported"], (where, routes)
+                            if routes["dragSupported"]:
+                                assert routes["dropped"] == 1, (where, routes)
+                            if routes["pasteSupported"]:
+                                assert routes["pasted"] == 1, (where, routes)
                     finally:
                         page.close()
         finally:
@@ -187,6 +216,14 @@ def test_filled_slots_keep_the_capsules_line_and_step_aside_with_the_capsules(di
                     where = f"{engine} {width}px {count} chip(s)"
                     _open_chat(page, url, width=width, height=800)
                     _assert_plus_in_place(_facts(page), where)
+                    if count == 1:
+                        # The menu fits the narrowest phone.
+                        page.click(PLUS)
+                        page.wait_for_selector(MENU, state="visible", timeout=5_000)
+                        menu = _facts(page)["menu"]
+                        assert menu["left"] >= 0 and menu["right"] <= width + 0.5, (where, menu)
+                        page.keyboard.press("Escape")
+                        page.wait_for_selector(MENU, state="detached", timeout=5_000)
                     before = page.evaluate(ROW)
                     page.evaluate(CHIPS, count)
                     page.wait_for_timeout(250)
