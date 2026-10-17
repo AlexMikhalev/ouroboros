@@ -316,6 +316,57 @@ def action_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                                purpose=purpose)
 
 
+# Integrity bound only: a recorded chain is a handful of Continues; a corrupted one
+# must never make one admission walk its edges without limit.
+_WORK_CHAIN_MAX_HOPS = 64
+
+
+def _work_name(record: Dict[str, Any]) -> str:
+    """An episode's name as its card shows it (coined, else authored), without Continue prefixes."""
+    for field in ("suggested_name", "title"):
+        name = str(record.get(field) or "").lstrip()
+        while name.startswith(CONTINUE_TITLE_PREFIX):
+            name = name[len(CONTINUE_TITLE_PREFIX):].lstrip()
+        if name.strip():
+            return name.strip()
+    return ""
+
+
+def _work_identity(q: Any, predecessor: str, result: Dict[str, Any]) -> tuple[str, str]:
+    """``(work_id, work_name)`` of the work a Continue of ``predecessor`` belongs to.
+
+    A stamped episode names its work. An older one is walked back over its
+    recorded ``predecessor_task_id`` edges to the first root, whose id and card
+    name are the work's. As in the work projection's walk over the same edges,
+    an edge to a record that cannot be read ends at the last episode read, and a
+    cycle (or the integrity bound) at the predecessor itself, so a stamped
+    successor and its unstamped episodes resolve to one work. Reads only stored
+    results, outside the queue lock.
+    """
+    from ouroboros.task_results import load_task_result
+
+    current, record, seen = predecessor, result, {predecessor}
+    for _hop in range(_WORK_CHAIN_MAX_HOPS):
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
+        if continuation.get("work_id"):
+            return str(continuation["work_id"]), str(continuation.get("work_name") or "") or _work_name(record)
+        earlier = str(continuation.get("predecessor_task_id") or "")
+        if not earlier:
+            return current, _work_name(record)
+        if earlier in seen:
+            break
+        try:
+            earlier_record = load_task_result(q.DRIVE_ROOT, earlier) if q is not None else None
+        except Exception:
+            earlier_record = None
+        if not isinstance(earlier_record, dict) or not earlier_record:
+            return current, _work_name(record)
+        current, record = earlier, earlier_record
+        seen.add(earlier)
+    return predecessor, _work_name(result)
+
+
 def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: Dict[str, Any],
                     verdict: Dict[str, Any], sources: Dict[str, Any], admission: Dict[str, Any]) -> Dict[str, Any]:
     from ouroboros.owner_continue import owner_corpus_rows, recorded_system_checkout, work_order_text
@@ -333,10 +384,12 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
     deadline_at = str(binding.get("deadline_at") or "")
     text = work_order_text(predecessor, verdict["cause"], sources, deadline_at=deadline_at,
                            authority_source=authority_source, checkout=recorded_system_checkout(result))
-    title = str(result.get("title") or result.get("suggested_name") or result.get("objective") or predecessor)
-    while title.startswith(CONTINUE_TITLE_PREFIX):
-        title = title[len(CONTINUE_TITLE_PREFIX):]
-    title = (title or predecessor)[:80]
+    # Every episode carries its work: the first root's id and name. The title is
+    # that name under ONE prefix, however long the chain.
+    work_id, work_name = _work_identity(q, predecessor, result)
+    work_name = (work_name or _work_name(result)
+                 or (_work_name({"title": result.get("objective")}) or predecessor)[:80])
+    title = work_name[:80]
     original = sources.get("original") or {}
     origin_ref = original.get("origin_message_ref")
     from ouroboros.settings_scales import EFFORT_SCALE
@@ -377,7 +430,8 @@ def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: D
             "objective_author": {"kind": "continuation", "predecessor_task_id": predecessor},
             "owner_corpus": owner_corpus_rows(sources),
             "continuation": {
-                "predecessor_task_id": predecessor, "cause": verdict["cause"],
+                "predecessor_task_id": predecessor, "work_id": work_id, "work_name": work_name,
+                "cause": verdict["cause"],
                 "owner_sources": {"original": sources.get("original"), "later": sources.get("later") or [],
                                   "held_owner_messages": sources.get("held_owner_messages") or {},
                                   "open_relays": sources.get("open_relays") or {}},
