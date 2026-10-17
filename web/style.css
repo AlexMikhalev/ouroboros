@@ -5801,6 +5801,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 /* A toast keeps its own glass background (a translucent status fill over the
    page would cost the text its contrast); the tone paints edge + foreground. */
+/* A notice's one way back (host_modules.js recovery) follows its words on the same line when they fit. */
+.toast .toast-action { display: inline-flex; margin-left: var(--space-2); vertical-align: middle; }
 .toast-ok { border-color: var(--status-ok-border); color: var(--status-ok-fg); }
 .toast-danger { border-color: var(--status-error-border); color: var(--status-error-fg); }
 .toast-warn { border-color: var(--status-warn-border); color: var(--status-warn-fg); }
