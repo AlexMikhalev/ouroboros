@@ -130,7 +130,7 @@ ouroboros/ — agent core and shared runtime (§6)
   loop_tool_execution.py, tool_call_log.py — tool dispatch, results, per-invocation counting
   deadline_utils.py — deadline parsing and the transport-vs-logical wait seam
   observability.py, source_retention.py — private CAS: equal histories stored once, gzip-1, hardlinks (§10)
-  evidence_packs.py, evidence_packer.py — task-local xz packs, packed by a maintenance job (§5); reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE.md)
+  evidence_packs.py, evidence_packer.py — per-task xz packs (maintenance job, §5); reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE)
   finalization_timing.py — final-event phase fields and `task_finalization_timing` (§6)
   process_logging.py — per-process logging bootstrap; the server is the sole `server.log` writer; the launcher copies the server pipe, byte-capped, into `agent_stdout.log`
   model_send_seal.py — the invariant `model-visible ⟺ logged` for `model_send`: a mismatch is a typed durable fact, not a blocked call (docs/MODEL_SEND_OBSERVABILITY.md)
@@ -246,7 +246,7 @@ ouroboros/ — agent core and shared runtime (§6)
   subagent_messages.py, subagents.py, subagent_history.py — durable child messages; dispatch through `subagent_runtime`; context/UI receipts, never admission (§6 Delegated subagents)
   subagent_worktrees.py — `state/subagent_worktrees.json` registry, `refs/ouroboros/delegated/` pins, custody-checked GC (§6 Delegated subagents)
   body_candidate.py, body_adoption.py, body_switch.py — Own-body worktree authoring and restart-bound adoption of an exact reviewed commit before body imports (§6 Own-body candidates; §2)
-  artifacts.py — attachment staging into `artifact_store/attachments/`, artifact records, scratch fingerprints (`.scratch_manifest.json`), the undeclared-output guard, partial tool-evidence reads
+  artifacts.py, artifact_clone.py — attachment staging (`artifact_store/attachments/`), artifact records, cloned copies, scratch fingerprints (`.scratch_manifest.json`), undeclared-output guard, partial tool-evidence reads
   chat_uploads.py, confined_files.py — the owner-attachment store (`data/uploads`) with byte-proven media kind; directory-confined regular-file open (DESIGN "Chat attachments")
   retention.py — GC clamp, cutoff and exact task-drive retention date (§6)
   workspace_preflight.py — read-only external-workspace snapshot for gateway task creation
@@ -684,7 +684,7 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── registry.md            ← memory awareness map
 │   │   └── owner_mailbox/         ← per-task owner messages
 │   ├── projects/<id>/knowledge/   ← per-project facts with provenance sidecars
-│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz once its row is terminal
+│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz
 │   ├── services/<task_id>/<service>.log ← service runner logs
 │   ├── logs/
 │   │   ├── chat.jsonl             ← frozen at the cutover
