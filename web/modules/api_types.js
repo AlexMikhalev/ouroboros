@@ -101,6 +101,7 @@
  * @property {string} runtime_version
  * @property {string} app_version
  * @property {string=} abi_version  // gateway ABI carrier; absent on cores older than GET /api/contract
+ * @property {BootDocument=} boot  // the serving generation's phases; answered while the boot runs
  */
 /**
  * @typedef {Object} OpenAICompatibleModelsResponse
