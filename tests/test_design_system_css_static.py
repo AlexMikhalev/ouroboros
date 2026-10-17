@@ -37,7 +37,7 @@ MAX_WIDTH_DEBT = {
     'web/onboarding.css': {'1100px': 1, '900px': 1, '760px': 1, '720px': 1},  # wizard
     'web/room_work.css': {'900px': 1},  # existing Shade height recipe (L1)
     'web/settings.css': {'980px': 2, '760px': 1, '640px': 1, '600px': 1},  # existing form/MCP layout debt
-    'web/style.css': {'900px': 3, '640px': 4, '980px': 4, '620px': 2},  # shell (L1) plus legacy content
+    'web/style.css': {'980px': 2, '900px': 1, '640px': 2, '620px': 2},  # legacy content only: the shell's queries are gone (L1)
     'web/ui.css': {'640px': 1},  # native field font-size/zoom recipe
 }
 
