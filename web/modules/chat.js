@@ -1254,7 +1254,7 @@ export function createChatInstance({
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <button type="button" class="chat-live-summary-side" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
-                        <span class="chat-live-count" data-live-count hidden>2 notes</span>
+                        <span class="chat-live-count" data-live-count hidden></span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
                         <svg class="chat-live-chevron" width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                             <path d="M5 7.5 10 12.5 15 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
