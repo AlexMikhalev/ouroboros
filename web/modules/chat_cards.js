@@ -31,11 +31,12 @@ let widgetTabs = null;
 export function readCardBody(cardId, revision = 0, read = (url) => fetchJson(url, { cache: 'no-store' })) {
     const held = bodies.get(cardId);
     if (held && (held.failed ? false : held.revision >= revision)) return held.promise;
+    // A read that a newer one replaced while it was in flight leaves the newer entry alone.
     const promise = read(`/api/cards/${encodeURIComponent(cardId)}`).then((body) => {
-        bodies.set(cardId, { revision: Number(body?.revision) || revision, promise });
+        if (bodies.get(cardId)?.promise === promise) bodies.set(cardId, { revision: Number(body?.revision) || revision, promise });
         return body;
     }, (error) => {
-        bodies.set(cardId, { revision, promise, failed: true });
+        if (bodies.get(cardId)?.promise === promise) bodies.set(cardId, { revision, promise, failed: true });
         throw error;
     });
     bodies.set(cardId, { revision, promise });
@@ -325,6 +326,8 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
     function load(record, revision, { quiet = false } = {}) {
         readCardBody(record.id, revision).then((body) => {
             if (destroyed || records.get(record.id) !== record) return;
+            // An earlier read that settles after a newer one never draws the older card back.
+            if (record.data && (Number(body?.revision) || 0) < (Number(record.data.revision) || 0)) return;
             retitle(record, body);
             const sameBody = record.data && record.data.revision === body.revision && record.data.kind === body.kind;
             record.data = body;

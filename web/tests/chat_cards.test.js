@@ -217,6 +217,34 @@ test('card_state: recorded presses update the drawn card in place; a newer revis
     }
 });
 
+test('overlapping reads: an older answer that settles after a newer one never draws the older card back', async () => {
+    const dom = installCardDom();
+    const held = [];
+    let calls = 0;
+    const body = (revision) => json(200, componentsBody('card_o1', { revision,
+        components: [{ type: 'action', label: revision === 1 ? 'Choose Pro' : 'Choose Max', submit: { id: 'pro' } }] }));
+    const server = serve({ 'GET /api/cards/card_o1': () => {
+        calls += 1;
+        return calls === 1 ? new Promise((resolve) => held.push(() => resolve(body(1)))) : body(2);
+    } });
+    try {
+        const cards = feed();
+        const bubble = cards.buildCard(identity('card_o1', 'components'));
+        await flush();
+        cards.applyCardState({ type: 'card_state', card: { card_id: 'card_o1', revision: 2 }, submissions_summary: [] });
+        await flush();
+        assert.equal(bubble.querySelector('[data-widget-action]').textContent, 'Choose Max', 'the newer card is drawn');
+        held.shift()();
+        await flush();
+        assert.equal(bubble.querySelector('[data-widget-action]').textContent, 'Choose Max', 'the late older answer is dropped');
+        assert.equal(calls, 2);
+        cards.destroy();
+    } finally {
+        server.restore();
+        dom.restore();
+    }
+});
+
 test('a widget card whose skill is off keeps its words and says so', async () => {
     const dom = installCardDom();
     const server = serve({
