@@ -630,8 +630,6 @@ body.resizing-panels { user-select: none; }
     padding: var(--space-3) var(--space-3) var(--space-1);
     color: var(--text-muted);
     font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
 }
 
 .nav-chevron {
@@ -719,6 +717,28 @@ body.resizing-panels { user-select: none; }
     height: auto;
     min-height: 0;
     overflow: hidden;
+}
+
+/* Page-body controls use the shared touch minimum in the stack layout and on
+   coarse pointers. Headers and navigation keep their shell-owned recipes. */
+:root[data-layout="stack"] {
+    --page-control-min: var(--touch-target-min);
+}
+@media (pointer: coarse) {
+    :root {
+        --page-control-min: var(--touch-target-min);
+    }
+}
+:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell)
+    :is(button, a[href], summary, select) {
+    min-inline-size: var(--page-control-min, 0px);
+    min-block-size: var(--page-control-min, 0px);
+}
+:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
+    display: inline-flex;
+    align-items: center;
+    overflow-wrap: anywhere;
+    max-inline-size: 100%;
 }
 
 .files-sidebar {
@@ -1064,6 +1084,8 @@ body.resizing-panels { user-select: none; }
     flex-wrap: nowrap;
     gap: 10px;
     overflow-x: auto;
+    min-width: 0;
+    max-width: 100%;
     padding: var(--pill-strip-padding);
     scrollbar-width: none;
 }
@@ -4382,8 +4404,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     margin-bottom: 8px;
     display: flex;
     align-items: center;
@@ -4534,8 +4554,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-weight: 700;
     flex-shrink: 0;
     min-width: 78px;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
     font-size: 11px;
 }
 
@@ -4910,7 +4928,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 .costs-stats-grid > *, .costs-tables-grid > * { min-width: 0; }
 .costs-tables-grid > * { overflow-x: auto; }
-.costs-stats-grid .stat-value { overflow-wrap: anywhere; }
+.costs-stats-grid .value { overflow-wrap: anywhere; }
 .costs-table-label { font-size: 14px; color: var(--text-secondary); margin: 0 0 8px; }
 .cost-cell-name { font-size: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cost-cell-right { text-align: right; }
@@ -5077,8 +5095,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: 13px;
     font-weight: 600;
     color: var(--text-meta);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
 }
 
 .activity-row {
@@ -5521,8 +5537,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .skills-access-label {
     color: var(--text-meta);
     font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     margin-right: 4px;
 }
 
@@ -5594,8 +5608,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .skills-detail-label {
     color: var(--text-meta);
     font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     min-width: 90px;
 }
 
@@ -5716,8 +5728,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-radius: 999px;
     font-size: 10.5px;
     font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     vertical-align: middle;
     border: 1px solid transparent;
 }
@@ -5753,8 +5763,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-radius: var(--radius-xs);
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     white-space: nowrap;
 }
 
@@ -6169,8 +6177,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     margin: 0 0 4px 0;
     font-size: 13px;
     color: var(--text-meta);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .marketplace-modal-actions {
@@ -9532,8 +9538,21 @@ textarea.chat-input {
 /* Tabs and segmented choices: neutral capsules with the secondary ink; the chosen one takes the crimson tone and stays
    standing. Their strip scrolls sideways, so it lends the capsules' shadow room inside its own box instead of clipping
    it. Filters are quiet controls: no body, so no shadow; a chosen filter takes the crimson tone. */
-:root[data-theme] .app-tab-strip { padding: 6px 16px 24px; margin: 0 -16px -16px; }
+:root[data-theme] .app-tab-strip {
+    padding: var(--space-2) var(--space-4) var(--space-5);
+    scroll-padding-inline: var(--space-4);
+    margin: 0;
+    --tab-fade-start: 0px;
+    --tab-fade-end: 0px;
+    -webkit-mask-image: linear-gradient(to right, transparent, black var(--tab-fade-start),
+        black calc(100% - var(--tab-fade-end)), transparent);
+    mask-image: linear-gradient(to right, transparent, black var(--tab-fade-start),
+        black calc(100% - var(--tab-fade-end)), transparent);
+}
+:root[data-theme] .app-tab-strip[data-scroll-start] { --tab-fade-start: var(--space-4); }
+:root[data-theme] .app-tab-strip[data-scroll-end] { --tab-fade-end: var(--space-4); }
 :root[data-theme] .app-tab {
+    min-block-size: var(--page-control-min, 0px);
     border-color: transparent; border-radius: var(--pill-radius); background: var(--surface-capsule); box-shadow: var(--elev-rest);
 }
 :root[data-theme] .app-tab:hover { border-color: transparent; background: var(--surface-capsule-hover); box-shadow: var(--elev-rest); color: var(--text-primary); }

@@ -1,4 +1,5 @@
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { bindScrollFade } from './scroll_fade.js';
 
 function classAttr(parts) {
     return parts.filter(Boolean).join(' ');
@@ -146,6 +147,7 @@ export function renderTabStrip({
 export function bindTabStrip(strip, { dataAttr, activeClass = 'active', onChange } = {}) {
     if (!dataAttr) throw new Error('bindTabStrip requires dataAttr');
     let disposed = false;
+    const disposeFade = bindScrollFade(strip, { axis: 'x' });
     const tabs = () => Array.from(strip.querySelectorAll(`[role="tab"][${dataAttr}]`))
         .filter((tab) => tab.closest('[role="tablist"]') === strip);
     const enabled = (tab) => !tab.disabled && tab.getAttribute('aria-disabled') !== 'true'
@@ -157,8 +159,11 @@ export function bindTabStrip(strip, { dataAttr, activeClass = 'active', onChange
         if (!tab) return;
         const bounds = strip.getBoundingClientRect();
         const rect = tab.getBoundingClientRect();
-        const left = bounds.left + strip.clientLeft;
-        const right = left + strip.clientWidth;
+        const style = strip.ownerDocument.defaultView.getComputedStyle(strip);
+        const inset = parseFloat(style.scrollPaddingInlineStart) || 0;
+        const endInset = parseFloat(style.scrollPaddingInlineEnd) || 0;
+        const left = bounds.left + strip.clientLeft + inset;
+        const right = bounds.left + strip.clientLeft + strip.clientWidth - endInset;
         // Scroll only this strip. scrollIntoView can also move the page or its
         // scroll panel when restoring an inactive page's saved selection.
         if (rect.left < left) strip.scrollLeft += rect.left - left;
@@ -221,6 +226,7 @@ export function bindTabStrip(strip, { dataAttr, activeClass = 'active', onChange
         select,
         destroy() {
             disposed = true;
+            disposeFade();
             strip.removeEventListener('click', onClick);
             strip.removeEventListener('keydown', onKey);
             observer?.disconnect();
