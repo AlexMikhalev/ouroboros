@@ -283,6 +283,17 @@ def _store_review_source(
 
         view = materialize_commit_review_session_view(
             {"source_ref": ref, "task_id": task_id, "data_root": root}, repo_dir)
+        if view.get("session_source_status") != "ready" and not (repo_dir / ".git").exists():
+            # Project-scoped review also supports ordinary non-Git workspaces;
+            # no Git ignore check is meaningful there.
+            from ouroboros.utils import write_bytes_atomic
+
+            relative = pathlib.Path(".review-drive") / task_id / (ref["sha256"] + ".txt")
+            try:
+                write_bytes_atomic(repo_dir / relative, raw)
+                view.update(session_source_status="ready", session_relative_path=relative.as_posix())
+            except OSError as exc:
+                return {"error": f"{type(exc).__name__}: {exc}"}
         if view.get("session_source_status") != "ready":
             return {"error": str(view.get("session_source_error") or "session_view_unavailable")}
         source["session_relative_path"] = view["session_relative_path"]

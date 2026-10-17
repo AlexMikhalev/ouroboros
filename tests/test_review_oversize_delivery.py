@@ -23,11 +23,15 @@ LIMIT = {"scope": "turn_text", "unit": "unicode_scalars", "limit": 1_048_576,
 
 @pytest.mark.parametrize("large", [True, False])
 @pytest.mark.parametrize("access", ["readonly", "full"])
-def test_complete_session_turn_pages_only_when_transport_requires_it(tmp_path, large, access):
+@pytest.mark.parametrize("git_workspace", [True, False])
+def test_complete_session_turn_pages_only_when_transport_requires_it(tmp_path, large, access, git_workspace):
     root, checking, data = (tmp_path / name for name in ("repo", "checking", "data"))
     for tree in (root, checking):
-        _staged_repo(tree)
-        (tree / ".git" / "info" / "exclude").write_text(".review-drive/\n", encoding="utf-8")
+        if git_workspace:
+            _staged_repo(tree)
+            (tree / ".git" / "info" / "exclude").write_text(".review-drive/\n", encoding="utf-8")
+        else:
+            tree.mkdir()
     prompt = "Review exact evidence 😀\n" * (60_000 if large else 10)
     facts = {"input_limit": LIMIT, "data_root": str(data)}
     invocation = SessionInvocation(task_id="t-size", surface="multi_model_review", slot_id="s",

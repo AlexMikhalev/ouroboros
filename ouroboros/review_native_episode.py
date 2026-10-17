@@ -954,7 +954,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         # Only initial layout: later working views remain the reviewer's choice.
         # Other surfaces may supply a large work order without the brief builder.
         bound = native_episode_transcript_bound(self.assignment.request, self.assignment.slot)
-        if _wire_size(messages, schemas) >= native_landing_at(bound):
+        delivery = (self.assignment.request.slot_source_delivery or {}).get(self.assignment.slot.slot_id) or {}
+        if delivery.get("status") != "paged" and _wire_size(messages, schemas) >= native_landing_at(bound):
             source = self._store_source("initial-brief", self.episode_prompt)
             if source:
                 from ouroboros.tools.review_brief_coupling import paged_review_text

@@ -793,7 +793,7 @@ def run_delegated_review_session(
     gateway, route = None, session_route
     recovering, project_id, existing_project = False, "", ""  # also bound on early recovery failures
     observed, summary = {}, {}  # a failure after start still names what it observed
-    delivery_facts = dict(invocation.source_delivery or {})
+    delivery_facts = invocation.source_delivery if invocation.source_delivery is not None else {}
     start_attempted, start_refused = False, False  # only submit witnesses POST entry
     try:
         record = custody.invocation_record(custody_drive, retry_token) if retry_token else None
