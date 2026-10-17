@@ -1,10 +1,25 @@
-"""Skill release identity: one versioned digest of a payload and its declared install specs.
+"""Skill release identity: one digest of a payload and its dependency declaration.
 
-A release digest names "these payload bytes with these declared dependencies" on every
+A release digest names "these payload bytes with this dependency declaration" on every
 machine. Per-install notes (launcher markers, legacy marketplace sidecars, local lineage
-notes) are not part of a release, so the same release installed twice has one digest and
-a review or an endorsement of it can be recognized anywhere. ``DIGEST_PREFIX`` tags the
-algorithm so a stored digest is never compared with a value computed another way.
+notes) are not part of a release, so the same release installed twice has one digest, and
+a review, an endorsement or an owner decision about it is recognized wherever it lands.
+It is the staleness hash of every review, grant and acceptance record:
+``skill_loader.compute_content_hash`` returns it.
+
+Version marker: the preimage starts with ``DIGEST_DOMAIN``, so the previous algorithm
+(version 1: sidecars inside, the native launcher marker exempt) never yields the value of
+the same bytes under this one. The text stays 64 lowercase hex because Presence ceilings,
+publication receipts and request validators already require that shape. Version-1 hashes
+survive only in ``legacy_content_hashes`` for the one-time conversion of persisted records
+(``convert_skill_identities``): a record moves to the new identity only when it covered
+the unchanged bytes; stale records stay stale.
+
+The dependency declaration is part of the release because it decides what the installer
+puts beside the payload: a legacy install sidecar's declaration when the payload carries
+one (that is what the installer used), else the manifest's own ``install_specs`` /
+``install`` / ``dependencies``. A source index computes the same value from the same
+manifest, so a source digest and an installed digest agree byte for byte.
 
 The file walk, confinement and sensitive-file policy are the loader's own
 (``skill_loader._iter_payload_files``); this module only decides what a release is.
@@ -13,10 +28,16 @@ The file walk, confinement and sensitive-file policy are the loader's own
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import pathlib
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-DIGEST_PREFIX = "sha256v2:"
+log = logging.getLogger(__name__)
+
+DIGEST_DOMAIN = b"ouroboros-skill-release/2\0"
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Top-level per-install notes that never belong to a release. Legacy names stay listed so
 # payloads installed by older versions keep the digest of the bytes they actually run.
@@ -26,11 +47,141 @@ PER_INSTALL_NOTE_FILENAMES = frozenset({
     ".clawhub.json",
     ".self_authored.json",
 })
+# Legacy install sidecars whose recorded declaration the installer used (same order as
+# ``skill_dependencies._payload_sidecar_specs``).
+_DECLARATION_SIDECARS = (".ouroboroshub.json", ".clawhub.json")
+_MANIFEST_DECLARATION_KEYS = ("install_specs", "install", "dependencies")
+_MANIFEST_NAMES = ("SKILL.md", "skill.json")
 
 
 def is_release_digest(value: Any) -> bool:
-    text = str(value or "")
-    return text.startswith(DIGEST_PREFIX) and len(text) == len(DIGEST_PREFIX) + 64
+    return bool(_DIGEST_RE.fullmatch(str(value or "")))
+
+
+def _empty(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def declaration_digest(declaration: Any) -> str:
+    """SHA-256 of the canonical JSON of a raw declaration, or "" when there is none."""
+    if _empty(declaration):
+        return ""
+    text = json.dumps(declaration, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def manifest_declaration(manifest: Any) -> Any:
+    """The manifest's raw dependency declaration (first non-empty key), or None."""
+    extras = getattr(manifest, "raw_extra", None)
+    if not isinstance(extras, dict):
+        return None
+    for key in _MANIFEST_DECLARATION_KEYS:
+        if not _empty(extras.get(key)):
+            return extras[key]
+    return None
+
+
+def _parse_manifest(skill_dir: pathlib.Path) -> Any:
+    from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
+
+    for name in _MANIFEST_NAMES:
+        path = skill_dir / name
+        if not path.is_file():
+            continue
+        try:
+            return parse_skill_manifest_text(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+
+def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
+    """Raw dependency declaration of the release in ``skill_dir``.
+
+    ``manifest`` is the already parsed manifest of the same directory, when the caller
+    has it; otherwise it is parsed here (SKILL.md first, as the loader selects it).
+    """
+    from ouroboros.utils import read_json_dict
+
+    root = pathlib.Path(skill_dir)
+    for name in _DECLARATION_SIDECARS:
+        sidecar = root / name
+        if not sidecar.is_file():
+            continue
+        specs = (read_json_dict(sidecar) or {}).get("install_specs")
+        if isinstance(specs, dict):
+            for key in ("raw", "auto"):
+                if not _empty(specs.get(key)):
+                    return specs[key]
+    if manifest is None:
+        manifest = _parse_manifest(root)
+    return manifest_declaration(manifest) if manifest is not None else None
+
+
+def release_digest_from_file_digests(file_digests: Iterable[Tuple[str, bytes]], declaration: Any = None) -> str:
+    """The release digest over ``(relative POSIX path, raw SHA-256)`` pairs.
+
+    Top-level per-install notes are skipped here, so a caller may pass every file it
+    captured. Paths are ordered as plain strings, which any index generator reproduces.
+    """
+    entries: Dict[str, bytes] = {}
+    for rel, file_digest in file_digests:
+        rel = str(rel)
+        if "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
+            continue
+        entries[rel] = bytes(file_digest)
+    digest = hashlib.sha256(DIGEST_DOMAIN)
+    for rel in sorted(entries):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(entries[rel])
+    declared = declaration_digest(declaration)
+    if declared:
+        digest.update(b"\0install_specs\0")
+        digest.update(declared.encode("ascii"))
+    return digest.hexdigest()
+
+
+def release_digest_from_files(files: Iterable[Dict[str, Any]], declaration: Any = None) -> str:
+    """The release digest of an index-shaped file list ``[{"path", "sha256"}]``."""
+    pairs = []
+    for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("file entries must be objects with path and sha256")
+        pairs.append((str(item.get("path") or ""), bytes.fromhex(str(item.get("sha256") or ""))))
+    return release_digest_from_file_digests(pairs, declaration)
+
+
+def _file_sha256(path: pathlib.Path, rel: str) -> bytes:
+    from ouroboros.skill_loader import SkillPayloadUnreadable
+
+    file_digest = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(64 * 1024), b""):
+                file_digest.update(chunk)
+    except OSError as exc:
+        log.warning("Failed to read skill payload file %s", path, exc_info=True)
+        raise SkillPayloadUnreadable(rel, exc) from exc
+    return file_digest.digest()
+
+
+def _payload_file_digests(
+    skill_dir: pathlib.Path,
+    *,
+    manifest_entry: str = "",
+    manifest_scripts: Optional[List[Dict[str, Any]]] = None,
+    include_notes: bool = False,
+) -> List[Tuple[str, bytes]]:
+    from ouroboros.skill_loader import _iter_payload_files
+
+    pairs = []
+    for file_path in _iter_payload_files(skill_dir, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts):
+        rel = file_path.relative_to(skill_dir).as_posix()
+        if not include_notes and "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
+            continue
+        pairs.append((rel, _file_sha256(file_path, rel)))
+    return pairs
 
 
 def payload_digest(
@@ -38,38 +189,159 @@ def payload_digest(
     *,
     manifest_entry: str = "",
     manifest_scripts: Optional[List[Dict[str, Any]]] = None,
-    install_specs: Any = None,
+    manifest: Any = None,
 ) -> str:
-    """Digest of the runtime payload plus the effective declared install specs.
+    """Release digest of an installed or staged payload directory.
 
-    Unreadable files fail closed through ``SkillPayloadUnreadable`` exactly as the
-    loader's content hash does.
+    Unreadable files fail closed through ``SkillPayloadUnreadable`` so no verdict is ever
+    bound to a partial runtime surface.
     """
-    from ouroboros.marketplace.install_specs import install_specs_hash, normalize_install_specs
-    from ouroboros.skill_loader import SkillPayloadUnreadable, _iter_payload_files
-
     root = pathlib.Path(skill_dir).resolve()
+    pairs = _payload_file_digests(root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts)
+    return release_digest_from_file_digests(pairs, release_declaration(root, manifest))
+
+
+def _legacy_reduce(file_digests: Iterable[Tuple[str, bytes]]) -> str:
     digest = hashlib.sha256()
-    for file_path in _iter_payload_files(
-        root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts,
-    ):
-        rel = file_path.relative_to(root).as_posix()
-        if "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
-            continue
-        file_digest = hashlib.sha256()
-        try:
-            with file_path.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(64 * 1024), b""):
-                    file_digest.update(chunk)
-        except OSError as exc:
-            raise SkillPayloadUnreadable(rel, exc) from exc
+    for rel, file_digest in file_digests:
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(file_digest.digest())
-    auto_specs, _manual, _errors = normalize_install_specs(install_specs or [])
-    if auto_specs:
-        # The declared dependencies are part of what a release installs; the pseudo path
-        # cannot collide with a file because real relative paths never start with NUL.
-        digest.update(b"\0install_specs\0")
-        digest.update(install_specs_hash(auto_specs).encode("utf-8"))
-    return DIGEST_PREFIX + digest.hexdigest()
+        digest.update(file_digest)
+    return digest.hexdigest()
+
+
+def legacy_content_hashes(
+    skill_dir: pathlib.Path,
+    *,
+    manifest_entry: str = "",
+    manifest_scripts: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[str, ...]:
+    """Version-1 hashes of the CURRENT bytes, for conversion only.
+
+    Version 1 hashed every payload file including install sidecars; in the native bucket
+    it exempted the top-level launcher marker (and before 6.31 it did not).
+    """
+    root = pathlib.Path(skill_dir).resolve()
+    pairs = _payload_file_digests(
+        root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts, include_notes=True,
+    )
+    every = _legacy_reduce(pairs)
+    if root.parent.name != "native":
+        return (every,)
+    exempt = _legacy_reduce(pair for pair in pairs if pair[0] != ".seed-origin")
+    return (exempt, every) if exempt != every else (exempt,)
+
+
+# --- one-time conversion of persisted records --------------------------------------
+
+CONVERSION_MARKER = ".identity-v2.json"
+
+
+def _rebind(record: Dict[str, Any], key: str, legacy: frozenset, digest: str) -> bool:
+    if str(record.get(key) or "") in legacy:
+        record[key] = digest
+        return True
+    return False
+
+
+def _rebind_review(data: Dict[str, Any], legacy: frozenset, digest: str) -> bool:
+    changed = _rebind(data, "content_hash", legacy, digest)
+    changed = _rebind(data, "reviewed_content_hash", legacy, digest) or changed
+    author = data.get("author_disposition")
+    if isinstance(author, dict):
+        changed = _rebind(author, "subject_hash", legacy, digest) or changed
+        reference = author.get("review_reference")
+        if isinstance(reference, dict):
+            changed = _rebind(reference, "content_hash", legacy, digest) or changed
+            preflight = reference.get("preflight")
+            if isinstance(preflight, dict):
+                changed = _rebind(preflight, "content_hash", legacy, digest) or changed
+    if changed:
+        # History rows of this snapshot keep their version-1 hash; free replay reads
+        # this bounded association while review.json still describes these bytes.
+        data["legacy_content_hashes"] = sorted(legacy)
+    return changed
+
+
+def convert_skill_records(drive_root: pathlib.Path, name: str, legacy: Iterable[str], digest: str) -> List[str]:
+    """Rebind the authority records of one skill from a version-1 hash of its unchanged
+    bytes to ``digest``. Returns the converted file names. Records bound to other bytes
+    are left alone (stale stays stale); publication receipts are history and untouched."""
+    from ouroboros.skill_loader import skill_state_dir_path
+    from ouroboros.utils import atomic_write_json, read_json_dict
+
+    legacy_set = frozenset(str(item) for item in legacy if item and item != digest)
+    if not legacy_set or not digest:
+        return []
+    state_dir = skill_state_dir_path(drive_root, name)
+    converted: List[str] = []
+    review = read_json_dict(state_dir / "review.json")
+    if review is not None and _rebind_review(review, legacy_set, digest):
+        atomic_write_json(state_dir / "review.json", review)
+        converted.append("review.json")
+    for filename in ("grants.json", "owner_attestation.json"):
+        data = read_json_dict(state_dir / filename)
+        if data is not None and _rebind(data, "content_hash", legacy_set, digest):
+            atomic_write_json(state_dir / filename, data)
+            converted.append(filename)
+    return converted
+
+
+def convert_skill_identities(drive_root: pathlib.Path, *, log_obj: Any = None,
+                             repo_path: Optional[str] = None,
+                             on_skill: Any = None) -> Dict[str, Any]:
+    """One-time, idempotent move of persisted records to the release digest.
+
+    Runs once per data root (``state/skills/.identity-v2.json`` records it); a second
+    run is a no-op, and an interrupted run converts the rest next time because a
+    converted record no longer equals a version-1 hash. ``on_skill(skill, legacy)``
+    lets the launcher record built-in install facts during the same pass. No payload
+    is moved and nothing is re-reviewed.
+    """
+    from ouroboros.skill_loader import discover_skills
+    from ouroboros.utils import atomic_write_json, utc_now_iso
+
+    logger = log_obj or log
+    marker = pathlib.Path(drive_root) / "state" / "skills" / CONVERSION_MARKER
+    if marker.is_file():
+        return {"skipped": True}
+    summary: Dict[str, Any] = {"converted": {}, "errors": []}
+    for skill in discover_skills(pathlib.Path(drive_root), repo_path=repo_path):
+        if skill.identity_collision or skill.load_error or not skill.content_hash:
+            continue
+        try:
+            legacy = legacy_content_hashes(
+                skill.skill_dir, manifest_entry=skill.manifest.entry, manifest_scripts=skill.manifest.scripts,
+            )
+            if on_skill is not None:
+                on_skill(skill, legacy)
+            files = convert_skill_records(pathlib.Path(drive_root), skill.name, legacy, skill.content_hash)
+        except Exception as exc:
+            logger.warning("Skill identity conversion failed for %s", skill.name, exc_info=True)
+            summary["errors"].append(f"{skill.name}: {type(exc).__name__}: {exc}")
+            continue
+        if files:
+            summary["converted"][skill.name] = files
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(marker, {"schema_version": 1, "converted_at": utc_now_iso(),
+                               "converted": summary["converted"], "errors": summary["errors"]})
+    if summary["converted"]:
+        logger.info("Skill identity v2: converted records for %d skill(s)", len(summary["converted"]))
+    return summary
+
+
+__all__ = [
+    "CONVERSION_MARKER",
+    "DIGEST_DOMAIN",
+    "PER_INSTALL_NOTE_FILENAMES",
+    "convert_skill_identities",
+    "convert_skill_records",
+    "declaration_digest",
+    "is_release_digest",
+    "legacy_content_hashes",
+    "manifest_declaration",
+    "payload_digest",
+    "release_declaration",
+    "release_digest_from_file_digests",
+    "release_digest_from_files",
+]

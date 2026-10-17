@@ -1,10 +1,9 @@
 """GET /api/extensions is a local read: it never waits for the OuroborosHub catalog.
 
-``official_hub_verified`` (and the hub side of ``owner_attestable``) is a display
-hint — the review profile and the owner-attestation endpoint re-verify against a
-fresh catalog. The index therefore only PEEKS at the display-plane catalog memo
-(§7.1a): ``True``/``False`` when a fresh view exists, ``None`` when it does not,
-and no download either way, whatever the number of installed hub skills.
+A source's trust is an install basis read by the review gate, so the listing needs
+no catalog at all: ``owner_attestable`` (Skip review) is offered for every origin
+with readable bytes, and nothing is downloaded or even peeked, whatever the number
+of installed hub skills.
 """
 
 from __future__ import annotations
@@ -76,36 +75,14 @@ def index(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("count", [1, 18])
-def test_fresh_display_view_verifies_every_hub_skill_without_a_download(index, count):
-    build, _drive_root = index
-    rows, _skills = build(count)
-    assert len(rows) == count
-    assert all(row["official_hub_verified"] is True for row in rows.values())
-    assert all(row["owner_attestable"] is True for row in rows.values())
-
-
-@pytest.mark.parametrize("memo_age_sec", [None, ouroboroshub._CATALOG_CACHE_TTL_SEC + 1])
-def test_without_a_fresh_view_the_hub_facts_are_unknown_not_negative(index, memo_age_sec):
+@pytest.mark.parametrize("memo_age_sec", [None, 0.0])
+def test_hub_rows_need_no_catalog_view_and_offer_skip_review(index, count, memo_age_sec):
     build, drive_root = index
     own, _row = _skill(drive_root, "external", "my-own")
-    rows, _skills = build(18, memo_age_sec=memo_age_sec, extra=[own])
-    hub_rows = [row for name, row in rows.items() if name != "my-own"]
-    assert len(hub_rows) == 18
-    assert all(row["official_hub_verified"] is None for row in hub_rows)
-    assert all(row["owner_attestable"] is None for row in hub_rows)
-    # Local facts never depend on the catalog.
-    assert rows["my-own"]["official_hub_verified"] is False
-    assert rows["my-own"]["owner_attestable"] is True
-
-
-def test_a_locally_edited_hub_payload_is_a_definitive_negative(index):
-    build, _drive_root = index
-    rows, skills = build(2)
-    (skills[0].skill_dir / "SKILL.md").write_text("edited locally\n", encoding="utf-8")
-    rows, _skills = build(0, memo_age_sec=None, extra=skills)
-    assert rows["hub-skill-0"]["official_hub_verified"] is False
-    assert rows["hub-skill-0"]["owner_attestable"] is False
-    assert rows["hub-skill-1"]["official_hub_verified"] is True
+    rows, _skills = build(count, memo_age_sec=memo_age_sec, extra=[own])
+    assert len(rows) == count + 1
+    assert all(row["owner_attestable"] is True for row in rows.values())
+    assert all("official_hub_verified" not in row for row in rows.values())
 
 
 def test_display_catalog_files_peeks_and_never_fetches(monkeypatch):
@@ -126,38 +103,9 @@ def test_display_catalog_files_peeks_and_never_fetches(monkeypatch):
         ouroboroshub._catalog_cache_clear()
 
 
-def test_an_unreadable_hub_payload_fails_only_its_own_row(index, monkeypatch):
-    """One payload the matcher cannot read is False for that row; the listing survives."""
-    build, _drive_root = index
-    _rows, skills = build(2)
-    victim = skills[0].skill_dir / "SKILL.md"
-    real_read_bytes = pathlib.Path.read_bytes
-
-    def boom(self):
-        if self == victim.resolve():
-            raise OSError("payload vanished between is_file() and read_bytes()")
-        return real_read_bytes(self)
-
-    monkeypatch.setattr(pathlib.Path, "read_bytes", boom)
-    rows, _skills = build(0, memo_age_sec=None, extra=skills)
-    assert rows["hub-skill-0"]["official_hub_verified"] is False
-    assert rows["hub-skill-0"]["owner_attestable"] is False
-    assert rows["hub-skill-1"]["official_hub_verified"] is True
-
-
-@pytest.mark.parametrize("skills_value", [{"not": "a list"}, [{"slug": "hub-skill-0", "files": 7}]])
-def test_a_malformed_display_memo_is_no_view_not_a_failed_listing(index, skills_value):
-    build, _drive_root = index
-    _rows, skills = build(1)
-    ouroboroshub._catalog_cache_inject({"raw_base_url": _RAW_BASE, "skills": skills_value})
-    assert ouroboroshub.display_catalog_files() is None
-    rows, _skills = build(0, memo_age_sec=None, extra=skills)
-    assert rows["hub-skill-0"]["official_hub_verified"] is None
-
-
-def test_the_manifest_read_peeks_the_same_view_and_never_downloads(index, monkeypatch):
-    """GET /api/extensions/{skill}/manifest carries the same hub hint: a display
-    peek, never a catalog fetch, unknown without a view."""
+def test_the_manifest_read_never_downloads(index, monkeypatch):
+    """GET /api/extensions/{skill}/manifest carries the same review facts and no
+    catalog read."""
     import asyncio
 
     from ouroboros.gateway import extensions as extensions_api
@@ -172,7 +120,4 @@ def test_the_manifest_read_peeks_the_same_view_and_never_downloads(index, monkey
         path_params = {"skill": "hub-skill-0"}
 
     body = json.loads(asyncio.run(extensions_api.api_extension_manifest(_Request())).body)
-    assert body["official_hub_verified"] is True
-    ouroboroshub._catalog_cache_clear()
-    body = json.loads(asyncio.run(extensions_api.api_extension_manifest(_Request())).body)
-    assert body["official_hub_verified"] is None
+    assert body["owner_attestable"] is True and "official_hub_verified" not in body

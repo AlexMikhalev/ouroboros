@@ -1,0 +1,377 @@
+"""Release identity and the local acceptance facts beside the review verdict.
+
+Pins: the release digest (payload + dependency declaration, per-install notes out, the
+same value from a directory and from an index file list); the one-time conversion of
+persisted records (only records that covered the unchanged bytes move; stale stays
+stale; free replay still finds old history rows); the gate's acceptance bases (trusted
+source, install-time owner skip, owner edit) and the strict review-source blocker rule;
+the owner-edit seam; turn-on-when-ready.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+
+import pytest
+
+from ouroboros import skill_identity as si
+
+
+def _skill(root: pathlib.Path, name: str = "probe", *, extra: str = "") -> pathlib.Path:
+    skill = root / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: d\nversion: 1.0.0\ntype: instruction\n{extra}---\n\n# {name}\n",
+        encoding="utf-8")
+    (skill / "notes.md").write_text("body\n", encoding="utf-8")
+    return skill
+
+
+# --- the digest -----------------------------------------------------------------------
+
+
+def test_per_install_notes_stay_out_and_payload_stays_in(tmp_path):
+    from ouroboros.skill_loader import compute_content_hash
+
+    skill = _skill(tmp_path / "external")
+    clean = compute_content_hash(skill)
+    for note in sorted(si.PER_INSTALL_NOTE_FILENAMES - {".ouroboroshub.json", ".clawhub.json"}):
+        (skill / note).write_text("installed_at=now\n", encoding="utf-8")
+        assert compute_content_hash(skill) == clean, note  # every bucket, top level only
+    (skill / ".ouroboroshub.json").write_text(json.dumps({"installed_at": "t1"}), encoding="utf-8")
+    first = compute_content_hash(skill)
+    (skill / ".ouroboroshub.json").write_text(json.dumps({"installed_at": "t2"}), encoding="utf-8")
+    assert compute_content_hash(skill) == first == clean
+    nested = skill / "data"
+    nested.mkdir()
+    (nested / ".seed-origin").write_text("runtime-readable bytes\n", encoding="utf-8")
+    assert compute_content_hash(skill) != clean  # a nested file of that name is payload
+    (nested / ".seed-origin").unlink()
+    (skill / "notes.md").write_text("changed\n", encoding="utf-8")
+    assert compute_content_hash(skill) != clean
+
+
+def test_declaration_is_part_of_the_release(tmp_path):
+    from ouroboros.skill_loader import compute_content_hash
+
+    plain = compute_content_hash(_skill(tmp_path / "a"))
+    declared = _skill(tmp_path / "b", extra="install_specs:\n  - kind: pip\n    package: requests\n")
+    with_specs = compute_content_hash(declared)
+    assert si.release_declaration(declared) == [{"kind": "pip", "package": "requests"}]
+    # A legacy sidecar's recorded declaration is what the installer used: it decides.
+    (declared / ".ouroboroshub.json").write_text(json.dumps(
+        {"install_specs": {"raw": [{"kind": "pip", "package": "httpx"}], "auto": []}}), encoding="utf-8")
+    assert si.release_declaration(declared) == [{"kind": "pip", "package": "httpx"}]
+    assert compute_content_hash(declared) not in {with_specs, plain}
+
+
+def test_directory_and_index_file_list_agree(tmp_path):
+    from ouroboros.skill_loader import compute_content_hash
+
+    skill = _skill(tmp_path / "hub", extra="install_specs:\n  - kind: pip\n    package: requests\n")
+    (skill / "lib").mkdir()
+    (skill / "lib" / "a-b.py").write_text("x = 1\n", encoding="utf-8")
+    (skill / "lib-z.txt").write_text("z\n", encoding="utf-8")
+    files = [{"path": p.relative_to(skill).as_posix(), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+             for p in sorted(skill.rglob("*")) if p.is_file()]
+    from_index = si.release_digest_from_files(files, [{"kind": "pip", "package": "requests"}])
+    assert from_index == compute_content_hash(skill)
+    assert si.is_release_digest(from_index)
+
+
+def test_version_two_never_equals_version_one(tmp_path):
+    from ouroboros.skill_loader import compute_content_hash, reduce_skill_content_hash
+
+    skill = _skill(tmp_path / "native", "seeded")
+    (skill / ".seed-origin").write_text("seeded_from=skills\n", encoding="utf-8")
+    current = compute_content_hash(skill)
+    legacy = si.legacy_content_hashes(skill)
+    assert current not in legacy and len(legacy) == 2  # post-6.31 (marker exempt) and older
+    pairs = [(p.relative_to(skill).as_posix(), hashlib.sha256(p.read_bytes()).digest())
+             for p in sorted(skill.rglob("*")) if p.is_file() and p.name != ".seed-origin"]
+    assert legacy[0] == reduce_skill_content_hash(pairs)
+
+
+# --- the one-time conversion ------------------------------------------------------------
+
+
+def _state(drive_root, name="probe"):
+    path = drive_root / "state" / "skills" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_conversion_moves_only_records_that_covered_the_unchanged_bytes(tmp_path):
+    from ouroboros.skill_loader import compute_content_hash, find_skill
+
+    drive_root = tmp_path / "data"
+    skill_dir = _skill(drive_root / "skills" / "external")
+    (skill_dir / ".ouroboroshub.json").write_text(json.dumps({"installed_at": "then"}), encoding="utf-8")
+    legacy = si.legacy_content_hashes(skill_dir)[0]
+    digest = compute_content_hash(skill_dir)
+    state = _state(drive_root)
+    (state / "review.json").write_text(json.dumps({
+        "content_hash": legacy, "status": "warnings", "reviewer_models": ["m"],
+        "findings": [{"item": "bug_hunting", "verdict": "FAIL", "severity": "warning", "model": "m"}],
+        "author_disposition": {"disposition": "accept", "rationale": "ok", "subject_hash": legacy,
+                               "reviewer_signal": "warnings", "enforcement": "advisory", "source": "author",
+                               "recorded_at": "2026-10-01T00:00:00Z", "action": "finish"}}), encoding="utf-8")
+    (state / "grants.json").write_text(json.dumps({"content_hash": legacy, "granted_keys": [],
+                                                   "requested_keys": []}), encoding="utf-8")
+    (state / "owner_attestation.json").write_text(json.dumps({"content_hash": "f" * 64}), encoding="utf-8")
+    receipt = {"published": {"content_hash": legacy, "slug": "probe"}}
+    (state / "ouroboroshub.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+    summary = si.convert_skill_identities(drive_root)
+    assert sorted(summary["converted"]["probe"]) == ["grants.json", "review.json"]
+    review = json.loads((state / "review.json").read_text(encoding="utf-8"))
+    assert review["content_hash"] == digest and review["legacy_content_hashes"] == [legacy]
+    assert review["author_disposition"]["subject_hash"] == digest
+    assert review["findings"][0]["item"] == "bug_hunting"  # evidence itself is untouched
+    assert json.loads((state / "grants.json").read_text(encoding="utf-8"))["content_hash"] == digest
+    assert json.loads((state / "owner_attestation.json").read_text(encoding="utf-8"))["content_hash"] == "f" * 64
+    assert json.loads((state / "ouroboroshub.json").read_text(encoding="utf-8")) == receipt
+    loaded = find_skill(drive_root, "probe")
+    assert loaded.review.gate_for(loaded.content_hash)["executable_review"] is True
+
+    # Idempotent: the marker ends the pass; a re-run of the record step is a no-op.
+    assert si.convert_skill_identities(drive_root) == {"skipped": True}
+    assert si.convert_skill_records(drive_root, "probe", [legacy], digest) == []
+
+
+def test_conversion_keeps_stale_records_stale(tmp_path):
+    from ouroboros.skill_loader import find_skill
+
+    drive_root = tmp_path / "data"
+    _skill(drive_root / "skills" / "external")
+    state = _state(drive_root)
+    (state / "review.json").write_text(json.dumps({"content_hash": "0" * 64, "status": "clean", "findings": [
+        {"item": "x", "verdict": "PASS", "model": "m"}]}), encoding="utf-8")
+    si.convert_skill_identities(drive_root)
+    assert json.loads((state / "review.json").read_text(encoding="utf-8"))["content_hash"] == "0" * 64
+    loaded = find_skill(drive_root, "probe")
+    assert loaded.review.gate_for(loaded.content_hash)["executable_review"] is False
+
+
+def test_free_replay_matches_history_rows_of_the_same_snapshot(tmp_path):
+    from ouroboros.skill_review_cycles import find_free_replay_row
+    from ouroboros.skill_review_history import append_history
+
+    drive_root = tmp_path / "data"
+    append_history(drive_root, "probe", status="clean", content_hash="1" * 64, findings=[],
+                   paid=True, review_contract_fingerprint="fp")
+    kwargs = dict(group_id="manual:probe", content_hash="2" * 64, contract_fingerprint="fp")
+    assert find_free_replay_row(drive_root, "probe", **kwargs) is None
+    assert find_free_replay_row(drive_root, "probe", legacy_hashes=("1" * 64,), **kwargs) is not None
+
+
+# --- the gate ----------------------------------------------------------------------------
+
+
+def _gate(status="pending", *, enforcement="blocking", acceptance=None, findings=None, stale=True, digest="d" * 64):
+    from ouroboros.skill_review_status import skill_review_gate
+
+    return skill_review_gate(status, stale=stale, enforcement=enforcement, findings=findings or [],
+                             current_hash=digest, acceptance=acceptance)
+
+
+@pytest.fixture
+def not_cyber(monkeypatch):
+    import ouroboros.tools.review_helpers as helpers
+
+    monkeypatch.setattr(helpers, "review_enforcement_blocks", lambda _mode: True)
+
+
+def test_acceptance_bases_admit_only_their_exact_bytes(not_cyber):
+    digest = "d" * 64
+    for basis, reason in (("trusted", "trusted_source"), ("owner_skip", "owner_skip")):
+        gate = _gate(acceptance={"basis": basis, "release_digest": digest})
+        assert gate["executable_review"] is True and gate["blocking_reason"] == reason
+        assert _gate(acceptance={"basis": basis, "release_digest": "e" * 64})["executable_review"] is False
+    assert _gate(acceptance={"basis": "review", "release_digest": digest})["executable_review"] is False
+    assert _gate(acceptance={"basis": "cyber", "release_digest": digest})["executable_review"] is False
+    assert _gate(acceptance={"owner_edit_digest": digest})["blocking_reason"] == "owner_edit"
+    assert _gate(acceptance={"owner_edit_digest": "e" * 64})["executable_review"] is False
+    failed = [{"item": "skill_preflight", "verdict": "FAIL", "model": "deterministic_preflight"}]
+    refused = _gate(acceptance={"basis": "trusted", "release_digest": digest}, findings=failed, stale=False)
+    assert refused["executable_review"] is False  # a fresh preflight failure outranks the basis
+
+
+def test_review_source_blockers_need_the_owner_even_under_advisory(not_cyber):
+    blockers = dict(status="blockers", enforcement="advisory", stale=False)
+    strict = _gate(acceptance={"basis": "review", "release_digest": "x", "strict_review": True}, **blockers)
+    assert strict["executable_review"] is False and strict["blocking_reason"] == "blocker_findings_need_owner"
+    for acceptance in (None, {"basis": "review", "strict_review": False}):
+        assert _gate(acceptance=acceptance, **blockers)["executable_review"] is True
+    assert _gate(acceptance={"strict_review": True}, status="warnings", enforcement="advisory",
+                 stale=False)["executable_review"] is True
+
+
+def test_install_record_feeds_the_loaded_gate(tmp_path, not_cyber):
+    from ouroboros.skill_install_record import write_install_record
+    from ouroboros.skill_loader import auto_grant_if_enabled, find_skill
+
+    drive_root = tmp_path / "data"
+    skill_dir = _skill(drive_root / "skills" / "external")
+    loaded = find_skill(drive_root, "probe")
+    write_install_record(drive_root, "probe", {"source": {"id": "ouroboros"}, "basis": "trusted",
+                                               "release": {"digest": loaded.content_hash}})
+    loaded = find_skill(drive_root, "probe")
+    assert loaded.review.gate_for(loaded.content_hash)["blocking_reason"] == "trusted_source"
+    assert auto_grant_if_enabled(drive_root, loaded).granted is False  # nothing requested
+    (skill_dir / "notes.md").write_text("edited\n", encoding="utf-8")
+    edited = find_skill(drive_root, "probe")
+    assert edited.review.gate_for(edited.content_hash)["executable_review"] is False
+
+
+# --- the owner-edit seam -------------------------------------------------------------------
+
+
+def _admitted(drive_root, *, owner_request):
+    from ouroboros.contracts.task_constraint import normalize_task_constraint
+    from ouroboros.skill_loader import compute_content_hash
+    from ouroboros.skill_repair_admission import record_repair_admission
+
+    skill_dir = _skill(drive_root / "skills" / "external")
+    record_repair_admission(drive_root, "probe", task_id="t1", owner_request=owner_request,
+                            base_content_hash=compute_content_hash(skill_dir))
+    constraint = normalize_task_constraint({"mode": "skill_repair", "skill_name": "probe",
+                                            "payload_root": "skills/external/probe"})
+    return skill_dir, constraint
+
+
+@pytest.mark.parametrize("owner_request", [True, False])
+def test_admitted_owner_task_edits_keep_running(tmp_path, owner_request, not_cyber):
+    from ouroboros.skill_acceptance import OWNER_EDIT_FILENAME
+    from ouroboros.skill_loader import find_skill
+    from ouroboros.skill_repair_admission import advance_repair_expected_hash
+
+    drive_root = tmp_path / "data"
+    skill_dir, constraint = _admitted(drive_root, owner_request=owner_request)
+    (skill_dir / "notes.md").write_text("fixed on the owner's request\n", encoding="utf-8")
+    advance_repair_expected_hash(drive_root, constraint, task_id="t1")
+    loaded = find_skill(drive_root, "probe")
+    gate = loaded.review.gate_for(loaded.content_hash)
+    assert gate["executable_review"] is owner_request
+    assert (drive_root / "state" / "skills" / "probe" / OWNER_EDIT_FILENAME).exists() is owner_request
+    # A later edit from anywhere else leaves the skill unreviewed.
+    (skill_dir / "notes.md").write_text("edited elsewhere\n", encoding="utf-8")
+    later = find_skill(drive_root, "probe")
+    assert later.review.gate_for(later.content_hash)["executable_review"] is False
+
+
+def test_owner_edit_rebinds_unchanged_grant_requests(tmp_path):
+    from ouroboros.skill_acceptance import record_owner_edit
+    from ouroboros.skill_loader import compute_content_hash, load_skill_grants, save_skill_grants
+
+    drive_root = tmp_path / "data"
+    skill_dir = _skill(drive_root / "skills" / "external")
+    save_skill_grants(drive_root, "probe", [], content_hash=compute_content_hash(skill_dir), requested_keys=[],
+                      granted_permissions=["inject_chat"], requested_permissions=["inject_chat"])
+    (skill_dir / "notes.md").write_text("owner edit\n", encoding="utf-8")
+    digest = record_owner_edit(drive_root, skill_dir, task_id="t1")
+    # The manifest requests nothing, so the old request set no longer matches: no carry.
+    assert load_skill_grants(drive_root, "probe")["content_hash"] != digest
+
+
+def test_owner_state_protects_the_acceptance_facts(tmp_path):
+    from ouroboros.contracts.skill_payload_policy import is_skill_owner_state_target
+
+    for name in ("install.json", "owner_edit.json"):
+        target = tmp_path / "data" / "state" / "skills" / "probe" / name
+        assert is_skill_owner_state_target(target, tmp_path / "data") is True
+
+
+# --- turn on when ready -------------------------------------------------------------------
+
+
+def _trusted_install(drive_root, *, turn_on=True):
+    from ouroboros.skill_install_record import write_install_record
+    from ouroboros.skill_loader import find_skill
+
+    _skill(drive_root / "skills" / "external")
+    loaded = find_skill(drive_root, "probe")
+    write_install_record(drive_root, "probe", {"source": {"id": "ouroboros"}, "basis": "trusted",
+                                               "release": {"digest": loaded.content_hash},
+                                               "turn_on_when_ready": turn_on})
+
+
+def test_turn_on_when_ready_enables_an_accepted_install(tmp_path, not_cyber, monkeypatch):
+    from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+    from ouroboros.skill_loader import load_enabled
+
+    monkeypatch.setattr("ouroboros.skill_lifecycle_actions._sync_schedules", lambda *a: None)
+    drive_root = tmp_path / "data"
+    _trusted_install(drive_root)
+    result = reconcile_turn_on_when_ready(drive_root, "probe", repo_path="")
+    assert result["action"] == "enabled" and load_enabled(drive_root, "probe") is True
+    assert reconcile_turn_on_when_ready(drive_root, "probe", repo_path="")["action"] == "already_on"
+
+
+def test_turn_on_when_ready_never_overrides_a_choice_or_a_missing_basis(tmp_path, not_cyber, monkeypatch):
+    from ouroboros.skill_install_record import read_install_record, write_install_record
+    from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+    from ouroboros.skill_loader import load_enabled, save_enabled
+
+    monkeypatch.setattr("ouroboros.skill_lifecycle_actions._sync_schedules", lambda *a: None)
+    drive_root = tmp_path / "data"
+    _trusted_install(drive_root, turn_on=False)
+    assert reconcile_turn_on_when_ready(drive_root, "probe", repo_path="")["action"] == "not_requested"
+    _trusted_install(drive_root)
+    save_enabled(drive_root, "probe", False, actor="owner_ui")
+    assert reconcile_turn_on_when_ready(drive_root, "probe", repo_path="")["action"] == "owner_choice"
+    save_enabled(drive_root, "probe", False, actor="load_error_revert")
+    assert reconcile_turn_on_when_ready(drive_root, "probe", repo_path="")["action"] == "enabled"
+    record = read_install_record(drive_root, "probe")
+    write_install_record(drive_root, "other", {**record, "basis": "review", "entry": "other"})
+    _skill(drive_root / "skills" / "external", "other")
+    result = reconcile_turn_on_when_ready(drive_root, "other", repo_path="")
+    assert result["action"] == "not_ready" and result["missing"] == ["acceptance"]
+    assert load_enabled(drive_root, "other") is False
+
+
+# --- review outside the lane ------------------------------------------------------------------
+
+
+def test_lent_lane_lets_other_jobs_run_and_is_taken_back(tmp_path):
+    import asyncio
+    import threading
+
+    from ouroboros import skill_lifecycle_queue as q
+
+    lent = threading.Event()
+    other_ran = threading.Event()
+    release = threading.Event()
+    order = []
+
+    def long_review():
+        with q.lend_lifecycle_lane():
+            lent.set()
+            assert release.wait(5)
+        order.append("persist")
+        return "reviewed"
+
+    async def main():
+        async def review_runner():
+            return await q.run_blocking_preserving_cancellation(long_review)
+
+        async def quick_runner():
+            other_ran.set()
+            order.append("other")
+            return "other"
+
+        review = asyncio.create_task(q.run_lifecycle_job(kind="review", target="a", runner=review_runner,
+                                                         options=q.LifecycleJobOptions(drive_root=tmp_path)))
+        assert await asyncio.to_thread(lent.wait, 5)
+        other = await asyncio.wait_for(q.run_lifecycle_job(kind="install", target="b", runner=quick_runner,
+                                                           options=q.LifecycleJobOptions(drive_root=tmp_path)), 5)
+        assert other == "other"
+        release.set()
+        assert await asyncio.wait_for(review, 5) == "reviewed"
+
+    asyncio.run(main())
+    assert order == ["other", "persist"]
+    with q.lend_lifecycle_lane():  # outside a lane job it is a no-op
+        pass

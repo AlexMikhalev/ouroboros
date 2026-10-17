@@ -68,6 +68,11 @@ SKILL_OWNER_STATE_FILENAMES = frozenset({
     # Uninstall tombstone (CPL4-C11): forging it would let the agent mark a
     # live skill payload-gone and have the startup sweep clear its owner state.
     "uninstalled.json",
+    # Install record and owner edit (skills sources v4): the review gate reads
+    # them as acceptance facts (trusted source basis, owner edit of exact bytes),
+    # so a forged copy would let a payload authorize itself.
+    "install.json",
+    "owner_edit.json",
 })
 
 SKILL_OWNER_STATE_STEMS = (
@@ -86,6 +91,8 @@ SKILL_OWNER_STATE_STEMS = (
     "owner_attestation",
     PRESENCE_PROFILE_STATE_STEM,
     "uninstalled",
+    "install",
+    "owner_edit",
 )
 
 
