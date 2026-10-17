@@ -1045,7 +1045,13 @@ def _native_seed_identity(repo_dir: pathlib.Path) -> dict[str, Any] | None:
 
 
 def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> int:
-    """One shared launcher/server completion, published only after the whole seed pass."""
+    """One shared launcher/server completion, published only after the whole seed pass.
+
+    The identity is the committed seed tree plus the declared post-bootstrap seeds, so
+    unrelated commits keep it; name collisions and failed phases stay incomplete, and
+    the previous receipt is removed before mutation so a partial upgrade cannot hide a
+    later downgrade.
+    """
     from ouroboros.utils import atomic_write_json
 
     receipt = drive_root / "state" / "native_seed.json"

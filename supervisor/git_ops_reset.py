@@ -822,6 +822,8 @@ def _bootstrap_snapshot() -> Optional[dict]:
 
     Transaction markers (including corrupt ones) force the ordinary bootstrap.
     Reads are addressed; no history or remote fetch participates in the proof.
+    The receipt this snapshot is compared with is written only by a successful
+    import smoke; a failed or interrupted smoke certifies no later boot.
     """
     import json
     from supervisor.update_merge import UPDATE_TX_MARKER_NAME
