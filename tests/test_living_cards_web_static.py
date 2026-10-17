@@ -89,3 +89,26 @@ def test_cards_ride_the_feed_deliveries_and_their_styles_load():
     assert "cards.release(root);" in media and "cards.destroy();" in media
     index = _read("web/index.html")
     assert index.index('href="/static/style.css"') < index.index('href="/static/cards.css"')
+
+
+def test_the_frames_in_a_message_section_is_the_builtin_one():
+    """docs/WIDGET_HOST_PROTOCOL.md §9 is checked against the code like the module widget sections."""
+    import re
+
+    doc = _read("docs/WIDGET_HOST_PROTOCOL.md").split("## 9. Frames in a message", 1)[1]
+    frames = _read("web/modules/card_frames.js")
+    cards = _read("web/modules/chat_cards.js")
+    policy = re.search(r"export const CARD_APP_CSP = \"([^\"]+)\"\n\s+\+ '([^']+)';", frames)
+    assert f"```\n  {policy.group(1)}{policy.group(2)}\n  ```" in doc
+    assert '`sandbox="allow-scripts"` and nothing else' in doc
+    assert set(re.findall(r"`(ouro-card-[a-z]+)", doc)) == set(re.findall(r"'(ouro-card-[a-z]+)'", frames))
+    for number, text in (("INLINE_FRAME_FLOOR = 120", "at least 120 pixels"), ("INLINE_FRAME_SHARE = 0.7", "70 %"),
+                         ("CARD_STATE_MAX_BYTES = 32 * 1024", "at most 32 KiB"), ("LINE_PART_MAX = 300", "300 characters")):
+        assert number in frames and text in doc, number
+    assert "MAX_LIVE_CARD_FRAMES = 3" in cards and "at most three frames" in doc
+    tokens = re.findall(r"'(--ouro-[a-z-]+)'", frames)
+    assert tokens and all(f"`{token}`" in doc for token in tokens)
+    api = re.search(r"window\.OuroborosCard = Object\.freeze\(\{(.*?)\n        \}\);", frames, re.S).group(1)
+    assert [name for name in ("resize", "state", "submit", "theme", "onTheme") if re.search(rf"\b{name}\b", api)] == \
+        ["resize", "state", "submit", "theme", "onTheme"]
+    assert "`window.OuroborosCard = {resize(height), state: {value, save(value)}, submit(value, summary), theme, onTheme(callback)}`" in doc

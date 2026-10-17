@@ -19,6 +19,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     work_portal.js, task_episodes.js, project_handoff.js — one Main card per work: the portal and its binding sources, Continue episodes, the binding receipt's words (§3 Project handoff receipts)
     chat_reply.js, chat_reply_quote.js, chat_row_menu.js, message_actions.js, routing_receipt.js, text_fit.js — replies and host-derived quotes, the row menu, saved-row actions, the owner message's routing receipt line, word-cut fitting (§3 Chat and Projects; DESIGN "Replies")
     composer.js — a room's composer: "+" menu, slots, Send (§3)
+    chat_cards.js, card_components.js, card_frames.js — living cards in the feed and kept on Widgets; the offline app frame (CLIENT_CONTRACT §5)
     contributions.js, composer_plus.js, composer_chips.js, host_modules.js — the contributions store and verbs; skills' "+" items and capsule-row chips; trusted page modules and their recovery (CLIENT_CONTRACT §11; DESIGN "Skills in the page")
     project_reference.js — the one Project pointer control and the only raiser of `ouro:open-project` (DESIGN "References and actions")
     project_activity.js — `active_chat_activities` census projection for Project dots (§3 Liveness census)
