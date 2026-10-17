@@ -245,6 +245,7 @@ ouroboros/ — agent core and shared runtime (§6)
   subagent_dispatch_notes.py — executor-note exports shared with `agent.py`; the note/blocked-outcome pair is implemented in `agent_dispatch.py`
   subagent_messages.py, subagents.py, subagent_history.py — durable child messages; dispatch through `subagent_runtime`; context/UI receipts, never admission (§6 Delegated subagents)
   subagent_worktrees.py — `state/subagent_worktrees.json` registry, `refs/ouroboros/delegated/` pins, custody-checked GC (§6 Delegated subagents)
+  force_remove.py — `force_rmtree`: the permission-granting recursive removal worktree teardown, review evidence copies and the custody trash share
   body_candidate.py, body_adoption.py, body_switch.py — Own-body worktree authoring and restart-bound adoption of an exact reviewed commit before body imports (§6 Own-body candidates; §2)
   artifacts.py — attachment staging into `artifact_store/attachments/`, artifact records, scratch fingerprints (`.scratch_manifest.json`), the undeclared-output guard, partial tool-evidence reads
   chat_uploads.py, confined_files.py — the owner-attachment store (`data/uploads`) with byte-proven media kind; directory-confined regular-file open (DESIGN "Chat attachments")
