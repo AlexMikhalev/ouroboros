@@ -7,7 +7,6 @@ their indexes (no scan of rows or addresses)."""
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import pathlib
 import sqlite3
@@ -339,7 +338,7 @@ def test_rows_whose_only_task_identifier_is_subagent_task_id_are_found_by_the_ta
 
 # ---- fact 5: room revision continuity ------------------------------------------------------------
 
-def test_room_revision_continues_from_the_projects_visible_revision_at_every_cutover(tmp_path):
+def test_room_revision_continues_from_the_projects_visible_revision_at_every_planning_cutover(tmp_path):
     from ouroboros.projects_registry import create_project, increment_project_visible_revision
 
     project = create_project(tmp_path, "unread-proof", name="Unread proof")
@@ -359,8 +358,10 @@ def test_room_revision_continues_from_the_projects_visible_revision_at_every_cut
     assert ds.mark_room_read(tmp_path, chat_id, 4)["read_revision"] == 4
     increment_project_visible_revision(tmp_path, chat_id=chat_id)
     increment_project_visible_revision(tmp_path, chat_id=chat_id)  # an older body advanced the registry's counter to 5
+    seed(tmp_path, live={"chat": [owner("that body's row", chat_id=quiet["chat_id"])]})  # and appended
     assert di.cutover(tmp_path)["rooms"] == {chat_id: 5} and ds.room(tmp_path, chat_id)["revision"] == 5
     ds.append(tmp_path, "chat", {"direction": "out", "chat_id": chat_id, "text": "another"}, feed=True)
+    seed(tmp_path, live={"chat": [owner("and again", chat_id=quiet["chat_id"])]})
     assert di.cutover(tmp_path)["rooms"] == {chat_id: 5} and ds.room(tmp_path, chat_id)["revision"] == 6, "never backwards"
     assert ds.room(tmp_path, chat_id)["read_revision"] == 4
 
@@ -403,3 +404,38 @@ def test_count_and_address_probes_are_indexed_and_cost_the_same_with_thirty_room
     assert results[1] == results[30] and results[1][1] > 0, results
     details = plans(root, statements)
     assert not any(detail.startswith("SCAN") for detail in details), details
+
+
+def _row(text, stamp="2026-10-01T00:00:00Z"):
+    return {"ts": stamp, "direction": "in", "chat_id": 1, "text": text}
+
+
+def test_a_steady_boot_plans_the_chains_again_only_when_another_body_may_have_written(tmp_path, monkeypatch):
+    seed(tmp_path, archives={f"chat_2026100{i}T000000.jsonl": [_row(f"archived {i}")] for i in range(1, 4)},
+         live={"chat": [_row("live")]})
+    assert di.cutover(tmp_path)["first"] is True
+    real, planned = di.segment_plan, []
+    monkeypatch.setattr(di, "segment_plan", lambda root, stream: planned.append(stream) or real(root, stream))
+    assert di.cutover(tmp_path)["replanned"] is False and planned == [], "a steady boot reads no segment"
+    seed(tmp_path, live={"chat": [_row("an older body appended")]})
+    di.cutover(tmp_path)
+    assert planned and any(entry.row.get("text") == "an older body appended"
+                           for entry in ds.newest(tmp_path, "chat", limit=10))
+    planned.clear()
+    di.cutover(tmp_path)
+    assert planned == [], "the joined rows are stored; the next boot is steady again"
+    seed(tmp_path, archives={"chat_20261020T000000.jsonl": [_row("rotated by an older body")]})
+    di.cutover(tmp_path)
+    assert planned, "a segment the last plan did not see: the boot plans again"
+
+
+@pytest.mark.parametrize("pending", [1, 40])
+def test_the_import_check_is_one_probe_whatever_is_still_pending(tmp_path, monkeypatch, pending):
+    from tests.test_dialogue_addressed_readers import metered
+
+    seed(tmp_path, archives={f"chat_2026{index:06d}T000000.jsonl": [_row(f"old {index}")] for index in range(pending)})
+    di.cutover(tmp_path)
+    with metered(monkeypatch) as counts:
+        with pytest.raises(ds.StoreMigrating):
+            ds.require_imported(tmp_path, "chat")
+    assert counts["statements"] <= 4 and counts["steps"] <= 200, counts

@@ -162,6 +162,9 @@ def cutover(root: Any) -> Dict[str, Any]:
         former = ds.retier(root)
         if former:
             report["retiered_from"] = former
+        if ds.meta(root, "cutover") is not None and not _replan_owed(root):
+            report.update(first=False, replanned=False)  # the steady boot: two stats and one job fact
+            return report
     else:
         ds.create(root)
         report["created"] = True
@@ -186,8 +189,37 @@ def cutover(root: Any) -> Dict[str, Any]:
             marks = {record["stream"]: dict(record) for record in conn.execute("SELECT * FROM streams")}
             facts = {"at": utc_now_iso(), **{stream: marks[stream] for stream in ds.STREAMS}}
             ds._set_meta(conn, "cutover" if first else "reconciled", facts)
+            ds._set_meta(conn, "archive_tails", _archive_tails(root))  # what this plan saw (``_replan_owed``)
     report["first"] = first
     return report
+
+
+def _archive_tails(root: pathlib.Path) -> Dict[str, List[Any]]:
+    """Each stream's archive segment count and newest name: one directory listing, no stat."""
+    tails: Dict[str, List[Any]] = {stream: [0, ""] for stream in ds.STREAMS}
+    try:
+        with os.scandir(root / "archive") as entries:
+            for entry in entries:
+                for stream in ds.STREAMS:
+                    if entry.name.startswith(f"{stream}_") and entry.name.endswith(".jsonl"):
+                        tails[stream][0] += 1
+                        tails[stream][1] = max(tails[stream][1], entry.name)
+    except FileNotFoundError:
+        pass
+    return tails
+
+
+def _replan_owed(root: pathlib.Path) -> bool:
+    """After the first cutover a boot plans the chains again only when another body wrote them:
+    a non-empty live file (a store-unaware body appended) or archive segments the last plan did
+    not see (one rotated them). A frozen segment that changed size is found by the import."""
+    for stream in ds.STREAMS:
+        try:
+            if (root / ds.LIVE_REL[stream]).stat().st_size:
+                return True
+        except FileNotFoundError:
+            continue
+    return _archive_tails(root) != ds.meta(root, "archive_tails")
 
 
 def _live_tail(root: pathlib.Path, stream: str, rotated: Optional[pathlib.Path]) -> List[str]:

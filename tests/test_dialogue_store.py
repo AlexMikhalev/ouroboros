@@ -259,8 +259,8 @@ def test_cutover_rotates_the_live_files_imports_them_and_keeps_every_chain_coord
     assert di.coverage(tmp_path, "chat")["pending"] == 3 and not di.coverage(tmp_path, "chat")["imported"]
     end = ds.stream_end(tmp_path, "chat")
     assert di.coverage(tmp_path, "chat", end)["imported"] is False and di.coverage(tmp_path, "chat", 0)["imported"]
-    again = di.cutover(tmp_path)
-    assert not again["created"] and not again["first"] and again["chat"]["rotated"] is None and again["chat"]["added"] == 0
+    again = di.cutover(tmp_path)  # a steady boot: nothing another body wrote, nothing planned again
+    assert not again["created"] and not again["first"] and again["replanned"] is False and "chat" not in again
     assert ds.meta(tmp_path, "cutover")["chat"]["cutover_seq"] == end
 
 

@@ -906,8 +906,19 @@ def require_imported(root: Any, stream: str, *, lower: int = 0, upper: Optional[
     Readers with a coverage field use ``range_coverage`` directly; readers whose public
     answer cannot express an unknown interval propagate the store's typed failure.
     """
-    coverage = range_coverage(root, stream, lower=lower, upper=upper)
-    if not coverage["imported"]:
-        if coverage["mismatch"]:
-            raise StoreError("Dialogue history: a segment could not be imported")
+    if stream not in STREAMS:
+        raise ValueError(f"not a dialogue stream: {stream!r}")
+    bound = _bound(upper)
+    if lower >= bound:
+        return
+    with transaction(root, write=False) as conn:  # existence, not counts: one indexed probe per state
+        def holds(state: str) -> bool:
+            return conn.execute(
+                "SELECT 1 FROM import_ledger INDEXED BY ledger_state WHERE stream=? AND state=? AND base<? "
+                "AND base+size>? LIMIT 1", (stream, state, bound, lower)).fetchone() is not None
+
+        mismatch, pending = holds("mismatch"), holds("pending")
+    if mismatch:
+        raise StoreError("Dialogue history: a segment could not be imported")
+    if pending:
         raise StoreMigrating("Dialogue history is still importing")
