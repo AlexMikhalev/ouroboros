@@ -66,7 +66,7 @@ export function createRecognition(env = globalThis) {
                 if (event.error === 'no-speech') finish();
                 else {
                     const reasons = {
-                        'not-allowed': 'Microphone access was denied. Allow it in your browser or system settings.',
+                        'not-allowed': 'Microphone or speech recognition access was denied. Allow it in your browser or system settings.',
                         'service-not-allowed': 'The browser speech service is unavailable here.',
                         'audio-capture': 'No microphone is available. Connect one and try again.',
                         network: 'The browser could not reach its speech service.',
