@@ -416,7 +416,10 @@ def test_the_real_child_process_runs_the_due_jobs_and_reports(data):
     _archive(data, 2)
     (data / "state" / "custody_trash" / "moved-0123456789ab").mkdir(parents=True)
     (data / "logs").mkdir(exist_ok=True)
-    assert maintenance.due(data) == ["activity_backfill", "custody_trash"]
+    from ouroboros import dialogue_import
+
+    dialogue_import.cutover(data)  # as the boot does before the dialogue opens: the archive is planned
+    assert maintenance.due(data) == ["dialogue_import", "activity_backfill", "custody_trash"]
     unit = maintenance.MaintenanceChild()
     assert unit.tick(data, REPO)
     unit._thread.join(240)
@@ -427,5 +430,6 @@ def test_the_real_child_process_runs_the_due_jobs_and_reports(data):
     assert finished[0]["exit_code"] == 0
     assert finished[0]["jobs"]["activity_backfill"]["state"] == "done"
     assert finished[0]["jobs"]["custody_trash"] == {"state": "done", "items": 1}
+    assert finished[0]["jobs"]["dialogue_import"]["state"] == "done"
     assert maintenance_jobs.job(data, "activity_backfill")["empty"] == ["never-active"]
     assert maintenance.due(data) == [], "the child left every job at rest"
