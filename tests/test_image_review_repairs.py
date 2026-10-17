@@ -42,14 +42,14 @@ def test_host_attachment_only_accept_rejoin_and_real_server_dequeue(tmp_path, mo
         body["client_message_id"] = "skill-file-image"
     headers = {"X-Skill-Token": "token"}
     if delivery == "write_then_retry":
-        original = message_bus.log_chat
+        original = message_bus.accept_chat
 
         def fail_after_write(*args, **kwargs):
             original(*args, **kwargs)
             raise OSError("controlled failure after canonical acceptance")
 
         with monkeypatch.context() as scoped:
-            scoped.setattr(message_bus, "log_chat", fail_after_write)
+            scoped.setattr(message_bus, "accept_chat", fail_after_write)
             assert client.post("/chat/inject", headers=headers, json=body).status_code == 500
         assert bridge._inbox.empty()
     response = client.post("/chat/inject", headers=headers, json=body)
