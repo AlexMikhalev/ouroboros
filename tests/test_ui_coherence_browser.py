@@ -538,12 +538,17 @@ def test_question_mirrors_full_form_settle_and_reload(subscription_ui, width, he
             taskListStyle: getComputedStyle(taskList).listStyleType,
             codeOverflow: getComputedStyle(code).overflowX,
             codeReachable: code.scrollWidth <= code.clientWidth || getComputedStyle(code).overflowX === 'auto',
-            sizes: [...new Set(cards.flatMap(el => [el.querySelector('.chat-quiz-status'), el.querySelector('.chat-quiz-project')])
-                .map(el => getComputedStyle(el).fontSize))]};
+            sizes: [...new Set(cards.map(el => getComputedStyle(el.querySelector('.chat-quiz-status')).fontSize))],
+            capsule: [...new Set(cards.map(el => el.querySelector('.chat-quiz-project')).map(el => JSON.stringify([
+                getComputedStyle(el).fontSize, getComputedStyle(el).borderTopWidth, getComputedStyle(el).borderRadius,
+                box(el).height >= parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--touch-target-min'))])))]};
     }""")
     print(json.dumps({'question_mirror_geometry': geometry, 'viewport': [width, height]}))
     assert geometry['overflow'] <= 1 and geometry['page'] <= 0 and geometry['right'] <= width, geometry
+    # The head's status is meta; its Project reference is the ONE inline capsule (owner 17.10, Q2 C): reading size,
+    # no outline, a capsule's radius and a full target, the same as under a System row or on a receipt line.
     assert geometry['chipInside'] and geometry['sizes'] == ['12px'], geometry
+    assert [json.loads(shape) for shape in geometry['capsule']] == [['14px', '0px', '999px', True]], geometry
     assert geometry['richHost'] and geometry['listPadding'] == '24px', geometry
     assert geometry['listTextOffset'] >= 20 and geometry['taskListStyle'] == 'none', geometry
     assert geometry['codeHasOverflow'] and geometry['codeReachable'] and geometry['codeOverflow'] == 'auto', geometry

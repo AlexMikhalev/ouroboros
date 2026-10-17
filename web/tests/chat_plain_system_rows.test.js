@@ -264,7 +264,7 @@ const PLAIN_ROW = {
     role: 'system',
     system_type: 'project_completion_summary',
     markdown: false,
-    content: 'Launch › Ship · Completed\nOpen the Project for details.',
+    content: 'Launch › Ship · Done with warnings\nThe reviewers did not reach a verdict on this answer.',
     project_id: 'launch',
     project_name: 'Launch',
     ts: '2026-08-31T00:00:00Z',
@@ -319,7 +319,7 @@ test('plain project row renders escaped text with the Project reference and no m
         // Escaped plain text: the raw newline survives (pre-wrap), so the row
         // did NOT pass through the markdown renderer (whose no-parser fallback
         // rewrites \n to <br>) and produced no heading elements.
-        assert.match(bubble.innerHTML, /Launch › Ship · Completed\nOpen the Project for details\./);
+        assert.match(bubble.innerHTML, /Launch › Ship · Done with warnings\nThe reviewers did not reach a verdict on this answer\./);
         assert.doesNotMatch(bubble.innerHTML, /<br>|<h1|<h2|md-h1|md-h2/);
         // Bug report #9: no enhancement pass — Mermaid/Chart/KaTeX/code-copy
         // only ever activate behind enhanceChatMarkdown's enhanced stamp.
@@ -390,7 +390,7 @@ test('a completion row carrying the answer renders as an ordinary Ouroboros mess
         assert.match(bubble.innerHTML, /<div class="sender">Ouroboros<\/div>/);
         // His words, through the markdown path — and none of the host's pointer text.
         assert.match(bubble.innerHTML, /Done: PR #7 merged\./);
-        assert.doesNotMatch(bubble.innerHTML, /Open the Project for details|Completed/);
+        assert.doesNotMatch(bubble.innerHTML, /Done with warnings|did not reach a verdict/);
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
         assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
@@ -845,7 +845,7 @@ test('the legacy-memory notice reads in the install language; other plain system
             restoreDom(prior);
         }
         // Not every System row: a plain Project row stays as the host wrote it.
-        assert.match(render(PLAIN_ROW), /Launch › Ship · Completed/);
+        assert.match(render(PLAIN_ROW), /Launch › Ship · Done with warnings/);
         assert.doesNotMatch(render(PLAIN_ROW), /Запуск/);
         applyPayload({ language: 'ru', english: false, entries: {} });
         assert.match(render(notice), /Memory: what Ouroboros remembered before this update/);

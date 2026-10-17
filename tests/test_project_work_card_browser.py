@@ -444,7 +444,7 @@ def test_room_card_follows_a_continue_pressed_in_the_room(project_chat, chat_id,
     assert_one_card("reload")
 
 
-# The glyph tile as painted: its fill, its ink and both against what lies beneath them.
+# The reference as painted: its one fill, the glyph's own fill (none), and the glyph's and the name's ink against it.
 _MARK_MATERIAL = """buttons => {
     const rgba = value => { const [r, g, b, a = 1] = String(value).match(/[\\d.]+/g).map(Number); return {r, g, b, a}; };
     const over = (top, base) => Object.fromEntries(['r', 'g', 'b'].map(k => [k, top[k] * top.a + base[k] * (1 - top.a)]));
@@ -464,23 +464,26 @@ _MARK_MATERIAL = """buttons => {
     const contrast = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
     return buttons.map(button => {
         const icon = button.querySelector('.chat-live-project-icon'), name = button.querySelector('.chat-live-project-name');
-        const tile = painted(icon), beneath = painted(icon.parentElement);
+        const fill = painted(button), beneath = painted(button.parentElement);
         return {host: button.classList.contains('chat-live-bound-pointer') ? 'footer'
                 : button.closest('.msg-routing-annotation') ? 'receipt' : 'capsule', ink,
-            fill: rgba(getComputedStyle(icon).backgroundColor).a,
+            tile: rgba(getComputedStyle(icon).backgroundColor).a,
+            fill: rgba(getComputedStyle(button).backgroundColor).a,
             glyph: getComputedStyle(icon).color, name: getComputedStyle(name).color,
-            glyph_on_tile: contrast(rgba(getComputedStyle(icon).color), tile),
-            tile_on_beneath: contrast(tile, beneath),
-            name_on_beneath: contrast(rgba(getComputedStyle(name).color), beneath)};
+            glyph_on_fill: contrast(rgba(getComputedStyle(icon).color), fill),
+            fill_on_beneath: contrast(fill, beneath),
+            name_on_fill: contrast(rgba(getComputedStyle(name).color), fill)};
     });
 }"""
 
 
-def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
-    """DESIGN "Design bible" (principle 3): hue says identity, fill strength importance. The glyph only identifies the
-    Project, so in each theme it is project ink on a tint, readable, and lighter than the name it marks: never a second
-    button in the row. Its hosts after one bubble per request: a moved work's portal footer, the capsule of a mirrored
-    answer and of a System lifecycle row, and the owner's routing receipt line (the retired Project entries are gone)."""
+def test_project_reference_is_one_tinted_fill_with_no_tile_behind_its_glyph(project_chat):
+    """DESIGN "Design bible" (principles 3, 4): hue says identity, fill strength importance, and a control has one
+    fill. The Project reference (owner 17.10, Q2 C: one chip in two forms) is the Project's tint with the glyph, the
+    name and the arrow in project ink on it, readable in each theme; the glyph stands on that fill with no tile of its
+    own (a second fill read as a second button), and the tint stays far quieter than the name. Its hosts after one
+    bubble per request: a moved work's portal footer, the capsule of a mirrored answer and of a System lifecycle row,
+    and the owner's routing receipt line (the retired Project entries are gone)."""
     page, expect = project_chat["page"], project_chat["expect"]
     for answer in ("The review runner reports every reviewer in words.", None):
         row = {"role": "system", "system_type": "project_completion_summary", "chat_id": 1,
@@ -503,10 +506,11 @@ def test_project_glyph_is_a_tinted_mark_never_a_solid_tile(project_chat):
     marks = page.locator('[data-intent="open-project"]').evaluate_all(_MARK_MATERIAL)
     assert sorted(mark["host"] for mark in marks) == ["capsule", "capsule", "footer", "footer", "receipt"]
     for mark in marks:
+        assert mark["tile"] == 0, mark
         assert 0 < mark["fill"] < 1, mark
         assert mark["glyph"] == mark["name"] == mark["ink"], mark
-        assert mark["glyph_on_tile"] >= 3, mark
-        assert mark["tile_on_beneath"] * 2 < mark["name_on_beneath"], mark
+        assert mark["glyph_on_fill"] >= 3, mark
+        assert mark["fill_on_beneath"] * 2 < mark["name_on_fill"], mark
 
 
 @pytest.mark.parametrize("journey", ["live", "reload"])
