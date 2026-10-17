@@ -247,9 +247,9 @@ def test_short_sidebar_bounds_projects_list_and_cost_cards_keep_local_table_over
     scrollers = """el => [...el.querySelectorAll('*')].filter(e =>
         ['auto','scroll'].includes(getComputedStyle(e).overflowY) && e.scrollHeight>e.clientHeight+1).map(e=>e.className)"""
     main_top = lambda: page.locator(".nav-row-main").evaluate("el => el.getBoundingClientRect().top")
-    # Three zones (DESIGN "Shell"): a window this short cannot hold the pinned zones, so the column itself scrolls
-    # with Main sticky at its top; the Projects list keeps its three rows and stays the one scroller inside.
-    assert set(sidebar.evaluate(scrollers)) == {"nav-projects-list"}, sidebar.evaluate(scrollers)
+    # Three zones (DESIGN "Shell"): a window this short cannot hold the pinned zones, so the column itself is the
+    # ONE scroller with Main sticky at its top, and the Projects list shows every row in flow (no inner scroller).
+    assert set(sidebar.evaluate(scrollers)) == set(), sidebar.evaluate(scrollers)
     assert sidebar.evaluate("el => el.scrollHeight > el.clientHeight + 1"), "the column is the fallback scroller"
     top_before = main_top()
     sidebar.evaluate("el => { el.scrollTop = el.scrollHeight; }")

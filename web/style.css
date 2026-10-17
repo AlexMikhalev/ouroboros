@@ -92,6 +92,13 @@ html[data-layout="stack"] .shell-icon-control {
 @media (pointer: fine) and (max-height: 700px) {
     #primary-sidebar { --nav-row-h: 36px; --nav-item-h: 28px; }
 }
+/* A window too short for the zones (the head, three list rows and the foot no longer fit): the whole column is
+   the ONE scroller with the head sticky, and the list shows every row in flow, so a finger or a wheel moves one
+   thing (the gate counts the sidebar's scrollers). */
+@media (max-height: 540px) {
+    #primary-sidebar .nav-projects { flex: 0 0 auto; min-height: 0; }
+    #primary-sidebar .nav-projects-list { flex: 0 0 auto; overflow-y: visible; }
+}
 
 .sidebar-head {
     position: sticky;

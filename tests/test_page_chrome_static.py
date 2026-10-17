@@ -181,9 +181,12 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     A too-short window falls back to the whole column scrolling with the head sticky."""
     css = _read("web/style.css")
     html = _read("web/index.html")
-    rule = css.split(".nav-projects-list {", 1)[1].split("}", 1)[0]
+    rule = css.split("\n.nav-projects-list {", 1)[1].split("}", 1)[0]  # the base rule, not the short-window fallback
     assert "flex: 1 1 auto" in rule and "min-height: 0" in rule and "overflow-y: auto" in rule, rule
     assert "overscroll-behavior: contain" in rule and "max-height" not in rule, rule
+    # Too short for the zones: the column is the one scroller and the list flows (no second scroller).
+    fallback = css.split("@media (max-height: 540px) {", 1)[1].split("}\n}", 1)[0]
+    assert "#primary-sidebar .nav-projects-list { flex: 0 0 auto; overflow-y: visible;" in fallback
     assert "--nav-projects-list-max-height" not in css and "--nav-projects-list-max-height" not in _read("web/ui.css")
     assert ".sidebar-scroll" not in css and "sidebar-scroll" not in html
     head = css.split(".sidebar-head {", 1)[1].split("}", 1)[0]
