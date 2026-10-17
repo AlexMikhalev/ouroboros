@@ -392,3 +392,27 @@ def test_no_history_sized_duty_runs_in_the_server_and_the_child_spawns_under_cus
         assert cmd[1:3] == ["-m", "ouroboros.maintenance"] and cmd[cmd.index("--data-root") + 1] == str(data)
         assert kwargs["purpose"] == "maintenance" and kwargs["scope"] == "session"
         assert kwargs.get("new_process_group", True) and kwargs["env"]["OUROBOROS_DATA_DIR"] == str(data)
+
+
+def test_the_real_child_process_runs_the_due_jobs_and_reports(data):
+    """End to end, one real ``python -m ouroboros.maintenance`` on a synthetic root: the custodied
+    spawn, the child's own facts, its jobs and its bounded report in ``logs/supervisor.jsonl``."""
+    from tests.test_evidence_packs import REPO
+
+    pr.create_project(data, "never-active", origin="reconcile")
+    _archive(data, 2)
+    (data / "state" / "custody_trash" / "moved-0123456789ab").mkdir(parents=True)
+    (data / "logs").mkdir(exist_ok=True)
+    assert maintenance.due(data) == ["activity_backfill", "custody_trash"]
+    unit = maintenance.MaintenanceChild()
+    assert unit.tick(data, REPO)
+    unit._thread.join(240)
+    assert not unit._thread.is_alive() and unit.live_children() == []
+    rows = [json.loads(line) for line in (data / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()]
+    finished = [row for row in rows if row.get("type") == "maintenance" and row["phase"] != "started"]
+    assert [row["phase"] for row in finished] == ["completed"], finished
+    assert finished[0]["exit_code"] == 0
+    assert finished[0]["jobs"]["activity_backfill"]["state"] == "done"
+    assert finished[0]["jobs"]["custody_trash"] == {"state": "done", "items": 1}
+    assert maintenance_jobs.job(data, "activity_backfill")["empty"] == ["never-active"]
+    assert maintenance.due(data) == [], "the child left every job at rest"
