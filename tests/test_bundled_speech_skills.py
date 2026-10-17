@@ -27,7 +27,7 @@ def test_actual_seed_is_valid_hash_bound_and_has_expected_enable_default(tmp_pat
     path = target / "native" / name
     skill = load_skill(path, data)
     assert skill.name == name
-    assert skill.manifest.plugin_api == "2.0"
+    assert skill.manifest.plugin_api["version"] == "2.0"
     assert skill.review.status == "clean"
     assert skill.review.content_hash == skill.content_hash
     assert load_enabled(data, name) is enabled

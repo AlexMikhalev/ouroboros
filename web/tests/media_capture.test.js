@@ -20,6 +20,7 @@ test('acquisition calls getUserMedia before the first microtask and excludes a s
     lease.release(); lease.release();
     assert.equal(mic.track.stops, 1);
     assert.equal(capture.currentHolder(), null);
+    env.navigator.mediaDevices.getUserMedia = () => Promise.resolve(stream());
     const next = await capture.acquire({ owner: 'other' });
     next.release();
 });
