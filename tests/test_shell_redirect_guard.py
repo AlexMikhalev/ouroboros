@@ -94,6 +94,7 @@ def test_ordinary_arguments_keep_exactly_one_note_each(cmd, subject):
 @pytest.mark.parametrize(("cmd", "subjects"), [
     (["echo", ">$HOME"], ['literal env reference "$HOME"']),  # one element: one note, never two
     (["echo", "$HOME", "2>/dev/null"], ['literal env reference "$HOME"', 'redirect-looking argument "2>/dev/null"']),
+    (["echo", ">$HOME", "2>/dev/null"], ['literal env reference "$HOME"', 'redirect-looking argument "2>/dev/null"']),
     (["sh", "-c", "cat", ">$HOME"], ['redirect-looking argument ">$HOME"']),  # no env note under a shell head
 ])
 def test_each_argv_element_gets_at_most_one_note(cmd, subjects):

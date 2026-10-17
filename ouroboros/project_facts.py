@@ -253,8 +253,9 @@ def _project_store_reader_hint(parts: list) -> str:
             except ValueError:
                 return f"This file is not addressable as a knowledge topic; knowledge_list({scope}) lists the shelf."
             if topic in ALWAYS_ACTIVE_TOPICS:
-                return (f"Topic {topic!r} is global-only: knowledge_read/knowledge_write(topic={topic!r}) address "
-                        "the global note even with a project scope, so no knowledge tool addresses this project copy.")
+                return (f"Topic {topic!r} is global-only: knowledge_read/knowledge_write(topic={topic!r}) read and "
+                        "replace the global note even with a project scope, never this project copy; "
+                        f"knowledge_list({scope}) may still list it.")
             return (f"This is a project knowledge topic: knowledge_read(topic={topic!r}, {scope}) reads it and "
                     f"knowledge_write(topic={topic!r}, {scope}, content=..., expected_revision=...) writes it; "
                     "expected_revision is the revision knowledge_read returned, omitted only to create a missing note.")

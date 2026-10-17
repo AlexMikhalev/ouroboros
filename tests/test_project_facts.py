@@ -176,10 +176,11 @@ def test_generic_tools_deny_project_store_live(tmp_path, monkeypatch):
      "knowledge_read(topic='notes/arch', scope='project:proj_x') reads it and "
      "knowledge_write(topic='notes/arch', scope='project:proj_x', content=..., expected_revision=...) writes it; "
      "expected_revision is the revision knowledge_read returned", "root task"),
-    ("projects/proj_x/knowledge/patterns.md", "Topic 'patterns' is global-only", "scope='project:proj_x'"),
-    ("projects/proj_x/knowledge/overview.md", "Topic 'overview' is global-only", "scope='project:proj_x'"),
+    ("projects/proj_x/knowledge/patterns.md", "Topic 'patterns' is global-only", "topic='patterns', scope="),
+    ("projects/proj_x/knowledge/overview.md", "never this project copy; knowledge_list(scope='project:proj_x') may "
+     "still list it", "topic='overview', scope="),
     ("projects/proj_x/knowledge/improvement-backlog.md", "Topic 'improvement-backlog' is global-only",
-     "scope='project:proj_x'"),
+     "topic='improvement-backlog', scope="),
     ("projects/proj_x/knowledge/_index.md",
      "not addressable as a knowledge topic; knowledge_list(scope='project:proj_x') lists the shelf", "topic="),
     ("projects/proj_x/knowledge", "knowledge_list(scope='project:proj_x') lists it", "workpad_read"),
