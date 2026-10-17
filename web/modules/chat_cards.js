@@ -121,7 +121,9 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         }), { rootMargin: NEAR_MARGIN })
         : null;
 
-    const write = (fn) => (destroyed ? undefined : onDomWrite(() => { fn(); return true; }));
+    // Every change to a card's height goes through the room's viewport write, so a room reading its newest message
+    // keeps following it (a late growth outside it would leave that message under the composer).
+    const write = (fn) => (destroyed ? undefined : onDomWrite(fn));
     const insertLine = (line) => {
         const room = composer();
         if (!room?.input) return false;
@@ -186,11 +188,11 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
 
     // One live frame (an app, or a framed widget): mounts into the body and returns its disposer.
     function startFrame(record) {
+        // The host reserves the frame's height from the start, so the frame arriving later moves nothing.
         const host = document.createElement('div');
         host.className = 'chat-card-frame-host';
-        write(() => { record.body.replaceChildren(host); setStatus(record, ''); });
-        // A frame's height changes the feed like any other write: through the room's reading position.
-        const inline = createInlineFit(host, record.toggle);
+        let inline = null;
+        write(() => { record.body.replaceChildren(host); setStatus(record, ''); inline = createInlineFit(host, record.toggle); });
         record.fit = { fit: (height) => write(() => inline.fit(height)), dispose: () => inline.dispose() };
         const controller = new AbortController();
         let dispose = null;
@@ -198,13 +200,13 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         const fail = (text) => { if (!controller.signal.aborted) showFallback(record, text, 'danger', true); };
         const body = record.data;
         if (record.framedKind === 'app') {
-            readAppText(body.app.url, body.app.sha256).then((html) => done(mountCardApp(host, {
+            readAppText(body.app.url, body.app.sha256).then((html) => done(write(() => mountCardApp(host, {
                 cardId: record.id, title: body.title, sha256: body.app.sha256, html, fit: record.fit,
                 onSubmit: (line) => insertLine(line),
-            })), (error) => fail(`The app could not be read: ${error.message || error}`));
+            }))), (error) => fail(`The app could not be read: ${error.message || error}`));
         } else {
             const { tab } = record;
-            const inline = { fit: (height) => record.fit?.fit(height), fault: (text) => setStatus(record, text, 'danger') };
+            const inline = { fit: (height) => record.fit?.fit(height), fault: (text) => write(() => setStatus(record, text, 'danger')) };
             Promise.resolve().then(() => (tab.render.kind === 'module'
                 ? mountModuleWidget(host, tab, tab.render, controller.signal, messageHandlers, inline)
                 : mountRouteIframeWidget(host, tab, tab.render))).then((fn) => {
@@ -239,8 +241,13 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         if (tab.render?.kind === 'declarative') {
             const host = document.createElement('div');
             host.className = 'chat-card-widget';
-            write(() => { record.body.replaceChildren(host); setStatus(record, ''); });
-            const dispose = await mountDeclarativeWidget(host, { ...tab, key: `card:${record.id}` }, tab.render, { input: ref.input });
+            // The declarative host paints its first frame synchronously: inside this write.
+            const mounting = write(() => {
+                record.body.replaceChildren(host);
+                setStatus(record, '');
+                return mountDeclarativeWidget(host, { ...tab, key: `card:${record.id}` }, tab.render, { input: ref.input });
+            });
+            const dispose = await mounting;
             if (destroyed || !records.has(record.id)) dispose?.();
             else record.mounted = { dispose };
             return;
@@ -254,14 +261,14 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
     function drawBody(record) {
         const body = record.data;
         disposeBody(record);
-        paintActions(record);
+        write(() => paintActions(record));
         if (body.kind === 'components') {
             write(() => {
                 const host = document.createElement('div');
                 host.className = 'chat-card-components';
                 record.body.replaceChildren(host);
                 setStatus(record, '');
-                record.mounted = mountCardComponents(host, body, { presses: pressLedger(record.id) });
+                record.mounted = mountCardComponents(host, body, { presses: pressLedger(record.id), write });
             });
         } else if (body.kind === 'widget') {
             mountWidget(record, body.widget);
@@ -279,7 +286,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
             if (destroyed || records.get(record.id) !== record) return;
             const sameBody = record.data && record.data.revision === body.revision;
             record.data = body;
-            if (sameBody && body.kind === 'components') record.mounted?.update(body);
+            if (sameBody && body.kind === 'components') write(() => record.mounted?.update(body));
             else drawBody(record);
         }, (error) => {
             if (destroyed || records.get(record.id) !== record) return;
@@ -351,7 +358,7 @@ export function createChatCards({ frameNode, decorate = () => {}, composer = () 
         }
         record.data = { ...record.data, submissions_summary: msg.submissions_summary || [] };
         bodies.set(record.id, { revision: record.data.revision, promise: Promise.resolve(record.data) });
-        record.mounted?.update?.(record.data);
+        write(() => record.mounted?.update?.(record.data));
         return true;
     }
 

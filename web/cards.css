@@ -30,6 +30,8 @@
 .chat-card-components,
 .chat-card-widget,
 .chat-card-frame-host { min-width: 0; }
+/* The host holds the frame's height before the frame arrives (card_frames.js sets it), so its arrival moves nothing. */
+.chat-card-frame-host { height: var(--widget-frame-height); }
 /* The renderer spaces components from each other; the first one starts at the card's own rhythm. */
 .chat-card-components > :first-child,
 .chat-card-widget > :first-child { margin-top: 0; }

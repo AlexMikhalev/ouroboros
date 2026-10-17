@@ -110,9 +110,10 @@ function drawnTree(components, presses) {
 /**
  * Mount one component card: `card` carries the `CardResponse` fields `{card_id, components, data?,
  * submissions_summary?}`. `presses` is the card's ledger when the caller keeps it across mounts (a feed row released
- * and drawn again keeps its retry ids). Returns `{update(card), dispose()}`; `update` draws a new revision in place.
+ * and drawn again keeps its retry ids); `write(fn)` is the place's own DOM write (the feed keeps its reading position
+ * through it). Returns `{update(card), dispose()}`; `update` draws a new revision in place.
  */
-export function mountCardComponents(mount, card, { presses = createCardPresses({ cardId: card.card_id }) } = {}) {
+export function mountCardComponents(mount, card, { presses = createCardPresses({ cardId: card.card_id }), write = (fn) => fn() } = {}) {
     const componentState = {};
     const formValues = {};
     const pendingActions = new Set();
@@ -152,12 +153,12 @@ export function mountCardComponents(mount, card, { presses = createCardPresses({
         if (disposed || !actionId || pendingActions.has(key) || presses.locked(actionId)) return;
         pendingActions.add(key);
         delete componentState[`feedback:${key}`];
-        render();
+        write(render);
         const feedback = await presses.press(actionId, { values, once: spec.submit.once === true });
         if (disposed) return;
         pendingActions.delete(key);
         if (feedback) componentState[`feedback:${key}`] = feedback;
-        render();
+        write(render);
     };
     const listen = (type, handler) => mount.addEventListener(type, handler, { signal: interactions.signal });
     listen('submit', (event) => {
@@ -174,7 +175,7 @@ export function mountCardComponents(mount, card, { presses = createCardPresses({
         if (button.dataset.widgetAction) send(button.dataset.widgetAction, null);
         else if (button.dataset.widgetTabKey) {
             componentState[button.dataset.widgetTabKey] = Number(button.dataset.widgetTabIdx || 0);
-            render();
+            write(render);
         }
     });
     mount.replaceChildren();
