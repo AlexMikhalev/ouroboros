@@ -24,6 +24,8 @@ def _fit(
     used=False,
     estimated_input=120_000,
     low_water_margin=0,
+    anchor_input=None,
+    anchor_round=None,
 ):
     from ouroboros.context_fit import MainFitDisposition, MainFitMeasurement
 
@@ -36,12 +38,14 @@ def _fit(
         response_reserve_tokens=65_536,
         target_total_tokens=250_000 if profile == "owner_low" else None,
         capacity_total_tokens=500_000,
-        measurement_basis="cold_estimate",
+        measurement_basis="fresh_route_usage" if anchor_input else "cold_estimate",
         measurement_density=1.0,
         target_deficit_tokens=target_deficit,
         capacity_deficit_tokens=capacity_deficit,
         reclaim_goal_tokens=goal,
         low_water_margin_tokens=low_water_margin,
+        anchor_input_tokens=anchor_input,  # this conversation's own accepted input (``context_anchor``)
+        anchor_round=anchor_round,
     )
     return MainFitDisposition(
         measurement=measurement,

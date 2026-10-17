@@ -168,15 +168,20 @@ def _facts(monkeypatch, **usage):
 
 
 def test_the_facts_line_names_window_room_and_target_excess_apart(monkeypatch):
+    # A measured input: this conversation's round 2 was accepted at 290,000 tokens (``context_anchor``).
     base = {"_context_prompt_estimate": 300_000, "_context_reply_allowance_tokens": 65_536,
-            "_context_response_reserve_tokens": 65_536, "_context_target_total_tokens": 250_000}
+            "_context_response_reserve_tokens": 65_536, "_context_target_total_tokens": 250_000,
+            "_context_anchor_input_tokens": 290_000, "_context_anchor_round": 2}
     line = _facts(monkeypatch, **base, _context_capacity_total_tokens=500_000)
-    assert "free 134,464" in line and "over target 115,536" in line and "reply floor" not in line
+    assert "free ~134,464" in line and "over target 115,536" in line and "reply floor" not in line
+    assert "round 2 accepted 290,000, +10,000 since" in line
     unknown = _facts(monkeypatch, **base, _context_capacity_total_tokens=None)
     assert "window unknown" in unknown and "free unknown" in unknown and "over target 115,536" in unknown
     nano = _facts(monkeypatch, **{**base, "_context_prompt_estimate": 60_000, "_context_response_reserve_tokens": 8_192,
                                   "_context_target_total_tokens": 85_000}, _context_capacity_total_tokens=200_000)
-    assert "free 74,464" in nano and "target room 16,808 (reply floor 8,192)" in nano
+    assert "free ~74,464" in nano and "target room 16,808 (reply floor 8,192)" in nano
+    cold = _facts(monkeypatch, **{**base, "_context_anchor_input_tokens": None}, _context_capacity_total_tokens=500_000)
+    assert "free unknown" in cold and "cold chars/4 estimate" in cold  # a cold estimate states no free room
 
 
 # --- #1728: a technical rebind keeps the sent view while it fits -----------------------------------
@@ -656,7 +661,7 @@ def _refusal_ctx(tmp_path, plan):
 
 
 def test_an_actual_refusal_narrows_memory_even_when_the_estimate_fits(tmp_path, monkeypatch):
-    from ouroboros import capability_evidence, loop
+    from ouroboros import loop
     from ouroboros import memory_floor as mf
     from ouroboros.context_fit import measure_main_fit
     from ouroboros.loop_model_call import _apply_overflow_rung
@@ -667,9 +672,8 @@ def test_an_actual_refusal_narrows_memory_even_when_the_estimate_fits(tmp_path, 
     built = plan(10_000_000)  # a startup view with every element whole
     events = []
     monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda *_a, **_kw: events.append(_a[-1]))
-    monkeypatch.setattr(capability_evidence, "resolve_main_token_density", lambda *_a, **_kw: (1.0, "cold_estimate"))
     ctx = _refusal_ctx(tmp_path, built)
-    fit = measure_main_fit(built, ctx.messages, [], drive_root=tmp_path, profile="owner_max", rendered_mode="max",
+    fit = measure_main_fit(built, ctx.messages, [], profile="owner_max", rendered_mode="max",
                            round_id="e:round:1")
     assert fit.measurement.capacity_deficit_tokens == 0  # the estimate says it fits; the provider refused
     assert built.projection("max").memory_facts["floor"]["steps"] == {}

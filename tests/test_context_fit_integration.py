@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import json
 
+from ouroboros.context_anchor import InputAnchor
+
+# This conversation's own anchor at density 1.0 (the estimate is its raw count, measured).
+_ANCHOR = InputAnchor(input_tokens=1_000_000, estimate_tokens=1_000_000, round=1)
+
 
 def _projection(mode: str):
     from ouroboros.context_fit import ContextFitProjection
@@ -54,15 +59,10 @@ def _tool_unit(size: int):
 
 
 def test_owner_low_deficit_reclaim_remeasures_on_one_basis(monkeypatch, tmp_path):
-    from ouroboros import capability_evidence, context_compaction as cc
+    from ouroboros import context_compaction as cc
     from ouroboros.context_budget import ContextReclaimRequest
     from ouroboros.context_fit import measure_main_fit
 
-    monkeypatch.setattr(
-        capability_evidence,
-        "resolve_main_token_density",
-        lambda *_a, **_kw: (1.0, "fresh_route_usage"),
-    )
     monkeypatch.setattr(
         cc,
         "_summarizer_spec",
@@ -90,10 +90,10 @@ def test_owner_low_deficit_reclaim_remeasures_on_one_basis(monkeypatch, tmp_path
     plan = _plan()
     messages = [*plan.messages_for("low"), *_tool_unit(450_000)]
     first = measure_main_fit(
-        plan, messages, [], drive_root=tmp_path, profile="owner_low",
+        plan, messages, [], anchor=_ANCHOR, profile="owner_low",
         rendered_mode="low", round_id="exec:round:1",
     )
-    assert first.action == "reclaim_once"
+    assert first.action == "send_target_miss"
     assert first.measurement.target_deficit_tokens > 0
     assert first.measurement.capacity_deficit_tokens == 0
 
@@ -109,7 +109,7 @@ def test_owner_low_deficit_reclaim_remeasures_on_one_basis(monkeypatch, tmp_path
         messages, request=request, drive_root=tmp_path, negative_memo=set(),
     )
     after = measure_main_fit(
-        plan, rebuilt, [], drive_root=tmp_path, profile="owner_low",
+        plan, rebuilt, [], anchor=_ANCHOR, profile="owner_low",
         rendered_mode="low", round_id="exec:round:1", automatic_pass_used=True,
     )
 
@@ -137,12 +137,8 @@ def _growth_unit(tag: str, chars: int):
 def _install_full_budget_materializer(monkeypatch):
     """A13 worst case: every summary comes back at the FULL summary budget of its
     source (never a tiny summary), the private checkpoint is stubbed, density 1.0."""
-    from ouroboros import capability_evidence, context_compaction as cc
+    from ouroboros import context_compaction as cc
 
-    monkeypatch.setattr(
-        capability_evidence, "resolve_main_token_density",
-        lambda *_a, **_kw: (1.0, "fresh_route_usage"),
-    )
     monkeypatch.setattr(cc, "_summarizer_spec", lambda: {
         "model": "summary-model", "resolved_model": "summary-model", "provider": "test",
         "route_fp": "summary-route", "effort": "low", "output_budget": 32_768, "use_local": False,
@@ -176,7 +172,7 @@ def _simulate_growing_transcript(tmp_path, *, window: int, rounds: int, growth_c
 
     def fit(current, round_idx, *, used):
         return measure_main_fit(
-            plan, current, [], drive_root=tmp_path, profile="owner_max", rendered_mode="max",
+            plan, current, [], anchor=_ANCHOR, profile="owner_max", rendered_mode="max",
             round_id=f"exec:round:{round_idx}", automatic_pass_used=used,
         )
 
@@ -185,7 +181,7 @@ def _simulate_growing_transcript(tmp_path, *, window: int, rounds: int, growth_c
     for round_idx in range(1, rounds + 1):
         messages = messages + _growth_unit(f"g{round_idx}", growth_chars)
         before = fit(messages, round_idx, used=False)
-        if before.action != "reclaim_once":
+        if before.measurement.reclaim_goal_tokens <= 0:
             assert before.action == "send"
             continue
         measurement = before.measurement
@@ -255,18 +251,13 @@ def test_low_water_margin_bounds_automatic_passes_under_a_full_budget_summarizer
 
 
 def test_target_miss_is_non_terminal_fit_evidence(monkeypatch, tmp_path):
-    from ouroboros import capability_evidence, loop
+    from ouroboros import loop
     from ouroboros.context_fit import measure_main_fit
 
-    monkeypatch.setattr(
-        capability_evidence,
-        "resolve_main_token_density",
-        lambda *_a, **_kw: (1.0, "fresh_route_usage"),
-    )
     plan = _plan()
     messages = [*plan.messages_for("low"), {"role": "user", "content": "x" * 900_000}]
     disposition = measure_main_fit(
-        plan, messages, [], drive_root=tmp_path, profile="owner_low",
+        plan, messages, [], anchor=_ANCHOR, profile="owner_low",
         rendered_mode="low", round_id="exec:round:1", automatic_pass_used=True,
     )
     assert disposition.action == "send_target_miss"
@@ -281,7 +272,7 @@ def test_target_miss_is_non_terminal_fit_evidence(monkeypatch, tmp_path):
     max_disposition = measure_main_fit(
         _plan(preferred="max", window=1_000_000),
         _plan(preferred="max", window=1_000_000).messages_for("max"),
-        [], drive_root=tmp_path, profile="owner_max", rendered_mode="max",
+        [], anchor=_ANCHOR, profile="owner_max", rendered_mode="max",
         round_id="exec:round:2",
     )
     loop._remember_main_fit(ctx, max_disposition)
@@ -289,16 +280,11 @@ def test_target_miss_is_non_terminal_fit_evidence(monkeypatch, tmp_path):
 
 
 def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_path):
-    from ouroboros import capability_evidence, config, loop
+    from ouroboros import config, loop
     from ouroboros.context_fit import measure_main_fit
 
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
     monkeypatch.delenv("OUROBOROS_CONTEXT_MODE_AUTO_LOW", raising=False)
-    monkeypatch.setattr(
-        capability_evidence,
-        "resolve_main_token_density",
-        lambda *_a, **_kw: (1.0, "cold_estimate"),
-    )
     plan = _plan(preferred="low")
 
     assert config.get_context_mode() == "low"
@@ -308,7 +294,6 @@ def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_p
         plan,
         plan.messages_for("low"),
         [],
-        drive_root=tmp_path,
         profile=loop._main_context_profile(plan, "low"),
         rendered_mode="low",
         round_id="exec:round:1",
@@ -319,10 +304,10 @@ def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_p
     assert config.get_owner_context_mode() == "low"
 
 
-def test_round_fit_reads_density_from_canonical_store_not_child_drive(tmp_path, monkeypatch):
-    """One observation store: a forked/child task with its own empty drive must
-    consume the SAME density witnesses settlement writes into the canonical host
-    root — never reset to cold 1.0 by its local empty drive."""
+def test_round_fit_reads_its_own_conversation_never_the_witness_store(tmp_path, monkeypatch):
+    """17.10.2026: another task's witness hid a full window. A fresh exact-route witness
+    (density 1.8) in the canonical store leaves the round's estimate cold; this
+    conversation's own accepted request (the anchor) is what calibrates it."""
     from types import SimpleNamespace
 
     canonical = tmp_path / "canonical"
@@ -372,5 +357,13 @@ def test_round_fit_reads_density_from_canonical_store_not_child_drive(tmp_path, 
     )
     disposition = loop._measure_round_main_fit(ctx, automatic_pass_used=False)
     assert disposition is not None
-    assert disposition.measurement.measurement_basis == "fresh_route_usage"
-    assert abs(disposition.measurement.measurement_density - 1.8) < 1e-6
+    assert disposition.measurement.measurement_basis == "cold_estimate"
+    assert disposition.measurement.measurement_density == 1.0
+    from ouroboros.context_anchor import record_input_anchor
+
+    ctx.accumulated_usage.update(_last_round_cache_usage={"prompt_tokens": 130_000, "provider": plan.provider},
+                                 _context_raw_input_tokens=100_000)
+    record_input_anchor(ctx.accumulated_usage, plan, round_idx=1)
+    anchored = loop._measure_round_main_fit(ctx, automatic_pass_used=False)
+    assert anchored.measurement.measurement_basis == "fresh_route_usage"
+    assert abs(anchored.measurement.measurement_density - 1.3) < 1e-6

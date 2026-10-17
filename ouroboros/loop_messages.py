@@ -642,18 +642,29 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     reserve = usage.get("_context_reply_allowance_tokens")
     capacity = usage.get("_context_capacity_total_tokens") if measured else None
     target = usage.get("_context_target_total_tokens") if measured else None
-    basis = str(usage.get("_context_measurement_basis") or "cold_estimate")
+    # The estimate's provenance (``context_anchor``): the input this model accepted on an earlier round of
+    # THIS conversation, or a cold chars/4 count; and the largest input it accepted, a floor under its window.
+    anchor, anchor_round = usage.get("_context_anchor_input_tokens"), usage.get("_context_anchor_round")
+    accepted = usage.get("_context_accepted_input_tokens") if measured else None
+    reading = usage.get("_context_window_reading_tokens") if measured else None
     parts = [_round_fact(ctx, tool_ctx), f"mode {ctx.active_context_mode}", f"model {ctx.active_model}"]
-    parts.append("window unknown" if capacity is None else f"window {int(capacity):,}")
+    largest = f" (largest accepted input {int(accepted):,})" if accepted else ""
+    if capacity is None and reading is not None and accepted:
+        parts.append(f"window above {int(accepted):,}: this model accepted that input, the stated {int(reading):,} is below it")
+    else:
+        parts.append(("window unknown" if capacity is None else f"window {int(capacity):,}") + largest)
     if target is not None:
         parts.append(f"target {int(target):,}")
     if estimate is None:
         parts.append("input unmeasured")
     else:
-        parts.append(f"input ~{int(estimate):,} before this line ({basis}) + reply {int(reserve or 0):,}")
-        # Free room is the window's; the economy target is its own fact, measured with the reply floor.
-        parts.append(f"free {int(capacity) - int(estimate) - int(reserve or 0):,}" if capacity is not None
-                     else "free unknown")
+        how = ("cold chars/4 estimate: nothing accepted on this model here yet" if anchor is None else
+               ("after a rewrite, " if usage.get("_context_anchor_rewritten") else "")
+               + f"round {anchor_round} accepted {int(anchor):,}, {int(estimate) - int(anchor):+,} since")
+        parts.append(f"input ~{int(estimate):,} before this line ({how}) + reply {int(reserve or 0):,}")
+        # Free room is the window's, stated only on a measured input; the economy target is its own fact.
+        parts.append(f"free ~{int(capacity) - int(estimate) - int(reserve or 0):,}"
+                     if capacity is not None and anchor is not None else "free unknown")
         if target is not None:
             floor = int(usage.get("_context_response_reserve_tokens") or reserve or 0)
             excess = int(estimate) + floor - int(target)

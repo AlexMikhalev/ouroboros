@@ -403,7 +403,7 @@ def _measure_tool_result_batch(ctx, messages, schemas, *, round_id):
     return _measure_main_context_view(
         getattr(ctx, "context_fit_plan", None), messages, schemas,
         getattr(ctx, "active_context_mode", "max"),
-        getattr(ctx, "active_effort", "medium"), round_id)
+        getattr(ctx, "active_effort", "medium"), round_id, usage=getattr(ctx, "_accumulated_usage", None))
 
 
 def _reset_turn_state(ctx: Any) -> None:

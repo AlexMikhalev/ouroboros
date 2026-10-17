@@ -427,7 +427,8 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
         # after a wait or fallback; do not carry a second routing snapshot here.
         fit_candidate = lambda candidate, selected: _loop()._measure_main_context_view(
             getattr(tool_ctx, "context_fit_plan", None), candidate, selected,
-            mode, getattr(tool_ctx, "active_effort", "medium"), str(ctx.round_idx))
+            mode, getattr(tool_ctx, "active_effort", "medium"), str(ctx.round_idx),
+            usage=getattr(tool_ctx, "_accumulated_usage", None))
     if pending is None:
         # Schema-only enablement uses the same candidate fit/publication. It
         # does not fabricate an authored note or rewrite existing history.

@@ -580,6 +580,7 @@ def _rebind_context_fit_plan(
         )
     from ouroboros.capability_evidence import is_known
     from ouroboros.context import _context_fit_route
+    from ouroboros.context_anchor import main_input_anchor
     from ouroboros.context_fit import _failed_route_evidence, _route_calibration_ratio, main_output_reserve_tokens
     from ouroboros.provider_models import parse_claudexor_model
 
@@ -600,7 +601,11 @@ def _rebind_context_fit_plan(
     except Exception:
         log.debug("Route-switch capability probe failed; preserving unknown Max", exc_info=True)
         route, evidence = _failed_route_evidence(task)
-    ratio = _route_calibration_ratio(
+    # The same model keeps this conversation's own anchor across an account rotation; a model it
+    # has not answered on yet starts from the plan-time witness, as at the task's start.
+    anchor, _accepted = main_input_anchor(getattr(tools._ctx, "_accumulated_usage", None), SimpleNamespace(
+        model=str(route.get("model") or model), provider=str(route.get("provider") or "")))
+    ratio = anchor.density if anchor is not None else _route_calibration_ratio(
         None,  # canonical evidence root (one observation store)
         str(getattr(evidence, "route_fp", "") or ""),
         str(route.get("model") or model),
@@ -793,6 +798,8 @@ def _remember_main_fit(ctx: _RoundModelCallContext, disposition: Any) -> None:
     usage["_context_target_miss"] = disposition.action == "send_target_miss"
     usage["_context_automatic_pass_used"] = disposition.automatic_pass_used
     usage["_context_predicted_capacity_miss"] = disposition.predicted_capacity_miss
+    for name in ("anchor_input_tokens", "anchor_round", "anchor_rewritten", "accepted_input_tokens", "window_reading_tokens"):
+        usage[f"_context_{name}"] = getattr(measurement, name)  # the estimate's provenance and the window floor
 
 
 def _measure_round_main_fit(
@@ -803,9 +810,12 @@ def _measure_round_main_fit(
     plan = ctx.context_fit_plan
     if plan is None or str(ctx.active_model or "") != str(getattr(plan, "model", "") or ""):
         return None
+    from ouroboros.context_anchor import main_input_anchor
     from ouroboros.context_fit import measure_main_fit
+    from ouroboros.transcript_prefix import rewrite_epoch
 
     rendered_mode = str(ctx.active_context_mode) if str(ctx.active_context_mode) in {"max", "low", "nano"} else "max"
+    anchor, accepted = main_input_anchor(ctx.accumulated_usage, plan, rewrite_epoch=rewrite_epoch(ctx.tools._ctx))
     disposition = measure_main_fit(
         plan,
         ctx.messages,
@@ -815,6 +825,8 @@ def _measure_round_main_fit(
         round_id=_context_fit_round_id(ctx),
         automatic_pass_used=automatic_pass_used,
         reasoning_effort=ctx.active_effort,
+        anchor=anchor,
+        accepted_input_tokens=accepted,
     )
     _remember_main_fit(ctx, disposition)
     return disposition
@@ -836,12 +848,15 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
     )
 
 
-def _measure_main_context_view(plan, messages, schemas, mode, effort, round_id) -> dict:
+def _measure_main_context_view(plan, messages, schemas, mode, effort, round_id, usage=None) -> dict:
     """Measure an authored candidate without changing Main's dispatch policy.
 
     Predictions inform the next ordinary reclaim/send; neither capacity nor
     economy estimates veto a useful authored view. No route probe or model runs.
+    ``usage`` (the task's) supplies this conversation's own anchor; a candidate
+    view is a rewrite, so its estimate is labelled as one.
     """
+    from ouroboros.context_anchor import main_input_anchor
     from ouroboros.context_fit import estimate_context_prompt_tokens, measure_main_fit
     from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
 
@@ -850,9 +865,11 @@ def _measure_main_context_view(plan, messages, schemas, mode, effort, round_id) 
                 "estimated_input_tokens": estimate_context_prompt_tokens(messages, schemas, reasoning_effort=effort),
                 "response_reserve_tokens": MAIN_LOOP_MAX_TOKENS, "capacity_total_tokens": None,
                 "measurement_basis": "cold_estimate", "reason": "main_route_capacity_unknown"}
+    anchor, accepted = main_input_anchor(usage, plan)
     disposition = measure_main_fit(
         plan, messages, schemas, profile=_main_context_profile(plan, mode),
         rendered_mode=mode, round_id=round_id, reasoning_effort=effort,
+        anchor=anchor, accepted_input_tokens=accepted,
     )
     return {"accepted": True, "strict_bound_proven": False,
             "predicted_capacity_miss": disposition.predicted_capacity_miss,
@@ -947,6 +964,11 @@ def _dispatch_round_model(
             **({"max_tokens": int(max_tokens)} if max_tokens else {}),
         )
     ctx.accumulated_usage.pop(REBOUND_PHYSICAL_CONTEXT_KEY, None)  # consumed by the call's later attempts, if any
+    if result[0] is not None:  # an accepted request is this conversation's next size anchor
+        from ouroboros.context_anchor import record_input_anchor
+        from ouroboros.transcript_prefix import rewrite_epoch
+        record_input_anchor(ctx.accumulated_usage, ctx.context_fit_plan, round_idx=ctx.round_idx,
+                            rewrite_epoch=rewrite_epoch(ctx.tools._ctx))
     capture = _loop().last_physical_attempt_capture()
     if primary and deferral is not None and deferral.fact and result[0] is None:
         ctx.tools._ctx._deferred_resource_refusal = deferral
