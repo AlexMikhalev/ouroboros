@@ -5,9 +5,11 @@
 //   ctx.routePath(route, params) — the same-origin URL of the owning skill's route, '' where there is none;
 //   ctx.routePrefix — that skill's route prefix; '' accepts no extension URL from data.
 // `view` is the mount's live state: `{ state, status, componentState, formValues, pendingActions, visibleKeys }`
-// (a rendered component adds its key to `visibleKeys`).
+// (a rendered component adds its key to `visibleKeys`). Every host that mounts the markup reconciles it in place with
+// `patchWidgetChildren` (a data update never detaches a retained control) and keeps its charts with `syncWidgetCharts`.
 import { cleanExtensionRoute } from './api_client.js';
 import { chartConfig, formatNumber, getPath, renderChartDataTable, renderTableCell } from './widget_chart.js';
+import { applyChartTheme } from './theme_palette.js';
 import { escapeHtmlAttr as escapeHtml, renderMarkdownSafe } from './utils.js';
 import { normalizeTone, renderSafeField } from './ui_helpers.js';
 
@@ -341,4 +343,113 @@ function renderComponentBody(ctx, component, view, treePath, inheritedTarget = '
         }).join('')}</div>`;
     }
     return '';
+}
+
+// Data updates patch the mounted declaration, never detach a retained control
+// or its ancestors. Component ids/tree paths already own identity; field and
+// kanban keys distinguish editable siblings inside those component roots.
+function widgetNodeKey(node) {
+    const data = node.dataset || {};
+    if (data.widgetComponent) return `component:${data.widgetComponent}`;
+    if (data.widgetFeedback) return `feedback:${data.widgetFeedback}`;
+    if (data.widgetTabKey) return `tab:${data.widgetTabKey}:${data.widgetTabIdx}`;
+    if (data.widgetKanbanCard) return `card:${data.widgetKanbanCard}`;
+    if (data.widgetKanbanCol) return `column:${data.widgetKanbanCol}`;
+    return node.name ? `field:${node.name}` : '';
+}
+
+export function patchWidgetChildren(current, desired) {
+    const available = Array.from(current.childNodes);
+    const used = new Set();
+    const pools = new Map();
+    const matchKey = (node) => `${node.nodeType}:${node.nodeName}:${widgetNodeKey(node)}`;
+    for (const node of available) {
+        const key = matchKey(node);
+        if (!pools.has(key)) pools.set(key, { nodes: [], next: 0 });
+        pools.get(key).nodes.push(node);
+    }
+    const pairs = Array.from(desired.childNodes).map((next) => {
+        const pool = pools.get(matchKey(next));
+        const live = pool?.nodes[pool.next++];
+        if (live) used.add(live);
+        return [live, next];
+    });
+    available.filter((node) => !used.has(node)).forEach((node) => node.remove());
+    let anchor = current.firstChild;
+    for (const [live, next] of pairs) {
+        const node = live || next.cloneNode(true);
+        if (node !== anchor) current.insertBefore(node, anchor);
+        if (live) patchWidgetNode(live, next);
+        anchor = node.nextSibling;
+    }
+}
+
+function patchWidgetNode(current, desired) {
+    if (current.nodeType !== 1) {
+        if (current.nodeValue !== desired.nodeValue) current.nodeValue = desired.nodeValue;
+        return;
+    }
+    if (current.classList.contains('widget-chart-canvas')) {
+        // Chart.js owns its canvas and responsive parent. Only the declaration
+        // attributes change here; renderAll updates the existing chart below.
+        const canvas = current.querySelector('canvas');
+        const next = desired.querySelector('canvas');
+        if (canvas && next) {
+            canvas.dataset.widgetChartConfig = next.dataset.widgetChartConfig;
+            canvas.setAttribute('aria-label', next.getAttribute('aria-label') || '');
+            return;
+        }
+    }
+    const field = current.matches('input, textarea, select') && current.closest('[data-widget-form]');
+    const preserve = (name) => (field && ['value', 'checked', 'selected'].includes(name))
+        || (current.tagName === 'DETAILS' && name === 'open');
+    for (const attr of Array.from(current.attributes)) {
+        if (!preserve(attr.name) && !desired.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+    }
+    for (const attr of Array.from(desired.attributes)) {
+        if (!preserve(attr.name) && current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+    }
+    // The declaration is fixed for this mount. Do not rewrite editable values,
+    // textarea children or select options during a composition/native popup.
+    // Passwords remain only in their live control, outside saved formValues.
+    if (!field) patchWidgetChildren(current, desired);
+}
+
+// The mounted charts follow the patched declarations: a canvas whose type and options are unchanged keeps its
+// Chart.js instance and takes the new data; a changed one is rebuilt; a canvas that left the mount takes its chart
+// with it. `instances` and `shapes` are the mount's own maps (key → chart, key → its type/options shape).
+export function syncWidgetCharts(mount, instances, shapes) {
+    const mountedChartKeys = new Set();
+    mount.querySelectorAll('[data-widget-chart-config]').forEach((canvas) => {
+        if (typeof Chart === 'undefined') return;
+        const chartKey = canvas.dataset.widgetChartKey || '';
+        mountedChartKeys.add(chartKey);
+        try {
+            const config = JSON.parse(canvas.dataset.widgetChartConfig || '{}');
+            const existing = instances.get(chartKey);
+            const shape = JSON.stringify({ type: config.type, options: config.options || {} });
+            if (existing && existing.canvas === canvas && shapes.get(chartKey) === shape) {
+                existing.data = config.data;
+                existing.update();
+                return;
+            }
+            if (existing) existing.destroy();
+            const chart = new Chart(canvas, config);
+            // widget_chart.js is DOM-free by contract, so its serialized
+            // config carries neutral chrome; the live theme is layered on
+            // here, where the document is actually readable.
+            applyChartTheme(chart);
+            instances.set(chartKey, chart);
+            shapes.set(chartKey, shape);
+        } catch (err) {
+            console.warn('widgets: chart render failed', err);
+        }
+    });
+    instances.forEach((chart, chartKey) => {
+        if (!mountedChartKeys.has(chartKey)) {
+            chart.destroy();
+            instances.delete(chartKey);
+            shapes.delete(chartKey);
+        }
+    });
 }
