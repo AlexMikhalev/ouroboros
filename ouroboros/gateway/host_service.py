@@ -816,6 +816,9 @@ async def _api_presence_delivery(request: Request) -> JSONResponse:
         return _presence_error(str(exc), 409, "presence_receipt_conflict", "rejected")
     except (ValueError, TypeError) as exc:
         return _presence_error(str(exc), 400, "presence_receipt_invalid", "rejected")
+    except store.StoreMigrating:  # the receipt's earlier rows are in saved history that is still being upgraded
+        return _presence_error("presence delivery history is still importing; retry the same receipt", 503,
+                               "presence_history_importing", "retry")
     except Exception:
         log.warning("Presence delivery history write failed for skill %s", skill_name, exc_info=True)
         return _presence_error("presence delivery history write failed; retry the same receipt", 503,

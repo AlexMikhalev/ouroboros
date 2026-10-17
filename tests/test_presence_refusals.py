@@ -102,6 +102,15 @@ def test_receipt_write_retry_and_conflict_do_not_share_disposition(tmp_path, mon
     assert json.loads(unavailable.body)["disposition"] == "retry"
     assert json.loads(unavailable.body)["code"] == "presence_receipt_unwritable"
 
+    def importing(*args):
+        from ouroboros.store import StoreMigrating
+        raise StoreMigrating("Dialogue history is still importing")
+
+    monkeypatch.setattr(ctx.presence_deliveries, "record", importing)
+    waiting = asyncio.run(host_service._api_presence_delivery(_request(app, payload)))
+    assert waiting.status_code == 503 and json.loads(waiting.body)["disposition"] == "retry"
+    assert json.loads(waiting.body)["code"] == "presence_history_importing", "an import is not a failed write"
+
 
 def test_missing_work_is_rejected_without_losing_original_error(tmp_path):
     app, binding, _ctx = _presence_app(tmp_path, _answer)
