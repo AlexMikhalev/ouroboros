@@ -208,6 +208,9 @@ flowchart LR
   directory; any later edit stales that critic verdict. `.self_authored.json`
   is provenance only; self-authored skills use the same tri-model review,
   grant, enable, and extension reload flow as other executable skills.
+  Reviewers also read how the skill was installed (`install.json`: by the
+  owner or by Ouroboros, from which source and trust, why, in which task) as
+  context, never as approval.
 - **Isolated deps** (pip / npm / uv / node) install into
   `data/skills/<bucket>/<name>/.ouroboros_env/`. Status is recorded
   in `data/state/skills/<name>/deps.json`.
