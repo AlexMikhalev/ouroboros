@@ -214,15 +214,9 @@ def _import(store: Any) -> Dict[str, Any]:
     records.extend(_nomination_marks(refs, meta or {}, LEGACY_ROOM_ID))
     from ouroboros.dialogue_positions import skipped_between
 
+    # Unreadable dialogue intervals are disclosed by every reader's coverage and by this receipt; they
+    # are not a retold record the mind must fold: the old memory never held their bytes either.
     skipped = [gap._asdict() for gap in skipped_between(root, "chat")]
-    if skipped:
-        records.append({"id": "legacy-dialogue-gap-" + _digest(skipped)[:16], "kind": "legacy",
-                        "room_id": LEGACY_ROOM_ID, "author": _SOURCE_GAP_AUTHOR,
-                        "text": "[MEMORY GAP] The dialogue import recorded unreadable intervals. "
-                                "The cursor counts retained objects only; it does not cover these missing bytes.",
-                        "source_refs": [], "covers": {"room_id": LEGACY_ROOM_ID, "raw_range": _UNKNOWN_RANGE},
-                        "metadata": {"legacy_type": "gap", "coverage": "unknown", "dialogue_gaps": skipped,
-                                     "source_gap": "unreadable dialogue intervals in state/dialog.sqlite"}})
     receipt = {"id": "legacy-import-" + _digest({name: ref.get("sha256") for name, ref in refs.items()})[:16],
                "kind": "activation", "room_id": "", "author": {"kind": "host", "operation": "legacy_import"},
                "metadata": {"source_refs": refs, "imported_records": len(records), "paid_calls": 0,
