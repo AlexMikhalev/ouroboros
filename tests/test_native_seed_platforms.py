@@ -491,13 +491,8 @@ def test_a_failed_install_keeps_the_enable_and_names_the_failure(windows_seeded,
         raise RuntimeError("pip install failed: no network")
 
     monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages", offline)
-    receipt = data / "state" / "native_seed.json"
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text("{}", encoding="utf-8")
 
     assert _native_seed_dependency_pass(data, [WINDOWS], log) == [WINDOWS]
-    # the next boot reconciles instead of taking the unchanged-seed fast path
-    assert not receipt.exists()
 
     from ouroboros.extension_liveness import _deps_block_reason
 
@@ -505,6 +500,32 @@ def test_a_failed_install_keeps_the_enable_and_names_the_failure(windows_seeded,
     assert _deps_block_reason(data, find_skill(data, WINDOWS)) == "deps_failed"
     assert "no network" in json.loads((data / "state" / "skills" / WINDOWS / "deps.json").read_text(encoding="utf-8"))["error"]
     assert reconciles == [WINDOWS]
+
+
+def test_the_seed_receipt_waits_until_a_boot_finds_every_dependency_ready(windows_seeded, monkeypatch):
+    data, installs, _reconciles = windows_seeded
+    receipt = data / "state" / "native_seed.json"
+    identity = {"schema_version": 1, "seed_tree": "fixed"}
+    reseeded, passes = [], []
+    monkeypatch.setattr(launcher_bootstrap, "_native_seed_identity", lambda repo_dir: identity)
+    monkeypatch.setattr(launcher_bootstrap, "_seed_skills_into", lambda *args, **kwargs: reseeded.append(1) or 0)
+    monkeypatch.setattr(launcher_bootstrap, "_migrate_control_file_hashes", lambda *args: True)
+    monkeypatch.setattr(launcher_bootstrap, "_per_skill_version_resync", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(launcher_bootstrap, "cleanup_orphaned_seed_markers", lambda *args: True)
+    # the process dies before its background pass installs anything
+    monkeypatch.setattr(launcher_bootstrap, "_start_native_seed_dependency_pass", lambda *args: passes.append(1))
+
+    for _boot in range(2):
+        launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+        assert not receipt.exists()
+    assert len(reseeded) == 2 and len(passes) == 2 and installs == []
+
+    assert _native_seed_dependency_pass(data, [WINDOWS], log) == [WINDOWS] and len(installs) == 1
+    assert not receipt.exists()  # the pass itself never certifies the seed
+    launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+    assert json.loads(receipt.read_text(encoding="utf-8")) == identity
+    launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+    assert len(reseeded) == 3  # fast path from here on
 
 
 def reviewed_external_skill(data_root):

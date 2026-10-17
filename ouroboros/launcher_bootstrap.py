@@ -836,39 +836,56 @@ def native_seed_dependencies(
     return _reconcile_deps_after_pass_review(pathlib.Path(drive_root), skill.name, repo_path=repo_path)
 
 
-def _native_seed_dependency_pass(drive_root: pathlib.Path, seed_names: list[str], log_obj: Any) -> list[str]:
-    """Ready the dependencies of enabled trusted native seeds, then reconcile each.
+def _seeds_with_dependency_work(drive_root: pathlib.Path, seed_names: list[str], log_obj: Any) -> list[str] | None:
+    """Enabled trusted native extension seeds whose isolated dependencies are not ready.
 
-    Runs off the boot path, one lifecycle-lane job per skill. A failed install
-    stays in ``deps.json`` for the Skills page and withdraws the seed receipt
-    (``state/native_seed.json``), so the next boot reconciles and retries it while
-    an unchanged healthy seed keeps its no-payload fast path; a disabled seed
-    waits for its enable (``skill_lifecycle_actions._toggle``).
+    ``None`` when the skills could not be inspected: callers treat that as work left.
     """
     try:
-        from ouroboros import extension_loader
-        from ouroboros.config import get_skills_repo_path, load_settings
+        from ouroboros.config import get_skills_repo_path
         from ouroboros.skill_dependencies import skill_deps_not_ready
-        from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
         from ouroboros.skill_loader import find_skill
 
         repo_path = get_skills_repo_path() or None
         found = [find_skill(drive_root, name, repo_path=repo_path) for name in seed_names]
-        names = [skill.name for skill in found
-                 if skill is not None and skill.enabled and skill.manifest.is_extension()
-                 and native_seed_trusted(skill) and skill_deps_not_ready(drive_root, skill)[1]]
+        return [skill.name for skill in found
+                if skill is not None and skill.enabled and skill.manifest.is_extension()
+                and native_seed_trusted(skill) and skill_deps_not_ready(drive_root, skill)[1]]
     except Exception:
-        log_obj.warning("Native seed dependency pass could not inspect skills", exc_info=True)
+        log_obj.warning("Native seed dependencies could not be inspected", exc_info=True)
+        return None
+
+
+def _native_seed_dependency_pass(drive_root: pathlib.Path, seed_names: list[str], log_obj: Any) -> list[str]:
+    """Ready the dependencies of enabled trusted native seeds, then reconcile each.
+
+    Runs off the boot path, one lifecycle-lane job per skill. It never writes the seed
+    receipt (``state/native_seed.json``): ``_ensure_native_seed_version`` publishes it
+    only when no seed still needs dependencies, so a failed or interrupted install (its
+    error stays in ``deps.json`` for the Skills page) is retried by the next boot's
+    reconciliation, and the first boot after every install succeeded re-certifies the
+    seed for the no-payload fast path; a disabled seed waits for its enable
+    (``skill_lifecycle_actions._toggle``).
+    """
+    names = _seeds_with_dependency_work(drive_root, seed_names, log_obj)
+    if not names:
         return []
-    failed: list[str] = []
+    try:
+        from ouroboros import extension_loader
+        from ouroboros.config import get_skills_repo_path, load_settings
+        from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
+        from ouroboros.skill_loader import find_skill
+
+        repo_path = get_skills_repo_path() or None
+    except Exception:
+        log_obj.warning("Native seed dependency pass could not start", exc_info=True)
+        return []
 
     def step(name: str) -> dict[str, Any]:
         skill = find_skill(drive_root, name, repo_path=repo_path)
         if skill is None or not skill.enabled:
             return {"deps_status": "skipped"}
         status, error = native_seed_dependencies(drive_root, skill, repo_path=repo_path)
-        if error:
-            failed.append(name)
         state = extension_loader.reconcile_extension(name, drive_root, load_settings, repo_path=repo_path)
         return {"deps_status": status, "error": error, "extension_action": state.get("action")}
 
@@ -880,13 +897,7 @@ def _native_seed_dependency_pass(drive_root: pathlib.Path, seed_names: list[str]
                 options=LifecycleJobOptions(drive_root=drive_root, result_error=lambda result: result.get("error", "")),
             )
         except Exception:
-            failed.append(name)
             log_obj.warning("Native seed dependency step failed for %s", name, exc_info=True)
-    if failed:
-        try:
-            (drive_root / "state" / "native_seed.json").unlink(missing_ok=True)
-        except OSError:
-            log_obj.warning("Native seed receipt not withdrawn after a failed install", exc_info=True)
     return names
 
 
@@ -1177,14 +1188,19 @@ def _native_seed_identity(repo_dir: pathlib.Path) -> dict[str, Any] | None:
 def _start_native_seed_dependency_pass(seed_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> None:
     """Start ``_native_seed_dependency_pass`` off the boot path for every shipped seed."""
     try:
-        seed_names = sorted(entry.name for entry in seed_dir.iterdir()
-                            if entry.is_dir() and not entry.name.startswith("."))
         threading.Thread(
-            target=_native_seed_dependency_pass, args=(drive_root, seed_names, log_obj),
+            target=_native_seed_dependency_pass, args=(drive_root, _shipped_seed_names(seed_dir), log_obj),
             name="native-seed-dependencies", daemon=True,
         ).start()
     except OSError:  # pragma: no cover - defensive
         log_obj.warning("Native seed dependency pass not started", exc_info=True)
+
+
+def _shipped_seed_names(seed_dir: pathlib.Path) -> list[str]:
+    try:
+        return sorted(entry.name for entry in seed_dir.iterdir() if entry.is_dir() and not entry.name.startswith("."))
+    except OSError:
+        return []
 
 
 def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> int:
@@ -1193,7 +1209,8 @@ def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path
     The identity is the committed seed tree plus the declared post-bootstrap seeds, so
     unrelated commits keep it; name collisions and failed phases stay incomplete, and
     the previous receipt is removed before mutation so a partial upgrade cannot hide a
-    later downgrade.
+    later downgrade. While a seed still needs its isolated dependencies the pass is not
+    complete either: the receipt waits until a boot finds every dependency ready.
     """
     from ouroboros.utils import atomic_write_json
 
@@ -1232,6 +1249,8 @@ def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path
     except Exception:  # pragma: no cover - defensive
         failures.append("orphaned_markers")
         log_obj.warning("Orphaned seed-marker cleanup raised", exc_info=True)
+    if _seeds_with_dependency_work(drive_root, _shipped_seed_names(seed_dir), log_obj) != []:
+        failures.append("dependencies")
     if identity and not failures and identity == _native_seed_identity(repo_dir):
         try:
             atomic_write_json(receipt, identity)
