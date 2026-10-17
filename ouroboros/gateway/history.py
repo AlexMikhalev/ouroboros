@@ -194,6 +194,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
     copy with recorded attachments renders as its row does (views, source, mark).
     """
     from ouroboros.project_dialogue import project_origin_rows
+    from ouroboros.chat_references import origin_projection
 
     origin_rows = project_origin_rows(data_dir, thread_id)
     if not origin_rows:
@@ -223,7 +224,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "client_message_id": cmid,
             "task_id": "",
             "origin_projected": True,
-            "origin_id": row["origin_id"],
+            "origin_id": row["origin_id"], **origin_projection(data_dir, ref),
             **({"attachments": attachment_views(row["attachments"], data_dir)} if row.get("attachments") else {}),
             **({"text_placeholder": True} if row.get("text_placeholder") is True else {}),
         })
@@ -300,7 +301,9 @@ def _chat_quota_predicate(row_matches_thread):
 
 
 def _history_identity(entry):
-    return {key: entry[key] for key in ("history_id", "history_position") if key in entry}
+    from ouroboros.chat_references import projection_fields
+    return {**({"row_address": entry["row_address"]} if entry.get("row_address") else projection_fields(entry)),
+            **{key: entry[key] for key in ("history_id", "history_position", "reply_to", "relay", "reply_to_relay") if key in entry}}
 
 
 def _read_progress_history_entries(live, adir, want, counts_toward_quota, *, include_gaps=False):
@@ -826,10 +829,9 @@ def _collect_chat_rows(
                 # before the producer stripped markdown; a no-op on new rows.
                 # The durable chat.jsonl is never rewritten.
                 rec["text"] = strip_markdown(rec["text"])
-                if isinstance(entry.get("terminal_time"), dict):
-                    rec["terminal_time"] = dict(entry["terminal_time"])
-                if isinstance(entry.get("completion_notice"), dict):
-                    rec["completion_notice"] = dict(entry["completion_notice"])
+                for key in ("terminal_time", "completion_notice", "outcome_axes"):
+                    if isinstance(entry.get(key), dict):
+                        rec[key] = dict(entry[key])
                 for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer",
                             "completion_reason", "delivery_id", "handoff_id"):
                     if key in entry:
@@ -1419,7 +1421,7 @@ def _assemble_history_response(
     thread_id: int,
     n_human: int,
     n_progress: int,
-    cursor: Optional[str] = None,
+    cursor: Optional[str] = None, around: Optional[str] = None,
 ) -> bytes:
     """Select and project recent/archive history in the endpoint's one worker.
 
@@ -1443,7 +1445,7 @@ def _assemble_history_response(
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
                                room_segment_lens(thread_id, project_chat_ids, project_source_refs, rooms),
-                               notes, rooms.warm)
+                               notes, rooms.warm, around, (row_matches_thread, _stored_chat_id))
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1465,7 +1467,7 @@ def _assemble_history_response(
     combined.extend(progress_rows)
     candidates = list(combined)
     combined = _fold_task_bound_skill_reviews(combined)
-    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor or page["after"] else None
+    lifecycle_row = _active_lifecycle_row(row_matches_thread) if not (cursor or around) or page["after"] else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
     result_cache[_READS].prefetch(row.get("task_id") for row in combined)
@@ -1519,7 +1521,6 @@ def _assemble_history_response(
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
-    # Wake-ups have their own task/result and need no replay special case.
     # Retired "bg-consciousness" progress has no task_result: replay treats it
     # like any missing-result row; the client's durable task-detail read shows
     # "Outcome unavailable". Never stamp it terminal here: no result is not Done.
@@ -1582,9 +1583,10 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         thread_id = _int_param("chat_id", 1, 2**31 - 1) or 1
         # ONE thread hop for the whole assembly (perf2 P3): reads, transforms,
         # slicing, annotation, and the JSON encode all run off the event loop.
-        cursor = request.query_params.get("cursor")
+        cursor, around = (request.query_params.get(name) for name in ("cursor", "around"))
         try:
-            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, cursor)
+            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress,
+                                           cursor, around)
         except (HistoryCursorError, JsonlChainUnreadable, OSError, StoreMigrating) as exc:
             reason = (exc.reason if isinstance(exc, HistoryCursorError) else
                       "migrating" if isinstance(exc, StoreMigrating) else "history_source_unavailable")

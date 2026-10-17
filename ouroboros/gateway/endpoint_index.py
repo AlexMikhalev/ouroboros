@@ -232,9 +232,9 @@ HTTP_SHAPES: dict[str, Shape] = {
     "POST /api/desktop/background": Shape(f"200:DesktopAutostartResponse {_SETTINGS_REFUSAL}", "OwnerEnabledRequest"),
     "POST /api/owner/runtime-mode": Shape(f"200:OwnerRuntimeModeResponse {_SETTINGS_REFUSAL}", "OwnerRuntimeModeRequest"),
     "POST /api/owner/auto-grant": Shape(f"200:OwnerAutoGrantResponse {_SETTINGS_REFUSAL}", "OwnerEnabledRequest"),
-    "POST /api/owner/context-mode": Shape(f"200:OwnerContextModeResponse {_SETTINGS_REFUSAL}", "OwnerContextModeRequest"),
-    "POST /api/owner/effort-range": Shape(f"200:OwnerEffortRangeResponse {_SETTINGS_REFUSAL}", "EffortRange",
-                                          note="min <= recommended <= max on the effort scale"),
+    "POST /api/owner/context-mode": Shape(f"200:OwnerContextModeResponse {_SETTINGS_REFUSAL} 404:SettingsWriteRefusal", "OwnerContextModeRequest"),
+    "POST /api/owner/effort-range": Shape(f"200:OwnerEffortRangeResponse {_SETTINGS_REFUSAL} 404:SettingsWriteRefusal", "OwnerEffortRangeRequest",
+                                          note="helper min <= max; primary independent; optional project_id, otherwise Main"),
     "POST /api/owner/safety-mode": Shape(f"200:OwnerSafetyModeResponse {_SETTINGS_REFUSAL}", "OwnerSafetyModeRequest"),
     "POST /api/owner/capability-ack": Shape(
         "200:ResponseLimitAckResponse|ContextWindowAckResponse 400:ErrorResponse", "CapabilityAckRequest",
@@ -279,7 +279,7 @@ HTTP_SHAPES: dict[str, Shape] = {
         "200,202:DecisionResponse 400,404:ErrorResponse 409:DecisionResponse|ErrorResponse 501,503:ErrorResponse",
         "DecisionRequest", note="request_id is the idempotency key; the first answer wins"),
     "GET /api/chat/history": Shape(
-        "200,400,409,503:ChatHistoryResponse", query="chat_id cursor n_human n_progress limit",
+        "200,400,409,503:ChatHistoryResponse", query="chat_id cursor around n_human n_progress limit",
         note="an error page echoes the cursor sent, so the same request can be repeated"),
     "POST /api/chat/upload": Shape("200:UploadResponse 400:ErrorResponse", "multipart", note="form field file"),
     "DELETE /api/chat/upload": Shape("200:ChatUploadDeleteResponse 400,404,409:ErrorResponse", "ChatUploadDeleteRequest",

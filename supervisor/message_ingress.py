@@ -236,6 +236,14 @@ def _chat_record(
         # Speech rows persist only the compact identity required to route a
         # child final after progress retention/rotation has removed its cards.
         meta = dict(message_meta or {})
+        if direction == "out" and task_id and record_type != "relay_entry" and "reply_to" not in meta:
+            from ouroboros.chat_references import origin_reply
+            meta["reply_to"] = origin_reply(root, task_id)
+        for key in ("reply_to", "relay"):
+            if isinstance(meta.get(key), dict) and meta[key]:
+                record[key] = dict(meta[key])
+        if meta.get("reply_to_relay"):
+            record["reply_to_relay"] = str(meta["reply_to_relay"])
         if meta.get("late_answer"):
             from ouroboros.owner_quiz import late_answer_ref
             accepted_answer = late_answer_ref(meta["late_answer"])
@@ -251,7 +259,7 @@ def _chat_record(
         if "narration" in meta:
             record["narration"] = bool(meta["narration"])
         if record_type in ("project_started", "project_handoff", "project_completion_summary"):
-            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time"):
+            for key in ("project_id", "project_name", "task_name", "target_label", "status", "completion_answer", "completion_reason", "completion_notice", "handoff_id", "terminal_time", "outcome_axes"):
                 if key in meta:
                     record[key] = meta[key]
         if meta.get("delivery_id"):
@@ -354,11 +362,13 @@ def accepted_chat_message(drive_root, chat_id: int, client_message_id: str) -> O
     return None if found is None else dict(found.row)
 
 
-def rejoin_or_refuse(row: dict, source: str, logged: str, refs: Any) -> None:
-    """A redelivered frame may rejoin the accepted row only as the same message of the same source."""
+def rejoin_or_refuse(row: dict, source: str, logged: str, refs: Any, reply: Optional[dict] = None) -> None:
+    """A redelivered frame may rejoin the accepted row only as the same message of the same source
+    (text, ordered attachment content and the Reply it points at)."""
     if row.get("source") != source:
         raise ValueError("client_message_id is already bound to another source")
-    if not same_message(row, logged, refs):  # text AND ordered attachment content
+    if (not same_message(row, logged, refs)
+            or (row.get("reply_to") or {}).get("address", "") != (reply or {}).get("address", "")):
         raise ValueError("client_message_id was already used for a different message")
 
 
@@ -391,6 +401,10 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
     )
     if not logged:
         raise ValueError("message is empty")
+    from ouroboros.chat_references import ingress_reply
+    reply = ingress_reply(drive_root, message.get("task_metadata") or {})
+    if reply:  # a replayed obligation dispatches the same reference
+        message["task_metadata"] = {**(message.get("task_metadata") or {}), "reply_reference": reply}
     refs = stored_refs((message.get("task_metadata") or {}).get("chat_attachments"))
     late_answer = late_answer_ref((message.get("task_metadata") or {}).get("late_answer"))
     placeholder = not text.strip() and not str(message.get("image_caption") or "").strip()
@@ -405,7 +419,7 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
                     chat_id, int(message.get("user_id") or 0), logged, ts=utc_now_iso(), source=source,
                     client_message_id=message_id, sender_label=str(message.get("sender_label") or ""),
                     transport=message.get("transport"), drive_root=root,
-                    message_meta={"attachments": refs, "text_placeholder": placeholder,
+                    message_meta={"attachments": refs, "text_placeholder": placeholder, "reply_to": reply,
                                   **({"late_answer": late_answer} if late_answer else {})},
                     dispatch=obligation(name, text, message))
             finally:
@@ -418,7 +432,7 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
             hand_over(root, chat_id, message_id, name)
         else:
             # The row an earlier delivery landed (or the race lost by a hair): rejoin it, or take its owed dispatch.
-            rejoin_or_refuse(row, source, logged, refs)
+            rejoin_or_refuse(row, source, logged, refs, reply)
             saved_answer = late_answer_ref(row.get("late_answer"))
             if saved_answer:
                 message["task_metadata"] = {**(message.get("task_metadata") or {}), "late_answer": saved_answer}
@@ -430,6 +444,8 @@ def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, d
             if (message.get("task_metadata") or {}).get("chat_attachments"):
                 message["task_metadata"] = {**message["task_metadata"], "chat_attachments": row.get("attachments")}
         ts = str(row.get("ts") or "")
+        if row.get("reply_to"):  # the reference the host resolved when it accepted the row
+            message["task_metadata"] = {**(message.get("task_metadata") or {}), "reply_reference": row["reply_to"]}
         ref = build_owner_message_ref(chat_id=chat_id, client_message_id=message_id, ts=ts, text=logged)
         # record_inbound_message gets the row witness and receipt time.
         # Dispatch only schedules/queues; slow work must not hold the ingress lock.
@@ -503,7 +519,12 @@ def record_inbound_message(bridge, message: dict, *, chat_id: int, user_id: int,
         metadata = message.get("task_metadata") or {}
         # no words or caption from the sender: TEXT is the host's placeholder
         placeholder = not str(message.get("text") or "").strip() and not str(message.get("image_caption") or "").strip()
-        message_bus.log_chat(
+        from ouroboros.chat_references import ingress_reply
+        reply = ingress_reply(message_bus.DATA_DIR, metadata)
+        if reply:
+            metadata["reply_reference"] = reply
+            message["task_metadata"] = metadata
+        row = message_bus.log_chat(
             "in", chat_id, user_id, text, ts=ts, source=source,
             sender_label=str(message.get("sender_label") or ""),
             sender_session_id=str(message.get("sender_session_id") or ""),
@@ -511,9 +532,10 @@ def record_inbound_message(bridge, message: dict, *, chat_id: int, user_id: int,
             client_surface=(metadata.get("client_surface") if isinstance(metadata, dict)
                             and isinstance(metadata.get("client_surface"), dict) else None),
             message_meta={"attachments": metadata.get("chat_attachments") if isinstance(metadata, dict) else None,
-                          "text_placeholder": placeholder},
+                          "text_placeholder": placeholder, "reply_to": reply},
         )
         ref = build_owner_message_ref(chat_id=chat_id, client_message_id=client_message_id, ts=ts, text=text)
+    from ouroboros.chat_references import projection_fields
     if source != "web":
         # A parked inline photo is one of the views: one bubble, never a second photo frame;
         # its text is the row's, placeholder mark included, as history replays it.
@@ -527,6 +549,129 @@ def record_inbound_message(bridge, message: dict, *, chat_id: int, user_id: int,
             "sender_label": str(message.get("sender_label") or ""),
             "sender_session_id": str(message.get("sender_session_id") or ""),
             "client_message_id": client_message_id, "transport": message.get("transport") or {},
-            "chat_id": chat_id,
+            "chat_id": chat_id, **(projection_fields(row) if row else {}),
         })
     return ref
+
+
+def handle_web_message(
+    self,
+    text: str,
+    *,
+    sender_session_id: str = "",
+    client_message_id: str = "",
+    image_base64: str = "",
+    image_mime: str = "",
+    image_caption: str = "",
+    task_metadata: Optional[Dict[str, Any]] = None,
+    chat_id: int = 1,
+    project_id: str = "",
+    dispatch=None,
+) -> None:
+    from supervisor import message_bus as bus
+    from ouroboros.chat_uploads import claim_refs
+    from ouroboros.chat_references import ingress_reply, projection_fields
+
+    # Web ownership stays user_id=1; positive chat_id selects Main/Project.
+    # Negative A2A ids are not web destinations and fall back to Main.
+    try:
+        thread_id = int(chat_id or 1)
+    except (TypeError, ValueError):
+        thread_id = 1
+    if thread_id < 1:
+        thread_id = 1
+    clean_text = str(text or "").strip()
+    if self.panic.request(clean_text):
+        return
+    if not clean_text and not image_base64 and not (task_metadata or {}).get("chat_attachment_uploads"):
+        return
+    import uuid
+
+    from ouroboros.process_custody import current_custody_session_id
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    ts = utc_now_iso()
+    message_id = client_message_id or f"web-{uuid.uuid4().hex}"
+    metadata = dict(task_metadata or {})
+    reply = ingress_reply(bus.DATA_DIR, metadata)
+    if reply:  # the obligation of a fresh acceptance replays the same reference
+        metadata["reply_reference"] = reply
+    if str(project_id or "").strip():
+        metadata.setdefault("project_id", str(project_id).strip())
+    from ouroboros.chat_uploads import attachment_placeholder
+
+    log_text = clean_text or str(image_caption or "").strip() or attachment_placeholder(image_base64, metadata)
+    placeholder = not clean_text  # a web caption is the gateway's own ``[user attachment: …]`` label
+    # The canonical row precedes echo/dispatch: neither WS nor Queue survives restart.
+    # The row, its receipt and the dispatch obligation are ONE store transaction; the
+    # returned witness lets dequeue validation avoid any chat read.
+    name = dispatcher_name(dispatch)
+    with _INGRESS_LOCK:
+        row = accepted_chat_message(bus.DATA_DIR, thread_id, client_message_id) if client_message_id else None
+        fresh = False
+        if row is None:
+            attachments = claim_refs(metadata.get("chat_attachments"), bus.DATA_DIR)  # DELETE refuses them now
+            message = dict(
+                chat_id=thread_id, user_id=1, source="web",
+                sender_session_id=sender_session_id, client_message_id=message_id,
+                image_base64=image_base64, image_mime=image_mime,
+                image_caption=image_caption, task_metadata=metadata,
+            )
+            receipt = bus.accept_chat(
+                thread_id, 1, log_text, ts=ts, source="web",
+                sender_session_id=sender_session_id, client_message_id=message_id,
+                client_surface=(metadata.get("client_surface") if isinstance(metadata.get("client_surface"), dict) else None),
+                message_meta={"attachments": attachments, "text_placeholder": placeholder, "reply_to": reply},
+                dispatch=obligation(name, clean_text, message))
+            row, fresh = receipt.row, not receipt.duplicate
+        if fresh:
+            handed = True
+        else:
+            # A redelivered frame names the accepted message: the same words, the same ordered
+            # attachment content and the same Reply rejoin it (no second row); anything else under
+            # that id is refused, claiming none of its uploads. A rejoin dispatches only by taking
+            # the row's still-owed dispatch (once); a dispatch that began is never replayed.
+            rejoin_or_refuse(row, "web", log_text, stored_refs(metadata.get("chat_attachments")), reply)
+            ts, attachments = str(row.get("ts") or ts), row.get("attachments")
+            log_text, placeholder = str(row.get("text") or log_text), row.get("text_placeholder") is True
+            if handed := dialogue_store.claim_dispatch(bus.DATA_DIR, thread_id, message_id, process=current_custody_session_id()):
+                claim_refs(metadata.get("chat_attachments"), bus.DATA_DIR)  # the copies it stages are kept
+        if row.get("reply_to"):  # the reference the host resolved when it accepted the row
+            metadata["reply_reference"] = row["reply_to"]
+        if handed:
+            ref = build_owner_message_ref(chat_id=thread_id, client_message_id=message_id, ts=ts, text=log_text)
+            message = dict(
+                chat_id=thread_id, user_id=1, source="web",
+                sender_session_id=sender_session_id, client_message_id=message_id,
+                image_base64=image_base64, image_mime=image_mime,
+                image_caption=image_caption, task_metadata=metadata,
+                accepted_source_ref=ref, accepted_source_row=row,
+            )
+            if dispatch is None:
+                if fresh:
+                    hand_over(bus.DATA_DIR, thread_id, message_id, name)  # the durable "entered" mark
+                self.enqueue_local_message(clean_text, **message)
+                dialogue_store.complete_dispatch(bus.DATA_DIR, thread_id, message_id)
+    try:
+        if self._broadcast_fn:
+            # The echo is the accepted row as history replays it (text, time, views, placeholder
+            # mark); a rejoin re-echoes it, so every tab keys it as the same saved bubble.
+            echo = {
+                "type": "chat", "role": "user", "content": log_text,
+                "ts": ts, "source": "web", "chat_id": thread_id, "attachments": attachment_views(attachments),
+                "sender_session_id": sender_session_id, "client_message_id": message_id,
+                "ingress_accepted": True,  # Canonical row exists; execution is not promised.
+            }
+            if placeholder:
+                echo["text_placeholder"] = True
+            # Positive call-entry evidence, never the acceptance stamp alone; a deferred dispatch is still pending.
+            echo.update(delivery_facts(row, thread_id))
+            echo.update(projection_fields(row))
+            bus.stamp_project_thread(bus.DATA_DIR, echo)
+            self._broadcast_fn(echo)
+    finally:
+        if dispatch is not None and handed:
+            if fresh:
+                hand_over(bus.DATA_DIR, thread_id, message_id, name)  # entered now, not at the echo
+            dispatch(clean_text, **message)  # Accepted work survives an echo/disconnect failure.
+            dialogue_store.complete_dispatch(bus.DATA_DIR, thread_id, message_id)
