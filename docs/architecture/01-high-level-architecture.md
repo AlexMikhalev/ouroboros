@@ -327,10 +327,11 @@ ouroboros/ — agent core and shared runtime (§6)
   extension_loader.py — Extension loading: in-process pure-Python via `PluginAPIImpl`, child-process proxies for isolated-dep and native extensions (§13)
   extension_process_runner.py — Extension child processes: scrubbed env, per-skill deps, timeouts, graceful host errors
   extension_route_stream.py — Portable stdio response frames and ASGI relay for out-of-process extension routes (§3 Out-of-process extension responses)
-  extension_ui_validation.py — The host-owned declarative-schema-v1 widget validator
+  extension_ui_validation.py — Widget and contribution catalog validation
+  extension_contributions.py — Manifest staging, captured host assets and revision URLs
   extension_isolated_deps.py — Non-reentrant reader/writer leases for `sys.path`, polled asynchronously; dependency RLock also serializes owned importer-cache sweeps against double deletion, not plugin execution
   extension_health.py — Durable process-qualified per-skill health at `data/state/skills/<name>/health.json`; server observation is authoritative, worker observation a handoff-qualified view
-  extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — The extension runtime's leaves: the `PluginAPI` handed to `register(api)`, live-surface registries, liveness, child-catalog validation, staged import trees, provider-safe surface naming
+  extension_plugin_api.py, extension_registry_state.py, extension_liveness.py, extension_child_catalog.py, extension_import_staging.py, extension_surface_names.py — PluginAPI implementation, live registries, liveness, child catalog, staged imports and provider-safe names
   skill_token.py — Opaque Host Service token minting/validation (§12)
   marketplace/ — ClawHub and OuroborosHub (§13)
     clawhub.py, ouroboroshub.py, fetcher.py, adapter.py, install.py, install_specs.py, isolated_deps.py, provenance.py — Registry clients (the hub update is an adopt transaction with verified rollback), fetch, manifest adaptation, install and dependency metadata, isolated deps, provenance and the publication receipt
@@ -417,12 +418,13 @@ ouroboros/ — agent core and shared runtime (§6)
     update_progress.py — Process-local stages owned by the synchronous update executor; status projection and WS invalidation, never recovery authority
     schedules.py — Cron schedule HTTP surface
     files.py — File Browser and chat upload
-    ui_preferences.py — `state/ui_preferences.json`: widget order and widths, per-card start modes (`extension_ui_validation.WIDGET_START_MODES`), nested subagent expansion, the empty-Main `welcome` copy
+    ui_preferences.py — Install-wide `state/ui_preferences.json`: widgets, layout, welcome, voice choice and contribution arrangement
     ui_i18n.py — `GET/POST /api/ui/i18n*`: interface language and translation memory (i18n_memory.py); the language POST is a locked owner-settings write of `OUROBOROS_UI_LANGUAGE`
     models.py — Model catalog, provider probes, local-model lifecycle
     extensions.py — Extensions/skills HTTP surface (routes: §4)
+    contributions.py — Live contributions, offers, voice availability, captured assets and UI preference types (CLIENT_CONTRACT §11)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
-    widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot, with no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts contracts.py re-exports
+    widgets.py — GET /api/widgets: live cards, no discovery/reconcile/hash/write; widget types re-exported by contracts.py
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
     marketplace.py — ClawHub and OuroborosHub HTTP surface
     mcp.py — MCP HTTP surface over the shared MCPManager

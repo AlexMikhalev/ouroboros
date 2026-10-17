@@ -26,8 +26,10 @@ def _ui_client_routes() -> list[BaseRoute]:
         api_ui_i18n_regenerate_post,
     )
     from ouroboros.gateway.ui_preferences import api_ui_preferences_get, api_ui_preferences_post
+    from ouroboros.gateway.contributions import api_ui_contributions
 
     return [
+        Route("/api/ui/contributions", endpoint=api_ui_contributions, methods=["GET"]),
         Route("/api/ui/preferences", endpoint=api_ui_preferences_get, methods=["GET"]),
         Route("/api/ui/preferences", endpoint=api_ui_preferences_post, methods=["POST"]),
         Route("/api/ui/i18n", endpoint=api_ui_i18n_get, methods=["GET"]),
@@ -66,6 +68,7 @@ def collect_routes(
         api_skill_toggle,
     )
     from ouroboros.gateway.widgets import api_widgets
+    from ouroboros.gateway.contributions import api_extension_host_asset
     from ouroboros.gateway.files import (
         api_chat_upload,
         api_chat_upload_delete,
@@ -181,11 +184,8 @@ def collect_routes(
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
         Route("/api/extensions/{skill}/manifest", endpoint=api_extension_manifest, methods=["GET"]),
         Route("/api/extensions/{skill}/module/{entry:path}", endpoint=api_extension_module, methods=["GET"]),
-        Route(
-            "/api/extensions/{skill}/settings_section",
-            endpoint=api_extension_settings_section,
-            methods=["GET"],
-        ),
+        Route("/api/extensions/{skill}/ui/{revision}/{path:path}", endpoint=api_extension_host_asset, methods=["GET"]),
+        Route("/api/extensions/{skill}/settings_section", endpoint=api_extension_settings_section, methods=["GET"]),
         Route(
             "/api/extensions/{skill}/{rest:path}",
             endpoint=api_extension_dispatch,

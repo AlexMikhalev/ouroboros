@@ -46,6 +46,7 @@ _MOVED_OWNERS = {
     # loader; they read only ``_ui_tabs``/``_extensions``, so they are owned here
     # and the loader re-exports the very same objects for its gateway callers.
     "live_module_sources": extension_registry_state,
+    "snapshot": extension_registry_state,
     "live_widget_projection": extension_registry_state,
     "_EXTENSION_NAME_PREFIX": extension_surface_names,
     "_EXTENSION_NAME_RE": extension_surface_names,
@@ -106,7 +107,7 @@ _STAYED = (
     "_run_unload_callback", "_unload_extension_locked",
     "ensure_companions_running", "get_tool", "list_companion_names", "list_routes",
     "list_ws_handlers", "load_extension", "log", "reconcile_extension", "reload_all",
-    "snapshot", "unload_extension",
+    "unload_extension",
 )
 
 

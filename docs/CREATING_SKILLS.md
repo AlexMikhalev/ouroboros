@@ -176,6 +176,90 @@ where the parser knows the repair, a `fix_hint` rendered into the message
 (`... — fix: ...`), so a refused registration tells you how to fix the
 manifest instead of only what was wrong.
 
+## Contributing controls and speech engines
+
+`contributes` is an optional list of up to 32 mappings on instruction or extension
+skills. Each needs a unique `id` matching `[a-z0-9_]{1,40}` and exactly one of
+`placement` or `provides`. Shape errors reject the manifest; semantic errors drop
+only that entry, with a repair warning in preflight and the contribution catalog.
+There is no additional PluginAPI registration call.
+
+| Field | Contract |
+|---|---|
+| `label`, `title` | Required nonblank label ≤40 characters, optional title ≤200; displayed verbatim. |
+| `icon`, `order` | Optional host icon name (the `icons` list of `/api/ui/contributions`), optional integer order (default 0). |
+| `placement` | `composer.plus`, `composer.chips` or `message.action`. |
+| `action` | Required on placements: `draft.insert` with text ≤4000, `notice` with text ≤300, `open.tab`, or `skill.request`. No verb sends as the owner. |
+| `action.route`, `with`, `then` | `skill.request` POSTs to its own relative route; `with: none` (default), `draft` or `message`; `then: keep_draft` (default) or `clear_draft`. The host supplies the absolute URL. |
+| `source` | Required only for chips: `{route, refresh_s}`; relative GET route, refresh integer 15..3600 seconds; reply `{text, tone?: ok|warn|bad|muted, title?}`. |
+| `provides`, `runtime` | Engine kind `stt` or `tts`; required runtime `server` or `client`. Server engines declare a relative POST `route`; clients register from their host module. |
+| `destination` | Required for engines: `device`, `host` or `vendor:<Name>`. Describe the real processing destination. |
+| `languages`, `formats` | Optional lists of up to 64 nonblank strings ≤120 characters. Formats: `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/mpeg`, `audio/wav`. |
+| `install_size` | Optional nonblank text ≤120 characters, shown by install offers. |
+| `max_bytes`, `max_seconds` | Optional STT limits: integers 1..524288 bytes and 1..600 seconds. These do not raise the host route cap. |
+| `render` | Defaults to `{kind: declarative}`. `{kind: host, entry: ui/name.js}` names a trusted same-origin ES module; only relative `.js` entries under `ui/`. |
+
+Routes are plain relative paths without traversal, URL schemes, queries or
+fragments. Host render and client runtime require `type: extension` and declared
+`page_module` permission. A client provider also needs `render.kind: host`; it
+has no server route. Data-only entries need no page permission and remain valid
+on instruction skills. Extension providers and controls appear only while their
+extension is loaded; instruction contributions follow enablement and review.
+
+A template item can be entirely declarative:
+
+```yaml
+contributes:
+  - id: explain_simpler
+    placement: composer.plus
+    label: Explain simpler
+    icon: sparkle
+    action: {verb: draft.insert, text: "Explain your last answer more simply."}
+```
+
+A server speech engine uses its normal registered route:
+
+```yaml
+contributes:
+  - id: dictation
+    provides: stt
+    label: Local dictation
+    runtime: server
+    route: transcribe
+    destination: host
+    languages: [auto, en, ru]
+    formats: [audio/webm, audio/mp4, audio/wav]
+    install_size: "~500 MB"
+    max_bytes: 393216
+    max_seconds: 60
+```
+
+The request body is raw audio (`Content-Type` is the recorded type), optionally
+with `?lang=`. Return `{text}`, `{text:"", status:"no_speech"}` or
+`{error:{code,message}}`. Keep uploads under both declared limits and the existing
+512 KiB route cap. The recorder enforces the declared limits; do not require a
+multipart wrapper or a skill-specific host upload exception.
+
+A capsule-row chip reads a small status route and opens its Widgets tab:
+
+```yaml
+contributes:
+  - id: quota
+    placement: composer.chips
+    label: Usage
+    source: {route: chip, refresh_s: 60}
+    action: {verb: open.tab}
+```
+
+Host modules and their relative imports load from captured revision URLs such as
+`/api/extensions/<skill>/ui/<revision>/ui/name.js`; CSS, JSON and images under
+`ui/` are captured too. Editing disk files does not change a loaded generation;
+unload or a new revision makes its old URLs return 404. Export `mount(ctx)` and
+return `{dispose}`; release resources when disposed. These are trusted page
+modules, distinct from sandboxed widget modules or model-written mini-apps.
+Ordinary external skills keep the existing review and owner grant policy;
+launcher-written native seeds can receive the hash-bound page grant automatically.
+
 ## Lifecycle: install → review → enable → execute
 
 ```mermaid
@@ -585,6 +669,7 @@ calls and runtime behaviours:
 | `net` | The skill may make outbound network calls. |
 | `fs` | The skill may write outside its state dir (review item still enforces confinement). |
 | `subprocess` | The skill may spawn child processes (review items + cwd-confinement still enforce). |
+| `page_module` | With its hash-bound grant, reviewed extension code may run as a trusted same-origin contribution module in the owner’s page. |
 | `widget` | The skill may call `register_ui_tab` and `register_settings_section`. |
 | `ws_handler` | The skill may call `register_ws_handler` and `send_ws_message`. |
 | `route` | The skill may call `register_route`. |

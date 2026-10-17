@@ -533,7 +533,7 @@ def install_deps(context: BootstrapContext) -> bool:
 
 
 _SEED_COMPLETE_MARKER = ".bootstrap-seed-complete"
-_POST_BOOTSTRAP_NEW_NATIVE_SEEDS = frozenset({"telegram", "unix_computer_use"})
+_POST_BOOTSTRAP_NEW_NATIVE_SEEDS = frozenset({"telegram", "unix_computer_use", "templates", "device_voice", "browser_speech"})
 
 
 def _read_skill_manifest(skill_dir: pathlib.Path):
@@ -675,10 +675,11 @@ def _per_skill_version_resync(
 
 
 # Auto-enable exemption: tool registration + local subprocess are the basic
-# extension substrate. Externally-facing capabilities (net, route, widget,
+# extension substrate; page_module is explicitly trusted for native seeds only.
+# Externally-facing capabilities (net, route, widget,
 # inject_chat, subscribe_event, ...) keep the skill DISABLED until the owner
 # enables it, even though the native-trust review verdict is stamped.
-_NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS = frozenset({"tool", "subprocess"})
+_NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS = frozenset({"tool", "subprocess", "page_module"})
 
 
 def _stamp_native_seed_trust(
@@ -692,8 +693,8 @@ def _stamp_native_seed_trust(
     launcher-written native skill gets ``status=clean`` bound to the payload
     hash computed AFTER seeding (control files excluded from the hash). Any
     later edit flips the verdict stale exactly like an ordinary review.
-    Zero-grant skills (no secret keys, no privileged permissions, only
-    tool/subprocess surface) also auto-enable. Owner opt-out:
+    Seeds without secret keys or non-page privileged grants and with only
+    tool/subprocess/page_module permissions also auto-enable. Owner opt-out:
     ``OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false``. Never raises.
     """
     try:
@@ -708,6 +709,7 @@ def _stamp_native_seed_trust(
             requested_skill_permissions,
             save_enabled,
             save_review_state,
+            save_skill_grants,
         )
         from ouroboros.utils import utc_now_iso
 
@@ -748,9 +750,15 @@ def _stamp_native_seed_trust(
             list(skill.manifest.permissions or []),
             list(skill.manifest.subscribe_events or []),
         )
+        # Only launcher-written, repo-reviewed seeds receive this grant automatically.
+        # External page modules retain the ordinary hash-bound owner grant path.
+        if "page_module" in perms:
+            save_skill_grants(drive_root, skill.name, [], granted_permissions=["page_module"],
+                              requested_permissions=perms, requested_keys=keys,
+                              content_hash=skill.content_hash)
         zero_grant = (
             not keys
-            and not perms
+            and not (set(perms) - {"page_module"})
             and set(skill.manifest.permissions or []) <= _NATIVE_AUTO_ENABLE_EXEMPT_PERMISSIONS
         )
         # Owner sovereignty: auto-enable only when NO explicit choice exists.

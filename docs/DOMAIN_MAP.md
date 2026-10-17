@@ -21,14 +21,14 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D11 | Gateway, server & Web UI | 85 | 0 |
 | D12 | Settings & configuration | 21 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
-| D14 | Skills & extensions | 58 | 0 |
+| D14 | Skills & extensions | 60 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
 | D17 | Projects, workspaces & task results | 37 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **770** | **0** |
+| **total** | | **772** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -814,6 +814,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/event_bus.py`
 - `ouroboros/extension_child_catalog.py`
 - `ouroboros/extension_companion.py`
+- `ouroboros/extension_contributions.py`
 - `ouroboros/extension_health.py`
 - `ouroboros/extension_import_staging.py`
 - `ouroboros/extension_isolated_deps.py`
@@ -826,6 +827,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/extension_route_stream.py`
 - `ouroboros/extension_surface_names.py`
 - `ouroboros/extension_ui_validation.py`
+- `ouroboros/gateway/contributions.py`
 - `ouroboros/marketplace/__init__.py`
 - `ouroboros/marketplace/adapter.py`
 - `ouroboros/marketplace/clawhub.py`

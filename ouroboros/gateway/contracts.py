@@ -18,6 +18,7 @@ from ouroboros.gateway.history_contracts import ChatHistoryResponse  # noqa: F40
 from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-exports
     AttachmentManifestEntry, ChatAttachmentInbound, ChatAttachmentView,
 )
+from ouroboros.gateway.contributions import UiContribution, UiContributionsResponse, UiPreferencesResponse
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
 from ouroboros.gateway.management_contracts import (  # noqa: F401 -- public re-exports
@@ -976,17 +977,6 @@ class SkillDeleteResponse(TypedDict, total=False):
     error: str
 
 
-class UiPreferencesResponse(TypedDict):
-    ok: NotRequired[bool]
-    widget_order: list[str]
-    widget_start_mode: dict[str, Literal["auto", "manual", "retain"]]  # owner per-card launch-policy override
-    widget_size: dict[str, dict[str, int]]  # owner Widgets card width: {w: masonry columns the card spans, 12 = full width; h: 0}
-    nested_subagents_expanded: bool
-    sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
-    project_panel_width: int  # px; 0 = CSS default
-    project_seen_revision: dict[str, int]  # monotonic paint ACK per active Project
-    welcome: dict[str, str]  # install-wide empty-Main UI copy: mode default|hidden|custom and plain text
-
 
 class DesktopAutostartResponse(TypedDict):  # GET/POST /api/desktop/autostart (OS registration) and /api/desktop/background (unavailable|off|on)
     state: Literal["unavailable", "off", "on", "other_copy", "disabled_by_os"]
@@ -1555,7 +1545,7 @@ __all__ = [
     "OnboardingPresetProjection",
     "SettingsPostCommitFailureResponse",
     "SkillGrantResponse", "SkillDeleteResponse",
-    "UiPreferencesResponse", "DesktopAutostartResponse",
+    "UiContribution", "UiContributionsResponse", "UiPreferencesResponse", "DesktopAutostartResponse",
     "GitLogResponse",
     "EvolutionDataResponse",
     "ScheduledTasksResponse", "ScheduleUpsertResponse", "ScheduleDeleteResponse", "ScheduleActionResponse",
