@@ -50,11 +50,17 @@ function boot({ saved = null, storage = true, systemLight = false, media = true,
         addEventListener: (key, fn) => handlers.set(`media:${key}`, fn),
         removeEventListener: (key) => handlers.delete(`media:${key}`),
     };
+    // The layout switch asks its own query (layout.test.js covers it); keep its listener apart.
+    const layoutQuery = {
+        matches: true,
+        addEventListener: (key, fn) => handlers.set(`layout:${key}`, fn),
+        removeEventListener: (key) => handlers.delete(`layout:${key}`),
+    };
     const window = {
         addEventListener: (key, fn) => handlers.set(key, fn),
         removeEventListener: (key) => handlers.delete(key),
         dispatchEvent: (event) => events.push(event),
-        ...(media ? { matchMedia: () => query } : {}),
+        ...(media ? { matchMedia: (q) => (q.includes('min-width') ? layoutQuery : query) } : {}),
         ...(bridge ? { pywebview: { api: bridge } } : {}),
         ...(clock ? { performance: clock } : {}),
     };

@@ -1,6 +1,7 @@
-/* Client-local appearance: Light / Dark / System. Runs synchronously before CSS
-   to avoid a dark flash. No server setting: the owner's WebView and each browser
-   retain their own choice, so one device can differ from another on purpose.
+/* Client-local appearance: Light / Dark / System, and the shell's layout switch.
+   Runs synchronously before CSS to avoid a dark flash and a wrong-shell flash. No
+   server setting: the owner's WebView and each browser retain their own choice, so
+   one device can differ from another on purpose.
 
    `ouroboros.theme` stores the CHOICE, not the painted theme. An absent value
    means System (the default for a new client); a previously saved 'light' or
@@ -72,6 +73,32 @@
         root.dataset.themeChoice = choice;
         syncControls();
     };
+
+    /* The shell's one layout switch (docs/DESIGN.md "Shell"): `docked` keeps the
+       sidebar as a column from LAYOUT.dockedMinWidth up; `stack` below it folds the
+       sidebar into a drawer and every room into a full-width layer. Written here,
+       before CSS, so the first paint is already the right shell, and kept current by
+       the window's own media-query change (a resize, a rotation). The two numbers
+       live here once; web/modules/layout.js is the ES-module door everything else
+       reads them through (tests/test_shell_layout_static.py). */
+    const LAYOUT = Object.freeze({ dockedMinWidth: 720, projectBesideMainMinWidth: 360 });
+    const layoutQuery = typeof window.matchMedia === 'function'
+        ? window.matchMedia(`(min-width: ${LAYOUT.dockedMinWidth}px)`)
+        : null;
+    // A client that cannot answer the query is a desktop window: docked.
+    const resolveLayout = () => (layoutQuery && !layoutQuery.matches ? 'stack' : 'docked');
+    let layout = resolveLayout();
+    const paintLayout = () => { root.dataset.layout = layout; };
+    const onLayoutQuery = () => {
+        const next = resolveLayout();
+        if (next === layout) return;
+        layout = next;
+        paintLayout();
+        window.dispatchEvent(new CustomEvent('ouro:layout-changed', { detail: { layout } }));
+    };
+    paintLayout();
+    layoutQuery?.addEventListener?.('change', onLayoutQuery);
+    window.ouroLayout = Object.freeze({ ...LAYOUT, get layout() { return layout; } });
 
     /* The desktop window's ordinary system caption takes the light or dark tint of
        the painted palette (launcher_appearance.py). Only a top-level document speaks
@@ -177,6 +204,7 @@
         window.removeEventListener('pageshow', onPageShow);
         window.removeEventListener('pagehide', cleanup);
         query?.removeEventListener?.('change', onSystemChange);
+        layoutQuery?.removeEventListener?.('change', onLayoutQuery);
     };
     document.addEventListener('click', onClick);
     document.addEventListener('keydown', onKeydown);

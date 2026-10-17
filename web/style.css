@@ -82,18 +82,14 @@ body {
 :root[data-window-chrome="integrated"] .project-panel-bar {
     padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
 }
-@media (max-width: 900px) {
-    :root[data-window-chrome="integrated"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
+:root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
+:root[data-window-chrome="integrated"][data-layout="stack"] #primary-sidebar {
+    padding-top: max(64px, calc(var(--space-4) + var(--window-chrome-top)));
 }
-@media (max-width: 640px) {
-    :root[data-window-chrome="integrated"] #primary-sidebar {
-        padding-top: max(64px, calc(var(--space-4) + var(--window-chrome-top)));
-    }
-    :root[data-window-chrome="integrated"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
-}
+:root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
 
 /* Resizable side-section drag handles (v6.33.0). Thin edge strips that set
-   --sidebar-width / --project-panel-width; hidden under the mobile drawer. */
+   --sidebar-width / --project-panel-width; absent in the stack layout (layout.js). */
 /* CW10 (v6.34.0): suppress text selection while dragging via a class, not a JS
    inline style (DEVELOPMENT.md: no element.style.* property mutations in UI JS). */
 body.resizing-panels { user-select: none; }
@@ -109,9 +105,8 @@ body.resizing-panels { user-select: none; }
 .resize-handle-right { right: -4px; }
 .resize-handle-left { left: -4px; }
 .resize-handle:hover { background: var(--accent-10); }
-@media (max-width: 980px) {
-    .resize-handle { display: none; }
-}
+html[data-layout="stack"] .resize-handle,
+html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 .sidebar-scroll {
     flex: 1;
@@ -3497,115 +3492,102 @@ body.resizing-panels { user-select: none; }
     flex: 1;
 }
 
-/* Early mobile overrides; late-defined selectors are handled at file end. */
-@media (max-width: 640px) {
-    /* Prevent iOS zoom on input focus. */
+/* A touch keyboard zooms into a field under 16px: the guard follows the pointer, not a width. */
+@media (pointer: coarse) {
     textarea, input[type="text"], input[type="password"], input[type="email"], select {
         font-size: 16px !important;
     }
+}
 
-    /* Bubble width is not set here: the `chatcol` container rule is the one
-       narrow-column rule, for a phone and a narrow Project panel alike. */
+/* The stack layout (html[data-layout="stack"], written by theme.js before first paint; layout.js): the sidebar
+   is a drawer, every room a full-width layer. Bubble width is not set here: the `chatcol` container rule is the
+   one narrow-column rule, for a phone and a narrow Project panel alike. */
 
-    #app {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .mobile-nav-toggle {
-        position: static;
-        flex: 0 0 44px;
-        width: 44px;
-        height: 44px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid var(--surface-border);
-        border-radius: var(--radius-md);
-        background: rgba(var(--shell-rgb), 0.76);
-        color: var(--text-primary);
-        backdrop-filter: blur(14px);
-        -webkit-backdrop-filter: blur(14px);
-    }
-
-    .nav-drawer-backdrop {
-        position: fixed;
-        inset: 0;
-        z-index: 68;
-        display: block;
-        background: rgba(0, 0, 0, 0.48);
-        backdrop-filter: blur(2px);
-        -webkit-backdrop-filter: blur(2px);
-    }
-
-    .nav-drawer-backdrop[hidden] {
-        display: none;
-    }
-
-    #primary-sidebar {
-        position: fixed;
-        inset: 0 auto 0 0;
-        z-index: 70;
-        width: min(86vw, 320px);
-        max-width: 320px;
-        transform: translateX(-105%);
-        transition: transform 0.18s ease, box-shadow 0.18s ease;
-        padding-top: calc(64px + env(safe-area-inset-top, 0px));
-        background:
-            linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86)),
-            radial-gradient(circle at 8% 0%, var(--accent-10), transparent 260px);
-    }
-
-    /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
-    #primary-sidebar.open {
-        transform: translateX(0);
-        box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
-    }
-
-    .unread-badge {
-        top: 2px;
-        right: 4px;
-        min-width: 14px;
-        height: 14px;
-    }
-
-    #nav-version,
-    .nav-spacer {
-        display: none;
-    }
-
-    #content {
-        padding-left: 0;
-        padding-bottom: env(safe-area-inset-bottom, 0px);
-    }
-
-    body.project-panel-open .mobile-nav-toggle {
-        display: none;
-    }
-
-    /* Restart / Panic / More is a short control set — let it wrap instead of
-       trapping the absolutely-positioned More menu inside an overflow-clip
-       (overflow:auto/hidden here is what made the dropdown invisible on mobile). */
-    .chat-header-actions {
-        display: flex;
-        max-width: 100%;
-        flex-wrap: wrap;
-    }
-
-    .chat-page-header .chat-budget-pill,
-    .chat-page-header .status-badge {
-        order: 0;
-    }
-
-    .page-header,
-    .app-page-header {
-        grid-template-columns: auto minmax(0, 1fr);
-        grid-template-areas:
-            "leading title"
-            "toolbar toolbar"
-            "tabs tabs";
-        padding: 10px 12px;
-    }
-
+html[data-layout="stack"] #app {
+    grid-template-columns: minmax(0, 1fr);
+}
+html[data-layout="stack"] .mobile-nav-toggle {
+    position: static;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    background: rgba(var(--shell-rgb), 0.76);
+    color: var(--text-primary);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+}
+html[data-layout="stack"] .nav-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 68;
+    display: block;
+    background: rgba(0, 0, 0, 0.48);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+html[data-layout="stack"] .nav-drawer-backdrop[hidden] {
+    display: none;
+}
+html[data-layout="stack"] #primary-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 70;
+    width: min(86vw, 320px);
+    max-width: 320px;
+    transform: translateX(-105%);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    padding-top: calc(64px + env(safe-area-inset-top, 0px));
+    background:
+        linear-gradient(180deg, rgba(var(--shell-rgb), 0.94), rgba(var(--shell-rgb), 0.86)),
+        radial-gradient(circle at 8% 0%, var(--accent-10), transparent 260px);
+}
+/* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
+html[data-layout="stack"] #primary-sidebar.open {
+    transform: translateX(0);
+    box-shadow: 24px 0 60px rgba(0, 0, 0, 0.36);
+}
+html[data-layout="stack"] .unread-badge {
+    top: 2px;
+    right: 4px;
+    min-width: 14px;
+    height: 14px;
+}
+html[data-layout="stack"] #nav-version,
+html[data-layout="stack"] .nav-spacer {
+    display: none;
+}
+html[data-layout="stack"] #content {
+    padding-left: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+html[data-layout="stack"] body.project-panel-open .mobile-nav-toggle {
+    display: none;
+}
+/* Restart / Panic / More is a short control set — let it wrap instead of
+   trapping the absolutely-positioned More menu inside an overflow-clip
+   (overflow:auto/hidden here is what made the dropdown invisible on mobile). */
+html[data-layout="stack"] .chat-header-actions {
+    display: flex;
+    max-width: 100%;
+    flex-wrap: wrap;
+}
+html[data-layout="stack"] .chat-page-header .chat-budget-pill,
+html[data-layout="stack"] .chat-page-header .status-badge {
+    order: 0;
+}
+html[data-layout="stack"] .page-header,
+html[data-layout="stack"] .app-page-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+        "leading title"
+        "toolbar toolbar"
+        "tabs tabs";
+    padding: 10px 12px;
 }
 
 #chat-input-area,
@@ -6882,128 +6864,6 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     }
     .widget-table th[scope="row"] { display: block; padding: 6px 0; }
 
-    /* iOS safe-area inset. */
-    #chat-input-area,
-.chat-input-area {
-        padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
-    }
-
-    .chat-input-wrap,
-    .chat-text-row,
-    .chat-toolbar-row,
-    #chat-input,
-textarea.chat-input {
-        min-width: 0;
-    }
-
-    .chat-input-wrap {
-        --composer-control-height: 32px;
-    }
-
-    .chat-toolbar-row {
-        position: static;
-        right: auto;
-        bottom: auto;
-        z-index: auto;
-        justify-content: flex-start;
-        gap: 6px;
-        padding: 0 6px;
-    }
-
-    .chat-swarm {
-        padding-left: 10px;
-        padding-right: 10px;
-    }
-
-    .chat-send-inline {
-        padding-left: 11px;
-        padding-right: 11px;
-    }
-
-    /* Transcript clears taller mobile header and absolute composer. */
-    #chat-messages,
-.chat-messages {
-        padding-top: var(--chat-header-reserve, 80px);
-        padding-bottom: 0;
-        overflow-x: hidden;
-    }
-
-    #chat-messages::after,
-    .chat-messages::after {
-        flex-basis: calc(var(--chat-input-reserve, 108px) + env(safe-area-inset-bottom, 0px) - 8px);
-    }
-
-    /* Keyboard-open layout: only #chat-messages scrolls within visual viewport. */
-    html.keyboard-open,
-    body.keyboard-open {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        height: var(--vvh);
-        max-height: var(--vvh);
-        overflow: hidden;
-        overscroll-behavior: none;
-    }
-
-    body.keyboard-open #content {
-        position: fixed;
-        inset: 0;
-        height: var(--vvh);
-        max-height: var(--vvh);
-        padding-left: 0;
-        padding-bottom: 0;
-        overflow: hidden;
-        overscroll-behavior: none;
-    }
-
-    body.keyboard-open #page-chat.active {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: var(--vvh);
-        max-height: var(--vvh);
-        display: flex;
-        flex-direction: column;
-        z-index: 20;
-        overflow: hidden;
-        overscroll-behavior: none;
-    }
-
-    body.keyboard-open #page-chat.active .chat-page-header {
-        flex-shrink: 0;
-        position: relative;
-    }
-
-    body.keyboard-open #page-chat.active #chat-messages,
-    body.keyboard-open .chat-instance-panel .chat-messages {
-        flex: 1;
-        min-height: 0;
-        position: relative;
-        height: auto;
-        max-height: none;
-        padding-top: 0;
-        padding-bottom: 0;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        -webkit-overflow-scrolling: touch;
-    }
-
-    /* The composer is in flow: remove the item, including its column gap. */
-    body.keyboard-open #page-chat.active #chat-messages::after,
-    body.keyboard-open .chat-instance-panel .chat-messages::after {
-        content: none;
-    }
-
-    body.keyboard-open #page-chat.active #chat-input-area,
-    body.keyboard-open .chat-instance-panel .chat-input-area {
-        flex-shrink: 0;
-        position: relative;
-        bottom: auto;
-        padding-top: 8px;
-        padding-bottom: 8px;
-    }
-
     .logs-filters {
         padding: 8px 12px;
     }
@@ -7057,6 +6917,127 @@ textarea.chat-input {
         width: 100%;
     }
 
+}
+
+/* The stack layout's composer (Main; the Project panel keeps its own rules below) and the keyboard-in-flow layout
+   app.js enters only there (`keyboard-open`, from the same switch: layout.js). */
+html[data-layout="stack"] #chat-input-area {
+    /* iOS safe-area inset. */
+    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+}
+
+html[data-layout="stack"] .chat-input-wrap,
+html[data-layout="stack"] .chat-text-row,
+html[data-layout="stack"] .chat-toolbar-row,
+html[data-layout="stack"] #chat-input,
+html[data-layout="stack"] textarea.chat-input {
+    min-width: 0;
+}
+
+html[data-layout="stack"] .chat-input-wrap {
+    --composer-control-height: 32px;
+}
+
+html[data-layout="stack"] .chat-toolbar-row {
+    position: static;
+    right: auto;
+    bottom: auto;
+    z-index: auto;
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+html[data-layout="stack"] .chat-swarm {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+html[data-layout="stack"] .chat-send-inline {
+    padding-left: 11px;
+    padding-right: 11px;
+}
+
+/* Main's transcript clears the taller phone header and the absolute composer. */
+html[data-layout="stack"] #chat-messages {
+    padding-top: var(--chat-header-reserve, 80px);
+    padding-bottom: 0;
+    overflow-x: hidden;
+}
+
+html[data-layout="stack"] #chat-messages::after {
+    flex-basis: calc(var(--chat-input-reserve, 108px) + env(safe-area-inset-bottom, 0px) - 8px);
+}
+
+/* Keyboard-open layout: only #chat-messages scrolls within visual viewport. */
+html.keyboard-open,
+body.keyboard-open {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: var(--vvh);
+    max-height: var(--vvh);
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
+body.keyboard-open #content {
+    position: fixed;
+    inset: 0;
+    height: var(--vvh);
+    max-height: var(--vvh);
+    padding-left: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
+body.keyboard-open #page-chat.active {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--vvh);
+    max-height: var(--vvh);
+    display: flex;
+    flex-direction: column;
+    z-index: 20;
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
+body.keyboard-open #page-chat.active .chat-page-header {
+    flex-shrink: 0;
+    position: relative;
+}
+
+body.keyboard-open #page-chat.active #chat-messages,
+body.keyboard-open .chat-instance-panel .chat-messages {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    height: auto;
+    max-height: none;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* The composer is in flow: remove the item, including its column gap. */
+body.keyboard-open #page-chat.active #chat-messages::after,
+body.keyboard-open .chat-instance-panel .chat-messages::after {
+    content: none;
+}
+
+body.keyboard-open #page-chat.active #chat-input-area,
+body.keyboard-open .chat-instance-panel .chat-input-area {
+    flex-shrink: 0;
+    position: relative;
+    bottom: auto;
+    padding-top: 8px;
+    padding-bottom: 8px;
 }
 
 /* ===========================================================================
@@ -7534,26 +7515,30 @@ textarea.chat-input {
     display: none;
 }
 
-@media (max-width: 900px) {
-    /* Mobile/narrow: the project thread overlays the content area. */
-    .project-panel {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        z-index: 60;
-        border-left: none;
-        /* A full-screen room must occlude Main, not show its text through glass. */
-        background: var(--bg-primary);
-        transform: translateY(14px);
-    }
+/* Docked, when Main would keep less than the minimum beside the panel (app.js measures; layout.js decides): the
+   panel takes the whole content area and keeps its frosted overlay nature. */
+html[data-project-fill] .project-panel {
+    width: calc(100vw - var(--sidebar-width));
+}
 
-    .project-panel-backdrop {
-        left: 0;
-    }
+/* The stack layout: the project thread is a full-width layer over the room. */
+html[data-layout="stack"] .project-panel {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    z-index: 60;
+    border-left: none;
+    /* A full-screen room must occlude Main, not show its text through glass. */
+    background: var(--bg-primary);
+    transform: translateY(14px);
+}
 
-    .project-panel.open {
-        transform: translateY(0);
-    }
+html[data-layout="stack"] .project-panel-backdrop {
+    left: 0;
+}
+
+html[data-layout="stack"] .project-panel.open {
+    transform: translateY(0);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -9364,10 +9349,8 @@ textarea.chat-input {
 
 /* The room: plain, the sidebar one step off it, no wash, glow or texture behind the page. */
 :root[data-theme] #primary-sidebar { background: var(--surface-side); border-right-color: rgba(var(--neutral-rgb), 0.05); }
-@media (max-width: 980px) {
-    :root[data-theme] #primary-sidebar { background: var(--surface-side); }
-    :root[data-theme] #primary-sidebar.open { box-shadow: var(--elev-float); }
-}
+:root[data-theme][data-layout="stack"] #primary-sidebar { background: var(--surface-side); }
+:root[data-theme][data-layout="stack"] #primary-sidebar.open { box-shadow: var(--elev-float); }
 :root[data-theme] .chat-page-header { background: var(--bg-primary); }
 /* A scrollbar is the room's furniture: neutral, never the accent. */
 :root[data-theme] ::-webkit-scrollbar-thumb { background: rgba(var(--neutral-rgb), 0.16); }
