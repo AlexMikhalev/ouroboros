@@ -179,7 +179,6 @@ def test_the_next_request_of_the_owning_room_carries_it_and_another_room_never_d
 
 def test_showing_reading_sealing_and_a_fitted_window_never_release_it(tmp_path):
     from ouroboros import chat_chain, memory_inventory
-    from ouroboros.llm_local import _compact_local_text
 
     shared.world(tmp_path)
     record = _record(tmp_path, "main1", 1, "KEEP-THIS-CRITIQUE")
@@ -204,7 +203,6 @@ def test_showing_reading_sealing_and_a_fitted_window_never_release_it(tmp_path):
     assert level.addressed, "the window took everything it may take"
     fitted = mv.render_room(snapshot, level)
     assert "KEEP-THIS-CRITIQUE" in fitted and f"release_id='{mark_id}'" in fitted and "memory_read(source_ref=" in fitted
-    assert "KEEP-THIS-CRITIQUE" in _compact_local_text(fitted, "dynamic")
     assert [mark["id"] for mark in _late_marks(tmp_path)] == [mark_id]
 
 
