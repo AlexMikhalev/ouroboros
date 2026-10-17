@@ -350,8 +350,8 @@ class ReviewActorRecord:
     failure_code: str = ""
     reset_at: str = ""
     http_status: Optional[int] = None
-    # What the engine REPORTED about the failed run, bounded and redacted at the gateway
-    # (``run_failure_cause``); "" when nothing was reported. Opaque: shown, never branched on.
+    # Engine-reported cause, or a bounded plain fallback from the producer error.
+    # Opaque: shown, never branched on.
     reported_cause: str = ""
     parse_status: str = ""
     semantic_verdict: str = ""
@@ -380,6 +380,39 @@ class ReviewActorRecord:
     # status. The wave it ran in, as the request resolved it.
     error_event_logged: bool = False
     review_wave_id: str = ""
+
+    def __post_init__(self) -> None:
+        facts = review_failure_facts(vars(self))
+        self.failure_code = facts["failure_code"]
+        self.reported_cause = facts["reported_cause"]
+
+
+def review_failure_facts(row: Mapping[str, Any]) -> Dict[str, str]:
+    """Keep a short reason on the row itself, before raw evidence can be pruned.
+
+    Codes come from producers or structural status, never error-text matching.
+    Existing typed facts win; successful and awaited seats gain nothing.
+    """
+    code, cause = str(row.get("failure_code") or ""), str(row.get("reported_cause") or "")
+    status = str(row.get("status") or "")
+    defaults = {
+        "error": ("review_error", "Reviewer execution failed without an error message."),
+        "not_dispatched": ("review_not_dispatched", "Reviewer was not dispatched."),
+        "empty": ("review_empty_response", "Reviewer returned no answer."),
+        "parse_failure": ("review_parse_failure", "Reviewer response did not satisfy the output contract."),
+        "partial": ("review_partial_response", "Reviewer response did not cover the required items."),
+    }
+    if status in defaults:
+        from ouroboros.gateways.claudexor import run_failure_cause
+
+        fallback_code, explanation = defaults[status]
+        code = code or fallback_code
+        if not cause:
+            words = str(row.get("error") or row.get("reason") or row.get("raw_text") or "")
+            if status in {"parse_failure", "partial"} and words:
+                words = f"{explanation} {words}"
+            cause = " ".join(run_failure_cause({"safeMessage": words or explanation}).split())
+    return {"failure_code": code, "reported_cause": cause}
 
 
 @dataclass
