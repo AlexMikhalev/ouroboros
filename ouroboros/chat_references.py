@@ -92,15 +92,68 @@ def resolve_progress_row(root, address):
     """Progress uses the same persisted-row hash, found by its indexed chat and time.
 
     A missing or ambiguous row answers None, as a chat row that does not resolve does."""
-    from ouroboros import dialogue_store
-    from ouroboros.chat_chain import _normalized, source_row_id
-    wanted = _normalized(address)
-    candidates = dialogue_store.rows_by_identity(root, wanted["chat_id"], wanted["ts"], stream="progress")
-    if wanted["chat_id"] == 1:  # the legacy missing-address convention of chat rows
-        candidates += dialogue_store.rows_by_identity(root, None, wanted["ts"], stream="progress")
-    matches = {source_row_id(entry.row): entry.row for entry in sorted(candidates, key=lambda entry: entry.seq)
-               if source_row_id(entry.row).startswith(wanted["row_sha256"])}
-    return next(iter(matches.values())) if len(matches) == 1 else None
+    return resolve_row(root, address, stream="progress")[0]
+
+
+def resolve_history_row(root, address):
+    """Exact navigation reads BOTH typed sources; ingress's unresolved preview is not a verdict.
+
+    A readable match survives the other source's import/failure. Only two complete readable
+    misses prove absence; conflicting matches and an ambiguous prefix remain ambiguous. A
+    same-time different row beside unreadable lines proves nothing here, though generic
+    ``resolve_row`` callers keep that ``row_mismatch`` and its candidates.
+    """
+    from ouroboros import dialogue_positions as dp
+    from ouroboros.chat_chain import source_row_id
+    from ouroboros.store import StoreMigrating
+
+    matches, states, errors = {}, set(), []
+    for source in ("chat", "progress"):
+        try:
+            row, resolution = resolve_row(root, address, stream=source)
+            gap = resolution["status"] == "row_mismatch" and dp.skipped_between(root, source)
+            states.add("row_unreadable" if gap else resolution["status"])
+            if row is not None:
+                matches.setdefault(source_row_id(row), (row, {**resolution, "source": source}))
+        except (OSError, StoreError) as exc:
+            errors.append(exc)
+    if len(matches) > 1 or "row_ambiguous" in states:
+        return None, {"state": "ambiguous"}
+    if matches:
+        return next(iter(matches.values()))
+    if errors or "row_unreadable" in states:
+        if errors and all(isinstance(exc, StoreMigrating) for exc in errors) and "row_unreadable" not in states:
+            raise StoreMigrating("Dialogue history is still importing")
+        raise StoreError("Dialogue history source unavailable")
+    return None, {"state": "absent"}
+
+
+def history_row_destination(root, row, thread_id, project_ids, source_refs, rooms):
+    """Prefer a real occurrence in this room; otherwise the row's home, without source-ref copies.
+
+    Only row-derived candidates enter the shared membership rule. Retained origins, the quoting
+    task and the reference's old chat label cannot supply a home. Unreadable authority raises.
+    """
+    from ouroboros.chat_chain import _row_chat_id
+    from ouroboros.project_admission import reserved_project_for_chat
+    from ouroboros.project_dialogue import bound_room_chat, room_membership
+
+    written = _row_chat_id(row)
+    def belongs(chat, refs):
+        return room_membership(chat, project_ids, refs, rooms)(written, row)
+
+    if thread_id in {1, *project_ids} and belongs(thread_id, source_refs):
+        home = thread_id
+    else:
+        candidates = {1, written, bound_room_chat(rooms, row)} & {1, *project_ids}
+        homes = [chat for chat in candidates if belongs(chat, [])]
+        if len(homes) != 1:
+            return {"state": "ambiguous" if homes else "unavailable"}
+        home = homes[0]
+    # Every room's identity, then only the home's routing: a malformed unrelated room blocks nothing.
+    if home != 1 and reserved_project_for_chat(root, home).get("lifecycle") != "active":
+        return {"state": "unavailable"}
+    return {"state": "found" if home == thread_id else "moved", "chat_id": home}
 
 
 def origin_projection(root, ref):

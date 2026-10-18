@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,15 @@ _EVENT_TOPIC_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 # to the model's context and what that costs in tokens. Prose by design — the
 # section is rendered verbatim (bounded) on model-visible surfaces, not parsed.
 MODEL_EXPERIENCE_KEYS = ("what_model_sees", "token_effect")
+
+# ``os`` names platforms by ``sys.platform`` (the vocabulary install specs use);
+# the marketplace adapter and authors also write these spellings.
+_OS_ALIASES = {"macos": "darwin", "mac": "darwin", "osx": "darwin", "windows": "win32", "win": "win32"}
+
+
+def host_platform() -> str:
+    """The platform a manifest's ``os`` is matched against (``sys.platform``)."""
+    return sys.platform
 
 
 class SkillManifestError(ValueError):
@@ -137,6 +147,16 @@ class SkillManifest:
 
     def is_extension(self) -> bool:
         return self.type == "extension"
+
+    def applies_to_platform(self, platform: str = "") -> bool:
+        """Whether the declared ``os`` (``any`` or a comma list) covers ``platform``.
+
+        Defaults to ``host_platform()``. This governs new bundled offerings;
+        discovery separately retains legacy remote choices. Other sources keep
+        ``os`` descriptive.
+        """
+        wanted = {_OS_ALIASES.get(item, item) for item in _string_list(self.os.lower())}
+        return not wanted or "any" in wanted or (platform or host_platform()) in wanted
 
     def validate(self) -> List[str]:
         """Return soft warnings; parse errors already raised on structural damage."""
@@ -592,7 +612,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         type=str(data.get("type") or "instruction").strip().lower(),
         when_to_use=str(data.get("when_to_use") or "").strip(),
         requires=_string_list(data.get("requires")),
-        os=str(data.get("os") or "any").strip().lower() or "any",
+        os=",".join(item.lower() for item in _string_list(data.get("os"))) or "any",
         runtime=str(data.get("runtime") or "").strip().lower(),
         timeout_sec=timeout_sec,
         env_from_settings=_string_list(data.get("env_from_settings")),
