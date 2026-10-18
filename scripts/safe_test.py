@@ -128,6 +128,8 @@ def main() -> int:
             # CI requires these test dependencies; without them a missing plugin or Node skips.
             "OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS", "OUROBOROS_PREFLIGHT_REQUIRE_NODE",
             "PLAYWRIGHT_BROWSERS_PATH", "OUROBOROS_E2E_DEEP",
+            # Opt-in native Windows desktop qualification (tests/test_windows_computer_use_native.py).
+            "OUROBOROS_WINDOWS_DESKTOP_QA",
             "OUROBOROS_TEST_EVIDENCE_ROOT", *environment["DIAGNOSTIC_OUTPUT_KEYS"],
         ))
         # Each pytest controller claims its own fresh basetemp beneath this owned
