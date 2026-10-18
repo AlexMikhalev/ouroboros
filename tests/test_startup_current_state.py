@@ -250,7 +250,7 @@ def test_periodic_sweep_retries_source_only_debt_until_success(tmp_path, monkeyp
         monkeypatch.setattr(maintenance, name, [name == "_STARTUP_SOURCE_PRUNES_OWED"])
     monkeypatch.setattr(maintenance, "_periodic_zombie_reconcile", lambda **kw: None)
     monkeypatch.setattr(maintenance, "_run_drive_custody_pass", lambda *a: None)
-    monkeypatch.setattr(review_operation, "collect_orphaned_operations_softly", lambda *a, **kw: None)
+    monkeypatch.setattr(review_operation, "local_reviews_settled", lambda *a, **kw: True)
     monkeypatch.setattr(headless, "prune_task_trees", lambda *a, **kw: pytest.fail("tree debt already discharged"))
     calls = []
     def unavailable(_root):
