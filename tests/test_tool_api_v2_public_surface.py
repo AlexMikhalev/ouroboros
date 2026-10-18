@@ -56,6 +56,12 @@ def test_legacy_tool_names_are_not_public_schemas(tmp_path):
     assert registry.get_schema_by_name("run_ci_tests") is None
     assert registry.execute("run_ci_tests", {}).startswith("⚠️ Unknown tool")
 
+    # `task_acceptance_review` is retired with no alias: a task's result is reviewed as
+    # review_change(subject="result") (owner 17.10, Q2-A).
+    assert "task_acceptance_review" not in names
+    assert registry.get_schema_by_name("task_acceptance_review") is None
+    assert registry.execute("task_acceptance_review", {}).startswith("⚠️ Unknown tool")
+
     assert {
         "read_file",
         "write_file",
@@ -65,7 +71,7 @@ def test_legacy_tool_names_are_not_public_schemas(tmp_path):
         "commit_reviewed",
         "schedule_subagent",
         "skill_review",
-        "task_acceptance_review",
+        "review_change",
     } <= names
     for tool_name in ("read_file", "list_files", "write_file", "edit_text", "search_code"):
         schema = registry.get_schema_by_name(tool_name) or {}
