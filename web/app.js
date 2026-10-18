@@ -957,15 +957,17 @@ window.addEventListener('ouro:open-project', (event) => {
     openProjectPanel(resolved, { openOnly: true, taskId: event.detail.task_id || '', quizId: event.detail.quiz_id || '' });
 });
 
-// Resizable side sections: edge drag-handles write --sidebar-width /
-// --project-panel-width on :root and persist (debounced) to /api/ui/preferences.
+// Resizable side sections: edge drag-handles resize the sidebar and the Project panel, whose widths live in
+// --sidebar-width / --project-panel-width on :root, persisted (debounced) to /api/ui/preferences.
 // Disabled in the stack layout (layout.js). Width 0 = keep the CSS default.
+// While a handle is dragged, each frame writes the measured width into the dragged box's own --drag-width, which no
+// element inherits (style.css), and everything that lines up with the box follows it by layout: one element
+// restyles. The stored width on :root is inherited by every element, so writing it per frame restyled the whole
+// document, about half of a drag frame on the owner's Main in WebKit; it is written once, when the drag ends.
 // CW10 note: the DEVELOPMENT.md "no inline styles in JS" rule targets static styling
 // that belongs in a stylesheet — the drag's transient `userSelect:none` was that, and
-// is now the `.resizing-panels` class. Setting a custom property (`--sidebar-width`)
-// for a DYNAMIC, per-frame drag value is the idiomatic CSS-variable theming API, not a
-// static inline style; routing it through a managed <style> rule re-parsed each frame
-// would be strictly worse, so CSS-variable mutation is the accepted pattern here.
+// is now the `.resizing-panels` class. A measured width in a narrowly named custom property is the exception
+// DEVELOPMENT "Design System" names.
 function setupResizablePanels(prefs) {
     const root = document.documentElement;
     let persistTimer = 0;
@@ -986,11 +988,10 @@ function setupResizablePanels(prefs) {
         handle.title = 'Drag to resize';
         target.appendChild(handle);
         let startX = 0, startW = 0, dragging = false, frame = 0, wanted = 0;
-        // One write per displayed frame: a mouse reports more often than the screen draws, and each write relays out
-        // the room.
+        // One write per displayed frame (a mouse reports more often than the screen draws), on the dragged box only.
         const apply = () => {
             frame = 0;
-            root.style.setProperty(cssVar, `${wanted}px`);
+            target.style.setProperty('--drag-width', `${wanted}px`);
         };
         handle.addEventListener('pointerdown', (e) => {
             if (isStackLayout()) return;  // the stack layout has a drawer, not a resizable column
@@ -1013,6 +1014,7 @@ function setupResizablePanels(prefs) {
             // Keep the width that is shown: a Project panel dragged past the content area's edge stops at it.
             const shown = Math.round(target.getBoundingClientRect().width) || 0;
             root.style.setProperty(cssVar, `${shown}px`);
+            target.style.removeProperty('--drag-width');
             persist({ [prefKey]: shown });
         };
         handle.addEventListener('pointerup', end);

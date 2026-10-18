@@ -20,9 +20,19 @@ body {
     overflow: hidden;
 }
 
+/* The sidebar's column is as wide as the sidebar's own box (its width below), and the dimmed room and the Project
+   panel are placed in the columns after it: everything that lines up with the sidebar follows its box by layout.
+   So a drag of a handle writes the width it measures into the dragged box's own --drag-width, which no element
+   inherits, and a frame restyles that one box; the stored width on :root (--sidebar-width, --project-panel-width),
+   which every element inherits, is written once, when the drag ends (app.js). */
+@property --drag-width {
+    syntax: '*';
+    inherits: false;
+}
+
 #app {
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     height: var(--vvh);
     position: relative;
 }
@@ -73,6 +83,7 @@ html[data-layout="stack"] .shell-icon-control {
     --nav-item-h: 32px;      /* a Project row */
     --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
     --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
+    width: var(--drag-width, var(--sidebar-width));
     height: var(--vvh);
     display: flex;
     flex-direction: column;
@@ -7174,7 +7185,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     top: 0;
     right: 0;
     bottom: 0;
-    width: var(--project-panel-width);
+    width: var(--drag-width, var(--project-panel-width));
     z-index: var(--z-project-panel);
     border-left: 1px solid var(--divider);
     /* A reading surface keeps its own backing even where native backdrop blur is not composited.
@@ -7222,10 +7233,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 
 .project-panel-backdrop {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: var(--sidebar-width);
+    inset: 0;
     z-index: var(--z-project-scrim);
     cursor: default;
     background: rgba(0, 0, 0, 0.18);
@@ -7303,9 +7311,16 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 }
 
 /* Docked, the panel lies beside Main at its own width (its handle resizes it apart from the sidebar's), over the
-   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). */
+   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). Both are
+   placed in the columns after the sidebar's (#app), so the room's dimmed edge and the panel's cap follow the
+   sidebar's box by layout, frame by frame while it is dragged. */
+html[data-layout="docked"] .project-panel-backdrop,
 html[data-layout="docked"] .project-panel {
-    max-width: calc(100vw - var(--sidebar-width));
+    position: absolute;
+    grid-column: 2 / -1;
+}
+html[data-layout="docked"] .project-panel {
+    max-width: 100%;
 }
 
 /* The stack layout: the project thread is a full-width layer over the room. */
@@ -7318,10 +7333,6 @@ html[data-layout="stack"] .project-panel {
     /* A full-screen room must occlude Main, not show its text through glass. */
     background: var(--bg-primary);
     transform: translateY(14px);
-}
-
-html[data-layout="stack"] .project-panel-backdrop {
-    left: 0;
 }
 
 html[data-layout="stack"] .project-panel.open {
