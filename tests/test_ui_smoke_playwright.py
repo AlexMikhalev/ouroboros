@@ -47,7 +47,7 @@ def _browser_missing(exc) -> bool:
 
 def _open_review_checkpoint(card, *, open_card=True):
     if open_card:
-        card.locator(":scope > [data-live-summary-button]").click()
+        card.locator(":scope > [data-live-summary-button] [data-live-disclosure]").click()
     assert card.is_visible()
     section = card.locator(":scope > [data-live-reviews-host] [data-review-section]")
     section.wait_for(state="visible", timeout=5_000)
@@ -1128,7 +1128,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert all(not bands[task_id]["clipped"] for task_id in bands), bands
                     assert all("Reviews" not in bands[task_id]["reviews"] for task_id in bands), bands
 
-                    named.locator(':scope > [data-live-summary-button]').click()
+                    named.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
                     line_toggle = named.locator(':scope > [data-live-timeline] .chat-live-line-toggle').first
                     line_toggle.wait_for(state="visible", timeout=5_000)
                     line_toggle.click()
@@ -1717,8 +1717,8 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
 
                 assert child.get_attribute("data-expanded") == "0"
                 assert grandchild.get_attribute("data-expanded") == "0"
-                child_summary = child.locator(":scope > [data-live-summary-button]").first
-                child_summary.click()
+                child_disclosure = child.locator(":scope > [data-live-summary-button] [data-live-disclosure]").first
+                child_disclosure.click()
                 _open_review_checkpoint(child, open_card=False)
                 assert "panel_child_review" in child.inner_text()
                 assert "claude-fable-5" in child.inner_text()
@@ -1743,7 +1743,7 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert "Scheduled subagent child1" not in expanded_text
                 assert "Subagent child1 running" not in expanded_text
                 assert child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
-                assert child_summary.get_attribute("aria-expanded") == "true"
+                assert child_disclosure.get_attribute("aria-expanded") == "true"
                 assert child.locator("[data-live-timeline]").first.get_attribute("id")
                 assert result_toggle.get_attribute("aria-controls")
 
@@ -2022,10 +2022,10 @@ def _mobile_keyboard_drawer_assertions(page, url: str, screenshot_path: pathlib.
     # surface even though the keyboard touch lock was active one frame earlier.
     scroll = page.evaluate(
         """() => {
-            const scroller = document.querySelector('#primary-sidebar .sidebar-scroll');
+            const scroller = document.querySelector('#primary-sidebar #nav-projects-list');
             for (let i = 0; i < 60; i += 1) {
                 const row = document.createElement('button');
-                row.className = 'nav-row';
+                row.className = 'nav-row nav-project-row';
                 row.type = 'button';
                 row.textContent = `Drawer overflow probe ${i}`;
                 scroller.appendChild(row);
@@ -2458,7 +2458,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert deepest.locator(':scope > .chat-live-summary-button [data-live-title]').inner_text() == "pty-tests"
         assert "Agent model: gemini-3.6-flash" in deepest.locator(
             ':scope > .chat-live-foot [data-live-meta]').inner_text()
-        deepest.locator(":scope > [data-live-summary-button]").click()
+        deepest.locator(":scope > [data-live-summary-button] [data-live-disclosure]").click()
         line_toggle = deepest.locator(":scope > [data-live-timeline] .chat-live-line-toggle").last
         line_toggle.wait_for(state="visible", timeout=5_000)
         line_toggle.click()

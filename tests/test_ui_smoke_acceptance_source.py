@@ -59,7 +59,7 @@ def test_old_applied_review_download_appears_when_its_reference_refreshes_the_ca
                                  "chat_id": 1, "state_revision": "a" * 64})
             card = page.locator(f'.chat-live-card[data-task-id="{task_id}"]')
             card.wait_for(state="visible")
-            card.locator("[data-live-summary-button]").click()
+            card.locator("[data-live-disclosure]").click()
             card.locator("[data-review-section-toggle]").click()
             card.locator("[data-review-group-toggle]").click()
             card.locator("[data-review-attempt-toggle]").click()
