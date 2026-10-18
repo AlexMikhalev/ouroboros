@@ -2,7 +2,8 @@
  *
  * Every place the sidebar offers is declared here once: its id (the `page-<id>` section app.js shows and the
  * `data-nav-page` of its row), the label the row and the stack layout's header title say verbatim, its icon key in
- * page_icons.js, and its zone in the sidebar (the pinned head holds Main; the pinned foot the tools, in this order).
+ * page_icons.js, and its zone in the sidebar (the pinned head holds Main; the foot after the Projects the tools, in
+ * this order).
  * The rows are rendered from this list (app.js), the headers read their titles from it (page_header.js), and the
  * gate lane walks it; index.html keeps no nav markup of its own (tests/test_pages_registry_static.py). */
 

@@ -130,7 +130,7 @@ ouroboros/ — agent core and shared runtime (§6)
   loop_tool_execution.py, tool_call_log.py — tool dispatch, results, per-invocation counting
   deadline_utils.py — deadline parsing and the transport-vs-logical wait seam
   observability.py, source_retention.py — private CAS: equal histories stored once, gzip-1, hardlinks (§10)
-  evidence_packs.py, evidence_packer.py — task-local xz packs, packed by a maintenance job (§5); reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE.md)
+  evidence_packs.py, evidence_packer.py — per-task xz packs (maintenance job, §5); reads verify loose → index → pack; missing ≠ `evidence_corrupt` (PERSISTENCE)
   finalization_timing.py — final-event phase fields and `task_finalization_timing` (§6)
   process_logging.py — per-process logging bootstrap; the server is the sole `server.log` writer; the launcher copies the server pipe, byte-capped, into `agent_stdout.log`
   model_send_seal.py — the invariant `model-visible ⟺ logged` for `model_send`: a mismatch is a typed durable fact, not a blocked call (docs/MODEL_SEND_OBSERVABILITY.md)
@@ -162,7 +162,7 @@ ouroboros/ — agent core and shared runtime (§6)
   usage_store.py, usage_journal.py, openrouter_cost.py — `state/usage.sqlite`, its journal import and explicit OpenRouter price receipts (docs/USAGE_STORE.md)
   store.py, store_import.py, store_switch.py, dialogue_store.py, dialogue_import.py, dialogue_positions.py — the shared SQLite core (docs/USAGE_STORE.md): `state/current.sqlite` (atomic `meta.commit_seq`; boot import/reconcile §2, export before storeless switches §9) and `state/dialog.sqlite` (chat/progress rows by chain coordinate, ordinals and import intervals; one `append` seam; cutover, archive-import job, rollback export; PERSISTENCE.md)
   cost_projection.py — the one task-cost projection for every producer: `accounted_upper_bound_usd`, null as None and never $0.00 (§6 Budget tracking)
-  storage.py — Dashboard Storage: one bounded, link-safe metadata walk at a time, kept in memory (§3)
+  storage.py, storage_free.py — Dashboard counts and temporary-space actions (§3)
   delegate_custody.py, delegate_custody_reconcile.py, delegate_collection.py, delegate_state_sweep.py, delegate_custody_usage.py — run custody, observation, collection and usage; OWNED/FOREIGN/UNKNOWN (§6 Nanny, transport and custody)
   delegate_hold.py — unknown-provider nanny hold (§6 Context fitting)
   delegate_source_coverage.py — oversized work-order source custody; incomplete source cannot authorize a passing terminal verdict or an apply
@@ -244,9 +244,10 @@ ouroboros/ — agent core and shared runtime (§6)
   delegate_terminal.py — terminal reconciliation and custody-audit persistence, audit-only in both directions; the typed `terminal_custody_notice` card row (§6 Delegated subagents)
   subagent_dispatch_notes.py — executor-note exports shared with `agent.py`; the note/blocked-outcome pair is implemented in `agent_dispatch.py`
   subagent_messages.py, subagents.py, subagent_history.py — durable child messages; dispatch through `subagent_runtime`; context/UI receipts, never admission (§6 Delegated subagents)
-  subagent_worktrees.py — `state/subagent_worktrees.json` registry, `refs/ouroboros/delegated/` pins, custody-checked GC (§6 Delegated subagents)
+  subagent_worktrees.py, worktree_removal.py — `state/subagent_worktrees.json` registry, `refs/ouroboros/delegated/` pins, custody GC, removal retries (§6 Delegated subagents)
+  force_remove.py — shared permission-granting `force_rmtree`
   body_candidate.py, body_adoption.py, body_switch.py — Own-body worktree authoring and restart-bound adoption of an exact reviewed commit before body imports (§6 Own-body candidates; §2)
-  artifacts.py — attachment staging into `artifact_store/attachments/`, artifact records, scratch fingerprints (`.scratch_manifest.json`), the undeclared-output guard, partial tool-evidence reads
+  artifacts.py, artifact_storage.py — attachments (`artifact_store/attachments/`), records, block clones, patch compression, scratch hashes (`.scratch_manifest.json`), undeclared-output guard, tool-evidence slices
   chat_uploads.py, confined_files.py — the owner-attachment store (`data/uploads`) with byte-proven media kind; directory-confined regular-file open (DESIGN "Chat attachments")
   retention.py — GC clamp, cutoff and exact task-drive retention date (§6)
   workspace_preflight.py — read-only external-workspace snapshot for gateway task creation
@@ -267,7 +268,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_native_episode.py — Read-only native API reviewer episodes for pool seats and deep self-review (§6 Native tool-round episode)
   review_session_reads.py — Harness-journal reading diagnostics (`harness_observed`), never verdict, quorum or retry authority (§6 Review delivery)
   review_verdict_extraction.py — verdict canonicalization by output shape: strict parse, then light-model extraction (`array`, `object`, `report` pass-through)
-  review_session_custody.py, review_checking.py, review_checking_prune.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private copies and their prune (§6 Review delivery)
+  review_session_custody.py, review_checking.py, review_checking_prune.py — Delegated-review recovery validation and the pre-POST durable invocation checkpoint; writable seats' private copies and the prune of every review copy (§6 Review delivery)
   review_slot_cancel.py — A cancel outcome reports only what it proved; a succeeded run whose result read fails is the typed `ReviewSessionSucceededResultUnavailable`, never "may still be live"
   review_actor_aggregation.py, review_session_usage.py, review_thread_continuity.py — Completed-actor contract aggregation; delegated-session usage attribution; Claudexor thread operations for delegated plan reviewers
   commit_admission.py — Release/syntax admission and bound test proof (§6)
@@ -385,7 +386,7 @@ ouroboros/ — agent core and shared runtime (§6)
     image_api.py — Image API routes/credentials; one send, bounded results, cost evidence
     claudexor.py — Loopback descriptor/handshake/runs/quota; private token; owned daemon; `discover_daemon_at`: daemon/control-api.json (§6)
     claudexor_run_events.py — Catalog-negotiated, bounded run-journal SSE frames and durable seq cursors; no polling owner (§6 Delegated subagents)
-  claudexor_runtime.py — Reviewed next-spawn pin in `data/state/cx`: seed/download, verify/probe, atomic promote; no mutable current; override `OUROBOROS_CLAUDEXOR_BIN` (§6)
+  claudexor_runtime.py, claudexor_runtime_retention.py — Reviewed next-spawn pin in `data/state/cx`: seed/download, verify/probe, atomic promote; no mutable current; override `OUROBOROS_CLAUDEXOR_BIN` (§6); copies neither pinned nor serving retire (§5)
   claudexor_exit_facts.py — Bounded saved exits; live memory/loop/store/admission facts and dated capacity snapshots, without lifecycle policy (§9)
   claudexor_daemon.py — Owned `data/claudexor`: lazy start, authenticated attach, `stop_outcome`, failed-start latch, `install_missing_harness_cli` (§9)
   claudexor_startup_failure.py — Stdlib `ExitFact`; `failed_without_control` drives spawn latch; diagnostic-only log labels and latch record (§9)
@@ -550,7 +551,7 @@ ouroboros/ — agent core and shared runtime (§6)
 
 ### Devtools boundary
 
-`devtools/` is excluded from runtime imports and package discovery; review applies and outputs stay external. A benchmark launcher stamps the isolated-benchmark sentinel into its throwaway data root, turning off JSONL log rotation and hot-store-growth warnings there (`supervisor/state.py`, `agent_startup_checks.py`). Each benchmark's own README keeps its module map and methodology: `devtools/benchmarks/cybergym/` pauses dispatch on three typed gates (dead gateway transport, refused budget claim, a sibling's unresolved workspace-custody gate) and keeps never-dispatched ids row-free; `devtools/benchmarks/cowork_bench/` keeps scoring authority in its audit (`METHODOLOGY.md`); `devtools/benchmarks/osworld/` splits runners from their owner leaves. `devtools/e2e_live/` is the live E2E stand: isolated real servers running the owner-shaped scenarios SM1, SW1 and SK1, judged on durable artifacts and a browser probe (manual `devtools/e2e_live/README.md`; the one rule binding runtime changes: DEVELOPMENT "Live E2E stand").
+`devtools/` is excluded from runtime imports and package discovery; review applies and outputs stay external. A benchmark launcher stamps the isolated-benchmark sentinel into its throwaway data root, turning off JSONL log rotation there (`supervisor/state.py`). Each benchmark's own README keeps its module map and methodology: `devtools/benchmarks/cybergym/` pauses dispatch on three typed gates (dead gateway transport, refused budget claim, a sibling's unresolved workspace-custody gate) and keeps never-dispatched ids row-free; `devtools/benchmarks/cowork_bench/` keeps scoring authority in its audit (`METHODOLOGY.md`); `devtools/benchmarks/osworld/` splits runners from their owner leaves. `devtools/e2e_live/` is the live E2E stand: isolated real servers running the owner-shaped scenarios SM1, SW1 and SK1, judged on durable artifacts and a browser probe (manual `devtools/e2e_live/README.md`; the one rule binding runtime changes: DEVELOPMENT "Live E2E stand").
 
 ### Gateway Boundary v1
 
@@ -631,7 +632,8 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── usage_attempts.jsonl   ← imported journal; historical audit and older-seed input
 │   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt rows
 │   │   ├── usage_import_watermark.json ← import watermark
-│   │   ├── skill_review_root_tasks.jsonl ← derived skill-review index; warns at `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES`
+│   │   ├── skill_review_root_tasks.jsonl ← derived skill index; bounded-suffix reads
+│   │   ├── storage_measurement.json ← last two counts; derived, never deletion authority
 │   │   ├── request_wire_compatibility.json ← exact-route wire evidence
 │   │   ├── capability_evidence.json ← sourced model-capability evidence
 │   │   ├── extra-ca-bundle/<digest>.pem ← content-addressed CA bundle every first-party HTTP client verifies against
@@ -689,7 +691,7 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── registry.md            ← memory awareness map
 │   │   └── owner_mailbox/         ← per-task owner messages
 │   ├── projects/<id>/knowledge/   ← per-project facts with provenance sidecars
-│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz once settled
+│   ├── observability/             ← private forensic ledger: blobs/, calls/<task_id>/, packs/<task>.xz
 │   ├── services/<task_id>/<service>.log ← service runner logs
 │   ├── logs/
 │   │   ├── chat.jsonl             ← frozen at the cutover
