@@ -872,3 +872,15 @@ def test_the_trust_opt_out_offers_without_acceptance_or_dependencies(data, monke
     skill = find_skill(data, WINDOWS)
     assert skill is not None and not skill.review.gate_for(skill.content_hash)["executable_review"]
     assert load_enabled(data, WINDOWS) is False and lifecycle == []
+
+
+@pytest.mark.parametrize("platform,own", [("darwin", UNIX), ("win32", WINDOWS)])
+def test_unticking_everything_at_onboarding_stands_after_an_update(data, monkeypatch, lifecycle, platform, own):
+    from ouroboros import skill_starter
+
+    on(monkeypatch, platform)
+    skill_starter.classify_first_start(data, {})
+    assert skill_starter.after_onboarding(data, [], repo_dir=REPO) == "done"
+    assert skill_starter.read_marker(data)["defaults_offered"] == [own]
+    _boot(data, monkeypatch)  # a later app update re-runs the startup pass
+    assert not (data / "skills" / "native" / own).exists() and lifecycle == []

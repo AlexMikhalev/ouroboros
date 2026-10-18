@@ -146,6 +146,14 @@ def record_defaults_offered(drive_root: pathlib.Path, names: List[str]) -> None:
         log.warning("Starter skill default offer could not be recorded", exc_info=True)
 
 
+def _record_presented_defaults(drive_root: pathlib.Path, repo_dir: Optional[pathlib.Path]) -> None:
+    """A starter choice presented the default-on built-ins (ticked by default); an untick stands."""
+    from ouroboros.skill_builtin import bundled_skills_dir, default_on_names
+
+    record_defaults_offered(drive_root, default_on_names(
+        pathlib.Path(repo_dir) / "skills" if repo_dir is not None else bundled_skills_dir()))
+
+
 def _install_one(drive_root: pathlib.Path, item_id: str, rows: List[Dict[str, Any]],
                  repo_dir: Optional[pathlib.Path]) -> Dict[str, Any]:
     from ouroboros.config import get_starter_skills_turn_on
@@ -186,11 +194,7 @@ def run_starter(drive_root: pathlib.Path, ids: Optional[List[str]], *, origin: s
         chosen = list(ids) if ids is not None else starter_ids(drive_root, settings, builtin_rows, repo_dir=repo_dir)
         marker = _write_marker(drive_root, state="running", origin=origin, requested=chosen,
                                resolve_default=ids is None)
-        from ouroboros.skill_builtin import bundled_skills_dir, default_on_names
-
-        # This list presented the default-on built-ins (ticked by default; an owner's untick stands).
-        record_defaults_offered(drive_root, default_on_names(
-            pathlib.Path(repo_dir) / "skills" if repo_dir is not None else bundled_skills_dir()))
+        _record_presented_defaults(drive_root, repo_dir)
         results = dict(marker.get("results") or {})
         def install(item_id: str) -> None:
             if (results.get(item_id) or {}).get("status") not in {"installed", "skipped", "failed"}:
@@ -327,6 +331,7 @@ def after_onboarding(drive_root: pathlib.Path, ids: Optional[List[str]], *,
         return state
     if ids is not None and not ids:
         _write_marker(drive_root, state="done", origin="onboarding", requested=[], results={})
+        _record_presented_defaults(drive_root, repo_dir)
         return "done"
     schedule_starter(drive_root, list(ids) if ids is not None else None, origin="onboarding", repo_dir=repo_dir)
     return "scheduled"
