@@ -246,7 +246,8 @@ _SCHEMAS = {
         "description": (
             "Search the skills offered by the connected sources (ClawHub joins a text search). Returns catalog ids "
             "for skill_install with source, trust, digest, keys, permissions, type and installed state; "
-            "local_digest names an installed copy's current bytes."
+            "local_digest names an installed copy's current bytes. skill_install, skill_update and skill_sources "
+            "load with enable_tools."
         ),
         "properties": {
             "query": {"type": "string", "description": "Words to match in names and descriptions; empty lists all."},

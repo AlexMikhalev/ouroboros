@@ -76,9 +76,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "request_restart", "promote_to_stable", "prepare_self_change",
     "preflight_review", "advisory_review", "review_change", "review_status", "task_acceptance_review",
     "verify_and_record",
-    # Skill discovery, installation from connected sources and review are core capabilities.
+    # Skill discovery and review are core capabilities; installing, updating and source changes
+    # load on demand (enable_tools) after a search found something worth it.
     "list_skills", "skill_review", "skill_preflight",
-    "submit_skill_to_hub", "skill_sources", "skill_search", "skill_install", "skill_update",
+    "submit_skill_to_hub", "skill_search",
 })
 
 # Meta-tools: always visible alongside core tools
