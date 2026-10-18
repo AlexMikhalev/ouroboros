@@ -1781,9 +1781,10 @@ jobs:
               echo "WARNING: no codesigning identity found in temp keychain — build.sh will auto-detect or fail with no identity."
           fi
 
-      # —— macOS build (signed + optionally notarized when secrets are
-      #         present, otherwise unsigned). Notarization values exist only
-      #         inside this first-party build step.
+      # —— macOS build (signed + notarized when secrets are present,
+      #         otherwise unsigned; the smoke stops a signed stable build that
+      #         is not notarized). Notarization values exist only inside this
+      #         first-party build step.
       - name: Build macOS app
         if: matrix.os == 'macos-latest'
         env:
@@ -1795,7 +1796,7 @@ jobs:
             echo "Pre-release tag detected — building unsigned DMG for artifact validation"
             OUROBOROS_SIGN=0 bash build.sh
           elif [ "$HAS_APPLE_SIGNING" = "true" ]; then
-            echo "Signing certificate detected — building with codesign + (optional) notarization"
+            echo "Signing certificate detected — building with codesign + notarization (required for a signed stable release)"
             bash build.sh
           else
             echo "No signing secrets — building unsigned (OUROBOROS_SIGN=0)"
