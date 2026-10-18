@@ -536,6 +536,7 @@ def work(activity, transition="none", turn=False):
     (projection(work("queued"), work("paused")), "Ouroboros: queued"),  # the server's order: queued before paused
     (projection(work("working", "finalizing")), "Ouroboros: finalizing"),  # an answer's upkeep is not a new task
     (projection(work("working", "finalizing"), work("working")), "Ouroboros: working on 2 tasks"),
+    (projection(work("working", "pausing"), work("working", "finalizing")), "Ouroboros: pausing"),  # as the room says
     (projection(work("working"), work("working", "finalizing"), work("working"), work("queued")),
      "Ouroboros: working on 3 tasks"),
     (projection(work("working")), "Ouroboros: working on 1 task"),

@@ -94,12 +94,15 @@ def status_line(port: int) -> str:
     # The server's order (working, queued, waiting, paused), with the room's own transitions.
     activities = {work.get("activity") for work in works}
     working = [work for work in works if work.get("activity") == "working"]
+    transitions = {work.get("transition") or "none" for work in working}
     moving = [work for work in working if work.get("transition") != "pausing"]
-    if moving and all(work.get("transition") == "finalizing" for work in moving):
+    if working and transitions == {"finalizing"}:
         line = "Ouroboros: finalizing"  # only answers' upkeep runs, as the page says
+    elif working and "none" not in transitions and "pausing" in transitions:
+        line = "Ouroboros: pausing"  # settling its Pause: neither working nor paused yet, as on the page
     elif moving:
         line = f"Ouroboros: working on {len(moving)} task{'' if len(moving) == 1 else 's'}"
-    elif working:  # settling its Pause: neither working nor paused yet, as on the page
+    elif working:
         line = "Ouroboros: pausing"
     elif "queued" in activities:
         line = "Ouroboros: queued"
