@@ -350,3 +350,38 @@ def test_registry_staged_hash_failure_returns_install_result(registry_release, m
     assert not result.staged.staging_dir.exists()
     assert read_install_record(drive, "demo") == before
     assert find_skill(drive, "demo").content_hash == before["release"]["digest"]
+
+
+@pytest.mark.parametrize("access", ["light", "advanced", "pro"])
+def test_a_saved_self_check_keeps_review_each_strictness_outside_cyber_pro(release, monkeypatch, set_mode, access):
+    from ouroboros.review_records import build_author_disposition
+    from ouroboros.skill_acceptance import load_acceptance_facts
+    from ouroboros.skill_review_status import skill_review_gate
+
+    drive, _folder, _row, item = release
+    set_mode("cyber_pro")
+    installer.install_item(drive, item["id"], check="self", check_notes="Read every file.", actor="ouroboros")
+    set_mode(access)
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    current = find_skill(drive, "demo").content_hash
+    facts = load_acceptance_facts(drive, "demo")
+    assert facts["strict_review"] is True
+    author = build_author_disposition(disposition="accepted", rationale="checked", subject_hash=current,
+                                      enforcement="advisory", action="finish")
+    for disposition in (None, author):  # blockers stay off, even after an Advisory author finish
+        gate = skill_review_gate("blockers", enforcement="advisory", current_hash=current, acceptance=facts,
+                                 author_disposition=disposition)
+        assert (gate["executable_review"], gate["blocking_reason"]) == (False, "blocker_findings_need_owner")
+    assert skill_review_gate("clean", enforcement="advisory", current_hash=current, acceptance=facts)["executable_review"]
+    skipped = skill_review_gate("blockers", enforcement="advisory", current_hash=current,
+                                acceptance={**facts, "basis": "owner_skip"})
+    assert (skipped["executable_review"], skipped["blocking_reason"]) == (True, "owner_skip")
+
+
+@pytest.mark.parametrize("owner_digest_matches", [True, False])
+def test_an_expired_self_check_does_not_mask_a_matching_owner_edit(owner_digest_matches):
+    current = "d" * 64
+    acceptance = {"basis": "self_check", "release_digest": current,
+                  "owner_edit_digest": current if owner_digest_matches else "e" * 64}
+    assert acceptance_in_force(acceptance, current, cyber=False) == ("owner_edit" if owner_digest_matches else "")
+    assert acceptance_in_force(acceptance, current, cyber=True) == "self_check"

@@ -231,7 +231,7 @@ def acceptance_in_force(acceptance: Any, current_hash: str, *, cyber: Optional[b
     """
     reason = _acceptance_reason(acceptance, current_hash)
     if reason == "self_check" and not (cyber_authority() if cyber is None else cyber):
-        return ""
+        return "owner_edit" if acceptance.get("owner_edit_digest") == current_hash else ""
     return reason
 
 
