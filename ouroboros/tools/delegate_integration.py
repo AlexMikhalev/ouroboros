@@ -396,7 +396,8 @@ def _provision_snapshot(ctx: ToolContext, drive: pathlib.Path, target_root: str,
             "delegated run executes only in its own snapshot, never in the shared tree.",
             target_root=target_root, definitely_unrun=True, **lock_busy_facts(exc))
     if folder.parts and not (pathlib.Path(handle.path) / folder).is_dir():
-        try:  # unclaimed: nothing else names it, and the startup GC reconciles a failed release
+        # Unclaimed; custody GC retries a failed release once the owning task is proven over.
+        try:
             remove_execution_snapshot(handle.snapshot_id)
         except Exception:
             log.warning("Failed to release snapshot %s without its starting folder", handle.snapshot_id, exc_info=True)

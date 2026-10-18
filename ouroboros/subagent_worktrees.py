@@ -124,7 +124,7 @@ class SubagentWorktreeRegistryCorrupt(RuntimeError):
     ``refs/ouroboros/delegated/*`` refs those rows pin — a leak nothing can
     reconcile afterwards. The malformed bytes are kept instead, which is what
     the sibling registries (cancel intents, terminal deliveries) do and what
-    the startup GC already does when the custody log is unreadable.
+    the custody GC does when the custody log is unreadable.
     """
 
 
@@ -337,8 +337,9 @@ def _discard_snapshot_checkout(target: Path, wt_path: Path, ref: str, snapshot_i
     files go first, OUTSIDE the lock (a 1.8 GB tree takes minutes), then one short
     section forgets the admin dir, unpins the baseline and drops the row — the
     postcondition ``tests/test_snapshot_file_inputs.py`` asserts (no row, no ref,
-    no ``dlg_*`` directory). Best-effort: the startup GC reconciles what a crash
-    leaves. ``lock_wait_sec`` shortens the wait when the failure WAS a busy lock:
+    no ``dlg_*`` directory). Best-effort: custody GC reconciles crash leftovers
+    at boot and each custody pass once the owning task is proven over.
+    ``lock_wait_sec`` shortens the wait when the failure WAS a busy lock:
     the same holder is still there, and the typed refusal must not wait twice."""
     if _deletable(wt_path, root) and wt_path.exists():
         _force_rmtree(wt_path)
@@ -645,11 +646,12 @@ def _provision_git_copy(
     ``refs/ouroboros/delegated/``. The execution root is a detached worktree at
     that commit, registered durably BEFORE the caller records any start intent,
     and removed only by an explicit disposition (``remove_execution_snapshot``)
-    or by the startup GC after custody says the run is closed.
+    or by custody GC (boot and each custody pass), after the owning task is proven
+    over and custody says the run is closed.
 
     The ops lock is held twice, briefly (#1241): once to register the row, pin
     the baseline and create the worktree's admin dir — row FIRST, so everything
-    after it is nameable by the startup GC — and once to finalize the row.
+    after it is nameable by custody GC — and once to finalize the row.
     Listing, classifying (one git process for every binary verdict), hashing,
     populating, copying and the one ``update-index`` that re-records the copied
     bytes' stat run OUTSIDE it, so a huge untracked inventory delays only its
@@ -809,8 +811,9 @@ def _provision_git_copy(
     try:
         with _ops_lock(root, op="provision", task_id=task, target=str(target)):
             # Row FIRST, then the pin, then the admin dir: a crash after any of these
-            # leaves a REGISTERED snapshot custody never opened, which the startup GC
-            # removes (checkout, ref, row). A pin without a row would be invisible.
+            # leaves a REGISTERED snapshot custody never opened. Custody GC removes
+            # it (checkout, ref, row) once its owning task is proven over.
+            # A pin without a row would be invisible.
             # The provisional row is LIGHT (no per-file maps): the GC needs only
             # path, ref and snapshot id, and the maps are O(files) to serialize.
             _git_quiet(target, "worktree", "prune")

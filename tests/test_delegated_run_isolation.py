@@ -622,7 +622,7 @@ class TestOrphanReconciliation:
         # Blocker 1: the worker died between the accepted POST and record_started.
         # Recovery used to rebuild custody WITHOUT the C1 binding, so the recovered
         # run replayed bindingless, open_snapshot_ids went empty the moment the
-        # invocation stopped being pending, and the startup GC deleted the snapshot
+        # invocation stopped being pending, and the custody GC deleted the snapshot
         # holding the child's ONLY copy of its work.
         target, data, handle = self._stranded(
             tmp_path, snapshot_id="inv-lost", task_id="t-dead", started=False)
@@ -640,7 +640,7 @@ class TestOrphanReconciliation:
         assert replayed.baseline_sha == handle.baseline_sha
         assert replayed.target_root == handle.target_root
         assert replayed.authority_source == "acting_constraint"
-        # Undisposed -> still OPEN to custody, so the startup GC keeps everything.
+        # Undisposed -> still OPEN to custody, so custody GC keeps everything.
         assert "inv-lost" in custody.open_snapshot_ids(data)
         report = prune_execution_snapshots(custody.open_snapshot_ids(data),
                                            worktree_root=tmp_path / "snaps", data_dir=data)
