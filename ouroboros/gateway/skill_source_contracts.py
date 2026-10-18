@@ -104,6 +104,7 @@ class MySkillsResponse(TypedDict, total=False):
     ok: Required[bool]
     created: bool
     repository: str
+    private: bool
     source: SkillSourceRow
     code: str
     error: str

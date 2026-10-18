@@ -1,7 +1,9 @@
 """Owner My skills creation/connection, contract and publication, with no GitHub traffic."""
 
+import ast
 import base64
 import json
+from pathlib import Path
 
 import pytest
 from starlette.applications import Starlette
@@ -19,6 +21,16 @@ ENDPOINT = "/api/skill-sources/my-skills"
 REPOSITORY = "alice/ouroboros-skills"
 URL = "https://github.com/" + REPOSITORY
 INITIAL = [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]
+
+
+def test_my_skills_is_declared_in_the_endpoint_tables():
+    from ouroboros.gateway import endpoint_index
+
+    tree = ast.parse(Path(endpoint_index.__file__).read_text(encoding="utf-8"))
+    tables = {node.target.id: node.value for node in tree.body if isinstance(node, ast.AnnAssign)}
+    token = "POST " + ENDPOINT
+    assert token in ast.literal_eval(tables["HTTP_ENDPOINTS"])
+    assert token in [ast.literal_eval(key) for key in tables["HTTP_SHAPES"].keys]
 
 
 @pytest.fixture
@@ -39,7 +51,7 @@ def env(tmp_path, monkeypatch):
         yield client, settings
 
 
-def _fake(monkeypatch, *, exists=False, failure=None, error_stage="create"):
+def _fake(monkeypatch, *, exists=False, private=True, failure=None, error_stage="create"):
     calls = []
 
     def request(method, path, **kwargs):
@@ -53,25 +65,27 @@ def _fake(monkeypatch, *, exists=False, failure=None, error_stage="create"):
                 raise failure
             if not exists:
                 raise GitHubError("Not Found", http_status=404)
-            return {"name": "ouroboros-skills", "private": True}
+            return {"name": "ouroboros-skills", "private": private}
         assert (method, path) == ("POST", "/user/repos")
         if failure:
             raise failure
-        return {"name": "ouroboros-skills", "private": True}
+        return {"name": "ouroboros-skills", "private": private}
 
     monkeypatch.setattr(skill_my_skills, "github_request", request)
     return calls
 
 
 @pytest.mark.parametrize("exists", [False, True])
-def test_create_or_connect_private_repository_and_save_trusted_source(env, monkeypatch, exists):
+@pytest.mark.parametrize("private", [False, True])
+def test_create_or_connect_repository_reports_visibility_and_saves_new_source(env, monkeypatch, exists, private):
     client, settings = env
-    calls = _fake(monkeypatch, exists=exists)
+    calls = _fake(monkeypatch, exists=exists, private=private)
     response = client.post(ENDPOINT, json={})
     assert response.status_code == 200, response.text
     assert assert_bound("POST " + ENDPOINT, response) == "MySkillsResponse"
     body = response.json()
     assert (body["ok"], body["created"], body["repository"]) == (True, not exists, REPOSITORY)
+    assert body["private"] is private
     source = body["source"]
     assert source == {"id": "my-skills", "name": "My skills", "kind": "git", "url": URL,
                       "trust": "trusted", "confirmed": True}
@@ -97,14 +111,15 @@ def test_repeat_connect_keeps_one_source_and_its_id(env, monkeypatch):
     assert [r["id"] for r in skill_sources.load_sources()] == ["builtin", "my-skills"]
 
 
-def test_existing_source_is_named_trusted_and_confirmed(env, monkeypatch):
+def test_existing_source_keeps_owner_name_trust_and_confirmation(env, monkeypatch):
     client, _settings = env
     monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps([*INITIAL, {
         "id": "existing", "name": "Other name", "url": URL, "kind": "git", "trust": "review", "confirmed": False}]))
     _fake(monkeypatch, exists=True)
     result = client.post(ENDPOINT, json={}).json()
-    assert result["source"] == {"id": "existing", "name": "My skills", "url": URL, "kind": "git",
-                                "trust": "trusted", "confirmed": True}
+    assert result["source"] == {"id": "existing", "name": "Other name", "url": URL, "kind": "git",
+                                "trust": "review", "confirmed": False}
+    assert skill_sources.source_by_id(skill_sources.load_sources(), "existing") == result["source"]
 
 
 def test_missing_token_never_touches_github_or_sources(env, monkeypatch):
@@ -166,11 +181,11 @@ def test_new_my_skills_source_publishes_and_merges_through_the_existing_transact
         if path == f"/repos/{REPOSITORY}":
             if not exists:
                 raise GitHubError("Not Found", http_status=404)
-            return {"default_branch": "trunk", "permissions": {"push": True}}
+            return {"default_branch": "trunk", "permissions": {"push": True}, "private": True}
         if path == "/user/repos":
             assert kwargs["body"]["private"] and kwargs["body"]["auto_init"]
             exists = True
-            return {"name": "ouroboros-skills"}
+            return {"name": "ouroboros-skills", "private": True}
         if "/git/refs/heads/trunk" in path:
             return {"object": {"sha": BASE_SHA}}
         if "/git/trees/" in path:

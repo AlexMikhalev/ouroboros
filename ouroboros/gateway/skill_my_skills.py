@@ -1,4 +1,4 @@
-"""Owner-click creation/connection of the private GitHub skills source.
+"""Owner-click creation/connection of the GitHub skills source, with its actual visibility.
 
 GitHub work runs off the event loop through the publication client. The source
 registry's existing writer persists the choice under the settings document lock.
@@ -13,7 +13,7 @@ from starlette.routing import Route
 from ouroboros.gateway._helpers import run_sync_to_completion
 from ouroboros.gateway.owner_settings import owner_audit
 from ouroboros.skill_publish_client import GitHubError, MISSING_TOKEN_MESSAGE, request as github_request
-from ouroboros.skill_sources import load_sources, save_sources, with_added_source, with_changed_source
+from ouroboros.skill_sources import load_sources, save_sources, with_added_source
 
 
 def _connect_my_skills(request: Request) -> JSONResponse:
@@ -25,12 +25,12 @@ def _connect_my_skills(request: Request) -> JSONResponse:
             raise ValueError("GitHub did not return the account login")
         repository = f"{login}/ouroboros-skills"
         try:
-            github_request("GET", f"/repos/{repository}")
+            repo = github_request("GET", f"/repos/{repository}")
         except GitHubError as exc:
             if exc.http_status != 404:
                 raise
             try:
-                github_request("POST", "/user/repos", timeout=60, body={
+                repo = github_request("POST", "/user/repos", timeout=60, body={
                     "name": "ouroboros-skills", "private": True, "auto_init": True,
                     "description": "My Ouroboros skills, shared between my installations.",
                 })
@@ -48,7 +48,6 @@ def _connect_my_skills(request: Request) -> JSONResponse:
             rows, source = with_added_source(rows, kind="git", url=url, name="My skills", trust="trusted")
         else:
             source = existing
-            rows = with_changed_source(rows, source["id"], name="My skills", trust="trusted", confirmed=True)
         saved = save_sources(rows)
         source = next(row for row in saved if row["id"] == source["id"])
     except GitHubError as exc:
@@ -60,7 +59,8 @@ def _connect_my_skills(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "code": "failed", "error": "Could not connect My skills; try again."},
                             status_code=502)
     owner_audit(request, "skill_sources", {"change": "my_skills", "repository": repository, "created": created})
-    return JSONResponse({"ok": True, "created": created, "repository": repository, "source": source})
+    return JSONResponse({"ok": True, "created": created, "repository": repository,
+                         "private": repo["private"], "source": source})
 
 
 async def api_skill_source_my_skills(request: Request) -> JSONResponse:
