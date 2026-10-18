@@ -708,3 +708,31 @@ def test_os_declarations_parse_as_platform_lists():
     assert unix.os == "darwin,linux" and windows.os == "win32"
     assert windows.permissions == ["tool"]
     assert windows.raw_extra["install"] == [{"kind": "pip", "package": "comtypes==1.4.17"}]
+
+
+def test_unknown_dependency_readiness_never_certifies_the_pass(windows_installed, monkeypatch):
+    data, installs, _reconciles = windows_installed
+    assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS] and len(installs) == 1  # ready and on
+    identity = {"schema_version": skill_builtin.RECEIPT_SCHEMA_VERSION, "seed_tree": "fixed"}
+    monkeypatch.setattr(skill_builtin, "_seed_identity", lambda repo_dir: identity)
+    monkeypatch.setattr(skill_builtin, "reseed_changed_builtins", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(skill_builtin, "release_removed_builtins", lambda *args, **kwargs: True)
+
+    def boot():
+        skill_builtin.ensure_builtin_skills(data, repo_dir=REPO, log_obj=log, dependency_pass=False)
+        return receipt(data)
+
+    import ouroboros.skill_dependencies as deps
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("deps state unreadable")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(deps, "auto_install_specs_for_skill", unreadable)
+        assert deps.skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "")  # execution readers
+        assert boot() is None  # completion never reads an unknown as ready
+    with monkeypatch.context() as broken:
+        broken.setattr(skill_builtin, "_bundled_names", lambda seed_root: None)
+        assert boot() is None
+    assert skill_builtin._bundled_names(data / "no-such-seed-tree") is None
+    assert boot() == identity
