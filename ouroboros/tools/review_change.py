@@ -1001,8 +1001,15 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         from ouroboros.tools.review_result import RESULT_LAYER, refuse_when_off, result_subject, running_earlier_request
 
         refuse_when_off()  # before any subject is built or any seat is paid
-        result = (frozen_result if frozen_result is not None
-                  else running_earlier_request(ctx, result_subject(ctx, request, governance_root=governance)))
+        result = frozen_result if frozen_result is not None else result_subject(ctx, request, governance_root=governance)
+        if frozen_result is None:
+            earlier = running_earlier_request(ctx, result)
+            # Only to collect: the same unchanged call rejoins that round's open operation at $0; any other call
+            # (another brief, a lost operation) reviews the request as it is now.
+            if earlier is not result and pending_round_attempt(
+                    ctx, root=pathlib.Path(earlier.spec.root), tool_name=wave_tool_name(request),
+                    retry_key=review_retry_key(earlier, round_sha=_round_sha(request, earlier))) is not None:
+                result = earlier
         root = pathlib.Path(result.spec.root)
         fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=False)
         layer, spec = RESULT_LAYER, result.spec

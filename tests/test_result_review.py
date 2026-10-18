@@ -803,3 +803,27 @@ def test_a_refusal_is_no_review_of_any_request(tmp_path, monkeypatch):
     record = review_ledger.load_record(review_ledger.ledger_root(ctx), current[-1]["record_id"])
     assert record["verdict"]["aggregate"] == "PASS" and not current[-1].get("earlier_request")
     assert words in rr._retained_subject_text(ctx, record["subject"]["diff_sha"])
+
+
+def test_another_call_of_the_same_answer_reviews_the_current_request_not_the_running_one(tmp_path, monkeypatch):
+    """Only the same unchanged call collects the running review of an earlier request: a call with another brief
+    (here another goal) reviews the request as it is now, never the earlier subject, and leaves that record alone."""
+    from ouroboros.tools import review_result as rr
+    from tests.test_review_change_end_to_end import _pending_then_answering_seat
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="auto")
+    sends: list[dict] = []
+    answer, _starts = _pending_then_answering_seat("t2", "other-brief")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    first = run_review_change(ctx, subject="result", answer="The sum is 12.", goal="Check the sum")
+    assert first["state"] == "pending"
+    root = review_ledger.ledger_root(ctx)
+    before = review_ledger.load_record(root, first["record_id"])
+    words = "Also show the working."
+    ctx._owner_directives = [*(getattr(ctx, "_owner_directives", None) or []),
+                             {"source": "owner_mailbox", "content": words, "msg_id": "m-2"}]
+    other = run_review_change(ctx, subject="result", answer="The sum is 12.", goal="Check the working too")
+    assert other["record_id"] != first["record_id"]
+    reviewed = review_ledger.load_record(root, other["record_id"])["subject"]["diff_sha"]
+    assert words in rr._retained_subject_text(ctx, reviewed), "the current request was reviewed"
+    assert review_ledger.load_record(root, first["record_id"])["subject"] == before["subject"]
