@@ -185,12 +185,15 @@ def test_project_panel_composer_and_welcome_contracts():
 
 def test_chat_header_controls_reorg_and_more_autodismiss():
     chat_js = _read("web/modules/chat.js")
+    # Main's header actions are declared once in chat_header.js; chat.js mounts them.
+    header_markup = _read("web/modules/chat_header.js")
+    assert "actionsHtml: mainHeaderActionsHtml()," in chat_js
     # Restart and Panic are header buttons; Panic always in the row, Restart visible in the row on a desk and
     # inside the ⋯ menu in the stack layout, where the budget joins it (owner Q4=A): the same two nodes, placed by
     # layout, so each keeps its one handler (confirmAndSendRestart; the budget's Dashboard → Costs click).
-    assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in chat_js
-    assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in chat_js
-    assert chat_js.count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
+    assert 'class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart"' in header_markup
+    assert 'class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic"' in header_markup
+    assert (chat_js + header_markup).count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
     header_js = _read("web/modules/page_header.js")
     placement = header_js.split("export function bindHeaderControlPlacement(", 1)[1].split("\n}\n", 1)[0]
     assert "if (next === 'menu') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restart);" in placement
@@ -202,9 +205,9 @@ def test_chat_header_controls_reorg_and_more_autodismiss():
     assert "disposeHeaderPlacement();" in chat_js
     assert "await confirmAndSendRestart({ openConfirmDialog, ws });" in chat_js
     # The stack layout's summary is the one ⋯ glyph; a desk keeps the word.
-    assert 'class="chat-header-more-word">More</span>' in chat_js and "${SHELL_ICONS.more}" in chat_js
+    assert 'class="chat-header-more-word">More</span>' in header_markup and "${SHELL_ICONS.more}" in header_markup
     # ...and Consciousness / Evolve / Review live in the More overflow menu.
-    menu = chat_js.split('class="chat-header-menu"', 1)[1].split("</details>", 1)[0]
+    menu = header_markup.split('class="chat-header-menu"', 1)[1].split("</details>", 1)[0]
     assert 'data-chat-command="bg"' in menu
     assert 'data-chat-command="evolve"' in menu
     assert 'data-chat-command="review"' in menu

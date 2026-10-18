@@ -69,6 +69,8 @@ test('nothing on the work card paints under the pointer but its disclosure, and 
         assert.ok(media >= 0 && /^@media \(hover: hover\)/.test(before.slice(media))
             && !/\n\}/.test(before.slice(media)), 'the disclosure hover is gated by (hover: hover)');
     }
-    // A finger gets the shared touch minimum around it, without a taller row.
-    assert.match(css, /@media \(pointer: coarse\) \{\s*\.chat-live-summary-side::after \{[^}]*var\(--touch-target-min\)/);
+    // A finger gets the shared touch minimum around it, without a taller row: the one ui.css recipe.
+    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+    assert.match(chat, /class="chat-live-summary-side ui-hit-area" data-live-disclosure/);
+    assert.doesNotMatch(css, /\.chat-live-summary-side::after/, 'no second copy of the hit-area recipe');
 });

@@ -272,7 +272,7 @@ def test_server_navigation_and_chat_static_contracts():
     assert "export async function cleanupUploadedAttachments" in media_source
     assert "method: 'DELETE'" in media_source
     assert "Promise.allSettled" in media_source
-    assert '>Loading…</span>' in chat_source
+    assert '>Loading…</span>' in _read("web/modules/chat_header.js")
     assert "syncHeaderControlState({ accounting: { available: false } });" in chat_source
     assert "budget_text: 'Connecting...'" not in chat_source
     assert "send(msg, options = {})" in _read("web/modules/ws.js")

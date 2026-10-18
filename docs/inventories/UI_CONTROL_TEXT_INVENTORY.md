@@ -49,7 +49,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Close | `btn btn-default document-reader-close` | modules/document_reader.js | 1 |
 | [icon] Close navigation | `shell-icon-control nav-drawer-close` | index.html | 1 |
 | Connect again | `btn btn-primary` | modules/harness_login_cards.js | 1 |
-| Consciousness | `chat-header-menu-item` | modules/chat.js | 1 |
+| Consciousness | `chat-header-menu-item` | modules/chat_header.js | 1 |
 | Continue in current mode | `btn btn-primary` | modules/onboarding_overlay.js | 1 |
 | Continue in external terminal | `btn btn-primary` | modules/harness_login_cards.js | 1 |
 | Copy | `files-context-item` | modules/files.js | 1 |
@@ -69,7 +69,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Download | `btn btn-default` | modules/files.js | 1 |
 | Download | `files-context-item` | modules/files.js | 1 |
 | Duplicate | `btn btn-default` | modules/subagents_settings.js | 1 |
-| Evolve | `chat-header-menu-item` | modules/chat.js | 1 |
+| Evolve | `chat-header-menu-item` | modules/chat_header.js | 1 |
 | Export | `btn btn-default btn-sm` | modules/settings_language.js | 1 |
 | + File | `btn btn-default` | modules/files.js | 1 |
 | Formatted | `btn btn-default` | modules/document_reader.js | 1 |
@@ -79,7 +79,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Install Local Runtime | `btn btn-secondary local-model-install-btn local-model-hidden` | modules/settings_ui.js | 1 |
 | Keep one per model | `btn btn-default` | modules/subagents_settings.js | 1 |
 | Load models | `btn btn-secondary` | modules/onboarding_wizard.js | 1 |
-| Loading… | `chat-budget-pill ui-chrome-control` | modules/chat.js | 1 |
+| Loading… | `chat-budget-pill ui-chrome-control` | modules/chat_header.js | 1 |
 | Make runnable | `skills-menu-item skills-make-runnable` | modules/skill_card_renderer.js | 1 |
 | Measure now | `btn btn-default btn-sm storage-refresh` | modules/storage.js | 1 |
 | Move | `files-context-item` | modules/files.js | 1 |
@@ -89,7 +89,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Open built-in setup | `btn btn-default` | modules/onboarding_overlay.js | 1 |
 | Open externally | `btn btn-default` | modules/files.js | 1 |
 | Open Ouroboros in the current mode | `btn btn-primary` | modules/onboarding_wizard.js | 1 |
-| Panic | `chat-header-btn danger ui-chrome-control` | modules/chat.js | 1 |
+| Panic | `chat-header-btn danger ui-chrome-control` | modules/chat_header.js | 1 |
 | Paste | `btn btn-default` | modules/files.js | 1 |
 | Paste Here | `files-context-item` | modules/files.js | 1 |
 | Pause | `btn btn-default btn-sm evo-refresh-btn` | modules/evolution.js | 1 |
@@ -125,7 +125,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Reset All Data | `btn btn-danger` | modules/settings_ui.js | 1 |
 | [icon] Resize width: drag or use arrow keys | `widgets-card-resize` | modules/widgets.js | 1 |
 | ▸ Resources | `btn btn-default` | modules/harness_accounts.js | 1 |
-| Restart | `chat-header-btn ui-chrome-control` | modules/chat.js | 1 |
+| Restart | `chat-header-btn ui-chrome-control` | modules/chat_header.js | 1 |
 | Restart now | `btn btn-secondary` | modules/settings_ui.js | 1 |
 | Restore | `btn btn-danger btn-xs` | modules/updates.js | 1 |
 | Restore hold | `btn btn-xs btn-default` | modules/activity.js | 1 |
@@ -134,7 +134,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Retry | `skill-review-retry` | modules/skill_review_card.js | 1 |
 | Retry model discovery | `btn btn-default` | modules/onboarding_wizard.js | 1 |
 | Retry request | `btn btn-default` | modules/model_wait.js | 1 |
-| Review | `chat-header-menu-item` | modules/chat.js | 1 |
+| Review | `chat-header-menu-item` | modules/chat_header.js | 1 |
 | Review & start | `btn btn-secondary` | modules/onboarding_wizard.js | 1 |
 | Save | `btn btn-default btn-sm` | modules/skill_card_renderer.js | 1 |
 | Save | `btn btn-primary` | modules/files.js | 1 |
@@ -150,7 +150,7 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Show | `btn btn-default` | modules/mcp_header_fields.js | 1 |
 | Show | `btn btn-default secret-toggle` | modules/settings.js | 2 |
 | Show | `btn btn-default secret-toggle` | modules/settings_ui.js | 1 |
-| Show details | `chat-live-summary-side` | modules/chat.js | 1 |
+| Show details | `chat-live-summary-side ui-hit-area` | modules/chat.js | 1 |
 | Sign in again | `btn btn-default` | modules/model_wait.js | 1 |
 | Skip review | `skills-menu-item skills-attest-review skills-attest-warn` | modules/skill_card_renderer.js | 1 |
 | Source | `btn btn-default` | modules/document_reader.js | 1 |

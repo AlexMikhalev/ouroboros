@@ -2172,16 +2172,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     outline-offset: 2px;
 }
 
-/* A finger's target (DESIGN §5): under a coarse pointer a small control's hit area grows around its centre to
-   the shared touch minimum; its box, look and neighbours stay where they are. */
-@media (pointer: coarse) {
-    .chat-live-summary-side::after {
-        content: "";
-        position: absolute;
-        inset: min(0px, calc((100% - var(--touch-target-min)) / 2));
-    }
-}
-
 .chat-live-phase,
 .chat-live-line-phase {
     display: inline-flex;

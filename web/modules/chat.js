@@ -1,7 +1,8 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
 import { bindHeaderControlPlacement, renderPageHeader } from './page_header.js';
-import { SHELL_ICONS, strokeIcon } from './page_icons.js';
+import { strokeIcon } from './page_icons.js';
+import { mainHeaderActionsHtml } from './chat_header.js';
 import { pageLabel } from './pages.js';
 import { showToast } from './toast.js';
 import { tx } from './i18n.js';
@@ -230,28 +231,7 @@ export function createChatInstance({
             variant: 'overlay',
             className: 'chat-page-header',
             toolbarClass: 'ui-chrome-group',
-            // Stack: Restart and the budget sit inside ⋯ (bindHeaderControlPlacement).
-            actionsHtml: `
-                <div class="chat-header-actions" id="chat-header-actions">
-                    <button class="chat-header-btn ui-chrome-control" type="button" data-chat-command="restart" title="Restart agent">Restart</button>
-                    <button class="chat-header-btn danger ui-chrome-control" type="button" data-chat-command="panic" title="Stop all workers">Panic</button>
-                    <details class="chat-header-more">
-                        <summary class="chat-header-btn ui-chrome-control" title="More agent controls"><span class="chat-header-more-word">More</span><span class="chat-header-more-glyph" aria-hidden="true">${SHELL_ICONS.more}</span></summary>
-                        <div class="chat-header-menu">
-                            <button class="chat-header-menu-item" type="button" data-chat-command="bg">Consciousness</button>
-                            <button class="chat-header-menu-item" type="button" data-chat-command="evolve">Evolve</button>
-                            <button class="chat-header-menu-item" type="button" data-chat-command="review" title="Run review now">Review</button>
-                        </div>
-                    </details>
-                </div>
-                <button class="chat-budget-pill ui-chrome-control" id="chat-budget-pill" type="button" title="Open budget controls" aria-label="Open budget controls">
-                    <span class="chat-budget-text" id="chat-budget-text">Loading…</span>
-                    <div class="chat-budget-bar">
-                        <div class="chat-budget-bar-fill" id="chat-budget-bar-fill"></div>
-                    </div>
-                </button>
-                <span id="chat-status" class="status-badge offline">Connecting…</span>
-            `,
+            actionsHtml: mainHeaderActionsHtml(),
         });
     // Main: the history note (gaps, a failed read, an approximate position) floats UNDER the bar as its own
     // strip, never as a second row of it; the Project panel keeps its in-flow status bar.
@@ -1256,7 +1236,7 @@ export function createChatInstance({
                         </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
-                    <button type="button" class="chat-live-summary-side" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+                    <button type="button" class="chat-live-summary-side ui-hit-area" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
                         <span class="chat-live-count" data-live-count hidden></span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
                         <svg class="chat-live-chevron" width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
