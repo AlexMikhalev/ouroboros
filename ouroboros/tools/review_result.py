@@ -532,8 +532,6 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     if getattr(ctx, "_presence_completion", None):
         return _presence_result_review(ctx, content, llm_trace, subject.diff_sha, record,
                                        owed=required and not running_result_review(rows, subject.diff_sha))
-    # A review of exactly this result that the mind started and that is still running is collected like
-    # the floor's own, in every mode but Off: the delivery waits for it unless the mind chose to finish.
     # A review of exactly this result that is still running (the mind's own, or the floor's left one) is
     # collected at $0, in every mode but Off: the delivery waits for it unless the mind chose to finish.
     running = running_result_review(rows, subject.diff_sha) if record is None else ""
