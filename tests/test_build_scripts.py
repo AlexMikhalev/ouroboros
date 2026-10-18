@@ -1031,7 +1031,7 @@ class TestMacOSSigning:
             + 'notarize dist/app.zip\nstaple dist/Ouroboros.app\necho DONE\n'
         )
         log = tmp_path / "xcrun.log"
-        env = dict(os.environ, PATH=f"{fake}:{os.environ['PATH']}", XCRUN_LOG=str(log),
+        env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}", XCRUN_LOG=str(log),
                    FAKE_STATUS=status, FAKE_STAPLE_RC=str(staple_rc), APPLE_ID="dev@example.test",
                    APPLE_TEAM_ID="TEAM", APPLE_APP_SPECIFIC_PASSWORD="secret")
         result = subprocess.run([bash, "--noprofile", "--norc", "-c", script], env=env,
@@ -1111,7 +1111,8 @@ class TestMacOSSigning:
 
     def test_macos_smoke_proves_gatekeeper_on_the_copied_out_app(self):
         """codesign passed v7.7.0; the release proof must ask Gatekeeper about the
-        app a user drags out, and hand the observed state to the receipt."""
+        app a user drags out (the decision itself is executed in
+        tests/test_release_proof_macos.py)."""
         src = _read(self._CI_PATH)
         smoke = src[src.index("- name: Smoke final macOS DMG"):src.index("- name: Smoke final Linux archive")]
         assert 'xcrun stapler validate "$DMG"' in smoke
@@ -1120,10 +1121,6 @@ class TestMacOSSigning:
         assert "--context context:primary-signature" in smoke
         assert smoke.count("grep -q 'source=Notarized Developer ID'") == 2
         assert smoke.index('ditto "$MOUNT" "$SBOM_ROOT"') < smoke.index("spctl --assess")
-        record = src[src.index("- name: Record packaged artifact smoke"):]
-        record = record[:record.index("\n      - name:", 10)]
-        assert "steps.smoke_macos.outputs.macos_notarization" in record
-        assert '--macos-notarization "$NOTARIZATION"' in record
 
 
 # ===========================================================================

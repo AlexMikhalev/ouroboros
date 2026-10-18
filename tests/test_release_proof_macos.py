@@ -156,7 +156,7 @@ def test_smoke_decides_notarization_from_configuration_and_proves_it(
     for tool in ("xcrun", "spctl"):
         (fake / tool).chmod(0o755)
     output, calls = tmp_path / "output", tmp_path / "calls"
-    env = dict(os.environ, PATH=f"{fake}:{os.environ['PATH']}", HAS_APPLE_SIGNING=signing,
+    env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}", HAS_APPLE_SIGNING=signing,
                SBOM_ROOT=str(tmp_path / "sbom"), RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output),
                CALLS=str(calls))
     result = subprocess.run([bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", block],

@@ -225,9 +225,7 @@ def command_record_smoke(args: argparse.Namespace) -> None:
                 "publisher": args.authenticode_publisher,
             }
     if args.proof_id == NOTARIZATION_PROOF_ID:
-        receipt["notarization"] = {
-            "status": getattr(args, "macos_notarization", "") or "not_notarized"
-        }
+        receipt["notarization"] = {"status": args.macos_notarization or "not_notarized"}
     _write_json(args.output, receipt)
 
 
