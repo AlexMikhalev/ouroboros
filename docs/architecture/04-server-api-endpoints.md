@@ -16,7 +16,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | GET | `/api/health` | 200 during boot too; the `boot` document: §2 Boot order |
 | GET | `/api/contract` | |
 | GET | `/api/state` | |
-| GET | `/api/extensions` | installed-skill projection; never fetches the hub catalog |
+| GET | `/api/extensions` | installed-skill projection; never fetches |
 | POST | `/api/skills/{skill}/publish-preflight` | |
 | GET | `/api/extensions/{skill}/manifest` | |
 | GET | `/api/extensions/{skill}/module/{entry:path}` | reviewed `.js`/`.mjs` from captured texts; `Access-Control-Allow-Origin: *` |
@@ -34,18 +34,27 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/skills/{skill}/reconcile` | |
 | GET | `/api/marketplace/clawhub/search` | |
 | GET | `/api/marketplace/clawhub/installed` | |
+| GET | `/api/marketplace/ouroboroshub/installed` | frozen hub listing |
 | GET | `/api/marketplace/clawhub/info/{slug:path}` | |
 | GET | `/api/marketplace/clawhub/preview/{slug:path}` | |
 | POST | `/api/marketplace/clawhub/install` | |
 | POST | `/api/marketplace/clawhub/update/{name}` | |
 | POST | `/api/marketplace/clawhub/uninstall/{name}` | |
-| GET | `/api/marketplace/ouroboroshub/catalog` | |
-| GET | `/api/marketplace/ouroboroshub/installed` | |
-| GET | `/api/marketplace/ouroboroshub/preview/{slug:path}` | |
-| POST | `/api/marketplace/ouroboroshub/install` | also the adopt transport |
-| POST | `/api/marketplace/ouroboroshub/update/{name}` | |
-| POST | `/api/marketplace/ouroboroshub/uninstall/{name}` | |
-| POST | `/api/marketplace/ouroboroshub/publication/{name}/clear` | forgets only the local publication receipt |
+| POST | `/api/skills/{skill}/publication/clear` | |
+| GET | `/api/skill-sources` | |
+| POST | `/api/skill-sources` | |
+| POST | `/api/skill-sources/my-skills` | |
+| POST | `/api/skill-sources/probe` | |
+| POST | `/api/skill-sources/{source_id}` | |
+| POST | `/api/skill-sources/{source_id}/remove` | |
+| POST | `/api/skill-sources/{source_id}/refresh` | |
+| GET | `/api/skill-catalog` | |
+| GET | `/api/skill-catalog/search` | |
+| GET | `/api/skill-catalog/item/{source_id}/{name}` | |
+| POST | `/api/skill-catalog/install` | |
+| POST | `/api/skills/{skill}/update` | |
+| POST | `/api/skills/{skill}/uninstall` | |
+| GET | `/api/onboarding/starter-skills` | |
 | GET | `/api/files/list` | |
 | GET | `/api/files/read` | |
 | GET | `/api/files/content` | |
