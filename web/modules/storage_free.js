@@ -46,9 +46,12 @@ const NOT_STARTED = {
 export const groupsOf = (free) => (Array.isArray(free?.groups) ? free.groups : []);
 const words = (group) => FREE_GROUPS[group?.id] || { label: String(group?.id || ''), loss: '', unit: ['{n} folder', '{count} folders'] };
 const groupBytes = (group) => (isSize(group?.bytes) ? group.bytes : 0);
-export const freeSum = (free, checked = null) => groupsOf(free)
-    .filter((group) => !checked || checked.has(group.id))
-    .reduce((total, group) => total + groupBytes(group), 0);
+const chosen = (free, checked = null) => groupsOf(free).filter((group) => !checked || checked.has(group.id));
+/** The sum of the sizes known for the (checked) groups: unknown is never zero, so see `sumComplete`. */
+export const freeSum = (free, checked = null) => chosen(free, checked).reduce((total, group) => total + groupBytes(group), 0);
+/** Every (checked) group with folders was sized whole: the sum is the whole truth. */
+export const sumComplete = (free, checked = null) => chosen(free, checked)
+    .every((group) => !group.count || (isSize(group.bytes) && group.bytes_complete !== false));
 export const unitOf = (group, n) => plural(n, ...words(group).unit);
 
 /** 'rest' | 'listing' | 'ready' | 'empty' | 'running' | 'done' | 'failed' (a dismissed list reads 'rest'). */
@@ -65,23 +68,28 @@ function groupWhy(group, days) {
     return [
         said.loss ? fmt(said.loss) : '',
         group.inside_wait ? fmt('{n} of {total} folders finished less than {days} days ago.', { n: number(group.inside_wait), total: number(group.count), days }) : '',
-        group.in_use ? fmt('{m} are in use and stay.', { m: number(group.in_use) }) : '',
-        group.unreadable ? fmt('{k} stay: their task record could not be read.', { k: number(group.unreadable) }) : '',
+        group.in_use ? plural(group.in_use, '{n} is in use and stays.', '{count} are in use and stay.') : '',
+        group.unreadable ? plural(group.unreadable, '{n} stays: its task record could not be read.', '{count} stay: their task record could not be read.') : '',
     ].filter(Boolean).join(' ');
 }
 
-function groupSize(group) {
-    if (!isSize(group.bytes)) return fmt('listing…');
-    return group.bytes_complete === false ? fmt('{size} so far', { size: formatBytes(group.bytes) }) : formatBytes(group.bytes);
+/** A group's size while listing ("so far") and once listed: a folder the sizing could not read leaves
+ *  the size unknown or incomplete, never zero. */
+function groupSize(group, listing) {
+    if (!isSize(group.bytes)) return listing ? fmt('listing…') : fmt('size unknown');
+    if (group.bytes_complete === false) {
+        return listing ? fmt('{size} so far', { size: formatBytes(group.bytes) }) : fmt('{size} (some could not be read)', { size: formatBytes(group.bytes) });
+    }
+    return formatBytes(group.bytes);
 }
 
-function checklistHtml(free, checked, days) {
+function checklistHtml(free, checked, days, listing = false) {
     const groups = groupsOf(free);
     const single = groups.length === 1;  // one offered group needs no checkbox column
     return `<ul class="storage-free-groups${single ? ' is-single' : ''}">${groups.map((group) => `<li class="storage-free-group">
             ${single ? '' : `<input type="checkbox" class="ui-checkbox" id="storage-free-${attr(group.id)}" data-free-group="${attr(group.id)}" data-key="check-${attr(group.id)}"${checked.has(group.id) ? ' checked' : ''}>`}
             <label class="storage-free-label" for="storage-free-${attr(group.id)}">${text(fmt(words(group).label))}</label>
-            <span class="storage-free-size" data-i18n-fmt="storage.size">${text(groupSize(group))}</span>
+            <span class="storage-free-size" data-i18n-fmt="storage.size">${text(groupSize(group, listing))}</span>
             <p class="storage-free-why" data-i18n-fmt="storage.free.why">${text(groupWhy(group, days))}</p>
         </li>`).join('')}</ul>`;
 }
@@ -104,15 +112,18 @@ function largestHtml(free) {
         </details>`;
 }
 
-// `data` is the button's one data attribute (`data-free-go`); it doubles as the focus key.
-const button = (label, data, tone = 'btn-default') => `<button type="button" class="btn ${tone} btn-sm" ${data} data-key="${attr(data)}">${text(label)}</button>`;
+// `data` is the button's one data attribute (`data-free-go`); it doubles as the focus key. A label
+// composed with `fmt` names its key so the language overlay leaves the rendered text alone.
+const button = (label, data, tone = 'btn-default', key = '') => `<button type="button" class="btn ${tone} btn-sm" ${data} data-key="${attr(data)}"${key ? ` data-i18n-fmt="${attr(key)}"` : ''}>${text(label)}</button>`;
+
+const deletingSentence = (run) => (run?.deleting ? plural(run.deleting, '{n} is still being deleted.', '{count} are still being deleted.') : '');
+const stuckSentence = (run) => (run?.stuck ? plural(run.stuck, '{n} could not be deleted yet; the app retries once it changes.', '{count} could not be deleted yet; the app retries once they change.') : '');
 
 function runningHtml(run, total) {
     const sentence = fmt('Freeing space · {size} removed · {done} of {total} folders · You can leave this tab.', {
         size: formatBytes(run?.removed_bytes || 0), done: number(run?.done), total: number(total),
     });
-    const deleting = run?.deleting ? fmt('{d} are still being deleted.', { d: number(run.deleting) }) : '';
-    return `<p class="storage-progress" data-i18n-fmt="storage.free.running">${DOTS}<span>${text([sentence, deleting].filter(Boolean).join(' '))}</span></p>
+    return `<p class="storage-progress" data-i18n-fmt="storage.free.running">${DOTS}<span>${text([sentence, deletingSentence(run)].filter(Boolean).join(' '))}</span></p>
         <div class="storage-actions">${button('Stop', 'data-free-stop')}</div>`;
 }
 
@@ -120,7 +131,7 @@ function listingHtml(free, checked, days) {
     const sentence = fmt('Checking what can go · {done} of {total} folders · {size} so far. Nothing is removed.', {
         done: number(free.done), total: number(free.total), size: formatBytes(freeSum(free)),
     });
-    return `${groupsOf(free).length ? checklistHtml(free, checked, days) : ''}
+    return `${groupsOf(free).length ? checklistHtml(free, checked, days, true) : ''}
         <p class="storage-progress" data-i18n-fmt="storage.free.listing">${DOTS}<span>${text(sentence)}</span></p>
         <div class="storage-actions">${button('Stop', 'data-free-stop')}</div>`;
 }
@@ -133,10 +144,11 @@ export function doneSentences(free) {
     const lead = run.stopped
         ? fmt('Removed {size}, then stopped. The rest was left as it was.', { size: formatBytes(removed) })
         : fmt('Removed {size} ({n}).', { size: formatBytes(removed), n: plural(run.removed || 0, '{n} folder', '{count} folders') });
-    const kept = (run.kept || []).filter((row) => row.count > 0).map((row) => fmt('{k} were kept: {reason}.', {
-        k: number(row.count), reason: fmt(KEPT_REASONS[row.reason] || KEPT_REASONS.other),
-    }));
-    const deleting = run.deleting ? [fmt('{d} are still being deleted.', { d: number(run.deleting) })] : [];
+    const kept = (run.kept || []).filter((row) => row.count > 0).map((row) => {
+        const reason = fmt(KEPT_REASONS[row.reason] || KEPT_REASONS.other);
+        return plural(row.count, '{n} was kept: {reason}.', '{count} were kept: {reason}.').replace('{reason}', reason);
+    });
+    const deleting = [deletingSentence(run), stuckSentence(run)].filter(Boolean);
     const disk = isSize(run.free_before) && isSize(run.free_after)
         ? [fmt('{before} free is now {after}.', { before: formatBytes(run.free_before), after: formatBytes(run.free_after) })] : [];
     const error = run.error ? [fmt('Freeing stopped: {reason}.', { reason: String(run.error).replace(/\.$/, '') })] : [];
@@ -148,10 +160,24 @@ function headHtml(sum = '') {
         ? `<span class="storage-tray-sum" data-i18n-fmt="storage.free.sum">${text(sum)}</span>` : ''}</div>`;
 }
 
+/** The danger capsule's label: the sum when every checked folder was sized, else the honest rest. */
+export function goLabel(free, checked) {
+    const sum = freeSum(free, checked);
+    if (sumComplete(free, checked)) return fmt('Free {size}', { size: formatBytes(sum) });
+    return sum > 0 ? fmt('Free {size} or more', { size: formatBytes(sum) }) : fmt('Free, size unknown');
+}
+
+/** The tray's headline once listed: the sum, qualified when a folder could not be read whole. */
+function sumLabel(free) {
+    const sum = freeSum(free);
+    if (sumComplete(free)) return fmt('{size} can be freed', { size: formatBytes(sum) });
+    return sum > 0 ? fmt('{size} or more can be freed', { size: formatBytes(sum) }) : fmt('Size unknown');
+}
+
 /** The closing controls: Cancel, then the danger capsule carrying the live sum, last on the page. */
 function actionsHtml(free, checked) {
-    const sum = freeSum(free, checked);
-    const go = sum > 0 ? button(fmt('Free {size}', { size: formatBytes(sum) }), 'data-free-go', 'btn-danger')
+    const selected = chosen(free, checked).some((group) => group.count > 0);
+    const go = selected ? button(goLabel(free, checked), 'data-free-go', 'btn-danger', 'storage.free.go')
         : '<span class="storage-meta">Nothing selected</span>';
     return `<div class="storage-actions">${button('Cancel', 'data-free-cancel')}${go}</div>`;
 }
@@ -162,7 +188,7 @@ export function trayHtml(free, ui, days = 7) {
     const checked = ui?.checked || new Set();
     if (state === 'listing') return `${headHtml()}${listingHtml(free, checked, days)}`;
     if (state === 'ready') {
-        return `${headHtml(fmt('{size} can be freed', { size: formatBytes(freeSum(free)) }))}
+        return `${headHtml(sumLabel(free))}
             <p class="storage-meta">Nothing here holds results, messages or model history.</p>
             ${checklistHtml(free, checked, days)}
             ${largestHtml(free)}
@@ -197,14 +223,16 @@ export const notStarted = (reason) => fmt('Nothing was removed. {reason}', { rea
 export function confirmCopy(free, checked) {
     const groups = groupsOf(free).filter((group) => checked.has(group.id));
     const size = formatBytes(freeSum(free, checked));
+    const removes = sumComplete(free, checked) ? fmt('This removes {size} for good.', { size })
+        : fmt('This removes the checked folders for good; some of their sizes could not be read.');
     return {
         title: fmt('Free temporary space?'),
-        body: fmt('This removes {size} for good. Results, messages and the exact model history are kept. Continuing one of these tasks later starts without its scratch files.', { size }),
+        body: `${removes} ${fmt('Results, messages and the exact model history are kept. Continuing one of these tasks later starts without its scratch files.')}`,
         details: {
             summary: fmt('Show details'),
-            rows: groups.map((group) => ({ label: fmt(words(group).label), value: `${formatBytes(groupBytes(group))} · ${unitOf(group, group.count)}` })),
+            rows: groups.map((group) => ({ label: fmt(words(group).label), value: `${groupSize(group)} · ${unitOf(group, group.count)}` })),
         },
-        confirmLabel: fmt('Free {size}', { size }),
+        confirmLabel: goLabel(free, checked),
         danger: true,
     };
 }

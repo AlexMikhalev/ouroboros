@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { confirmCopy, doneSentences, freeSum, notStarted, trayHtml, trayState } from '../modules/storage_free.js';
+import { confirmCopy, doneSentences, freeSum, goLabel, notStarted, sumComplete, trayHtml, trayState } from '../modules/storage_free.js';
 
 // Text is escaped through document.createElement, as a browser's innerHTML does.
 globalThis.document = globalThis.document || {
@@ -66,6 +66,48 @@ test('the checkbox column disappears for one offered group; the live sum follows
     const dismissed = trayHtml(free('ready', { groups: both() }), ui([], true));
     assert.equal(trayState(free('ready', { groups: both() }), true), 'rest');
     assert.match(dismissed, /Show what can go/);
+});
+
+test('an unknown or incomplete size is never zero: the row, the headline, the capsule and the dialog say so', () => {
+    const unknown = group('working_copies', { count: 4, inside_wait: 0, in_use: 0, bytes: null, bytes_complete: false, items: [] });
+    const partial = group('work_folders', { bytes: 5.1 * GB, bytes_complete: false });
+    const alone = trayHtml(free('ready', { groups: [unknown] }), ui(['working_copies']));
+    assert.match(alone, /Size unknown/);
+    assert.match(alone, /storage-free-size[^>]*>size unknown</);
+    assert.match(alone, /btn-danger[^>]*data-free-go[^>]*data-i18n-fmt="storage\.free\.go"[^>]*>Free, size unknown</, 'the folders are selected: the capsule stays');
+    assert.doesNotMatch(alone, /Nothing selected|0 bytes|listing…/);
+    const mixed = trayHtml(free('ready', { groups: [partial, unknown] }), ui());
+    assert.match(mixed, /5\.1 GB or more can be freed/);
+    assert.match(mixed, /5\.1 GB \(some could not be read\)/);
+    assert.match(mixed, /data-free-go[^>]*>Free 5\.1 GB or more</);
+    assert.equal(freeSum(free('ready', { groups: [partial, unknown] })), 5.1 * GB);
+    assert.equal(sumComplete(free('ready', { groups: [partial, unknown] })), false);
+    assert.equal(sumComplete(free('ready', { groups: both() })), true);
+    assert.equal(goLabel(free('ready', { groups: both() }), new Set(['work_folders'])), 'Free 6.8 GB');
+    const copy = confirmCopy(free('ready', { groups: [partial, unknown] }), new Set(['work_folders', 'working_copies']));
+    assert.match(copy.body, /^This removes the checked folders for good; some of their sizes could not be read\. Results, messages/);
+    assert.deepEqual(copy.details.rows.map((row) => row.value), ['5.1 GB (some could not be read) · 1,629 folders', 'size unknown · 4 copies']);
+    assert.equal(copy.confirmLabel, 'Free 5.1 GB or more');
+    // While listing the same rows read as progress, and the sum is a checked group's complete size.
+    const listing = trayHtml(free('listing', { done: 1, total: 5, groups: [partial, unknown] }), ui());
+    assert.match(listing, /5\.1 GB so far[\s\S]*listing…/);
+    assert.doesNotMatch(listing, /size unknown|could not be read/);
+    const ready = trayHtml(free('ready', { groups: both() }), ui());
+    assert.match(ready, /data-free-go[^>]*data-i18n-fmt="storage\.free\.go"[^>]*>Free 8\.9 GB</);
+});
+
+test('counts of one read as one: in use, kept, deleting and stuck', () => {
+    const one = trayHtml(free('ready', { groups: [group('work_folders', { count: 2, inside_wait: 0, in_use: 1, unreadable: 1 })] }), ui(['work_folders']));
+    assert.match(one, /1 is in use and stays\. 1 stays: its task record could not be read\./);
+    const many = trayHtml(free('ready', { groups: [group('work_folders', { count: 5, inside_wait: 0, in_use: 2, unreadable: 3 })] }), ui(['work_folders']));
+    assert.match(many, /2 are in use and stay\. 3 stay: their task record could not be read\./);
+    assert.deepEqual(doneSentences(free('done', { run: run({ removed: 1, removed_bytes: 1e9, deleting: 1, deleting_bytes: 1e6, stuck: 1,
+        kept: [{ reason: 'in_use', count: 1 }], free_before: null, free_after: null }) })), [
+        'Removed 1.0 GB (1 folder).', '1 was kept: still in use.', '1 is still being deleted.',
+        '1 could not be deleted yet; the app retries once it changes.', 'The next count will show the new total.',
+    ]);
+    assert.deepEqual(doneSentences(free('done', { run: run({ deleting: 0, deleting_bytes: 0, stuck: 2, free_before: null, free_after: null }) })).slice(3, 4),
+        ['2 could not be deleted yet; the app retries once they change.']);
 });
 
 test('an empty preview says so and keeps the door', () => {

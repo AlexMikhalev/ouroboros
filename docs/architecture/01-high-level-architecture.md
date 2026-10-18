@@ -628,7 +628,7 @@ Default root (overrides: §7). This tree is the orientation carrier; `docs/PERSI
 │   │   ├── usage_attempts.quarantine.jsonl ← the journal's proven-corrupt rows
 │   │   ├── usage_import_watermark.json ← import watermark
 │   │   ├── skill_review_root_tasks.jsonl ← derived skill index; bounded-suffix reads
-│   │   ├── storage_measurement.json ← latest/previous counts; derived, never deletion authority
+│   │   ├── storage_measurement.json ← last two counts; derived, never deletion authority
 │   │   ├── request_wire_compatibility.json ← exact-route wire evidence
 │   │   ├── capability_evidence.json ← sourced model-capability evidence
 │   │   ├── extra-ca-bundle/<digest>.pem ← content-addressed CA bundle every first-party HTTP client verifies against

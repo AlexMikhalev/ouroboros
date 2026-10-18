@@ -1280,7 +1280,7 @@ const storageTray = (mount) => mount.querySelector('[data-storage-tray]');
 const trayButton = (mount, name) => storageTray(mount).querySelector(`[${name}]`);
 
 test('Storage tray previews on its door, polls while listing, and shows the checklist once ready', async (t) => {
-    const { mount, routes, calls, timers, start } = openStorage(t);
+    const { mount, routes, calls, timers, start, document } = openStorage(t);
     routes.set(storageUrl, response(storageBody()));
     start();
     await settle();
@@ -1290,10 +1290,14 @@ test('Storage tray previews on its door, polls while listing, and shows the chec
         return response(freeBody('listing', { total: 2, groups: [freeGroup('work_folders', null)], started: true }), 202);
     });
     const door = trayButton(mount, 'data-free-preview');
+    door.focus();
+    const measureButton = mount.querySelector('[data-storage-action="measure"]');
     await storageTray(mount).fire('click', { target: door });
     await settle();
     assert.deepEqual(calls, [storageUrl, previewUrl]);
     assert.match(storageTray(mount).textContent, /Checking what can go · 0 of 2 folders/);
+    assert.equal(measureButton.textContent, 'Measure now', 'a preview POST never reads as a count');
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-stop', 'focus follows the door into the listing');
     assert.equal(timers.polls(), 1, 'a listing is polled');
     routes.set(storageUrl, response(freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9), freeGroup('working_copies', 2.1e9)] })));
     await timers.fire();
@@ -1306,13 +1310,15 @@ test('Storage tray previews on its door, polls while listing, and shows the chec
     await storageTray(mount).fire('change', { target: box });
     assert.match(storageTray(mount).textContent, /Free 6\.8 GB/);
     const cancel = trayButton(mount, 'data-free-cancel');
+    cancel.focus();
     await storageTray(mount).fire('click', { target: cancel });
     assert.match(storageTray(mount).textContent, /Show what can go/);
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-preview', 'focus lands on the door');
     assert.deepEqual(calls, [storageUrl, previewUrl, storageUrl]);
 });
 
 test('Storage tray frees the checked groups under the plan after the shared confirm, then shows the result', async (t) => {
-    const { mount, routes, calls, timers, start, document } = openStorage(t);
+    const { mount, routes, calls, timers, start, show, document } = openStorage(t);
     routes.set(storageUrl, response(freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9), freeGroup('working_copies', 2.1e9)] })));
     start();
     await settle();
@@ -1338,14 +1344,28 @@ test('Storage tray frees the checked groups under the plan after the shared conf
     assert.deepEqual(posted, { plan: 'p1', groups: ['work_folders', 'working_copies'] });
     assert.match(storageTray(mount).textContent, /Freeing space · 0 bytes removed · 2 of 6 folders/);
     assert.match(storageTray(mount).textContent, /2 are still being deleted/);
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-stop', 'focus moves to the running tray\'s Stop');
     assert.equal(timers.polls(), 1);
     routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
         deleting: 1, deleting_bytes: 0.2e9, kept: [{ reason: 'results_pending', count: 0 }], free_before: 140e9, free_after: 148e9,
         stopped: false, error: null } })));
     await timers.fire();
     await settle();
-    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 are still being deleted\. 140 GB free is now 148 GB\. The next count will show the new total\./);
+    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 is still being deleted\. 140 GB free is now 148 GB\. The next count will show the new total\./);
     assert.equal(timers.polls(), 1, 'the maintenance child is still deleting');
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
+        deleting: 0, deleting_bytes: 0, stuck: 1, kept: [], free_before: 140e9, free_after: 148e9, stopped: false, error: null } })));
+    await timers.fire();
+    await settle();
+    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 could not be deleted yet; the app retries once it changes\./);
+    assert.equal(timers.polls(), 0, 'an entry the child reported stuck is not polled for');
+    assert.equal(mount.querySelector('[data-storage-live]').textContent, 'Not counted yet. Removed 8.0 GB (5 folders).', 'the live region carries one phase sentence');
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
+        deleting: 1, deleting_bytes: 0.2e9, kept: [{ reason: 'results_pending', count: 0 }], free_before: 140e9, free_after: 148e9,
+        stopped: false, error: null } })));
+    show('storage');
+    await settle();
+    assert.equal(timers.polls(), 1, 'the entry changed, the tab was shown again: it is deleting again');
     routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 6, removed_bytes: 8.2e9,
         deleting: 0, deleting_bytes: 0, kept: [], free_before: 140e9, free_after: 149e9, stopped: false, error: null } })));
     await timers.fire();
@@ -1353,7 +1373,7 @@ test('Storage tray frees the checked groups under the plan after the shared conf
     assert.match(storageTray(mount).textContent, /Removed 8\.2 GB \(6 folders\)\.\s*140 GB free is now 149 GB/);
     assert.doesNotMatch(storageTray(mount).textContent, /still being deleted/);
     assert.equal(timers.polls(), 0);
-    assert.deepEqual(calls, [storageUrl, freeUrl, storageUrl, storageUrl]);
+    assert.deepEqual(calls, [storageUrl, freeUrl, storageUrl, storageUrl, storageUrl, storageUrl]);
 });
 
 test('Storage tray says why a run did not start and stops a run on Stop', async (t) => {

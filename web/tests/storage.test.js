@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    announceSentence,
     barSegments,
     durationLabel,
     formatBytes,
@@ -87,6 +88,31 @@ test('places keep server order under their five groups; an absent place is omitt
         ['temporary', 34 * GB, 7 * GB], ['other', 0.4 * GB, null],
     ]);
     assert.equal(groups.find((group) => group.id === 'other').caveat, true, 'an unreadable member flags its group');
+    assert.match(rows.find((row) => row.id === 'working_copies').why, /Removed 7 days after they were made, once their task has finished\.$/);
+    // A group whose only member could not be listed has no size, never zero.
+    const unknownOnly = groupRows(placeRows(count({ places: [place('app_state', 'other', null, { unreadable: 1 })] }), 7));
+    assert.deepEqual(unknownOnly.map((group) => [group.id, group.bytes]), [['other', null]]);
+    const { places: html } = renderStorage(response({ count: count({ places: [place('app_state', 'other', null, { unreadable: 1 })] }) }), { now: NOW });
+    assert.match(html, /storage-group-head[\s\S]*storage-place-size is-unknown"[^>]*><\/span>/);
+    assert.doesNotMatch(html, /0 bytes/);
+    assert.deepEqual(barSegments(count({ places: [place('app_state', 'other', null, { unreadable: 1 })] })), []);
+});
+
+test('the live region carries one sentence per phase, never the progress figures', () => {
+    const tray = { checked: new Set(), dismissed: false };
+    assert.equal(announceSentence(null), '');
+    assert.equal(announceSentence(response(), { now: NOW }), 'Not counted yet.');
+    assert.equal(announceSentence(response({ count: count() }), { now: NOW }), 'Ouroboros uses 400 GB.');
+    const early = announceSentence(response({ counting: counting() }), { now: NOW });
+    const later = announceSentence(response({ counting: counting({ current: 'profiles', bytes: 190 * GB, places_done: 2 }) }), { now: NOW });
+    assert.equal(early, 'Measuring. You can leave this tab.');
+    assert.equal(later, early, 'a second of progress changes nothing a screen reader hears');
+    assert.match(announceSentence(response({ count: count(), error: { at: 'x', message: 'Stopped before it finished.', stopped: true } }), { now: NOW }), /^Stopped before it finished\. Showing the count from today at \d\d:\d\d\.$/);
+    assert.equal(announceSentence(response({ count: count(), free: { ...free, state: 'listing', total: 3 } }), { now: NOW, tray }), 'Ouroboros uses 400 GB. Checking what can go. Nothing is removed.');
+    assert.equal(announceSentence(response({ count: count(), free: { ...free, state: 'running', total: 3, run: {} } }), { now: NOW, tray }), 'Ouroboros uses 400 GB. Freeing space. You can leave this tab.');
+    assert.equal(announceSentence(response({ free: { ...free, state: 'failed', error: 'x' } }), { now: NOW, tray }), 'Not counted yet. Temporary space could not be listed. Nothing was removed.');
+    assert.equal(announceSentence(response(), { readFailed: true, now: NOW }), 'Storage status could not be read. Not counted yet.');
+    assert.equal(renderStorage(response({ counting: counting() }), { now: NOW }).announce, early);
 });
 
 test('the bar exists only for a finished count, its five shares sum to 100 and stay while a new count runs', () => {

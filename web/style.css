@@ -4929,6 +4929,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .storage-summary, .storage-panel { padding: var(--space-4); }
 .storage-summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .storage-summary-text { min-width: 0; }
+/* The tab's one live region: screen readers hear its phase sentence; sighted owners read the summary. */
+.storage-announce { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .storage-total {
     color: var(--text-primary);
     font-size: var(--type-page);
