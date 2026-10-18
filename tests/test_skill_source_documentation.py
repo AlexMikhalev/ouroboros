@@ -1,6 +1,8 @@
 """The source migration documents the frozen compatibility surface and retired state honestly."""
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -34,3 +36,24 @@ def test_settings_folder_and_configuration_authority_are_documented():
     row = next(line for line in text.splitlines() if line.startswith("| OUROBOROS_SKILLS_REPO_PATH |"))
     for fact in ("read in place", "my-folder", "saved source list", "removing that row clears", "Other folders"):
         assert fact in row
+
+
+@pytest.mark.parametrize("path, facts, stale", [
+    ("docs/architecture/13-external-skills-layer.md",
+     ("github.com HTTPS anonymously", "authentication refusals once with the configured GitHub token",
+      "Other URLs use host credentials", "pre-update record restores an interrupted landing"),
+     "Git caches in `state/skill_sources/` use host credentials"),
+    ("docs/CREATING_SKILLS.md",
+     ("Private github.com HTTPS sources", "after an anonymous read is refused for authentication",
+      "existing repository, which may be public", "reconnecting keeps your saved name, trust and confirmation"),
+     "It is added as a trusted git source"),
+    ("docs/CLIENT_CONTRACT.md",
+     ("Official (`trusted`) and Community (`review`)", "both unconfirmed",
+      "preserves any surviving row's choices"),
+     "Official and Community rows with the chosen trust"),
+])
+def test_source_credentials_and_reconnection_docs_match_the_runtime(path, facts, stale):
+    text = " ".join((ROOT / path).read_text(encoding="utf-8").split())
+    for fact in facts:
+        assert fact in text, fact
+    assert stale not in text
