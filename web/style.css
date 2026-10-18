@@ -4823,6 +4823,13 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     color: var(--text-primary);
 }
 
+/* A fact too long for a narrow card moves its value under its label instead of overflowing. */
+.evo-runtime-chip {
+    flex-wrap: wrap;
+    max-width: 100%;
+    white-space: normal;
+}
+
 .evo-chart-wrap {
     position: relative;
     width: 100%;
@@ -6205,6 +6212,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     justify-content: space-between;
     gap: 10px;
 }
+
+/* A long unbroken title (a skill name) wraps; Close never leaves the dialog. */
+.marketplace-modal-head > h3 { min-width: 0; overflow-wrap: anywhere; }
+.marketplace-modal-head > button { flex: 0 0 auto; }
 
 .marketplace-modal-head, .marketplace-modal-actions { flex-shrink: 0; }
 .marketplace-modal-body > * { flex-shrink: 0; }
@@ -8796,6 +8807,7 @@ textarea.chat-input {
     color: var(--text-meta);
 }
 .chat-quiz-dot {
+    flex: 0 0 auto;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -9017,12 +9029,12 @@ textarea.chat-input {
     from { box-shadow: 0 0 0 3px var(--accent-25); }
     to { box-shadow: 0 0 0 3px transparent; }
 }
-:is(.chat-bubble, .chat-live-card).is-quote-target { animation: chat-quote-target 1.4s ease-out; }
+:is(.chat-bubble, .chat-live-card, .chat-live-line).is-quote-target { animation: chat-quote-target 1.4s ease-out; }
 /* A row that takes focus only to be returned to (a quote's target, a closed row menu) shows the one keyboard ring. */
-:is(.chat-bubble, .chat-live-card)[tabindex="-1"]:focus { outline: none; }
-:is(.chat-bubble, .chat-live-card)[tabindex="-1"]:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
+:is(.chat-bubble, .chat-live-card, .chat-live-line)[tabindex="-1"]:focus { outline: none; }
+:is(.chat-bubble, .chat-live-card, .chat-live-line)[tabindex="-1"]:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
-    :is(.chat-bubble, .chat-live-card).is-quote-target { animation: none; box-shadow: 0 0 0 3px var(--accent-25); }
+    :is(.chat-bubble, .chat-live-card, .chat-live-line).is-quote-target { animation: none; box-shadow: 0 0 0 3px var(--accent-25); }
 }
 
 /* === The quote panel (docs/DESIGN.md "Replies"): one component (chat_reply_quote.js) inside a bubble and

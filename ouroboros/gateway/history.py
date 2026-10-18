@@ -28,7 +28,7 @@ from ouroboros.gateway._helpers import coerce_int
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
-    replay_evidence_rows, room_lens, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp,
+    replay_evidence_rows, room_lens, room_view_fingerprint, select_history_page, latest_arrival, notes_stamp, parse_around,
     IMPORTING, PROJECTION_FAILED, _PROBE_ROWS, _RECENT_WINDOW_BYTES, _RECENT_WINDOW_ROWS,
 )
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
@@ -137,25 +137,35 @@ def _stored_chat_id(value: Any, default: int = 1) -> int:
 def _project_history_context(
     data_dir: pathlib.Path,
     thread_id: int,
+    *, strict: bool = False,
 ) -> tuple[set[int], list[dict], Dict[str, Any], Dict[str, int], Any, bool]:
     """Read-only Project lenses and registry completeness, in the assembly worker.
 
     Preload bindings (the cursor fingerprint's explicit roots) and the room rule
     once per request; no per-row registry reads, no extra event-loop thread hops.
+    ``strict`` (an exact row's destination) raises unreadable authority as StoreError.
     """
-    from ouroboros.projects_registry import reserved_project_chat_ids
+    from ouroboros.projects_registry import reserved_project_chat_ids, RoomResolver, all_task_bindings
 
     try:
         project_chat_ids, classified = reserved_project_chat_ids(data_dir, strict=True), True
     except Exception:  # the rooms its readable rows name are still Projects; any other is unknown
+        if strict:
+            raise StoreError("Project registry unavailable") from None
         project_chat_ids, classified = reserved_project_chat_ids(data_dir), False
+    try:
+        rooms = RoomResolver(data_dir, strict=strict)
+    except ValueError:
+        raise StoreError("Project bindings unavailable") from None
     source_refs: list[dict] = []
     if thread_id in project_chat_ids:
         try:
             from ouroboros.project_dialogue import source_refs_for_project
 
-            source_refs = source_refs_for_project(data_dir, thread_id)
+            source_refs = source_refs_for_project(data_dir, thread_id, bindings=rooms.bindings)
         except Exception:
+            if strict:
+                raise StoreError("Project origins unavailable") from None
             log.debug("Failed to load canonical Project source refs", exc_info=True)
     try:
         from ouroboros.project_dialogue import latest_chat_annotations
@@ -163,10 +173,7 @@ def _project_history_context(
         annotations = latest_chat_annotations(data_dir)
     except Exception:
         annotations = {}
-    from ouroboros.projects_registry import RoomResolver, all_task_bindings
-
-    # Neither raises: an unreadable bindings store reads as no bindings in both.
-    return project_chat_ids, source_refs, annotations, all_task_bindings(data_dir), RoomResolver(data_dir), classified
+    return project_chat_ids, source_refs, annotations, all_task_bindings(data_dir), rooms, classified
 
 
 def _user_annotation(
@@ -1385,10 +1392,29 @@ def _assemble_history_response(
     Room lenses, source reads, projection, terminal truth and JSON encoding all
     stay off the event loop. Both selectors use the same row transformers.
     """
+    if around is not None:
+        parse_around(around)
+    exact = bool(around and around.startswith("row:"))
+    if around is not None and cursor:
+        raise HistoryCursorError("history_around_invalid", 400)
     notes = notes_stamp(data_dir)  # before the annotations are read: a later change refuses ``after``
     project_chat_ids, project_source_refs, chat_annotations, bindings_by_task, rooms, classified = (
-        _project_history_context(data_dir, thread_id)
+        _project_history_context(data_dir, thread_id, strict=exact)
     )
+    row_target = None
+    if exact:
+        from ouroboros.chat_references import history_row_destination, resolve_history_row
+        row, row_target = resolve_history_row(data_dir, around)
+        try:
+            anchor = {"row_address": around, **(history_row_destination(
+                data_dir, row, thread_id, project_chat_ids, project_source_refs, rooms) if row is not None else row_target)}
+        except ValueError:
+            raise StoreError("Project room authority unavailable") from None
+        if anchor["state"] != "found":
+            return json.dumps({"messages": [], "anchor": anchor, "has_more": False, "next_cursor": None,
+                               "page_cursor": None, "window": {"complete": False, "truncated_by": []}}).encode()
+        from ouroboros.projects_registry import RoomResolver
+        rooms = RoomResolver(data_dir)  # strict authority chose the room; its page reads rows as every page does
     row_matches_thread = _make_thread_filter(
         thread_id, project_chat_ids, project_source_refs, rooms
     )
@@ -1402,7 +1428,7 @@ def _assemble_history_response(
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
                                {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
                                room_lens(data_dir, thread_id, project_chat_ids, project_source_refs, bindings_by_task),
-                               notes, rooms.warm, around, (row_matches_thread, _stored_chat_id))
+                               notes, rooms.warm, around, (row_matches_thread, _stored_chat_id), row_target)
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}

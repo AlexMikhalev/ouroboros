@@ -285,12 +285,13 @@ never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
 **Secret visibility has one meaning across Settings.** Show reveals the complete
-current value as selectable, read-only text below the unchanged editing field;
-long values wrap within the column. An edited value is shown from the local
-draft; an untouched saved value is read only when requested. A prefix or a
-configured-value placeholder is never a successful reveal. Hide removes that
-text and retains the draft. Viewing changes neither the dirty state nor the
-values submitted by Save or Test. Editing, clearing, reloading or leaving the
+current value as selectable, read-only text in the masked field's own place,
+never as a second field; long values wrap within the column. An edited value is
+shown from the local draft; an untouched saved value is read only when requested.
+A prefix or a configured-value placeholder is never a successful reveal. Hide
+brings back the unchanged masked field and its draft; typing a new value starts
+with Hide or Clear. Viewing changes neither the dirty state nor the values
+submitted by Save or Test. Clearing, renaming the entry, reloading or leaving the
 page closes the reveal, and a late read cannot reopen it. Built-in, custom,
 skill-requested and MCP header fields use the same interaction; loading Settings
 keeps saved secrets masked. Pending reads and failures are shown at the field.
@@ -999,14 +1000,13 @@ Persistent history notices are wrapping text in the room's header chrome: the
 Project status bar without an opaque strip, Main's floating header on its own
 reading backing (§5).
 
-A room always opens at its newest message: Main and every Project, however long
-ago its last message was and however much other rooms wrote since. Returning to
-a room in the same app session opens it at its newest message too, Main after a
-closed Project included (owner decisions 2026-07-10 and 2026-10-05). Only an explicit navigation to one place
-lands elsewhere: a question opened from its Main mirror, or a row of the room's
-work status, whose landing reads the page around that work as the room's history
+Main and every Project open at their newest message, regardless of age or other
+rooms' traffic. Returning in the same session does too, including Main after
+closing a Project (owner decisions 2026-07-10 and 2026-10-05). Only explicit
+navigation lands elsewhere: a question from its Main mirror, an exact quoted message, or a row of the room's
+work status. Its landing reads the bounded page around the target as the room's history
 from there on: `Load more history` continues older from it and `Scroll to latest
-message` returns to the present. A window merely shown again keeps the reader where they were.
+message` returns to the present. Showing the window again keeps the reader in place.
 
 A room's history is its own. A page is counted in the room's messages, never in
 bytes of other rooms' traffic: the newest page holds the room's newest messages,
@@ -1094,7 +1094,9 @@ the Available subagents roster, MCP servers, custom keys.
   new entry appears at the end of its own group, is scrolled into view (the
   shortest distance, without animation) and takes the caret in its first field.
   A button that stays in view while the entry it made is born off-screen has not
-  finished its job.
+  finished its job. Remove hands the caret the same way to the entry now in its
+  place (the next, else the previous), or to the add action once the group is
+  empty, never to the page.
 - A freshly added entry is an invitation, not an error. Where a list editor
   validates in the browser (today the Available subagents roster), the entry
   shows a neutral hint in its own meta line until the owner tries to save; the
@@ -1401,26 +1403,32 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
 
 ### Replies
 
-A reply is a reference: the owner says which row he means, Ouroboros decides
-what to do, and nothing routes by it. Every saved row offers Reply (beside Copy
-on a bubble, first in a root work card's action row, in the row menu), never on
-hover only. Reply stages one strip above the composer (`Replying to`, the quoted
-author, one line, ×; Esc cancels); the sent message carries only the row's
-address, and the host makes the snippet. An answerable question card answers in
-its own field. The quote panel is one component (bubble, strip, relay): above
-the text, a 2 px bar and a tint in the quoted author's ink, one line cut on a
-word (a photo leads with its thumbnail); pressing it goes to the quoted row when
-loaded. An Ouroboros answer quotes the message it answers only when that message
-is not directly above it (its own card does not count). A relay arrives in the
-work's room as one Ouroboros bubble: each owner message it passes on, in his
-complete words with where and when he wrote them (six lines, then Show all;
-files named, a captionless file by name alone), then Ouroboros's note (Telegram:
-plain text); his Main message keeps its one receipt line. The row menu
-(right-click, Shift+F10 or the ContextMenu key on the focused row, a long press
-on touch) offers the row's own doors: Reply, Copy, Open project and, on a work
-card, Resume, Pause and Stop… exactly when the card does; Esc or an outside
-press closes it, focus returning to the row. Words the owner selected keep the
-browser's menu.
+A reply names the row meant; Ouroboros decides what to do, routing nothing by it. Saved rows offer Reply beside Copy on bubbles, first in root card actions, and
+in row menus; never on hover only. Reply stages one
+composer strip (`Replying to`, quoted author, one line, ×; Esc cancels). Send
+carries only the address; the host makes the snippet. Answerable questions use their own field.
+
+One quote component serves bubbles, strips and relays: above the text, a 2 px
+bar and tint in the quoted author's ink, one line cut on a word; a photo leads
+with its thumbnail. Pressing a reply quote reveals the exact row, loading its
+bounded page in this room when present, otherwise its available home. Containing
+timelines open and scroll; the line is focused and highlighted below the header.
+A card, portal or retained copy cannot substitute. A refused or failed read
+keeps the view, and a reader following the newest message keeps following it;
+its toast says why and offers Try again only when asking again can differ. Newer
+gestures/navigation cancel it. Only the quoted row's stream is positioned: the
+other stream (narration beside an owner message, or the reverse) stays unloaded
+down that page chain until `Scroll to latest message`. Old sources read no newer
+messages. Ouroboros quotes the message it answers only when it is not directly
+above (its own card does not count).
+
+A relay is one Ouroboros bubble in the work's room: every owner's message passed
+on, complete with where/when (six lines, then Show all; files named, captionless
+files by name), then Ouroboros's note; Telegram uses plain text. Main keeps its
+one receipt line. The row menu (right-click, Shift+F10, ContextMenu on the focused
+row, long press on touch) offers Reply, Copy, Open project and a work card's
+Resume, Pause and Stop… exactly when the card does. Esc/outside press closes it
+and returns focus; selected words keep the browser's menu.
 
 ### Conversation activity block
 
