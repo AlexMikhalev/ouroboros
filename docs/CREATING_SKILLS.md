@@ -52,7 +52,8 @@ There are three skill types:
 
 The **runtime ownership** of an installed skill is also tagged:
 
-- `native`: bundled with the launcher (e.g. `unix_computer_use`).
+- `native`: bundled with the launcher (e.g. `unix_computer_use` on macOS/Linux,
+  `windows_computer_use` on Windows).
 - `self_authored`: created by Ouroboros itself in the current data
   plane; marked by `.self_authored.json` and reviewed through the
   standard tri-model skill-review path.
@@ -60,14 +61,13 @@ The **runtime ownership** of an installed skill is also tagged:
 - `clawhub`: installed via the ClawHub marketplace.
 - `ouroboroshub`: installed via the official OuroborosHub catalog.
 
-User-authored or manually copied skills belong under
-`data/skills/external/<name>/`. The `native` bucket is reserved for
-launcher-seeded skills that carry a `.seed-origin` marker. That marker, not the
-directory name alone, is the ownership fact: an existing payload under
-`native/` without the marker is treated in place as user-managed `external`
-content. Ordinary top-level tasks can inspect, edit, run commands in, or
-delegate that payload without a migration. A marker-present launcher seed stays
-read/review-only, and new skills are still created under `external/`.
+Create or manually copy skills under `data/skills/external/<name>/`.
+The `native` bucket is launcher-owned only with `.seed-origin`; without it,
+payloads stay in place as user-managed `external` content, inspectable, editable,
+executable and delegable by ordinary top-level tasks without migration.
+Marker-present seeds remain read/review-only. Windows retains a legacy enabled
+Unix remote skill across later OFF/ON and updates (eligibility, not local Windows
+support or execution authority; [bootstrap rules](architecture/02-startup-onboarding-flow.md#packaged-seed-and-managed-checkout)).
 
 ## Manifest schema (`SKILL.md` frontmatter or `skill.json`)
 
@@ -82,6 +82,7 @@ description: Live weather widget    # required, short summary
 version: 0.2.1                      # required, free-form (semver recommended)
 type: extension                     # instruction | script | extension
 runtime: python3                    # script skills: python/python3/bash/node/deno/ruby/go; extension entry modules are Python plugin.py
+os: any                             # or [darwin, linux, win32]; governs new bundled offerings (legacy remote exception above)
 entry: plugin.py                    # type=extension only — relative to skill dir
 scripts:                            # type=script only
   - name: fetch.py                  # name resolves under scripts/ unless slashes/extensions
@@ -288,7 +289,8 @@ install:
 
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
-executable review and only under the skill's `.ouroboros_env` directory.
+executable review (a bundled native seed's launcher trust counts, so it needs
+no model review) and only under the skill's `.ouroboros_env` directory.
 Global package-manager specs remain manual setup guidance. Exact resources and
 explicit build actions use the same isolated install owner:
 
@@ -1655,8 +1657,8 @@ requires fresh reviewer approval. See ARCHITECTURE §13 for the shared runtime g
 ## Reference skills
 
 The simplest reference for each type lives in the OuroborosHub catalog
-(`razzant/OuroborosHub`); `unix_computer_use` ships bundled under
-`repo/skills/`:
+(`razzant/OuroborosHub`); `unix_computer_use` and `windows_computer_use` ship
+bundled under `repo/skills/`:
 
 - `weather` — `type: extension`, declarative form/key-value widget,
   reads no env keys.
