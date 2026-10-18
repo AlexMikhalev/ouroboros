@@ -197,7 +197,7 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     pages_js = _read("web/modules/pages.js")
     assert "id: 'chat', label: 'Main Chat', icon: 'chat', zone: 'head'" in pages_js
     for page in ("files", "skills", "widgets", "dashboard", "settings"):
-        assert f"id: '{page}'," in pages_js and f"zone: 'foot'" in pages_js.split(f"id: '{page}',", 1)[1].split("}", 1)[0]
+        assert f"id: '{page}'," in pages_js and "zone: 'foot'" in pages_js.split(f"id: '{page}',", 1)[1].split("}", 1)[0]
     assert "Utilities" not in html and "nav-section-label" not in html
     # A finger gets 44px rows, ⋯ and +; the version reads at the meta size; unread is crimson, never red or a glow.
     assert "#primary-sidebar { --nav-item-h: 44px; --nav-control-h: 44px; }" in css
