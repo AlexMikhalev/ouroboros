@@ -5,18 +5,24 @@ folders of finished tasks (direct and helper drives whose row is terminal and wh
 supervisor's liveness probe proves not live), and G2, working copies of finished work (plain
 worktrees with the same proof, delegated snapshots custody no longer holds open, own-body
 candidates whose owner is terminal with no live lineage process). The preview changes nothing:
-no file under the data root, no event row, no settlement call; its sizes come from the storage
-count child (``python -m ouroboros.storage --size-paths``) with progress and Stop, and the plan is
-held in memory under an id. A *run* frees exactly the previewed items of the chosen groups
-through the existing retirers with the wait set to zero (owner decision Q1 = A; the background
-pass keeps its days): G1 through ``headless.prune_task_drives``/``prune_headless_task_drives``
-(``settle_child_drive`` moves a proven drive into ``state/custody_trash``; the maintenance child
-deletes it, asked at once through ``maintenance.child.request``), G2 through
-``subagent_worktrees.prune_orphans``/``prune_execution_snapshots`` (direct removal under the ops
-lock, as the custody cadence does: the registry row, pin and own-body verdict logic live there,
-and a move-aside would need a second row state). It runs on its own thread with the generation's
-stop token and no reconcile latch; concurrency is the retirers' own locks. A moved folder counts
-as removed only once its trash entry is gone, "still being deleted" meanwhile; free space is read
+no file under the data root (the task rows are read through the read-only fact reader, never the
+drive pass's projection fill), no event row, no settlement call; its sizes come from the storage
+count child (``python -m ouroboros.storage --size-paths``, one JSON string per line each way)
+with progress and Stop, and the plan is held in memory under an id. A folder the child could
+not list keeps an unknown size (``None``, never zero) and the group says so. A *run* frees
+exactly the previewed items of the chosen groups through the existing retirers with the wait
+set to zero (owner decision Q1 = A; the background pass keeps its days): G1 through
+``headless.prune_task_drives``/``prune_headless_task_drives`` (``settle_child_drive`` moves a
+proven drive into ``state/custody_trash``; the maintenance child deletes it, asked at once
+through ``maintenance.child.request``), G2 through ``subagent_worktrees.prune_orphans``/
+``prune_execution_snapshots``, one copy per call with a stop check between calls (each call
+decides under the ops lock, as the custody cadence does: the registry row, pin and own-body
+verdict logic live there, and a move-aside would need a second row state). It runs on its own
+thread and stops between items on the owner's Stop, the server's stop or a closed supervisor
+generation (``_closed``), with no reconcile latch; concurrency is the retirers' own locks. A
+moved folder counts as removed only once its trash entry is gone, "still being deleted"
+meanwhile, and "stuck" once the maintenance child's ``custody_trash`` job recorded that the
+entry survived its removal (it waits for the entry's identity to change); free space is read
 fresh on every projection. Words (labels, loss sentences) live in the client with the other
 storage copy; this module reports ids, counts, sizes and typed reasons.
 """
@@ -90,6 +96,7 @@ class StorageFreeRun(TypedDict):
     removed_bytes: int
     deleting: int  # moved aside, the maintenance child has not deleted them yet
     deleting_bytes: int
+    stuck: int  # moved aside and survived the child's removal; retried when the entry changes
     kept: List[StorageFreeKept]
     free_before: Optional[int]
     free_after: Optional[int]
@@ -234,27 +241,46 @@ class FreeSpace:
             "inside_wait": sum(1 for item in candidates if item.inside_wait),
             "in_use": group["in_use"], "unreadable": group["unreadable"],
             "bytes": sum(item.bytes or 0 for item in sized) if sized or not candidates else None,
-            "bytes_complete": len(sized) == len(candidates),
+            "bytes_complete": len(sized) == len(candidates) and not any(item.unreadable for item in sized),
             "items": [{"id": item.key, "name": item.name, "bytes": item.bytes} for item in ranked],
         }
 
     def _run_view(self, root: pathlib.Path, run: Dict[str, Any]) -> StorageFreeRun:
-        """The result as it stands now: a moved folder is removed once its trash entry is gone."""
+        """The result as it stands now: a moved folder is removed once its trash entry is gone,
+        stuck once the ``custody_trash`` job recorded that this very entry survived its removal."""
         from ouroboros.task_custody import custody_trash_entries
 
-        waiting = {name.rsplit("-", 1)[0] for name, _identity in custody_trash_entries(root)} if run["moved"] else set()
+        entries = custody_trash_entries(root) if run["moved"] else []
+        survived = self._stuck_trash(root) if entries else {}
+        waiting = {name.rsplit("-", 1)[0] for name, identity in entries if survived.get(name) != identity}
+        blocked = {name.rsplit("-", 1)[0] for name, identity in entries if survived.get(name) == identity}
         deleting = [key for key in run["moved"] if key.split(":", 1)[-1] in waiting]
-        removed = [key for key in run["moved"] if key not in deleting] + run["removed"]
+        stuck = [key for key in run["moved"] if key not in deleting and key.split(":", 1)[-1] in blocked]
+        removed = [key for key in run["moved"] if key not in deleting and key not in stuck] + run["removed"]
         sizes = run["sizes"]
         return {
             "groups": run["groups"], "selected": run["selected"], "done": run["done"],
             "removed": len(removed), "removed_bytes": sum(sizes.get(key) or 0 for key in removed),
             "deleting": len(deleting), "deleting_bytes": sum(sizes.get(key) or 0 for key in deleting),
+            "stuck": len(stuck),
             "kept": [{"reason": reason, "count": count} for reason, count in sorted(run["kept"].items()) if count],
             "free_before": run["free_before"],
             "free_after": _free_bytes(root),
             "stopped": run["stopped"], "error": run["error"],
         }
+
+    @staticmethod
+    def _stuck_trash(root: pathlib.Path) -> Dict[str, Any]:
+        """The ``custody_trash`` job's record of entries that survived its removal (name -> the
+        identity it saw); nothing when the row is absent or the store cannot be read now."""
+        try:
+            from ouroboros import maintenance_jobs
+
+            row = maintenance_jobs.job(root, "custody_trash") or {}
+            stuck = row.get("stuck")
+            return stuck if isinstance(stuck, dict) else {}
+        except Exception:
+            return {}
 
     # ---- lifecycle --------------------------------------------------------------------------
 
@@ -332,7 +358,7 @@ class FreeSpace:
             for layout, base in (("headless", root / HEADLESS_TASKS_DIR), ("direct", root / TASK_DRIVES_DIR)):
                 if not base.is_dir():
                     continue
-                for task_id, status, _at, inside, fact in drive_candidates(base, root, cutoff, self._closed):
+                for task_id, status, _at, inside, fact in drive_candidates(base, root, cutoff, self._closed, record=False):
                     if self._closed():
                         raise _Stopped()
                     if not fact:
@@ -486,7 +512,7 @@ class FreeSpace:
         self._record(root, view, time.monotonic() - started)
         supervisor_row(root, "storage_free", {"phase": self._state, "duration_seconds": round(time.monotonic() - started, 2),
                                                **{key: view[key] for key in ("groups", "selected", "removed", "removed_bytes",
-                                                                             "deleting", "kept", "free_before", "free_after")}})
+                                                                             "deleting", "stuck", "kept", "free_before", "free_after")}})
 
     @staticmethod
     def _record(root: pathlib.Path, view: StorageFreeRun, seconds: float) -> None:
@@ -566,32 +592,34 @@ class FreeSpace:
             maintenance.child.request()  # the moved drives' deletion is the maintenance child's job
 
     def _free_copies(self, root: pathlib.Path, candidates: List[_Candidate], run: Dict[str, Any]) -> None:
+        """One retirer call per copy, so Stop lands between copies and each ops-lock hold covers
+        one checkout; a stop leaves the remaining copies as they were."""
         from ouroboros.subagent_worktrees import prune_execution_snapshots, prune_orphans
 
         live, stop = self._probe(), self._closed
-        if stop():
-            raise _Stopped()
-        copies = [item for item in candidates if item.layout != "delegated"]
-        snapshots = [item for item in candidates if item.layout == "delegated"]
-        if copies:
-            prune_orphans(data_dir=root, retention_days=0, live=live, only=[item.key.split(":", 1)[1] for item in copies])
-        if snapshots and not stop():
+        open_ids: Optional[set] = None
+        if any(item.layout == "delegated" for item in candidates):
             try:
                 from ouroboros.delegate_custody import open_snapshot_ids
 
                 open_ids = open_snapshot_ids(root)
             except Exception:
-                open_ids = None  # unreadable custody: nothing is freed
-            if open_ids is not None:
-                prune_execution_snapshots(open_ids, data_dir=root, only=[item.key.split(":", 1)[1] for item in snapshots])
+                open_ids = None  # unreadable custody: no snapshot is freed
         for item in candidates:
+            if stop():
+                raise _Stopped()
+            task_id = item.key.split(":", 1)[1]
+            if item.layout == "delegated":
+                if open_ids is not None:
+                    prune_execution_snapshots(open_ids, data_dir=root, only=[task_id])
+            else:
+                prune_orphans(data_dir=root, retention_days=0, live=live, only=[task_id])
             if not item.path.exists():
                 run["removed"].append(item.key)
             else:
-                task_id = item.key.split(":", 1)[1]
                 reason = "in_use" if item.layout != "delegated" and live(task_id) is not False else "other"
                 run["kept"][reason] = run["kept"].get(reason, 0) + 1
-        self._tick(run, run["done"] + len(candidates))
+            self._tick(run, run["done"] + 1)
 
 
 free = FreeSpace()

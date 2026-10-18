@@ -186,11 +186,13 @@ def _prompt_settlement(result: Dict[str, Any]) -> bool:
             and str(result.get("delegation_role") or "") == "subagent")
 
 
-def _drive_retention_rows(parent: pathlib.Path, names: List[str], stop: Any) -> Iterable[Tuple[str, Any]]:
+def _drive_retention_rows(parent: pathlib.Path, names: List[str], stop: Any, *,
+                          record: bool = True) -> Iterable[Tuple[str, Any]]:
     """Select only this layout's names in bounded transactions; never hold one across a yield.
 
     A selector/upgrade failure does not become absence: the existing strict reader
     handles each name, preserving missing/quarantined/unreadable-result outcomes.
+    ``record=False`` reads without filling the retention projection (the preview).
     """
     from ouroboros import store
     from ouroboros.task_store import DRIVE_RETENTION_BATCH, drive_retention_facts
@@ -198,7 +200,7 @@ def _drive_retention_rows(parent: pathlib.Path, names: List[str], stop: Any) -> 
     for start in range(0, len(names), DRIVE_RETENTION_BATCH):
         batch = names[start:start + DRIVE_RETENTION_BATCH]
         try:
-            facts = drive_retention_facts(parent, batch, stop=stop)
+            facts = drive_retention_facts(parent, batch, stop=stop, record=record)
         except (store.StoreError, ValueError, TypeError):
             facts = {}
         for task_id in batch:
@@ -206,16 +208,17 @@ def _drive_retention_rows(parent: pathlib.Path, names: List[str], stop: Any) -> 
 
 
 def drive_candidates(base: pathlib.Path, parent: pathlib.Path, cutoff: float, stop: Any = None,
-                     *, after: str = "") -> Iterable[Tuple[str, str, Optional[float], bool, Dict[str, Any]]]:
+                     *, after: str = "", record: bool = True) -> Iterable[Tuple[str, str, Optional[float], bool, Dict[str, Any]]]:
     """The selection half the prune and the free-space preview share: every drive folder under
     BASE in name order (wrapping after AFTER), each with the cheap canonical facts of its task row
     as ``(task_id, status, drive_retention_at, inside_wait, fact)``. ``inside_wait`` says the
     row is terminal but its retention instant is after CUTOFF; a missing row yields ``""`` as
     status and None as the instant (the strict reader decides later). A hint never authorizes
-    removal: the prune re-reads the strict row before any settlement."""
+    removal: the prune re-reads the strict row before any settlement. ``record=False`` (the
+    preview) classifies a legacy row in memory only; the prune fills the projection."""
     names = sorted(entry.name for entry in base.iterdir() if entry.is_dir())
     names = [name for name in names if name > after] + [name for name in names if name <= after]
-    for task_id, fact in _drive_retention_rows(parent, names, stop):
+    for task_id, fact in _drive_retention_rows(parent, names, stop, record=record):
         status, retention_at, inside = "", None, False
         usable = fact is not None and fact["body_present"] and fact["drive_retention_at"] is not None
         if usable:

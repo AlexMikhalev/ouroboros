@@ -121,6 +121,7 @@
  * @property {number} removed_bytes
  * @property {number} deleting  // moved aside, the maintenance child has not deleted them yet
  * @property {number} deleting_bytes
+ * @property {number} stuck  // moved aside and survived the child's removal; retried when the entry changes
  * @property {StorageFreeKept[]} kept
  * @property {number|null} free_before
  * @property {number|null} free_after

@@ -201,6 +201,52 @@ def test_preview_is_pure(tmp_path, monkeypatch):
     assert not (root / "logs" / "events.jsonl").exists()
 
 
+def test_the_preview_reads_a_legacy_row_without_filling_its_retention_projection(tmp_path, monkeypatch):
+    """An install upgraded from an older body holds rows with a NULL retention projection: the
+    preview classifies them in memory (read-only reader) and writes nothing; the drive pass fills it."""
+    from ouroboros import store
+
+    root = tmp_path / "data"
+    probes = _drives(root, [("legacy", "direct", "completed", OLD)])
+
+    def projection():
+        with store.open_store(root, write=False) as txn:
+            return txn.conn.execute("SELECT drive_retention_at FROM tasks WHERE task_id='legacy'").fetchone()[0]
+
+    with store.open_store(root, write=True) as txn:
+        txn.conn.execute("UPDATE tasks SET drive_retention_at=NULL WHERE task_id='legacy'")
+    assert projection() is None
+    _fake_sizer(monkeypatch)
+    before = sorted((str(path), path.stat().st_mtime_ns) for path in root.rglob("*"))
+
+    view = _preview(_owner(probes), root, tmp_path)
+
+    folders = _group(view, "work_folders")
+    assert (folders["count"], folders["unreadable"], folders["inside_wait"]) == (1, 0, 0), "classified from its body, in memory"
+    assert projection() is None, "the preview fills no projection"
+    assert sorted((str(path), path.stat().st_mtime_ns) for path in root.rglob("*")) == before
+    headless.prune_task_drives(root, retention_days=365, live=lambda _t: False, guard=_guard)
+    assert projection() is not None, "the drive pass fills it"
+
+
+def test_a_folder_the_sizing_cannot_list_keeps_an_unknown_size_never_zero(tmp_path, monkeypatch):
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("needs a folder this user cannot list")
+    root = tmp_path / "data"
+    probes = _drives(root, [("locked", "direct", "completed", OLD), ("open", "direct", "completed", OLD)])
+    _fake_sizer(monkeypatch)
+    (root / "task_drives" / "locked").chmod(0)
+    try:
+        view = _preview(_owner(probes), root, tmp_path)
+    finally:
+        (root / "task_drives" / "locked").chmod(0o700)
+    folders = _group(view, "work_folders")
+    assert view["state"] == "ready" and folders["count"] == 2
+    items = {item["id"]: item["bytes"] for item in folders["items"]}
+    assert "direct:locked" not in items and items["direct:open"] >= 4096, "an unknown size is never a largest item"
+    assert folders["bytes"] == items["direct:open"] and folders["bytes_complete"] is False
+
+
 # ------------------------------------------------------------- B3, B4, B6, B7
 
 
@@ -386,6 +432,31 @@ def test_removed_bytes_follow_the_trash_and_the_row_carries_the_same_numbers(tmp
     assert row["free_after"] == 100, "the event records completion; the UI reads current free space"
 
 
+def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_path, monkeypatch):
+    from ouroboros import maintenance, maintenance_jobs
+    from ouroboros.task_custody import custody_trash_entries
+
+    root = tmp_path / "data"
+    probes = _drives(root, [("gone", "direct", "completed", OLD)])
+    _fake_sizer(monkeypatch)
+    monkeypatch.setattr(maintenance.child, "request", lambda: None)
+    owner = _owner(probes)
+    _preview(owner, root, tmp_path)
+    view = _run(owner, root, tmp_path)
+    assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 1, 0)
+    [(name, identity)] = custody_trash_entries(root)
+    # The maintenance child's custody_trash job recorded that this very entry survived its removal.
+    maintenance_jobs.record(root, "custody_trash", state="failed", stuck={name: identity}, removed=0)
+    view = owner.projection(root)
+    assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 0, 1)
+    # The entry changed (the owner released a file): the child will retry, so it is deleting again.
+    (root / "state" / "custody_trash" / name / "released.bin").write_bytes(b"x")
+    view = owner.projection(root)
+    assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 1, 0)
+    row = json.loads((root / "logs" / "supervisor.jsonl").read_text().splitlines()[-1])
+    assert (row["type"], row["deleting"], row["stuck"]) == ("storage_free", 1, 0)
+
+
 # ------------------------------------------------------------------- B11
 
 
@@ -462,6 +533,49 @@ def test_working_copies_of_finished_work_are_freed_and_a_running_ones_stays(tmp_
     assert not paths["finished"].exists() and paths["busy"].is_dir()
     assert view["run"]["removed"] == 1 and view["run"]["kept"] == []
     assert {row["task_id"] for row in sw.list_worktrees(data_dir=root)} == {"busy"}
+
+
+@pytest.mark.parametrize("kind", ["plain", "delegated"])
+def test_stop_between_working_copies_leaves_the_rest_and_reports_a_stopped_run(tmp_path, monkeypatch, kind):
+    """Each copy is one retirer call with a stop check before it: a Stop that lands while the first
+    copy goes leaves the second and third as they were, and the run reports stopped."""
+    root = tmp_path / "data"
+    repo, wtroot = tmp_path / "repo", tmp_path / "wtroot"
+    _init_repo(repo)
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(wtroot))
+    root.mkdir()
+    from tests._store_shared import seed_result
+
+    paths = {}
+    for task_id in ("first", "second", "third"):
+        if kind == "plain":
+            paths[task_id] = Path(sw.provision_worktree(repo_dir=repo, task_id=task_id, worktree_root=wtroot, data_dir=root).path)
+            seed_result(root, task_id, document(task_id, "completed"))
+        else:
+            paths[task_id] = Path(sw.provision_execution_snapshot(target_root=repo, task_id=task_id, snapshot_id=f"snap-{task_id}",
+                                                                  worktree_root=wtroot, data_dir=root).path)
+    _fake_sizer(monkeypatch)
+    owner = _owner({})
+    view = _preview(owner, root, tmp_path)
+    assert _group(view, "working_copies")["count"] == 3
+    retirer = "prune_orphans" if kind == "plain" else "prune_execution_snapshots"
+    real, calls = getattr(sw, retirer), []
+
+    def retire_then_stop(*args, **kwargs):
+        outcome = real(*args, **kwargs)
+        calls.append(list(kwargs["only"]))
+        if len(calls) == 1:
+            assert owner.cancel() is True  # Stop lands as the first copy's retirer returns
+        return outcome
+
+    monkeypatch.setattr(sw, retirer, retire_then_stop)
+    view = _run(owner, root, tmp_path, groups=("working_copies",))
+    assert view["state"] == "stopped" and view["run"]["stopped"] is True
+    assert len(calls) == 1 and len(calls[0]) == 1, "one copy per retirer call"
+    assert (view["run"]["removed"], view["run"]["done"], view["run"]["kept"]) == (1, 1, [])
+    assert not paths["first"].exists() and paths["second"].is_dir() and paths["third"].is_dir()
+    assert {row["task_id"] for row in sw.list_worktrees(data_dir=root)} == {"second", "third"}
 
 
 # ---------------------------------------------------------------- routes
