@@ -375,14 +375,12 @@ def test_an_advisory_delivery_after_a_shown_refusal_is_the_authors_own_decision(
 def test_delivery_collects_the_running_review_the_mind_started_without_buying_another(tmp_path, monkeypatch,
                                                                                       owner_message):
     """With ``owner_message`` an owner message arrives while the review runs (the usual reason its author left
-    it): the same answer keeps the subject it was first reviewed against, so it is still collected at $0."""
-    from ouroboros.tools import review_result as rr
+    it): the running review of the same answer is still collected at $0 under its own subject, and since it
+    judged the earlier request the host asks once whether the new words change it; delivering again keeps it."""
     from ouroboros.tools.review_result import result_review_at_delivery
     from tests.test_review_change_end_to_end import _pending_then_answering_seat
 
-    ask = rr._ask
     for mode in ("auto", "required"):
-        monkeypatch.setattr(rr, "_ask", ask)
         ctx = _floor_ctx(tmp_path / mode, monkeypatch, mode=mode)
         _produced_answer_protocol(monkeypatch)
         sends: list[dict] = []
@@ -392,10 +390,14 @@ def test_delivery_collects_the_running_review_the_mind_started_without_buying_an
                                   author_questions=["Is 2 the answer?"])
         assert first["state"] == "pending" and len(sends) == 3, (mode, first)
         if owner_message:
-            monkeypatch.setattr(rr, "_ask", lambda c: ask(c) + "\nHow far along are you? Keep the units in the answer.")
+            ctx._owner_directives = [*(getattr(ctx, "_owner_directives", None) or []),
+                                     {"source": "owner_mailbox", "content": "How far along are you?", "msg_id": "m-2"}]
 
-        trace = {"tool_calls": []}
-        assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False, mode
+        trace, shown = {"tool_calls": []}, []
+        if owner_message:
+            assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True, mode
+            assert "How far along are you?" in shown[0] and "deliver again" in shown[0], shown
+        assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is False, mode
         assert len(sends) == 4 and sends[3]["slot_id"] == "t2" and sends[3]["reconcile_only"] is True, \
             "the delivery rejoined the running wave's own seat; no second wave was bought"
         [run] = trace["review_runs"]
@@ -616,9 +618,9 @@ def test_returning_to_an_exactly_reviewed_answer_makes_its_review_current_again(
 
 
 def test_the_same_unchanged_result_call_collects_its_running_review_after_an_owner_message(tmp_path, monkeypatch):
-    """The settlement notice promises that re-issuing the same unchanged call collects the left review at $0:
-    an owner message in between does not make the same answer a new subject (no second wave is bought), while a
-    revised reply is a new answer reviewed against the new words."""
+    """The settlement notice promises that re-issuing the same unchanged call collects the left review at $0: an
+    owner message in between does not make the running review of the same answer unreachable. Once collected, the
+    same call reviews the current request, with the new words in its subject."""
     from ouroboros.tools import review_result as rr
     from tests.test_review_change_end_to_end import _pending_then_answering_seat
 
@@ -629,16 +631,17 @@ def test_the_same_unchanged_result_call_collects_its_running_review_after_an_own
     args = dict(subject="result", answer="The report lists three findings.", goal="Check the report")
     first = run_review_change(ctx, **args)
     assert first["state"] == "pending" and len(sends) == 3
-    ask = rr._ask
-    monkeypatch.setattr(rr, "_ask", lambda c: ask(c) + "\nAlso mention the backup window.")
+    ctx._owner_directives = [*(getattr(ctx, "_owner_directives", None) or []),
+                             {"source": "owner_mailbox", "content": "Also mention the backup window.", "msg_id": "m-2"}]
     again = run_review_change(ctx, **args)
     assert again["record_id"] == first["record_id"] and again["state"] == "settled" and len(sends) == 4
-    revised_answer = "The report lists three findings and the backup window."
-    revised = run_review_change(ctx, **{**args, "answer": revised_answer})
-    assert revised["record_id"] != first["record_id"] and len(sends) == 7
-    subject = rr.result_subject(ctx, SimpleNamespace(answer=revised_answer), governance_root=ctx.repo_dir)
-    assert "Also mention the backup window." in subject.diff_text
-    assert "Also mention the backup window." not in rr.result_subject(
+    # Once collected, the same call reviews the current request: the new words are in its subject.
+    current = run_review_change(ctx, **args)
+    assert current["record_id"] != first["record_id"] and len(sends) == 7
+    record = review_ledger.load_record(review_ledger.ledger_root(ctx), current["record_id"])
+    assert record["subject"]["tree_sha"] == review_ledger.load_record(
+        review_ledger.ledger_root(ctx), first["record_id"])["subject"]["tree_sha"], "the same answer"
+    assert "Also mention the backup window." in rr.result_subject(
         ctx, SimpleNamespace(answer=args["answer"]), governance_root=ctx.repo_dir).diff_text
 
 
@@ -736,3 +739,67 @@ def test_a_late_settlement_just_before_the_rejoin_write_keeps_the_rounds_provena
     assert result_review_at_delivery(ctx, args["answer"], {"tool_calls": []}, lambda _: None) is False
     assert review_ledger.load_record(root, first["record_id"])["fingerprints"] == original["fingerprints"]
     assert rc.run_review_change(ctx, **args)["reused"] is True
+
+
+
+@pytest.mark.parametrize("words_change_the_request", [True, False])
+def test_new_owner_words_after_a_review_of_the_same_answer_are_asked_about_once(tmp_path, monkeypatch,
+                                                                                words_change_the_request):
+    """Owner, 18.10 (A): the only review of this exact answer judged an earlier request, so the host shows the
+    owner's words since then once and asks. If they change what was asked, the mind asks for a review of the
+    current request (the reviewers now see them and FAIL it; Blocking holds); if not, it delivers again and the
+    earlier review stands, with no new seat."""
+    from ouroboros.tools import review_result as rr
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    trace, shown = {"tool_calls": []}, []
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 12 miles", trace, shown.append) is False, "PASS delivers"
+    paid = len(sends)
+    words = "Requirement change: give the distance in kilometres."
+    ctx._owner_directives = [*(getattr(ctx, "_owner_directives", None) or []),
+                             {"source": "owner_mailbox", "content": words, "msg_id": "m-2"}]
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 12 miles", trace, shown.append) is True, "asked once"
+    assert words in shown[-1] and len(sends) == paid
+    if words_change_the_request:
+        monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+        current = run_review_change(ctx, subject="result", answer="FINAL ANSWER: 12 miles")
+        assert current["aggregate"] == "FAIL" and len(sends) == paid + 3
+        reviewed = review_ledger.load_record(review_ledger.ledger_root(ctx), current["record_id"])["subject"]["diff_sha"]
+        assert words in rr._retained_subject_text(ctx, reviewed), "the reviewers saw the new words"
+        assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 12 miles", trace, shown.append) is True
+        assert "FAIL" in shown[-1], "Blocking holds over the review of the current request"
+    else:
+        assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 12 miles", trace, shown.append) is False
+        current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
+        assert [(run["aggregate_signal"], run.get("earlier_request")) for run in current] == [("PASS", True)]
+        assert len(sends) == paid, "the earlier review stands; nothing new is bought"
+
+
+def test_a_refusal_is_no_review_of_any_request(tmp_path, monkeypatch):
+    """A $0 refusal froze no reviewed request: once the ceiling allows, the floor reviews the request as it is now
+    (the owner's later words included), never the one the refusal happened to carry."""
+    from ouroboros.tools import review_result as rr
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="required", enforcement="advisory")
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    trace, shown = {"tool_calls": []}, []
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True  # FAIL shown
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True  # refused, shown
+    words = "Also state the units."
+    ctx._owner_directives = [*(getattr(ctx, "_owner_directives", None) or []),
+                             {"source": "owner_mailbox", "content": words, "msg_id": "m-3"}]
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    paid = len(sends)
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False
+    assert len(sends) == paid + 3, "the floor reviewed the current request"
+    current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
+    record = review_ledger.load_record(review_ledger.ledger_root(ctx), current[-1]["record_id"])
+    assert record["verdict"]["aggregate"] == "PASS" and not current[-1].get("earlier_request")
+    assert words in rr._retained_subject_text(ctx, record["subject"]["diff_sha"])

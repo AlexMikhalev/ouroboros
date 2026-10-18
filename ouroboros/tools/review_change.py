@@ -998,10 +998,11 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
                                  author_questions=request.author_questions, reason=request.reason)
     governance = _governance_repo(ctx)
     if request.subject == RESULT:
-        from ouroboros.tools.review_result import RESULT_LAYER, refuse_when_off, result_subject
+        from ouroboros.tools.review_result import RESULT_LAYER, refuse_when_off, result_subject, running_earlier_request
 
         refuse_when_off()  # before any subject is built or any seat is paid
-        result = frozen_result if frozen_result is not None else result_subject(ctx, request, governance_root=governance)
+        result = (frozen_result if frozen_result is not None
+                  else running_earlier_request(ctx, result_subject(ctx, request, governance_root=governance)))
         root = pathlib.Path(result.spec.root)
         fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=False)
         layer, spec = RESULT_LAYER, result.spec

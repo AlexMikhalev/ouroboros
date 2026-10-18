@@ -225,20 +225,57 @@ def _retained_subject_text(ctx: Any, digest: str) -> str:
     return data.decode("utf-8", "replace") if hashlib.sha256(data).hexdigest() == digest else ""
 
 
-def _pinned_subject_text(ctx: Any, answer_sha: str, answer: str) -> str:
-    """The text of this task's earliest result subject of exactly this answer, else ``""``: the same answer
-    keeps what it was first reviewed against, so an owner message after that (a status question, say) never
-    makes it a new subject that buys a second paid review, and the same unchanged call collects its running
-    review at $0. A reply revised for new owner words is a new answer, reviewed against them."""
-    for row in reversed(_result_rows(ctx)):  # oldest first
-        subject = row.get("subject") or {}
-        if str(subject.get("tree_sha") or "") != answer_sha:
-            continue
-        text = _retained_subject_text(ctx, str(subject.get("diff_sha") or ""))
-        if text.startswith(_SUBJECT_HEAD) and text.endswith("\n\n" + answer):
-            return text
-    return ""
+def earlier_request_subject(ctx: Any, subject: Any, rows: Optional[List[Dict[str, Any]]] = None, *,
+                            state: str) -> Optional[Tuple[Dict[str, Any], Any]]:
+    """This task's newest result record of exactly this answer (the same ``tree_sha``: reply, produced material,
+    verification) that judged an earlier request, in ``state`` ("pending": a review still running, collected at
+    $0; "settled": a review of this answer before the owner's words changed), with its own frozen subject rebuilt
+    from its retained text. A refusal is no review of anything; an unreadable text yields nothing."""
+    import dataclasses
 
+    for row in rows if rows is not None else _result_rows(ctx):
+        recorded = row.get("subject") or {}
+        if (str(recorded.get("tree_sha") or "") != subject.tree_sha or row.get("state") != state
+                or str(recorded.get("diff_sha") or "") == subject.diff_sha
+                or str((row.get("verdict") or {}).get("aggregate") or "") == "NOT_DISPATCHED"):
+            continue
+        text = _retained_subject_text(ctx, str(recorded.get("diff_sha") or ""))
+        if text.startswith(_SUBJECT_HEAD):
+            return row, dataclasses.replace(subject, diff_text=text, diff_sha=hashlib.sha256(text.encode("utf-8")).hexdigest())
+    return None
+
+
+def _words_since(ctx: Any, earlier: str) -> List[str]:
+    """The owner's words this run holds now that the earlier subject's request did not carry, verbatim."""
+    from ouroboros.owner_words import FIELD, governing_words_for_schedule
+
+    rows = governing_words_for_schedule(ctx).get(FIELD) or []
+    texts = [str(row.get("text") or "").strip() for row in rows if isinstance(row, dict)]
+    return [text for text in texts if text and text not in earlier] if earlier else []
+
+
+def _request_changed_text(ctx: Any, record: Dict[str, Any]) -> str:
+    """Asked once (owner, 18.10): the only review of this exact answer judged an earlier request."""
+    earlier = _retained_subject_text(ctx, str((record.get("subject") or {}).get("diff_sha") or ""))
+    words = _words_since(ctx, earlier)
+    aggregate = str((record.get("verdict") or {}).get("aggregate") or "")
+    lines = [f"[Result review] This exact result was reviewed (record {record.get('record_id')}: {aggregate}) before "
+             "what was asked last changed; its reviewers did not see these words of your human:"]
+    lines += [f"- {text[:600]}" for text in words[:5]] or ["- (the request changed: its claims or contract, or words "
+                                                          "the earlier request cannot be read back for)"]
+    if len(words) > 5:
+        lines.append(f"- ... and {len(words) - 5} more message(s)")
+    lines.append("Do they change what was asked? If they do, revise the result, or ask for a review of the current "
+                 "request with review_change(subject=\"result\"). If they do not, deliver again: the earlier review "
+                 "stands for this result (its findings and enforcement apply as they are).")
+    return "\n".join(lines)
+
+
+def running_earlier_request(ctx: Any, subject: Any) -> Any:
+    """The mind's own call of an unchanged answer whose review is still running under an earlier request
+    collects that review at $0 (its frozen subject); else the live subject stands."""
+    found = earlier_request_subject(ctx, subject, state="pending")
+    return found[1] if found is not None else subject
 
 def result_subject(ctx: Any, request: Any, *, governance_root: Any, answer: Optional[str] = None,
                    produced: Optional[Dict[str, Any]] = None) -> Any:
@@ -255,7 +292,7 @@ def result_subject(ctx: Any, request: Any, *, governance_root: Any, answer: Opti
         raise ReviewChangeArgumentError("subject=result has nothing to review: no reply and nothing this task produced")
     answer_part = answer_text(reply=reply, produced=produced, verification=_verification(ctx))
     answer_sha = hashlib.sha256(answer_part.encode("utf-8")).hexdigest()
-    text = _pinned_subject_text(ctx, answer_sha, answer_part) or _SUBJECT_HEAD + _ask(ctx) + "\n\n" + answer_part
+    text = _SUBJECT_HEAD + _ask(ctx) + "\n\n" + answer_part  # what is asked now (see earlier_request_subject)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     source = subject_source(ctx, text)
     root = produced["workspace"] or (str(source.parent) if source else str(pathlib.Path(ctx.drive_root)))
@@ -437,12 +474,16 @@ def _supersede_other_result_runs(llm_trace: Dict[str, Any], subject_sha: str) ->
 
 
 def _bind_review_run(llm_trace: Dict[str, Any], record: Dict[str, Any], subject_sha: str,
-                     enforcement: str) -> Dict[str, Any]:
-    """The result review bound to the delivered answer, in the task's review runs the outcome axes read."""
+                     enforcement: str, *, earlier_request: bool = False) -> Dict[str, Any]:
+    """The result review bound to the delivered answer, in the task's review runs the outcome axes read.
+    ``earlier_request``: the mind judged that the owner's words since this review do not change what was
+    asked, so the review of this exact answer stands for the current request too."""
     runs = llm_trace.setdefault("review_runs", [])
     record_id = str(record.get("record_id") or "")
     bound = next((run for run in runs if isinstance(run, dict) and run.get("panel_id") == record_id), None)
     if bound is not None:
+        if earlier_request:
+            bound.update(binding_hash=subject_sha, earlier_request=True)
         if bound.get("binding_hash") == subject_sha:
             bound.pop("superseded_by_revision", None)  # the exact subject it reviewed is current again
         return bound
@@ -453,7 +494,8 @@ def _bind_review_run(llm_trace: Dict[str, Any], record: Dict[str, Any], subject_
              "binding_hash": subject_sha, "aggregate_signal": signal, "aggregate": aggregate,
              "degraded": signal == "DEGRADED", "reason": str(verdict.get("reason") or ""),
              "critical_count": len(verdict.get("critical_findings") or []), "enforcement": enforcement,
-             "dispatch_refusal": str((record.get("dispatch_refusal") or {}).get("kind") or "")}
+             "dispatch_refusal": str((record.get("dispatch_refusal") or {}).get("kind") or ""),
+             **({"earlier_request": True} if earlier_request else {})}
     runs.append(bound)
     return bound
 
@@ -546,7 +588,9 @@ def _presence_result_review(ctx: Any, content: str, llm_trace: Dict[str, Any], s
             return False
         record = settled_result_record(ctx, subject.diff_sha)
     if record is not None:
-        _bind_review_run(llm_trace, record, subject.diff_sha, "blocking" if _blocking_enforcement() else "advisory")
+        earlier = str((record.get("subject") or {}).get("diff_sha") or "") != subject.diff_sha
+        _bind_review_run(llm_trace, record, subject.diff_sha, "blocking" if _blocking_enforcement() else "advisory",
+                         earlier_request=earlier)
     return False
 
 
@@ -561,8 +605,11 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     Advisory and Cyber Pro deliver on the mind's next decision while Blocking holds until a review passes
     the result or the task stops. A review of this result the mind started that is still running is
     collected the same way: the delivery waits for it unless a nonblocking install's mind chose
-    ``pending_review=finish``. A child is never forced; Presence speech is never held (its owed review runs
-    with nobody waiting and arrives as a late mark, ``_presence_result_review``)."""
+    ``pending_review=finish``. When the only review of this exact answer judged an earlier request (its owner's
+    words changed since), the host shows the new words once and asks whether they change what was asked; a
+    delivery after that keeps that review for this result (owner, 18.10). A child is never forced; Presence
+    speech is never held (its owed review runs with nobody waiting and arrives as a late mark,
+    ``_presence_result_review``)."""
     from ouroboros.config import get_task_review_mode
 
     mode = get_task_review_mode()
@@ -590,18 +637,25 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         if refused[subject.diff_sha] == _ceiling():  # still spent: the refusal shown stands, nothing new is written
             return _hold_refused(ctx, llm_trace, subject.diff_sha, hold)
         # A raised ceiling lets the owed review run now (below).
-    if getattr(ctx, "_presence_completion", None):
-        return _presence_result_review(ctx, content, llm_trace, subject, record,
-                                       owed=required and not running_result_review(rows, subject.diff_sha))
-    # A review of exactly this result that is still running (the mind's own, or the floor's left one) is
-    # collected at $0, in every mode but Off: the delivery waits for it unless the mind chose to finish.
+    # The only review of this exact answer may have judged an earlier request (the owner's words changed since):
+    # one still running is collected at $0 under its own subject, a settled one is asked about once (owner, 18.10).
     running = running_result_review(rows, subject.diff_sha) if record is None else ""
+    collect, earlier = subject, None
+    if record is None and not running:
+        pending = earlier_request_subject(ctx, subject, rows, state="pending")
+        if pending is not None:
+            running, collect = str(pending[0].get("record_id") or ""), pending[1]
+        elif (settled := earlier_request_subject(ctx, subject, rows, state="settled")) is not None:
+            earlier = settled_result_record(ctx, settled[1].diff_sha, rows)
+    if getattr(ctx, "_presence_completion", None):
+        return _presence_result_review(ctx, content, llm_trace, subject, record or earlier,
+                                       owed=required and not running and earlier is None)
     if running:
         ctx._result_review_pending = running
         if (pending_review_choice_offered(ctx)
                 and str(getattr(ctx, "_acceptance_pending_review_choice", "") or "") == "finish"):
             return False  # the mind chose to finish; the reviewers settle later and leave a mark
-    if record is None and (required or running):
+    if record is None and earlier is None and (required or running):
         from ouroboros import review_pause
 
         def dispatch() -> Dict[str, Any]:
@@ -611,13 +665,13 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         try:
             with review_pause.receptive_author(review_pause.receptive_binding(ctx)):
                 try:
-                    outcome = _collect_running(ctx, content, running, subject) if running else dispatch()
+                    outcome = _collect_running(ctx, content, running, collect) if running else dispatch()
                 except ReviewChangeArgumentError:
                     if not running:
                         raise
                     # The round settled (or left custody) after the lookup: its record is read again below,
                     # and a Required result that no settled review covers gets the host's own review.
-                    covered = settled_result_record(ctx, subject.diff_sha) is not None
+                    covered = settled_result_record(ctx, collect.diff_sha) is not None
                     outcome = dispatch() if required and not covered else {"state": "settled"}
         except ReviewChangeArgumentError as exc:
             log.warning("Required result review of %s not dispatched: %s", getattr(ctx, "task_id", ""), exc)
@@ -633,17 +687,29 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
                     if pending_review_choice_offered(ctx) else ""))
             return True
         ctx._result_review_pending = ""
-        record = settled_result_record(ctx, subject.diff_sha)
+        record = settled_result_record(ctx, collect.diff_sha)
         if record is None and outcome.get("record_id"):
             # A $0 refusal (the result reviews' paid-cycle allowance is spent) is bound as it is: no review
             # of this result can run, so it is shown once and never holds the delivery again.
             from ouroboros import review_ledger as ledger
 
             record = ledger.load_record(ledger.ledger_root(ctx), str(outcome["record_id"]))
+    record = record or earlier
     if record is None:
         return False
+    stands_for_earlier = str((record.get("subject") or {}).get("diff_sha") or "") not in {"", subject.diff_sha}
+    if stands_for_earlier:
+        asked = getattr(ctx, "_result_review_request_asked", None)
+        if not isinstance(asked, set):
+            asked = set()
+            ctx._result_review_request_asked = asked
+        if (str(record.get("record_id") or ""), subject.diff_sha) not in asked:
+            asked.add((str(record.get("record_id") or ""), subject.diff_sha))
+            hold(_request_changed_text(ctx, record))
+            return True
+        # Delivered again: the mind judged the new words leave what was asked as it was.
     enforcement = "blocking" if _blocking_enforcement() else "advisory"
-    run = _bind_review_run(llm_trace, record, subject.diff_sha, enforcement)
+    run = _bind_review_run(llm_trace, record, subject.diff_sha, enforcement, earlier_request=stands_for_earlier)
     if str((record.get("verdict") or {}).get("aggregate") or "") == "PASS":
         return False
     refused = str((record.get("verdict") or {}).get("aggregate") or "") == "NOT_DISPATCHED"
