@@ -968,6 +968,9 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     # In-process callers (the commit gate's look, the contributor lane) hand the test
     # execution they established; the tool surface has no such argument.
     supplied_execution = args.pop("_preflight_execution", None)
+    # The host collecting a running wave it did not start names that wave's recorded round
+    # (its retry key): it rejoins the open operation at $0 and never buys another wave.
+    rejoin_key = str(args.pop("_rejoin_retry_key", "") or "")
     request = parse_request(args)
     if request.subject == "system":
         if _assigned_review_root(ctx) is not None:
@@ -1011,7 +1014,9 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         # Locate an already-paid round before consulting mutable pool settings.
         # An absent or changed row cannot substitute a new operation for this one.
         rejoin = pending_round_attempt(ctx, root=root, tool_name=wave_tool_name(request),
-            retry_key=review_retry_key(frozen, round_sha=_round_sha(request, frozen)))
+            retry_key=rejoin_key or review_retry_key(frozen, round_sha=_round_sha(request, frozen)))
+        if rejoin_key and rejoin is None:
+            raise ReviewChangeArgumentError("the running review named for collection has no open operation left")
         if rejoin is not None:
             from ouroboros.tools.review_change_custody import recorded_change_panel
             panel = recorded_change_panel(ctx, rejoin)
@@ -1025,7 +1030,8 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
             if rejoin is not None:
                 record_id = str(rejoin.review_record_id or wave.record_id)
                 wave = dataclasses.replace(wave, rejoin=rejoin, record_id=record_id,
-                                           execution=_dispatched_execution(ctx, record_id, rejoin))
+                                           execution=_dispatched_execution(ctx, record_id, rejoin),
+                                           retry_key=rejoin_key or wave.retry_key)
             else:
                 prior = reuse_or_none(ledger_root(ctx), wave.reuse_key, questions=request.author_questions)
                 if prior is not None:

@@ -105,6 +105,26 @@ def test_result_reviews_keep_their_own_paid_cycle_count(tmp_path, monkeypatch):
     assert second["dispatch_refusal"]["kind"] == "review_cycles_exhausted"
 
 
+def test_result_reviews_of_one_root_share_one_allowance_wherever_their_material_lives(tmp_path, monkeypatch):
+    """Two children of one root review their results from different folders (each task's own retained
+    subject): they still spend the ROOT's one result allowance, never one allowance per folder."""
+    ctx, _project = _foreign_project(tmp_path, monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    root_id = str(getattr(ctx, "task_id", "") or "root-task")
+    for child in ("child-a", "child-b"):
+        ctx.task_id = child
+        ctx.task_metadata = {**dict(getattr(ctx, "task_metadata", None) or {}), "root_task_id": root_id,
+                             "parent_task_id": root_id}
+        outcome = run_review_change(ctx, subject="result", answer=f"{child} wrote its summary.")
+        if child == "child-a":
+            assert outcome["aggregate"] == "PASS", outcome
+        else:
+            assert outcome["aggregate"] == "NOT_DISPATCHED", "the root's one result allowance is spent"
+            assert outcome["dispatch_refusal"]["kind"] == "review_cycles_exhausted"
+
+
 @pytest.mark.parametrize("args, problem", [
     ({"subject": "result", "base": "HEAD~1"}, "root, workspace_root, base and head do not apply"),
     ({"subject": "result", "workspace_root": "/tmp"}, "root, workspace_root, base and head do not apply"),
@@ -195,19 +215,21 @@ def test_nothing_is_forced_for_a_child_auto_off_or_a_plain_text_answer(tmp_path,
     assert sends == []
 
 
-def test_required_never_holds_presence_speech_or_a_result_that_only_declared_its_expected_output(
+def test_required_reviews_presence_results_without_holding_them_and_ignores_a_declared_expected_output(
         tmp_path, monkeypatch):
     from ouroboros.tools.review_result import required_material, result_review_at_delivery
 
     sends: list[dict] = []
     ctx = _floor_ctx(tmp_path / "presence", monkeypatch)
     _produced_answer_protocol(monkeypatch)
-    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
     ctx._presence_completion = {"outcome": "spoken"}
-    trace = {"tool_calls": []}
-    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False, \
+    trace, shown = {"tool_calls": []}, []
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is False, \
         "Presence speech is never held for a review"
-    assert not trace.get("review_runs") and sends == []
+    assert shown == [] and len(sends) == 3, "its owed review still runs, with nobody waiting for it"
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is False and len(sends) == 3
+    sends.clear()
 
     # The expected result a task was given is intent, never production (owner, 11 Oct, #1731).
     ctx = _floor_ctx(tmp_path / "declared", monkeypatch)
@@ -271,15 +293,60 @@ def test_blocking_with_no_review_left_to_buy_reads_blocked(tmp_path, monkeypatch
     trace, shown = {"tool_calls": []}, []
 
     assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True  # FAIL holds
-    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True  # refused: shown once
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True  # refused at $0
     assert "REVIEW_CYCLES_EXHAUSTED" in shown[-1] and "escalate to the owner" in shown[-1]
-    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False, "a refusal never holds again"
-    assert len(sends) == 3
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True, \
+        "Blocking keeps holding an unreviewed result until its human raises the ceiling or the task stops"
+    assert "raises the review ceiling" in shown[-1] and len(sends) == 3
     review = _review_axis(trace)
     assert review["blocked_reason"] == "review_cycles_exhausted" and not review.get("author_finish")
     objective = _objective_axis(review)
     assert (objective["status"], objective["outcome_tier"], objective["reason"]) == (
         "fail", OUTCOME_TIER_BLOCKED, "review_cycles_exhausted")
+
+
+def test_an_advisory_delivery_after_a_shown_refusal_is_the_authors_own_decision(tmp_path, monkeypatch):
+    from ouroboros.outcomes import _objective_axis, _review_axis
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch)
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    trace, shown = {"tool_calls": []}, []
+
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True  # findings first
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is True  # refused, shown once
+    assert "You decide" in shown[-1]
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False, "the mind decided"
+    current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
+    assert [run.get("informed_finish") for run in current] == [True] and len(sends) == 3
+    assert _objective_axis(_review_axis(trace))["source"] == "author_acceptance"
+
+
+def test_delivery_collects_the_running_review_the_mind_started_without_buying_another(tmp_path, monkeypatch):
+    from ouroboros.tools.review_result import result_review_at_delivery
+    from tests.test_review_change_end_to_end import _pending_then_answering_seat
+
+    for mode in ("auto", "required"):
+        ctx = _floor_ctx(tmp_path / mode, monkeypatch, mode=mode)
+        _produced_answer_protocol(monkeypatch)
+        sends: list[dict] = []
+        answer, starts = _pending_then_answering_seat("t2", f"invocation-t2-{mode}")
+        monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+        first = run_review_change(ctx, subject="result", answer="FINAL ANSWER: 2", goal="Check the arithmetic",
+                                  author_questions=["Is 2 the answer?"])
+        assert first["state"] == "pending" and len(sends) == 3, (mode, first)
+
+        trace = {"tool_calls": []}
+        assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, lambda text: None) is False, mode
+        assert len(sends) == 4 and sends[3]["slot_id"] == "t2" and sends[3]["reconcile_only"] is True, \
+            "the delivery rejoined the running wave's own seat; no second wave was bought"
+        [run] = trace["review_runs"]
+        assert (run["record_id"], run["aggregate_signal"]) == (first["record_id"], "PASS"), mode
+        record = review_ledger.load_record(ctx.drive_root, first["record_id"])
+        assert record["brief"]["goal"] == "Check the arithmetic", "the collected record keeps the mind's brief"
 
 
 def test_a_delivered_answer_never_keeps_an_earlier_answers_run_current(tmp_path, monkeypatch):
@@ -319,7 +386,6 @@ def test_a_running_review_the_mind_started_is_waited_for_unless_it_chose_to_fini
         tmp_path, monkeypatch, runtime, enforcement, finish_delivers):
     import pathlib
 
-    import ouroboros.tools.review_change as review_change_mod
     import ouroboros.tools.review_result as review_result
     from ouroboros.body_candidate import serving_repo_dir_for
 
@@ -331,13 +397,14 @@ def test_a_running_review_the_mind_started_is_waited_for_unless_it_chose_to_fini
     rows = [{"record_id": "rl-mind", "state": "pending", "subject": {"diff_sha": subject.diff_sha}}]
     monkeypatch.setattr(review_result, "_result_rows", lambda ctx: rows)
     collected = []
-    monkeypatch.setattr(review_change_mod, "run_review_change",
-                        lambda ctx, **kwargs: collected.append(kwargs) or {"state": "pending", "record_id": "rl-mind"})
+    monkeypatch.setattr(review_result, "_collect_running",
+                        lambda ctx, content, record_id: collected.append(record_id) or {"state": "pending",
+                                                                                          "record_id": record_id})
     shown = []
 
     assert review_result.result_review_at_delivery(ctx, answer, {"tool_calls": []}, shown.append) is True, \
         "the default is to wait for the review the mind started (in Cyber Pro too)"
-    assert collected and collected[0]["subject"] == "result" and "still running" in shown[0]
+    assert collected == ["rl-mind"] and "still running" in shown[0]
     ctx._acceptance_pending_review_choice = "finish"
     assert (review_result.result_review_at_delivery(ctx, answer, {"tool_calls": []}, shown.append) is False) \
         is finish_delivers, "an explicit finish is honoured unless Blocking outside Cyber Pro"

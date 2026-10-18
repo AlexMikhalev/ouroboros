@@ -457,6 +457,9 @@ def count_paid_review_cycles(ctx: ToolContext, *, root_task_id: str) -> int:
         for item in state.filter_attempts(tool_name=tool):
             if not item.paid or item.root_task_id != root:
                 continue
+            if tool == "review_result":  # a result's allowance is its root task's, wherever its material lives
+                paid += 1
+                continue
             key = item.review_budget_repo_key or owners.get(item.repo_key)
             if key is None:
                 key = owners[item.repo_key] = paid_repo_key(ctx, item.repo_key)

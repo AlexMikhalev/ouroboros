@@ -54,6 +54,9 @@ DETACH_POLL_SEC = 1.0
 # The author's drain mark outlives any panel window; the supervisor bounds its lease by the task.
 _DRAIN_MARK_SEC = 6 * 3600.0
 ADDRESSED_EVENT = "addressed_event"
+# The author never waits at all (a Presence completion: its speech is never held): its drain leaves at once,
+# no mailbox notice follows, and the wave settles as an unwaited one (``owe_unwaited_review``).
+DEPARTED_EVENT = "author_departed"
 # This process's identity: a left-review wait restored from a checkpoint names another
 # process, whose live custody and settlement notice died with it.
 PROCESS_TOKEN = uuid.uuid4().hex
@@ -74,6 +77,15 @@ def receptive_binding(ctx: Any) -> Optional[Dict[str, Any]]:
 
     return {"drive_root": pathlib.Path(drive_root), "task_id": task_id, "attempt": getattr(ctx, "task_attempt", None) or 1,
             "seen": frozenset(getattr(ctx, "_loop_mailbox_seen_ids", None) or ()), "peek": OwnerMailboxPeek()}
+
+
+def departed_binding(ctx: Any) -> Optional[Dict[str, Any]]:
+    """The author of a wave nobody waits for: the drain detaches at its first slice and keeps the workers."""
+    drive_root, task_id = getattr(ctx, "drive_root", None), str(getattr(ctx, "task_id", "") or "")
+    if not drive_root or not task_id:
+        return None
+    return {"drive_root": pathlib.Path(drive_root), "task_id": task_id, "departed": True,
+            "attempt": getattr(ctx, "task_attempt", None) or 1, "seen": frozenset(), "peek": None}
 
 
 @contextmanager
@@ -187,11 +199,12 @@ def author_detaches(operation: Any, pending_entries: Iterable[Any]) -> bool:
     from ouroboros.owner_pause import launch_lock
 
     if not author_paused(operation):
-        if not author_hears_mail():
+        departed = bool((_RECEPTIVE.get() or {}).get("departed"))
+        if not departed and not author_hears_mail():
             return False
         for entry in pending_entries:
-            if entry is not None:
-                entry.author_left_for = ADDRESSED_EVENT  # read by ``detached_actor`` of this drain
+            if entry is not None:  # read by ``detached_actor`` of this drain
+                entry.author_left_for = DEPARTED_EVENT if departed else ADDRESSED_EVENT
         return True
     root_drive, root_task_id, _ = _author_coordinates(operation.wait)
     with launch_lock(root_drive, root_task_id):
@@ -234,9 +247,14 @@ def detached_actor(slot: Any, entry: Any, error_actor: Callable[..., Any], *, us
         if operation is not None:
             operation.author_detached = True
     preparing = bool(entry.pause_before_launch)
-    yielded = not preparing and getattr(entry, "author_left_for", "") == ADDRESSED_EVENT
+    left_for = getattr(entry, "author_left_for", "")
+    yielded = not preparing and left_for in {ADDRESSED_EVENT, DEPARTED_EVENT}
     unsent = yielded and not episode_armed(entry.episode)
     message = (
+        "Nobody waits for this reviewer (the author's speech is never held): it finishes the same check "
+        "separately and its outcome settles into the record and a late mark in the author's room. No verdict "
+        "yet; nothing was committed or applied."
+        if yielded and left_for == DEPARTED_EVENT else
         "An addressed message reached the author while this reviewer was "
         + ("preparing its first launch, which still sends" if unsent else "running")
         + ": the author left only its own wait and the reviewer finishes the same check separately. No verdict "
@@ -255,7 +273,7 @@ def detached_actor(slot: Any, entry: Any, error_actor: Callable[..., Any], *, us
     actor.awaiting_since = entry.started_at
     usage = dict(getattr(actor, "usage", None) or {})
     if yielded:
-        usage["author_left_for"] = ADDRESSED_EVENT
+        usage["author_left_for"] = left_for
     else:
         usage["owner_pause_detached"] = True
     if preparing:
@@ -274,7 +292,7 @@ def detached_actor(slot: Any, entry: Any, error_actor: Callable[..., Any], *, us
                          "retry_key": str(getattr(request, "retry_key", "") or ""),
                          "slot_id": str(getattr(slot, "slot_id", "") or ""),
                          "operation_id": entry.operation_id, "attempt_key": entry.key,
-                         "reason": ADDRESSED_EVENT if yielded else "owner_pause"})
+                         "reason": left_for if yielded else "owner_pause"})
     return actor
 
 

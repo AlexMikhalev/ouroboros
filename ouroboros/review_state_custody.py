@@ -176,14 +176,14 @@ def checkpoint_pending_review_invocation(
 
 
 def _left_before_launch_still_sends(operation_id: str) -> bool:
-    """This process's live seat for ``operation_id`` was detached by an addressed message, not by
-    Pause: its preparation goes on and sends. The caller is that seat itself, about to start."""
+    """This process's live seat for ``operation_id`` was detached by an addressed message or a departed
+    author, not by Pause: its preparation goes on and sends. The caller is that seat itself, about to start."""
     from ouroboros.review_custody import _ACTIVE, _ACTIVE_LOCK
-    from ouroboros.review_pause import ADDRESSED_EVENT
+    from ouroboros.review_pause import ADDRESSED_EVENT, DEPARTED_EVENT
 
     with _ACTIVE_LOCK:
         entry = next((item for item in _ACTIVE.values() if item.operation_id == operation_id), None)
-        return bool(entry is not None and getattr(entry, "author_left_for", "") == ADDRESSED_EVENT
+        return bool(entry is not None and getattr(entry, "author_left_for", "") in {ADDRESSED_EVENT, DEPARTED_EVENT}
                     and not getattr(entry, "pause_before_launch", False))
 
 
