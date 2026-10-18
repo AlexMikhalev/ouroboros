@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createMySkillsDestination } from '../modules/skill_dialogs.js';
+import { publicationDisclosure } from '../modules/skill_presentation.js';
 
 import {
     buildHealPrompt, destinationFromChoice, inFlightCount, installedFilterCounts, lifecycleEventsFromQueue,
@@ -101,4 +103,26 @@ test('the repair prompt carries bounded diagnostics as data', () => {
     assert.match(prompt, /"name": "minecraft-widget"/);
     assert.match(prompt, /widget_safety/);
     assert.ok(prompt.length < 9000, 'the load error is bounded');
+});
+
+test('saved My skills and git origins keep unknown visibility after a private connection', async () => {
+    const answer = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/my_skills.json', import.meta.url), 'utf8')).private;
+    const connected = await createMySkillsDestination(async () => answer);
+    assert.match(publicationDisclosure(connected.private, connected.repository), /your private repository/);
+    const saved = publishDestinations(byName('minecraft-widget'), [answer.source])[0];
+    assert.equal(saved.repository, answer.repository);
+    assert.equal(saved.private, undefined, 'the saved source contains no visibility fact');
+    assert.equal(publicationDisclosure(saved.private, saved.repository),
+        "Everything in the skill's folder goes to owner/ouroboros-skills; whoever can read that repository can see it.");
+    for (const kind of ['git', 'hub']) {
+        const source = { ...answer.source, kind };
+        const origin = publishDestinations({ install: { source } }, [source])[0];
+        assert.equal(origin.repository, answer.repository);
+        assert.match(publicationDisclosure(origin.private, origin.repository), /whoever can read that repository/);
+    }
+    const pointer = byName('anime_studio');
+    pointer.install.release.repo = 'https://github.com/author/private-skill';
+    const choice = publishDestinations(pointer, SOURCES)[0];
+    assert.equal(choice.repository, 'author/private-skill');
+    assert.match(publicationDisclosure(choice.private, choice.repository), /goes to author\/private-skill; whoever can read/);
 });

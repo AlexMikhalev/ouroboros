@@ -40,11 +40,14 @@ export function canUpdateWithoutReview(install) {
         && (!install.update_available || install.update_available.digest === install.update_rejected.digest));
 }
 
-/** Publication visibility follows the selected destination's host fact. */
-export function publicationDisclosure(privateRepository = false) {
-    return privateRepository === true
-        ? "Everything in the skill's folder goes to your private repository."
-        : "Everything in the skill's folder becomes public.";
+/** Saved sources have no visibility fact; only the public hub is known by its address. */
+export function publicationDisclosure(privateRepository, repository = '') {
+    if (privateRepository === true) return "Everything in the skill's folder goes to your private repository.";
+    const target = repoLabel(repository).replace(/\.git$/i, '');
+    if (privateRepository === false || target.toLowerCase() === 'razzant/ouroboroshub') {
+        return "Everything in the skill's folder becomes public.";
+    }
+    return `Everything in the skill's folder goes to ${target || 'the selected repository'}; whoever can read that repository can see it.`;
 }
 
 function timeOf(value) {

@@ -203,23 +203,23 @@ export function publishDestinations(skill, sources = []) {
     const authorRepo = String(skill.install?.release?.repo || '');
     if (origin?.id && ['hub', 'git'].includes(originKind)) {
         out.push(authorRepo
-            ? { value: `origin:${origin.id}`, label: `Back to ${repoLabel(authorRepo)} — its author’s repository`,
+            ? { value: `origin:${origin.id}`, repository: repoLabel(authorRepo), label: `Back to ${repoLabel(authorRepo)} — its author’s repository`,
                 detail: 'Suggest your changes to its author as a new version. The author decides.' }
-            : { value: `origin:${origin.id}`, label: `Back to ${origin.name || originRow?.name} — where it came from`,
+            : { value: `origin:${origin.id}`, repository: repoLabel(originRow?.url || origin.url), label: `Back to ${origin.name || originRow?.name} — where it came from`,
                 detail: 'Suggest your changes as a new version. The maintainers decide.' });
     }
     for (const source of sources.filter((row) => row.kind === 'git')) {
         if (source.id === origin?.id) continue;
-        out.push({ value: `source:${source.id}`, label: `${source.name} — your own source`,
+        out.push({ value: `source:${source.id}`, repository: repoLabel(source.url), label: `${source.name} — your own source`,
             detail: origin ? 'Publish your version now, under the same name, for your own installs.' : `Publish now. Every Ouroboros that reads ${source.name} gets it at once.` });
     }
     // The hub's two rows are one repository: a skill from it goes back as its origin, or beside it as a new skill.
     const community = sources.find((row) => row.kind === 'hub' && row.part === 'community');
     if (community && originKind === 'hub') {
-        out.push({ value: `new:${community.id}`, label: `${community.name} — as a new skill`,
+        out.push({ value: `new:${community.id}`, repository: repoLabel(community.url), label: `${community.name} — as a new skill`,
             detail: 'Ask to list it next to the original under another name.' });
     } else if (community) {
-        out.push({ value: `source:${community.id}`, label: `${community.name} — share with everyone`,
+        out.push({ value: `source:${community.id}`, repository: repoLabel(community.url), label: `${community.name} — share with everyone`,
             detail: 'Ask to list it in the shared catalog. New skills and new authors are read by the maintainer first.' });
     }
     return out;
@@ -670,7 +670,7 @@ export function initSkills(ctx = {}) {
         const choice = await openPublishDestinationDialog({ name, choices, changed: Boolean(skill.install) });
         if (!choice) return false;
         const destination = destinationFromChoice(choice.value);
-        const outcome = await runSkillPublishFlow(name, { destination, privateRepository: choice.private === true });
+        const outcome = await runSkillPublishFlow(name, { destination, privateRepository: choice.private });
         if (!outcome.started) return false;
         showToast(`${name}: publication task ${outcome.task?.task_id || ''} started — see chat`, 'ok');
         emitSkillLifecycle('submit_hub', name);

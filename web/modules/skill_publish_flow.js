@@ -149,7 +149,7 @@ export function skillPublishDetails(preflight = {}) {
 }
 
 /** Translate one backend-authored state into dialog copy without reclassifying it. */
-export function skillPublishDialogModel(preflight = {}, { privateRepository = false } = {}) {
+export function skillPublishDialogModel(preflight = {}, { privateRepository } = {}) {
     const state = text(preflight.state);
     const presentation = STATE_PRESENTATION[state];
     const target = targetFromPreflight(preflight);
@@ -180,7 +180,7 @@ export function skillPublishDialogModel(preflight = {}, { privateRepository = fa
         canStart,
         dialog: {
             title: `${presentation.title}${titleTarget}`,
-            body: [summary, presentation.body, canStart ? publicationDisclosure(privateRepository) : ''].filter(Boolean).join('\n\n'),
+            body: [summary, presentation.body, canStart ? publicationDisclosure(privateRepository, target.repository) : ''].filter(Boolean).join('\n\n'),
             alert: !canStart,
             confirmLabel: presentation.confirmLabel,
             cancelLabel: 'Cancel',
@@ -194,12 +194,12 @@ export function skillPublishDialogModel(preflight = {}, { privateRepository = fa
  * Build the exact ordinary managed-task request after explicit confirmation. The owner's
  * `destination` ({source_id, mode}) rides in `skill_publish_target`, where the publish tool reads it.
  */
-export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, destination = null, privateRepository = false } = {}) {
+export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, destination = null, privateRepository } = {}) {
     const { skill, repository } = targetFromPreflight(preflight);
     if (!validTaskStart(preflight)) {
         throw new Error('Publish preflight does not authorize a task start.');
     }
-    const disclosure = publicationDisclosure(privateRepository);
+    const disclosure = publicationDisclosure(privateRepository, repository);
     const evidence = {
         state: text(preflight.state),
         publication_ready: preflight.publication_ready === true,
@@ -247,7 +247,7 @@ export async function runSkillPublishFlow(skill, {
     projectId = '',
     chatId,
     destination = null,
-    privateRepository = false,
+    privateRepository,
 } = {}) {
     const requestedSkill = text(typeof skill === 'string' ? skill : skill?.name);
     if (!requestedSkill) throw new Error('Skill name is required for publication.');

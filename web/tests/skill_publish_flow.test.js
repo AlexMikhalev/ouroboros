@@ -58,11 +58,12 @@ test('the browser renders all five backend-authored states without reclassifying
     }
 });
 
-test('publication confirmation and task preserve the selected public or private disclosure', async () => {
-    for (const privateRepository of [true, false, undefined]) {
+test('publication confirmation and task preserve public, private and unknown visibility', async () => {
+    for (const privateRepository of [true, false, undefined, null]) {
         const disclosure = privateRepository === true
             ? "Everything in the skill's folder goes to your private repository."
-            : "Everything in the skill's folder becomes public.";
+            : privateRepository === false ? "Everything in the skill's folder becomes public."
+                : "Everything in the skill's folder goes to Owner/Configured-Hub; whoever can read that repository can see it.";
         const result = await runSkillPublishFlow('demo', {
             privateRepository,
             destination: { source_id: 'my-skills', mode: 'entry' },
@@ -73,10 +74,19 @@ test('publication confirmation and task preserve the selected public or private 
         assert.equal(result.started, true);
         for (const field of ['description', 'constraints', 'context']) {
             assert.ok(result.payload[field].includes(disclosure), `${field}: ${result.payload[field]}`);
-            assert.equal(result.payload[field].includes('becomes public'), privateRepository !== true);
+            assert.equal(result.payload[field].includes('becomes public'), privateRepository === false);
+            assert.equal(result.payload[field].includes('private repository'), privateRepository === true);
         }
         assert.deepEqual(result.payload.metadata.skill_publish_target.destination, { source_id: 'my-skills', mode: 'entry' },
             'visibility copy adds no fields to the shared destination contract');
+    }
+});
+
+test('the known public hub is disclosed as public without guessing visibility for other repositories', () => {
+    for (const repository of ['razzant/OuroborosHub', 'https://github.com/razzant/OuroborosHub.git/', 'owner/private-hub']) {
+        const model = skillPublishDialogModel(preflight('ready', { repository }));
+        assert.equal(model.dialog.body.includes('becomes public'), repository !== 'owner/private-hub');
+        assert.equal(model.dialog.body.includes('whoever can read that repository'), repository === 'owner/private-hub');
     }
 });
 

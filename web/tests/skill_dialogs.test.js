@@ -78,12 +78,13 @@ test('My skills selects the source from both create and connect answers', async 
         for (const privateValue of [true, false, undefined, 'true']) {
             const choice = await createMySkillsDestination(async () => ({ ok: true, created, private: privateValue,
                 repository: 'owner/ouroboros-skills', source: { id: 'owner-skills', name: 'My renamed skills' } }));
-            const visibility = privateValue === true ? 'private' : 'public';
+            const visibility = privateValue === true ? ' (private)' : privateValue === false ? ' (public)' : '';
             assert.equal(choice.value, 'source:owner-skills');
-            assert.equal(choice.private, privateValue === true);
+            assert.equal(choice.private, typeof privateValue === 'boolean' ? privateValue : undefined);
+            assert.equal(choice.repository, 'owner/ouroboros-skills');
             assert.match(choice.label, /My renamed skills/);
-            assert.ok(choice.label.includes(`owner/ouroboros-skills (${visibility})`));
-            assert.equal(choice.status, `${created ? 'Created' : 'Connected'} owner/ouroboros-skills (${visibility}).`);
+            assert.ok(choice.label.includes(`owner/ouroboros-skills${visibility}`));
+            assert.equal(choice.status, `${created ? 'Created' : 'Connected'} owner/ouroboros-skills${visibility}.`);
         }
     }
 });
