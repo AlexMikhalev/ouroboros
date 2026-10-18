@@ -678,8 +678,11 @@ export function initSkills(ctx = {}) {
         return true;
     }
 
+    // The skill as its card shows it: forgetting names the record the owner saw, never a newer one.
+    const shownSkill = (name) => (snapshot?.rawSkills || []).find((item) => item.name === name) || null;
+
     async function forgetPublication(name) {
-        const skill = await currentSkill(name);
+        const skill = shownSkill(name) || await currentSkill(name);
         const ok = await openConfirmDialog({
             title: `Forget the publication record of ${name}?`,
             body: 'This forgets only this computer’s note of what was sent; the request stays on GitHub.',

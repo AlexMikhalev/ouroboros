@@ -426,7 +426,7 @@ ouroboros/ — agent core and shared runtime (§6)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
     widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot, with no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts contracts.py re-exports
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
-    marketplace.py, skill_sources.py, skill_my_skills.py — ClawHub; sources, catalog, installs; My skills repository
+    marketplace.py, skill_sources.py, skill_my_skills.py — ClawHub; sources, catalog, installs; My skills
     skill_source_contracts.py — Source/catalog/install envelopes; browser twin skill_source_contract_types.js
     mcp.py — MCP HTTP surface over the shared MCPManager
     claudexor_accounts.py — Thin owned-daemon status/login/account proxies; no auth logic or browser token. `reads` classifies catalog/accounts/quota, `resource_capabilities_read` operations; only a successful read proves absence (§3 Agent accounts; §4)
