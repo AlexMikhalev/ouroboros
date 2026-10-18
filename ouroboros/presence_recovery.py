@@ -147,9 +147,13 @@ def retained_work_view(stored: Mapping[str, Any], reference: str,
         return 200, {"ok": True, "status": status, "outcome": result.outcome, "text": result.text,
                      "work_ref": reference, "delivery_reporting_version": result.delivery_reporting_version}
     if not attempt_ended(stored, drive_root):
-        return continued if continued is not None else (202, {
-            "ok": True, "status": "pending", "work_ref": reference,
-            "delivery_reporting_version": presence.get("delivery_reporting_version", 0)})
+        if continued is None:
+            return 202, {"ok": True, "status": "pending", "work_ref": reference,
+                         "delivery_reporting_version": presence.get("delivery_reporting_version", 0)}
+        # A live author stays observed even after its row recorded a terminal without an answer:
+        # its execution may still back-fill a child before it ends.
+        return 202, {**{key: value for key, value in continued[1].items()
+                        if key not in {"outcome", "text", "output_ref"}}, "status": "pending"}
     # Already released continuation outputs keep their exact identities. A draft
     # salvaged from the unanswered final round is never newly selected speech.
     facts = retained_turn_facts(stored, reference)

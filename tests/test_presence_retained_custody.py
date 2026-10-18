@@ -80,6 +80,8 @@ def test_retained_receipt_releases_next_event_preserves_original_and_late_child(
                       terminal_origin="model_final", result="child answer")
     assert _poll(app, binding, "child")[1]["text"] == "child answer"
     assert _poll(app, binding, old)[1]["status"] == "failed"
+    # Projection guarantee only: a canonical answer stored on the row is served first (no production
+    # writer adds one after an attempt ended; conforming transports stopped at the terminal above).
     # A canonical late publication may enrich the existing failed result with its
     # source-bound selected answer; task lifecycle remains monotonic. Observation
     # neither regenerates the old event nor rewrites it as a silent completion.

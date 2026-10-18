@@ -138,18 +138,40 @@ def test_a_recorded_interrupted_alone_proves_no_end(tmp_path):
     assert reconcile_orphaned_running_tasks(tmp_path) == 0
 
 
-def test_live_execution_outranks_a_recorded_cancel(tmp_path):
-    # A Stop written under a live author (d375d9fd0's miss lane, V5): wait for the execution to finish.
-    ref, stored = _row(tmp_path, "ev-live-cancel", "cancelled", child="child-1")
+@pytest.mark.parametrize("status,unknown", [("cancelled", False), ("failed", True)])
+@pytest.mark.parametrize("parked", [False, True])
+def test_live_execution_outranks_a_recorded_unanswered_terminal(tmp_path, status, unknown, parked):
+    # A Stop written under a live author (d375d9fd0's miss lane, V5), or an unknown outcome stored before
+    # handle_task returns: the execution may still back-fill a child, so it stays observed until it ends.
+    ref, stored = _row(tmp_path, f"ev-live-{status}-{parked}", status, unknown=unknown, child="child-1",
+                       parked=_parked(controller_identity()) if parked else None)
     key = (str(tmp_path.resolve()), ref)
     presence_runner._LIVE_PRESENCE_TASKS.add(key)
     try:
         assert not attempt_ended(stored, tmp_path)
-        assert retained_work_view(stored, ref, tmp_path)[0] == 202
+        code, pending = retained_work_view(stored, ref, tmp_path)
+        assert code == 202 and pending["status"] == "pending"
+        assert not {"outcome", "text", "output_ref"} & pending.keys()
+        if parked:
+            assert pending["outputs"] == [OUTPUT] and pending["work_ref"] == ref
     finally:
         presence_runner._LIVE_PRESENCE_TASKS.discard(key)
-    status, view = retained_work_view(stored, ref, tmp_path)
-    assert status == 200 and view["status"] == "cancelled" and view["child_work_ref"] == "child-1"
+    code, view = retained_work_view(stored, ref, tmp_path)
+    assert code == 200 and view["status"] == status and view["child_work_ref"] == "child-1"
+    assert view["code"] and (view["outcome"], view["text"]) == ("silent", "")
+
+
+def test_a_completed_turn_with_a_workspace_stays_completed(tmp_path):
+    # Inline Presence has no workspace artifact finalization: its recorded terminal is final on every read,
+    # even after its controller died (it must not read as running, nor be re-projected as lost).
+    ref, stored = _row(tmp_path, "ev-workspace-answered", "completed", answer="Done.",
+                       owner=_witnessed(tmp_path, _dead_witness()))
+    patch_document(tmp_path, ref, lambda current: {**current, "workspace_root": str(tmp_path / "external")})
+    stored = load_task_result(tmp_path, ref)
+    effective = effective_task_result(tmp_path, stored, materialize_artifacts=False)
+    assert effective["status"] == "completed" and "status_reconciled_from" not in effective
+    assert reconcile_orphaned_running_tasks(tmp_path) == 0
+    assert retained_work_view(stored, ref, tmp_path)[1]["text"] == "Done."
 
 
 def test_an_executor_that_raises_records_its_end_and_is_settled_once(tmp_path):

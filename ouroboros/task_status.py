@@ -595,6 +595,18 @@ def _is_stale_orphan_running_task(
 PRESENCE_ATTEMPT_LOST = "presence_attempt_lost"
 
 
+def _project_lost_attempt(merged: Dict[str, Any], reason: str, prior_status: str, notice: str) -> None:
+    """Project a non-terminal row whose executor positively ended as an infra failure, in place."""
+    merged.update(status=STATUS_FAILED, reason_code=reason, outcome_axes=infra_failed_axes(reason),
+                  status_reconciled_from=prior_status)
+    merged["result"] = (str(merged.get("result") or "Task was interrupted before a terminal result was recorded.")
+                        + "\n\n⚠️ " + notice)
+    if str(merged.get("artifact_status") or "").strip().lower() in ARTIFACT_NONTERMINAL_STATUSES:
+        merged["artifact_status"] = ARTIFACT_STATUS_FAILED
+        bundle = dict(merged["artifact_bundle"]) if isinstance(merged.get("artifact_bundle"), dict) else {}
+        merged["artifact_bundle"] = _fail_nonterminal_artifact_bundle(bundle, "task interrupted before artifact finalization")
+
+
 def _presence_attempt_lost(drive_root: pathlib.Path, result: Dict[str, Any],
                            queue_snapshot: Optional[Dict[str, Any]] = None) -> bool:
     """A non-terminal row of a Presence turn whose attempt can no longer change.
@@ -618,6 +630,8 @@ def _normalize_workspace_artifact_status(result: Dict[str, Any]) -> Dict[str, An
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     if not (str(result.get("workspace_root") or "").strip() or str(metadata.get("workspace_root") or "").strip()):
         return result
+    if isinstance(metadata.get("presence"), dict):
+        return result  # an inline Presence turn has no workspace artifact finalization: its terminal is final
     task_constraint = result.get("task_constraint") if isinstance(result.get("task_constraint"), dict) else {}
     if not task_constraint and isinstance(metadata.get("task_constraint"), dict):
         task_constraint = metadata.get("task_constraint") or {}
@@ -820,11 +834,6 @@ def reconcile_orphaned_running_tasks(
                 if not applied:
                     continue  # the row moved on between the effective read and this write: nothing was settled here
                 healed += 1
-                if persist_fields.get("reason_code") == PRESENCE_ATTEMPT_LOST:
-                    # The room learns once that this turn ended unanswered; the mind decides what follows.
-                    from ouroboros.presence_runner import _notify_unresolved_turn
-
-                    _notify_unresolved_turn(root, task_id)
                 # This sweep is a terminal writer that never passes the task-done seam, so it closes the
                 # same per-task owner-control projections that seam closes (otherwise the record says
                 # "ended" while the card keeps an open question), before any next attempt can open new
@@ -843,6 +852,11 @@ def reconcile_orphaned_running_tasks(
                         expired_quizzes.extend((task_id, quiz_id) for quiz_id in expired)
                 except Exception:
                     log.debug("owner_quiz reconcile failed for healed %s", task_id, exc_info=True)
+            if persist_fields.get("reason_code") == PRESENCE_ATTEMPT_LOST:
+                # Outside the write guard: the room learns once that this turn ended unanswered.
+                from ouroboros.presence_runner import _notify_unresolved_turn
+
+                _notify_unresolved_turn(root, task_id)
         except Exception:
             continue
     return healed
@@ -1080,15 +1094,9 @@ def effective_task_result(
             if _presence_attempt_lost(pathlib.Path(drive_root), merged, queue_snapshot):
                 # The queue never owns a Presence turn; its own end fact decides, as the work view does.
                 terminal_projection = "presence_attempt_lost"
-                merged["status"] = STATUS_FAILED
-                merged["reason_code"] = PRESENCE_ATTEMPT_LOST
-                merged["outcome_axes"] = infra_failed_axes(PRESENCE_ATTEMPT_LOST)
-                merged["status_reconciled_from"] = parent_status
-                merged["result"] = (
-                    str(merged.get("result") or "Task was interrupted before a terminal result was recorded.")
-                    + "\n\n⚠️ PRESENCE_ATTEMPT_LOST: this Presence turn's executor ended without a terminal "
-                    "result; whether its reply or tools took effect is unknown, and it is never re-run."
-                )
+                _project_lost_attempt(merged, PRESENCE_ATTEMPT_LOST, parent_status, (
+                    "PRESENCE_ATTEMPT_LOST: this Presence turn's executor ended without a terminal result; "
+                    "whether its reply or tools took effect is unknown, and it is never re-run."))
             elif queue_status == "unknown":
                 merged["queue_reconciliation_warning"] = "queue snapshot missing or invalid"
             elif _terminal_failure_from_outcome(merged):
@@ -1113,23 +1121,9 @@ def effective_task_result(
                     if parent_status == STATUS_INTERRUPTED
                     else "orphaned_running_after_worker_restart"
                 )
-                merged["status"] = STATUS_FAILED
-                merged["reason_code"] = orphan_reason
-                merged["outcome_axes"] = infra_failed_axes(orphan_reason)
-                merged["status_reconciled_from"] = parent_status
-                merged["result"] = (
-                    str(merged.get("result") or "Task was interrupted before a terminal result was recorded.")
-                    + "\n\n⚠️ TASK_ORPHAN_RECONCILED: queue is empty and worker restarted after this task; "
-                    f"marking the stale {parent_status} task as infra_failed."
-                )
-                artifact_status = str(merged.get("artifact_status") or "").strip().lower()
-                if artifact_status in ARTIFACT_NONTERMINAL_STATUSES:
-                    merged["artifact_status"] = ARTIFACT_STATUS_FAILED
-                    bundle = dict(merged.get("artifact_bundle") or {}) if isinstance(merged.get("artifact_bundle"), dict) else {}
-                    merged["artifact_bundle"] = _fail_nonterminal_artifact_bundle(
-                        bundle,
-                        "task interrupted before artifact finalization",
-                    )
+                _project_lost_attempt(merged, orphan_reason, parent_status, (
+                    "TASK_ORPHAN_RECONCILED: queue is empty and worker restarted after this task; "
+                    f"marking the stale {parent_status} task as infra_failed."))
     # Typed public cancel projection (phase A): an ACTIVE durable cancel intent
     # rides every effective read as ``cancel_state: "pending"`` — status itself
     # stays honest (running/scheduled) until the supervisor settles the teardown.
