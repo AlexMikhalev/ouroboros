@@ -262,12 +262,16 @@ def settle_pending_update(drive_root: pathlib.Path, name: str, *, expected_diges
         return {"status": "superseded"}
     record = read_install_record(drive_root, name) or {}
     release = record.get("release") or {}
-    if not data.get("restore_started") and (record.get("pending_update") != pending
-                                            or release.get("digest") != pending["digest"]):
+    previous = json.loads(snapshot.lifecycle_state.get(INSTALL_RECORD_FILENAME) or b"{}")
+    # The durable snapshot precedes both the payload swap and the new record. If
+    # the old record is still present, landing was interrupted, not superseded.
+    interrupted_landing = bool(record) and record == previous
+    if not data.get("restore_started") and not interrupted_landing and (
+            record.get("pending_update") != pending or release.get("digest") != pending["digest"]):
         discard_update_snapshot(drive_root, name)
         return {"status": "superseded"}
     loaded = find_skill(drive_root, name, repo_path=get_skills_repo_path())
-    current = loaded is not None and release.get("digest") == pending["digest"]
+    current = not interrupted_landing and loaded is not None and release.get("digest") == pending["digest"]
     if not landing_failed and not data.get("restore_started") and current and not loaded.load_error \
             and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
         update_install_record(drive_root, name, pending_update=None, update_rejected=None)
@@ -275,7 +279,7 @@ def settle_pending_update(drive_root: pathlib.Path, name: str, *, expected_diges
         update_backup_path(drive_root, name).unlink()
         return {"status": "accepted"}
     job = read_json_dict(review_job_state_path(drive_root, name)) or {}
-    if not force and not data.get("restore_started") and job.get("status") == "running" \
+    if not force and not interrupted_landing and not data.get("restore_started") and job.get("status") == "running" \
             and _running_job_interrupt_reason(job) is None:
         return {"status": "review_running"}
     reason = "landing_failed" if landing_failed else "review_unfinished"

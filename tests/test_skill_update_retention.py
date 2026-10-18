@@ -94,6 +94,79 @@ def test_startup_restores_interrupted_update_and_leaves_running_review(release, 
     assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "review_unfinished"
 
 
+@pytest.mark.parametrize("kind", ["hub", "git", "builtin", "registry"])
+@pytest.mark.parametrize("cut", ["before_swap", "between_moves", "after_swap"])
+@pytest.mark.parametrize("same_release", [False, True], ids=["new-release", "same-release"])
+def test_startup_restores_landing_before_new_install_record(request, tmp_path, monkeypatch, kind, cut, same_release):
+    from ouroboros.marketplace import fetcher, install as storage
+
+    if kind == "registry":
+        drive, _storage, registry = request.getfixturevalue("registry_release")
+        if not same_release:
+            registry["latest"] = "2.0.0"
+        rows = None
+    else:
+        drive, folder, row, item = request.getfixturevalue("release")
+        row.update(kind=kind, trust="trusted")
+        if kind == "builtin":
+            folder.parent.rename(tmp_path / "skills")
+            folder = tmp_path / "skills" / "demo"
+            monkeypatch.setattr("ouroboros.config.REPO_DIR", tmp_path)
+        installer.install_item(drive, item["id"])
+        row["trust"] = "review"
+        if not same_release:
+            manifest = folder / "SKILL.md"
+            manifest.write_text(manifest.read_text(encoding="utf-8").replace("1.0.0", "2.0.0"), encoding="utf-8")
+            item.update(version="2.0.0", digest=tree_release_digest(folder))
+        rows = [row]
+
+    previous = read_install_record(drive, "demo")
+    old = find_skill(drive, "demo")
+    save_review_state(drive, "demo", SkillReviewState(status="clean", content_hash=old.content_hash))
+    save_enabled(drive, "demo", True, actor="owner_ui")
+    env_marker = old.skill_dir / ".ouroboros_env" / "ready.txt"
+    env_marker.parent.mkdir()
+    env_marker.write_text("previous dependencies", encoding="utf-8")
+    state = skill_state_dir(drive, "demo")
+    saved_review = (state / "review.json").read_bytes()
+    land = fetcher.land_staged_tree
+
+    class InterruptedLanding(BaseException):
+        """A crash bypasses ordinary Exception rollback handlers."""
+
+    def interrupt(staging, target, *, replacement_suffix):
+        assert (state / "update_backup.json").is_file()
+        if cut == "between_moves":
+            target.rename(target.with_name(f"{target.name}.{replacement_suffix}"))
+        elif cut == "after_swap":
+            land(staging, target, replacement_suffix=replacement_suffix)
+        raise InterruptedLanding()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fetcher, "land_staged_tree", interrupt)
+        patch.setattr(storage, "land_staged_tree", interrupt)
+        with pytest.raises(InterruptedLanding):
+            installer.update_installed(drive, "demo", mode="replace", rows=rows)
+    assert read_install_record(drive, "demo") == previous
+    pending = json.loads((state / "update_backup.json").read_text(encoding="utf-8"))["pending_update"]
+    assert (old.skill_dir / "SKILL.md").exists() == (cut != "between_moves")
+    if cut == "after_swap":
+        assert find_skill(drive, "demo").content_hash == pending["digest"]
+        assert not env_marker.exists()
+
+    installer.settle_pending_updates_at_startup(drive)
+    assert find_skill(drive, "demo").content_hash == old.content_hash
+    assert env_marker.read_text(encoding="utf-8") == "previous dependencies"
+    assert (state / "review.json").read_bytes() == saved_review
+    assert load_enabled(drive, "demo")
+    restored = read_install_record(drive, "demo")
+    assert restored["source"] == previous["source"] and restored["release"] == previous["release"]
+    assert "pending_update" not in restored
+    assert restored["update_rejected"]["reason"] == "review_unfinished"
+    assert restored["update_rejected"]["digest"] == pending["digest"]
+    assert not (state / "update_backup.json").exists()
+
+
 def test_review_exception_restores_previous_without_waiting_for_restart(release):
     drive, _folder, _row, _item = release
     previous, _ = _pending(release)
