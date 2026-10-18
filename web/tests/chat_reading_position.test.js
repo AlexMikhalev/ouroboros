@@ -398,6 +398,48 @@ test('a resize that waited on the owed scrolls keeps where they end; at rest it 
     assert.equal(feed.scrollTop, 450, 'at rest a resize keeps the place read before it');
 });
 
+test('rows are lazy only while the width moves; once it holds, every row is laid out and the place re-applied', t => {
+    const previous = globalThis.requestAnimationFrame, frames = [];
+    globalThis.requestAnimationFrame = callback => frames.push(callback);
+    t.after(() => { globalThis.requestAnimationFrame = previous; });
+    const frame = () => frames.splice(0).forEach(callback => callback());
+    const marks = new Set();
+    const feed = { scrollTop: 100, scrollHeight: 1000, clientHeight: 400, clientWidth: 400, ownerDocument: {},
+        addEventListener() {}, removeEventListener() {}, contains: node => node === feed,
+        toggleAttribute: (name, on) => { if (on) marks.add(name); else marks.delete(name); return on; } };
+    // Laying the rows out again at the held width moves the passage; restoring the place puts it back.
+    let restores = 0;
+    const reading = createChatReadingPosition({ feed, visible: () => true, alive: () => true, ready: () => true,
+        anchors: { capture: () => ({ top: 100 }), restore: anchor => { restores++; feed.scrollTop = anchor.top; return true; },
+            serialize: () => null }, changed() {}, afterWrite() {}, activity() {}, updateButton() {} });
+    reading.stick = false; reading.remember(true);
+    reading.reflow();
+    assert.equal(marks.has('data-resizing'), false, 'a reflow at the same width (the composer grew) is no move');
+    feed.clientWidth = 380; reading.reflow();
+    assert.equal(marks.has('data-resizing'), true, 'the width moved: rows off the screen keep their size');
+    for (let i = 0; i < 6; i++) frame();
+    feed.clientWidth = 360; reading.reflow(); // the drag goes on: the hold starts again
+    for (let i = 0; i < 11; i++) frame();
+    assert.equal(marks.has('data-resizing'), true, 'still within the hold after the last move');
+    feed.scrollTop = 140; // the rows above the passage were laid out at the new width
+    const before = restores;
+    frame();
+    assert.equal(marks.has('data-resizing'), false, 'the width held: every row is laid out again');
+    assert.deepEqual([restores - before, feed.scrollTop], [1, 100], 'and the place is re-applied in that same frame');
+    for (let i = 0; i < 20; i++) frame();
+    assert.equal(frames.length, 0, 'nothing keeps counting at rest');
+    // A feed hidden and shown again at another width (another room was open) is not a move.
+    feed.clientWidth = 0; reading.reflow();
+    feed.clientWidth = 300; reading.reflow();
+    assert.equal(marks.has('data-resizing'), false);
+    // Following the newest message, the held width lands at the new bottom.
+    reading.stick = true; feed.clientWidth = 320; reading.reflow();
+    for (let i = 0; i < 11; i++) frame();
+    feed.scrollHeight = 1300;
+    frame();
+    assert.deepEqual([marks.has('data-resizing'), feed.scrollTop], [false, 1300]);
+});
+
 test('reading inside a box ends what an earlier feed gesture still owes, not a scrollbar still held', t => {
     const f = fixture(t);
     f.feed.ownerDocument.defaultView = { getComputedStyle: node => ({ overflowY: node.overflowY || 'visible' }) };

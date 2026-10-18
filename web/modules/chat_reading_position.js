@@ -2,6 +2,9 @@
  * a frame deadline. Frames only settle geometry after those owners are ready.
  * No fetch, pager, message cache or timer lives here.
  */
+// About 200ms at 60Hz: a drag that pauses that long lays every row out once, then goes on lazily.
+const WIDTH_HELD_FRAMES = 12;
+
 export function createChatReadingPosition({ visible, alive, ready, feed, anchors, changed, afterWrite, activity, updateButton }) {
     let generation = 0, scheduled = false;
     let mutationDepth = 0;
@@ -23,6 +26,25 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
             else if (wait) owedEnd(true);
         }));
     };
+    // While the feed's width moves, its rows off the screen keep their size (style.css: lazy rows under
+    // [data-resizing]) and only those near the screen are laid out again. Once the width has held for
+    // WIDTH_HELD_FRAMES frames, every row is laid out at the final width and the place is re-applied in that frame.
+    // A feed shown again (no width before) is not a move.
+    let rowsWidth = feed.clientWidth, heldFrames = -1;
+    const holdLazyRows = () => requestAnimationFrame(() => {
+        if (++heldFrames < WIDTH_HELD_FRAMES) { holdLazyRows(); return; }
+        heldFrames = -1;
+        feed.toggleAttribute?.('data-resizing', false);
+        if (alive()) state.reflow();
+    });
+    const noteWidth = () => {
+        const now = feed.clientWidth;
+        if (now && rowsWidth && now !== rowsWidth) {
+            if (heldFrames < 0) { feed.toggleAttribute?.('data-resizing', true); holdLazyRows(); }
+            heldFrames = 0;
+        }
+        rowsWidth = now;
+    };
     const state = {
         top: 0,
         stick: true,
@@ -37,6 +59,7 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
             width = feed.clientWidth; viewportAnchor = anchors.capture();
         },
         reflow() {
+            noteWidth();
             // The animation a downward gesture still owes scrolls to is the reader's:
             // a resize neither writes under it (a write stops it short) nor ends it,
             // so its own last scroll still decides following. The resize lays out
