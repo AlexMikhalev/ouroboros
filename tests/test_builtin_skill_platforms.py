@@ -16,6 +16,7 @@ import pathlib
 import shutil
 import subprocess
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -564,7 +565,7 @@ def test_the_pass_starts_the_dependency_step_off_the_boot_path(seed_repo, monkey
         def start(self):
             pass
 
-    monkeypatch.setattr(skill_builtin.threading, "Thread", Thread)
+    monkeypatch.setattr(skill_builtin, "threading", SimpleNamespace(Thread=Thread))  # this module's threads only
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
     assert [(name, daemon, target) for name, daemon, target, _names in started] == [
         ("builtin-dependencies", True, skill_builtin._dependency_pass)]
@@ -572,3 +573,138 @@ def test_the_pass_starts_the_dependency_step_off_the_boot_path(seed_repo, monkey
     started.clear()
     skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # receipt matches: nothing to do
     assert started == []
+
+
+# ── work a later startup pass must still see ──
+
+class _SyncThread:
+    """Runs the startup pass's background work inline so a test can observe it."""
+
+    def __init__(self, *, target, args, name, daemon):
+        self.target, self.args = target, args
+
+    def start(self):
+        self.target(*self.args)
+
+
+def _stub_lifecycle_effects(monkeypatch):
+    from ouroboros import skill_lifecycle_actions
+
+    reconciles = []
+    monkeypatch.setattr("ouroboros.extension_loader.reconcile_extension",
+                        lambda name, *args, **kwargs: reconciles.append(name) or {"action": "extension_loaded"})
+    monkeypatch.setattr(skill_lifecycle_actions, "_reconcile", lambda *args, **kwargs: {"action": "extension_loaded"})
+    monkeypatch.setattr(skill_lifecycle_actions, "_sync_schedules", lambda *args, **kwargs: None)
+    return reconciles
+
+
+def test_a_builtin_installed_after_the_receipt_retries_its_dependencies_at_the_next_boot(tmp_path, monkeypatch):
+    """A new install writes the receipt before onboarding; the starter's later built-in install must
+    not hide a failed dependency install from the next boot."""
+    on(monkeypatch, "win32")
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "true")
+    repo, drive = tmp_path / "repo", tmp_path / "data"
+    (drive / "skills").mkdir(parents=True)
+    monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", drive / "settings.json")
+    shutil.copytree(SEEDS / WINDOWS, repo / "skills" / WINDOWS, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@ouroboros")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "bundled tree")
+    monkeypatch.setattr(skill_builtin, "threading", SimpleNamespace(Thread=_SyncThread))  # this module's threads only
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
+    assert receipt(drive) is not None  # the first start, before onboarding
+    _stub_lifecycle_effects(monkeypatch)
+    installs = []
+
+    def offline(*args, **kwargs):
+        raise RuntimeError("pip install failed: no network")
+
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages", offline)
+    assert install_builtin_skill(WINDOWS, drive_root=drive, seed_dir=repo / "skills", turn_on_when_ready=True,
+                                 installed_by="owner")["ok"]
+    assert receipt(drive) is None  # the install leaves work for the next pass
+    assert _dependency_pass(drive, [WINDOWS], log) == [WINDOWS] and not load_enabled(drive, WINDOWS)
+
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # the network is back
+    assert installs == [["comtypes==1.4.17"]] and load_enabled(drive, WINDOWS) is True
+    assert receipt(drive) is None  # this pass still saw the dependency work
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
+    assert receipt(drive) is not None and len(installs) == 1
+
+
+def test_the_boot_pass_finishes_a_requested_turn_on_whose_dependencies_were_ready(windows_installed):
+    """The install prepared the dependencies, then the process stopped before it turned the skill on."""
+    from ouroboros.skill_acceptance import accepted_release_dependencies
+
+    data, installs, reconciles = windows_installed
+    assert accepted_release_dependencies(data, find_skill(data, WINDOWS))[0] == "installed"
+    assert skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "") and not load_enabled(data, WINDOWS)
+    assert skill_builtin._builtins_needing_dependencies(data, [WINDOWS], log) == []  # nothing holds the receipt
+
+    assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
+
+    assert load_enabled(data, WINDOWS) is True
+    assert installs == [["comtypes==1.4.17"]]  # prepared once, never again
+
+
+def test_a_turn_on_waiting_for_grants_never_holds_the_receipt(data, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "false")
+    on(monkeypatch, "darwin")
+    assert install_builtin_skill("telegram", drive_root=data, seed_dir=SEEDS, turn_on_when_ready=True)["ok"]
+    _stub_lifecycle_effects(monkeypatch)
+
+    assert skill_builtin._builtins_needing_dependencies(data, ["telegram"], log) == []
+    assert _dependency_pass(data, ["telegram"], log) == ["telegram"]  # tried at a slow start
+    assert load_enabled(data, "telegram") is False  # still waits for the owner's grants
+
+
+def test_an_unreadable_installed_version_leaves_the_pass_unfinished(seed_repo):
+    repo, drive = seed_repo
+    manifest = drive / "skills" / "native" / "first" / "SKILL.md"
+    text = manifest.read_text(encoding="utf-8")
+    manifest.write_text("not a manifest\n", encoding="utf-8")
+    ensure(repo, drive)
+    assert receipt(drive) is None  # an unknown version is unfinished work, never a completed pass
+    manifest.write_text(text, encoding="utf-8")
+    ensure(repo, drive)
+    assert receipt(drive) is not None
+
+
+def test_the_dependency_job_carries_a_kind_the_skills_card_labels(windows_installed):
+    import re
+
+    from ouroboros.gateway.projects import _SKILL_LIFECYCLE_KINDS
+    from ouroboros.skill_lifecycle_queue import queue_snapshot
+
+    data, _installs, _reconciles = windows_installed
+    assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
+
+    job = [event for event in queue_snapshot()["events"]
+           if event["target"] == WINDOWS and event["source"] == "builtin"][-1]
+    card = (REPO / "web" / "modules" / "skill_card_renderer.js").read_text(encoding="utf-8")
+    labels = re.search(r"const LIFECYCLE_PENDING_LABELS = \{(.*?)\};", card, re.S).group(1)
+    assert job["kind"] in re.findall(r"^\s*(\w+):", labels, re.M)  # else the card says only "Working…"
+    assert _SKILL_LIFECYCLE_KINDS[job["kind"]] == "Skill dependencies"
+
+
+def test_os_declarations_parse_as_platform_lists():
+    from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
+
+    def manifest(os_line):
+        return parse_skill_manifest_text(f"---\nname: x\ndescription: x\nversion: 1\ntype: instruction\n{os_line}---\n")
+
+    assert manifest("").os == "any" and manifest("").applies_to_platform("win32")
+    listed = manifest("os: [darwin, Linux]\n")
+    assert listed.os == "darwin,linux"
+    assert listed.applies_to_platform("linux") and not listed.applies_to_platform("win32")
+    assert manifest("os: windows\n").applies_to_platform("win32")
+    assert manifest("os: macos, win32\n").applies_to_platform("darwin")
+    assert not manifest("os: win32\n").applies_to_platform("darwin")
+    unix, windows = skill_builtin._manifest(SEEDS / UNIX), skill_builtin._manifest(SEEDS / WINDOWS)
+    assert unix.os == "darwin,linux" and windows.os == "win32"
+    assert windows.permissions == ["tool"]
+    assert windows.raw_extra["install"] == [{"kind": "pip", "package": "comtypes==1.4.17"}]

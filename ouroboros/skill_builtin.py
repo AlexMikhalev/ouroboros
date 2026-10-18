@@ -190,6 +190,10 @@ def install_builtin_skill(
         return {"ok": False, "name": name, "error": f"could not land built-in {name!r}: {exc}"}
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    try:  # the next startup pass must see this install's dependency and turn-on work
+        (drive / "state" / "native_seed.json").unlink(missing_ok=True)
+    except OSError:
+        log.warning("Built-in receipt could not be invalidated after installing %s", name, exc_info=True)
     skill = load_skill(target, drive)
     if skill is None or skill.load_error or not skill.content_hash:
         return {"ok": False, "name": name, "error": f"built-in {name!r} did not load: "
@@ -246,6 +250,8 @@ def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[path
             continue
         seed_version, target_version = _version(seed), _version(target)
         if not seed_version or not target_version:
+            if failures is not None:
+                failures.append(seed.name)  # an unreadable version is unfinished work, never a completed pass
             continue
         if seed_version == target_version:
             _warn_equal_version_drift(seed, target, seed_version, logger)
@@ -383,24 +389,31 @@ def _bundled_names(seed_root: pathlib.Path) -> Optional[List[str]]:
         return None
 
 
-def _wants_dependencies(drive: pathlib.Path, skill: Any) -> bool:
-    """A built-in extension accepted without a review that is on, or whose install asked to turn
-    on when ready and has no explicit choice yet (it stays off until its dependencies are ready)."""
-    from ouroboros.skill_acceptance import accepted_without_review
+def _requested_on(drive: pathlib.Path, skill: Any) -> bool:
+    """An install that asked to turn on when ready and has no enablement choice yet."""
     from ouroboros.skill_install_record import read_install_record
     from ouroboros.skill_loader import skill_state_dir_path
 
+    if skill.enabled or (skill_state_dir_path(drive, skill.name) / "enabled.json").exists():
+        return False
+    return (read_install_record(drive, skill.name) or {}).get("turn_on_when_ready") is True
+
+
+def _wants_lifecycle_work(drive: pathlib.Path, skill: Any) -> bool:
+    """A built-in extension accepted without a review that is on, or asked to turn on (it stays off until
+    its dependencies are ready)."""
+    from ouroboros.skill_acceptance import accepted_without_review
+
     if skill is None or skill.source != "native" or not skill.manifest.is_extension() or not accepted_without_review(skill):
         return False
-    if skill.enabled:
-        return True
-    requested = (read_install_record(drive, skill.name) or {}).get("turn_on_when_ready") is True
-    return requested and not (skill_state_dir_path(drive, skill.name) / "enabled.json").exists()
+    return bool(skill.enabled) or _requested_on(drive, skill)
 
 
-def _builtins_needing_dependencies(drive: pathlib.Path, names: List[str], logger: Any) -> Optional[List[str]]:
-    """Built-ins that want their isolated dependencies (``_wants_dependencies``) and do not have them
-    ready; ``None`` when they could not be inspected (callers treat that as work left)."""
+def _builtins_needing_work(drive: pathlib.Path, names: List[str], logger: Any, *,
+                           requested_on: bool) -> Optional[List[str]]:
+    """Built-ins (``_wants_lifecycle_work``) whose isolated dependencies are not ready, and with
+    ``requested_on`` also those still waiting to turn on; ``None`` when they could not be inspected
+    (callers treat that as work left)."""
     try:
         from ouroboros.config import get_skills_repo_path
         from ouroboros.skill_dependencies import skill_deps_not_ready
@@ -408,19 +421,25 @@ def _builtins_needing_dependencies(drive: pathlib.Path, names: List[str], logger
 
         repo_path = get_skills_repo_path() or None
         found = [find_skill(drive, name, repo_path=repo_path) for name in names]
-        return [skill.name for skill in found
-                if _wants_dependencies(drive, skill) and skill_deps_not_ready(drive, skill, strict=True)[1]]
+        return [skill.name for skill in found if _wants_lifecycle_work(drive, skill) and (
+            skill_deps_not_ready(drive, skill, strict=True)[1] or (requested_on and _requested_on(drive, skill)))]
     except Exception:
         logger.warning("Built-in skill dependencies could not be inspected", exc_info=True)
         return None
 
 
+def _builtins_needing_dependencies(drive: pathlib.Path, names: List[str], logger: Any) -> Optional[List[str]]:
+    """The receipt's condition: no built-in that wants its dependencies is still without them (a turn-on
+    waiting for the owner's grants never holds it)."""
+    return _builtins_needing_work(drive, names, logger, requested_on=False)
+
+
 def _dependency_pass(drive: pathlib.Path, names: List[str], logger: Any) -> List[str]:
-    """Ready the dependencies of built-ins that want them (``_wants_dependencies``), one lifecycle job
-    each, then turn on a requested one and reconcile the extension. Off the boot path; a failure stays
-    in ``deps.json`` for the Skills page and the next boot retries it (an owner's OFF waits for the
+    """Ready the dependencies of built-ins that want them (``_wants_lifecycle_work``) and finish a
+    requested turn-on, one lifecycle job each, then reconcile the extension. Off the boot path; a failure
+    stays in ``deps.json`` for the Skills page and the next boot retries it (an owner's OFF waits for the
     enable, which runs the same step)."""
-    pending = _builtins_needing_dependencies(drive, names, logger)
+    pending = _builtins_needing_work(drive, names, logger, requested_on=True)
     if not pending:
         return []
     try:
@@ -438,7 +457,7 @@ def _dependency_pass(drive: pathlib.Path, names: List[str], logger: Any) -> List
 
     def step(name: str) -> Dict[str, Any]:
         skill = find_skill(drive, name, repo_path=repo_path)
-        if not _wants_dependencies(drive, skill):
+        if not _wants_lifecycle_work(drive, skill):
             return {"deps_status": "skipped"}
         status, error = accepted_release_dependencies(drive, skill, repo_path=repo_path)
         turn_on = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path, reason="dependencies ready at startup")

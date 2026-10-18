@@ -2,8 +2,8 @@
 
 Opt-in: runs only on Windows with ``OUROBOROS_WINDOWS_DESKTOP_QA=1`` in an
 interactive desktop session, and needs network access for the real isolated
-``comtypes`` install. It drives the production path end to end - launcher seed
-and trust stamp, the native-seed dependency step, out-of-process extension load
+``comtypes`` install. It drives the production path end to end - built-in install
+and trusted acceptance, the startup dependency step, out-of-process extension load
 and tool dispatch through ``ToolRegistry`` - against a WinForms window and a WPF
 window this test creates in its own PowerShell process. Only those windows are
 read or acted on, and only that process is stopped; nothing else on the desktop

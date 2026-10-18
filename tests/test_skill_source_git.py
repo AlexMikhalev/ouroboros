@@ -117,7 +117,7 @@ def test_only_authentication_refusals_retry_once_with_a_configured_token(
     def run(argv, *, env, **kwargs):
         if argv[1] == "fetch":
             attempts.append(env["GIT_CONFIG_COUNT"])
-            return 128, "", failure
+            return 128, "", failure if len(attempts) == 1 else "remote: Invalid username or token."
         return 0, "", ""
 
     monkeypatch.setattr("supervisor.git_ops._run_git_process_bounded", run)
@@ -126,7 +126,8 @@ def test_only_authentication_refusals_retry_once_with_a_configured_token(
     retry = bool(token) and authentication
     assert attempts == (["1", "3"] if retry else ["1"])
     assert ("Retrying with the configured GitHub token failed too" in str(exc.value)) == retry
-    assert failure in str(exc.value)
+    assert failure in str(exc.value)  # the read without the token, a mistyped or deleted repository included
+    assert ("Invalid username or token" in str(exc.value)) == retry
 
 
 def test_token_retry_never_asks_this_computers_credential_helpers(credentials, tmp_path, monkeypatch):
