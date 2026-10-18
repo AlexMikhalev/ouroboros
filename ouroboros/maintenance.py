@@ -10,8 +10,8 @@ inputs decodes no history body, copies nothing and commits nothing.
 Server half: ``child`` (``MaintenanceChild``). The supervisor's maintenance dispatcher calls
 ``tick`` at the end of each reconcile pass and on its first tick of a process (``owed``;
 ``request`` asks again, e.g. after a boot scheduled a job). ``tick`` only reserves the one slot:
-its thread reads cheap facts (``due``: the job rows, the store revision, the terminal rows' count
-and write sum) and spawns the child only when one of them says work may wait, never because
+its thread reads cheap facts (``due``: the job rows, the store revision, the terminal-write
+counter) and spawns the child only when one of them says work may wait, never because
 time passed. The spawn is the existing custodied one (``startup_historical_audit.
 spawn_maintenance_job``: session custody, its own process group, a parent lifeline; ``stop`` and
 ``live_children`` serve the Panic and exit census). Queue-owned work (orphan recovery, drive
@@ -183,9 +183,9 @@ def _analyze_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 
 
 def _packing_inputs(root: pathlib.Path) -> Dict[str, Any]:
-    """The facts the packing rule reads, cheaply: the terminal rows' count and write sum (a task
-    closing or a closed task written again moves it; a live task's writes do not), whether archived
-    usage segments wait, and whether any loose evidence exists at all."""
+    """The facts the packing rule reads, cheaply: the store's terminal-write counter (a task closing
+    or a closed task written again moves it; a live task's writes do not; one meta row, never a read
+    over the rows), whether archived usage segments wait, and whether any loose evidence exists."""
     from ouroboros import evidence_packer
 
     return {"terminal": _plain(evidence_packer.terminal_revision(root)),

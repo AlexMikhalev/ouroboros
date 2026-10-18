@@ -171,18 +171,13 @@ def archive_pending(root: pathlib.Path) -> bool:
     return directory.is_dir() and any(directory.glob("segment_ep*.jsonl"))
 
 
-def terminal_revision(root: pathlib.Path) -> list:
-    """The dispatcher's fact for the packing rule: how many rows are terminal and the sum of their
-    write sequences. A task closing, or a closed task written again (late evidence rides a row write),
-    moves it; a live task's writes do not, so the child is never spawned for them."""
-    from ouroboros.task_status import SETTLED_STATUSES
-
-    statuses = tuple(sorted(SETTLED_STATUSES))
+def terminal_revision(root: pathlib.Path) -> int:
+    """The dispatcher's fact for the packing rule: how many times a terminal row was written, the
+    counter the store keeps where it writes rows (``store.TERMINAL_WRITES``): one meta read, whatever
+    the history holds. A task closing, or a closed task written again (late evidence rides a row
+    write), moves it; a live task's writes do not, so the child is never spawned for them."""
     with store.open_store(root, write=False) as txn:
-        record = txn.conn.execute(
-            f"SELECT COUNT(*), COALESCE(SUM(write_seq), 0) FROM tasks WHERE status IN ({','.join('?' * len(statuses))})",
-            statuses).fetchone()
-    return [int(record[0]), int(record[1])]
+        return int(txn.meta(store.TERMINAL_WRITES) or 0)
 
 
 def ordered_candidates(root: pathlib.Path, packable: List[str], *, rows: Optional[dict] = None) -> List[Tuple[str, int]]:
