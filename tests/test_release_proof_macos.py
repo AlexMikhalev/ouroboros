@@ -133,8 +133,8 @@ OK = "accepted\nsource=Notarized Developer ID"
         ("false", "true", 0, 0, OK, "rejected\nsource=Unnotarized Developer ID", None),
         ("false", "true", 0, 0, OK, "accepted\nsource=Developer ID", None),
         ("false", "true", 0, 65, OK, OK, None),  # the app lacks its own ticket
-        # Gatekeeper switched off on the runner accepts everything: no proof.
-        ("false", "true", 0, 0, OK, "accepted\noverride=security disabled", None),
+        # Gatekeeper switched off on the runner accepts everything, so it proves nothing.
+        ("false", "true", 0, 0, "accepted\noverride=security disabled", OK, None),
         # Prereleases build unsigned by policy; forks without a certificate too.
         ("true", "true", 0, 0, "", "", "not_notarized"),
         ("false", "false", 0, 0, "", "", "not_notarized"),
