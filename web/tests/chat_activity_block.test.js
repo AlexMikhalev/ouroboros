@@ -983,6 +983,27 @@ test('a host note inside a child leaves the child\'s collapsed line and title al
     } finally { f.close(); }
 });
 
+// A helper's narration is activity: only its lifecycle frames re-read the state (its work's members changed).
+test('helper narration never re-reads the state; a helper lifecycle frame does', async () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        const reads = () => f.requests.filter((url) => url.startsWith('/api/state')).length;
+        // Its first frame mints a card for a member the last body did not list: that one asks once.
+        f.emit('chat', childNote({ content: 'Reading the spec.', narration: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const before = reads();
+        for (const line of ['Comparing two runs.', 'Writing the summary.', 'Checking the result.']) {
+            f.emit('chat', childNote({ content: line, narration: true }));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(reads(), before, 'three more narration lines, no state read');
+        f.emit('chat', childNote({ subagent_event: 'completed', status: 'completed', result: 'Done.', narration: false }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.ok(reads() > before, 'the helper ended: its work changed members, so the state is read');
+    } finally { f.close(); }
+});
+
 // Child cards fold their own live calls and host counters. Canonical child
 // history is exercised separately below.
 test('a child folds its own live calls and host counters', () => {

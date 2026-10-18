@@ -187,6 +187,8 @@ export {
 
 // Host placement: custody warns; settled reviews show results.
 const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
+const SUBAGENT_LIFECYCLE_EVENTS = new Set(['scheduled', 'running', 'completed', 'completed_warn', 'failed',
+    'cancelled', 'rejected', 'interrupted']);  // a helper's narration is `progress`
 const CHAT_STORAGE_KEY = 'ouro_chat';
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
@@ -1983,10 +1985,7 @@ export function createChatInstance({
         // Worker narration carries subagent_event="progress" too. It is activity,
         // not a lifecycle row: route it through the progress key so the later
         // terminal frame cannot overwrite the only full narration disclosure.
-        if (![
-            'scheduled', 'running', 'completed', 'completed_warn',
-            'failed', 'cancelled', 'rejected', 'interrupted',
-        ].includes(event)) {
+        if (!SUBAGENT_LIFECYCLE_EVENTS.has(event)) {
             return routeSubagentProgressToCard(childId, evt);
         }
         const rawTs = tsValue || new Date().toISOString();
@@ -3557,7 +3556,7 @@ export function createChatInstance({
             learnSubagentLineage(msg);
             if (msg.is_progress) {
                 showTaskIncidentToast(msg);
-                if (msg.subagent_event) reread();  // a helper's lifecycle changes its work's members
+                if (SUBAGENT_LIFECYCLE_EVENTS.has(String(msg.subagent_event || '').toLowerCase())) reread();  // members
                 const changed = updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });
                 return settled(changed, false);
             }
