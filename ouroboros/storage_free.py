@@ -121,11 +121,12 @@ class _Stopped(Exception):
 
 
 class _Candidate:
-    __slots__ = ("group", "key", "path", "layout", "inside_wait", "bytes", "name")
+    __slots__ = ("group", "key", "path", "layout", "inside_wait", "bytes", "unreadable", "name")
 
     def __init__(self, group: str, key: str, path: pathlib.Path, layout: str, *, inside_wait: bool = False) -> None:
         self.group, self.key, self.path, self.layout, self.inside_wait = group, key, path, layout, inside_wait
-        self.bytes: Optional[int] = None
+        self.bytes: Optional[int] = None  # None until sized, and when the folder could not be listed
+        self.unreadable = 0  # entries inside it the sizing could not read
         self.name = key
 
 
@@ -398,8 +399,8 @@ class FreeSpace:
         try:
             if self._closed():
                 process.kill()
-            try:
-                process.stdin.write("".join(f"{path}\n" for path in by_path).encode("utf-8"))
+            try:  # one JSON string per line: ASCII on the pipe, the exact path back (storage.main)
+                process.stdin.write("".join(f"{json.dumps(path)}\n" for path in by_path).encode("ascii"))
                 process.stdin.close()
             except (OSError, ValueError):
                 pass
@@ -412,7 +413,9 @@ class FreeSpace:
                 if not isinstance(line, dict):
                     return
                 if line.get("event") == "size" and str(line.get("path")) in by_path:
-                    by_path[str(line["path"])].bytes = line.get("bytes") if isinstance(line.get("bytes"), int) else 0
+                    item, size = by_path[str(line["path"])], line.get("bytes")
+                    item.bytes = size if isinstance(size, int) and not isinstance(size, bool) else None
+                    item.unreadable = line.get("unreadable") if isinstance(line.get("unreadable"), int) else 0
                     with self._lock:
                         self._progress["done"] += 1
                 elif "status" in line and line.get("status") != "finished":

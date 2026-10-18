@@ -27,7 +27,8 @@ millisecond of sleep per 512 ``stat`` calls. A descriptor limit a very deep tree
 that subtree unreadable, counted as such; the walk goes on.
 
 ``--size-paths`` sizes only the directories named on stdin with the same walker (the free-space
-preview's sizing, ``storage_free``), one line per path, nothing saved.
+preview's sizing, ``storage_free``): one JSON string per line in, one JSON line per path out, so
+the pipe carries ASCII whatever the platform's code page; nothing saved.
 """
 
 from __future__ import annotations
@@ -557,7 +558,17 @@ def load_saved(data_root: Any) -> Optional[Dict[str, Any]]:
     if not all(isinstance(place, dict) and isinstance(place.get("id"), str) for place in latest["places"]):
         return None
     previous = raw.get("previous")
-    return {"latest": latest, "previous": previous if isinstance(previous, dict) else None}
+    if not _is_summary(previous):
+        previous = None  # a malformed summary loses growth, never the count or the reader
+    return {"latest": latest, "previous": previous}
+
+
+def _is_summary(value: Any) -> bool:
+    """The shape ``_summary`` writes: the only ``previous`` ``with_growth`` and the mind's fact read."""
+    if not isinstance(value, dict) or any(not isinstance(value.get(key), kind) or isinstance(value.get(key), bool)
+                                          for key, kind in _REQUIRED.items() if key != "started_at"):
+        return False
+    return all(isinstance(place, dict) and isinstance(place.get("id"), str) for place in value["places"])
 
 
 def _summary(latest: Dict[str, Any]) -> Dict[str, Any]:
@@ -778,11 +789,14 @@ def _lower_io_priority() -> str:
         if sys.platform == "darwin":
             import ctypes
 
+            # <sys/resource.h>: the disk policy of this process, then never materialize dataless
+            # (cloud-evicted) files. IOPOL_UTILITY is 4; 5 is IOPOL_STANDARD, the default tier.
+            IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_UTILITY = 0, 0, 4
+            IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_MATERIALIZE_DATALESS_FILES_OFF = 3, 1
             libc = ctypes.CDLL(None, use_errno=True)
-            # setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_UTILITY); then never
-            # materialize dataless (cloud-evicted) files: IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES off.
-            if libc.setiopolicy_np(0, 0, 5) == 0:
-                libc.setiopolicy_np(3, 0, 1)
+            if libc.setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_UTILITY) == 0:
+                libc.setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS,
+                                    IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
                 return "utility"
         elif sys.platform.startswith("linux"):
             import ctypes
@@ -809,6 +823,16 @@ def _emit(line: Dict[str, Any]) -> None:
     print(json.dumps(line, separators=(",", ":")), flush=True)
 
 
+def _sized_path(line: str) -> Optional[str]:
+    """One ``--size-paths`` request line: a JSON string (ASCII on the pipe, so the platform's
+    stdin code page cannot garble a path); anything else is ignored."""
+    try:
+        path = json.loads(line) if line.strip() else None
+    except ValueError:
+        return None
+    return path if isinstance(path, str) and path else None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", required=True)
@@ -828,7 +852,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     io_priority = _lower_io_priority()
     try:
         if args.size_paths:
-            paths = [line.rstrip("\r\n") for line in sys.stdin if line.strip()]
+            paths = [path for path in map(_sized_path, sys.stdin) if path is not None]
             size_paths(paths, progress=lambda facts: _emit({"event": "progress", **facts}),
                        each=lambda row: _emit({"event": "size", **row}))
             _emit({"status": "finished", "io_priority": io_priority, "paths": len(paths)})

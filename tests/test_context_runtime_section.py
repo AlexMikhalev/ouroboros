@@ -10,6 +10,7 @@ block.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -657,8 +658,9 @@ class TestStorageFact:
         storage.save_count(tmp_path, first)
         section, data = self._runtime(env)
         fact = data["storage"]
-        assert set(fact) == {"counted_at", "bytes", "basis", "previous_at", "growth_bytes", "free_bytes", "volume_total_bytes"}
+        assert set(fact) == {"counted_at", "bytes", "unreadable", "basis", "previous_at", "growth_bytes", "free_bytes", "volume_total_bytes"}
         assert fact["counted_at"] == first["finished_at"] and fact["bytes"] == first["bytes"] > 0
+        assert fact["unreadable"] == 0 and "growth_flag" not in fact
         assert fact["previous_at"] is None and fact["growth_bytes"] is None
         assert isinstance(fact["free_bytes"], int) and isinstance(fact["volume_total_bytes"], int)
         for word in ("WARNING", "threshold", "tier", "HOT STORE"):
@@ -695,3 +697,44 @@ class TestStorageFact:
         (tmp_path / storage.MEASUREMENT_FILE).write_bytes(b"not json")
         _section, data = self._runtime(env)
         assert "storage" not in data
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs a folder this user cannot list")
+    def test_unreadable_items_qualify_the_headline_and_the_growth(self, tmp_path):
+        """A count that could not read everything reaches the mind with its unreadable total, and
+        a growth against a count that had unreadable items carries the same flag the gauge shows."""
+        import stat
+
+        from ouroboros import storage
+
+        env = self._env(tmp_path)
+        calls = tmp_path / "observability" / "calls"
+        calls.mkdir(parents=True)
+        (calls / "record.json").write_bytes(b"r" * 4096)
+        table = [{"id": "model_calls", "group": "records", "roots": [(str(tmp_path), ("observability",))]}]
+        first = storage.measure(tmp_path, places=table, sleep=lambda _s: None)
+        storage.save_count(tmp_path, first)
+        calls.chmod(0)
+        try:
+            second = storage.measure(tmp_path, places=table, sleep=lambda _s: None)
+            storage.save_count(tmp_path, second)
+            _section, data = self._runtime(env)
+        finally:
+            calls.chmod(stat.S_IRWXU)
+        fact = data["storage"]
+        assert second["unreadable"] == 1 and fact["unreadable"] == 1 and fact["bytes"] == second["bytes"]
+        assert fact["growth_bytes"] == second["bytes"] - first["bytes"] < 0 and fact["growth_flag"] == "unreadable"
+
+    def test_a_malformed_previous_is_no_growth_and_never_breaks_the_section(self, tmp_path):
+        from ouroboros import storage
+        from ouroboros.utils import atomic_write_json
+
+        env = self._env(tmp_path)
+        (tmp_path / "observability").mkdir()
+        (tmp_path / "observability" / "a.bin").write_bytes(b"x" * 4096)
+        table = [{"id": "model_calls", "group": "records", "roots": [(str(tmp_path), ("observability",))]}]
+        latest = storage.measure(tmp_path, places=table, sleep=lambda _s: None)
+        atomic_write_json(tmp_path / storage.MEASUREMENT_FILE, {"_schema_version": storage.SCHEMA_VERSION, "latest": latest, "previous": {}})
+        section, data = self._runtime(env)
+        assert "## Runtime context" in section
+        assert data["storage"]["bytes"] == latest["bytes"] and data["storage"]["previous_at"] is None
+        assert data["storage"]["growth_bytes"] is None

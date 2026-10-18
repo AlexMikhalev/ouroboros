@@ -325,6 +325,24 @@ def test_a_corrupt_or_foreign_file_is_no_count_yet(tmp_path, content):
     assert projection["count"] is None and projection["error"] is None and projection["counting"] is None
 
 
+@pytest.mark.parametrize("previous", [{}, "a summary", 7, {"finished_at": "2026-10-16T15:10:05Z", "bytes": 1, "files": 1, "unreadable": 0, "places": "none"},
+                                      {"finished_at": "2026-10-16T15:10:05Z", "bytes": 1, "files": 1, "unreadable": 0, "places": [{"id": 3}]}])
+def test_a_malformed_previous_loses_growth_never_the_count_or_the_reader(tmp_path, previous):
+    """`previous` is validated like `latest`: a hand-edited or foreign summary is dropped, so the
+    saved count still shows (without growth) and no reader raises."""
+    from ouroboros.utils import atomic_write_json
+
+    data = tmp_path / "data"
+    _write(data / "observability" / "a.bin", 10)
+    latest = _count(data)
+    atomic_write_json(data / storage.MEASUREMENT_FILE, {"_schema_version": storage.SCHEMA_VERSION, "latest": latest, "previous": previous})
+    saved = load_saved(data)
+    assert saved == {"latest": latest, "previous": None}
+    count = with_growth(saved["latest"], saved["previous"])
+    assert count["bytes"] == latest["bytes"] and "growth_bytes" not in count and "growth_since" not in count
+    assert StorageCounter().projection(data)["count"]["bytes"] == latest["bytes"]
+
+
 # --------------------------------------------------- A10, A11, A14: the owner
 
 
@@ -585,14 +603,32 @@ def test_the_count_child_streams_progress_writes_the_file_and_reports_its_priori
     assert next(place for place in saved["latest"]["places"] if place["id"] == "program")["roots"] == [os.path.realpath(str(REPO))]
 
     sizing = subprocess.run([sys.executable, "-m", "ouroboros.storage", "--data-root", str(data), "--size-paths"],
-                            input=f"{data / 'task_results'}\n{tmp_path / 'absent'}\n", capture_output=True, text=True,
-                            env=env, cwd=str(REPO), timeout=120)
+                            input=f"{json.dumps(str(data / 'task_results'))}\n{json.dumps(str(tmp_path / 'absent'))}\n",
+                            capture_output=True, text=True, env=env, cwd=str(REPO), timeout=120)
     assert sizing.returncode == 0, sizing.stderr[-2000:]
     rows = [json.loads(line) for line in sizing.stdout.splitlines() if line.strip()]
     sizes = {row["path"]: row for row in rows if row.get("event") == "size"}
     assert sizes[str(data / "task_results")]["files"] == 1 and sizes[str(data / "task_results")]["bytes"] >= 20
     assert sizes[str(tmp_path / "absent")]["bytes"] == 0 and rows[-1] == {"status": "finished", "io_priority": final["io_priority"], "paths": 2}
     assert load_saved(data)["latest"]["finished_at"] == final["finished_at"], "sizing saves nothing"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
+def test_the_sizing_child_matches_a_non_ascii_path_whatever_the_pipe_code_page(tmp_path, encoding):
+    """Windows decodes a pipe in the ANSI code page; the request and the answer are JSON (ASCII on
+    the pipe), so a path with a non-ASCII user name sizes and matches under cp1252 as under UTF-8."""
+    data = tmp_path / "data"
+    target = data / "Пользователь José" / "task_drives" / "done-old"
+    _write(target / "scratch.bin", 4096)
+    env = {**os.environ, "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_REPO_DIR": str(REPO), "PYTHONPATH": str(REPO),
+           "OUROBOROS_SETTINGS_PATH": str(tmp_path / "settings.json"), "PYTHONIOENCODING": encoding}
+    run = subprocess.run([sys.executable, "-m", "ouroboros.storage", "--data-root", str(data), "--size-paths"],
+                         input=(json.dumps(str(target)) + "\n").encode("ascii"), capture_output=True, env=env, cwd=str(REPO), timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    rows = [json.loads(line) for line in run.stdout.decode("ascii").splitlines() if line.strip()]
+    sizes = {row["path"]: row for row in rows if row.get("event") == "size"}
+    assert sizes[str(target)]["files"] == 1 and sizes[str(target)]["bytes"] >= 4096 and sizes[str(target)]["unreadable"] == 0
+    assert rows[-1]["status"] == "finished" and rows[-1]["paths"] == 1
 
 
 def test_the_child_reports_a_missing_data_folder_as_failed_and_writes_nothing(tmp_path):
@@ -605,8 +641,24 @@ def test_the_child_reports_a_missing_data_folder_as_failed_and_writes_nothing(tm
     assert not (tmp_path / "absent").exists()
 
 
+def test_the_count_child_lowers_its_disk_priority_and_reports_only_what_took():
+    """The positive call runs in a child of its own (it changes a process's policy for good) and
+    the policy is read back: on macOS IOPOL_UTILITY (4), never IOPOL_STANDARD (5), the tier the
+    recorded "utility" must mean."""
+    code = ("import ctypes, json, sys\nfrom ouroboros.storage import _lower_io_priority\n"
+            "reported = _lower_io_priority()\n"
+            "policy = ctypes.CDLL(None, use_errno=True).getiopolicy_np(0, 0) if sys.platform == 'darwin' else None\n"
+            "print(json.dumps({'reported': reported, 'disk_policy': policy}))")
+    run = subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": str(REPO)}, cwd=str(REPO),
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    facts = json.loads(run.stdout.strip().splitlines()[-1])
+    assert facts["reported"] in {"utility", "best-effort-low", "background", "unchanged"}
+    if sys.platform == "darwin":
+        assert facts == {"reported": "utility", "disk_policy": 4}
+
+
 def test_disk_priority_is_best_effort_and_never_fatal(monkeypatch):
-    assert storage._lower_io_priority() in {"utility", "best-effort-low", "background", "unchanged"}
     import ctypes
 
     def refuse(*_args, **_kwargs):

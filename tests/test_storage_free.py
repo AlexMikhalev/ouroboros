@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import threading
 import time
@@ -79,7 +80,8 @@ def _fake_sizer(monkeypatch, *, hold: threading.Event = None):
 
         def close(self):
             if self._lines is None:
-                paths = [line for line in self._paths.decode("utf-8").split("\n") if line.strip()]
+                self._paths.decode("ascii")  # the request is ASCII on the pipe whatever the code page
+                paths = [path for path in map(storage._sized_path, self._paths.decode("ascii").split("\n")) if path]
                 self._lines = [json.dumps({"event": "size", **row}).encode() + b"\n"
                                for row in storage.size_paths(paths, sleep=lambda _s: None)]
                 self._lines.append(b'{"status":"finished","io_priority":"unchanged","paths":%d}\n' % len(paths))
