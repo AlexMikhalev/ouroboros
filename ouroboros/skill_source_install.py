@@ -248,7 +248,7 @@ def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
     except (FetchError, OSError) as exc:
         raise SkillInstallError("payload_refused", f"{name} was not installed: {exc}") from exc
     try:
-        digest = tree_release_digest(staging)
+        digest = tree_release_digest(staging, bucket=BUCKETS[row["kind"]])
     except Exception as exc:
         shutil.rmtree(staging, ignore_errors=True)
         raise SkillInstallError("payload_unreadable", f"{name} was not installed: {exc}") from exc

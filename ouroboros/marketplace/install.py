@@ -719,7 +719,7 @@ def _registry_install_record(drive_root: pathlib.Path, name: str, target_dir: pa
             "id": "clawhub", "kind": "registry", "name": "ClawHub", "trust": "review"}
         fields = {"source": {key: row[key] for key in ("id", "kind", "name", "url") if row.get(key)},
                   "basis": row["trust"], "official": False, "installed_by": "owner", "turn_on_when_ready": False}
-    digest = tree_release_digest(target_dir)
+    digest = tree_release_digest(target_dir, bucket="clawhub")  # its sidecar is a note of that bucket
     fields.update(entry=slug, release={"version": version, "digest": digest}, base_digest=digest)
     fields.pop("installed_at", None)
     return fields

@@ -71,15 +71,16 @@ def read_manifest(skill_dir: pathlib.Path) -> Any:
     return None
 
 
-def tree_release_digest(skill_dir: pathlib.Path, manifest: Any = None) -> str:
-    """Release digest of a skill tree; raises when it has no readable manifest or payload."""
+def tree_release_digest(skill_dir: pathlib.Path, manifest: Any = None, *, bucket: Optional[str] = None) -> str:
+    """Release digest of a skill tree (``bucket``: a staged tree's destination); raises when it has
+    no readable manifest or payload."""
     from ouroboros.skill_identity import payload_digest
 
     manifest = manifest if manifest is not None else read_manifest(skill_dir)
     if manifest is None:
         raise ValueError(f"{pathlib.Path(skill_dir).name}: no readable SKILL.md or skill.json")
     return payload_digest(pathlib.Path(skill_dir), manifest_entry=manifest.entry,
-                          manifest_scripts=manifest.scripts, manifest=manifest)
+                          manifest_scripts=manifest.scripts, manifest=manifest, bucket=bucket)
 
 
 def installed_release_digest(loaded: Any) -> str:

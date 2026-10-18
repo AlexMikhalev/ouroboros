@@ -136,7 +136,7 @@ def _build_skill_file_packs(
     The bound is ONE pack-level token budget, not per-file BYTE caps. Loadable
     executables (content magic bytes) / unreadable files are still refused by
     ``_read_skill_file``; other non-UTF-8 files enter the pack as descriptors."""
-    from ouroboros.skill_identity import release_declaration, release_digest_from_file_digests
+    from ouroboros.skill_identity import payload_bucket, release_declaration, release_digest_from_file_digests
     from ouroboros.skill_loader import _iter_payload_files  # pylint: disable=W0212
 
     skill_dir = skill_dir.resolve()
@@ -146,7 +146,8 @@ def _build_skill_file_packs(
         manifest_scripts=manifest_scripts,
     )
     if not files:
-        if expected_content_hash and release_digest_from_file_digests([], release_declaration(skill_dir)) != expected_content_hash:
+        if expected_content_hash and release_digest_from_file_digests(
+                [], release_declaration(skill_dir), bucket=payload_bucket(skill_dir)) != expected_content_hash:
             raise _SkillFileUnreadable("(payload snapshot)", RuntimeError("skill payload changed after hashing"))
         return ["(empty skill directory — no manifest, no payload)"]
 
@@ -177,7 +178,7 @@ def _build_skill_file_packs(
     if current:
         packs.append("\n\n".join(current))
     if expected_content_hash and release_digest_from_file_digests(
-            file_digests, release_declaration(skill_dir)) != expected_content_hash:
+            file_digests, release_declaration(skill_dir), bucket=payload_bucket(skill_dir)) != expected_content_hash:
         raise _SkillFileUnreadable("(payload snapshot)", RuntimeError("skill payload changed after hashing"))
     return packs
 

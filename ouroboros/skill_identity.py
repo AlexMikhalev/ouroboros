@@ -39,14 +39,17 @@ log = logging.getLogger(__name__)
 DIGEST_DOMAIN = b"ouroboros-skill-release/2\0"
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# Top-level per-install notes that never belong to a release. Legacy names stay listed so
-# payloads installed by older versions keep the digest of the bytes they actually run.
-PER_INSTALL_NOTE_FILENAMES = frozenset({
-    ".seed-origin",
-    ".ouroboroshub.json",
-    ".clawhub.json",
-    ".self_authored.json",
-})
+# Top-level per-install notes the host writes into payloads of ONE bucket. There they never
+# belong to the release (legacy names stay listed so older installs keep the digest of the
+# bytes they run); anywhere else a file of that name is skill content and is hashed, so it
+# cannot carry unreviewed bytes past the review binding.
+PER_INSTALL_NOTE_BUCKETS: Dict[str, str] = {
+    ".seed-origin": "native",
+    ".ouroboroshub.json": "ouroboroshub",
+    ".clawhub.json": "clawhub",
+    ".self_authored.json": "external",
+}
+PER_INSTALL_NOTE_FILENAMES = frozenset(PER_INSTALL_NOTE_BUCKETS)
 # Legacy install sidecars whose recorded declaration the installer used (same order as
 # ``skill_dependencies._payload_sidecar_specs``).
 _DECLARATION_SIDECARS = (".ouroboroshub.json", ".clawhub.json")
@@ -56,6 +59,17 @@ _MANIFEST_NAMES = ("SKILL.md", "skill.json")
 
 def is_release_digest(value: Any) -> bool:
     return bool(_DIGEST_RE.fullmatch(str(value or "")))
+
+
+def payload_bucket(skill_dir: pathlib.Path) -> str:
+    """The data bucket a payload directory sits in (its parent's name; a frozen review view keeps it)."""
+    return pathlib.Path(skill_dir).resolve().parent.name
+
+
+def is_per_install_note(rel: str, bucket: str) -> bool:
+    """A top-level note the host writes into payloads of ``bucket``."""
+    rel = str(rel)
+    return bool(bucket) and "/" not in rel and PER_INSTALL_NOTE_BUCKETS.get(rel) == bucket
 
 
 def _empty(value: Any) -> bool:
@@ -129,9 +143,10 @@ def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
     from ouroboros.utils import read_json_dict
 
     root = pathlib.Path(skill_dir)
+    bucket = payload_bucket(root)
     for name in _DECLARATION_SIDECARS:
         sidecar = root / name
-        if not sidecar.is_file():
+        if not is_per_install_note(name, bucket) or not sidecar.is_file():
             continue
         declaration = sidecar_declaration(read_json_dict(sidecar) or {})
         if declaration is not None:
@@ -141,16 +156,18 @@ def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
     return manifest_declaration(manifest) if manifest is not None else None
 
 
-def release_digest_from_file_digests(file_digests: Iterable[Tuple[str, bytes]], declaration: Any = None) -> str:
+def release_digest_from_file_digests(file_digests: Iterable[Tuple[str, bytes]], declaration: Any = None, *,
+                                     bucket: str = "") -> str:
     """The release digest over ``(relative POSIX path, raw SHA-256)`` pairs.
 
-    Top-level per-install notes are skipped here, so a caller may pass every file it
-    captured. Paths are ordered as plain strings, which any index generator reproduces.
+    A caller that captured every file of a payload names its ``bucket`` so the host's
+    per-install notes of that bucket are skipped; an index file list names none. Paths are
+    ordered as plain strings, which any index generator reproduces.
     """
     entries: Dict[str, bytes] = {}
     for rel, file_digest in file_digests:
         rel = str(rel)
-        if "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
+        if is_per_install_note(rel, bucket):
             continue
         entries[rel] = bytes(file_digest)
     digest = hashlib.sha256(DIGEST_DOMAIN)
@@ -195,13 +212,18 @@ def _payload_file_digests(
     manifest_entry: str = "",
     manifest_scripts: Optional[List[Dict[str, Any]]] = None,
     include_notes: bool = False,
+    bucket: Optional[str] = None,
 ) -> List[Tuple[str, bytes]]:
     from ouroboros.skill_loader import _iter_payload_files
 
     pairs = []
+    if include_notes:
+        bucket = ""
+    elif bucket is None:
+        bucket = payload_bucket(skill_dir)
     for file_path in _iter_payload_files(skill_dir, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts):
         rel = file_path.relative_to(skill_dir).as_posix()
-        if not include_notes and "/" not in rel and rel in PER_INSTALL_NOTE_FILENAMES:
+        if is_per_install_note(rel, bucket):
             continue
         pairs.append((rel, _file_sha256(file_path, rel)))
     return pairs
@@ -213,14 +235,17 @@ def payload_digest(
     manifest_entry: str = "",
     manifest_scripts: Optional[List[Dict[str, Any]]] = None,
     manifest: Any = None,
+    bucket: Optional[str] = None,
 ) -> str:
     """Release digest of an installed or staged payload directory.
 
-    Unreadable files fail closed through ``SkillPayloadUnreadable`` so no verdict is ever
-    bound to a partial runtime surface.
+    ``bucket`` names the data bucket whose per-install notes are skipped; by default the
+    directory's own (a staged payload names its destination). Unreadable files fail closed
+    through ``SkillPayloadUnreadable`` so no verdict is ever bound to a partial runtime surface.
     """
     root = pathlib.Path(skill_dir).resolve()
-    pairs = _payload_file_digests(root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts)
+    pairs = _payload_file_digests(root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts,
+                                  bucket=bucket)
     return release_digest_from_file_digests(pairs, release_declaration(root, manifest))
 
 
@@ -364,6 +389,7 @@ def convert_skill_identities(drive_root: pathlib.Path, *, log_obj: Any = None,
 __all__ = [
     "CONVERSION_MARKER",
     "DIGEST_DOMAIN",
+    "PER_INSTALL_NOTE_BUCKETS",
     "PER_INSTALL_NOTE_FILENAMES",
     "convert_skill_identities",
     "convert_skill_records",

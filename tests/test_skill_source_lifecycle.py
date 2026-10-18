@@ -370,11 +370,12 @@ def test_tree_digest_covers_declared_dependencies_and_ignores_install_notes(tmp_
     declared = write_skill(tmp_path / "b", "dep", extra="dependencies: [ddgs]\n")
     assert catalog.tree_release_digest(plain) != catalog.tree_release_digest(declared)
     before = catalog.tree_release_digest(plain)
-    (plain / ".seed-origin").write_text("x", encoding="utf-8")
     (plain / ".ouroboroshub.json").write_text("{}", encoding="utf-8")
-    assert catalog.tree_release_digest(plain) == before
-    (plain / "SKILL.md").write_text((plain / "SKILL.md").read_text() + "!", encoding="utf-8")
+    # The note of the destination bucket stays outside; elsewhere a file of that name is payload.
+    assert catalog.tree_release_digest(plain, bucket="ouroboroshub") == before
     assert catalog.tree_release_digest(plain) != before
+    (plain / "SKILL.md").write_text((plain / "SKILL.md").read_text() + "!", encoding="utf-8")
+    assert catalog.tree_release_digest(plain, bucket="ouroboroshub") != before
 
 
 def _commit_at(monkeypatch, when):

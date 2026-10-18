@@ -32,39 +32,47 @@ def _skill(root: pathlib.Path, name: str = "probe", *, extra: str = "") -> pathl
 # --- the digest -----------------------------------------------------------------------
 
 
-def test_per_install_notes_stay_out_and_payload_stays_in(tmp_path):
+@pytest.mark.parametrize("note,bucket", sorted(si.PER_INSTALL_NOTE_BUCKETS.items()))
+def test_per_install_notes_stay_out_only_in_their_own_bucket(tmp_path, note, bucket):
+    """A note the host writes into its own bucket never enters the release; the same name
+    anywhere else is skill content, so it cannot carry bytes past the review binding."""
     from ouroboros.skill_loader import compute_content_hash
 
-    skill = _skill(tmp_path / "external")
-    clean = compute_content_hash(skill)
-    for note in sorted(si.PER_INSTALL_NOTE_FILENAMES - {".ouroboroshub.json", ".clawhub.json"}):
-        (skill / note).write_text("installed_at=now\n", encoding="utf-8")
-        assert compute_content_hash(skill) == clean, note  # every bucket, top level only
-    (skill / ".ouroboroshub.json").write_text(json.dumps({"installed_at": "t1"}), encoding="utf-8")
-    first = compute_content_hash(skill)
-    (skill / ".ouroboroshub.json").write_text(json.dumps({"installed_at": "t2"}), encoding="utf-8")
-    assert compute_content_hash(skill) == first == clean
-    nested = skill / "data"
+    own = _skill(tmp_path / bucket)
+    clean = compute_content_hash(own)
+    (own / note).write_text(json.dumps({"installed_at": "t1"}), encoding="utf-8")
+    first = compute_content_hash(own)
+    (own / note).write_text(json.dumps({"installed_at": "t2"}), encoding="utf-8")
+    assert compute_content_hash(own) == first == clean  # its own bucket, top level: outside
+    nested = own / "data"
     nested.mkdir()
-    (nested / ".seed-origin").write_text("runtime-readable bytes\n", encoding="utf-8")
-    assert compute_content_hash(skill) != clean  # a nested file of that name is payload
-    (nested / ".seed-origin").unlink()
-    (skill / "notes.md").write_text("changed\n", encoding="utf-8")
-    assert compute_content_hash(skill) != clean
+    (nested / note).write_text("runtime-readable bytes\n", encoding="utf-8")
+    assert compute_content_hash(own) != clean  # a nested file of that name is payload
+    other_bucket = "user" if bucket != "user" else "elsewhere"
+    other = _skill(tmp_path / other_bucket)
+    plain = compute_content_hash(other)
+    (other / note).write_text("runtime-readable bytes\n", encoding="utf-8")
+    assert compute_content_hash(other) != plain  # another place: the name is payload
+    (other / "notes.md").write_text("changed\n", encoding="utf-8")
+    assert compute_content_hash(other) != plain
 
 
 def test_declaration_is_part_of_the_release(tmp_path):
     from ouroboros.skill_loader import compute_content_hash
 
     plain = compute_content_hash(_skill(tmp_path / "a"))
-    declared = _skill(tmp_path / "b", extra="install_specs:\n  - kind: pip\n    package: requests\n")
+    declared = _skill(tmp_path / "ouroboroshub", extra="install_specs:\n  - kind: pip\n    package: requests\n")
     with_specs = compute_content_hash(declared)
     assert si.release_declaration(declared) == [{"kind": "pip", "package": "requests"}]
-    # A legacy sidecar's recorded declaration is what the installer used: it decides.
-    (declared / ".ouroboroshub.json").write_text(json.dumps(
-        {"install_specs": {"raw": [{"kind": "pip", "package": "httpx"}], "auto": []}}), encoding="utf-8")
+    # A legacy sidecar's recorded declaration is what the installer used: in its bucket it decides.
+    sidecar = json.dumps({"install_specs": {"raw": [{"kind": "pip", "package": "httpx"}], "auto": []}})
+    (declared / ".ouroboroshub.json").write_text(sidecar, encoding="utf-8")
     assert si.release_declaration(declared) == [{"kind": "pip", "package": "httpx"}]
     assert compute_content_hash(declared) not in {with_specs, plain}
+    # Outside its bucket a file of that name is content and never replaces the manifest's declaration.
+    elsewhere = _skill(tmp_path / "external", extra="install_specs:\n  - kind: pip\n    package: requests\n")
+    (elsewhere / ".ouroboroshub.json").write_text(sidecar, encoding="utf-8")
+    assert si.release_declaration(elsewhere) == [{"kind": "pip", "package": "requests"}]
 
 
 def test_directory_and_index_file_list_agree(tmp_path):
