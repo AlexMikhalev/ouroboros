@@ -43,6 +43,7 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/skills/{skill}/publication/clear` | |
 | GET | `/api/skill-sources` | |
 | POST | `/api/skill-sources` | |
+| POST | `/api/skill-sources/my-skills` | |
 | POST | `/api/skill-sources/probe` | |
 | POST | `/api/skill-sources/{source_id}` | |
 | POST | `/api/skill-sources/{source_id}/remove` | |

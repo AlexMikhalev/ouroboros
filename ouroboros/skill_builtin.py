@@ -80,7 +80,7 @@ def _write_record(drive_root: pathlib.Path, name: str, *, version: str, digest: 
         "entry": name,
         "release": {"version": version, "digest": digest, "path": f"skills/{name}"},
         "basis": builtin_trust(),
-        "official": False,
+        "official": True,  # the app's own bundled release, exactly as shipped
         "installed_by": installed_by,
         "turn_on_when_ready": bool(turn_on_when_ready),
     }

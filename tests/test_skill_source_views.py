@@ -217,7 +217,7 @@ def test_legacy_converted_hub_install_gains_the_current_endorsement(tmp_path):
     payload = hub.work / "skills" / "skill"
     record = legacy_hub_record({"source": "ouroboroshub", "slug": "skill", "version": "1.0.0",
                                 "catalog_url": str(hub.bare), "files": [{"path": "SKILL.md", "sha256":
-                                hashlib.sha256((payload / "SKILL.md").read_bytes()).hexdigest()}]}, rows)
+                                hashlib.sha256((payload / "SKILL.md").read_bytes()).hexdigest()}]}, rows, payload)
     assert record["official"] is False and record["release"]["digest"] == digest
     drive = tmp_path / "data"
     shutil.copytree(payload, drive / "skills" / "ouroboroshub" / "skill")
@@ -241,3 +241,35 @@ def test_builtin_install_listing_endorsement_tracks_the_bundled_bytes(tmp_path, 
     assert catalog.install_listing(drive, loaded, snapshots)["install"]["official"] is True
     (loaded.skill_dir / "SKILL.md").write_text("---\nname: telegram\ndescription: changed\n---\nOwner edit", encoding="utf-8")
     assert catalog.install_listing(drive, find_skill(drive, "telegram"), snapshots)["install"]["official"] is False
+
+
+def test_listing_serves_check_and_update_outcomes_without_private_details(tmp_path, monkeypatch):
+    """The listing joins the record's public check/update facts; task ids and rollback paths stay private."""
+    from ouroboros.skill_loader import find_skill
+
+    drive = tmp_path / "data"
+    write_skill(drive / "skills" / "ouroboroshub", "notes")
+    loaded = find_skill(drive, "notes")
+    digest = loaded.content_hash
+    write_install_record(drive, "notes", {
+        "source": {"id": "elsewhere", "kind": "hub", "name": "Elsewhere"}, "entry": "notes", "basis": "self_check",
+        "release": {"version": "1", "digest": digest}, "base_digest": digest,
+        "check": {"by": "ouroboros", "notes": "read every file", "task_id": "t-1", "at": "2026-10-18T00:00:00Z"},
+        "pending_update": {"from_version": "0", "from_digest": "a" * 64, "version": "2", "digest": "b" * 64,
+                           "requested_at": "2026-10-18T00:00:00Z"},
+        "update_rejected": {"version": "3", "digest": "c" * 64, "reason": "review_blockers",
+                            "at": "2026-10-18T00:00:00Z"},
+    })
+    install = catalog.install_listing(drive, find_skill(drive, "notes"), {})["install"]
+    assert install["check"] == {"by": "ouroboros", "notes": "read every file", "at": "2026-10-18T00:00:00Z"}
+    assert install["pending_update"] == {"version": "2", "digest": "b" * 64}
+    assert install["update_rejected"] == {"version": "3", "digest": "c" * 64, "reason": "review_blockers",
+                                          "at": "2026-10-18T00:00:00Z"}
+    assert "task_id" not in install["check"] and "from_digest" not in install["pending_update"]
+
+    write_install_record(drive, "notes", {
+        "source": {"id": "elsewhere", "kind": "hub"}, "entry": "notes", "basis": "review",
+        "release": {"version": "1", "digest": digest}, "base_digest": digest})
+    plain = catalog.install_listing(drive, find_skill(drive, "notes"), {})["install"]
+    assert not {"check", "pending_update", "update_rejected"} & set(plain)
+

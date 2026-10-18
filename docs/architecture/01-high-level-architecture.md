@@ -318,7 +318,7 @@ ouroboros/ — agent core and shared runtime (§6)
   skill_repair_admission.py — Selected-skill development admission: immutable `base_content_hash` against observed `expected_content_hash` before each payload operation; no long shell lock or rollback (§6 Skills and extensions)
   skill_owner_attestation.py — Skip review / Turn on anyway: the owner accepts any skill's exact bytes without the LLM review (§13)
   skill_identity.py, skill_install_record.py, skill_acceptance.py, skill_builtin.py — Release digest and record conversion; install record; install-basis/owner-edit acceptance; the built-in source (§13)
-  skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_eligibility.py, skill_publish_destination.py — Publication leaves: captured bytes, Betterleaks evidence, typed attempt/receipt, GitHub transport, author authority, destination and hub entry (§6 Skill publication)
+  skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_client.py, skill_publish_eligibility.py, skill_publish_destination.py — Publication leaves: captured bytes, Betterleaks evidence, typed attempt/receipt, GitHub transport over token HTTPS, author authority, destination and hub entry (§6 Skill publication)
   skill_review_status.py — The review gate → `executable_review` (§13): verdicts, Advisory author acceptance, install-basis and owner facts
   skill_review_passes.py, skill_review_collect.py — One multi-model pass or chunked quorum, reserving the complete operation roster before dispatch; exact-wave collection without paid dispatch
   skill_review.py — Skill review: deterministic preflight, then the review pool against the Skill Review Checklist and CREATING_SKILLS
@@ -426,7 +426,7 @@ ouroboros/ — agent core and shared runtime (§6)
     extension_receipts.py — Process-qualified extension index/toggle/reconcile receipt projection
     widgets.py — GET /api/widgets: the Widgets card list from the in-memory extension snapshot, with no discovery, reconcile, hashing or writes on the read path; homes the widget TypedDicts contracts.py re-exports
     skill_publish.py — Read-only publish preflight with scan cache; one five-state response; no task or GitHub effect (§6 Skill publication)
-    marketplace.py, skill_sources.py — ClawHub; sources, catalog, installs
+    marketplace.py, skill_sources.py, skill_my_skills.py — ClawHub; sources, catalog, installs; My skills repository
     skill_source_contracts.py — Source/catalog/install envelopes; browser twin skill_source_contract_types.js
     mcp.py — MCP HTTP surface over the shared MCPManager
     claudexor_accounts.py — Thin owned-daemon status/login/account proxies; no auth logic or browser token. `reads` classifies catalog/accounts/quota, `resource_capabilities_read` operations; only a successful read proves absence (§3 Agent accounts; §4)

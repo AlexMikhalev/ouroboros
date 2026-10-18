@@ -505,7 +505,7 @@ def _entry_for_record(record: Dict[str, Any], snapshots: Dict[str, tuple]) -> tu
 
 def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, tuple]) -> Dict[str, Any]:
     """``install`` and ``category`` fields of one ``GET /api/extensions`` row (passive)."""
-    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.skill_install_record import install_listing_fields, read_install_record
 
     record = read_install_record(pathlib.Path(drive_root), loaded.name)
     category: List[str] = []
@@ -535,6 +535,7 @@ def install_listing(drive_root: pathlib.Path, loaded: Any, snapshots: Dict[str, 
         "installed_by": record.get("installed_by", ""), "installed_at": record.get("installed_at", ""),
         **{key: str(record[key]) for key in ("reason", "task_id") if record.get(key)},
         **facts,
+        **install_listing_fields(record),
     }}
 
 

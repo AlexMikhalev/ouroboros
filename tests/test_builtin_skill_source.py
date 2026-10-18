@@ -80,6 +80,7 @@ def test_install_writes_trusted_record_and_the_gate_admits_exact_bytes(env):
     assert record["source"]["id"] == "builtin"
     assert record["release"]["digest"] == record["base_digest"] == result["digest"]
     assert record["turn_on_when_ready"] is True
+    assert record["official"] is True  # the bundled release is the app's own
     assert not (skill_state_dir_path(drive_root, "weather") / "review.json").exists()
     skill = find_skill(drive_root, "weather")
     gate = skill.review.gate_for(skill.content_hash)
