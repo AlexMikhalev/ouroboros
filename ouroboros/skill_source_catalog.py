@@ -407,20 +407,6 @@ def items_for(row: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> List[D
     return out
 
 
-def _registry_facts(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """The author of a registry record and, when it says, its update time (ClawHub: ``ownerHandle``,
-    ``updatedAt`` in milliseconds)."""
-    publisher = raw.get("publisher") if isinstance(raw.get("publisher"), dict) else {}
-    facts: Dict[str, Any] = {"owner": str(raw.get("ownerHandle") or publisher.get("handle") or "").strip()}
-    stamp = raw.get("updatedAt")
-    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp > 0:
-        try:
-            facts["updated_at"] = datetime.fromtimestamp(stamp / 1000, timezone.utc).isoformat()
-        except (OverflowError, OSError, ValueError):
-            pass
-    return facts
-
-
 def registry_items(row: Dict[str, Any], query: str, *, limit: int = 16) -> List[Dict[str, Any]]:
     """ClawHub search hits as items (network; called on an explicit search only)."""
     from ouroboros.marketplace.clawhub import search
@@ -438,7 +424,7 @@ def registry_items(row: Dict[str, Any], query: str, *, limit: int = 16) -> List[
             "category": [], "version": summary.latest_version, "digest": "", "official": False,
             "recommended": False, "signals": None, "withdrawn": None, "type": "",
             "needs_keys": list(summary.requires_env or []), "permissions": [], "installed": None,
-            "registry_stats": dict(summary.stats or {}), **_registry_facts(summary.raw or {}),
+            "registry_stats": dict(summary.stats or {}), **summary.catalog_facts(),
         })
     return out
 
