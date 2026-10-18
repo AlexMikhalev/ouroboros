@@ -8,6 +8,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -138,6 +139,49 @@ def test_only_restricts_the_pass_and_an_unchanged_row_set_leaves_the_registry_un
     assert _prune(world, retention_days=0, live=lambda _task: False, only=["second"]) == {"removed": 1, "kept": 1}
     assert first.is_dir() and not second.exists()
     assert _registry_mtime(data) != before
+
+
+def _registry_cost(monkeypatch):
+    counts = {"locks": 0, "reads": 0}
+    for name, counter in (("_ops_lock", "locks"), ("_load_registry", "reads")):
+        real = getattr(sw, name)
+
+        def counted(*args, _real=real, _counter=counter, **kwargs):
+            counts[_counter] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(sw, name, counted)
+    return counts
+
+
+@pytest.mark.parametrize("count", [100, 800])
+@pytest.mark.parametrize("only", [None, ["absent"], ["task-0"]])
+def test_irrelevant_rows_do_not_add_registry_locks_or_reads(world, monkeypatch, count, only):
+    repo, data, root = world
+    for i in range(count):
+        (root / str(i)).mkdir(parents=True)
+    rows = [{"task_id": f"task-{i}", "kind": "delegated_exec" if i % 2 else "plain",
+             "path": str(root / str(i)), "created_at": 9e12} for i in range(count)]
+    sw._save_registry(rows, data)
+    before = _registry_mtime(data)
+    costs = _registry_cost(monkeypatch)
+    assert _prune(world, retention_days=7, only=only, live=lambda _: False) == {"removed": 0, "kept": count}
+    assert costs["locks"] <= 1 and costs["reads"] <= 2
+    assert _registry_mtime(data) == before
+
+
+def test_a_selected_old_copy_still_goes_among_many_unrelated_rows(world, monkeypatch):
+    repo, data, root = world
+    path = _copy(world, "selected")
+    write_task_result(data, "selected", "completed")
+    _age(data)
+    unrelated = [{"task_id": f"task-{i}", "kind": "delegated_exec", "path": str(root / str(i))}
+                 for i in range(400)]
+    sw._save_registry(sw.list_worktrees(data) + unrelated, data)
+    costs = _registry_cost(monkeypatch)
+    assert _prune(world, retention_days=0, only=["selected"], live=lambda _: False) == {"removed": 1, "kept": 400}
+    assert costs["locks"] <= 2 and costs["reads"] <= 4
+    assert not path.exists() and sw.list_worktrees(data) == unrelated
 
 
 def test_a_checkout_surviving_its_removal_keeps_its_row_and_is_retried(world, monkeypatch):
@@ -360,3 +404,76 @@ def test_failed_removal_waits_for_changed_directory_identity_without_rewriting_f
     monkeypatch.setattr(sw, "_force_rmtree", real_remove)
     (path / "changed_again").touch()
     assert prune() and not path.exists() and sw.list_worktrees(data) == []
+
+
+_RETRY_IN_NEW_PROCESS = """
+import json, pathlib, sys
+from ouroboros import subagent_worktrees as wt
+from supervisor import queue
+data, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+kind, failing = sys.argv[3], sys.argv[4] == "fail"
+queue.task_settlement_liveness = lambda _: False
+attempts = []
+remove = wt._force_rmtree
+def attempt(path):
+    attempts.append(str(path))
+    if not failing:
+        remove(path)
+wt._force_rmtree = attempt
+removed = []
+registry = data / "state" / "subagent_worktrees.json"
+for _ in range(3):
+    if kind == "snapshot":
+        result = len(wt.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"])
+    else:
+        result = wt.prune_orphans(worktree_root=root, data_dir=data, retention_days=0, live=lambda _: False)["removed"]
+    removed.append(result)
+    state = (registry.read_bytes(), registry.stat().st_mtime_ns)
+    if len(removed) == 1:
+        first = state
+    else:
+        assert state == first, "unchanged failure rewrote its registry on a later pass"
+rows = wt.list_worktrees(data)
+print(json.dumps({"attempts": len(attempts), "removed": removed,
+                  "stamp": rows[0].get("removal_failed") if rows else None}))
+"""
+
+
+@pytest.mark.parametrize("kind", ["plain", "body", "snapshot"])
+def test_a_deep_survivor_retries_once_in_each_new_process(world, monkeypatch, kind):
+    repo, data, root = world
+    if kind == "snapshot":
+        path = pathlib.Path(sw.provision_execution_snapshot(
+            target_root=repo, task_id="done", snapshot_id="deep", worktree_root=root, data_dir=data).path)
+    else:
+        path = _copy(world, "done")
+        if kind == "body":
+            rows = sw._load_registry(data)
+            rows[0]["kind"] = "body_candidate"
+            sw._save_registry(rows, data)
+    write_task_result(data, "done", "completed")
+    _age(data)
+    held = path / "nested" / "deep" / "held.txt"
+    held.parent.mkdir(parents=True)
+    held.write_text("held by another process")
+    monkeypatch.setattr(sw, "_force_rmtree", lambda _: None)
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _: False)
+    if kind == "snapshot":
+        assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"] == []
+    else:
+        assert _prune(world, retention_days=0, live=lambda _: False)["removed"] == 0
+    [failed] = sw.list_worktrees(data)
+    held.unlink()  # release below the root does not change its saved stat identity
+    seen = path.stat()
+    assert failed["removal_failed_identity"] == [seen.st_dev, seen.st_ino, seen.st_mtime_ns, seen.st_ctime_ns]
+
+    def restarted(action):
+        child = subprocess.run([sys.executable, "-c", _RETRY_IN_NEW_PROCESS, str(data), str(root), kind, action],
+                               capture_output=True, text=True, timeout=120)
+        assert child.returncode == 0, child.stderr
+        return json.loads(child.stdout)
+
+    again = restarted("fail")
+    assert again == {"attempts": 1, "removed": [0, 0, 0], "stamp": failed["removal_failed"]}
+    assert restarted("remove") == {"attempts": 1, "removed": [1, 0, 0], "stamp": None}
+    assert not path.exists() and sw.list_worktrees(data) == []

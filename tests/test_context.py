@@ -1,7 +1,7 @@
 """The health invariants ouroboros.context builds, and where they must appear.
 
 This module owns the cache hit-rate invariant, the remote context overflow it reports,
-the hot-store growth it watches, the rest of the invariant coverage, and the rule that
+the rest of the invariant coverage, and the rule that
 the invariants come first in both the dynamic and the background-consciousness context.
 
 The runtime section, the advisory review status, the memory/consolidation sections and

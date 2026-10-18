@@ -6,7 +6,7 @@ machine-wide ``.worktree_ops.lock`` for 40 minutes, and every other mutating
 classifying, hashing, populating, copying and deleting a snapshot's files now run
 OUTSIDE the lock; the registry row, the baseline pin and the worktree admin dir
 are the only things written under it — row first, so everything after it is
-nameable by the startup GC. A held lock is a typed refusal that names its holder,
+nameable by custody GC. A held lock is a typed refusal that names its holder,
 a dead holder is evicted at once, and a pre-POST refusal is definitely unrun.
 """
 

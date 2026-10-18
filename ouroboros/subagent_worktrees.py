@@ -41,6 +41,7 @@ from ouroboros.force_remove import force_rmtree as _force_rmtree  # the shared p
 from ouroboros.utils import atomic_write_json, utc_now_iso
 from ouroboros.config import DATA_DIR, get_subagent_projects_root, get_subagent_worktree_root
 from ouroboros.retention import age_cutoff, get_gc_retention_days
+from ouroboros import worktree_removal
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class SubagentWorktreeRegistryCorrupt(RuntimeError):
     ``refs/ouroboros/delegated/*`` refs those rows pin — a leak nothing can
     reconcile afterwards. The malformed bytes are kept instead, which is what
     the sibling registries (cancel intents, terminal deliveries) do and what
-    the startup GC already does when the custody log is unreadable.
+    the custody GC does when the custody log is unreadable.
     """
 
 
@@ -300,28 +301,14 @@ def _remove_paths(repo_dir: Path, wt_path: Path, branch: str, *, allowed_root: O
     return True
 
 
-def _removal_identity(row: Dict[str, Any]) -> Optional[List[int]]:
-    try:
-        seen = Path(row.get("path") or "").lstat()
-    except FileNotFoundError:
-        return []
-    except OSError:
-        return None
-    return [seen.st_dev, seen.st_ino, seen.st_mtime_ns, seen.st_ctime_ns]
-
-
-def _removal_unchanged(row: Dict[str, Any]) -> bool:
-    return "removal_failed_identity" in row and row["removal_failed_identity"] == _removal_identity(row)
-
-
 def _mark_removal_failed(match: Dict[str, Any], data_dir: Optional[Any], op: str) -> None:
     """Keep the first failure time and the surviving directory identity, under the lock."""
     rows = _load_registry(data_dir, strict=True, op=op)
-    failed = {**match, "removal_failed": match.get("removal_failed") or utc_now_iso(),
-              "removal_failed_identity": _removal_identity(match)}
-    if match in rows and failed != match:
-        rows[rows.index(match)] = failed
-        _save_registry(rows, data_dir)
+    if match in rows:
+        failed = worktree_removal.record_failure(match)
+        if failed != match:
+            rows[rows.index(match)] = failed
+            _save_registry(rows, data_dir)
 
 
 def _register_snapshot(handle: "ExecutionSnapshotHandle", excluded: List[Dict[str, Any]],
@@ -350,8 +337,9 @@ def _discard_snapshot_checkout(target: Path, wt_path: Path, ref: str, snapshot_i
     files go first, OUTSIDE the lock (a 1.8 GB tree takes minutes), then one short
     section forgets the admin dir, unpins the baseline and drops the row — the
     postcondition ``tests/test_snapshot_file_inputs.py`` asserts (no row, no ref,
-    no ``dlg_*`` directory). Best-effort: the startup GC reconciles what a crash
-    leaves. ``lock_wait_sec`` shortens the wait when the failure WAS a busy lock:
+    no ``dlg_*`` directory). Best-effort: custody GC reconciles crash leftovers
+    at boot and each custody pass once the owning task is proven over.
+    ``lock_wait_sec`` shortens the wait when the failure WAS a busy lock:
     the same holder is still there, and the typed refusal must not wait twice."""
     if _deletable(wt_path, root) and wt_path.exists():
         _force_rmtree(wt_path)
@@ -658,11 +646,12 @@ def _provision_git_copy(
     ``refs/ouroboros/delegated/``. The execution root is a detached worktree at
     that commit, registered durably BEFORE the caller records any start intent,
     and removed only by an explicit disposition (``remove_execution_snapshot``)
-    or by the startup GC after custody says the run is closed.
+    or by custody GC (boot and each custody pass), after the owning task is proven
+    over and custody says the run is closed.
 
     The ops lock is held twice, briefly (#1241): once to register the row, pin
     the baseline and create the worktree's admin dir — row FIRST, so everything
-    after it is nameable by the startup GC — and once to finalize the row.
+    after it is nameable by custody GC — and once to finalize the row.
     Listing, classifying (one git process for every binary verdict), hashing,
     populating, copying and the one ``update-index`` that re-records the copied
     bytes' stat run OUTSIDE it, so a huge untracked inventory delays only its
@@ -822,8 +811,9 @@ def _provision_git_copy(
     try:
         with _ops_lock(root, op="provision", task_id=task, target=str(target)):
             # Row FIRST, then the pin, then the admin dir: a crash after any of these
-            # leaves a REGISTERED snapshot custody never opened, which the startup GC
-            # removes (checkout, ref, row). A pin without a row would be invisible.
+            # leaves a REGISTERED snapshot custody never opened. Custody GC removes
+            # it (checkout, ref, row) once its owning task is proven over.
+            # A pin without a row would be invisible.
             # The provisional row is LIGHT (no per-file maps): the GC needs only
             # path, ref and snapshot id, and the maps are O(files) to serialize.
             _git_quiet(target, "worktree", "prune")
@@ -1374,10 +1364,10 @@ def remove_execution_snapshot(
 ) -> bool:
     """Remove a released snapshot, its baseline pin and registry row.
     Call only after explicit disposition or GC's ownership/custody proof.
-    A surviving tree keeps its row/pin; unchanged failed directories wait.
+    A surviving tree keeps its row/pin; unchanged failures wait until a new process.
     """
     entry = find_execution_snapshot(snapshot_id, data_dir)
-    if entry is None or _removal_unchanged(entry):
+    if entry is None or worktree_removal.unchanged(entry):
         return False
     root = _resolve_root(worktree_root)
     wt_path = Path(str(entry.get("path") or ""))
@@ -1401,6 +1391,7 @@ def remove_execution_snapshot(
             if ref.startswith(_BASELINE_REF_PREFIX):
                 _git_quiet(target, "update-ref", "-d", ref)
         _unregister_snapshot(str(entry.get("snapshot_id") or ""), data_dir, "remove_execution_snapshot")
+    worktree_removal.forget(entry)
     return True
 
 
@@ -1497,7 +1488,7 @@ def remove_worktree(
 def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: str,
                      lock_wait_sec: Optional[float] = None) -> bool:
     """Delete files without the shared lock, then reconcile only the unchanged row."""
-    if _removal_unchanged(match):
+    if worktree_removal.unchanged(match):
         return False
     wt_path = Path(match.get("path") or "")
     if _deletable(wt_path, root) and wt_path.exists():
@@ -1514,6 +1505,7 @@ def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: s
             return False
         rows.remove(match)
         _save_registry(rows, data_dir)
+    worktree_removal.forget(match)
     return True
 
 
@@ -1533,55 +1525,55 @@ def prune_orphans(
     or with an unknown answer, age alone deletes nothing. ``only`` restricts the pass to
     those task ids (the free action's previewed rows), leaving every other row untouched.
     The registry is written only when a row set or a row changed; a checkout that
-    survives removal keeps its first failure stamp and pin, waiting for its directory identity to change.
+    survives removal keeps its first failure stamp and pin; a new process or directory identity retries it.
     """
     retention = retention_days if retention_days is not None else get_gc_retention_days()
     cutoff = age_cutoff(retention)
     root = _resolve_root(worktree_root)
     chosen = None if only is None else {str(task_id) for task_id in only}
-    removed = 0
-    # A candidate's verdict reads its whole tree (and may capture it), so it is
-    # computed before the lock; under the lock the row is read again and a removing
-    # verdict is applied only while it still describes that row and that checkout
-    # (`body_candidate.verdict_holds`). A row first seen under the lock is kept.
+    entries = _load_registry(data_dir, strict=True, op="prune_orphans")
+    selected = [entry for entry in entries if entry.get("kind") != _KIND_DELEGATED_EXEC
+                and (chosen is None or str(entry.get("task_id") or "") in chosen)
+                and not worktree_removal.unchanged(entry)]
+    if not selected:
+        return {"removed": 0, "kept": len(entries)}
+    # Capture candidate evidence outside the lock; one decision batch then rechecks
+    # the selected rows and marks retiring candidates before any files are deleted.
     from ouroboros import body_candidate
     verdicts = {
         str(entry.get("path") or ""): body_candidate.retention_verdict(
             entry, data_dir=data_dir,
             expired=max(float(entry.get("created_at") or 0), float(entry.get("used_at") or 0)) < cutoff)
-        for entry in _load_registry(data_dir, strict=True, op="prune_orphans")
-        if entry.get("kind") == _KIND_BODY_CANDIDATE and not _removal_unchanged(entry)
-        and (chosen is None or str(entry.get("task_id") or "") in chosen)}
-
-    for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
-        with _ops_lock(root, op="prune"):
-            if entry not in _load_registry(data_dir, strict=True, op="prune_orphans"):
-                continue
-            task_id = str(entry.get("task_id") or "")
-            if chosen is not None and task_id not in chosen:
+        for entry in selected if entry.get("kind") == _KIND_BODY_CANDIDATE}
+    retiring = []
+    with _ops_lock(root, op="prune"):
+        rows = _load_registry(data_dir, strict=True, op="prune_orphans")
+        by_path = {str(row.get("path") or ""): row for row in rows}
+        changed = False
+        for preview in selected:
+            entry = by_path.get(str(preview.get("path") or ""))
+            if entry != preview:
                 continue
             branch = str(entry.get("branch") or "")
             if entry.get("kind") == _KIND_BODY_CANDIDATE:
-                verdict = verdicts.get(str(entry.get("path") or "")) or {"remove": False}
+                verdict = verdicts[str(entry.get("path") or "")]
                 if not verdict["remove"] or not body_candidate.verdict_holds(entry, verdict, data_dir=data_dir):
                     continue
+                if not entry.get("retiring"):
+                    entry["retiring"], changed = True, True
                 if verdict.get("keep_branch"):
                     branch = ""
-            elif entry.get("kind") == _KIND_DELEGATED_EXEC:
-                # Delegated execution snapshots have their OWN lifecycle: they persist
-                # until the run's explicit patch disposition, and the custody GC
-                # (`prune_execution_snapshots`) cross-checks custody for open runs and
-                # pending invocations. Age/path heuristics here must not eat them —
-                # and their baseline ref needs deleting, which this loop cannot do.
-                continue
             else:
                 path_exists = bool(entry.get("path")) and Path(entry["path"]).exists()
                 if (path_exists and float(entry.get("created_at") or 0) >= cutoff) \
-                        or not _task_proven_over(task_id, data_dir, live):
+                        or not _task_proven_over(str(entry.get("task_id") or ""), data_dir, live):
                     continue
-        if _retire_worktree(entry, root, data_dir, branch):
-            removed += 1
-    return {"removed": removed, "kept": len(_load_registry(data_dir, strict=True, op="prune_orphans"))}
+            retiring.append((entry, branch))
+        if changed:
+            _save_registry(rows, data_dir)
+    removed = sum(_retire_worktree(entry, root, data_dir, branch) for entry, branch in retiring)
+    return {"removed": removed, "kept": len(_load_registry(data_dir, strict=True, op="prune_orphans"))
+            if retiring else len(rows)}
 
 
 def list_worktrees(data_dir: Optional[Any] = None) -> List[Dict[str, Any]]:
