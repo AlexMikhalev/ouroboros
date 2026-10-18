@@ -31,7 +31,7 @@ export function createHistoryControls(messagesDiv, statusHost = null) {
     root.className = 'chat-load-older';
     const button = doc.createElement('button');
     button.type = 'button';
-    button.className = 'chat-load-older-btn';
+    button.className = 'chat-load-older-btn ui-hit-area';
     const note = doc.createElement('span');
     note.className = 'chat-load-older-note';
     root.append(button, note);

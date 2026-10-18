@@ -92,6 +92,13 @@ html[data-layout="stack"] .shell-icon-control {
 @media (pointer: fine) and (max-height: 700px) {
     #primary-sidebar { --nav-row-h: 36px; --nav-item-h: 28px; }
 }
+/* A window too short for the zones (the head, three list rows and the foot no longer fit): the whole column is
+   the ONE scroller with the head sticky, and the list shows every row in flow, so a finger or a wheel moves one
+   thing (the gate counts the sidebar's scrollers). */
+@media (max-height: 540px) {
+    #primary-sidebar .nav-projects { flex: 0 0 auto; min-height: 0; }
+    #primary-sidebar .nav-projects-list { flex: 0 0 auto; overflow-y: visible; }
+}
 
 .sidebar-head {
     position: sticky;
@@ -259,8 +266,10 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 .nav-activity-marker[hidden] { display: none; }
 
 /* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins. */
+   would lose on order; name the composed marker so the row ink wins for the still states. Confirmed work is the
+   crimson live ink (DESIGN principle 3: "live dots"), like the room's status sentence; a wait is the one amber. */
 .nav-activity-marker.chat-live-typing span { background: currentColor; }
+.nav-activity-marker[data-state="working"] span { background: var(--accent); }
 .nav-activity-marker[data-state="waiting"] span { background: var(--amber); }
 .nav-activity-marker[data-state="queued"],
 .nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
@@ -1055,6 +1064,15 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     max-width: 100%;
 }
 
+/* Under a finger every header action is one of the header's controls: the chrome height, which ui.css raises to
+   the touch minimum on a coarse pointer (Refresh, a Project's ×, the bars' icon controls alike). */
+@media (pointer: coarse) {
+    .app-page-toolbar :is(.btn, button),
+    .app-page-trailing button {
+        min-height: var(--chrome-control-h);
+    }
+}
+
 /* The tab strip is its own strip under the header row (it scrolls sideways by design). */
 .app-page-tabs {
     flex: 0 0 auto;
@@ -1166,7 +1184,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 /* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
    of controls, the history note) that fades only in the band below it, so moving messages never show
    through header text, closed or open. The mask stays on this layer, never on the actions. */
-.chat-page-header::before {
+.chat-page-header::before,
+.chat-page-note::before {
     content: "";
     position: absolute;
     inset: 0 0 calc(-1 * var(--space-4));
@@ -1182,6 +1201,21 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .chat-page-header > * {
     pointer-events: auto;
 }
+
+/* The history note (a reading-window fact: gaps, a failed read, an approximate position) is its own strip under
+   the bar, never a second row of it: it floats at the bar's measured height (chat.js writes --chat-header-bar)
+   with the same reading backing, and the transcript's reserve counts both. Empty, it takes no room. */
+.chat-page-note {
+    position: absolute;
+    top: var(--chat-header-bar, 56px);
+    left: 0;
+    right: 0;
+    z-index: var(--z-page-header);
+    padding: 0 var(--page-header-padding-x) var(--space-2);
+    pointer-events: none;
+}
+.chat-page-note > * { pointer-events: auto; }
+.chat-page-note:not(:has(> :not([hidden]))) { display: none; }
 
 .chat-header-actions {
     display: flex;
@@ -3616,17 +3650,21 @@ html[data-layout="stack"] .chat-header-more > summary.has-active::after {
     top: 9px;
     right: 9px;
 }
-html[data-layout="stack"] .chat-header-menu {
+html[data-layout="stack"] .chat-page-note {
+    padding: 0 var(--space-3) var(--space-2);
+}
+/* Inside ⋯ (page_header.js places them there when the bar is too narrow for the full row) the budget is a
+   full-width amber row and Restart the last row. */
+.chat-header-menu:has(> .chat-budget-pill) {
     min-width: 220px;
 }
-/* Inside ⋯ the budget is a full-width amber row and Restart the last row. */
-html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {
+.chat-header-menu > .chat-budget-pill {
     width: 100%;
     min-width: 0;
     align-items: stretch;
     text-align: left;
 }
-html[data-layout="stack"] .chat-header-menu > .chat-header-btn {
+.chat-header-menu > .chat-header-btn {
     width: 100%;
     justify-content: flex-start;
     text-align: left;
@@ -7043,9 +7081,11 @@ body.keyboard-open #page-chat.active {
     overscroll-behavior: none;
 }
 
-body.keyboard-open #page-chat.active .chat-page-header {
+body.keyboard-open #page-chat.active .chat-page-header,
+body.keyboard-open #page-chat.active .chat-page-note {
     flex-shrink: 0;
     position: relative;
+    top: auto;
 }
 
 body.keyboard-open #page-chat.active #chat-messages,
@@ -7270,6 +7310,11 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     color: var(--text-meta);
     cursor: pointer;
     border-radius: var(--radius-sm);
+}
+
+.nav-project-kebab > svg {
+    width: 18px;
+    height: 18px;
 }
 
 @media (hover: hover) {

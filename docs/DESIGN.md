@@ -625,10 +625,11 @@ Project/task scope verification waits are static amber; `resumed` questions no
 longer wait. A wait on the same producer row suppresses its working motion; an
 independent working row keeps motion, and the row's accessible name states both
 facts. Unknown or unconfirmed census state stays static and explicitly
-unavailable. The dots take the row's own foreground, like the status-sentence
-dot, so they never out-shout the title and follow its hover and selected ink;
-the wait is the one hue, and no row paints them in a saturated project colour of
-its own. In a Project row the dots and the unread dot each own a reserved
+unavailable. Working dots take the crimson live ink (principle 3: "live dots"),
+like the room's status sentence; the wait is the one amber; queued and unknown
+dots stay static in the row's own foreground at a quieter step, following its
+hover and selected ink; no row paints them in a saturated project colour of its
+own. In a Project row the dots and the unread dot each own a reserved
 trailing column, so both sit at one x across rows whether or not the other is
 present, whatever the name length, and while the sibling kebab is hovered,
 focused or has its menu open; a deleting row draws only `Deleting…`, its census

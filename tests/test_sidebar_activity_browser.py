@@ -171,11 +171,12 @@ def test_sidebar_activity_census_and_navigation(subscription_ui, width, theme, r
     assert page.locator(WORK + ' .nav-unread-dot').count() == 1
     assert page.locator('#nav-projects-count').inner_text() == '1'
     assert 'Unread' in page.locator(WORK).get_attribute('aria-label')
-    # Ink: a wait is the one amber fact; working and queued dots take the row's own
-    # foreground (never the saturated project token on a plain row), queued quieter.
+    # Ink: a wait is the one amber fact; working dots are the crimson live ink (DESIGN principle 3), like the
+    # room's status; queued dots take the row's own foreground, quieter; none is the saturated project token.
     assert dot_color(page, 'p-wait') == token_color(page, 'p-wait', '--amber')
+    assert dot_color(page, 'p-work') == token_color(page, 'p-work', '--accent')
+    assert dot_color(page, 'p-queue') == row_color(page, 'p-queue')
     for project in ('p-work', 'p-queue'):
-        assert dot_color(page, project) == row_color(page, project)
         assert dot_color(page, project) != token_color(page, project, '--project')
     assert marker('p-queue').evaluate('el => getComputedStyle(el).opacity') == '0.55'
     assert marker('p-work').evaluate('el => getComputedStyle(el).opacity') == '1'
@@ -380,6 +381,7 @@ def assert_rail(page, rows, states, *, lit=()):
     marker = next(row['marker'] for row in live if row['drawn'])
     unread = next(row['unread'] for row in live if row['unread'])
     amber = token_color(page, live[0]['id'], '--amber')
+    accent = token_color(page, live[0]['id'], '--accent')
     project = token_color(page, live[0]['id'], '--project')
     for row in live:
         assert row['state'] == states[row['id']], (row['id'], row['state'])
@@ -403,6 +405,9 @@ def assert_rail(page, rows, states, *, lit=()):
         assert abs((row['marker']['top'] + row['marker']['bottom']) - (row['row']['top'] + row['row']['bottom'])) <= 1
         if row['state'] == 'waiting':
             assert row['dotColor'] == amber
+        elif row['state'] == 'working':
+            assert row['dotColor'] == accent, (row['id'], row['dotColor'])  # the crimson live ink, lit row or not
+            assert row['opacity'] == '1', row['id']
         elif row['state'] != 'idle':
             assert row['dotColor'] == row['rowColor'], (row['id'], row['dotColor'], row['rowColor'])
             assert row['opacity'] == ('0.55' if row['state'] in ('queued', 'unknown') else '1'), row['id']
@@ -469,13 +474,13 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
     reference = assert_rail(page, rail_rows(page), states)
     capture('default')
 
-    # Hovering a row reveals its sibling kebab and brightens the title; the dots follow the title ink.
+    # Hovering a row reveals its sibling kebab and brightens the title; the working dots keep the crimson live ink.
     plain = rail_rows(page)['p-w']['rowColor']
     page.locator('[data-project-id="p-w"]').hover()
     page.wait_for_function("() => getComputedStyle(document.querySelector('[data-project-id=\"p-w\"] ~ .nav-project-kebab')).opacity === '1'")
     settled('p-w', '--text-primary')
     hovered = rail_rows(page)
-    assert hovered['p-w']['rowColor'] != plain and hovered['p-w']['dotColor'] == hovered['p-w']['rowColor']
+    assert hovered['p-w']['rowColor'] != plain and hovered['p-w']['dotColor'] == token_color(page, 'p-w', '--accent')
     same_rail(reference, assert_rail(page, hovered, states))
     capture('hover')
     page.mouse.move(width / 2, 600)
@@ -511,13 +516,14 @@ def test_sidebar_activity_rail_geometry(subscription_ui, width, theme, reduced):
     capture('read')
 
     if width >= 700:
-        # The open room's title takes the project ink and its dots follow it; slots stay put.
+        # The open room's title takes the project ink; its working dots stay the crimson live ink; slots stay put.
         page.locator('[data-project-id="p-w"]').click()
         page.locator('#project-panel').wait_for(state='visible')
         page.mouse.move(width / 2, 600)
         settled('p-w', '--project')
         lit = rail_rows(page)
-        assert lit['p-w']['active'] and lit['p-w']['dotColor'] == lit['p-w']['rowColor'] == token_color(page, 'p-w', '--project')
+        assert lit['p-w']['active'] and lit['p-w']['rowColor'] == token_color(page, 'p-w', '--project')
+        assert lit['p-w']['dotColor'] == token_color(page, 'p-w', '--accent')
         same_rail(reference, assert_rail(page, lit, states, lit=('p-w',)), ids=[key for key in reference if key != 'p-wu'])
         capture('active')
         page.locator('#project-panel-close').click()

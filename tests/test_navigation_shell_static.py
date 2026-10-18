@@ -193,9 +193,11 @@ def test_chat_header_controls_reorg_and_more_autodismiss():
     assert chat_js.count('type="button" data-chat-command="restart"') == 1, "one Restart node, never a second copy"
     header_js = _read("web/modules/page_header.js")
     placement = header_js.split("export function bindHeaderControlPlacement(", 1)[1].split("\n}\n", 1)[0]
-    assert "if (layout === 'stack') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restart);" in placement
+    assert "if (next === 'menu') {" in placement and "menu.prepend(budgetPill);" in placement and "menu.append(restart);" in placement
     assert "headerActions.insertBefore(restart, panic);" in placement
-    assert "place(currentLayout());" in placement and "return onLayoutChange(place);" in placement
+    # Driven by the layout AND the bar's own measured width, so a narrow docked column keeps one row too.
+    assert "layout === 'stack'" in placement and "bar.clientWidth < HEADER_FULL_ROW_MIN_WIDTH" in placement
+    assert "onLayoutChange(place)" in placement and "observer?.observe(bar);" in placement
     assert "bindHeaderControlPlacement({ headerActions, budgetPill })" in chat_js
     assert "disposeHeaderPlacement();" in chat_js
     assert "await confirmAndSendRestart({ openConfirmDialog, ws });" in chat_js

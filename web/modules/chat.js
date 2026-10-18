@@ -253,8 +253,10 @@ export function createChatInstance({
                 <span id="chat-status" class="status-badge offline">Connecting…</span>
             `,
         });
+    // Main: the history note (gaps, a failed read, an approximate position) floats UNDER the bar as its own
+    // strip, never as a second row of it; the Project panel keeps its in-flow status bar.
     page.innerHTML = `
-        ${headerHtml}
+        ${headerHtml}${asPanel ? '' : '<div class="chat-page-note"></div>'}
         <div id="chat-messages"></div>
         <div id="chat-input-area">
             <div class="chat-input-wrap">
@@ -265,18 +267,18 @@ export function createChatInstance({
                 <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
                 <div class="chat-toolbar-row">
                     <div class="chat-composer-pills" id="chat-composer-pills">
-                        <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
+                        <button class="chat-swarm ui-hit-area" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
                     </div>
                     <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>
                 </div>
                 <div class="chat-text-row">
-                    <button class="chat-attach-btn" id="chat-attach" type="button" title="Attach file">
+                    <button class="chat-attach-btn ui-hit-area" id="chat-attach" type="button" title="Attach file">
                         ${strokeIcon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 18)}
                     </button>
                     <input type="file" id="chat-file-input" class="chat-file-input-hidden" accept="*/*" multiple>
                     <textarea id="chat-input" placeholder="Message Ouroboros..." rows="1" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
                     <div class="chat-send-group">
-                        <button class="chat-send-inline" id="chat-send" title="Send message">Send</button>
+                        <button class="chat-send-inline ui-hit-area" id="chat-send" title="Send message">Send</button>
                     </div>
                 </div>
             </div>
@@ -301,6 +303,7 @@ export function createChatInstance({
     const statusBadge = byId('status');
     const headerActions = byId('header-actions');
     const pageHeader = page.querySelector('.chat-page-header');
+    const pageNote = page.querySelector('.chat-page-note');
     const budgetPill = byId('budget-pill');
     const disposeHeaderPlacement = asPanel ? () => {} : bindHeaderControlPlacement({ headerActions, budgetPill });
     const attachBtn = byId('attach');
@@ -2984,8 +2987,15 @@ export function createChatInstance({
         const mutate = () => {
             let changed = false;
             if (pageHeader && messagesDiv) {
-                const headerReserve = Math.max(56, Math.ceil(pageHeader.offsetHeight || 0));
-                const value = `${headerReserve}px`;
+                // The bar's own height places the note under it; the transcript clears both.
+                const bar = Math.ceil(pageHeader.offsetHeight || 0);
+                const note = pageNote?.offsetParent ? Math.ceil(pageNote.offsetHeight || 0) : 0;
+                const barValue = `${bar}px`;
+                if (page.style.getPropertyValue('--chat-header-bar') !== barValue) {
+                    page.style.setProperty('--chat-header-bar', barValue);
+                    changed = true;
+                }
+                const value = `${Math.max(56, bar + note)}px`;
                 if (page.style.getPropertyValue('--chat-header-reserve') !== value) {
                     page.style.setProperty('--chat-header-reserve', value);
                     changed = true;
@@ -3026,6 +3036,7 @@ export function createChatInstance({
         chatResizeObserver = new ResizeObserver(schedule);
         chatResizeObserver.observe(messagesDiv);
         if (pageHeader) chatResizeObserver.observe(pageHeader);
+        if (pageNote) chatResizeObserver.observe(pageNote);
         if (inputArea) chatResizeObserver.observe(inputArea);
     }
 
@@ -3229,7 +3240,7 @@ export function createChatInstance({
         }
     }
 
-    const historyControls = createHistoryControls(messagesDiv, pageHeader || page.querySelector('.chat-panel-statusbar'));
+    const historyControls = createHistoryControls(messagesDiv, pageNote || page.querySelector('.chat-panel-statusbar'));
     const { olderButton: loadOlderBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({

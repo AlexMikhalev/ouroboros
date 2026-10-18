@@ -81,19 +81,31 @@ export function renderPageHeader({
     `;
 }
 
+/** A bar narrower than this (px) cannot hold Restart, Panic, More and the budget on one row with the status. */
+export const HEADER_FULL_ROW_MIN_WIDTH = 640;
+
 /**
- * Main's header controls by layout (owner Q4=A): docked keeps Restart in the row and the budget after the
- * actions; the stack layout moves the same two nodes into the ⋯ menu (the budget first, Restart last), so each
- * keeps its one handler and its one id. Returns the disposer of the layout subscription.
+ * Main's header controls by the room the bar has (owner Q4=A): a bar wide enough keeps Restart in the row and the
+ * budget after the actions; the stack layout, and a docked content column narrower than
+ * HEADER_FULL_ROW_MIN_WIDTH, move the same two nodes into the ⋯ menu (the budget first, Restart last), so the bar
+ * stays one row and each control keeps its one handler and its one id. The bar's width is measured (a
+ * ResizeObserver), never a viewport breakpoint. Returns the disposer.
  */
-export function bindHeaderControlPlacement({ headerActions, budgetPill = null } = {}) {
+export function bindHeaderControlPlacement({ headerActions, budgetPill = null, bar = headerActions?.closest?.('.app-page-header') } = {}) {
     const restart = headerActions?.querySelector?.('[data-chat-command="restart"]');
     const panic = headerActions?.querySelector?.('[data-chat-command="panic"]');
     const menu = headerActions?.querySelector?.('.chat-header-menu');
     const toolbar = budgetPill?.parentElement || null;
     if (!restart || !menu) return () => {};
-    const place = (layout) => {
-        if (layout === 'stack') {
+    let placed = '';
+    const compact = (layout) => layout === 'stack'
+        || (Number(bar?.clientWidth) > 0 && bar.clientWidth < HEADER_FULL_ROW_MIN_WIDTH);
+    // Called with the layout name by the layout switch, with entries by the observer, with nothing at bind.
+    const place = (arg) => {
+        const next = compact(typeof arg === 'string' ? arg : currentLayout()) ? 'menu' : 'row';
+        if (next === placed) return;
+        placed = next;
+        if (next === 'menu') {
             if (budgetPill) menu.prepend(budgetPill);
             menu.append(restart);
         } else {
@@ -101,8 +113,12 @@ export function bindHeaderControlPlacement({ headerActions, budgetPill = null } 
             if (budgetPill && toolbar) toolbar.insertBefore(budgetPill, headerActions.nextSibling);
         }
     };
-    place(currentLayout());
-    return onLayoutChange(place);
+    place();
+    const offLayout = onLayoutChange(place);
+    const Observer = bar?.ownerDocument?.defaultView?.ResizeObserver;
+    const observer = Observer && bar ? new Observer(place) : null;
+    observer?.observe(bar);
+    return () => { offLayout(); observer?.disconnect(); };
 }
 
 // SSOT for a segmented single-select control (the settings effort/mode toggles):

@@ -5,6 +5,7 @@ header with no actions renders no bar. Stack: one row of at most 56px, `☰ · t
 title one line and ellipsized; Restart and the budget inside ⋯. No icon anywhere."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -43,11 +44,34 @@ def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_
     summary = _rule(css, 'html[data-layout="stack"] .chat-header-more > summary {')
     assert "width: 44px" in summary and "height: 44px" in summary
     assert 'html[data-layout="stack"] .chat-header-more-word { display: none; }' in css
-    assert 'html[data-layout="stack"] .chat-header-menu > .chat-budget-pill {' in css
+    assert '.chat-header-menu > .chat-budget-pill {' in css
+    # The note is a floating sibling under the bar, never a second row of it; the move into ⋯ follows the
+    # bar's measured width as well as the layout (page_header.js), so a narrow docked column keeps one row too.
+    assert '.chat-page-note {' in css and "top: var(--chat-header-bar, 56px)" in _rule(css, ".chat-page-note {")
+    assert "createHistoryControls(messagesDiv, pageNote || page.querySelector('.chat-panel-statusbar'))" in _read("web/modules/chat.js")
+    header_js = _read("web/modules/page_header.js")
+    assert "export const HEADER_FULL_ROW_MIN_WIDTH = 640;" in header_js
+    assert "bar.clientWidth < HEADER_FULL_ROW_MIN_WIDTH" in header_js and "new Observer(place)" in header_js
     # The ☰ and the × share the shell's one icon-control recipe; the Project's × is that recipe too.
     assert 'class="shell-icon-control project-panel-close"' in _read("web/app.js")
     assert 'class="shell-icon-control mobile-nav-toggle"' in _read("web/modules/page_header.js")
     assert ".project-panel-title" not in css, "one title style"
+
+
+def test_header_actions_take_the_chrome_height_under_a_finger():
+    css = _read("web/style.css")
+    gated = css.split("@media (pointer: coarse) {\n    .app-page-toolbar :is(.btn, button),", 1)[1].split("}", 1)[0]
+    assert "min-height: var(--chrome-control-h)" in gated
+    assert re.search(r"@media \(pointer: coarse\) \{[^}]*--chrome-control-h: var\(--touch-target-min\)", _read("web/ui.css"), re.S)
+
+
+def test_the_place_name_wins_over_the_status_word_and_the_status_keeps_its_target():
+    room_work = _read("web/room_work.css")
+    trigger = _rule(room_work, ":is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {")
+    assert "flex: 0 1000 auto" in trigger, "the status yields a thousand times faster than the title"
+    assert "min-width: var(--touch-target-min)" in trigger and "5ch" not in trigger
+    title = _rule(room_work, ":is(.chat-page-header, .project-panel-bar) .app-page-title-row > .app-page-title {")
+    assert "flex: 0 1 auto" in title and "min-width: 0" in title and "text-overflow: ellipsis" in title
 
 
 def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():

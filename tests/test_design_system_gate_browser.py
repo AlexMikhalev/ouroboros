@@ -60,18 +60,34 @@ MEASURE = """root => {
     const overflow = [], small = [], headers = [];
     const scope = document.querySelector(root);
     const doc = document.scrollingElement;
+    // The 44px rule is a touch rule: it applies when the pointer is coarse, and it measures the HIT area, not the
+    // box. A control passes when its centre ±21px (clipped to the viewport) lands on it or on something inside it
+    // (an invisible hit extension counts); otherwise its box is reported.
+    const coarse = matchMedia('(pointer: coarse)').matches;
+    const hits = (e, r) => {
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const clampX = x => Math.min(Math.max(x, 0), innerWidth - 1);
+        const clampY = y => Math.min(Math.max(y, 0), innerHeight - 1);
+        return [[cx - 21, cy], [cx + 21, cy], [cx, cy - 21], [cx, cy + 21]].every(([x, y]) => {
+            const t = document.elementFromPoint(clampX(x), clampY(y));
+            return Boolean(t) && (t === e || e.contains(t));
+        });
+    };
     if (doc.scrollWidth > doc.clientWidth + 1)
         overflow.push({node:'document.scrollingElement',extra:doc.scrollWidth-doc.clientWidth});
     for (const e of [scope, ...scope.querySelectorAll('*')].filter(shown)) {
         const s = getComputedStyle(e), r = e.getBoundingClientRect();
-        const pageBody = e.matches('.page, .settings-scroll, .skills-scroll, .widgets-scroll, ' +
-            '.files-list, .dashboard-panel') || ['auto','scroll'].includes(s.overflowY);
+        // A page body scrolls sideways only when it CAN scroll (overflow-x auto/scroll); a clipping container
+        // (overflow: hidden) with a clipped child, such as a closed Effort strip, is not a page scroll.
+        const pageBody = ['auto','scroll'].includes(s.overflowX) &&
+            (e.matches('.page, .settings-scroll, .skills-scroll, .widgets-scroll, .files-list, .dashboard-panel') ||
+             ['auto','scroll'].includes(s.overflowY));
         if (pageBody && !local(e) && e.scrollWidth > e.clientWidth + 1)
             overflow.push({node:name(e),extra:e.scrollWidth-e.clientWidth});
         if (local(e) && (r.left < -1 || r.right > innerWidth + 1))
             overflow.push({node:name(e),outside:[r.left,r.right]});
-        if (innerWidth < 720 && e.matches('button, a[href], summary, select') &&
-            (r.width < 43.9 || r.height < 43.9))
+        if (coarse && e.matches('button, a[href], summary, select') &&
+            (r.width < 43.9 || r.height < 43.9) && !hits(e, r))
             small.push({node:name(e),label:(e.getAttribute('aria-label') || e.textContent).trim().slice(0,65),
                 width:Math.round(r.width*10)/10,height:Math.round(r.height*10)/10});
         if (e.matches('.app-page-header') && r.height > 56.1)
@@ -183,6 +199,10 @@ def test_every_page_and_settings_tab_meets_shell_contract(gate_ui, tmp_path, wid
         actual = page.locator('html').get_attribute('data-layout')
         if actual != wanted:
             failures['layout'] = {'wanted': wanted, 'actual': actual}
+        # The 44px rule keys on the pointer: the touch emulation of a narrow page must report a coarse one, or the
+        # rule would silently skip (both engines do under has_touch).
+        if width < 720:
+            assert page.evaluate("matchMedia('(pointer: coarse)').matches"), 'a touch page reports a coarse pointer'
         if telegram:
             assert page.locator('html').get_attribute('data-ouroboros-host') == 'telegram'
             assert page.evaluate('Telegram.WebApp.platform') == 'ios'

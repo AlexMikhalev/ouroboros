@@ -90,7 +90,7 @@ function ringArc(a0, a1) {
 }
 
 /* A capsule's head: the ring, the setting's name and its value (the value gives way to the strip). */
-const capsuleHead = (glyph, name, headClass, valueAttrs = '') => `<button type="button" class="chat-capsule-head ${headClass}" aria-expanded="false">`
+const capsuleHead = (glyph, name, headClass, valueAttrs = '') => `<button type="button" class="chat-capsule-head ui-hit-area ${headClass}" aria-expanded="false">`
     + `<span class="chat-capsule-glyph" aria-hidden="true"><svg viewBox="0 0 184 184">${glyph}</svg></span>`
     + `<span class="chat-capsule-name">${name}</span><span class="chat-capsule-value"${valueAttrs}></span></button>`;
 

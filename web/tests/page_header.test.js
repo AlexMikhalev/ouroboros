@@ -61,9 +61,19 @@ test('Restart and the budget are the same nodes, placed by layout: the row on a 
     const dispose = bindHeaderControlPlacement({ headerActions: actions, budgetPill: budget });
     assert.deepEqual(menu.children.map((c) => c.name), ['budget', 'restart'], 'stack: the budget first, Restart last, inside ⋯');
     assert.deepEqual(actions.children.map((c) => c.name), ['panic', 'details']);
+    globalThis.window.ouroLayout.layout = 'docked';
     listeners.get('ouro:layout-changed')({ detail: { layout: 'docked' } });
     assert.deepEqual(actions.children.map((c) => c.name), ['restart', 'panic', 'details'], 'docked: Restart back before Panic');
     assert.deepEqual(toolbar.children.map((c) => c.name), ['actions', 'budget', 'status'], 'the budget back after the actions');
+    // A docked bar too narrow for the full row (a narrow content column) moves them too; a wide one keeps the row.
+    const bar = { clientWidth: 500 };
+    const narrow = bindHeaderControlPlacement({ headerActions: actions, budgetPill: budget, bar });
+    assert.deepEqual(menu.children.map((c) => c.name), ['budget', 'restart'], 'a 500px bar: inside ⋯');
+    narrow();
+    bar.clientWidth = 900;
+    const wide = bindHeaderControlPlacement({ headerActions: actions, budgetPill: budget, bar });
+    assert.deepEqual(actions.children.map((c) => c.name), ['restart', 'panic', 'details'], 'a 900px bar: the row');
+    wide();
     dispose();
     assert.equal(listeners.size, 0);
     assert.equal(typeof bindHeaderControlPlacement({ headerActions: null }), 'function', 'no actions: a no-op disposer');

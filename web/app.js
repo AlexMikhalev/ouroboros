@@ -795,7 +795,7 @@ function paintProjectsNav() {
             const kebab = document.createElement('button');
             kebab.type = 'button';
             kebab.className = 'nav-project-kebab';
-            kebab.textContent = '⋯';
+            kebab.innerHTML = SHELL_ICONS.more;  // the shell's one ⋯ (page_icons.js)
             kebab.title = tr('project.kebab_title', 'Project actions');
             kebab.setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
             kebab.addEventListener('click', (event) => {
