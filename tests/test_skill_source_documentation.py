@@ -26,3 +26,11 @@ def test_auto_repair_state_is_documented_as_a_legacy_leftover():
     assert "`auto_repair.json` is a legacy leftover; nothing writes it" in text
     owner_state = next(line for line in text.splitlines() if "owner state (`review.json`" in line)
     assert "auto_repair.json" not in owner_state
+
+
+def test_settings_folder_and_configuration_authority_are_documented():
+    text = (ROOT / "docs/architecture/07-configuration.md").read_text(encoding="utf-8")
+    assert "never a second authority" in text
+    row = next(line for line in text.splitlines() if line.startswith("| OUROBOROS_SKILLS_REPO_PATH |"))
+    for fact in ("read in place", "my-folder", "saved source list", "removing that row clears", "Other folders"):
+        assert fact in row

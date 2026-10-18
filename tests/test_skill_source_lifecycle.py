@@ -446,6 +446,9 @@ def test_registry_hits_name_their_author_and_update_time(monkeypatch):
     assert (hits["weather"]["owner"], hits["weather"]["updated_at"]) == ("steipete", "2026-09-16T21:35:54.485000+00:00")
     assert hits["plain"]["owner"] == "someone" and "updated_at" not in hits["plain"]
     assert hits["bare"]["owner"] == "" and "updated_at" not in hits["bare"]
+    # Shared catalog consumes the adapter's normalized facts, not its raw wire keys.
+    monkeypatch.setattr(clawhub.ClawHubSkillSummary, "catalog_facts", lambda self: {"owner": "adapter"})
+    assert {item["owner"] for item in catalog.registry_items(row, "weather")} == {"adapter"}
 
 
 def test_the_listing_says_why_and_in_which_task_ouroboros_installed(drive, hub):

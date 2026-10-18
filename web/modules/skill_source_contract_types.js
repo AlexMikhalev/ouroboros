@@ -83,6 +83,7 @@
  * @property {boolean} ok
  * @property {boolean=} created
  * @property {string=} repository
+ * @property {boolean=} private
  * @property {SkillSourceRow=} source
  * @property {string=} code
  * @property {string=} error

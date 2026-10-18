@@ -2,8 +2,8 @@
 
 A hub and a plain skills repository are both read from a clone under
 ``data/state/skill_sources/repos/<key>/repo`` (the two public hub rows share one clone because they read
-one repository), fetched with this computer's own git credentials, so a private repository works when
-the host can fetch it. Reads are local files; a refresh fetches the newest commit of the configured
+one repository), fetched with the configured GitHub token for github.com HTTPS, otherwise this
+computer's git credentials. Reads are local files; a refresh fetches the newest commit of the configured
 branch (or the pinned commit) and is started in the background by whoever shows or searches a catalog.
 A pointer entry's author repository is fetched at its exact commit into ``pointers/<key>/repo``.
 A source clone keeps the last ``HISTORY_DEPTH`` commits so its catalog can say when each skill last
@@ -17,15 +17,18 @@ process tree on timeout.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
 import pathlib
 import shutil
 import threading
+import urllib.parse
 import uuid
 from typing import Any, Dict, Optional
 
+from ouroboros.secret_masking import redact_known_values
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -71,19 +74,36 @@ def read_meta(drive_root: pathlib.Path, row: Dict[str, Any]) -> Dict[str, Any]:
     return read_json_dict(repo_cache_dir(drive_root, row) / "meta.json") or {}
 
 
-def _git_env() -> Dict[str, str]:
+def _git_env(url: str) -> tuple[Dict[str, str], list[str]]:
     env = dict(os.environ)
     env.update({"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_LFS_SKIP_SMUDGE": "1"})
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-    return env
+    secrets = []
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "https" and parsed.hostname == "github.com":
+        from ouroboros.tools.github import github_token_from_env_or_settings
+
+        token = github_token_from_env_or_settings()
+        if token:
+            encoded = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+            index = int(env.get("GIT_CONFIG_COUNT") or "0")
+            env.update({"GIT_CONFIG_COUNT": str(index + 1),
+                        f"GIT_CONFIG_KEY_{index}": "http.https://github.com/.extraheader",
+                        f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {encoded}"})
+            secrets = [token, encoded]
+    return env, secrets
 
 
-def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_SEC) -> str:
+def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_SEC, url: str = "") -> str:
     from supervisor.git_ops import _run_git_process_bounded
 
-    code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=_git_env())
+    env, secrets = _git_env(url)
+    try:
+        code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
+    except Exception as exc:
+        raise SkillSourceFetchError(redact_known_values(str(exc), secrets)) from None
     if code != 0:
-        detail = " ".join(str(err or out or "").split())[:400]
+        detail = " ".join(redact_known_values(str(err or out or ""), secrets).split())[:400]
         raise SkillSourceFetchError(detail or f"git {args[0]} failed with exit code {code}")
     return str(out or "")
 
@@ -103,7 +123,7 @@ def fetch_tree(target: pathlib.Path, url: str, selector: str, *, depth: int = 1)
         _git(["remote", "add", "origin", _origin_text(url)], cwd=target)
     else:
         _git(["remote", "set-url", "origin", _origin_text(url)], cwd=target)
-    _git(["fetch", "--depth", str(depth), "--no-tags", "--quiet", "origin", selector or "HEAD"], cwd=target)
+    _git(["fetch", "--depth", str(depth), "--no-tags", "--quiet", "origin", selector or "HEAD"], cwd=target, url=url)
     _git(["checkout", "--quiet", "--force", "--detach", "FETCH_HEAD"], cwd=target)
     _git(["clean", "-ffdxq"], cwd=target)
     return _git(["rev-parse", "HEAD"], cwd=target).strip()
@@ -172,11 +192,11 @@ def refresh_in_background(drive_root: pathlib.Path, row: Dict[str, Any], refresh
         return True
 
 
-def fetch_signals(clone: pathlib.Path, branch: str = "signals") -> Optional[bytes]:
+def fetch_signals(clone: pathlib.Path, branch: str = "signals", *, url: str = "") -> Optional[bytes]:
     """The ``signals.json`` of a hub's signals branch, or ``None`` when it is unavailable."""
     try:
         _git(["fetch", "--depth", "1", "--no-tags", "--quiet", "origin",
-              f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=clone, timeout=60)
+              f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=clone, timeout=60, url=url)
         return _git(["show", f"refs/remotes/origin/{branch}:signals.json"], cwd=clone, timeout=30).encode("utf-8")
     except SkillSourceFetchError:
         return None

@@ -404,9 +404,12 @@ def _installed_skills_for_source(drive_root: pathlib.Path, source: str) -> list[
         hub_record = None
         if source == "ouroboroshub" and not skill.identity_collision:
             hub_record = read_install_record(drive_root, skill.name)
-        from_hub = source == "ouroboroshub" and (skill.location == source or
-                    ((hub_record or {}).get("source") or {}).get("kind") == "hub")
-        if skill.source != source and not from_hub:
+        if source == "ouroboroshub":
+            from_hub = (((hub_record or {}).get("source") or {}).get("kind") == "hub" or
+                        (hub_record is None and skill.location == source))
+            if not from_hub:
+                continue
+        elif skill.source != source:
             continue
         provenance = None
         if source == "clawhub":

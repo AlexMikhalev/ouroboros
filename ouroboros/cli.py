@@ -486,7 +486,7 @@ def _marketplace_command(args: argparse.Namespace) -> int:
             "uninstall": f"/api/marketplace/clawhub/uninstall/{urllib.parse.quote(name)}",
         }
     else:  # ouroboroshub is the compatibility spelling of sources
-        if args.marketplace_command == "install" and "/" not in slug:
+        if args.marketplace_command in {"install", "preview"} and "/" not in slug:
             offered = client.request("GET", f"/api/skill-catalog/search?q={urllib.parse.quote(slug)}")
             item = next((item for item in offered.get("items", []) if item.get("name") == slug and
                          item.get("source_id") in {"ouroboros", "ouroboros-community"}), None)
@@ -496,7 +496,7 @@ def _marketplace_command(args: argparse.Namespace) -> int:
         item = urllib.parse.quote(slug, safe="/")
         paths = {
             "search": f"/api/skill-catalog/search?q={urllib.parse.quote(query)}",
-            "installed": "/api/extensions",
+            "installed": "/api/marketplace/ouroboroshub/installed" if hub == "ouroboroshub" else "/api/extensions",
             "preview": f"/api/skill-catalog/item/{item}",
             "install": "/api/skill-catalog/install",
             "update": f"/api/skills/{urllib.parse.quote(name)}/update",

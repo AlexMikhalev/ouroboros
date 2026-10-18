@@ -137,6 +137,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/skill-sources",
     "POST /api/skill-sources",
     "POST /api/skill-sources/probe",
+    "POST /api/skill-sources/my-skills",
     "POST /api/skill-sources/{source_id}",
     "POST /api/skill-sources/{source_id}/remove",
     "POST /api/skill-sources/{source_id}/refresh",
@@ -355,6 +356,7 @@ HTTP_SHAPES: dict[str, Shape] = {
         "SkillSourceAddRequest", note="reads the address once before saving; a saved repository starts a background fetch"),
     "POST /api/skill-sources/probe": Shape("200:SkillSourceProbeResponse 400:ErrorResponse", "SkillSourceProbeRequest",
                                            note="read-only; the address is fetched into a scratch folder that is removed"),
+    "POST /api/skill-sources/my-skills": Shape("200,400,403,502:MySkillsResponse", "MySkillsRequest"),
     "POST /api/skill-sources/{source_id}": Shape(
         f"200:SkillSourceChangeResponse 400:ErrorResponse|SkillSourceChangeResponse {_SOURCES_WRITE}",
         "SkillSourceChangeRequest", note="a trust change never rewrites an existing install"),
@@ -468,7 +470,6 @@ HTTP_SHAPES: dict[str, Shape] = {
         note="safe to repeat; every engine refusal answers 503"),
 }
 
-HTTP_ENDPOINTS, HTTP_SHAPES = (*HTTP_ENDPOINTS, "POST /api/skill-sources/my-skills"), {**HTTP_SHAPES, "POST /api/skill-sources/my-skills": Shape("200,400,403,502:MySkillsResponse", "MySkillsRequest")}
 # Middleware-owned routes: ``server_auth.NetworkAuthGate`` answers them itself, and only while it
 # enforces a configured network password for a non-loopback peer (otherwise they are not mounted).
 AUTH_ENDPOINTS: dict[str, Shape] = {

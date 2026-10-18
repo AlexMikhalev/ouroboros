@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 
 import pytest
@@ -41,9 +42,9 @@ def test_connected_local_folders_load_in_place_through_review(tmp_path, monkeypa
     assert "hello from skill" in result
     monkeypatch.setenv(sources.SOURCES_SETTING, json.dumps(sources.without_source(rows, row["id"])))
     assert loader.discover_skills(drive) == [] and folder.is_dir()
-    # A materialized list owns its local roots; the old setting cannot resurrect a removed row.
+    # Settings can connect its own folder even after a source list has been saved.
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(folder.parent))
-    assert loader.discover_skills(drive) == []
+    assert loader.find_skill(drive, "local_skill").skill_dir == folder.resolve()
     monkeypatch.delenv(sources.SOURCES_SETTING)
     assert loader.find_skill(drive, "local_skill").skill_dir == folder.resolve()
     # Existing no-adopt protection also applies to connected folders.
@@ -56,6 +57,33 @@ def test_connected_local_folders_load_in_place_through_review(tmp_path, monkeypa
     with pytest.raises(SkillInstallError) as refused:
         plan_install(drive, "ouroboros-community/local_skill", rows=hub_rows, replace=True)
     assert refused.value.code == "name_taken" and folder.is_dir()
+
+
+@pytest.mark.parametrize("saved_folder", [False, True])
+def test_settings_folder_follows_current_path_with_a_saved_list(tmp_path, monkeypatch, saved_folder):
+    from ouroboros import skill_loader as loader
+
+    old = write_skill(tmp_path / "old", "old_skill").parent
+    new = write_skill(tmp_path / "new", "new_skill").parent
+    extra = write_skill(tmp_path / "extra", "extra_skill").parent
+    rows, _ = sources.with_added_source([], kind="local", path=str(extra), name="Extra", trust="review")
+    if saved_folder:
+        rows.append({"id": sources.LOCAL_ID, "name": "Private", "kind": "local", "path": str(old),
+                     "trust": "trusted", "confirmed": False})
+    monkeypatch.setenv(sources.SOURCES_SETTING, json.dumps(rows))
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(new))
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: pytest.fail("inventory reread settings"))
+    drive = tmp_path / "data"
+    assert {s.name for s in loader.discover_skills(drive)} == {"new_skill", "extra_skill"}
+    assert loader.find_skill(drive, "new_skill").skill_dir == (new / "new_skill").resolve()
+    effective = sources.load_sources(dict(os.environ))
+    linked = sources.source_by_id(effective, sources.LOCAL_ID)
+    assert linked["path"] == str(new)
+    if saved_folder:
+        assert (linked["name"], linked["trust"], linked["confirmed"]) == ("Private", "trusted", False)
+    assert {s.name for s in loader.discover_skills(drive, repo_path=str(old))} == {"old_skill", "extra_skill"}
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    assert {s.name for s in loader.discover_skills(drive)} == {"extra_skill"}
 
 
 def test_local_source_collision_and_duplicate_roots_keep_global_identity(tmp_path, monkeypatch):
@@ -190,18 +218,26 @@ def test_git_addresses_still_refuse_embedded_credentials(url):
         sources.validate_git_url(url)
 
 
-def test_readding_default_public_hub_restores_the_two_source_rows():
+@pytest.mark.parametrize("trust", ["trusted", "review"])
+def test_readding_default_public_hub_restores_the_two_source_rows(trust):
     defaults = sources.derived_sources({})
     public = next(row for row in defaults if row.get("part") == "official")
     remaining = [row for row in defaults if row["kind"] != "hub"]
-    rows, added = sources.with_added_source(remaining, kind="hub", url=public["url"], name="Hub", trust="review")
+    rows, added = sources.with_added_source(remaining, kind="hub", url=public["url"], name="Hub", trust=trust)
     hubs = [row for row in rows if row["kind"] == "hub"]
     assert {row["part"] for row in hubs} == {"official", "community"}
-    assert all(row["confirmed"] and row["trust"] == "review" for row in hubs)
+    assert {(row["part"], row["trust"], row["confirmed"]) for row in hubs} == {
+        ("official", "trusted", False), ("community", "review", False)}
     assert added in hubs
     ordinary, _ = sources.with_added_source(remaining, kind="hub", url="https://github.com/another/hub",
-                                            name="Another", trust="review")
+                                            name="Another", trust=trust)
     assert len(ordinary) == len(remaining) + 1 and "part" not in ordinary[-1]
+    assert ordinary[-1]["trust"] == trust and ordinary[-1]["confirmed"] is True
+    # Reconnecting one missing row preserves the surviving row's explicit choice.
+    chosen = {**public, "name": "Chosen", "trust": "review", "confirmed": True}
+    restored, _ = sources.with_added_source([*remaining, chosen], kind="hub", url=public["url"], name="Hub", trust=trust)
+    assert sources.source_by_id(restored, chosen["id"]) == chosen
+    assert sources.source_by_id(restored, sources.HUB_COMMUNITY_ID) == next(r for r in hubs if r["part"] == "community")
 
 
 def test_legacy_converted_hub_install_gains_the_current_endorsement(tmp_path):

@@ -153,12 +153,15 @@ def test_marketplace_hub_alias_uses_source_routes(monkeypatch, hub, command, met
     monkeypatch.setattr(cli, "_client", lambda _args: client)
     args = cli.build_parser().parse_args(["marketplace", hub, *command])
     assert args.func(args) == 0
+    if command == ["installed"] and hub == "ouroboroshub":
+        path = "/api/marketplace/ouroboroshub/installed"
     assert calls == [(method, path, body)]
 
 
 @pytest.mark.parametrize("hub", ["sources", "ouroboroshub"])
 @pytest.mark.parametrize("source", ["ouroboros", "ouroboros-community"])
-def test_marketplace_bare_name_resolves_the_public_hub_offer(monkeypatch, hub, source):
+@pytest.mark.parametrize("command", ["install", "preview"])
+def test_marketplace_bare_name_resolves_the_public_hub_offer(monkeypatch, hub, source, command):
     from ouroboros import cli
 
     calls = []
@@ -169,13 +172,15 @@ def test_marketplace_bare_name_resolves_the_public_hub_offer(monkeypatch, hub, s
                           {"id": f"{source}/weather", "name": "weather", "source_id": source}]}
 
     monkeypatch.setattr(cli, "_client", lambda _args: SimpleNamespace(request=request))
-    args = cli.build_parser().parse_args(["marketplace", hub, "install", "weather"])
+    args = cli.build_parser().parse_args(["marketplace", hub, command, "weather"])
     assert args.func(args) == 0
-    assert calls == [("GET", "/api/skill-catalog/search?q=weather", None),
-                     ("POST", "/api/skill-catalog/install", {"id": f"{source}/weather"})]
+    action = (("POST", "/api/skill-catalog/install", {"id": f"{source}/weather"}) if command == "install"
+              else ("GET", f"/api/skill-catalog/item/{source}/weather", None))
+    assert calls == [("GET", "/api/skill-catalog/search?q=weather", None), action]
 
 
-def test_marketplace_bare_name_does_not_select_a_different_source(monkeypatch):
+@pytest.mark.parametrize("command", ["install", "preview"])
+def test_marketplace_bare_name_does_not_select_a_different_source(monkeypatch, command):
     from ouroboros import cli
 
     calls = []
@@ -184,7 +189,7 @@ def test_marketplace_bare_name_does_not_select_a_different_source(monkeypatch):
         return {"items": [{"id": "mine/weather", "name": "weather", "source_id": "mine"}]}
 
     monkeypatch.setattr(cli, "_client", lambda _args: SimpleNamespace(request=request))
-    args = cli.build_parser().parse_args(["marketplace", "sources", "install", "weather"])
+    args = cli.build_parser().parse_args(["marketplace", "sources", command, "weather"])
     with pytest.raises(cli.CLIError, match="catalog id"):
         args.func(args)
     assert calls == ["GET"]
