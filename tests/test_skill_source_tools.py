@@ -250,7 +250,32 @@ def test_search_serves_release_capabilities_and_current_local_digest(ctx):
     assert (loaded.skill_dir / "edit.txt").exists()
 
 
-def test_tools_record_self_check_without_starting_panel(ctx):
+@pytest.fixture
+def cyber_pro():
+    import ouroboros.config as cfg
+
+    cfg.reset_runtime_mode_baseline_for_tests()
+    cfg.initialize_runtime_mode_baseline("cyber_pro")
+    yield
+    cfg.reset_runtime_mode_baseline_for_tests()
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+def test_self_check_outside_cyber_pro_is_refused_with_the_rule(ctx, tool):
+    context, drive, reviews, _hub = ctx
+    _call("skill_search", context)
+    arguments = {"id": "ouroboros-community/notes", "reason": "notes"}
+    if tool == "skill_update":
+        _call("skill_install", context, **arguments)
+        arguments = {"name": "notes", "mode": "replace"}
+    result = _typed_call(tool, context, **arguments, check="self", check_notes="Read every file.")
+    assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR")
+    assert "only in Cyber Pro" in result.text and "only the owner skips one" in result.text
+    record = read_install_record(drive, "notes")
+    assert record is None if tool == "skill_install" else record["basis"] == "review"
+
+
+def test_tools_record_self_check_without_starting_panel(ctx, cyber_pro):
     context, drive, reviews, _hub = ctx
     _call("skill_search", context)
     installed = json.loads(_call("skill_install", context, id="ouroboros-community/notes", reason="r",
