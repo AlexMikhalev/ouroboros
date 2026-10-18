@@ -1,8 +1,7 @@
 """Readers that announce a retained source test its presence through the pack-aware check, not the
 loose file alone: once the packer has moved a terminal task's checkpoint handles into its pack, a
 Continue successor still reads its predecessor's exact sources and a wake still names a settled late
-review's exact source. A handle that is truly gone stays
-a disclosed gap."""
+review's exact source. A handle that is truly gone is a read failure, never invented bytes."""
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +16,7 @@ from ouroboros.artifacts import store_actor_source_bytes
 from tests.test_evidence_packs import _handle_path, _result, root as root  # noqa: F401  (the shared fixture)
 
 
-def test_a_successor_reads_its_predecessors_packed_sources_and_a_lost_one_stays_a_gap(root):
+def test_a_successor_reads_its_predecessors_packed_sources_and_a_lost_one_fails_to_read(root):
     """The successor path (``main_context_authority.predecessor_notes_message``) reads the
     predecessor's retained sources through ``artifacts.read_actor_source_bytes``: once the packer
     has moved the terminal predecessor's handle into its pack, the same reader still returns the
