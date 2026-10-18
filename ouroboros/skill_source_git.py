@@ -2,8 +2,9 @@
 
 A hub and a plain skills repository are both read from a clone under
 ``data/state/skill_sources/repos/<key>/repo`` (the two public hub rows share one clone because they read
-one repository), fetched with the configured GitHub token for github.com HTTPS, otherwise this
-computer's git credentials. Reads are local files; a refresh fetches the newest commit of the configured
+one repository). GitHub HTTPS reads try anonymously first, then retry an authentication refusal once
+with the configured token; other sources use this computer's git credentials. Reads are local files;
+a refresh fetches the newest commit of the configured
 branch (or the pinned commit) and is started in the background by whoever shows or searches a catalog.
 A pointer entry's author repository is fetched at its exact commit into ``pointers/<key>/repo``.
 A source clone keeps the last ``HISTORY_DEPTH`` commits so its catalog can say when each skill last
@@ -86,10 +87,6 @@ def _git_env(url: str) -> tuple[Dict[str, str], list[str]]:
         token = github_token_from_env_or_settings()
         if token:
             encoded = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-            index = int(env.get("GIT_CONFIG_COUNT") or "0")
-            env.update({"GIT_CONFIG_COUNT": str(index + 1),
-                        f"GIT_CONFIG_KEY_{index}": "http.https://github.com/.extraheader",
-                        f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {encoded}"})
             secrets = [token, encoded]
     return env, secrets
 
@@ -98,13 +95,28 @@ def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_S
     from supervisor.git_ops import _run_git_process_bounded
 
     env, secrets = _git_env(url)
+    authenticated = False
     try:
         code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
+        # GitHub hides private repositories from anonymous readers. Other failures (DNS,
+        # missing refs, local I/O) cannot be repaired by sending a credential.
+        if code and args[0] == "fetch" and secrets and any(marker in str(err or out).lower() for marker in (
+                "could not read username", "could not read password", "authentication failed",
+                "repository not found", "returned error: 401", "returned error: 403")):
+            index = int(env.get("GIT_CONFIG_COUNT") or "0")
+            env = {**env, "GIT_CONFIG_COUNT": str(index + 1),
+                   f"GIT_CONFIG_KEY_{index}": "http.https://github.com/.extraheader",
+                   f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {secrets[1]}"}
+            authenticated = True
+            code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
     except Exception as exc:
-        raise SkillSourceFetchError(redact_known_values(str(exc), secrets)) from None
+        code, out, err = 1, "", str(exc)
     if code != 0:
         detail = " ".join(redact_known_values(str(err or out or ""), secrets).split())[:400]
-        raise SkillSourceFetchError(detail or f"git {args[0]} failed with exit code {code}")
+        detail = detail or f"git {args[0]} failed with exit code {code}"
+        if authenticated:
+            detail = f"The configured GitHub token was refused. {detail}"
+        raise SkillSourceFetchError(detail) from None
     return str(out or "")
 
 
