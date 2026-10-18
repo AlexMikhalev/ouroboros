@@ -500,9 +500,8 @@ def _release_notes(
     else:
         lines.extend([
             "",
-            "macOS: this DMG is not notarized. The release was built without Apple "
-            "notarization credentials, so on macOS 15 and later open the app once, then "
-            "choose Open Anyway in System Settings → Privacy & Security.",
+            "macOS: this DMG is not notarized by Apple, so on macOS 15 and later open the "
+            "app once, then choose Open Anyway in System Settings → Privacy & Security.",
         ])
     if android["status"] != "verified":
         lines.extend([

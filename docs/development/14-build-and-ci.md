@@ -106,7 +106,7 @@ jobs:
 
 ### Apple signing & notarization (macOS Build job)
 
-Prereleases may be unsigned and say so; stable releases apply the configured policy (ARCHITECTURE §8 "Build scripts"). Only the non-secret `HAS_APPLE_SIGNING` gate is job-wide: certificate and keychain values exist only in the import step, Apple ID values only in the build step, and cleanup runs under `always()` plus the matrix/env guards, so signing material never persists across runs. With the Apple ID values present, notarization is fail-closed (`build.sh`): the app, then the DMG, must each read `Accepted` in Apple's JSON and get a validated staple. The DMG smoke requires `spctl` to accept the copied-out app as `Notarized Developer ID`; receipt and notes carry the observed `notarized`/`not_notarized` state.
+Prereleases may be unsigned and say so (ARCHITECTURE §8 "Build scripts"). Only the non-secret `HAS_APPLE_SIGNING` gate is job-wide: certificate and keychain values exist only in the import step, Apple ID values only in the build step, and an `always()` cleanup keeps signing material from persisting across runs. With the Apple ID values present, `build.sh` notarizes fail-closed: the app, then the DMG, must each read `Accepted` in Apple's JSON and get a validated staple. A signed stable DMG's smoke requires both tickets and `spctl` accepting the copied-out app as `Notarized Developer ID`, so signing without notarization stops the release; receipt and notes carry the `notarized`/`not_notarized` state.
 
 ### Windows Authenticode release signing (SSL.com eSigner)
 

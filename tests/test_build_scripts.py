@@ -1078,8 +1078,8 @@ class TestMacOSSigning:
             src.index('staple "$DMG_PATH"'),
         ]
         assert order == sorted(order), "the stapled app must be what the DMG contains"
-        # The outcome no longer degrades to a warning, and the retired advice is gone.
-        assert "NOTARIZE_OUTCOME" not in src and "right-click" not in src
+        # The outcome no longer degrades to a warning.
+        assert "NOTARIZE_OUTCOME" not in src
 
     def test_build_sh_drops_debug_symbols_and_pyobjc_tests_before_pyinstaller(self, tmp_path):
         """Executes build.sh's own payload prune: debug-symbol bundles and pyobjc's

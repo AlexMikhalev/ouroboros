@@ -1887,11 +1887,13 @@ jobs:
           test -L "$SBOM_ROOT/Applications"
           unlink "$SBOM_ROOT/Applications"
           echo "sbom_path=$SBOM_ROOT" >> "$GITHUB_OUTPUT"
-          # A stapled DMG means build.sh notarized this build. Then the app copied
-          # out of it must carry its own ticket and pass Gatekeeper as a user's Mac
-          # judges it: codesign alone passed v7.7.0, whose app Gatekeeper rejected.
+          # Gatekeeper, not codesign, decides whether a Mac opens the app. A signed
+          # stable build must carry both stapled tickets and be accepted as copied
+          # out of the DMG; any failure here stops the release, never relabels it.
           DMG="${{ steps.release_asset.outputs.path }}"
-          if xcrun stapler validate "$DMG" >/dev/null 2>&1; then
+          if [ "${{ needs.release-preflight.outputs.is_prerelease }}" != "true" ] \
+              && [ "$HAS_APPLE_SIGNING" = "true" ]; then
+            xcrun stapler validate "$DMG"
             xcrun stapler validate "$SBOM_ROOT/Ouroboros.app"
             spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 \
               | tee "$RUNNER_TEMP/gatekeeper-dmg.txt"

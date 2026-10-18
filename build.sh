@@ -293,8 +293,10 @@ staple() {
         if xcrun stapler staple "$1" && xcrun stapler validate "$1"; then
             return 0
         fi
-        echo "WARNING: stapling $1 failed (attempt $attempt/3); retrying."
-        sleep 30
+        if [ "$attempt" -lt 3 ]; then
+            echo "WARNING: stapling $1 failed (attempt $attempt/3); retrying."
+            sleep 30
+        fi
     done
     echo "ERROR: no validated notarization ticket could be stapled to $1." >&2
     exit 1

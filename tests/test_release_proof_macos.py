@@ -76,10 +76,10 @@ def test_macos_receipt_records_notarization_state(tmp_path: Path):
               "--commit", "a" * 40, "--tag", "v6.87.5", "--check", "packaged_cli_help"]
     plain, notarized = tmp_path / "plain.json", tmp_path / "notarized.json"
     assert _run_cli(*common, "--output", str(plain)).returncode == 0
-    assert json.loads(plain.read_text())["notarization"] == {"status": "not_notarized"}
+    assert json.loads(plain.read_text(encoding="utf-8"))["notarization"] == {"status": "not_notarized"}
     assert _run_cli(*common, "--output", str(notarized),
                     "--macos-notarization", "notarized").returncode == 0
-    assert json.loads(notarized.read_text())["notarization"] == {"status": "notarized"}
+    assert json.loads(notarized.read_text(encoding="utf-8"))["notarization"] == {"status": "notarized"}
     # An empty workflow output never becomes a state.
     assert _run_cli(*common, "--output", str(tmp_path / "empty.json"),
                     "--macos-notarization", "").returncode != 0
@@ -112,8 +112,64 @@ def test_workflow_records_the_observed_macos_notarization(tmp_path: Path, observ
         assert result.returncode != 0
         return
     assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "dist" / "release-smoke-macos-arm64.json").read_text())
+    receipt = json.loads((tmp_path / "dist" / "release-smoke-macos-arm64.json").read_text(encoding="utf-8"))
     assert receipt["notarization"] == {"status": observed}
     claimed = release_proof.NOTARIZATION_SMOKE_CHECKS & set(receipt["checks"])
     assert claimed == (release_proof.NOTARIZATION_SMOKE_CHECKS if observed == "notarized" else set())
     assert release_proof._notarization_state(receipt, receipt["checks"]) == {"status": observed}
+
+
+@pytest.mark.parametrize(
+    ("prerelease", "signing", "validate_rc", "spctl", "expected"),
+    [
+        ("false", "true", 0, "accepted\nsource=Notarized Developer ID", "notarized"),
+        # A service or ticket error during validation stops the release; it is
+        # never relabelled as an unnotarized build (it was notarized and stapled).
+        ("false", "true", 68, "accepted\nsource=Notarized Developer ID", None),
+        ("false", "true", 0, "rejected\nsource=Unnotarized Developer ID", None),
+        # Gatekeeper switched off on the runner accepts everything: no proof.
+        ("false", "true", 0, "accepted\noverride=security disabled", None),
+        # Prereleases build unsigned by policy; forks without a certificate too.
+        ("true", "true", 0, "", "not_notarized"),
+        ("false", "false", 0, "", "not_notarized"),
+    ],
+)
+def test_smoke_decides_notarization_from_configuration_and_proves_it(
+    tmp_path: Path, prerelease: str, signing: str, validate_rc: int, spctl: str, expected: str | None
+):
+    """Execute the final-DMG smoke's notarization block with a fake xcrun/spctl."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("workflow shell execution requires bash")
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    run = next(step for step in jobs["build"]["steps"]
+               if step.get("name") == "Smoke final macOS DMG")["run"]
+    block = run[run.index('DMG="${{ steps.release_asset.outputs.path }}"'):]
+    block = (block.replace("${{ steps.release_asset.outputs.path }}", (tmp_path / "x.dmg").as_posix())
+             .replace("${{ needs.release-preflight.outputs.is_prerelease }}", prerelease))
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "xcrun").write_text(f'#!/bin/sh\necho "xcrun $*" >> "$CALLS"\nexit {validate_rc}\n',
+                                encoding="utf-8")
+    (fake / "spctl").write_text(f'#!/bin/sh\necho "spctl $*" >> "$CALLS"\nprintf \'{spctl}\\n\'\n'
+                                f'case "{spctl}" in rejected*) exit 3 ;; esac\n', encoding="utf-8")
+    for tool in ("xcrun", "spctl"):
+        (fake / tool).chmod(0o755)
+    output, calls = tmp_path / "output", tmp_path / "calls"
+    env = dict(os.environ, PATH=f"{fake}:{os.environ['PATH']}", HAS_APPLE_SIGNING=signing,
+               SBOM_ROOT=str(tmp_path / "sbom"), RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output),
+               CALLS=str(calls))
+    result = subprocess.run([bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", block],
+                            cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    recorded = output.read_text(encoding="utf-8") if output.exists() else ""
+    if expected is None:
+        assert result.returncode != 0 and "macos_notarization" not in recorded
+    else:
+        assert result.returncode == 0, result.stderr
+        assert recorded == f"macos_notarization={expected}\n"
+    probed = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    if expected == "not_notarized":
+        assert probed == ""
+    if expected == "notarized":
+        assert probed.count("stapler validate") == 2 and probed.count("spctl --assess") == 2
