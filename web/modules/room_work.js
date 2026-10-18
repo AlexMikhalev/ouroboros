@@ -677,6 +677,16 @@ export function createRoomWork({
         });
     }
 
+    // The word goes whole or not at all (DESIGN "Shell"): shown, measured, dropped when the row would cut it, in one
+    // task so nothing paints between; the mark stays and the control's name keeps the word. Measured again when the
+    // word or the bar's width changes (the bar is sized by the page, so this never feeds itself).
+    let fittedWord = null;
+    function fitWord() {
+        if (destroyed) return;
+        delete trigger.dataset.word;
+        if (statusBadge.scrollWidth > statusBadge.clientWidth + 1) trigger.dataset.word = 'off';
+    }
+
     function paintTrigger() {
         const text = clean(statusBadge.textContent);
         const current = rows.filter((row) => !row.settled && !row.latest);
@@ -701,6 +711,7 @@ export function createRoomWork({
         const mixed = !['offline', 'starting', 'wait'].includes(tone) && current.some((row) => row.question);
         trigger.dataset.wait = mixed ? '1' : '0';
         waitNote.hidden = !mixed;
+        if (text !== fittedWord) { fittedWord = text; fitWord(); }
         if (!listed && open) close({ restoreFocus: false });
     }
 
@@ -967,6 +978,9 @@ export function createRoomWork({
         trigger.hidden = away;
     }) : null;
     watcher?.observe(page, { attributes: true, attributeFilter: ['hidden'] });
+    const Resize = globalThis.ResizeObserver;
+    const sizer = bar && typeof Resize === 'function' ? new Resize(() => fitWord()) : null;
+    sizer?.observe(bar);
 
     function schedule() {
         if (destroyed || scheduled) return;
@@ -1001,6 +1015,7 @@ export function createRoomWork({
             clearTimeout(outsideClickTimer);
             if (outsideClick) doc.removeEventListener('click', outsideClick, true);
             watcher?.disconnect();
+            sizer?.disconnect();
             for (const dispose of disposers.splice(0)) dispose();
             openHost?.removeAttribute('data-rw-open');
             // The badge returns where the product put it; this module's nodes go.

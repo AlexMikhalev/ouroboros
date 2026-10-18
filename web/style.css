@@ -3539,6 +3539,7 @@ html[data-layout="stack"] .nav-drawer-backdrop {
     z-index: var(--z-drawer-scrim);
     display: block;
     background: rgba(0, 0, 0, 0.48);
+    touch-action: pan-y pinch-zoom;  /* a sideways finger on the scrim drags the drawer closed (drawer_drag.js) */
 }
 html[data-layout="stack"] .nav-drawer-backdrop[hidden] {
     display: none;

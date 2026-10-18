@@ -308,6 +308,9 @@ def test_the_drawer_follows_a_finger_on_a_phone_room(chromium_ui, tmp_path, room
         if facts['open_drag']['open']:
             swipe(page, (300, y), (20, y))  # starts on the open drawer
             facts['close_drag'] = page.evaluate(DRAWER)
+            swipe(page, (60, y), (330, y))
+            swipe(page, (370, y), (60, y))  # starts on the scrim's visible strip
+            facts['scrim_close_drag'] = page.evaluate(DRAWER)
     finally:
         evidence(tmp_path, f'shell-drawer-drag-{room}', facts)
         page.close()
@@ -316,6 +319,37 @@ def test_the_drawer_follows_a_finger_on_a_phone_room(chromium_ui, tmp_path, room
     assert facts['vertical_up'] == facts['vertical_down'] == {'open': False, 'layers': under}, facts
     assert facts['open_drag'] == {'open': True, 'layers': under + ['drawer']}, facts
     assert facts['close_drag'] == {'open': False, 'layers': under}, facts
+    assert facts['scrim_close_drag'] == {'open': False, 'layers': under}, facts
+
+
+WORD = """bar => {
+    const t = document.querySelector(bar + ' .rw-trigger:not([hidden])');
+    const b = t?.querySelector('.status-badge');
+    if (!t || !b) return null;
+    const shown = getComputedStyle(b).display !== 'none';
+    return {shown, cut: shown && b.scrollWidth > b.clientWidth + 1, word: t.dataset.word || '', title: t.title,
+            mark: [...t.querySelectorAll('.rw-mark, .rw-dots')].some((m) => getComputedStyle(m).display !== 'none')};
+}"""
+
+
+@pytest.mark.parametrize('room,width', [('main', 390), ('project', 390), ('main', 1280)])
+def test_the_status_word_is_whole_or_absent(shell_ui, tmp_path, room, width):
+    page = seed_page(shell_ui, width, 844)
+    facts = {'engine': shell_ui['engine'], 'room': room, 'width': width}
+    try:
+        boot(page, shell_ui)
+        if room == 'project':
+            open_project(page)  # the fixture's long Project name leaves the word no room on a phone
+        page.wait_for_timeout(300)
+        facts['word'] = page.evaluate(WORD, '#project-panel .project-panel-bar' if room == 'project' else '.chat-page-header')
+    finally:
+        evidence(tmp_path, f'shell-status-word-{room}-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+    word = facts['word']
+    assert word and word['mark'] and word['title'], facts
+    assert word['cut'] is False, facts  # never a fragment such as "Wor…"
+    if width >= 720:
+        assert word['shown'] is True, facts  # a bar with room keeps the word
 
 
 INLINE_LINK = """() => {

@@ -43,14 +43,6 @@
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .project-panel-bar .app-page-title-block { flex: 1 1 0; min-width: 0; }
-/* A title row too short for the name, the word and the mark keeps the name and the mark: the word goes whole
-   instead of showing a cut fragment ("Wor…"). The title block is sized by the bar (flex-basis 0), so it can be the
-   container. */
-html[data-layout="stack"] .chat-page-header > .app-page-title-block,
-.project-panel-bar .app-page-title-block { container: rw-title / inline-size; }
-@container rw-title (max-width: 15rem) {
-    .rw-trigger .status-badge { display: none; }
-}
 /* The real badge (setStatus writes it) is bare text inside the control. */
 .rw-trigger .status-badge {
     display: block;
@@ -66,6 +58,9 @@ html[data-layout="stack"] .chat-page-header > .app-page-title-block,
     white-space: nowrap;
     font-weight: 500;
 }
+/* A row too short for the name, the word and the mark keeps the name and the mark: the word goes whole instead of
+   showing a cut fragment ("Wor…"); room_work.js measures it (fitWord). */
+.rw-trigger[data-word="off"] .status-badge { display: none; }
 /* (0,5,0) outranks the light theme's connection colours (0,4,0): the tone below owns the word's ink. */
 :root .rw-trigger[data-tone] .status-badge.status-badge { color: inherit; }
 /* Tones (one producer, chat_activity.js): crimson is live work, amber only the owner's own question, green the
