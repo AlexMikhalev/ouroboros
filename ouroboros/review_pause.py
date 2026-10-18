@@ -796,7 +796,14 @@ def _seat_words(seat: Dict[str, Any]) -> str:
     raw = str(seat.get("raw_text") or "")
     if not raw.strip():
         return "failed: " + (" ".join(str(seat.get("error") or "").split()) or "no answer")
-    answers = parse_two_part_answer(raw, tuple(seat.get("parts") or ())) if seat.get("parts") else None
+    parts = tuple(seat.get("parts") or ())
+    if parts == ("result",):  # a result seat answers the findings array (contract A), not the two-part object
+        from ouroboros.triad_review import parse_seat_answers
+
+        answers = (parse_seat_answers({"results": [{**seat, "text": raw}]}, {str(seat.get("slot_id") or ""): parts})
+                   .actor_records[0].answers or None)
+    else:
+        answers = parse_two_part_answer(raw, parts) if parts else None
     if not answers:
         return "answered; its full answer is in the retained source"
     return "; ".join(f"{part} {answer.get('verdict') or answer.get('status')}"

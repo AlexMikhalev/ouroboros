@@ -58,3 +58,9 @@ def test_review_status_explains_the_pool_gate_codes_in_the_gates_words():
         "selected_attempt": SimpleNamespace(status="blocked", block_reason="result_unanswered", tool_name="review_result"),
         "effective_status": "stale", "open_debts": []})
     assert result.startswith("Last result review BLOCKED (result_unanswered)"), result
+    for code in ("critical_findings", "review_late_result_pending"):  # a result is delivered again, never committed
+        rendered = _review_status_message({
+            "selected_attempt": SimpleNamespace(status="blocked", block_reason=code, tool_name="review_result"),
+            "effective_status": "stale", "open_debts": []})
+        assert "commit" not in rendered.split("|")[0].replace("Last result review", ""), rendered
+        assert "commit" in line(code).split("|")[0].replace("Last commit", ""), line(code)

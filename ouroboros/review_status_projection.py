@@ -458,6 +458,12 @@ def _review_status_message(projection: Dict[str, Any]) -> str:
         }
         label = "BLOCKED" if ca.status == "blocked" else "FAILED"
         what = "result review" if getattr(ca, "tool_name", "") == "review_result" else "commit"
+        if what == "result review":  # a result is revised and delivered again, never committed
+            reason_map.update(
+                critical_findings="Reviewers found critical issues in the result. Revise it or answer the findings, then deliver again.",
+                review_late_result_pending=(
+                    f"Review NOT_PERFORMED: {NOT_PERFORMED_PHRASES['review_late_result_pending']}; no verdict is counted yet. "
+                    "The next delivery of the same result collects it at $0."))
         current = (
             f"Last {what} {label} ({ca.block_reason or 'unclassified'}): "
             f"{reason_map.get(ca.block_reason, ca.block_reason or 'unknown')}"

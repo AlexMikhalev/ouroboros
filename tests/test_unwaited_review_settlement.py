@@ -125,3 +125,31 @@ def test_a_headless_authors_left_seats_are_read_from_the_canonical_custody_root(
     assert gap == "" and roots == [canonical] and seats[0]["raw_text"] == "[]"
     review_pause._left_seats({**record, "canonical_root": ""})
     assert roots[-1] == child
+
+
+def test_an_unwaited_result_review_settles_into_its_rooms_mark_with_each_seats_answer(tmp_path, monkeypatch):
+    """A Presence result's Required review runs with nobody waiting: once its author ended, its record settles
+    from the recorded seats' findings arrays and the outcome is kept in the room, each seat named by its
+    result answer (a result seat answers contract A, never the two-part object)."""
+    data = _data(tmp_path)
+    second = _raw("s2", "m2", "pending", parts=("result",), operation_state="in_flight", late_result_pending=True)
+    record = rl.build_wave_record(_facts([_raw("s1", "m1", parts=("result",)), second], task_id=TASK, pending=True),
+                                  surface="result", drive_root=data)
+    rl.write_record(data, record)
+    ctx = SimpleNamespace(task_id=TASK, drive_root=data, task_metadata={"budget_drive_root": str(data)})
+    assert review_pause.owe_unwaited_review(ctx, surface="result", retry_key="round-1", record_id=record.record_id)
+    [row] = _owed_rows(data).values()
+    seats = [{**seat, "surface": "result", "parts": ["result"]} for seat in _seats()]
+    published = []
+    monkeypatch.setattr(review_pause, "_left_seats", lambda record: (None, seats, ""))
+    monkeypatch.setattr("ouroboros.late_review_marks.publish_late_review",
+                        lambda root, mark: published.append(mark) or SimpleNamespace(status="saved"))
+
+    assert review_pause.ended_left_review(row["left_review"]) == "saved"
+
+    settled = rl.load_record(data, record.record_id)
+    assert settled["state"] == "settled" and settled["verdict"]["aggregate"] == "PASS"
+    [mark] = published
+    assert "result review" in mark["lines"][0] and "Its record now reads PASS" in mark["lines"][0]
+    body = "\n".join(mark["lines"][1:])
+    assert "result PASS" in body and "retained source" not in body, mark["lines"]
