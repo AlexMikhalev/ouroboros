@@ -638,3 +638,89 @@ def test_the_project_panel_keeps_its_own_width_beside_main(shell_ui, tmp_path, w
     content = width - facts['sidebarRight']
     assert facts['panel'] == min(581, content), facts
     assert facts['left'] >= facts['sidebarRight'], facts
+
+
+FOCUS = """() => { const a = document.activeElement;
+    return a === document.body ? 'body' : a.id || (a.dataset.projectId ? 'project:' + a.dataset.projectId
+        : a.dataset.navPage ? 'page:' + a.dataset.navPage : a.className); }"""
+
+
+def test_the_keyboard_stays_in_the_projects_when_a_collapse_hides_its_control(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    current = {'state': live_state(live)}
+    facts = {'engine': shell_ui['engine']}
+    hidden = "id => document.querySelector(`[data-project-id=\"${id}\"]`).closest('[hidden]') !== null"
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
+                               timeout=20_000)
+        page.locator('#nav-projects-toggle').click()
+        facts['show_all_name'] = page.locator('#nav-projects-show-all').get_attribute('aria-label')
+        page.locator('#nav-projects-show-all').focus()
+        page.keyboard.press('Enter')
+        settle(page)
+        facts['after_show_all'] = page.evaluate(FOCUS)
+        page.keyboard.press('Tab')
+        facts['next_tab'] = page.evaluate(FOCUS)
+        # Collapse again, put the keyboard on a live row, then its work ends in a complete census: the row stays
+        # under the keyboard and goes behind "Show all" once focus leaves the Projects.
+        page.locator('#nav-projects-toggle').click()
+        page.locator(f'[data-project-id="{live[0]}"]').focus()
+        current['state'] = live_state(live[1:])
+        page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+        page.wait_for_function(f"() => !document.querySelector('[data-project-id=\"{live[0]}\"]').closest('.nav-project-item').hasAttribute('data-live')",
+                               timeout=20_000)
+        settle(page)
+        facts['focused_row_hidden'] = page.evaluate(hidden, live[0])
+        facts['focus_while_quiet'] = page.evaluate(FOCUS)
+        page.locator('[data-nav-page="chat"]').focus()
+        settle(page)
+        facts['row_hidden_after_leave'] = page.evaluate(hidden, live[0])
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-focus-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['show_all_name'] == f'Show all {len(PROJECTS)} Projects', facts
+    assert facts['after_show_all'].startswith('project:'), facts
+    assert facts['next_tab'] not in ('page:files', 'body'), facts
+    assert facts['focused_row_hidden'] is False and facts['focus_while_quiet'] == f'project:{live[0]}', facts
+    assert facts['row_hidden_after_leave'] is True, facts
+
+
+def test_collapsed_projects_follow_the_census_and_keep_the_open_one(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    current = {'state': live_state([PROJECTS[3]['id']])}
+    facts = {'engine': shell_ui['engine']}
+    rows = "() => [...document.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden).map((e) => e.querySelector('[data-project-id]').dataset.projectId)"
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 1",
+                               timeout=20_000)
+        page.locator('#nav-projects-toggle').click()
+        facts['one'] = page.evaluate(rows)
+        for name, ids_now in (('three', [PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), ('none', [])):
+            current['state'] = live_state(ids_now)
+            page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+            page.wait_for_function(f"() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === {len(ids_now)}",
+                                   timeout=20_000)
+            settle(page)
+            facts[name] = page.evaluate(rows)
+        # The open Project stays in a collapsed list though nothing runs there; once it closes it goes.
+        open_project(page, 12)
+        settle(page)
+        facts['open'] = page.evaluate(rows)
+        page.keyboard.press('Escape')
+        page.wait_for_function("() => window.__ouroLayers.ids().length === 0")
+        page.locator('[data-nav-page="chat"]').focus()
+        settle(page)
+        facts['closed'] = page.evaluate(rows)
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-census-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['one'] == [PROJECTS[3]['id']], facts
+    assert sorted(facts['three']) == sorted([PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), facts
+    assert facts['none'] == [], facts
+    assert facts['open'] == [PROJECTS[12]['id']], facts
+    assert facts['closed'] == [], facts

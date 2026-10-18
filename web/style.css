@@ -64,9 +64,10 @@ html[data-layout="stack"] .shell-icon-control {
 }
 
 /* The sidebar is three zones (docs/DESIGN.md "Shell"): a pinned head (Main Chat), the Projects list as the ONE
-   scroller, a pinned foot (the tools, the version, the update). Row heights follow the pointer: a finger gets the
-   touch minimum, a mouse a quieter row, and a short window with a mouse compacts the rows first. A window too short
-   even for that (the list keeps three rows) falls back to the whole column scrolling with the head sticky. */
+   scroller, and the tools, the version and the update right after it; free room stays under the last row. Row
+   heights follow the pointer: a finger gets the touch minimum, a mouse a quieter row, and a short window with a
+   mouse compacts the rows first. A window too short even for that falls back to the whole column scrolling with
+   the head sticky. */
 #primary-sidebar {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
@@ -157,9 +158,6 @@ html[data-layout="stack"] .shell-icon-control {
     height: var(--window-chrome-top);
     z-index: -1;
     pointer-events: auto;
-}
-:root[data-window-chrome="integrated"] .project-panel-bar {
-    padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
 :root[data-window-chrome="integrated"][data-layout="stack"] .drawer-head {
@@ -302,7 +300,8 @@ html[data-layout="stack"] .resize-handle { display: none; }
     background: var(--accent);
 }
 
-/* Unread is the crimson accent (a live fact for you), never red (danger) and never a glow (owner Q6=A). */
+/* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
+   a Project row's own unread dot is the quieter red dot in a soft ring (.nav-unread-dot). */
 .unread-badge {
     position: absolute;
     top: 4px;
@@ -961,8 +960,8 @@ html[data-layout="stack"] .resize-handle { display: none; }
 
 /* The one header (page_header.js; DESIGN "Shell"): one row, `☰ · title · status … actions · ×`. The leading
    slot holds ☰ (shown by the stack layout), the title row the place's name and the room's status, the toolbar the
-   actions, the trailing slot a Project's ×. A description and a tab strip are not in the row: the lede is the
-   page's first quiet paragraph after it, the tabs their own strip. */
+   actions, the trailing slot a Project's ×. A tab strip is not in the row: it is its own strip under it, and a
+   page has no caption line. */
 .page-header,
 .app-page-header {
     display: grid;
@@ -6760,8 +6759,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    Multi-project sidebar + right thread panel (v6.32.0)
    =========================================================================== */
 
-/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. It keeps
-   at least three rows; a shorter window scrolls the whole column instead (the head stays sticky). */
+/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. A window
+   too short for it scrolls the whole column instead (the head stays sticky). */
 .nav-projects {
     display: flex;
     flex-direction: column;

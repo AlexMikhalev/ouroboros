@@ -75,8 +75,8 @@ const layers = createLayerStack();
 // Loopback-only debug hook, like __ouroWs: browser tests read the stack through it.
 window.__ouroLayers = layers;
 const primarySidebar = document.getElementById('primary-sidebar');
-// The places come from the one registry (pages.js): Main into the pinned head, the tools into the pinned foot
-// before the version, the Projects header into the middle zone. Nothing below looks a row up before this.
+// The places come from the one registry (pages.js): Main into the pinned head, the tools into the foot that
+// follows the Projects, before the version. Nothing below looks a row up before this.
 primarySidebar?.querySelector('.sidebar-head')?.insertAdjacentHTML('beforeend', renderNavRows('head'));
 primarySidebar?.querySelector('.sidebar-foot-meta')?.insertAdjacentHTML('beforebegin', renderNavRows('foot'));
 const navProjectsHeader = primarySidebar?.querySelector('.nav-projects-header');
@@ -227,7 +227,6 @@ function syncNavigationState() {
         if (isActive) button.setAttribute('aria-current', 'page');
         else button.removeAttribute('aria-current');
     });
-    syncProjectsCollapse();  // after the chosen row is marked: a collapsed list keeps the open Project
     if (projectPanel) {
         if (projectPanelHideTimer) {
             clearTimeout(projectPanelHideTimer);
@@ -256,6 +255,8 @@ function syncNavigationState() {
         layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
             onClose: () => closeProjectPanel() });
     } else layers.remove('project');
+    // Last: the open Project's row is marked, and a closed Project's focus is back on its row, which then stays.
+    syncProjectsCollapse();
 }
 
 // Crossing the switch: a drawer has no place in the docked layout; the Project layer changes its modality.
@@ -625,20 +626,32 @@ navProjectsShowAll.addEventListener('click', () => {
 function syncProjectsCollapse() {
     if (!navProjectsList) return;
     const collapsed = !navState.projectsExpanded;
+    const focused = document.activeElement;
     navProjects?.toggleAttribute('data-collapsed', collapsed);
     let total = 0;
     let shown = 0;
     for (const item of navProjectsList.children) {
         if (!item.classList.contains('nav-project-item')) continue;
         total += 1;
-        const keep = !collapsed || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'));
+        // A row under the keyboard or with its menu open stays until focus leaves it (the list's focusout below).
+        const keep = !collapsed || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'))
+            || item.contains(document.activeElement) || Boolean(item.querySelector('[aria-expanded="true"]'));
         item.hidden = !keep;
         if (keep) shown += 1;
     }
     navProjectsList.hidden = collapsed && shown === 0;
     navProjectsShowAll.hidden = !collapsed || shown === total;
     navProjectsShowAll.textContent = fmt('Show all {n}', { n: total });
+    navProjectsShowAll.setAttribute('aria-label', fmt('Show all {n} Projects', { n: total }));
+    // "Show all" hides itself as it expands the list: the keyboard goes on to the first row it revealed.
+    if (focused === navProjectsShowAll && navProjectsShowAll.hidden) {
+        navProjectsList.querySelector('.nav-project-item:not([hidden]) [data-project-id]')?.focus({ preventScroll: true });
+    }
 }
+// Focus leaving the Projects lets a row that stayed only for the keyboard go behind "Show all".
+navProjects?.addEventListener('focusout', (event) => {
+    if (!navProjects.contains(event.relatedTarget)) queueMicrotask(syncProjectsCollapse);
+});
 
 function renderProjectsNav(projects, projectChatIds, activityIndex = projectActivityIndex) {
     const all = projects || [];
@@ -997,8 +1010,10 @@ function setupResizablePanels(prefs) {
             if (frame) { cancelAnimationFrame(frame); apply(); }
             dragging = false; document.body.classList.remove('resizing-panels');  // CW10
             try { handle.releasePointerCapture(e.pointerId); } catch {}
-            const cur = parseInt(getComputedStyle(root).getPropertyValue(cssVar), 10) || 0;
-            persist({ [prefKey]: cur });
+            // Keep the width that is shown: a Project panel dragged past the content area's edge stops at it.
+            const shown = Math.round(target.getBoundingClientRect().width) || 0;
+            root.style.setProperty(cssVar, `${shown}px`);
+            persist({ [prefKey]: shown });
         };
         handle.addEventListener('pointerup', end);
         handle.addEventListener('pointercancel', end);

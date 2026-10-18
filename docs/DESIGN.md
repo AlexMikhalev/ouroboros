@@ -624,8 +624,8 @@ Project/task scope verification waits are static amber; `resumed` questions no
 longer wait. A wait on the same producer row suppresses its working motion; an
 independent working row keeps motion, and the row's accessible name states both
 facts. Unknown or unconfirmed census state stays static and explicitly
-unavailable. The dots take the row's own foreground, like the status-sentence
-dot, so they never out-shout the title and follow its hover and selected ink;
+unavailable. Unlike the room's live status, the sidebar's dots take the row's
+own foreground, so they never out-shout the title and follow its hover and selected ink;
 the wait is the one hue, and no row paints them in a saturated project colour of
 its own. In a Project row the dots and the unread dot each own a reserved
 trailing column, so both sit at one x across rows whether or not the other is
@@ -2130,8 +2130,9 @@ has a pinned head (Main Chat), one collection (Projects, the column's only
 scroller) and the tools right after it (Files, Skills, Widgets, Dashboard,
 Settings, then the version and the update), which reach the bottom edge only
 when the Projects do not fit: free room stays under the last row, never between
-them. Collapsed, the Projects keep the ones with work running or waiting and the
-open one; the rest wait behind "Show all N". The order follows §5; no label is set
+them. Collapsed, the Projects keep the ones whose dots show (work running, queued
+or waiting), the open one and the one under the keyboard; the rest wait behind
+"Show all N". The order follows §5; no label is set
 in capitals. A short window first compacts rows (fine pointer only), then lets the
 whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
 place is chosen at a time, and pressing a place opens it, never closes it.
