@@ -906,10 +906,10 @@ function paintProjectsNav() {
         if (navProjectsList.children[index] !== item) navProjectsList.insertBefore(item, navProjectsList.children[index] || null);
     }
     for (const item of keyed.values()) item.remove();
-    repositionProjectRowMenu();
     // Moving an existing node can blur it even though its identity survives.
     if (focused?.isConnected && navProjectsList.contains(focused) && focused !== document.activeElement) focused.focus({ preventScroll: true });
     patchProjectActivityMarkers(projectActivityIndex);
+    repositionProjectRowMenu();
 }
 
 async function toggleProjectPin(project) {

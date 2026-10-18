@@ -194,3 +194,28 @@ def test_pins_keep_unread_activity_menu_and_deleting_semantics(pins_ui):
     expect(row(page, "older").locator('.nav-project-row')).to_be_disabled()
     expect(row(page, "older").locator('.nav-project-deleting-status')).to_have_text("Deleting…")
     assert row(page, "older").locator('.nav-project-pin').count() == 0
+
+
+def test_menu_repositions_after_a_hidden_pin_is_revealed(pins_ui, tmp_path):
+    ui, expect = pins_ui, pytest.importorskip("playwright.sync_api").expect
+    page, control = ui["page"], ui["control"]
+    control["activities"] = [{"activity_id": "work", "project_id": "newer",
+                              "chat_id": registry.get_project(ui["root"], "newer")["chat_id"],
+                              "kind": "managed_task", "phase": "working"}]
+    refresh(page)
+    expect(row(page, "newer")).to_have_attribute("data-live", "")
+    page.locator('#nav-projects-toggle').click()
+    expect(row(page, "older")).to_be_hidden()
+    kebab = row(page, "newer").locator('.nav-project-kebab')
+    kebab.click()
+    original_anchor = kebab.bounding_box()
+    response = ui["client"].post('/api/projects/older/update', json={"pinned": True})
+    assert response.status_code == 200
+    refresh(page)
+    expect(row(page, "older")).to_be_visible()
+    expect(page.locator('.project-row-menu')).to_be_visible()
+    anchor, popup = kebab.bounding_box(), page.locator('.project-row-menu').bounding_box()
+    assert anchor['y'] != original_anchor['y']
+    assert abs(popup['y'] - (anchor['y'] + anchor['height'] + 4)) <= 1
+    evidence = producer_evidence_dir(tmp_path, "pin-menu", env="OUROBOROS_BROWSER_EVIDENCE_OUT")
+    page.screenshot(path=str(evidence / f"collapsed-menu-{ui['engine']}.png"), animations="disabled")
