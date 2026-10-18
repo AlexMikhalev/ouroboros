@@ -9,7 +9,7 @@ import { skillSourcesApi } from './api_client.js';
 import { bindDialogFocus, bindMenu } from './ui_interactions.js';
 import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import {
-    displayAddress, officialPromise, permissionWords, plural, publicationDisclosure, updateRejectionSentence, versionText,
+    canUpdateWithoutReview, displayAddress, officialPromise, permissionWords, plural, publicationDisclosure, updateRejectionSentence, versionText,
 } from './skill_presentation.js';
 
 let activeClose = null;
@@ -166,7 +166,7 @@ export function openUpdateDialog({ name, sourceName = '', update = {}, installed
 /** The rejected release, not a newer catalog candidate, is what the owner confirms. */
 export async function updateWithoutReview(skill, { dialog = openConfirmDialog, update = skillSourcesApi.updateSkill } = {}) {
     const release = skill.install?.update_rejected;
-    if (!release?.digest || release.digest !== skill.install?.update_available?.digest) return null;
+    if (!canUpdateWithoutReview(skill.install)) return null;
     const confirmed = await dialog({
         title: `Update ${skill.name} to ${release.version} without review?`,
         body: `${updateRejectionSentence(release)} This replaces your current copy with that exact version and lets it run without review. Your choice is recorded.`,

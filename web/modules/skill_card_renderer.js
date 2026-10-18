@@ -18,7 +18,7 @@ import {
 import { installedTime } from './ui_helpers.js';
 import { hasSemanticVerdict, lifecycleMeta } from './review_presentation.js';
 import {
-    buttonHtml, chipHtml, grantPhrases, officialMarkHtml, permissionWords, plural, relativeAge,
+    buttonHtml, canUpdateWithoutReview, chipHtml, grantPhrases, officialMarkHtml, permissionWords, plural, relativeAge,
     shortDate, skipReviewButtonHtml, trayHtml, updateRejectionSentence, versionText,
 } from './skill_presentation.js';
 
@@ -304,7 +304,7 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
             note: updateAction ? `${escapeHtml(versionText(update.version) || 'A new version')} is available.` : '',
             actions: updateAction
                 + (['review_blockers', 'preflight_failed'].includes(rejected.reason) ? smallButton('See findings', name, 'read_findings') : '')
-                + (update?.digest && update.digest === rejected.digest ? smallButton('Update without review', name, 'update_without_review') : '') }));
+                + (canUpdateWithoutReview(install) ? smallButton('Update without review', name, 'update_without_review') : '') }));
     } else if (update && !install?.pending_update) {
         const v = escapeHtml(versionText(update.version) || 'A new version');
         trays.push(modified || install?.base_known === false

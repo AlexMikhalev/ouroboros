@@ -34,6 +34,12 @@ export function updateRejectionSentence(release) {
     return `Update to ${release.version}: ${cause}; the previous version runs.`;
 }
 
+/** With no catalog candidate (including registries), the host pins and checks the rejected release. */
+export function canUpdateWithoutReview(install) {
+    return Boolean(install?.update_rejected?.digest
+        && (!install.update_available || install.update_available.digest === install.update_rejected.digest));
+}
+
 /** Publication visibility follows the selected destination's host fact. */
 export function publicationDisclosure(privateRepository = false) {
     return privateRepository === true

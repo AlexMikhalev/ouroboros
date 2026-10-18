@@ -148,17 +148,23 @@ test('per-release withdrawal names the withdrawn version supplied by the host', 
 
 test('each rejected update states its cause and keeps the reviewed retry; only findings have a findings action', () => {
     const causes = { rejected_newer: 'its review found problems', review_unfinished: 'its review didn&#39;t finish',
-        preflight_failed: 'its file checks failed', landing_failed: 'it couldn&#39;t be installed' };
+        preflight_failed: 'its file checks failed', landing_failed: 'it couldn&#39;t be installed',
+        registry_rejected: 'its review didn&#39;t finish' };
     for (const row of ROUND2) {
         const tray = traysOf(renderInstalledSkillCard(row));
         assert.ok(tray.includes(`${causes[row.name]}; the previous version runs.`), tray);
-        assert.match(tray, /data-skill-action="update"[^>]*>Update</);
+        assert.equal(tray.includes('data-skill-action="update"'), Boolean(row.install.update_available));
         assert.equal(tray.includes('data-skill-action="read_findings"'), ['review_blockers', 'preflight_failed'].includes(row.install.update_rejected.reason));
         assert.equal(tray.includes('data-skill-action="update_without_review"'), row.name !== 'rejected_newer');
         if (row.name === 'rejected_newer') assert.match(tray, /v0\.3\.3 is available/);
         const unavailable = structuredClone(row);
         unavailable.install.update_available = null;
-        assert.doesNotMatch(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update(?:_without_review)?"/);
+        assert.doesNotMatch(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update"/);
+        assert.match(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update_without_review"/);
+        delete unavailable.install.update_available;
+        assert.match(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update_without_review"/);
+        delete unavailable.install.update_rejected.digest;
+        assert.doesNotMatch(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update_without_review"/);
     }
 });
 
