@@ -110,7 +110,7 @@ rule is retried unchanged (`tools/arg_feedback`).
 A producer that knows its call failed publishes that fact typed
 (`tool_result._publish_tool_result`, or a first-line `⚠️ IDENTIFIER`): identifier-less
 `⚠️ prose` and bare `ERROR: ...` are recorded as a successful call in `tools.jsonl`, the
-outcome classifier and the result review's subject, so the failure is lost where the next
+outcome classifier and the result subject, so the failure is lost where the next
 decision reads it. A wrapper carries its inner producer's failure forward, and a
 supervising wake is acknowledged on the published `supervision_wake_id`, never on the
 tool's name (ARCHITECTURE §6 "Delegated subagents").
