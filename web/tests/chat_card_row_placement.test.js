@@ -395,13 +395,17 @@ const childWords = () => {
         history_id: `${row.is_progress ? 'progress' : 'chat'}:${offset}`,
         history_position: { source: row.is_progress ? 'progress' : 'chat', offset } });
     const photo = { role: 'assistant', is_progress: false, system_type: 'photo', msg_type: 'photo', mime: 'image/png',
-        text: 'CHILD_PHOTO', caption: 'CHILD_PHOTO', download_url: '/api/tasks/kid-1/artifacts/chat-media-x',
+        text: 'CHILD_PHOTO', caption: 'CHILD_PHOTO', download_url: `/api/tasks/kid-1/artifacts/chat-media-${'a'.repeat(64)}.png`,
         task_id: 'kid-1', ...KID, ts: ts(live.length - 1), history_id: 'chat:99', history_position: { source: 'chat', offset: 99 } };
-    return { live, history: [...live.map(stored), photo], running_history: live.slice(0, -1).map(stored) };
+    const history = live.map(stored);
+    // Like the real producer, the photo precedes the final. A render failure
+    // there must not leave the rest of a reload silently untested.
+    history.splice(history.length - 1, 0, photo);
+    return { live, history, running_history: live.slice(0, -1).map(stored) };
 };
 const feedBubbles = (messages, text) => messages.children.filter((node) => node.classList.contains('chat-bubble')
     && String(node.innerHTML).includes(text));
-// The DOM stub mounts no media gallery; a photo is checked never to become a card line.
+// A photo stays outside the card; its item-owned controls must render before the final.
 const lineKeysOf = (history, test) => history.filter(test)
     .map((row) => `history-${row.history_id.replace(/[^A-Za-z0-9_-]/g, '-')}`);
 const isPhoto = (row) => row.msg_type === 'photo';
@@ -575,6 +579,11 @@ test('child words: a reload places the same rows the same way', async () => {
             words, 'each stored word is one line of the child\'s card');
         assert.equal(feedBubbles(messages(), 'CHILD_WORDS').length, 0, 'never a conversation bubble');
         assert.equal(kid.dataset.finished, '1', 'the stored final concludes the child');
+        const photos = feedBubbles(messages(), 'CHILD_PHOTO');
+        assert.equal(photos.length, 1, 'the photo before the final was rendered, not skipped');
+        const figure = photos[0].querySelector('.chat-gallery-item');
+        assert.ok(figure?.querySelector('summary'), 'the photo menu belongs to its figure');
+        assert.ok(figure.querySelector('[data-photo-action="open"]'));
         assert.equal(feedBubbles(messages(), 'Not delivered').length, 1, 'the notice stays a row of its own');
         assert.ok(systemBubbles(messages()).some((node) => node.innerHTML.includes('Not delivered')));
         const photo = lineKeysOf(history, isPhoto);

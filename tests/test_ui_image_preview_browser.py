@@ -19,7 +19,8 @@ import pytest
 
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_ui_document_reader_browser import (
-    LEFT_BEHIND, NARROW, OPEN_ROOM, WIDE, _enter_room, _feed_scroll, _send_files_mock,
+    LEFT_BEHIND, NARROW, OPEN_ROOM, WIDE, _check_reader_place, _close_with_escape,
+    _enter_room, _feed_scroll, _open as _open_document, _send_files_mock,
 )
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
@@ -401,3 +402,61 @@ def test_owner_upload_preview_in_a_project_room_closes_with_back_and_navigation(
                 page.locator(f'[id="pchat-{other["id"]}-input"]').click(timeout=5_000)
             finally:
                 browser.close()
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server_with_data, monkeypatch, engine):  # noqa: F811
+    """A late socket row above an open reader legitimately changes scrollTop.
+    Assert the visible card's position instead of mistaking that compensation
+    for a close/focus regression; unchanged-layout checks still require both.
+    The frame is synthetic, delivered through the real SPA socket decoder.
+    """
+    from playwright.sync_api import sync_playwright
+
+    source = direct_server_with_data["data_dir"] / "anchor.md"
+    source.write_text("# Anchored reader\n\nThe conversation stays in place.\n", encoding="utf-8")
+    calls = []
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, engine).launch()
+        try:
+            page = browser.new_page(viewport=WIDE)
+            page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+            page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
+            page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === WebSocket.OPEN)")
+            _deliver(page, monkeypatch, [source], calls, tool="send_file", replies=1)
+            page.locator('#chat-messages .chat-live-card [data-phase="done"]').wait_for()
+            emit = """frames => {
+                const socket = window.__testSockets.find(s => s.readyState === WebSocket.OPEN);
+                for (const frame of frames) socket.dispatchEvent(new MessageEvent('message', {data: JSON.stringify(frame)}));
+            }"""
+            for label, year in (("Earlier", 1999), ("Following", 2099)):
+                page.evaluate(emit, [{"type": "chat", "role": "assistant", "chat_id": 1,
+                    "content": f"{label} conversation {i}", "ts": f"{year}-01-01T00:00:{i:02d}Z"} for i in range(24)])
+            card = page.locator("#chat-messages .chat-file-card").filter(has_text="anchor.md")
+            card.scroll_into_view_if_needed()
+            # A reader away from the live edge: no native anchoring can hide a
+            # missing application-owned viewport compensation.
+            page.add_style_tag(content="#chat-messages { overflow-anchor: none; }")
+            box = card.bounding_box()
+            page.mouse.move(box["x"] + 20, box["y"] + 20)
+            page.mouse.wheel(0, -40)
+            _feed_scroll(page)
+            state = _open_document(page, "anchor.md", ready=".document-reader-markdown")
+            before = state["opening_place"]
+            assert before["scroll"] > 0
+            page.evaluate(emit, [{"type": "chat", "role": "assistant", "chat_id": 1,
+                "content": "Late history above the visible window. " * 24, "ts": "1998-01-01T00:00:00Z"}])
+            page.wait_for_function("h => document.querySelector('#chat-messages').scrollHeight > h", arg=before["height"])
+            _close_with_escape(page)
+            _check_reader_place(page, "anchor.md", state)
+            assert abs(_feed_scroll(page) - before["scroll"]) > 1, "the old raw-offset oracle would falsely fail"
+            assert page.evaluate("() => document.activeElement?.classList.contains('chat-file-card')")
+            # A real 16 px reveal must still fail even though the feed grew:
+            # this oracle does not excuse visible jumps on changed geometry.
+            offset = _feed_scroll(page)
+            page.evaluate("() => { document.querySelector('#chat-messages').scrollTop += 16; }")
+            assert abs(_feed_scroll(page) - offset - 16) <= 1
+            with pytest.raises(AssertionError):
+                _check_reader_place(page, "anchor.md", state)
+        finally:
+            browser.close()

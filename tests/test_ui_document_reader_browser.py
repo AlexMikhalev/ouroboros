@@ -123,13 +123,15 @@ def _open(page, name, *, ready=".document-reader-markdown, .document-reader-sour
     # Playwright may scroll again to avoid fixed chrome before dispatching
     # the click. Measure the actual opening gesture, before the reader handler.
     card.evaluate("""(node, feed) => node.addEventListener('click', () => {
-        node.__readerOpeningScroll = document.querySelector(feed).scrollTop;
+        const root = document.querySelector(feed);
+        node.__readerOpeningPlace = {scroll: root.scrollTop, height: root.scrollHeight,
+            top: node.getBoundingClientRect().top};
     }, {capture: true, once: true})""", feed)
     card.click()
     page.locator("dialog.document-reader[open]").wait_for(state="visible")
     page.locator(f"dialog.document-reader[open] :is({ready})").first.wait_for(state="attached")
     state = _reader(page)
-    state["opening_scroll"] = card.evaluate("node => node.__readerOpeningScroll")
+    state["opening_place"] = card.evaluate("node => node.__readerOpeningPlace")
     return state
 
 
@@ -149,6 +151,22 @@ def _feed_scroll(page, feed="#chat-messages"):
             return value[0]
         value = latest
     return value[0]
+
+
+def _check_reader_place(page, name, state, feed="#chat-messages"):
+    """Keep the visible card in place, not an obsolete absolute offset. A late
+    task row can grow the feed above it while the reader is open: stable-viewport
+    must then change scrollTop to preserve the same visible reading position.
+    With unchanged feed geometry, the absolute offset must also remain unchanged.
+    """
+    scroll = _feed_scroll(page, feed)
+    card = page.locator(f"{feed} .chat-file-card").filter(has_text=name)
+    current = card.evaluate("""(node, feed) => ({top: node.getBoundingClientRect().top,
+        height: document.querySelector(feed).scrollHeight})""", feed)
+    before = state["opening_place"]
+    assert abs(current["top"] - before["top"]) <= 1, (before, current, scroll)
+    if current["height"] == before["height"]:
+        assert abs(scroll - before["scroll"]) <= 1, (before, current, scroll)
 
 
 def _check_brief(state, title="brief.md"):
@@ -246,7 +264,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.locator('[data-reader-view="formatted"]').click()
             _close_with_escape(page)
             assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('brief.md')")
-            assert abs(_feed_scroll(page) - state["opening_scroll"]) <= 1, "closing returns to the same place in the conversation"
+            _check_reader_place(page, "brief.md", state)
 
             state = _open(page, "notes.txt", ready=".document-reader-source")
             assert state["source"] == NOTES and not state["views"] and state["meta"].startswith("TXT · ")
@@ -352,7 +370,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.screenshot(path=str(evidence / "chromium-narrow-light-brief.png"))
             page.locator('dialog.document-reader [data-reader-action="close"]').click()
             page.locator("dialog.document-reader").wait_for(state="detached")
-            assert abs(_feed_scroll(page) - state["opening_scroll"]) <= 1
+            _check_reader_place(page, "brief.md", state)
         finally:
             chromium.close()
 
@@ -370,7 +388,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.screenshot(path=str(evidence / "webkit-wide-light-brief.png"))
             _close_with_escape(page)
             assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('brief.md')")
-            assert abs(_feed_scroll(page) - state["opening_scroll"]) <= 1
+            _check_reader_place(page, "brief.md", state)
             state = _open(page, "big.md", ready=".document-reader-markdown")
             assert "Showing the first 1.0 MB of 1.5 MB" in state["notice"] and "UTF-8" not in state["notice"]
             _close_with_escape(page)
@@ -498,7 +516,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             page.screenshot(path=str(evidence / "chromium-wide-dark-project-brief.png"))
             _close_with_escape(page)
             assert page.evaluate(f"() => document.activeElement?.closest('{feed} .chat-file-card')?.textContent.includes('room-brief.md')")
-            assert abs(_feed_scroll(page, feed) - state["opening_scroll"]) <= 1, "closing returns to the same place in the room"
+            _check_reader_place(page, "room-brief.md", state, feed)
 
             # Reload: the room rebuilds from history and reads the immutable artifact route.
             page.reload(wait_until="domcontentloaded")
@@ -557,7 +575,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             page.screenshot(path=str(evidence / "webkit-narrow-light-project-brief.png"))
             _close_with_escape(page)
             assert page.evaluate(f"() => document.activeElement?.closest('{feed} .chat-file-card')?.textContent.includes('room-brief.md')")
-            assert abs(_feed_scroll(page, feed) - state["opening_scroll"]) <= 1
+            _check_reader_place(page, "room-brief.md", state, feed)
 
             held = []
             page.route("**/artifacts/**", lambda route: held.append(route))
