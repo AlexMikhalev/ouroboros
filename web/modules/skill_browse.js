@@ -126,13 +126,14 @@ export function browseCardState(item, { source = null, installed = null, listed 
         }
         const model = installedSkillModel(installed, { reviewing });
         const v = escapeHtml(versionText(installed.version));
-        if (model.modified) return { status: statusHtml(`Installed · modified here`, 'muted'), action: act('Details', 'open', 'ghost') };
+        const update = installed.install?.update_available;
+        const retryUpdate = update && installed.install?.update_rejected;
+        if (model.modified && !retryUpdate) return { status: statusHtml(`Installed · modified here`, 'muted'), action: act('Details', 'open', 'ghost') };
         if (installed.lifecycle_pending) return { status: statusHtml(escapeHtml(installed.lifecycle_kind === 'update' ? 'Updating…' : 'Working…'), 'warn', { work: true }), action: '' };
         if (/Reviewing/.test(model.chip)) {
             return { status: statusHtml('Reviewing · you can skip', 'warn', { work: true }), action: skipReviewButtonHtml(`data-browse-action="skip" data-item="${id}"`) };
         }
-        if (model.needs) return { status: statusHtml(`Installed ${v} · needs you`, 'warn'), action: act('Open in Installed', 'installed') };
-        const update = installed.install?.update_available;
+        if (model.needs && !retryUpdate) return { status: statusHtml(`Installed ${v} · needs you`, 'warn'), action: act('Open in Installed', 'installed') };
         if (update) {
             const same = update.version && update.version === installed.install?.release?.version;
             return { status: statusHtml(same ? `Installed ${v} · new files for the same version` : `Installed ${v} · ${escapeHtml(versionText(update.version))} available`, 'muted'), action: act('Update', 'update') };

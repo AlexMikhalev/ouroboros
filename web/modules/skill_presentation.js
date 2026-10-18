@@ -23,6 +23,17 @@ export function versionText(version) {
     return /^v\d/i.test(text) ? text : `v${text}`;
 }
 
+/** The host's update outcome, shared by the card and exact-release confirmation. */
+export function updateRejectionSentence(release) {
+    const cause = {
+        review_blockers: 'its review found problems',
+        preflight_failed: 'its file checks failed',
+        review_unfinished: "its review didn't finish",
+        landing_failed: "it couldn't be installed",
+    }[release.reason] || 'it did not complete';
+    return `Update to ${release.version}: ${cause}; the previous version runs.`;
+}
+
 function timeOf(value) {
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
     const parsed = Date.parse(String(value || ''));

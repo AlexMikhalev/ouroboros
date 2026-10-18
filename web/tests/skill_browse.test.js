@@ -119,6 +119,22 @@ test('one name, two sources: the card offers Compare… instead of a silent repl
     assert.match(text(browseCardState(item('ouroboros-community/old_tool'), {}).status), /^Withdrawn by Ouroboros Community$/);
 });
 
+test('Browse offers the current update after rejection, including a newer release and a modified restored copy', () => {
+    for (const row of fixture('extensions_fix_r2.json').skills) {
+        for (const modified of [false, true]) {
+            row.install.modified = modified;
+            const entry = { ...item('ouroboros/weather'), name: row.name };
+            const state = browseCardState(entry, { installed: row });
+            assert.match(state.action, /data-browse-action="update"/);
+            assert.doesNotMatch(state.action, /Open in Installed/);
+            assert.ok(text(state.status).includes(`v${row.install.update_available.version} available`));
+        }
+    }
+    const row = fixture('extensions_fix_r2.json').skills[0];
+    row.install.update_available = null;
+    assert.match(browseCardState(item('ouroboros/weather'), { installed: row }).action, /Open in Installed/);
+});
+
 test('before the installed listing is read, the catalog\'s own join says installed or taken, with no action', () => {
     const early = browseCardState(item('ouroboros/weather'), { listed: false });
     assert.equal(text(early.status), 'Installed · v0.3.1');

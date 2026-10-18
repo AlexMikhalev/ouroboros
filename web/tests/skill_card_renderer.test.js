@@ -12,6 +12,7 @@ import {
 const LISTING = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_v4.json', import.meta.url), 'utf8'));
 const row = (name) => structuredClone(LISTING.skills.find((skill) => skill.name === name));
 const FIXES = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_fix_r1.json', import.meta.url), 'utf8')).skills;
+const ROUND2 = JSON.parse(readFileSync(new URL('./fixtures/skills_v4/extensions_fix_r2.json', import.meta.url), 'utf8')).skills;
 const chipOf = (html) => html.match(/<span class="skills-card-status"><span class="ui-chip skills-chip" data-tone="([^"]+)"[^>]*>(?:<span class="chat-live-typing[^"]*"[^>]*>(?:<span><\/span>){3}<\/span>)?([^<]+)</);
 const traysOf = (html) => html.split('data-skill-trays>')[1].split('<div data-skill-errors>')[0];
 
@@ -105,10 +106,10 @@ test('withdrawn and left-source skills say so; a withdrawn one offers Uninstall'
 test('a rejected update names the restored state and offers findings and owner skip; a pending update stays off', () => {
     const rejected = FIXES.find((skill) => skill.name === 'update_rejected');
     const html = renderInstalledSkillCard(rejected);
-    assert.match(traysOf(html), /The update to 0\.3\.2 didn’t pass its review, so the previous version runs\./);
+    assert.match(traysOf(html), /its review found problems; the previous version runs\./);
     assert.match(traysOf(html), /data-skill-action="read_findings"[^>]*>See findings</);
     assert.match(traysOf(html), /data-skill-action="update_without_review"[^>]*>Update without review</);
-    assert.doesNotMatch(traysOf(html), /is available/);
+    assert.match(traysOf(html), /data-skill-action="update"[^>]*>Update</);
     assert.deepEqual(chipOf(html).slice(1), ['ok', 'On']);
     const pending = renderInstalledSkillCard(FIXES.find((skill) => skill.name === 'pending_update'));
     assert.match(traysOf(pending), /Updating to 2\.0\.0: it stays off until the review finishes\./);
@@ -121,7 +122,7 @@ test('a rejected update names the restored state and offers findings and owner s
 test('self-check is escaped, abbreviated in the review sentence, complete in Details and has no pending chip', () => {
     const checked = FIXES.find((skill) => skill.name === 'self_checked');
     const html = renderInstalledSkillCard(checked);
-    assert.match(reviewSentence(checked), /^Ouroboros read it before installing and recorded why: “/);
+    assert.match(reviewSentence(checked), /^Ouroboros read it before accepting it and recorded why: “/);
     assert.ok(reviewSentence(checked).length < checked.install.check.notes.length);
     assert.doesNotMatch(html, /<script>|>pending<|Reviewed on this computer/);
     assert.match(html, /&lt;script&gt;/);
@@ -136,6 +137,29 @@ test('per-release withdrawal names the withdrawn version supplied by the host', 
     const withdrawn = structuredClone(FIXES.find((skill) => skill.name === 'old_tool'));
     withdrawn.install.withdrawn.version = '0.1.9';
     assert.match(traysOf(renderInstalledSkillCard(withdrawn)), /Version 0\.1\.9 was withdrawn by Ouroboros Community: Sends data to an unnamed server\./);
+    withdrawn.install.update_available = { version: '0.1.8', digest: 'c'.repeat(64) };
+    const tray = traysOf(renderInstalledSkillCard(withdrawn));
+    assert.match(tray, /data-skill-action="update"[^>]*>Update</);
+    assert.match(tray, /data-skill-action="uninstall"[^>]*>Uninstall</);
+    assert.match(tray, /v0\.1\.8/);
+    delete withdrawn.install.withdrawn.version;
+    assert.doesNotMatch(traysOf(renderInstalledSkillCard(withdrawn)), /data-skill-action="update"/);
+});
+
+test('each rejected update states its cause and keeps the reviewed retry; only findings have a findings action', () => {
+    const causes = { rejected_newer: 'its review found problems', review_unfinished: 'its review didn&#39;t finish',
+        preflight_failed: 'its file checks failed', landing_failed: 'it couldn&#39;t be installed' };
+    for (const row of ROUND2) {
+        const tray = traysOf(renderInstalledSkillCard(row));
+        assert.ok(tray.includes(`${causes[row.name]}; the previous version runs.`), tray);
+        assert.match(tray, /data-skill-action="update"[^>]*>Update</);
+        assert.equal(tray.includes('data-skill-action="read_findings"'), ['review_blockers', 'preflight_failed'].includes(row.install.update_rejected.reason));
+        assert.equal(tray.includes('data-skill-action="update_without_review"'), row.name !== 'rejected_newer');
+        if (row.name === 'rejected_newer') assert.match(tray, /v0\.3\.3 is available/);
+        const unavailable = structuredClone(row);
+        unavailable.install.update_available = null;
+        assert.doesNotMatch(traysOf(renderInstalledSkillCard(unavailable)), /data-skill-action="update(?:_without_review)?"/);
+    }
 });
 
 test('conflicts lock an off switch with a visible reason but never trap an enabled skill', () => {

@@ -4,14 +4,14 @@ import { createMySkillsDestination, firstStartTrustHtml, sourceProbeWarning, upd
 import { skillSourcesApi } from '../modules/api_client.js';
 
 test('rejected update confirms its exact version and sends only that release after literal confirmation', async () => {
-    const skill = { name: 'demo', install: { update_rejected: { version: '2.0', digest: 'd'.repeat(64) },
-        update_available: { version: '3.0', digest: 'e'.repeat(64) } } };
+    const skill = { name: 'demo', install: { update_rejected: { version: '2.0', digest: 'd'.repeat(64), reason: 'review_blockers' },
+        update_available: { version: '2.0', digest: 'd'.repeat(64) } } };
     for (const decision of [false, null, undefined, { confirmed: true }, true]) {
         const calls = [];
         const result = await updateWithoutReview(skill, {
             dialog: async (model) => {
                 assert.match(model.title, /demo to 2\.0 without review/);
-                assert.match(model.body, /Version 2\.0 didn’t pass/);
+                assert.match(model.body, /its review found problems; the previous version runs\./);
                 assert.equal(model.confirmLabel, 'Update without review');
                 return decision;
             },
@@ -19,6 +19,20 @@ test('rejected update confirms its exact version and sends only that release aft
         });
         assert.deepEqual(calls, decision === true ? [['demo', 'replace', 'd'.repeat(64), '', { skipReview: true }]] : []);
         assert.deepEqual(result, decision === true ? { ok: true } : null);
+    }
+});
+
+test('owner skip is only offered for the current rejected candidate and states the actual cause', async () => {
+    for (const candidate of [null, { digest: 'newer' }]) {
+        await updateWithoutReview({ name: 'demo', install: { update_rejected: { digest: 'rejected' }, update_available: candidate } }, {
+            dialog: () => assert.fail('a missing or changed candidate must not be offered'),
+            update: () => assert.fail('nothing was confirmed'),
+        });
+    }
+    for (const [reason, cause] of Object.entries({ review_unfinished: "its review didn't finish", preflight_failed: 'its file checks failed', landing_failed: "it couldn't be installed" })) {
+        await updateWithoutReview({ name: 'demo', install: {
+            update_rejected: { version: '2.0', digest: 'd', reason }, update_available: { digest: 'd' },
+        } }, { dialog: async (model) => { assert.ok(model.body.includes(cause)); return false; } });
     }
 });
 

@@ -56,7 +56,7 @@ def test_acceptance_and_update_outcomes(skills_browser, browser_name, width, the
     try:
         page, skills, errors = _open(browser, width, theme, browser_name)
         rejected = _only(page, "update_rejected")
-        assert "The update to 0.3.2 didn’t pass its review, so the previous version runs." in rejected.inner_text()
+        assert "Update to 0.3.2: its review found problems; the previous version runs." in rejected.inner_text()
         assert rejected.locator('.skills-toggle').is_checked()
         capture(page, browser_name, width, f"{theme}-update-rejected")
         rejected.get_by_role("button", name="See findings", exact=True).click()
@@ -83,7 +83,7 @@ def test_acceptance_and_update_outcomes(skills_browser, browser_name, width, the
         for name, sentence in [
             ('weather', 'because you trust Ouroboros.'),
             ('telegram', 'because you trust Built in.'),
-            ('self_checked', 'Ouroboros read it before installing and recorded why:'),
+            ('self_checked', 'Ouroboros read it before accepting it and recorded why:'),
         ]:
             card = _only(page, name)
             card.locator('.skills-details > summary').click()
