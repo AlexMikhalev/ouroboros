@@ -734,7 +734,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 assert page.locator(rehome_card).get_attribute("data-finished") == "0"
 
                 # Fast terminal truth ledgers a root even though rehome left no
-                # local activity/missing entry; late typing and old state stay inert.
+                # local activity/missing entry; late typing and old state leave its card finished.
                 page.evaluate(
                     """() => window.__ouroWs.emit('log', {
                         type: 'log', chat_id: 1,

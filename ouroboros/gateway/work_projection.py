@@ -44,6 +44,7 @@ class _Observations:
         self.drive_root = drive_root
         self.results: Dict[str, Optional[dict]] = {}
         self.fences: Dict[str, dict] = {}
+        self.reviews: Dict[str, bool] = {}
         self.gaps: List[Dict[str, Any]] = []
 
     def result(self, task_id: str) -> Optional[dict]:
@@ -57,6 +58,19 @@ class _Observations:
                 log.debug("Work projection could not read %s", task_id, exc_info=True)
                 self.results[task_id] = None
         return self.results[task_id]
+
+    def review_live(self, task_id: str) -> bool:
+        """The task's own live review operation (an acceptance review after its answer), read from its result."""
+        if task_id not in self.reviews:
+            try:
+                from ouroboros.review_operation import task_has_live_review_operation
+
+                self.reviews[task_id] = task_has_live_review_operation(
+                    self.drive_root, task_id, result_loader=lambda tid: self.result(tid) or {})
+            except Exception:
+                log.debug("Work projection could not read the review operation of %s", task_id, exc_info=True)
+                self.reviews[task_id] = False
+        return self.reviews[task_id]
 
     def fence(self, root_id: str, drive_root: Any = None) -> dict:
         if root_id not in self.fences:
@@ -266,9 +280,10 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         current_id = str(episode["task_id"])
 
         def stoppable(root: str) -> bool:
-            # The Stop door takes a root whose tree still has a live queue or direct row; a settled tree whose only
-            # writer is a delegated run, a handoff or a process answers 404, so no control is offered for it.
-            return any(member["activity"] != "unknown" for member in owners_by_root.get(root, ()))
+            # The Stop door's own test for a settled tree (queue_transitions.task_subtree_is_live): a live queue or
+            # direct row of the tree (every member is one) or the root's live review operation. A tree whose only
+            # writer is another delegated run, a handoff or a process answers 404, so no control is offered for it.
+            return bool(owners_by_root.get(root)) or obs.review_live(root)
 
         # Every other episode root that still owns a live member is the earlier attempt; a retry attempt's own
         # original stands for the same episode, never an earlier one.
