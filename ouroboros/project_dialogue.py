@@ -224,12 +224,14 @@ def owner_message_ref_is_valid(ref: Any) -> bool:
     )
 
 
-def source_refs_for_project(drive_root: Any, project_chat_id: int) -> List[Dict[str, Any]]:
+def source_refs_for_project(drive_root: Any, project_chat_id: int, *, bindings=None) -> List[Dict[str, Any]]:
     """Canonical owner-row references held by bindings for one Project lens."""
     from ouroboros.projects_registry import project_task_bindings
 
     refs: List[Dict[str, Any]] = []
-    for row in project_task_bindings(drive_root).values():
+    for row in (project_task_bindings(drive_root) if bindings is None else bindings).values():
+        if not isinstance(row, dict):
+            continue  # raw ``bindings`` keep malformed rows; project_task_bindings drops them too
         try:
             same_chat = int(row.get("project_chat_id") or 0) == int(project_chat_id or 0)
         except (TypeError, ValueError):

@@ -164,12 +164,15 @@ class ChatHistoryWindow(TypedDict, total=False):
 
 
 class ChatHistoryAnchor(TypedDict, total=False):
-    """What an ``around=task:<id>`` read found: ``found`` (its page lands on ``history_id``), ``absent``
-    (the thread's saved history holds no row of the task a client could show) or ``moved`` (another
-    thread's)."""
+    """``around``: a task's card or an exact stored row. ``found`` binds ``history_id``; ``moved``
+    names a row's current ``chat_id``. Row misses distinguish absent (both sources complete),
+    ambiguous and unavailable (no visible active home). Source failures/imports answer 503.
+    A row has ``row_address``; a task has ``task_id``. Neither may substitute for the other."""
 
     state: Required[str]
-    task_id: Required[str]
+    task_id: str
+    row_address: str
+    chat_id: int
     history_id: str
 
 

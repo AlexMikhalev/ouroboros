@@ -830,3 +830,59 @@ def test_tasks_notify_word_and_icon_follow_the_host_phase(tmp_path, monkeypatch)
         "✅ Задача ok1 готова",
         "⚠️ Задача odd1 готова · failed",
     ]
+
+
+def _tree_cost(amount, *, final=True, unpriced=False, open_=False, rows=True, scope="root_tree"):
+    return {"scope": scope, "tracked_amount": amount, "has_unpriced": unpriced, "tracked_final": final,
+            "accounting_open": open_, "has_rows": rows}
+
+
+def _notify_one_root(nt, api, data, monkeypatch, result):
+    _Rec.sent = []
+    monkeypatch.setattr(nt, "TelegramClient", _Rec)
+    monkeypatch.setattr("ouroboros.task_results.load_task_result", lambda _root, _tid: result)
+    row = {"type": "task_summary", **_OWNER_ROOT, "task_id": "cost1",
+           "outcome_axes": {"lifecycle": {"status": "completed"}}}
+    (data / "logs" / "chat.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    asyncio.run(nt._check_tasks_notify(api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, {"notified_task_ids": []}, "en"))
+    return [text for _chat, text in _Rec.sent]
+
+
+@pytest.mark.parametrize(("result", "line"), [
+    ({"cost_presentation": _tree_cost(3.42)}, "✅ Task cost1 done · $3.42"),
+    ({"cost_presentation": _tree_cost(3.42, final=False, open_=True)}, "✅ Task cost1 done · up to $3.42"),
+    ({"cost_presentation": _tree_cost(3.42, final=False, unpriced=True)}, "✅ Task cost1 done · Tracked: up to $3.42"),
+    ({"cost_presentation": _tree_cost(3.42, unpriced=True)}, "✅ Task cost1 done · Tracked: $3.42"),
+    ({"cost_presentation": _tree_cost(0.125)}, "✅ Task cost1 done · $0.13"),  # toFixed(2) rounds a tie up
+    ({"cost_presentation": _tree_cost(0.0)}, "✅ Task cost1 done · $0.00"),  # a priced zero is a real zero
+])
+def test_task_notify_shows_the_cost_in_the_cards_words(tmp_path, monkeypatch, result, line):
+    """#971: the phone line carries the card's cost words for the root's whole tree."""
+    nt = _load(); api, data = _api(tmp_path)
+    assert _notify_one_root(nt, api, data, monkeypatch, result) == [line]
+
+
+@pytest.mark.parametrize("result", [
+    {"cost_presentation": _tree_cost(None, final=False, open_=True, rows=False)},  # the card's "Cost unknown"
+    {"cost_presentation": _tree_cost(None, final=False, unpriced=True)},  # only unpriced rows: no measured zero
+    {"cost_presentation": None, "cost_accounting_status": "unavailable"},
+    {"cost_presentation": _tree_cost(1.5, scope="own")},  # a root's own share is not the tree's cost
+    {"cost_usd": 7.98},  # the retired alias is not a current price
+    {"accounted_upper_bound_usd": 7.98, "cost_usd": 7.98},
+])
+def test_task_notify_says_nothing_about_money_it_does_not_know(tmp_path, monkeypatch, result):
+    nt = _load(); api, data = _api(tmp_path)
+    assert _notify_one_root(nt, api, data, monkeypatch, result) == ["✅ Task cost1 done"]
+
+
+def test_task_notify_reads_the_cost_the_task_result_store_keeps(tmp_path, monkeypatch):
+    from ouroboros.task_results import STATUS_COMPLETED, write_task_result
+
+    nt = _load(); api, data = _api(tmp_path); _Rec.sent = []
+    monkeypatch.setattr(nt, "TelegramClient", _Rec)
+    write_task_result(data, "cost2", STATUS_COMPLETED, cost_presentation=_tree_cost(12.5, final=False))
+    row = {"type": "task_summary", **_OWNER_ROOT, "task_id": "cost2",
+           "outcome_axes": {"lifecycle": {"status": "completed"}}}
+    (data / "logs" / "chat.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    asyncio.run(nt._check_tasks_notify(api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, {"notified_task_ids": []}, "en"))
+    assert [text for _chat, text in _Rec.sent] == ["✅ Task cost2 done · up to $12.50"]
