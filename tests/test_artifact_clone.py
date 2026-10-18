@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pathlib
 import shutil
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -78,6 +80,45 @@ def test_an_unavailable_clone_falls_back_to_the_streamed_copy_with_the_same_iden
     measured = artifacts.copy_artifact_file(source, destination, expected=_measured(source))
     assert streamed == [True] and measured == _measured(destination) == _measured(source)
     assert list(destination.parent.iterdir()) == [destination]
+
+
+def test_a_cloned_temporary_of_an_old_source_is_in_flight_for_the_temp_sweep(tmp_path, monkeypatch):
+    """Both directions. A clone copies the source's times, so the temporary of a copy of an old result
+    looked older than the sweep's age guard while its verification read was still running, and the
+    maintenance child's ``temp_sweep`` reaped it from under the copy. The temporary now carries the
+    clone's own time: the sweep run during that read keeps it and reaps the genuine orphan beside it,
+    the copy completes, and the published file still carries the source's times."""
+    from ouroboros.temp_sweep import atomic_temp_path, sweep_stale_temp_files
+
+    root, aged = tmp_path / "data", time.time() - 7200
+    source = root / "old_result.bin"
+    source.parent.mkdir()
+    source.write_bytes(os.urandom(200_000))
+    os.utime(source, (aged, aged))
+    destination = root / "task_results" / "artifacts" / "t1" / "result.bin"
+    destination.parent.mkdir(parents=True)
+    orphan = atomic_temp_path(destination.parent / "earlier.bin")  # a hard kill's leftover, genuinely old
+    orphan.write_bytes(b"half a copy")
+    os.utime(orphan, (aged, aged))
+    swept, original = {}, artifacts.stream_artifact_file
+
+    def sweep_while_the_temporary_is_in_flight(path, sink=None, **kwargs):
+        temporary = pathlib.Path(sink.name if sink is not None else path)  # streamed into, or cloned then verified
+        if temporary.parent == destination.parent and "temporary" not in swept:
+            swept["temporary"] = temporary.name
+            swept["removed"] = sweep_stale_temp_files(root, scripts=False)
+            swept["kept"] = temporary.exists()
+        return original(path, sink, **kwargs)
+
+    monkeypatch.setattr(artifacts, "stream_artifact_file", sweep_while_the_temporary_is_in_flight)
+    measured = artifacts.copy_artifact_file(source, destination, expected=_measured(source))
+    assert swept["temporary"].startswith(".result.bin.tmp.") and (swept["removed"], swept["kept"]) == (1, True)
+    assert not orphan.exists() and list(destination.parent.iterdir()) == [destination]
+    assert measured == _measured(destination) == _measured(source)
+    assert abs(destination.stat().st_mtime - aged) < 2  # the published copy keeps the source's times
+    direct = atomic_temp_path(destination.parent / "direct.bin")
+    if artifact_storage.clone_file(source, direct):  # the clone seam itself, where the platform copies the times
+        assert time.time() - direct.stat().st_mtime < 600
 
 
 @pytest.mark.parametrize("damaged", ["source", "clone"])

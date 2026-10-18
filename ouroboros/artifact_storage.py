@@ -6,6 +6,7 @@ diverges at the first write to either side. The platform calls are function-loca
 guards (docs/development/10-platform-abstraction-rule.md names this module's exception)."""
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import stat
@@ -21,18 +22,25 @@ def clone_file(source: pathlib.Path, destination: pathlib.Path) -> bool:
     """Make DESTINATION (which must not exist) a block-sharing clone of SOURCE; ``False`` when this
     platform or filesystem cannot, with nothing left at DESTINATION, so the caller copies instead.
     Only a regular file is cloned: a directory would be cloned whole and a FIFO's open would block,
-    so anything else is left to the streamed copy's own typed refusal."""
+    so anything else is left to the streamed copy's own typed refusal. The clone's times are its
+    own: ``clonefile`` copies the source's, and a temporary that looks as old as the result it copies
+    would be reaped as a hard kill's orphan by the temp sweep's age guard while the copy is in flight."""
     source, destination = pathlib.Path(source), pathlib.Path(destination)
     try:
         if not stat.S_ISREG(os.stat(source).st_mode):
             return False
         if sys.platform == "darwin":
-            return _clonefile(source, destination)
-        if sys.platform.startswith("linux"):
-            return _ficlone(source, destination)
+            cloned = _clonefile(source, destination)
+        elif sys.platform.startswith("linux"):
+            cloned = _ficlone(source, destination)
+        else:
+            return False
     except OSError:
         return False
-    return False
+    if cloned:
+        with contextlib.suppress(OSError):  # the clone stands either way; the caller sets the published times
+            os.utime(destination)
+    return cloned
 
 
 def _clonefile(source: pathlib.Path, destination: pathlib.Path) -> bool:
