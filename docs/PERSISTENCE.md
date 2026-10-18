@@ -27,16 +27,25 @@ row here, count-anchored both ways.
   or `[disposable: <module.function>]` (a copy, cache or scratch, and the production function
   that retires it; `none` while nothing does). `tests/test_persistence_lifetimes.py` resolves
   every retirer and lists the planes without one; that list only shrinks.
-- **Rotation** — `supervisor/state.py::rotate_jsonl_log_if_needed`: >800 KB →
-  atomic rename to `archive/<prefix>_<ts>.jsonl` under the append lock. The
-  supervisor tick rotates `events.jsonl`, `tools.jsonl`, `supervisor.jsonl` and
-  `task_reflections.jsonl`; `chat.jsonl` and `progress.jsonl` were rotated one
-  last time by the dialogue cutover (`state/dialog.sqlite`); their frozen
-  segments are read only by the import job (`dialogue_import`), every
-  chat/progress reader is an addressed store query. Readers of the file logs
-  walk `archive/<stem>_*.jsonl` in chronological name order;
-  `utils.jsonl_chain_handles` prevents rotation races by opening live first
-  and deduplicating inodes.
+- **Rotation** — `supervisor/state.py::rotate_jsonl_log_if_needed`: ≥800,000 bytes →
+  atomic rename to `archive/<prefix>_<ts>.jsonl` under the append lock, with
+  collision suffixes and an empty new live file. The supervisor tick rotates
+  `events.jsonl`, `tools.jsonl`, `supervisor.jsonl` and `task_reflections.jsonl`;
+  benchmark-sentinel roots skip rotation. This optional maintenance contains
+  escaped `OSError` across checks, lock acquisition, rename and live-file creation,
+  retaining `finally` lock release. These exceptions produce one ERROR per path
+  per 30 seconds; completion resets the throttle. Lock-helper/busy warnings are
+  separate and unthrottled.
+  The next tick attempts again without added retry delay. Before rename, live
+  bytes stay put; after rename, a failed touch leaves history in the archive
+  and the next append recreates live. Persistent failures can grow live logs
+  past the threshold; `agent_startup_checks.hot_store_growth_notes` warns above
+  8 MB. Other exceptions, and mandatory `utils.replace_atomic` and
+  `dialogue_import.rotate_final` failures, propagate. The dialogue cutover rotates chat/progress
+  once; frozen segments feed `dialogue_import`, while their readers query
+  `state/dialog.sqlite`. File-log readers walk archives chronologically;
+  `utils.jsonl_chain_handles` opens live first and deduplicates inodes to avoid
+  rotation races.
 - **`archive/` is durable history, never GC'd** (BIBLE P1): readers backfill
   from rotated segments; no retention sweep touches `archive/` and none may be
   added.
