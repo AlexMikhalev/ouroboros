@@ -272,7 +272,10 @@ def execution_owner_record(drive_root: Any, task: Dict[str, Any], kind: str) -> 
     Assignment replaces this fact when an inline turn resumes in the pool; it
     is ownership provenance, never a process-death or replay authorization. A
     direct turn lives only inside the server process that runs it, so its record
-    also names that process generation (``direct_roots.owner_process_ended``).
+    also names that process generation (``direct_roots.owner_process_ended``). A
+    Presence turn runs on a thread of whichever process admitted it (the Host, or
+    an initiating tool's worker): its record names that controller, so its end is
+    a fact rather than a guess (``presence_recovery.attempt_ended``).
     """
     record = {"kind": kind, "data_root": str(pathlib.Path(drive_root).resolve()),
               "task_id": str(task.get("id") or task.get("task_id") or ""),
@@ -281,6 +284,10 @@ def execution_owner_record(drive_root: Any, task: Dict[str, Any], kind: str) -> 
         from ouroboros.process_custody import current_custody_session_id
 
         record["process"] = current_custody_session_id()
+    elif kind == "presence":
+        from ouroboros.review_operation import controller_identity
+
+        record["controller"] = controller_identity()
     return record
 
 
@@ -585,6 +592,28 @@ def _is_stale_orphan_running_task(
     return bool(latest_worker_boot and latest_worker_boot > latest_task_event)
 
 
+PRESENCE_ATTEMPT_LOST = "presence_attempt_lost"
+
+
+def _presence_attempt_lost(drive_root: pathlib.Path, result: Dict[str, Any],
+                           queue_snapshot: Optional[Dict[str, Any]] = None) -> bool:
+    """A non-terminal row of a Presence turn whose attempt can no longer change.
+
+    The positive end facts are one rule shared with the Host work view
+    (``presence_recovery.attempt_ended``); age, absence and worker boots prove nothing.
+    """
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    if (str(result.get("status") or "").lower() not in {STATUS_RUNNING, STATUS_INTERRUPTED}
+            or not isinstance(metadata.get("presence"), dict)):
+        return False
+    observation = task_execution_observation(drive_root, result, queue_snapshot=queue_snapshot)
+    if observation["kind"] != "presence" or observation["state"] == "active":
+        return False
+    from ouroboros.presence_recovery import attempt_ended
+
+    return attempt_ended(result, drive_root)
+
+
 def _normalize_workspace_artifact_status(result: Dict[str, Any]) -> Dict[str, Any]:
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     if not (str(result.get("workspace_root") or "").strip() or str(metadata.get("workspace_root") or "").strip()):
@@ -791,6 +820,11 @@ def reconcile_orphaned_running_tasks(
                 if not applied:
                     continue  # the row moved on between the effective read and this write: nothing was settled here
                 healed += 1
+                if persist_fields.get("reason_code") == PRESENCE_ATTEMPT_LOST:
+                    # The room learns once that this turn ended unanswered; the mind decides what follows.
+                    from ouroboros.presence_runner import _notify_unresolved_turn
+
+                    _notify_unresolved_turn(root, task_id)
                 # This sweep is a terminal writer that never passes the task-done seam, so it closes the
                 # same per-task owner-control projections that seam closes (otherwise the record says
                 # "ended" while the card keeps an open question), before any next attempt can open new
@@ -1043,7 +1077,19 @@ def effective_task_result(
                 if not merged.get(key) and queue_task.get(key):
                     merged[key] = queue_task.get(key)
         else:
-            if queue_status == "unknown":
+            if _presence_attempt_lost(pathlib.Path(drive_root), merged, queue_snapshot):
+                # The queue never owns a Presence turn; its own end fact decides, as the work view does.
+                terminal_projection = "presence_attempt_lost"
+                merged["status"] = STATUS_FAILED
+                merged["reason_code"] = PRESENCE_ATTEMPT_LOST
+                merged["outcome_axes"] = infra_failed_axes(PRESENCE_ATTEMPT_LOST)
+                merged["status_reconciled_from"] = parent_status
+                merged["result"] = (
+                    str(merged.get("result") or "Task was interrupted before a terminal result was recorded.")
+                    + "\n\n⚠️ PRESENCE_ATTEMPT_LOST: this Presence turn's executor ended without a terminal "
+                    "result; whether its reply or tools took effect is unknown, and it is never re-run."
+                )
+            elif queue_status == "unknown":
                 merged["queue_reconciliation_warning"] = "queue snapshot missing or invalid"
             elif _terminal_failure_from_outcome(merged):
                 terminal_projection = "recorded_outcome"
