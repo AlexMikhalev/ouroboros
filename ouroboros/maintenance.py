@@ -10,8 +10,8 @@ inputs decodes no history body, copies nothing and commits nothing.
 Server half: ``child`` (``MaintenanceChild``). The supervisor's maintenance dispatcher calls
 ``tick`` at the end of each reconcile pass and on its first tick of a process (``owed``;
 ``request`` asks again, e.g. after a boot scheduled a job). ``tick`` only reserves the one slot:
-its thread reads cheap facts (``due``: the job rows, the store revision, the terminal rows' count
-and write sum) and spawns the child only when one of them says work may wait, never because
+its thread reads cheap facts (``due``: the job rows, the store revision, the terminal-write
+counter) and spawns the child only when one of them says work may wait, never because
 time passed. The spawn is the existing custodied one (``startup_historical_audit.
 spawn_maintenance_job``: session custody, its own process group, a parent lifeline; ``stop`` and
 ``live_children`` serve the Panic and exit census). Queue-owned work (orphan recovery, drive
@@ -183,9 +183,9 @@ def _analyze_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
 
 
 def _packing_inputs(root: pathlib.Path) -> Dict[str, Any]:
-    """The facts the packing rule reads, cheaply: the terminal rows' count and write sum (a task
-    closing or a closed task written again moves it; a live task's writes do not), whether archived
-    usage segments wait, and whether any loose evidence exists at all."""
+    """The facts the packing rule reads, cheaply: the store's terminal-write counter (a task closing
+    or a closed task written again moves it; a live task's writes do not; one meta row, never a read
+    over the rows), whether archived usage segments wait, and whether any loose evidence exists."""
     from ouroboros import evidence_packer
 
     return {"terminal": _plain(evidence_packer.terminal_revision(root)),
@@ -196,18 +196,24 @@ def _packing_inputs(root: pathlib.Path) -> Dict[str, Any]:
 def _packing_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
     """Evidence may wait when archived usage segments wait, or when loose evidence exists and the
     terminal rows moved since the last pass, or the last pass unlinked (one more look is owed: it
-    records the moved directories' stamps)."""
+    records the moved directories' stamps), or it left candidates unfinished (``pending``: deferred
+    by a held custody lock, busy files, faults) and the store has been written since (the contender
+    that held the lock or the file writes its receipt; nothing but a write re-arms it, so a
+    persistent fault costs one pass per store change, never a tight loop); in the child the
+    unfinished work runs whenever the child runs for another reason."""
     inputs = _packing_inputs(root)
+    unfinished = bool(row.get("pending")) and (child or facts["revision"] != row.get("revision"))
     return inputs["archive_pending"] or (inputs["loose"] and (
-        row.get("terminal") != inputs["terminal"] or not row.get("quiet")))
+        row.get("terminal") != inputs["terminal"] or not row.get("quiet") or unfinished))
 
 
 def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[str, Any]:
     """Discovery (archive first, then the first changed task stamp) and, when it finds work, one
     packing pass with its own fresh census. The inputs are read before the pass and recorded after
     it, so a task closing during the pass makes the next look differ. A pass that unlinked records
-    ``quiet: False``. A raised discovery or pass records nothing: the job stays due for the next
-    look (per-task faults are the pass's own counters)."""
+    ``quiet: False``; one that left candidates deferred, busy or faulted records their count as
+    ``pending`` with the store revision its own record leaves (``_packing_due`` re-arms on the next
+    write). A raised discovery or pass records nothing: the job stays due for the next look."""
     from ouroboros import evidence_packer, evidence_packs as packs
 
     inputs = _packing_inputs(root)
@@ -217,8 +223,11 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
         packs.record_storage_pack(root, phase=report["status"], **{key: report[key] for key in evidence_packer.COUNTERS})
     if should_stop():
         return {"state": "pending", "items": report["examined"]}
-    maintenance_jobs.record(root, "evidence_packing", state="done", terminal=inputs["terminal"],
-                            quiet=not report["unlinked"], packed=report["packed"], examined=report["examined"])
+    pending = report["deferred"] + report["busy"] + report["faults"]
+    with store.open_store(root, write=True) as txn:  # one write: the row and the revision it leaves
+        maintenance_jobs.record_in(txn, "evidence_packing", state="done", terminal=inputs["terminal"],
+                                   quiet=not report["unlinked"], pending=pending, revision=txn.revision() + 1,
+                                   packed=report["packed"], examined=report["examined"])
     return {"state": "done", "items": report["examined"]}
 
 

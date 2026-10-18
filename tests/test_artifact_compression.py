@@ -55,6 +55,28 @@ def test_failed_compression_preserves_original_and_removes_temporary(tmp_path, m
     assert path.read_bytes() == raw and path.stat().st_ino == before.st_ino
     assert artifacts.stream_artifact_file(path, expected=_identity(raw)) == _identity(raw)
     assert list(tmp_path.iterdir()) == [path]
+    _assert_swept_after_a_hard_kill(tmp_path, pathlib.Path(calls[0][-1]).name)
+
+
+def _assert_swept_after_a_hard_kill(tmp_path, temporary_name):
+    """A hard kill between the sibling's write and its replace leaves it in the artifact folder: the
+    maintenance child's ``temp_sweep`` reaps that name (the atomic signature), and the artifact
+    listing never offers it as a deliverable; the former ``.<hex>.tmp`` name met neither."""
+    import os
+    import time
+
+    from ouroboros.temp_sweep import sweep_stale_temp_files
+
+    root = tmp_path / "data"
+    folder = root / "task_results" / "artifacts" / "task-1"
+    folder.mkdir(parents=True)
+    leftover, former = folder / temporary_name, folder / ".0123456789abcdef0123456789abcdef.tmp"
+    for path in (leftover, former):
+        path.write_bytes(b"half a patch")
+        os.utime(path, (time.time() - 7200, time.time() - 7200))
+    assert temporary_name.startswith(".") and ".tmp." in temporary_name
+    assert sweep_stale_temp_files(root, scripts=False) == 1
+    assert not leftover.exists() and former.exists()
 
 
 @pytest.mark.parametrize("platform", ["linux", "freebsd", "unknown"])

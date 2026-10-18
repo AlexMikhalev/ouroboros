@@ -404,7 +404,8 @@ def _predecessor_review_readers(root: Any, owner: str, refs: list, *, inherited:
     """Use the existing exact-source reader and retained-root locations."""
     from pathlib import Path
     from ouroboros.acceptance_history import historical_source_reference
-    from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.evidence_packs import handle_info
     from ouroboros.review_history_view import _immutable_ref, _sha
     from ouroboros.source_retention import retained_task_roots
 
@@ -416,10 +417,11 @@ def _predecessor_review_readers(root: Any, owner: str, refs: list, *, inherited:
             continue
         seen.add(_sha(identity))
         for source_root in roots:
-            path = task_artifact_dir_path(source_root, owner, create=False) / ref["path"]
-            if not path.is_file():
-                continue
             try:
+                # Present at THIS root, loose or as a verified pack member (the packer moves a
+                # terminal task's handles): the same pack-aware check the handle's writer uses.
+                if handle_info(source_root, owner, str(ref["path"])) is None:
+                    continue
                 read_actor_source_bytes(source_root, owner, ref)
                 addressed = historical_source_reference(source_root, owner, ref)
                 # Existing lineage reads permit the named predecessor's absolute

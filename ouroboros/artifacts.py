@@ -10,14 +10,13 @@ import stat
 import pathlib
 import re
 import shutil
-import uuid
 import zipfile
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from ouroboros.artifact_storage import clone_file
+from ouroboros.artifact_storage import clone_file, temporary_sibling
 from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, write_bytes_atomic
 from ouroboros.headless import ARTIFACT_STATUS_FAILED, ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
 from ouroboros.outcome_receipt_store import is_verification_receipts_path
@@ -1235,7 +1234,7 @@ def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any 
         return stream_artifact_file(source, expected=expected)
     fence_publication()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{uuid.uuid4().hex}.tmp")
+    temporary = temporary_sibling(destination)  # the atomic signature the temp sweep reaps after a hard kill
     try:
         if source_path is not None and clone_file(source_path, temporary):
             try:
@@ -1274,7 +1273,7 @@ def store_task_artifact_bytes(
         raise ValueError("task artifact name is reserved")
     artifact_dir = task_artifact_dir_path(drive_root, task_id, create=True)
     path = artifact_dir / safe_name
-    temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
+    temporary = temporary_sibling(path)
 
     def publish(_current):
         try:
@@ -1457,8 +1456,8 @@ def copy_directory_to_task_artifacts(
         members = sorted(pathlib.Path(p) for p in member_paths)
     file_records: List[Dict[str, Any]] = []
     tree_hasher = sha256(str(source).encode("utf-8", errors="replace") + b"\0")
-    tmp_zip_path = artifact_dir / f".directory.{uuid.uuid4().hex}.tmp"
-    tmp_ledger_path = artifact_dir / f".directory.{uuid.uuid4().hex}.json.tmp"
+    tmp_zip_path = temporary_sibling(artifact_dir / "directory.zip")
+    tmp_ledger_path = temporary_sibling(artifact_dir / "directory.json")
     try:
         with zipfile.ZipFile(tmp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in members:

@@ -263,7 +263,7 @@ def _former_blocker(root, index, task):
     if kind == 0:
         _reserve(root, task)
     elif kind == 1:
-        _result(root, task, review_operations={"op": {"surface": "multi_model_review", "state": "dispatched"}})
+        _result(root, task, review_operations={"op": {"surface": "multi_model_review", "state": "closed"}})
     elif kind == 2:
         _result(root, task, canonical_terminal_projection_origin="terminal_transition")
     elif kind == 3:
@@ -277,9 +277,12 @@ def _former_blocker(root, index, task):
 
 
 def test_production_shaped_backfill_packs_every_terminal_task_beside_live_sharers(root):
-    """300 terminal tasks, each carrying a former blocker; 10 running tasks sharing a blob with ten of
-    them. One pass packs all 300, every ref reads back byte-identical, the shared blobs stay loose."""
-    terminal, live, shared = 300, 10, {}
+    """The production shape at a size the default suite affords: 18 terminal tasks, each carrying a former
+    blocker (every kind three times); 3 running tasks sharing a blob with three of them. One pass packs all
+    18, every ref reads back byte-identical, the shared blobs stay loose. (The 300-task shape took 2–30 min
+    under load against the suite's 300 s per-test bound; the property has no size: P2 proves it for one
+    sharer, this for many.)"""
+    terminal, live, shared = 18, 3, {}
     refs, handles = {}, {}
     for number in range(terminal):
         task = f"done-{number:03}"

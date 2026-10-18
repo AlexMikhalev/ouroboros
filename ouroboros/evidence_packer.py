@@ -1,10 +1,12 @@
 """Evidence packing passes the maintenance child runs (``ouroboros/maintenance.py``, job ``evidence_packing``);
 storage protocol: docs/PERSISTENCE.md, evidence pack row.
 
-A task is packed once its row is terminal (``evidence_packs.task_packable``): no duty, money or
-delivery fact is consulted, because packing moves verified bytes, never content, and anything written
-for the task later becomes its next generation. Loose blobs stay for the tasks whose row is live
-(the keep-set) and for the manifests published during a pass (the publication journal).
+A task is packed once its row is terminal and no review of it is open (``evidence_packs.task_packable``:
+the row's ``review_collection_pending`` fact names an open review operation or an uncollected acceptance,
+whose agent-session reader was handed a retained handle's absolute path): no duty, money or delivery
+fact is consulted, because packing moves verified bytes, never content, and anything written for the
+task later becomes its next generation. Loose blobs stay for the tasks whose row is live or under an
+open review (the keep-set) and for the manifests published during a pass (the publication journal).
 """
 from __future__ import annotations
 
@@ -21,10 +23,14 @@ from ouroboros import evidence_packs as packs, store
 
 log = logging.getLogger(__name__)
 # ``packed`` = new generations written; ``examined`` = candidates processed; ``verified_bytes`` = raw bytes re-read;
-# ``missing`` = referenced records neither loose nor packed; ``live``/``storeless`` = folders still holding loose
-# evidence because their task runs / has no store row (neither packed nor kept).
+# ``missing`` = referenced records neither loose nor packed; ``live``/``reading``/``storeless`` = folders still
+# holding loose evidence because their task runs / is terminal under an open review / has no store row;
+# ``deferred`` = candidates whose unlink waited for a held custody lock or a moved stamp (retried next pass).
 COUNTERS = ("packed", "examined", "swept", "candidates", "raw", "compressed", "verified_bytes",
-            "unlinked", "kept", "busy", "faults", "archived", "missing", "live", "storeless")
+            "unlinked", "kept", "busy", "faults", "archived", "missing", "live", "reading", "storeless", "deferred")
+
+
+_ROW_COLUMNS = ("status", "write_seq", "updated_at", "review_collection_pending")
 
 
 def _terminal(row: Optional[tuple]) -> bool:
@@ -33,30 +39,36 @@ def _terminal(row: Optional[tuple]) -> bool:
     return row is not None and str(row[0] or "") in SETTLED_STATUSES
 
 
+def _packable(row: Optional[tuple]) -> bool:
+    return row is not None and packs.row_packable(row[0], row[3])
+
+
 def task_rows(root: pathlib.Path, ids, *, txn=None) -> Dict[str, Optional[tuple]]:
-    """``{task_id: (status, write_seq, updated_at)}`` for IDS from one indexed select (``None``: no row);
-    the only store facts a pass reads, in one short read closed before any directory probe."""
+    """``{task_id: (status, write_seq, updated_at, review_collection_pending)}`` for IDS from one indexed
+    select (``None``: no row); the only store facts a pass reads, in one short read closed before any
+    directory probe."""
     ids = sorted(set(ids))
     with (store.open_store(root, write=False) if txn is None else contextlib.nullcontext(txn)) as txn:
-        found = {record["task_id"]: (record["status"], record["write_seq"], record["updated_at"]) for record in
-                 txn.conn.execute("SELECT task_id, status, write_seq, updated_at FROM tasks WHERE task_id IN "
+        found = {record["task_id"]: tuple(record[name] for name in _ROW_COLUMNS) for record in
+                 txn.conn.execute(f"SELECT task_id, {', '.join(_ROW_COLUMNS)} FROM tasks WHERE task_id IN "
                                   "(SELECT value FROM json_each(?))", (json.dumps(ids),))}
     return {task: found.get(task) for task in ids}
 
 
 def task_stamps(root: pathlib.Path, task_id: str, *, txn=None) -> str:
-    """One task's stamp: its status from one short read (or the caller's ``txn``), then ``_stamp``."""
+    """One task's stamp: its row from one short read (or the caller's ``txn``), then ``_stamp``."""
     with (store.open_store(root, write=False) if txn is None else contextlib.nullcontext(txn)) as txn:
-        status = txn.row(str(task_id), "status")
-    return _stamp(root, task_id, None if status is None else str(status))
+        row = txn.row(str(task_id), *_ROW_COLUMNS)
+    return _stamp(root, task_id, row)
 
 
-def _stamp(root: pathlib.Path, task_id: str, status: Optional[str]) -> str:
-    """The facts the rule reads: the row's status (``None``: no row) and the two evidence directories'
-    identity, built from facts already read: no store access, so no transaction spans its ``stat`` calls."""
+def _stamp(root: pathlib.Path, task_id: str, row: Optional[tuple]) -> str:
+    """The facts the rule reads: the row's status and review fact (``None``: no row) and the two evidence
+    directories' identity, built from facts already read: no store access, so no transaction spans its
+    ``stat`` calls."""
     from ouroboros.artifacts import task_artifact_dir_path
 
-    stamps: list = [("status", status)]
+    stamps: list = [("status", None if row is None else str(row[0] or "")), ("review", None if row is None else row[3])]
     paths = [root / "observability" / "calls" / task_id,
              task_artifact_dir_path(root, task_id, create=False).joinpath(*packs.CHECKPOINTS_REL.parts)]
     for path in paths:
@@ -124,8 +136,7 @@ def _changed_stamps(root: pathlib.Path, *, rows: Optional[dict] = None, ids: Opt
     for task in sorted(ids):
         if stop is not None and stop():
             return
-        row = rows.get(task)
-        stamp = _stamp(root, task, None if row is None else str(row[0] or ""))
+        stamp = _stamp(root, task, rows.get(task))
         if swept is None or swept.get(task) != stamp:
             yield task, stamp
 
@@ -160,18 +171,13 @@ def archive_pending(root: pathlib.Path) -> bool:
     return directory.is_dir() and any(directory.glob("segment_ep*.jsonl"))
 
 
-def terminal_revision(root: pathlib.Path) -> list:
-    """The dispatcher's fact for the packing rule: how many rows are terminal and the sum of their
-    write sequences. A task closing, or a closed task written again (late evidence rides a row write),
-    moves it; a live task's writes do not, so the child is never spawned for them."""
-    from ouroboros.task_status import SETTLED_STATUSES
-
-    statuses = tuple(sorted(SETTLED_STATUSES))
+def terminal_revision(root: pathlib.Path) -> int:
+    """The dispatcher's fact for the packing rule: how many times a terminal row was written, the
+    counter the store keeps where it writes rows (``store.TERMINAL_WRITES``): one meta read, whatever
+    the history holds. A task closing, or a closed task written again (late evidence rides a row
+    write), moves it; a live task's writes do not, so the child is never spawned for them."""
     with store.open_store(root, write=False) as txn:
-        record = txn.conn.execute(
-            f"SELECT COUNT(*), COALESCE(SUM(write_seq), 0) FROM tasks WHERE status IN ({','.join('?' * len(statuses))})",
-            statuses).fetchone()
-    return [int(record[0]), int(record[1])]
+        return int(txn.meta(store.TERMINAL_WRITES) or 0)
 
 
 def ordered_candidates(root: pathlib.Path, packable: List[str], *, rows: Optional[dict] = None) -> List[Tuple[str, int]]:
@@ -199,11 +205,11 @@ def ordered_candidates(root: pathlib.Path, packable: List[str], *, rows: Optiona
 
 
 class PackSweep:
-    """The keep-set of one pass: the blobs referenced by tasks whose row is live, read once outside
-    the deletion locks (``collect_keep``), plus the refs of manifests published during the pass, read
-    from the journal suffix under the publication lock (``refresh_keep``). Store-less folders are
-    neither packed nor kept. A blob a live task shares with a packed one stays loose until the
-    sharer's own pass; a terminal task resumed after the census reads its packed blobs from the pack."""
+    """The keep-set of one pass: the blobs referenced by tasks whose row is live or under an open review,
+    read once outside the deletion locks (``collect_keep``), plus the refs of manifests published during
+    the pass, read from the journal suffix under the publication lock (``refresh_keep``). Store-less
+    folders are neither packed nor kept. A blob such a task shares with a packed one stays loose until
+    the sharer's own pass; a terminal task resumed after the census reads its packed blobs from the pack."""
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root
         self.keep: set = set()
@@ -211,7 +217,7 @@ class PackSweep:
 
     def collect_keep(self, rows: Dict[str, Optional[tuple]]) -> None:
         for task, row in rows.items():
-            if row is not None and not _terminal(row):
+            if row is not None and not _packable(row):
                 self.keep.update(sha for _, sha, _ in packs.manifest_blob_refs(self.root, task))
 
     def refresh_keep(self) -> set:
@@ -252,11 +258,13 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
     ids = _loose_task_ids(root)
     rows = task_rows(root, ids)  # the census baseline: older than every fact read below
     report["live"] = sum(1 for row in rows.values() if row is not None and not _terminal(row))
+    report["reading"] = sum(1 for row in rows.values() if _terminal(row) and not _packable(row))
     report["storeless"] = sum(1 for row in rows.values() if row is None)
     # Evidence that arrives during the pass makes the recorded stamp stale, so the next pass selects
-    # that task again; a live or store-less folder is recorded too, and its stamp moves with its status.
+    # that task again; a live, reviewed or store-less folder is recorded too, and its stamp moves with
+    # its status and review fact.
     revisions = changed_stamps(root, rows=rows, ids=ids)
-    packable = [task for task in revisions if _terminal(rows.get(task))]
+    packable = [task for task in revisions if _packable(rows.get(task))]
     for task in revisions:
         if task not in packable:
             record_swept(root, task, revisions[task])
@@ -279,7 +287,7 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
         report["packed"] += int(outcome.get("generation") is not None)
         report["raw"] += int(outcome.get("raw") or 0)
         report["compressed"] += int(outcome.get("packed") or 0)
-        for key in ("unlinked", "kept", "busy", "verified_bytes", "missing"):
+        for key in ("unlinked", "kept", "busy", "verified_bytes", "missing", "deferred"):
             report[key] += int(outcome.get(key) or 0)
         # A blob kept for a live sharer does not re-queue this task: the sharer's own pass unlinks it
         # once it closes (its stamp moves then); busy files and deferred candidates retry.
