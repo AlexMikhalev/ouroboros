@@ -149,3 +149,86 @@ def test_card_shows_only_this_tasks_records_and_says_when_older_ones_exist(tmp_p
     assert projection["review_records_omitted"] == "1+"
     (group,) = [g for g in _render("t-many", projection)["groups"] if g["surface"] == "review_record"]
     assert group["countIsAuthoritative"] is False and group["attemptCount"] == SHOWN
+
+
+# What the strictness-keyed composer records (IMPL_SPEC §4.6, names as L1 writes them): the pool
+# snapshot, strictness, who chose, the seats never reached; per seat its cost. Added here to a
+# record the real builder made, so the projection and the card read exactly the stored shape.
+SECRET = "sk-or-v1-" + "0123456789abcdef" * 3
+
+
+def _pool_record(task_id, strictness="advisory", **panel):
+    record = _gate_record(task_id)
+    if strictness in ("advisory", "blocking"):  # the enforcement the wave ran under says the same
+        record.enforcement, record.enforcement_blocks = strictness, strictness == "blocking"
+    record.panel = {**record.panel, "strictness": strictness, "chosen_by": "ouroboros", "pool": ["sol", "opus", "grok"],
+                    "not_reached": [{"seat_id": "critic", "cause": f"engine refused token {SECRET}"}], **panel}
+    costs = {"sol": {"cost_usd": 0.4213, "cost_kind": "measured"}, "opus": {"cost_usd": None, "cost_kind": "subscription"},
+             "critic": {"cost_usd": None, "cost_kind": "unknown"}}
+    for seat in record.rows:
+        seat.update(costs[seat["seat_id"]])
+    return record
+
+
+def test_pool_facts_reach_the_card_in_words_while_an_older_record_projects_as_before(tmp_path):
+    old = rl.write_record(tmp_path, _gate_record("t-old"))
+    rl.write_record(tmp_path, _pool_record("t-pool"))
+    (old_panel,) = _terminal(tmp_path, "t-old")[0]["review_projection"]["panels"]
+    # The older record: its own panel block, no cost, no seat additions, the card's old lines.
+    assert old_panel["panel_facts"] == old["panel"] and "cost" not in old_panel
+    assert not any({"cost", "additional"} & set(actor) for actor in old_panel["actors"])
+    old_lines = _render("t-old", {"panels": [old_panel]})["card"].splitlines()
+    assert any(line.startswith("Panel composition: composed · chosen by author · seats=2") for line in old_lines)
+    assert not any(line.startswith(("Panel: ", "Wave total", "Why these reviewers")) for line in old_lines)
+
+    stored, _event, history = _terminal(tmp_path, "t-pool")
+    projection = stored["review_projection"]
+    assert history["review_projection"] == projection
+    (panel,) = projection["panels"]
+    facts = panel["panel_facts"]
+    assert facts["strictness"] == "advisory" and facts["pool"] == ["sol", "opus", "grok"] and facts["chosen_by"] == "ouroboros"
+    assert facts["not_reached"] == [{"seat_id": "critic", "cause": "engine refused token ***REDACTED***"}]
+    assert SECRET not in json.dumps(projection)
+    actors = {actor["slot_id"]: actor for actor in panel["actors"]}
+    assert actors["sol"]["cost"] == {"kind": "usd", "usd": 0.4213} and actors["sol"]["additional"] is False
+    assert actors["opus"]["cost"] == {"kind": "subscription", "usd": None}
+    assert actors["critic"]["cost"] == {"kind": "unknown", "usd": None} and actors["critic"]["additional"] is True
+    assert panel["cost"] == {"usd": 0.4213, "seats": {"usd": 1, "subscription": 1, "unknown": 1}}
+
+    shown = _render("t-pool", projection)
+    lines = shown["card"].splitlines()
+    assert "Panel: Advisory · chosen by Ouroboros · 2 of 3 ticked reviewers · 1 adviser, not counted" in lines
+    assert "Why these reviewers: two engines are enough for a docs fix" in lines
+    assert "Not reached: critic (engine refused token ***REDACTED***)" in lines
+    assert "Wave total: $0.42 for the priced seats · 1 seat on a subscription · 1 seat cost unknown" in lines
+    assert any(line.startswith("Reviewer sol: counted · $0.42 · role=commit_gate reviewer") for line in lines)
+    assert any(line.startswith("Reviewer critic: adviser, not counted · cost unknown · role=") for line in lines)
+    assert not any(line.startswith("Panel composition:") for line in lines)
+    (group,) = [g for g in shown["groups"] if g["surface"] == "review_record"]
+    assert "Panel: Advisory · chosen by Ouroboros · 2 of 3 ticked reviewers" in group["attempts"][0]["detailText"]
+
+
+def test_malformed_pool_facts_are_dropped_never_guessed(tmp_path):
+    from ouroboros.review_projection import ledger_record_panel
+
+    # A Blocking wave that widened the requested subset: named seats survive, junk entries do not.
+    record = rl.write_record(tmp_path, _pool_record("t-wide", strictness="blocking", chosen_by="owner", not_reached="x",
+                                                     widened_from=["sol", {"seat_id": "opus"}, 7, ""]))
+    facts = ledger_record_panel(record)["panel_facts"]
+    assert facts["widened_from"] == ["sol", "opus"] and "not_reached" not in facts
+    # A seat's own cost facts decide (an explicit unknown outranks the older `usd` carrier, a
+    # measured kind needs an amount); a seat recorded without them shows the money it reported.
+    sol, opus, critic = record["rows"]
+    sol.update(cost_kind="unknown", cost_usd=None, usd=0.5)
+    opus.pop("cost_kind"), opus.pop("cost_usd"), opus.update(usd=0.25)
+    critic.update(cost_kind="measured", cost_usd=None)
+    assert {actor["slot_id"]: actor["cost"] for actor in ledger_record_panel(record)["actors"]} == {
+        "sol": {"kind": "unknown", "usd": None}, "opus": {"kind": "usd", "usd": 0.25},
+        "critic": {"kind": "unknown", "usd": None}}
+    lines = _render("t-wide", {"panels": [ledger_record_panel(record)]})["card"].splitlines()
+    assert "Why these reviewers: widened to every ticked reviewer (Blocking) from the requested sol, opus · reason given: two engines are enough for a docs fix" in lines
+    # Neither a pool nor a strictness the card can read: the record prints as before it existed.
+    broken = rl.write_record(tmp_path, _pool_record("t-broken", strictness=" ", pool={"sol": True}))
+    projected = ledger_record_panel(broken)
+    assert "cost" not in projected and not {"pool", "strictness"} & set(projected["panel_facts"])
+    assert "Panel composition: composed" in _render("t-broken", {"panels": [projected]})["card"]
