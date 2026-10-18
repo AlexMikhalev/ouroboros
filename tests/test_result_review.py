@@ -662,3 +662,39 @@ def test_collecting_a_rebuttal_bearing_review_keeps_its_provenance_and_its_reuse
     paid = len(sends)
     again = run_review_change(ctx, **args)
     assert again["reused"] is True and again["record_id"] == first["record_id"] and len(sends) == paid
+
+
+def test_a_running_review_whose_operation_was_lost_never_lets_a_required_result_pass_unreviewed(tmp_path, monkeypatch):
+    """A restart can close a tokenless seat's attempt while its ledger row still reads pending: the collection
+    finds no open operation. Under Required the floor then buys its own review (the lost attempt produced no
+    verdict) instead of delivering the result unreviewed; Blocking holds over that review's findings."""
+    from ouroboros.tools import review_change as rc
+    from ouroboros.tools import review_result as rr
+    from tests.test_review_change_end_to_end import _pending_then_answering_seat
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    sends: list[dict] = []
+    pending, _starts = _pending_then_answering_seat("t2", "lost-operation")
+
+    def answer(request, slot, actor, **kwargs):
+        actor.raw_text = CRITICAL if slot.slot_id == "t1" else "[]"
+        return pending(request, slot, actor, **kwargs)
+
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    first = run_review_change(ctx, subject="result", answer="FINAL ANSWER: 2")
+    assert first["state"] == "pending"
+    lost = review_ledger.load_record(review_ledger.ledger_root(ctx), first["record_id"])["fingerprints"]["retry_key"]
+    lookup = rc.pending_round_attempt
+    # Restart reconciliation closed that round's attempt; its ledger row still reads pending.
+    monkeypatch.setattr(rc, "pending_round_attempt",
+                        lambda ctx, **kw: None if kw.get("retry_key") == lost else lookup(ctx, **kw))
+    shown: list[str] = []
+    trace = {"tool_calls": []}
+    before = len(sends)
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True
+    # Whatever the floor's own review settles to (the lost seat may leave it without quorum), the result is
+    # never delivered unreviewed: a run is bound and Blocking holds over it.
+    assert [run["aggregate_signal"] for run in trace["review_runs"]] in (["FAIL"], ["DEGRADED"])
+    assert "not delivered until a review passes it" in shown[0]
+    assert len(sends) <= before + 3, "at most the floor's own one wave (recorded seats replay at $0)"

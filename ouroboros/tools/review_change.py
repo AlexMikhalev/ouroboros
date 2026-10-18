@@ -735,7 +735,13 @@ def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, 
     record is answered from memory and says so."""
     def settle(prior: Dict[str, Any]) -> Dict[str, Any]:
         fresh = record.to_dict()
-        return settle_pending_payload(prior, fresh) if prior.get("state") == "pending" else fresh
+        if prior.get("state") != "pending":
+            return fresh
+        settled = settle_pending_payload(prior, fresh)
+        # What custody still holds is the settling wave's fact, never the dispatch's.
+        retention = {key: (fresh.get("subject") or {}).get(key) for key in ("retained_checkout", "retention")
+                     if key in (fresh.get("subject") or {})}
+        return {**settled, "subject": {**dict(settled.get("subject") or {}), **retention}}
 
     try:
         revised = revise_record(drive, record.record_id, settle) if rejoin else None
