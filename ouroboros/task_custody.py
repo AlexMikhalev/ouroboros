@@ -1258,7 +1258,7 @@ def _remove_entry(entry: pathlib.Path) -> None:
     """A moved drive or a crashed settlement's staging goes whole: the removal grants owner write and
     list bits inside the tree (never through a link), so read-only folders do not strand it."""
     if entry.is_dir() and not entry.is_symlink():
-        from ouroboros.subagent_worktrees import _force_rmtree
+        from ouroboros.force_remove import force_rmtree as _force_rmtree
 
         _force_rmtree(entry)
     else:

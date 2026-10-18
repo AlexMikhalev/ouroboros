@@ -48,7 +48,7 @@ def prune_unpinned_runtimes(*, now: Optional[float] = None) -> Dict[str, Any]:
     from ouroboros import claudexor_runtime as runtime
     from ouroboros.claudexor_daemon import owned_engine_version
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
-    from ouroboros.subagent_worktrees import _force_rmtree
+    from ouroboros.force_remove import force_rmtree as _force_rmtree
 
     report: Dict[str, Any] = {"removed": [], "errors": []}
     try:
