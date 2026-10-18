@@ -18,17 +18,17 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D08 | Supervisor: queue, workers, events & runtime control | 67 | 0 |
 | D09 | Cancellation, owner control & process custody | 23 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
-| D11 | Gateway, server & Web UI | 87 | 0 |
+| D11 | Gateway, server & Web UI | 88 | 0 |
 | D12 | Settings & configuration | 21 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
-| D14 | Skills & extensions | 68 | 0 |
+| D14 | Skills & extensions | 69 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
 | D16 | Observability, usage accounting & cost | 21 | 0 |
 | D17 | Projects, workspaces & task results | 37 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 26 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **782** | **0** |
+| **total** | | **784** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -733,6 +733,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/schema.py`
 - `ouroboros/gateway/settings.py`
 - `ouroboros/gateway/settings_secrets.py`
+- `ouroboros/gateway/skill_my_skills.py`
 - `ouroboros/gateway/skill_publish.py`
 - `ouroboros/gateway/skill_source_contracts.py`
 - `ouroboros/gateway/skill_sources.py`
@@ -848,6 +849,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/skill_owner_attestation.py`
 - `ouroboros/skill_payload_binding.py`
 - `ouroboros/skill_peer_inventory.py`
+- `ouroboros/skill_publish_client.py`
 - `ouroboros/skill_publish_destination.py`
 - `ouroboros/skill_publish_eligibility.py`
 - `ouroboros/skill_publish_github.py`
