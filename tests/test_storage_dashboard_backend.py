@@ -569,11 +569,39 @@ def test_stop_reaches_a_child_spawned_moments_before(tmp_path, monkeypatch):
     assert counter.projection(data)["error"]["stopped"] is True
 
 
-def test_the_two_stop_sites_and_the_census_name_the_storage_count():
+def test_the_two_stop_sites_and_the_census_name_the_storage_count_and_the_free_owner():
     server = (REPO / "server.py").read_text(encoding="utf-8")
     control = (REPO / "ouroboros" / "server_control.py").read_text(encoding="utf-8")
     assert "storage_count.stop()" in server and "storage_count.live_children()" in server
+    assert "storage_free.stop()" in server and server.count("storage_free.live_children()") == 2, "restart adoption and the exit census"
     assert 'attempt("storage-count", storage_count.stop, native=True)' in control
+    assert 'attempt("storage-free", storage_free.stop, native=True)' in control
+
+
+def test_the_production_spawn_forwards_the_configured_work_roots_to_the_child(tmp_path, monkeypatch):
+    """`spawn_maintenance_job` builds a narrow environment; the three work roots this process
+    resolved (Docker keeps them under /ouroboros/work, outside HOME) reach the child, and a fresh
+    interpreter with exactly that environment resolves the same roots."""
+    from ouroboros import config, process_custody
+    from ouroboros.startup_historical_audit import spawn_maintenance_job
+
+    keys = ("OUROBOROS_SUBAGENT_WORKTREE_ROOT", "OUROBOROS_SUBAGENT_PROJECTS_ROOT", "OUROBOROS_DELIVERABLES_ROOT")
+    for key, leaf in zip(keys, ("copies", "projects", "deliverables")):
+        (tmp_path / leaf).mkdir()
+        monkeypatch.setenv(key, str(tmp_path / leaf))
+    expected = [config.get_subagent_worktree_root(), config.get_subagent_projects_root(), config.get_deliverables_root()]
+    assert expected == [str(tmp_path / leaf) for leaf in ("copies", "projects", "deliverables")]
+    captured = {}
+    monkeypatch.setattr(process_custody, "spawn_supervised", lambda argv, **kwargs: captured.update(argv=argv, **kwargs) or object())
+    spawn_maintenance_job(tmp_path / "data", REPO, "storage")
+    assert captured["argv"][1:3] == ["-m", "ouroboros.storage"]
+    env = captured["env"]
+    assert [env[key] for key in keys] == expected
+    code = ("import json; from ouroboros import config; print(json.dumps([config.get_subagent_worktree_root(), "
+            "config.get_subagent_projects_root(), config.get_deliverables_root()]))")
+    run = subprocess.run([sys.executable, "-c", code], env=env, cwd=str(REPO), capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert json.loads(run.stdout.strip().splitlines()[-1]) == expected
 
 
 # ------------------------------------------------------------ A12: the child

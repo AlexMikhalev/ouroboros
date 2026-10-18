@@ -346,6 +346,9 @@ def execute_panic_stop(
         from ouroboros.storage import count as storage_count
 
         attempt("storage-count", storage_count.stop, native=True)
+        from ouroboros.storage_free import free as storage_free
+
+        attempt("storage-free", storage_free.stop, native=True)
         import multiprocessing
 
         from ouroboros.claudexor_daemon import get_owned_daemon
