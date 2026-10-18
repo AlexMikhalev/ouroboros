@@ -42,7 +42,7 @@ from ouroboros.preflight_receipts import bind_execution_exhibit
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
     PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, load_record, new_record_id,
-    panel_facts, reduce_verdict, revise_record, row_verdict, seat_findings, write_record,
+    panel_facts, reduce_verdict, revise_record, row_verdict, seat_findings, settle_pending_payload, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
@@ -730,10 +730,15 @@ def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_k
 
 
 def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, Any], bool]:
-    """Write the one record (a rejoin revises the record its open operation left
-    pending); an unwritten record is answered from memory and says so."""
+    """Write the one record (a rejoin revises the record its open operation left pending, keeping that
+    dispatch's provenance: the subject, brief, rebuttal and fingerprints its seats read); an unwritten
+    record is answered from memory and says so."""
+    def settle(prior: Dict[str, Any]) -> Dict[str, Any]:
+        fresh = record.to_dict()
+        return settle_pending_payload(prior, fresh) if prior.get("state") == "pending" else fresh
+
     try:
-        revised = revise_record(drive, record.record_id, lambda _prior: record.to_dict()) if rejoin else None
+        revised = revise_record(drive, record.record_id, settle) if rejoin else None
         return revised or write_record(drive, record), True
     except (OSError, ValueError) as exc:
         log.warning("review_change ledger record was not written", exc_info=True)
@@ -971,6 +976,9 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
     # The host collecting a running wave it did not start names that wave's recorded round
     # (its retry key): it rejoins the open operation at $0 and never buys another wave.
     rejoin_key = str(args.pop("_rejoin_retry_key", "") or "")
+    # The host's delivery step hands the result subject it already froze, so the wave it dispatches or
+    # collects is of exactly that material (a recapture could name a later artifact the seats never saw).
+    frozen_result = args.pop("_frozen_result", None)
     request = parse_request(args)
     if request.subject == "system":
         if _assigned_review_root(ctx) is not None:
@@ -983,7 +991,7 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
         from ouroboros.tools.review_result import RESULT_LAYER, refuse_when_off, result_subject
 
         refuse_when_off()  # before any subject is built or any seat is paid
-        result = result_subject(ctx, request, governance_root=governance)
+        result = frozen_result if frozen_result is not None else result_subject(ctx, request, governance_root=governance)
         root = pathlib.Path(result.spec.root)
         fact = body_fact(root, system_repo=governance, data_dir=ledger_root(ctx), treat_as_body=False)
         layer, spec = RESULT_LAYER, result.spec

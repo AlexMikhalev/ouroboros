@@ -187,18 +187,57 @@ def _verification(ctx: Any) -> str:
                       ensure_ascii=False, indent=1, default=str)
 
 
-def compose_subject(*, ask: str, reply: str, produced: Dict[str, Any], verification: str) -> str:
+_SUBJECT_HEAD = "# Task result under review\n\n## What was asked\n\n"
+
+
+def answer_text(*, reply: str, produced: Dict[str, Any], verification: str) -> str:
+    """The answer half of a result subject (the reply, what the task produced, the verification): its digest
+    is the subject's ``tree_sha``, the answer's own identity apart from what was asked."""
     files = [f"- {item['path']} ({item['kind']}; sha256 {item['sha256']}; {item['size']} bytes)"
              for item in produced.get("files") or []]
     effects = [f"- effect declared by {item['tool']}: {item['receipt']}" for item in produced.get("effects") or []]
     gaps = [f"- not captured: {issue}" for issue in produced.get("issues") or []]
     return "\n".join([
-        "# Task result under review", "",
-        "## What was asked", "", ask, "",
         "## The reply", "", reply.strip() or "(no reply text)", "",
         "## What the task produced", "", *(files + effects + gaps or ["(nothing produced beyond the reply)"]), "",
         "## Host-attested verification", "", verification, "",
     ])
+
+
+def compose_subject(*, ask: str, reply: str, produced: Dict[str, Any], verification: str) -> str:
+    return _SUBJECT_HEAD + ask + "\n\n" + answer_text(reply=reply, produced=produced, verification=verification)
+
+
+def _retained_subject_text(ctx: Any, digest: str) -> str:
+    """The exact retained text of this task's result subject ``digest`` (``subject_source``), else ``""``."""
+    from ouroboros.artifacts import read_actor_source_bytes, task_artifact_dir_path
+
+    task_id = str(getattr(ctx, "task_id", "") or "")
+    if len(digest) != 64 or not task_id:
+        return ""
+    path = f"source_handles/tool_results/result-subject-{digest[:16]}-{digest}.txt"  # subject_source's own name
+    try:
+        size = (task_artifact_dir_path(ctx.drive_root, task_id) / path).stat().st_size
+        data = read_actor_source_bytes(ctx.drive_root, task_id, {"kind": "task_source", "root": "artifact_store",
+                                                                  "path": path, "sha256": digest, "size": size})
+    except (OSError, ValueError, TypeError, KeyError):
+        return ""
+    return data.decode("utf-8", "replace") if hashlib.sha256(data).hexdigest() == digest else ""
+
+
+def _pinned_subject_text(ctx: Any, answer_sha: str, answer: str) -> str:
+    """The text of this task's earliest result subject of exactly this answer, else ``""``: the same answer
+    keeps what it was first reviewed against, so an owner message after that (a status question, say) never
+    makes it a new subject that buys a second paid review, and the same unchanged call collects its running
+    review at $0. A reply revised for new owner words is a new answer, reviewed against them."""
+    for row in reversed(_result_rows(ctx)):  # oldest first
+        subject = row.get("subject") or {}
+        if str(subject.get("tree_sha") or "") != answer_sha:
+            continue
+        text = _retained_subject_text(ctx, str(subject.get("diff_sha") or ""))
+        if text.startswith(_SUBJECT_HEAD) and text.endswith("\n\n" + answer):
+            return text
+    return ""
 
 
 def result_subject(ctx: Any, request: Any, *, governance_root: Any, answer: Optional[str] = None,
@@ -214,13 +253,15 @@ def result_subject(ctx: Any, request: Any, *, governance_root: Any, answer: Opti
     produced = produced if produced is not None else produced_material(ctx)
     if not reply.strip() and not produced["files"] and not produced["effects"]:
         raise ReviewChangeArgumentError("subject=result has nothing to review: no reply and nothing this task produced")
-    text = compose_subject(ask=_ask(ctx), reply=reply, produced=produced, verification=_verification(ctx))
+    answer_part = answer_text(reply=reply, produced=produced, verification=_verification(ctx))
+    answer_sha = hashlib.sha256(answer_part.encode("utf-8")).hexdigest()
+    text = _pinned_subject_text(ctx, answer_sha, answer_part) or _SUBJECT_HEAD + _ask(ctx) + "\n\n" + answer_part
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     source = subject_source(ctx, text)
     root = produced["workspace"] or (str(source.parent) if source else str(pathlib.Path(ctx.drive_root)))
     spec = ReviewSubjectSpec(root_kind=RESULT_ROOT_KIND, root=root, kind=RESULT_KIND, governance_root=str(governance_root),
                              surface="result", body_fact="unknown", body_how="", layer=RESULT_LAYER)
-    return FrozenSubject(spec=spec, diff_text=text, diff_sha=digest, tree_sha=digest, parent_sha="",
+    return FrozenSubject(spec=spec, diff_text=text, diff_sha=digest, tree_sha=answer_sha, parent_sha="",
                          name_status=tuple(("M", str(item["path"])) for item in produced["files"]))
 
 
@@ -364,8 +405,9 @@ def running_result_review(rows: List[Dict[str, Any]], subject_sha: str) -> str:
     return ""
 
 
-def _collect_running(ctx: Any, content: str, record_id: str) -> Dict[str, Any]:
-    """Rejoin the running result review ``record_id`` at $0: the same brief, under its recorded round."""
+def _collect_running(ctx: Any, content: str, record_id: str, subject: Any) -> Dict[str, Any]:
+    """Rejoin the running result review ``record_id`` at $0: the same brief and frozen subject, under its
+    recorded round (the record's identity never moves to material its seats did not see)."""
     from ouroboros import review_ledger as ledger
     from ouroboros.tools.review_change import run_review_change
 
@@ -374,7 +416,7 @@ def _collect_running(ctx: Any, content: str, record_id: str) -> Dict[str, Any]:
     return run_review_change(ctx, subject="result", answer=str(content or ""), goal=str(brief.get("goal") or ""),
                              scope=str(brief.get("scope") or ""),
                              author_questions=list(brief.get("author_questions") or []),
-                             reason="Collect the running review of this result",
+                             reason="Collect the running review of this result", _frozen_result=subject,
                              _rejoin_retry_key=str((record.get("fingerprints") or {}).get("retry_key") or ""))
 
 
@@ -401,6 +443,8 @@ def _bind_review_run(llm_trace: Dict[str, Any], record: Dict[str, Any], subject_
     record_id = str(record.get("record_id") or "")
     bound = next((run for run in runs if isinstance(run, dict) and run.get("panel_id") == record_id), None)
     if bound is not None:
+        if bound.get("binding_hash") == subject_sha:
+            bound.pop("superseded_by_revision", None)  # the exact subject it reviewed is current again
         return bound
     verdict = dict(record.get("verdict") or {})
     aggregate = str(verdict.get("aggregate") or "")
@@ -451,28 +495,19 @@ def _findings_text(record: Dict[str, Any], *, blocking: bool) -> str:
     return "\n".join(lines)
 
 
-def _after_refusal(ctx: Any, llm_trace: Dict[str, Any], subject_sha: str, hold: Any, *, required: bool) -> bool:
-    """A $0 refusal of this result's review (its allowance is spent) was already shown. Blocking with an owed
-    review keeps holding: the result is delivered once its human raises the ceiling and a review passes it, or
-    the task stops. Elsewhere the mind's delivery after seeing the refusal is its own informed decision."""
+def _after_refusal(llm_trace: Dict[str, Any], subject_sha: str) -> bool:
+    """A $0 refusal of this result's review (its allowance is spent) was already shown, and the mind delivers:
+    its own informed decision. (Blocking with an owed review never comes here: it asks again on every
+    delivery, which costs nothing and lets a raised ceiling buy the review.)"""
     run = next((item for item in llm_trace.get("review_runs") or [] if isinstance(item, dict)
                 and item.get("surface") == RESULT_KIND and item.get("binding_hash") == subject_sha
                 and not item.get("superseded_by_revision")), None)
-    if required and _blocking_enforcement():
-        from ouroboros import review_ledger as ledger
-
-        try:
-            record = ledger.load_record(ledger.ledger_root(ctx), str((run or {}).get("record_id") or ""))
-        except ValueError:
-            record = {"verdict": {"aggregate": "NOT_DISPATCHED"}, "dispatch_refusal": {}}
-        hold(_findings_text(record, blocking=True))
-        return True
     if run is not None:
         run["informed_finish"] = True
     return False
 
 
-def _presence_result_review(ctx: Any, content: str, llm_trace: Dict[str, Any], subject_sha: str,
+def _presence_result_review(ctx: Any, content: str, llm_trace: Dict[str, Any], subject: Any,
                             record: Optional[Dict[str, Any]], *, owed: bool) -> bool:
     """Presence speech is never held. A Required review of its result still runs: its author departs at
     once (``review_pause.departed_binding``), nobody waits for the seats, and the outcome settles as a late
@@ -483,14 +518,14 @@ def _presence_result_review(ctx: Any, content: str, llm_trace: Dict[str, Any], s
 
         try:
             with review_pause.receptive_author(review_pause.departed_binding(ctx)):
-                run_review_change(ctx, subject="result", answer=str(content or ""),
+                run_review_change(ctx, subject="result", answer=str(content or ""), _frozen_result=subject,
                                   reason="Required: the host's review of a Presence result with produced work")
         except ReviewChangeArgumentError as exc:
             log.warning("Required result review of Presence %s not dispatched: %s", getattr(ctx, "task_id", ""), exc)
             return False
-        record = settled_result_record(ctx, subject_sha)
+        record = settled_result_record(ctx, subject.diff_sha)
     if record is not None:
-        _bind_review_run(llm_trace, record, subject_sha, "blocking" if _blocking_enforcement() else "advisory")
+        _bind_review_run(llm_trace, record, subject.diff_sha, "blocking" if _blocking_enforcement() else "advisory")
     return False
 
 
@@ -527,10 +562,11 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         return False
     _supersede_other_result_runs(llm_trace, subject.diff_sha)
     record = settled_result_record(ctx, subject.diff_sha, rows)
-    if record is None and subject.diff_sha in (getattr(ctx, "_result_review_refused", None) or set()):
-        return _after_refusal(ctx, llm_trace, subject.diff_sha, hold, required=required)
+    if (record is None and subject.diff_sha in (getattr(ctx, "_result_review_refused", None) or set())
+            and not (required and _blocking_enforcement())):
+        return _after_refusal(llm_trace, subject.diff_sha)
     if getattr(ctx, "_presence_completion", None):
-        return _presence_result_review(ctx, content, llm_trace, subject.diff_sha, record,
+        return _presence_result_review(ctx, content, llm_trace, subject, record,
                                        owed=required and not running_result_review(rows, subject.diff_sha))
     # A review of exactly this result that is still running (the mind's own, or the floor's left one) is
     # collected at $0, in every mode but Off: the delivery waits for it unless the mind chose to finish.
@@ -543,11 +579,21 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     if record is None and (required or running):
         from ouroboros import review_pause
 
+        def dispatch() -> Dict[str, Any]:
+            return run_review_change(ctx, subject="result", answer=str(content or ""), _frozen_result=subject,
+                                     reason="Required: the host's review of a result with produced work")
+
         try:
             with review_pause.receptive_author(review_pause.receptive_binding(ctx)):
-                outcome = (_collect_running(ctx, content, running) if running else
-                           run_review_change(ctx, subject="result", answer=str(content or ""),
-                                             reason="Required: the host's review of a result with produced work"))
+                try:
+                    outcome = _collect_running(ctx, content, running, subject) if running else dispatch()
+                except ReviewChangeArgumentError:
+                    if not running:
+                        raise
+                    # The round settled (or left custody) after the lookup: its record is read again below,
+                    # and a Required result that no settled review covers gets the host's own review.
+                    covered = settled_result_record(ctx, subject.diff_sha) is not None
+                    outcome = dispatch() if required and not covered else {"state": "settled"}
         except ReviewChangeArgumentError as exc:
             log.warning("Required result review of %s not dispatched: %s", getattr(ctx, "task_id", ""), exc)
             return False
