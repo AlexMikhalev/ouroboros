@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
+from ouroboros.context_budget import WHOLE_CATEGORY  # noqa: F401 -- re-exported for the refusal pins
 from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import REBOUND_PHYSICAL_CONTEXT_KEY, REFUSED_CANDIDATE_KEY, TRANSPORT_DEATHS_KEY
 from ouroboros.loop_round_limits import _coarsen_memory_view, _run_emergency_address_pass
@@ -146,8 +147,18 @@ def _adopt_fallback_route(
     return fallback_model, fallback_use_local, context_fit_plan, active_context_mode
 
 
+def _route_fit_key(key: str) -> bool:
+    """Route-fit state a failed candidate's walk must not leave behind. The conversation's per-model
+    facts (anchors, accepted floors, refused sizes) and this round's own size refusal are not route
+    state: a candidate's refusal still earns the round its renewal (review r2, 18.10)."""
+    from ouroboros.context_anchor import ACCEPTED_INPUTS_KEY, INPUT_ANCHOR_KEY, REFUSED_INPUTS_KEY
+
+    return key.startswith("_context_") and key not in {
+        INPUT_ANCHOR_KEY, ACCEPTED_INPUTS_KEY, REFUSED_INPUTS_KEY, CONTEXT_REFUSAL_ROUND_KEY}
+
+
 def _snapshot_context_fit_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in usage.items() if key.startswith("_context_")}
+    return {key: value for key, value in usage.items() if _route_fit_key(key)}
 
 
 def _restore_context_fit_usage(
@@ -155,7 +166,7 @@ def _restore_context_fit_usage(
     snapshot: Dict[str, Any],
 ) -> None:
     for key in tuple(usage):
-        if key.startswith("_context_"):
+        if _route_fit_key(key):
             usage.pop(key, None)
     usage.update(snapshot)
 
@@ -966,6 +977,7 @@ def _dispatch_round_model(
     if result[0] is not None:  # an accepted request is this conversation's next size anchor
         from ouroboros.context_anchor import record_input_anchor
         from ouroboros.transcript_prefix import rewrite_epoch
+        ctx.accumulated_usage.pop(CONTEXT_REFUSAL_ROUND_KEY, None)  # an answer ends the round's refusal (review r2)
         record_input_anchor(ctx.accumulated_usage, ctx.context_fit_plan, round_idx=ctx.round_idx,
                             rewrite_epoch=rewrite_epoch(ctx.tools._ctx))
     capture = _loop().last_physical_attempt_capture()
@@ -1389,14 +1401,14 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 # view as applied and walks nothing again. The fallback chain and the end of the path follow in the caller.
 REFUSAL_PASSES: Tuple[Tuple[str, ...], ...] = (("host_copies", "bodies"), ("floor", "unseen_bodies"))
 WAKE_DELIVERY_STEP = "wake_delivery"  # the change applied before the passes, when there was one
-WHOLE_CATEGORY = 2**31 - 1  # an unknown target: the step takes everything its category can give
 #: The round a provider refused this conversation for size (``context_renewal`` reads it): a configured
 #: fallback that then fails for another reason never cancels the renewal the size refusal earned.
 CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 
 
-def _refusal_window(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Tuple[Optional[int], int, int]:
-    """``(stated limit or None, the refused size, the return-after-fold slack)`` of this refusal.
+def _refusal_window(ctx: _RoundModelCallContext, fit: Any,
+                    refused: Any = None) -> Tuple[Optional[int], int, int, int]:
+    """``(stated limit or None, the refused size, the return-after-fold slack, the reply it reserved)``.
 
     A provider's stated limit (OpenAI, Anthropic and Gemini wordings) with its own count of the refused
     input when it states one, or a local serving instance's exact window and input (``refused``: its
@@ -1410,21 +1422,27 @@ def _refusal_window(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) 
     measurement = fit.measurement
     message = str(ctx.accumulated_usage.get("_last_llm_provider_message") or "")
     stated = _parse_ctx_limit_number(message) or None
-    # The provider's own count of the refused input beats the estimate when it states both.
-    size = (_parse_ctx_requested_number(message) if stated else 0) or measurement.estimated_input_tokens
+    # The provider's own count of the refused input beats the estimate when it states both; a stated limit
+    # beside a COLD estimate measures nothing (chars/4 under-counts code and Cyrillic): unknown, as before.
+    provider_size = _parse_ctx_requested_number(message) if stated else 0
+    if stated and not provider_size and measurement.anchor_input_tokens is None:
+        stated = None
+    size = provider_size or measurement.estimated_input_tokens
+    reply = measurement.reply_allowance_tokens
     exact_window, exact_input = (int(getattr(refused, key, 0) or 0) for key in ("context_window_tokens", "input_tokens"))
-    if exact_window and exact_input:
+    if exact_window and exact_input:  # the instance's own counts, with the reply its exact request reserved
         stated, size = exact_window, exact_input
+        reply = int(getattr(refused, "max_completion_tokens", 0) or reply)
     window = stated or measurement.capacity_total_tokens or max(
         measurement.window_reading_tokens or 0, measurement.accepted_input_tokens or 0) or None
-    return stated, size, reclaim_low_water_margin(None, window) if window else 0
+    return stated, size, reclaim_low_water_margin(None, window) if window else 0, reply
 
 
 def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Optional[int]:
     """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
 
-    A stated limit L (``_refusal_window``) gives ``size + reply - L`` whatever the estimate's basis (the
-    limit is the measurement; a cold estimate still names its excess). Without one, the anchored estimate E
+    A stated limit L (``_refusal_window``) gives ``size + reply - L`` with the provider's own count of the
+    refused input, or an anchored estimate (a cold one beside a limit measures nothing). Without one, the anchored estimate E
     over the largest input this model accepted here, A, gives ``E - A``; E at or below A contradicts the
     reading, and a cold E compares with nothing: unknown. Both add the return-after-fold slack. The refused
     size is recorded, so the facts state no optimistic room for this model again.
@@ -1432,10 +1450,10 @@ def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) 
     from ouroboros.context_anchor import record_refused_input
 
     measurement = fit.measurement
-    record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, measurement.estimated_input_tokens)
-    stated, size, slack = _refusal_window(ctx, fit, refused)
+    stated, size, slack, reply = _refusal_window(ctx, fit, refused)
+    record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, size)  # the provider's count when it stated one
     if stated:
-        return max(0, size + measurement.reply_allowance_tokens - stated) + slack
+        return max(0, size + reply - stated) + slack
     if measurement.anchor_input_tokens is None:
         return None
     accepted = measurement.accepted_input_tokens
@@ -1462,14 +1480,14 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
     fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
     if fit is None:
         return None, cost, ctx.active_context_mode
-    target = _refusal_target(ctx, fit, failed_capture)
+    target, slack = _refusal_target(ctx, fit, failed_capture), _refusal_window(ctx, fit, failed_capture)[2]
     for steps in ((WAKE_DELIVERY_STEP,),) * bool(prepared) + REFUSAL_PASSES:
         if steps != (WAKE_DELIVERY_STEP,):
             key = (fit.measurement.round_id, "+".join(steps))  # once per round, never re-armed for a route
             if key in done:
                 continue
             done.add(key)
-            if not _apply_refusal_pass(ctx, steps, fit, target):
+            if not _apply_refusal_pass(ctx, steps, fit, target, slack):
                 continue
         fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
         if fit is None:
@@ -1495,12 +1513,12 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
             return _skipped("failed_candidate_not_comparable")
         failed_capture = latest
         fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True) or fit
-        target = _refusal_target(ctx, fit, failed_capture)
+        target, slack = _refusal_target(ctx, fit, failed_capture), _refusal_window(ctx, fit, failed_capture)[2]
     return None, cost, ctx.active_context_mode
 
 
 def _apply_refusal_pass(ctx: _RoundModelCallContext, steps: Tuple[str, ...], fit: Any,
-                        target: Optional[int]) -> bool:
+                        target: Optional[int], slack: Optional[int] = None) -> bool:
     """Apply a pass's steps in order until together they shed ``target``; True when the candidate changed.
 
     Each step is sized by what the earlier steps of the pass left of the target: host copies that
@@ -1512,22 +1530,24 @@ def _apply_refusal_pass(ctx: _RoundModelCallContext, steps: Tuple[str, ...], fit
     for step in steps:
         if remaining is not None and remaining <= 0:
             break
-        shed = _apply_refusal_step(ctx, step, fit, remaining)
+        shed = _apply_refusal_step(ctx, step, fit, remaining, slack)
         if shed is not None:
             changed = True
             remaining = None if remaining is None else remaining - shed
     return changed
 
 
-def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target: Optional[int]) -> Optional[int]:
+def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target: Optional[int],
+                        slack: Optional[int] = None) -> Optional[int]:
     """Apply one step of a refusal pass to the live transcript: the tokens it shed, None when unchanged.
 
     Bodies are addressed oldest first until ``target`` (the whole category when it is unknown). The floor
     narrows memory by the measured excess only, never by the return-after-fold slack: memory is continuity
     (BIBLE P1), and narrowing it for slack showed this room's own rows by address. Without a target it
     narrows by the deficit against a known window, and only with neither by everything it can give. Books
-    stay when memory alone met the target (the owner's books-last order), otherwise they become their
-    navigation form for the rest of the task, and the remaining slack falls to re-readable sources.
+    stay when memory met the measured excess (the owner's books-last order; the plan's return-after-fold
+    goal addresses other bodies first), otherwise they become their navigation form for the rest of the
+    task; the slack falls to unseen bodies.
     """
     if step in ("host_copies", "bodies", "unseen_bodies"):
         goal = None if step == "host_copies" else target
@@ -1542,12 +1562,12 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
         return max(0, before - after.measurement.estimated_input_tokens) if after is not None else default
 
     # The measured excess, else the deficit against a known window, else everything memory can give.
-    excess = max(1, target - _refusal_window(ctx, fit)[2]) if target else (
-        fit.measurement.capacity_deficit_tokens or WHOLE_CATEGORY)
+    slack = _refusal_window(ctx, fit)[2] if slack is None else slack
+    excess = max(1, target - slack) if target else (fit.measurement.capacity_deficit_tokens or WHOLE_CATEGORY)
     coarsened = _coarsen_memory_view(ctx, fit, saving=excess)
     saved = shed_since_before(0) if coarsened else 0
-    if target and saved >= target:
-        return saved
+    if target and saved >= excess:
+        return saved  # memory met the measured excess: books stay, the slack falls to unseen bodies
     mode = ctx.active_context_mode
     _reproject_actual_overflow_low(ctx)
     if ctx.active_context_mode != mode:

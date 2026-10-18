@@ -92,7 +92,7 @@ def test_cold_switched_model_keeps_actual_overflow_recovery_and_retry(tmp_path, 
     registry = cold_registry(tmp_path, monkeypatch)
     sends, steps = [], []
 
-    def apply(call, step, fit, target):
+    def apply(call, step, fit, target, slack=None):
         # A cold first request measures no target: the first pass takes its whole categories
         # and earns the single strict-shrink retry on the same model.
         assert target is None and call.active_model == "same-model"

@@ -127,3 +127,12 @@ def test_renewal_is_not_attempted_when_it_cannot_help_or_the_failure_is_not_size
                  {"role": "user", HOST_CONTEXT_KIND_KEY: OWNER_WORDS_KIND, "content": "A"}]
     before = list(only_host)
     assert renew_after_refusal(ctx(only_host), tools) is False and only_host == before  # nothing substantive leaves
+
+
+def test_a_second_renewal_keeps_the_first_renewals_index_until_a_newer_note(tmp_path):
+    """Review r2 (18.10): a second renewal without a newer note dropped the first record, and with it the
+    facts of the calls it had indexed; they stay until the mind writes a newer note."""
+    messages = _noted(tmp_path)
+    first = bound_host_row(RENEWAL_RECORD_NAME, "[Host record: working view renewed] ... three.py ...")
+    seed, _left = renewal_seed([*messages, first, *_tool("five", "more " * 500)])
+    assert first in seed

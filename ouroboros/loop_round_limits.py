@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.context import build_incoming_user_content
-from ouroboros.context_budget import OWNER_WORDS_KIND
+from ouroboros.context_budget import OWNER_WORDS_KIND, WHOLE_CATEGORY
 from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
@@ -1020,7 +1020,7 @@ def _run_emergency_address_pass(ctx: Any, disposition: Any, *, rung: str, goal_t
         route_fp=measurement.route_fp, round_id=measurement.round_id,
         transcript_sha256=context_reclaim_transcript_sha256(ctx.messages),
         measurement_basis=measurement.measurement_basis, measurement_density=measurement.measurement_density,
-        reclaim_goal_tokens=int(goal_tokens) if goal_tokens else 2**31 - 1, allow_partial_shrink=True,
+        reclaim_goal_tokens=int(goal_tokens) if goal_tokens else WHOLE_CATEGORY, allow_partial_shrink=True,
     )
     rebuilt, receipt = emergency_address_view(
         ctx.messages, request, rung=rung,

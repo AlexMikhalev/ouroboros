@@ -110,10 +110,11 @@ def main_input_anchor(usage: Optional[Mapping[str, Any]], plan: Any, *,
 
 def floored_window(window_tokens: Optional[int], known: bool, accepted: Optional[int]) -> Tuple[int, bool]:
     """``(window, known)`` with this conversation's floor applied: a stated window below an input this model
-    already accepted here is no window (``(0, False)``, unknown), whatever reads it — the Main fit, a route
-    rebind, the books step of a refusal pass. Otherwise the reading passes unchanged."""
+    already accepted here is no window (``known`` False; the number stays, so the facts can name the reading
+    the floor disproved), whatever reads it — the Main fit, a route rebind, the books step of a refusal
+    pass. Otherwise the reading passes unchanged."""
     if accepted and window_tokens and int(accepted) > int(window_tokens):
-        return 0, False
+        return int(window_tokens), False
     return int(window_tokens or 0), bool(known)
 
 

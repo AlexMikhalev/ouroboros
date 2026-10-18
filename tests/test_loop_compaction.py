@@ -190,7 +190,7 @@ def _steps_applied(monkeypatch, outcome=lambda step: True):
 
     steps = []
 
-    def apply(ctx, step, fit, target):
+    def apply(ctx, step, fit, target, slack=None):
         steps.append((step, target))
         return 0 if outcome(step) else None
 
@@ -549,7 +549,7 @@ def test_failed_main_capture_is_snapshotted_before_the_passes(tmp_path, monkeypa
     current_capture = {"value": _failed_capture(size=1_000)}
     monkeypatch.setattr(loop, "_measure_round_main_fit", _measure_cycle([_fit()]))
 
-    def apply(ctx, step, fit, target):
+    def apply(ctx, step, fit, target, slack=None):
         current_capture["value"] = _failed_capture(size=700)  # a receipt the pass itself produced
         return True
 

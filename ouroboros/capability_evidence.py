@@ -84,6 +84,7 @@ _CTX_LIMIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
 #: The refused request's own size where the provider states it beside the limit (same wordings).
 _CTX_REQUESTED_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"resulted in\s*([0-9][0-9,]*)\s*tokens", re.I),
+    re.compile(r"you requested (?:about\s*)?([0-9][0-9,]*)\s*tokens", re.I),  # OpenRouter / OpenAI
     re.compile(r"([0-9][0-9,]*)\s*in the messages", re.I),
     re.compile(r"prompt is too long:\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"context limit:\s*([0-9][0-9,]*)\s*\+", re.I),

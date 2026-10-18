@@ -50,8 +50,13 @@ def test_the_target_is_measured_on_this_conversation_or_stays_unknown():
     assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192), local) == (
         34_000 + 8_192 - 32_768 + 4_096)
     assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192)) is None  # cold, numberless
-    # A stated limit measures even the first refusal, before this model accepted anything here (cold E).
-    assert lmc._refusal_target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) == 10_000 + 50_000
+    # A stated limit beside a COLD estimate measures nothing (chars/4 under-counts code and Cyrillic): unknown;
+    # with the provider's own count of the refused input it measures even the first refusal (review r2, 18.10).
+    assert lmc._refusal_target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) is None
+    sized = _ctx("This endpoint's maximum context length is 400000 tokens. However, you requested about 410000 tokens")
+    assert lmc._refusal_target(sized, _fit(300_000, anchor=None, accepted=None, reply=20_000)) == 30_000 + 50_000
+    assert sized.accumulated_usage[REFUSED_INPUTS_KEY]["claudexor|codex=gpt-6-astra"] == 410_000 or 410_000 in (
+        sized.accumulated_usage[REFUSED_INPUTS_KEY].values())  # the provider's count is the refused size
 
 
 def test_bodies_shed_only_what_the_host_copies_left_of_the_target(monkeypatch):
@@ -111,4 +116,28 @@ def test_memory_narrowed_enough_addresses_no_unseen_body(monkeypatch):
     sizes[:] = [880_000, 700_000]
     stated = _ctx("This model's maximum context length is 400,000 tokens.")  # slack 50,000
     assert lmc._apply_refusal_pass(stated, second, _fit(900_000, accepted=None), 70_000) is True
-    assert calls == [("floor", 20_000), ("books",)]  # 70,000 = 20,000 excess + 50,000 slack; books met the rest
+    # 70,000 = 20,000 excess + 50,000 slack: memory met the excess, so books stay and unseen bodies take the slack.
+    assert calls == [("floor", 20_000), ("unseen_bodies", 50_000)]
+
+
+def test_a_failed_candidates_walk_keeps_the_rounds_refusal_and_the_conversation_facts():
+    """Review r2 (18.10): restoring the primary's route-fit state after a failed fallback erased the round's
+    size-refusal stamp (so the renewal never ran) and the per-model anchors. Route-fit keys still restore."""
+    from ouroboros.context_anchor import ACCEPTED_INPUTS_KEY, INPUT_ANCHOR_KEY, REFUSED_INPUTS_KEY
+
+    usage = {"_context_capacity_total_tokens": 872_000, INPUT_ANCHOR_KEY: {"a": {}}}
+    snapshot = lmc._snapshot_context_fit_usage(usage)
+    usage.update({"_context_capacity_total_tokens": 128_000, lmc.CONTEXT_REFUSAL_ROUND_KEY: 7,
+                  INPUT_ANCHOR_KEY: {"a": {}, "b": {}}, ACCEPTED_INPUTS_KEY: {"b": 90_000}, REFUSED_INPUTS_KEY: {"b": 130_000}})
+    lmc._restore_context_fit_usage(usage, snapshot)
+    assert usage["_context_capacity_total_tokens"] == 872_000  # route-fit state is the primary's again
+    assert usage[lmc.CONTEXT_REFUSAL_ROUND_KEY] == 7 and set(usage[INPUT_ANCHOR_KEY]) == {"a", "b"}
+    assert usage[ACCEPTED_INPUTS_KEY] == {"b": 90_000} and usage[REFUSED_INPUTS_KEY] == {"b": 130_000}
+
+
+def test_a_local_pre_send_refusal_uses_the_reply_its_exact_request_reserved():
+    """Review r2 (18.10): a 131,072 window, 125,000 exact input and the 8,192 reply floor of the refused
+    request exceed by 2,120, not by the estimate's 14,688-token reply."""
+    local = SimpleNamespace(input_tokens=125_000, context_window_tokens=131_072, max_completion_tokens=8_192)
+    target = lmc._refusal_target(_ctx(), _fit(100_000, anchor=None, accepted=None, reply=14_688), local)
+    assert target == 2_120 + -(-131_072 // 8)

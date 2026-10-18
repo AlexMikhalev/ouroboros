@@ -234,7 +234,7 @@ def test_first_main_refusal_recovers_unobserved_body_on_same_model_and_effort(ma
     rungs = []
     apply_step = loop_model_call._apply_refusal_step
 
-    def apply(ctx, step, fit, target):
+    def apply(ctx, step, fit, target, slack=None):
         rungs.append(step)
         return apply_step(ctx, step, fit, target)
 

@@ -94,8 +94,8 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
             prose = _plain_text(row.get("content")) if role == "assistant" and i > newest_note else None
             if prose and prose.strip():
                 kept.append({"role": "assistant", "content": prose})  # my words beside the call stay
-        elif _capsule_metadata(row)[0] and i > newest_note:
-            kept.append(row)  # the passes' address records since my newest note: what left, with its facts
+        elif (_capsule_metadata(row)[0] or kind == RENEWAL_RECORD_NAME) and i > newest_note:
+            kept.append(row)  # address records and earlier renewal indexes since my newest note: what left, with facts
         elif (_capsule_metadata(row)[0] or row.get(REVIEW_CONTEXT_INDEX_KEY)
               or (kind in resent and host_row_intact(row))):
             left["host_rows"] += 1  # older addresses, superseded review copies, state the host sends afresh
