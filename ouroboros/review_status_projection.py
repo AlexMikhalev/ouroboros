@@ -438,6 +438,9 @@ def _review_status_message(projection: Dict[str, Any]) -> str:
             "review_late_result_pending": (
                 f"Review NOT_PERFORMED: {NOT_PERFORMED_PHRASES['review_late_result_pending']}; no verdict is counted yet. "
                 "The pending result settles into the ledger when it lands; retry the commit afterwards."),
+            "result_unanswered": (
+                f"Review NOT_PERFORMED: {NOT_PERFORMED_PHRASES['result_unanswered']}. A result review counts only a "
+                "PASS/FAIL answer; each seat's error is recorded in the attempt."),
             "critical_findings": "Reviewers found critical issues. Repair or rebut (review_rebuttal) the findings listed, then re-run commit_reviewed.",
             "review_quorum": "Not enough review models responded. Retry — usually transient.",
             "parse_failure": "Review models could not produce parseable output. Retry the commit.",
@@ -454,8 +457,9 @@ def _review_status_message(projection: Dict[str, Any]) -> str:
             "review_subject_binding_mismatch": "The reviewed managed subject is not the tree this commit would write. Re-stage the intended candidate and retry so review and commit describe the same tree.",
         }
         label = "BLOCKED" if ca.status == "blocked" else "FAILED"
+        what = "result review" if getattr(ca, "tool_name", "") == "review_result" else "commit"
         current = (
-            f"Last commit {label} ({ca.block_reason or 'unclassified'}): "
+            f"Last {what} {label} ({ca.block_reason or 'unclassified'}): "
             f"{reason_map.get(ca.block_reason, ca.block_reason or 'unknown')}"
             f"  |  {current}"
         )
