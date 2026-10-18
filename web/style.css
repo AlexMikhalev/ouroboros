@@ -700,10 +700,18 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     min-inline-size: var(--page-control-min, 0px);
     min-block-size: var(--page-control-min, 0px);
 }
-/* Links stay inline, where the minimum above does not apply (their touch area is the hit recipe in ui.css), and
-   wrap before they widen a column. */
+/* Links stay inline, where the minimum above does not apply, and wrap before they widen a column. Under a finger
+   they take the hit extension's inset (ui.css --ui-hit-inset), so a link inside a sentence keeps its lines. */
 :is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
+    position: relative;
     overflow-wrap: anywhere;
+}
+@media (pointer: coarse) {
+    :is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href]::after {
+        content: "";
+        position: absolute;
+        inset: var(--ui-hit-inset);
+    }
 }
 
 .files-sidebar {
