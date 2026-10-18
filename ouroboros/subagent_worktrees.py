@@ -6,7 +6,7 @@ identity distinguishes Ouroboros-body copies from external project copies.
 The child returns its delta; the parent integrates and owns final delivery.
 
 git has no automatic worktree garbage collection, so we keep a durable JSON
-registry (``data/state/subagent_worktrees.json``) and prune orphans on startup.
+registry (``data/state/subagent_worktrees.json``) and prune on the custody cadence.
 Mutations of SHARED metadata — a target's ``.git/worktrees`` (add/prune), its
 ``refs/ouroboros/delegated/*`` pins and the registry file — are serialized by a
 portable cross-process lock (the existing repo git lock is drive-root scoped,
@@ -280,9 +280,10 @@ def _git_quiet(repo_dir: Path, *args: str) -> None:
 
 
 def _remove_paths(repo_dir: Path, wt_path: Path, branch: str, *, allowed_root: Optional[Any] = None) -> bool:
-    """Best-effort teardown: drop the worktree checkout, dir, and branch. True when the
-    checkout is gone (its row may be forgotten); False when the directory survived the
-    removal, so the row and its pin stay for a later pass (``removal_failed``).
+    """Forget a deleted checkout's Git registration and branch under the ops lock.
+
+    The caller deletes files OUTSIDE the lock first. A surviving directory returns
+    False without retrying deletion here, so its row and pin stay (``removal_failed``).
 
     When ``allowed_root`` is given, refuse to touch any path that is empty or not
     strictly inside it. The registry is durable runtime state; a corrupt/malformed
@@ -291,9 +292,6 @@ def _remove_paths(repo_dir: Path, wt_path: Path, branch: str, *, allowed_root: O
     wt_path = Path(wt_path)
     if allowed_root is not None and not _deletable(wt_path, Path(allowed_root)):
         return True  # not ours to delete: the malformed row is forgotten, the path untouched
-    _git_quiet(repo_dir, "worktree", "remove", "--force", str(wt_path))
-    if wt_path.exists():
-        _force_rmtree(wt_path)
     if wt_path.exists():
         return False
     _git_quiet(repo_dir, "worktree", "prune")
@@ -1463,21 +1461,27 @@ def remove_worktree(
             _force_rmtree(Path(want_path))
             return True
         return False
+    return _retire_worktree(match, root, data_dir, match.get("branch") or "", lock_wait_sec)
+
+
+def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: str,
+                     lock_wait_sec: Optional[float] = None) -> bool:
+    """Delete files without the shared lock, then reconcile only the unchanged row."""
     wt_path = Path(match.get("path") or "")
     if _deletable(wt_path, root) and wt_path.exists():
         _force_rmtree(wt_path)  # the checkout's files go first, OUTSIDE the lock (#1241)
     from ouroboros import body_candidate
     body_candidate.discard_scratch(match)  # an own-body copy's sibling process environment, unless retained
-    with _ops_lock(root, op="remove_worktree", task_id=str(task_id or ""), timeout_sec=lock_wait_sec):
+    with _ops_lock(root, op="remove_worktree", task_id=str(match.get("task_id") or ""), timeout_sec=lock_wait_sec):
+        rows = _load_registry(data_dir, strict=True, op="remove_worktree")
+        if match not in rows:  # another writer changed ownership while files were being removed
+            return False
         if not _remove_paths(Path(match.get("git_dir") or match.get("repo_dir") or "."), wt_path,
-                             match.get("branch") or "", allowed_root=root):
+                             branch, allowed_root=root):
             _mark_removal_failed(match, data_dir, "remove_worktree")  # the directory survived: row and pin stay
             return False
-        survivors = [
-            e for e in _load_registry(data_dir, strict=True, op="remove_worktree")
-            if e.get("path") != match.get("path")
-        ]
-        _save_registry(survivors, data_dir)
+        rows.remove(match)
+        _save_registry(rows, data_dir)
     return True
 
 
@@ -1506,10 +1510,7 @@ def prune_orphans(
     cutoff = age_cutoff(retention)
     root = _resolve_root(worktree_root)
     chosen = None if only is None else {str(task_id) for task_id in only}
-    removed: List[Dict[str, Any]] = []
-    kept: List[Dict[str, Any]] = []
-    repos: set[str] = set()
-    changed = False
+    removed = 0
     # A candidate's verdict reads its whole tree (and may capture it), so it is
     # computed before the lock; under the lock the row is read again and a removing
     # verdict is applied only while it still describes that row and that checkout
@@ -1527,59 +1528,34 @@ def prune_orphans(
         return bool(task_id) and live is not None and body_candidate._recorded_terminal(task_id, data_dir) \
             and live(task_id) is False and not body_candidate.live_lineage_processes(data_dir, task_id)
 
-    with _ops_lock(root, op="prune"):
-        for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
+    for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
+        with _ops_lock(root, op="prune"):
+            if entry not in _load_registry(data_dir, strict=True, op="prune_orphans"):
+                continue
             task_id = str(entry.get("task_id") or "")
             if chosen is not None and task_id not in chosen:
-                kept.append(entry)
                 continue
+            branch = str(entry.get("branch") or "")
             if entry.get("kind") == _KIND_BODY_CANDIDATE:
                 verdict = verdicts.get(str(entry.get("path") or "")) or {"remove": False}
                 if not verdict["remove"] or not body_candidate.verdict_holds(entry, verdict, data_dir=data_dir):
-                    kept.append(entry)
                     continue
-                body_candidate.discard_scratch(entry)
-                if not _remove_paths(Path(str(entry.get("git_dir") or entry.get("repo_dir") or ".")),
-                                     Path(str(entry.get("path") or "")),
-                                     "" if verdict.get("keep_branch") else str(entry.get("branch") or ""),
-                                     allowed_root=root):
-                    kept.append({**entry, "removal_failed": utc_now_iso()})
-                    changed = True
-                    continue
-                removed.append(entry)
-                continue
-            if entry.get("kind") == _KIND_DELEGATED_EXEC:
+                if verdict.get("keep_branch"):
+                    branch = ""
+            elif entry.get("kind") == _KIND_DELEGATED_EXEC:
                 # Delegated execution snapshots have their OWN lifecycle: they persist
                 # until the run's explicit patch disposition, and the custody GC
                 # (`prune_execution_snapshots`) cross-checks custody for open runs and
                 # pending invocations. Age/path heuristics here must not eat them —
                 # and their baseline ref needs deleting, which this loop cannot do.
-                kept.append(entry)
                 continue
-            repo_dir = str(entry.get("git_dir") or entry.get("repo_dir") or "")
-            wt_path = str(entry.get("path") or "")
-            created = float(entry.get("created_at") or 0)
-            if repo_dir:
-                repos.add(repo_dir)
-            path_exists = Path(wt_path).exists() if wt_path else False
-            if not path_exists or (created < cutoff and proven_over(task_id)):
-                if (repo_dir or wt_path) and not _remove_paths(Path(repo_dir or "."), Path(wt_path),
-                                                               entry.get("branch") or "", allowed_root=root):
-                    kept.append({**entry, "removal_failed": utc_now_iso()})
-                    changed = True
-                    continue
-                body_candidate.discard_scratch(entry)
-                removed.append(entry)
             else:
-                kept.append(entry)
-        if removed or changed:
-            _save_registry(kept, data_dir)
-            for repo in repos:
-                try:
-                    _git(Path(repo), "worktree", "prune", check=False)
-                except Exception:
-                    pass
-    return {"removed": len(removed), "kept": len(kept)}
+                path_exists = bool(entry.get("path")) and Path(entry["path"]).exists()
+                if path_exists and not (float(entry.get("created_at") or 0) < cutoff and proven_over(task_id)):
+                    continue
+        if _retire_worktree(entry, root, data_dir, branch):
+            removed += 1
+    return {"removed": removed, "kept": len(_load_registry(data_dir, strict=True, op="prune_orphans"))}
 
 
 def list_worktrees(data_dir: Optional[Any] = None) -> List[Dict[str, Any]]:

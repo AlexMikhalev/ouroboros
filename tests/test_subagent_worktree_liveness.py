@@ -177,3 +177,49 @@ def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects
     assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"}) == {"removed": ["snapOne"], "kept": []}
     assert not pathlib.Path(one.path).exists() and pathlib.Path(two.path).is_dir()
     assert sw.find_execution_snapshot("snapTwo", data_dir=data) is not None
+
+
+@pytest.mark.parametrize("kind", ["plain", "body", "snapshot"])
+def test_pruning_deletes_outside_the_ops_lock_and_preserves_concurrent_registration(world, monkeypatch, kind):
+    repo, data, root = world
+    if kind == "snapshot":
+        handle = sw.provision_execution_snapshot(
+            target_root=repo, task_id="done", snapshot_id="closed", worktree_root=root, data_dir=data)
+        path = pathlib.Path(handle.path)
+    else:
+        path = _copy(world, "done")
+        if kind == "body":
+            rows = sw._load_registry(data)
+            rows[0]["kind"] = "body_candidate"
+            sw._save_registry(rows, data)
+    write_task_result(data, "done", "completed")
+    _age(data)
+    real_remove, real_save, real_git = sw._force_rmtree, sw._save_registry, sw._git_quiet
+    saves, deletions = [], []
+
+    def remove(checkout):
+        assert not sw._inproc_lock.locked(), "tree deletion must not hold the shared ops lock"
+        deletions.append(checkout)
+        _copy(world, "arrived")  # a real provision interleaves with this deletion
+        real_remove(checkout)
+
+    def save(rows, data_dir=None):
+        saves.append(sw._inproc_lock.locked())
+        real_save(rows, data_dir)
+
+    def git(repo_dir, *args):
+        if args[:2] == ("worktree", "remove") and path.exists():
+            assert not sw._inproc_lock.locked(), "Git tree deletion must also be outside the shared lock"
+        real_git(repo_dir, *args)
+
+    monkeypatch.setattr(sw, "_force_rmtree", remove)
+    monkeypatch.setattr(sw, "_save_registry", save)
+    monkeypatch.setattr(sw, "_git_quiet", git)
+    if kind == "snapshot":
+        assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"] == ["closed"]
+    else:
+        assert _prune(world, retention_days=0, live=lambda _: False)["removed"] == 1
+    assert deletions == [path] and not path.exists()
+    assert saves and all(saves), "registry mutations still require the shared lock"
+    [row] = sw.list_worktrees(data_dir=data)
+    assert row["task_id"] == "arrived" and pathlib.Path(row["path"]).is_dir()
