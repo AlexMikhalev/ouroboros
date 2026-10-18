@@ -964,13 +964,7 @@
      "kind": "task",
      "project_id": "",
      "since": null,
-     "controls": [
-      {
-       "action": "stop",
-       "target": "r",
-       "scope": "cascade"
-      }
-     ]
+     "controls": []
     }
    ],
    "rooms": {

@@ -264,21 +264,19 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         # Working helpers say the reason and keep the call's word; the count of runs is still the work's fact.
         work["members"]["delegated"] = int(entry["delegated"])
         current_id = str(episode["task_id"])
-        # Every other episode root that still owns a live member (or a running delegated run) is the earlier
-        # attempt; a retry attempt's own original stands for the same episode, never an earlier one.
-        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root} and (
-            any(member["activity"] != "unknown" for member in owners_by_root.get(root, ())) or root in held))
-        if current_state is not None and any(entry_reason.get("code") == "earlier_work_unconfirmed"
-                                             for entry_reason in current_state.get("reasons") or ()):
-            # A Continue held for its earlier attempt's writers: that attempt keeps its Stop even when no queue
-            # row or run stands for its writer (an unbound start, a handoff, an owned process).
-            predecessor = str(_continuation(facts or {}).get("predecessor_task_id") or "")
-            if predecessor and predecessor not in earlier and predecessor not in {current_id, current_root}:
-                earlier.append(predecessor)
+
+        def stoppable(root: str) -> bool:
+            # The Stop door takes a root whose tree still has a live queue or direct row; a settled tree whose only
+            # writer is a delegated run, a handoff or a process answers 404, so no control is offered for it.
+            return any(member["activity"] != "unknown" for member in owners_by_root.get(root, ()))
+
+        # Every other episode root that still owns a live member is the earlier attempt; a retry attempt's own
+        # original stands for the same episode, never an earlier one.
+        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root} and stoppable(root))
         # Stop ends the whole work: a retry's logical original carries its tree too (never an earlier attempt).
-        logical = [current_root] if current_root and current_root != current_id else []
-        controls = ws.controls_for(current_state, current_row, earlier_live=earlier,
-                                   live_roots=([] if current_state is not None else [current_id]) + logical + earlier)
+        logical = [current_root] if current_root and current_root != current_id and stoppable(current_root) else []
+        ended = [] if current_state is not None or not stoppable(current_id) else [current_id]
+        controls = ws.controls_for(current_state, current_row, earlier_live=earlier, live_roots=ended + logical + earlier)
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",
                     project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=controls)
         cmid = str(room_row.get("client_message_id") or "")

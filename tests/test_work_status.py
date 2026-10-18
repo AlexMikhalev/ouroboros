@@ -285,6 +285,7 @@ def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monke
     assert work["work_id"] == "p" and work["activity"] == "working" and work["members"]["delegated"] == 2
     assert work["because"][0]["code"] == "delegated_running"
     assert work["since"] == datetime(2026, 10, 17, 11, tzinfo=timezone.utc).timestamp()
+    assert work["controls"] == [], "the Stop door does not reach a settled tree's runs: no dead Stop"
 
 
 def test_working_helpers_say_the_reason_while_the_work_still_counts_its_runs(stored, monkeypatch, tmp_path):
@@ -359,18 +360,19 @@ def test_a_retry_and_the_helpers_it_started_are_one_work(stored, tmp_path):
     assert not any(entry["action"] == "stop_earlier" for entry in work["controls"])
 
 
-def test_a_held_continue_keeps_its_earlier_attempt_stop_without_a_live_member(stored, tmp_path):
-    """Its writer may be an unbound start, a handoff or a process no queue row or run names."""
+def test_a_held_continue_offers_stop_earlier_only_where_the_stop_door_reaches(stored, tmp_path):
+    """A writer the queue does not list (an unbound start, a handoff, a process) is a wait the Stop door cannot end
+    (it answers 404 for a settled tree with no live row): no dead control. A live helper of that attempt can."""
     stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}
     held = row("c", "budget_paused", pause_cause="unknown", can_resume=False)
-    snap = wp.works_snapshot(tmp_path, [held], {"c": {"_budget_pause_hold": {"reason": "continuation_writer_unsettled"},
-                                                       "continuation": {"predecessor_task_id": "p"}}})
-    [work] = snap["works"]
-    assert [(entry["action"], entry["target"]) for entry in work["controls"]] == [
+    raw = {"c": {"_budget_pause_hold": {"reason": "continuation_writer_unsettled"},
+                 "continuation": {"predecessor_task_id": "p"}}}
+    [alone] = wp.works_snapshot(tmp_path, [held], raw)["works"]
+    assert [(entry["action"], entry["target"]) for entry in alone["controls"]] == [("stop", "c")]
+    helper = row("h0", parent_task_id="p", root_task_id="p")
+    [helped] = wp.works_snapshot(tmp_path, [held, helper], raw)["works"]
+    assert [(entry["action"], entry["target"]) for entry in helped["controls"]] == [
         ("stop", "c"), ("stop", "p"), ("stop_earlier", "p")]
-    plain = wp.works_snapshot(tmp_path, [row("c2", "queued")], {"c2": {"continuation": {"predecessor_task_id": "p"}}})
-    assert [(entry["action"], entry["target"]) for entry in plain["works"][0]["controls"]] == [
-        ("pause", "c2"), ("stop", "c2")], "a Continue that is not held names no earlier attempt"
 
 
 @pytest.mark.parametrize("cause, raw, resumable", [
