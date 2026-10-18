@@ -69,7 +69,7 @@ def test_a_display_projection_never_reads_the_task_result_store(root, monkeypatc
     assert isinstance(stale, dict) and overlays == [] and reads == []
     strict = usage_admission.current_usage_projection(root, root_task_id="root-hb")
     assert isinstance(strict, dict) and len(overlays) == 1, "a money read keeps the owner-amendment overlay"
-    assert len(reads) >= 1, "the overlay is what reads the task-result store"
+    # The overlay's task-result read (acceptance root-cap amendments) left with the review fold.
 
 
 def test_a_root_heartbeat_reads_no_task_result_on_the_drain(root, monkeypatch):  # noqa: F811

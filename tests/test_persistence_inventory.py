@@ -791,7 +791,8 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``review_projection.py``, ``review_operation.py``, ``review_evidence_sections.py``,
 # ``review_source_closure.py`` and ``artifacts.py``), the request-source snapshot root
 # ``source_handles/review_inputs`` (``review_source_closure.retain_review_request_sources``), and
-# ``observability/blobs`` with its ``.stream.*`` temp name (``repo_diff_capture.write_blob_stream``).
+# ``observability/blobs`` with its ``.stream.*`` temp name (``write_blob_stream``, the acceptance diff's
+# private retention, deleted with its module ``repo_diff_capture``).
 # Every row stays: stored acceptance sources are still served (section 7), old review-input snapshots
 # are still read, and the tool-results plane keeps live writers; the last two rows are exempted from
 # the no-stale-rows direction below, each with its reason.
