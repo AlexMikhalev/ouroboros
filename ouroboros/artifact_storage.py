@@ -11,16 +11,21 @@ import pathlib
 import stat
 import subprocess
 import sys
-import uuid
+
+from ouroboros.temp_sweep import atomic_temp_path as temporary_sibling
 
 _FICLONE = 0x40049409  # _IOW(0x94, 9, int), <linux/fs.h>
 
 
 def clone_file(source: pathlib.Path, destination: pathlib.Path) -> bool:
     """Make DESTINATION (which must not exist) a block-sharing clone of SOURCE; ``False`` when this
-    platform or filesystem cannot, with nothing left at DESTINATION, so the caller copies instead."""
+    platform or filesystem cannot, with nothing left at DESTINATION, so the caller copies instead.
+    Only a regular file is cloned: a directory would be cloned whole and a FIFO's open would block,
+    so anything else is left to the streamed copy's own typed refusal."""
     source, destination = pathlib.Path(source), pathlib.Path(destination)
     try:
+        if not stat.S_ISREG(os.stat(source).st_mode):
+            return False
         if sys.platform == "darwin":
             return _clonefile(source, destination)
         if sys.platform.startswith("linux"):
@@ -48,14 +53,23 @@ def _ficlone(source: pathlib.Path, destination: pathlib.Path) -> bool:
     import fcntl
 
     try:
-        with open(source, "rb") as reader, open(destination, "xb") as writer:
+        # Non-blocking open: a FIFO swapped in since the regular-file check never parks this thread.
+        reader = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(reader).st_mode):
+            return False
+        with open(destination, "xb") as writer:
             try:
-                fcntl.ioctl(writer.fileno(), _FICLONE, reader.fileno())
+                fcntl.ioctl(writer.fileno(), _FICLONE, reader)
                 return True
             except OSError:
                 pass
     except OSError:
         return False
+    finally:
+        os.close(reader)
     destination.unlink(missing_ok=True)  # the empty file of a refused clone
     return False
 
@@ -83,7 +97,7 @@ def _compress_macos(path: pathlib.Path) -> bool:
     from ouroboros.config import ARTIFACT_COMPRESSION_TIMEOUT_SEC
 
     expected = stream_artifact_file(path)
-    temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
+    temporary = temporary_sibling(path)  # the atomic signature: a hard kill's leftover is swept, never a deliverable
     try:
         subprocess.run(
             ["/usr/bin/ditto", "--hfsCompression", str(path), str(temporary)],

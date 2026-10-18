@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 import pathlib
+import threading
 import time
+import uuid
 from typing import Iterator
 
 # Where the atomic writers place their temp siblings (the data root's own files aside): the
@@ -17,6 +19,14 @@ from typing import Iterator
 # whole with its drive's GC; checkouts and runtimes are foreign). Never ``observability/``.
 ATOMIC_TEMP_DIRS = ("state", "logs", "memory", "projects", "task_results")
 _ATOMIC_TEMP_PRUNED = (("state", "headless_tasks"), ("state", "review_checkouts"), ("state", "cx"))
+
+
+def atomic_temp_path(path: pathlib.Path) -> pathlib.Path:
+    """The sibling temp name every atomic writer uses, ``.{name}.tmp.<pid>.<tid>.<uuid>``: the one
+    signature this sweep reaps, so a hard kill's leftover is reclaimed instead of surviving beside
+    the file it was meant to replace (and, in an artifact folder, being listed as a deliverable)."""
+    path = pathlib.Path(path)
+    return path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
 
 
 def _atomic_temp_candidates(root: pathlib.Path) -> Iterator[pathlib.Path]:

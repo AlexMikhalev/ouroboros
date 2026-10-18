@@ -118,6 +118,57 @@ def test_identity_verification_is_unchanged_on_the_clone_path(tmp_path):
     assert measured == _measured(destination)
 
 
+@pytest.mark.parametrize("kind", ["directory", "fifo"])
+def test_a_source_that_is_not_a_regular_file_is_refused_before_any_clone(tmp_path, monkeypatch, kind):
+    """A directory would be cloned whole (and its temporary could not be unlinked), a writerless FIFO's
+    open would block: neither reaches the clone; the streamed copy's typed refusal answers, nothing is
+    left in the destination folder, and a regular file beside them still clones."""
+    import stat
+    import threading
+
+    source, destination = tmp_path / "source", tmp_path / "out" / "result"
+    if kind == "directory":
+        source.mkdir()
+        (source / "inner.txt").write_bytes(b"inner")
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("no FIFOs on this platform")
+        os.mkfifo(source)
+    bindings = []
+    for name in ("_clonefile", "_ficlone"):
+        monkeypatch.setattr(artifact_storage, name, lambda *a, _n=name: bindings.append(_n) or pytest.fail(f"{_n} ran"))
+    outcome = {}
+
+    def attempt():
+        try:
+            artifacts.copy_artifact_file(source, destination)
+        except OSError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the copy blocked on a source that is not a regular file"
+    assert "not a regular file" in outcome["error"] and bindings == []
+    assert artifact_storage.clone_file(source, tmp_path / "clone") is False and not (tmp_path / "clone").exists()
+    assert not destination.exists() and list(destination.parent.iterdir()) == []
+    regular = tmp_path / "regular.bin"
+    regular.write_bytes(b"bytes" * 1000)
+    monkeypatch.undo()
+    measured = artifacts.copy_artifact_file(regular, destination, expected=_measured(regular))
+    assert measured == _measured(destination) and stat.S_ISREG(destination.stat().st_mode)
+
+
+def test_the_copy_temporary_carries_the_signature_the_temp_sweep_reaps(tmp_path, monkeypatch):
+    source, destination = tmp_path / "source.bin", tmp_path / "out" / "source.bin"
+    source.write_bytes(b"x" * 4096)
+    names = []
+    monkeypatch.setattr(artifacts, "clone_file", lambda src, dst: names.append(dst.name) or False)
+    artifacts.copy_artifact_file(source, destination, expected=_measured(source))
+    [name] = names
+    assert name.startswith(".source.bin.tmp.") and not set(name.rsplit(".tmp.", 1)[1]) - set("0123456789abcdef.")
+
+
 def test_a_refused_linux_clone_leaves_no_empty_destination(tmp_path, monkeypatch):
     if not sys.platform.startswith("linux"):
         pytest.skip("FICLONE is a Linux ioctl")
