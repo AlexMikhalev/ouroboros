@@ -140,3 +140,96 @@ def test_builtin_from_review_row_keeps_recorded_self_check(tmp_path, monkeypatch
     record = read_install_record(drive, "telegram")
     assert result["basis"] == record["basis"] == "self_check" and result["acceptance"]["accepted"]
     assert record["check"]["notes"] == "Read the bundled instruction."
+
+
+@pytest.fixture
+def registry_release(tmp_path, monkeypatch):
+    from ouroboros.marketplace.clawhub import ClawHubSkillSummary
+    from tests.test_marketplace_api import _patch_clawhub_install_pipeline
+
+    drive = tmp_path / "data"
+    row = {"id": "clawhub", "name": "ClawHub", "kind": "registry", "trust": "review", "confirmed": True}
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps([row]))
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", drive / "settings.json")
+    monkeypatch.delenv("OUROBOROS_SKILLS_REPO_PATH", raising=False)
+    storage = _patch_clawhub_install_pipeline(monkeypatch, tmp_path, auto_specs=[])
+    registry = {"latest": "1.0.0", "changed": False, "staged_versions": []}
+    monkeypatch.setattr(storage, "_registry_info", lambda slug: ClawHubSkillSummary(
+        slug=slug, latest_version=registry["latest"]))
+    original_stage = storage._stage_archive
+    def stage(*args, **kwargs):
+        staged = original_stage(*args, **kwargs)
+        version = kwargs["version"]
+        registry["staged_versions"].append(version)
+        manifest = staged.staging_dir / "SKILL.md"
+        text = manifest.read_text(encoding="utf-8").replace("1.0.0", version)
+        if version != "1.0.0":
+            text = text.replace("type: skill", "env_from_settings: [GITHUB_TOKEN]\ntype: skill")
+        manifest.write_text(text + ("changed release" if registry["changed"] else ""), encoding="utf-8")
+        return staged
+    monkeypatch.setattr(storage, "_stage_archive", stage)
+    assert storage.install_skill(drive, tmp_path, slug="demo", auto_review=False).ok
+    return drive, storage, registry
+
+
+@pytest.mark.parametrize("choice", ["confirmed", "changed", "newest"])
+def test_registry_owner_skip_checks_staged_bytes_and_pins_only_confirmed_release(registry_release, choice):
+    from ouroboros.skill_loader import SkillReviewState, save_review_state, skill_state_dir
+
+    drive, _storage, registry = registry_release
+    registry["latest"] = "2.0.0"
+    assert installer.update_installed(drive, "demo", mode="replace")["needs_review"]
+    rejected_digest = find_skill(drive, "demo").content_hash
+    save_review_state(drive, "demo", SkillReviewState(status="blockers", content_hash=rejected_digest))
+    assert installer.settle_pending_update(drive, "demo")["status"] == "restored"
+    before = read_install_record(drive, "demo")
+    assert before["update_rejected"]["version"] == "2.0.0"
+    saved = {p.name: p.read_bytes() for p in skill_state_dir(drive, "demo").iterdir() if p.is_file()}
+    registry.update(latest="3.0.0", changed=choice == "changed")
+    digest = "" if choice == "newest" else rejected_digest
+    if choice == "changed":
+        with pytest.raises(installer.SkillInstallError) as exc:
+            installer.update_installed(drive, "demo", mode="replace", digest=digest, skip_review=True)
+        assert exc.value.code == "candidate_changed" and exc.value.status == 409
+        assert exc.value.facts["candidate"]["version"] == "2.0.0"
+        assert exc.value.facts["candidate"]["digest"] != digest
+        assert read_install_record(drive, "demo") == before
+        assert find_skill(drive, "demo").content_hash == before["release"]["digest"]
+        assert {p.name: p.read_bytes() for p in skill_state_dir(drive, "demo").iterdir() if p.is_file()} == saved
+    else:
+        result = installer.update_installed(drive, "demo", mode="replace", digest=digest, skip_review=True)
+        record = read_install_record(drive, "demo")
+        assert record["basis"] == result["basis"] == "owner_skip"
+        assert record["release"]["version"] == ("3.0.0" if choice == "newest" else "2.0.0")
+        assert (record["release"]["digest"] == rejected_digest) is (choice == "confirmed")
+        assert result["acceptance"]["accepted"] and result["acceptance"]["granted_keys"] == ["GITHUB_TOKEN"]
+        assert "update_rejected" not in record
+    assert registry["staged_versions"][-1] == ("3.0.0" if choice == "newest" else "2.0.0")
+
+
+@pytest.mark.parametrize("via_source", [False, True])
+def test_registry_update_without_digest_still_selects_latest(registry_release, via_source):
+    drive, storage, registry = registry_release
+    registry["latest"] = "3.0.0"
+    if via_source:
+        assert installer.update_installed(drive, "demo", mode="replace")["needs_review"]
+    else:
+        assert storage.update_skill(drive, drive.parent, sanitized_name="demo", auto_review=False).ok
+    assert registry["staged_versions"][-1] == "3.0.0"
+    assert read_install_record(drive, "demo")["release"]["version"] == "3.0.0"
+
+
+def test_registry_staged_hash_failure_returns_install_result(registry_release, monkeypatch):
+    drive, storage, _registry = registry_release
+    before = read_install_record(drive, "demo")
+    def fail(*args, **kwargs):
+        raise OSError("staged tree unreadable")
+    monkeypatch.setattr(storage, "_registry_install_record", fail)
+    result = storage.install_skill(drive, drive.parent, slug="demo", version="2.0.0", overwrite=True,
+                                   auto_review=False)
+    assert isinstance(result, storage.InstallResult) and not result.ok
+    assert "staged tree unreadable" in result.error
+    assert not result.staged.staging_dir.exists()
+    assert read_install_record(drive, "demo") == before
+    assert find_skill(drive, "demo").content_hash == before["release"]["digest"]

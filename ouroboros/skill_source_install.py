@@ -628,7 +628,7 @@ def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
         raise SkillInstallError("local_changed", f"The local copy of {name} changed; look at it again.",
                                 local_digest=current)
     if (record.get("source") or {}).get("kind") == "registry":
-        return _update_registry(drive_root, name, mode=mode, repo_dir=repo_dir, progress=progress,
+        return _update_registry(drive_root, name, mode=mode, digest=digest, repo_dir=repo_dir, progress=progress,
                                 acceptance_options={"check": check, "check_notes": check_notes,
                                                     "skip_review": skip_review, "task_id": task_id})
     plan = _candidate_plan(drive_root, name, record, rows, repo_dir)
@@ -663,7 +663,7 @@ def update_installed(drive_root: pathlib.Path, name: str, *, mode: str, digest: 
     return result
 
 
-def _update_registry(drive_root: pathlib.Path, name: str, *, mode: str,
+def _update_registry(drive_root: pathlib.Path, name: str, *, mode: str, digest: str,
                      repo_dir: Optional[pathlib.Path], progress: Optional[Callable[[str], None]],
                      acceptance_options: Dict[str, Any]) -> Dict[str, Any]:
     if mode != "replace":
@@ -671,10 +671,15 @@ def _update_registry(drive_root: pathlib.Path, name: str, *, mode: str,
     from ouroboros.config import REPO_DIR
     from ouroboros.marketplace.install import update_skill
 
+    rejected = (read_install_record(drive_root, name) or {}).get("update_rejected") or {}
+    version = rejected.get("version") if digest and rejected.get("digest") == digest else None
     result = update_skill(pathlib.Path(drive_root), pathlib.Path(repo_dir or REPO_DIR), sanitized_name=name,
-                          progress_callback=progress, auto_review=False, acceptance_options=acceptance_options)
+                          version=version, expected_digest=digest, progress_callback=progress,
+                          auto_review=False, acceptance_options=acceptance_options)
     if not result.ok:
-        raise SkillInstallError("registry_update_failed", result.error or "update failed", int(result.error_status or 400))
+        raise SkillInstallError(result.error_code or "registry_update_failed", result.error or "update failed",
+                                int(result.error_status or 400),
+                                **({"candidate": result.candidate} if result.candidate else {}))
     record = read_install_record(pathlib.Path(drive_root), name) or {}
     trusted = record.get("basis") in {"trusted", "self_check", "owner_skip"}
     out = {"ok": True, "name": name, "mode": "replace", "basis": record.get("basis"),
