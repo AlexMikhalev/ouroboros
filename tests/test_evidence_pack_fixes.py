@@ -325,20 +325,19 @@ def test_settlement_waits_for_owner_held_obligation(root, name, entry):
     assert packs.task_settled(root, "owed")
 
 
-def test_acceptance_debt_blocks_without_delivery_and_late_notice_requires_receipt(root):
+def test_old_acceptance_residue_holds_nothing_but_a_pending_delivery_or_an_awaited_seat_does(root):
+    """The retired task acceptance's debt and late-notice receipts are history on an old record, never
+    owed work; a pending terminal delivery and a review panel still awaiting a seat hold the task."""
     from supervisor import terminal_delivery
 
     _task(root, "debt", blobs=1, acceptance_debt={"debt_id": "debt"})
-    assert not packs.task_settled(root, "debt")
+    assert packs.task_settled(root, "debt")
     wanted = "task_acceptance:" + hashlib.sha256(b"debt").hexdigest()
     panel = {"panel_id": "p", "late_settlement": {"settled_at": "revision-1", "reviewed_subject": {"retry_key": wanted}}}
     projection = {"panels": [panel], "late_notice_receipts": {"acceptance-late:" + wanted: {
         "panel_id": "p", "settled_at": "revision-1", "custody": "publication"}}}
     _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
-    assert not packs.task_settled(root, "debt")
-    receipt = projection["late_notice_receipts"]["acceptance-late:" + wanted]
-    receipt["custody"] = "terminal_outbox"
-    _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
+    assert packs.task_settled(root, "debt")
     event = {"delivery_id": "acceptance-late:" + wanted, "task_id": "debt", "chat_id": 1}
     assert terminal_delivery.register_pending_delivery(root, event)
     assert not packs.task_settled(root, "debt")
@@ -347,6 +346,9 @@ def test_acceptance_debt_blocks_without_delivery_and_late_notice_requires_receip
     panel["actors"] = [{"operation_state": "in_flight"}]
     _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
     assert not packs.task_settled(root, "debt")
+    panel["surface"] = "task_acceptance"  # an old acceptance panel's seat is history too
+    _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
+    assert packs.task_settled(root, "debt")
 
 
 @pytest.mark.parametrize("source", ["obligations", "terminal_deliveries"])

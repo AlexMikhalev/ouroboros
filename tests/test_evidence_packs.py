@@ -136,11 +136,10 @@ def test_readers_resolve_loose_then_pack_and_blob_shared_with_active_task_stays_
     assert _loose(refs_c[0])  # an active task is never packed
     for ref in refs_a:
         assert obs.read_blob_ref(root, ref)["message"]["content"].startswith("answer task-a")
-    from ouroboros.repo_diff_capture import read_blob_bytes
-    packed_raw = read_blob_bytes(root, refs_a[2], expected_kind="json")
+    packed_raw = packs.blob_bytes(root, refs_a[2], expected_kind="json")
     assert hashlib.sha256(packed_raw).hexdigest() == refs_a[2]["sha256"]
     with pytest.raises(ValueError, match="unexpected kind"):
-        read_blob_bytes(root, refs_a[2], expected_kind="bin")
+        packs.blob_bytes(root, refs_a[2], expected_kind="bin")
     raw = read_actor_source_bytes(root, "task-a", handle_a)
     assert raw.startswith(b"# focus") and len(raw) == handle_a["size"]
     assert packs.handle_info(root, "task-a", handle_a["path"]) == {"size": handle_a["size"], "sha256": handle_a["sha256"], "loose": False}
@@ -459,20 +458,22 @@ def test_unpacker_restores_usage_archive(root):
 
 # ---- the settle predicate ----------------------------------------------------------
 
-def test_settle_predicate_reads_status_obligations_operations_acceptance_and_money(root):
+def test_settle_predicate_reads_status_obligations_operations_deliveries_and_money(root):
     _task(root, "done", blobs=1)
     _task(root, "live", blobs=1, status="running")
     _task(root, "owed", blobs=1, canonical_terminal_projection_origin="terminal_transition")
     _task(root, "reviewing", blobs=1, review_operations={"op": {"state": "dispatched"}})
-    _task(root, "indebted", blobs=1, acceptance_debt={"debt_id": "d1"})
+    _task(root, "delivering", blobs=1, acceptance_debt={"debt_id": "d1"})
     from supervisor import terminal_delivery
-    assert terminal_delivery.register_pending_delivery(root, {"delivery_id": "dl-1", "task_id": "indebted", "chat_id": 1})
-    wanted = "task_acceptance:" + hashlib.sha256(b"d1").hexdigest()
-    _task(root, "discharged", blobs=1, acceptance_debt={"debt_id": "d1"},
-          review_projection={"panels": [{"late_settlement": {"reviewed_subject": {"retry_key": wanted}}}]})
-    settled = {t for t in ("done", "live", "owed", "reviewing", "indebted", "discharged") if packs.task_settled(root, t)}
-    assert settled == {"done", "discharged"}
-    assert packs.task_settlement_facts(root, "indebted")["open_acceptance"] is True
+    assert terminal_delivery.register_pending_delivery(root, {"delivery_id": "dl-1", "task_id": "delivering", "chat_id": 1})
+    # What the retired task acceptance left on a record (its debt, its operation pointer, its
+    # panel's awaited seat) is history with no collector, never open work.
+    _task(root, "old_acceptance", blobs=1, acceptance_debt={"debt_id": "d1"},
+          review_operations={"op": {"surface": "task_acceptance", "state": "dispatched"}},
+          review_projection={"panels": [{"surface": "task_acceptance", "actors": [{"operation_state": "in_flight"}]}]})
+    settled = {t for t in ("done", "live", "owed", "reviewing", "delivering", "old_acceptance") if packs.task_settled(root, t)}
+    assert settled == {"done", "old_acceptance"}
+    assert packs.task_settlement_facts(root, "delivering")["open_late_receipts"] is True  # the pending delivery
     facts = packs.task_settlement_facts(root, "owed")
     assert facts["terminal"] and "terminal_projection" in facts["obligations"]
     assert packs.task_settlement_facts(root, "reviewing")["open_operations"]

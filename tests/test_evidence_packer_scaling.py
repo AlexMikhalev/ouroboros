@@ -308,7 +308,7 @@ def test_body_change_while_candidates_are_chosen_keeps_the_shared_blob(root, mon
 
     def ordered(root, settled):
         task_store.patch_document(root, "sharer", lambda d: {**d, "review_operations": {
-            "ctrl": {"surface": "task_acceptance", "state": "preparing"}}})
+            "ctrl": {"surface": "plan_review", "state": "dispatched"}}})
         return original(root, settled)
 
     with monkeypatch.context() as edits:
