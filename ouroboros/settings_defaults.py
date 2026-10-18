@@ -286,7 +286,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # with a typed reason + telemetry rather than eat the tail of the budget.
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
-    # STRING "N"|"unlimited": paid plan/result/commit/skill waves; final feedback still permits author response. Explicit task-local author limits and free identical-material replay remain separate.
+    # STRING "N"|"unlimited": paid result/commit/skill waves (plan asks stand outside it); final feedback still permits author response. Explicit task-local author limits and free identical-material replay remain separate.
     "OUROBOROS_REVIEW_MAX_CYCLES": "2",
     # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08, batch #2 Q2=A): applied to
     # EVERY cache_control breakpoint on the Anthropic-normalizing family — main loop, review lanes, safety
