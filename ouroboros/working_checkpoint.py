@@ -690,7 +690,11 @@ def resume_from_working(tools: Any, state: Dict[str, Any], messages: list, trace
     ctx._task_acceptance_sealed_fence_token = None
     ctx._task_acceptance_sealed_fence_generation = None
     if ctx._delivery_candidate is not None:
-        ctx._delivery_candidate.acceptance_binding = {}
+        # It holds no verdict and says so explicitly: an empty binding let a superseded PASS stay current.
+        from ouroboros.loop_delivery import _unaccepted_delivery_binding
+
+        ctx._delivery_candidate.acceptance_binding = _unaccepted_delivery_binding(
+            tools, ctx._delivery_candidate.content_sha256)
     if not same_id:
         for run in trace.get("review_runs") or []:
             if isinstance(run, dict) and run.get("authority") == "host_root":

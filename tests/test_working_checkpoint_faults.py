@@ -96,12 +96,7 @@ def test_final_delivery_ownership_prevents_recovery_without_losing_checkpoint(tm
 
 
 @pytest.mark.parametrize("new_id", [False, True])
-@pytest.mark.parametrize("owner_changed", [
-    pytest.param(False, marks=pytest.mark.xfail(
-        reason="fold regression: a recovered candidate is delivered with the {} binding "
-               "working_checkpoint.resume_from_working left, not the explicit unaccepted one", strict=True)),
-    True,
-])
+@pytest.mark.parametrize("owner_changed", [False, True])
 @pytest.mark.parametrize("interrupted_again", [False, True])
 def test_candidate_is_saved_before_a_later_finalization_failure(
     tmp_path, monkeypatch, new_id, owner_changed, interrupted_again,
