@@ -431,7 +431,7 @@ def test_owner_state_protects_the_acceptance_facts(tmp_path, monkeypatch):
 
     data_root = tmp_path / "data"
     monkeypatch.setattr(cfg, "DATA_DIR", data_root, raising=True)
-    for stem in ("install", "owner_edit"):
+    for stem in ("install", "owner_edit", "update_backup"):
         assert f"{stem}.json" in SKILL_OWNER_STATE_FILENAMES and stem in SKILL_OWNER_STATE_STEMS
         for parts in (("state", "skills"), ("State", "Skills")):
             target = data_root.joinpath(*parts) / "probe" / f"{stem}.json"

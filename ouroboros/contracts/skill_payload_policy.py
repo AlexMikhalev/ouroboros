@@ -73,6 +73,10 @@ SKILL_OWNER_STATE_FILENAMES = frozenset({
     # so a forged copy would let a payload authorize itself.
     "install.json",
     "owner_edit.json",
+    # The previous release kept while an update waits for its review, with that
+    # release's review, grants and enablement; startup may restore them from it,
+    # so a forged copy would carry acceptance past the same gate.
+    "update_backup.json",
 })
 
 SKILL_OWNER_STATE_STEMS = (
@@ -93,6 +97,7 @@ SKILL_OWNER_STATE_STEMS = (
     "uninstalled",
     "install",
     "owner_edit",
+    "update_backup",
 )
 
 

@@ -660,12 +660,15 @@ the prerequisite for trusting opaque bytes as EXECUTABLE payload inside
 the skill tree — the WASM there is a host-side WebAssembly runtime, a
 separate future topic from the browser-sandboxed `.wasm` above.
 
-Skills default to **disabled** and cannot be executed by `skill_exec`
-until review produces a fresh executable verdict. Skill review output is persisted
+A skill runs through `skill_exec` only when its exact current bytes are accepted
+(by a fresh executable review verdict or by one of the exact-byte bases below) and
+it is enabled (by the owner, or by an install's turn-on-when-ready request, never
+over an explicit Off). Skill review output is persisted
 to `~/Ouroboros/data/state/skills/<name>/review.json` with a content
 hash so an edit to the skill invalidates the previous verdict.
-`review.json`, `enabled.json`, `grants.json`, `install.json`, `owner_edit.json`
-and marketplace/self-authored provenance are skill trust/control-plane state:
+`review.json`, `enabled.json`, `grants.json`, `install.json`, `owner_edit.json`,
+`update_backup.json` and marketplace/self-authored provenance are skill
+trust/control-plane state:
 they are mutated only through the review, toggle, launcher-grant, self-authored
 finalize, installer and owner-edit paths, not through generic agent/browser
 file writes.
@@ -674,13 +677,15 @@ A source the owner trusts is the named, digest-pinned exception to a first
 review: the installer (built-ins included) writes the host-owned
 `install.json` with basis `trusted` and the exact release digest, and the
 gate admits those bytes only (`trusted_source`); any later edit leaves the
-release and is unreviewed again. No synthetic `clean` verdict is written,
-the deterministic preflight still gates the landed bytes, and a source's
+release and is unreviewed again. No synthetic `clean` verdict is written;
+the deterministic preflight still gates the bytes an install or update lands (a
+built-in re-seeded with an app update carries the app's own release); a source's
 trust never rewrites earlier installs. A skill installed from a source that
 reviews each skill keeps blocker findings non-executable even under Advisory
 until the owner skips the review. Enablement of such installs is the
 owner's choice or the install's turn-on-when-ready request, never over an
-explicit Off. Built-in trust opt-out: `OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false`.
+explicit Off. The Built in row of the source list sets built-in trust;
+`OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS=false` only seeds that row while no list is saved.
 A built-in whose manifest `os` excludes this host is neither offered nor newly
 installed; an installed copy is still re-seeded and discovery hides it, except a
 Windows Unix-remote choice: the re-seed records `legacy_remote_platform=win32` in
@@ -709,10 +714,13 @@ configuration does not turn a self-authored decision into an owner attestation. 
 expressed owner instruction through `skill_owner_action`; the shared host owner
 checks the actual caller, resolved member source, selected revision and source
 eligibility before invoking this same attestation. The model interprets the
-owner's words; a formatted reference alone grants nothing. Besides this and a
-trusted source, the only other acceptance without a review is an owner edit:
-the admitted selected-skill task the owner's own door started records
-`owner_edit.json` for each revision it writes.
+owner's words; a formatted reference alone grants nothing. Without a review
+panel, exact bytes are accepted only by: a trusted source (`trusted`); Ouroboros's
+own recorded check of that release (`self_check`, its notes in `install.json`; it
+never overrules a panel's blockers); the owner's Skip review or "Update without
+review" of that release (owner attestation, `owner_skip`); and an owner edit: the
+admitted selected-skill task the owner's own door started records `owner_edit.json`
+for each revision it writes. Each binds to exact bytes; any later edit leaves it.
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is default-on as of v6.10.0 (the owner
 may disable it), in which case a fresh executable review grants only
 manifest-declared settings keys and host permissions for that exact content
