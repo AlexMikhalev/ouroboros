@@ -19,6 +19,7 @@ from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclus
 from ouroboros.utils import append_jsonl, assert_test_data_path, utc_now_iso, write_bytes_atomic  # noqa: F401 -- assert_test_data_path re-exported: the guard moved to the utils leaf so append_jsonl shares it; state.assert_test_data_path callers keep working
 
 log = logging.getLogger(__name__)
+_ROTATION_SHARING_WARNED_AT: dict[pathlib.Path, float] = {}
 
 # ABI 7.0 (Q8=B): the durable ``state.json`` snapshot names its schema on
 # every write. Stamp-on-write ONLY — readers do not require the stamp (no
@@ -1458,7 +1459,21 @@ def rotate_jsonl_log_if_needed(
             suffix += 1
             archive_path = drive_root / "archive" / f"{archive_prefix}_{ts}_{suffix}.jsonl"
         archive_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(path, archive_path)
+        try:
+            os.replace(path, archive_path)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in (32, 33):
+                raise
+            # A Windows reader without FILE_SHARE_DELETE may temporarily hold the
+            # live log. Keep its bytes and append lock contract; retry next tick.
+            now = time.monotonic()
+            last_warning = _ROTATION_SHARING_WARNED_AT.get(path)
+            if last_warning is None or now - last_warning >= 30.0:
+                _ROTATION_SHARING_WARNED_AT[path] = now
+                log.warning("%s rotation deferred: Windows file in use (WinError %s); live log unchanged",
+                            name, exc.winerror)
+            return
+        _ROTATION_SHARING_WARNED_AT.pop(path, None)
         path.touch()
     finally:
         release_exclusive_file_lock(lock_path, lock_fd)
