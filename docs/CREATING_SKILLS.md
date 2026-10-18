@@ -307,8 +307,8 @@ install:
 
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
-executable review (a bundled native seed's launcher trust counts, so it needs
-no model review) and only under the skill's `.ouroboros_env` directory.
+executable review (bytes accepted without a review, such as a trusted source's
+release, count, so they need no model review) and only under the skill's `.ouroboros_env` directory.
 Global package-manager specs remain manual setup guidance. Exact resources and
 explicit build actions use the same isolated install owner:
 
@@ -568,7 +568,7 @@ An ordinary top-level task in every runtime mode can target user-managed skill
 payloads with `root=skill_payload`, `bucket` (`external` / `clawhub` /
 `ouroboroshub` / `user_repo`), and `skill_name`. A markerless payload physically
 under `native/` is selected through the logical `external` bucket; a true
-marker-present native seed remains read/review-only. A short relative
+marker-present built-in remains read/review-only. A short relative
 `path` such as `plugin.py` or `lib/utils.py` resolves under
 the selected physical payload root. Supply both args together — passing only
 one returns a clear
@@ -1056,7 +1056,7 @@ plugin_api: "2.0"            # major strict; minor = required minimum
 A payload without the field binds the legacy "1.3" generation by
 construction: an already-reviewed payload keeps loading on its existing
 hash-bound review PASS, but a NEW review PASS (LLM review, owner attestation,
-or native-seed trust) is refused until the field is declared.
+or an install-basis acceptance) is refused until the field is declared.
 
 ```python
 def register(api):

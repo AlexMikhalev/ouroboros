@@ -250,7 +250,7 @@ def _existing_install(drive_root: pathlib.Path, settings: Dict[str, Any]) -> boo
 
 
 def classify_first_start(drive_root: pathlib.Path, settings: Dict[str, Any]) -> str:
-    """Record whether this data root is new or an upgrade; call before native seeding. Never raises."""
+    """Record whether this data root is new or an upgrade; call before the built-in startup work. Never raises."""
     try:
         state = str(read_marker(drive_root).get("state") or "")
         if state:
@@ -265,7 +265,7 @@ def classify_first_start(drive_root: pathlib.Path, settings: Dict[str, Any]) -> 
 
 def at_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_ready: bool,
                repo_dir: Optional[pathlib.Path] = None) -> str:
-    """Startup work of skill sources after native seeding: convert sidecar-era install records, then run
+    """Startup work of skill sources after the built-in startup work: convert sidecar-era install records, then run
     the starter installer for a new install that skips onboarding, or retry what could not be fetched.
     Never raises."""
     try:
