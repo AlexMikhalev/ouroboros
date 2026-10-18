@@ -20,8 +20,8 @@ carry the whole unit, so they leave the view and restore again from there). Comp
 already cover, host state the host sends afresh (facts, clock, roster and skill snapshots,
 bound and unchanged), superseded review copies and earlier address records leave the view;
 one host record names the checkpoint that holds them exactly. A renewal that would remove no
-tool unit and no covered reply, or a seed not smaller than the refused request, is never
-sent: the round then ends in the named refusal.
+tool unit, no covered reply and no restored source, or a seed not smaller than the refused request, is
+never sent: the round then ends in the named refusal.
 """
 from __future__ import annotations
 

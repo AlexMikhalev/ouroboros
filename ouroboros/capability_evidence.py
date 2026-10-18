@@ -81,17 +81,18 @@ _CTX_LIMIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"context limit:\s*[0-9][0-9,]*\s*\+\s*[0-9][0-9,]*\s*>\s*([0-9][0-9,]*)", re.I),
     re.compile(r"maximum number of tokens allowed\s*\(?\s*([0-9][0-9,]*)", re.I),
 )
-#: The refused request's own input where the provider states it beside the limit: OpenAI ("N in the messages",
-#: "your messages resulted in N tokens"), Anthropic ("prompt is too long: N tokens", "context limit: N + R")
-#: and Gemini ("input token count (N)"); OpenRouter states parts ("N of text input, M of tool input").
+#: The refused request's whole input where the provider states it beside the limit: OpenAI ("your messages
+#: resulted in N tokens"), Anthropic ("prompt is too long: N tokens", "context limit: N + R") and Gemini
+#: ("input token count (N)").
 _CTX_INPUT_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"([0-9][0-9,]*)\s*in the messages", re.I),
     re.compile(r"resulted in\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"prompt is too long:\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"context limit:\s*([0-9][0-9,]*)\s*\+", re.I),
     re.compile(r"input token count\s*\(?\s*([0-9][0-9,]*)", re.I),
 )
-_CTX_INPUT_PART = re.compile(r"([0-9][0-9,]*)\s*of [a-z]+ input", re.I)
+#: Shares of the input where only the parts are stated: OpenAI's messages and functions (tool definitions),
+#: OpenRouter's "N of <kind> input".
+_CTX_INPUT_PART = re.compile(r"([0-9][0-9,]*)\s*(?:of [a-z]+ input|in the (?:messages|functions))", re.I)
 #: The reply the refused request reserved ("R in the completion" / "in the output", Anthropic's "+ R").
 _CTX_REPLY_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"([0-9][0-9,]*)\s*in the (?:completion|output)", re.I),
@@ -112,8 +113,9 @@ def gateway_double_counted_cache(prompt_tokens: int, cached_tokens: int) -> bool
 def _parse_ctx_requested(text: str) -> Tuple[int, int, int]:
     """``(input, reply, total)`` of a refused request as the provider stated them beside its limit; 0 = unstated.
 
-    A stated input count wins, OpenRouter's input parts are summed, and a total beside its reply share gives
-    the input as the difference. A bare total stays a total: it already holds the reply that request reserved.
+    A total beside its reply share gives the input as the difference, whatever parts it lists (messages,
+    functions, images); else a stated whole input; else the sum of the stated input parts. A bare total stays a
+    total: it already holds the reply that request reserved.
     """
     text = str(text or "")
 
@@ -126,8 +128,10 @@ def _parse_ctx_requested(text: str) -> Tuple[int, int, int]:
 
     reply = first(_CTX_REPLY_PATTERNS)
     total = first((_CTX_TOTAL_PATTERN,))
+    if reply and total > reply:
+        return total - reply, reply, total
     stated = first(_CTX_INPUT_PATTERNS) or sum(int(n.replace(",", "")) for n in _CTX_INPUT_PART.findall(text))
-    return stated or (total - reply if reply and total > reply else 0), reply, total
+    return stated, reply, total
 
 
 def _parse_ctx_limit_number(text: str) -> int:

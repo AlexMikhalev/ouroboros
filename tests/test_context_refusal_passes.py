@@ -84,6 +84,18 @@ def test_a_providers_requested_total_holds_the_reply_once():
     parts = _ctx("This endpoint's maximum context length is 200000 tokens. However, you requested about 237000 tokens "
                  "(205000 of text input, 32000 in the output).")
     assert _target(parts, _fit(205_000, accepted=None, reply=32_000)) == 37_000 + 25_000  # anchored E agrees
+    # OpenAI counts tool definitions as their own share ("in the functions"); the input is the total less the
+    # reply whatever parts it lists (review r4, 18.10: the messages share alone shed 16,000 of a 38,000 need).
+    tools = _ctx("This model's maximum context length is 128000 tokens. However, you requested 150000 tokens "
+                 "(110000 in the messages, 25000 in the functions, and 15000 in the completion). Please reduce the "
+                 "length of the messages, functions, or completion.")
+    assert _target(tools, _fit(1, anchor=None, accepted=None, reply=20_000)) == 22_000 + 16_000
+    assert _refused_size(tools) == 135_000
+    whole = _ctx("This model's maximum context length is 128000 tokens. However, your messages resulted in 140000 "
+                 "tokens (115000 in the messages, 25000 in the functions). Please reduce the length of the messages "
+                 "or functions.")
+    assert _target(whole, _fit(1, anchor=None, accepted=None, reply=8_192)) == 140_000 + 8_192 - 128_000 + 16_000
+    assert _refused_size(whole) == 140_000
     # A bare total already holds its reply: the excess is the total over the limit, the input the rest.
     bare = _ctx("This endpoint's maximum context length is 400000 tokens. However, you requested about 410000 tokens")
     assert _target(bare, _fit(300_000, anchor=None, accepted=None, reply=20_000)) == 10_000 + 50_000
@@ -99,6 +111,12 @@ def test_the_size_parser_reads_input_reply_and_total_apart():
                                 "128000 in the output)") == (1_782, 128_000, 129_782)
     assert _parse_ctx_requested("you requested about 237000 tokens (32000 in the output)") == (205_000, 32_000, 237_000)
     assert _parse_ctx_requested("you requested about 410000 tokens") == (0, 0, 410_000)  # a total, never an input
+    assert _parse_ctx_requested("you requested 150000 tokens (110000 in the messages, 25000 in the functions, "
+                                "and 15000 in the completion)") == (135_000, 15_000, 150_000)
+    assert _parse_ctx_requested("your messages resulted in 140000 tokens (115000 in the messages, 25000 in the "
+                                "functions)") == (140_000, 0, 0)  # the whole input, not its messages share
+    assert _parse_ctx_requested("you requested 140000 tokens (115000 in the messages, 25000 in the functions)") == (
+        140_000, 0, 140_000)  # no reply share: the parts are the input
     assert _parse_ctx_requested("context limit: 190000 + 65536 > 200000") == (190_000, 65_536, 0)
     assert _parse_ctx_requested("The input token count (1050000) exceeds the limit") == (1_050_000, 0, 0)
     assert _parse_ctx_requested("Your input exceeds the context window of this model") == (0, 0, 0)
