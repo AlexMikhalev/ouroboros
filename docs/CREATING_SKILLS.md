@@ -801,9 +801,9 @@ optional `work_ref` for a real admitted child, and `delivery_reporting_version`.
 Persist the full receipt and source event, release the input FIFO, and observe
 both references independently through `/presence/work`; never resubmit the event
 as new work. A work view is `pending` (202) while its attempt can still change.
-Then it is terminal: a recorded terminal without an unknown outcome keeps its
-recorded projection (a selected reply, or `silent`); otherwise `failed` (`cancelled` when recorded)
-with `outcome: "silent"`, empty `text`/`output_ref`, the typed `code` and facts
+Then it is terminal: a recorded `completed` or `failed` answer keeps its recorded
+projection (a selected reply, or `silent`); a cancellation, unknown outcome, resource
+refusal or settled loss is `failed` (`cancelled` when recorded) with `outcome: "silent"`, empty `text`/`output_ref`, the typed `code` and facts
 (`recorded_status` is the status when observed, `uncertainty`,
 `status_reconciled_from`), `work_ref` naming the polled reference, a real child in
 `child_work_ref` and already released continuation outputs. There `silent` means

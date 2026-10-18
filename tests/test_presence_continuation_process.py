@@ -504,13 +504,21 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
         assert blocked["task_id"] == ref and blocked["closed"] is False
         assert blocked["status"] in {"completed", "cancelled"}
         final = host.work(ref)
-        assert final.status_code == 200 and final.json()["status"] == blocked["status"]
+        # A canonical answer is final the moment it is recorded; an unanswered terminal of a still-live
+        # author stays observed (202) until its execution ends.
+        canonical = blocked["status"] == "completed"
+        assert (final.status_code, final.json()["status"]) == ((200, "completed") if canonical else (202, "pending"))
         assert final.json()["child_work_ref"] == LATE_CHILD
         assert host.client.get("/fixture/live").json() == [ref]
         assert len(host.inputs()) == 4
         assert host.client.post("/fixture/release-close").status_code == 200
         eventually(lambda: host.client.get("/fixture/live").json() == [])
-        assert host.work(ref).json() == final.json()
+        if canonical:
+            assert host.work(ref).json() == final.json()
+        else:
+            ended = host.work(ref)
+            assert (ended.status_code, ended.json()["status"], ended.json()["child_work_ref"]) == (
+                200, "cancelled", LATE_CHILD)
         assert host.turn().json() == initial and len(host.inputs()) == 4
         assert host.work(LATE_CHILD).status_code == 202
         (tmp_path / "teardown-order-facts.json").write_text(json.dumps({

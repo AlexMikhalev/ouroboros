@@ -157,6 +157,7 @@ def test_work_poll_distinguishes_live_then_retained_lost_turn_and_late_terminal(
         assert (facts["outcome"], facts["text"]) == ("silent", "")
         assert poll().json() == facts
 
+        # Projection guarantee only, as above: a canonical answer stored after the end is served first.
         _complete(calls[0], "Late canonical answer", tmp_path)
         completed = poll()
         assert completed.status_code == 200 and completed.json()["status"] == "completed"
