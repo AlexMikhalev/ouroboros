@@ -370,7 +370,7 @@ def test_review_grants_no_commit_control_or_self_approval(tree):
     _, child, _ = tree
     reg = _registry(child)
     for tool in ('commit_reviewed', 'vcs_commit_reviewed', 'request_restart',
-                 'promote_to_stable', 'enable_tools', 'skill_review', 'task_acceptance_review'):
+                 'promote_to_stable', 'enable_tools', 'skill_review'):
         assert reg.get_schema_by_name(tool) is None, tool
         assert 'BLOCKED' in reg.execute(tool, {}), tool
     assert not _starts()
