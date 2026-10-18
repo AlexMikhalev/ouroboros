@@ -5,6 +5,7 @@
 // dialog never confirm. Add source is the one two-step flow (address, then what
 // was found with the one-time trust choice).
 import { openConfirmDialog } from './confirm_dialog.js';
+import { skillSourcesApi } from './api_client.js';
 import { bindDialogFocus, bindMenu } from './ui_interactions.js';
 import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import {
@@ -162,6 +163,19 @@ export function openUpdateDialog({ name, sourceName = '', update = {}, installed
     });
 }
 
+/** The rejected release, not a newer catalog candidate, is what the owner confirms. */
+export async function updateWithoutReview(skill, { dialog = openConfirmDialog, update = skillSourcesApi.updateSkill } = {}) {
+    const release = skill.install?.update_rejected;
+    if (!release?.digest) return null;
+    const confirmed = await dialog({
+        title: `Update ${skill.name} to ${release.version} without review?`,
+        body: `Version ${release.version} didn’t pass its review. This replaces your current copy with that exact version and lets it run without review. Your choice is recorded.`,
+        confirmLabel: 'Update without review', cancelLabel: 'Keep the previous version', danger: true,
+    });
+    if (confirmed !== true) return null;
+    return update(skill.name, 'replace', release.digest, '', { skipReview: true });
+}
+
 /** Two skills with one name (B5b): keep mine or use the other. Resolves 'keep' | 'replace' | null. */
 export function openCompareDialog({ mine = {}, other = {} }) {
     const line = (skill) => [skill.name, skill.official ? 'Official' : '', skill.source, skill.owner ? `by ${skill.owner}` : '',
@@ -180,14 +194,58 @@ export function openCompareDialog({ mine = {}, other = {} }) {
 }
 
 /** Where a skill is published (B10). choices: [{value, label, detail}]. Resolves the value or null. */
-export function openPublishDestinationDialog({ name, choices = [], changed = false }) {
-    return openChoiceDialog({
-        title: `Publish ${name}`,
-        lead: changed ? 'Where should your changed version go?' : 'Where should it go?',
-        groupLabel: 'Destination',
-        choices: choices.map((choice) => ({ ...choice, confirmLabel: 'Check and publish', tone: 'primary' })),
-        note: 'Everything in the skill’s folder becomes public. Ouroboros first checks it for secrets and problems.',
+export function openPublishDestinationDialog({ name, choices = [], changed = false, createMySkills = () => skillSourcesApi.mySkills() }) {
+    return new Promise((resolve) => {
+        const host = mountDialog({ title: `Publish ${name}`, wide: true, onSettle: resolve });
+        const destinations = choices.length ? [...choices] : [{ value: 'default', label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
+        let selected = destinations[0].value;
+        let created = false;
+        const paint = (error = '') => {
+            host.body.innerHTML = `<p>${changed ? 'Where should your changed version go?' : 'Where should it go?'}</p>
+                ${choiceCardsHtml(destinations, selected, { label: 'Destination' })}
+                ${created ? '' : '<button type="button" class="btn btn-default" data-create-my-skills>Create «My skills» — a private repository on your GitHub</button>'}
+                ${error ? `<p class="skills-dialog-note" role="alert">${escapeHtml(error)}</p>` : ''}
+                <p class="skills-dialog-note">The skill’s folder goes to the selected repository. Ouroboros first checks it for secrets and problems.</p>`;
+            host.actions.innerHTML = '<button type="button" class="btn btn-default" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-primary" data-dialog-ok>Check and publish</button>';
+            bindChoiceCards(host.body.querySelector('[role="radiogroup"]'), (value) => { selected = value; });
+            host.actions.querySelector('[data-dialog-ok]').addEventListener('click', () => host.close(selected));
+            host.body.querySelector('[data-create-my-skills]')?.addEventListener('click', async (event) => {
+                event.currentTarget.disabled = true;
+                event.currentTarget.textContent = 'Connecting My skills…';
+                host.actions.querySelector('[data-dialog-ok]').disabled = true;
+                try {
+                    const choice = await createMySkillsDestination(createMySkills);
+                    if (!host.dialog.isConnected) return;
+                    const index = destinations.findIndex((item) => item.value === choice.value);
+                    if (index < 0) destinations.push(choice); else destinations[index] = choice;
+                    selected = choice.value;
+                    created = true;
+                    paint();
+                } catch (err) {
+                    if (host.dialog.isConnected) paint(err.message);
+                }
+            });
+            host.focus(() => host.body.querySelector('[aria-checked="true"]'));
+        };
+        paint();
     });
+}
+
+/** Translate the route's typed outcome; a successful connect does not publish any files. */
+export async function createMySkillsDestination(create) {
+    try {
+        const answer = await create();
+        if (answer?.ok !== true || !answer.source?.id) throw { body: answer };
+        return { value: `source:${answer.source.id}`, label: `${answer.source.name} — your private repository`,
+            detail: `Publish to ${answer.repository}; your other Ouroboros installs can read it when you connect this source.` };
+    } catch (error) {
+        const code = error?.body?.code;
+        throw new Error({
+            no_token: 'Add GITHUB_TOKEN in Settings → Secrets, then try creating My skills again.',
+            cannot_create: 'GitHub couldn’t create or connect My skills; allow repository access for GITHUB_TOKEN in Settings → Secrets, then try again.',
+            failed: 'My skills couldn’t be connected; check your GitHub connection and try again.',
+        }[code] || 'My skills couldn’t be connected; check your GitHub connection and try again.');
+    }
 }
 
 /** Change a source's trust later (UX §6.3). Resolves 'trusted' | 'review' | null. */
@@ -232,6 +290,11 @@ export function openRemoveSourceDialog(source, installedNames = []) {
             : `Its skills disappear from Browse.${source.kind === 'hub' ? ' You can add this source back any time with Add source.' : ''}`,
         confirmLabel: 'Remove source', danger: true,
     });
+}
+
+export function sourceProbeWarning(probe) {
+    return probe?.warning === 'not_encrypted'
+        ? 'This address is not encrypted: anyone on the network path could change what you install.' : '';
 }
 
 /**
@@ -285,6 +348,7 @@ export function openAddSourceDialog({ api, initialAddress = '' } = {}) {
             host.body.innerHTML = `
                 <p class="ui-status" data-tone="ok">Found ${escapeHtml(plural(probe.found.length, 'skill'))}${probe.suggested_name ? ` — “${escapeHtml(probe.suggested_name)}”` : ''}${probe.owner ? ` by ${escapeHtml(probe.owner)}` : ''}</p>
                 <p class="skills-dialog-note">${escapeHtml(found)}</p>
+                ${sourceProbeWarning(probe) ? `<p class="skills-dialog-note" data-source-warning>${sourceProbeWarning(probe)}</p>` : ''}
                 <label class="ui-field skills-add-field"><span>Name</span>
                     <input class="ui-control" type="text" data-source-name value="${escapeHtml(named)}" aria-describedby="skills-add-name-help">
                 </label>
@@ -315,23 +379,25 @@ export function openAddSourceDialog({ api, initialAddress = '' } = {}) {
     });
 }
 
-/**
- * First start of the public hub (B3): both rows with their suggested choices
- * selected; the owner confirms once. Resolves {id: trust} or null (Later).
- */
-export function openFirstStartDialog(rows = []) {
-    return new Promise((resolve) => {
-        const choice = (row) => `<div class="skills-first-row" data-row="${escapeHtml(row.id)}">
+/** Suggested trust choices and their consequence, before the owner confirms. */
+export function firstStartTrustHtml(rows = []) {
+    const choice = (row) => `<div class="skills-first-row" data-row="${escapeHtml(row.id)}">
                 <div class="skills-first-name"><strong>${escapeHtml(row.name)}</strong>${row.markHtml || ''}<span class="skills-first-about">${escapeHtml(row.about || '')}</span></div>
                 <div class="ui-segment-group skills-trust-segments" role="radiogroup" aria-label="${escapeHtml(`How skills from ${row.name} install`)}">
                     ${[['trusted', 'Install without review'], ['review', 'Review each skill']].map(([value, label]) => `<button type="button" class="ui-segment${row.trust === value ? ' active' : ''}" role="radio" aria-checked="${row.trust === value ? 'true' : 'false'}" data-trust="${value}">${label}</button>`).join('')}
                 </div></div>`;
+    return `<p>Ouroboros comes connected to its public hub. Confirm how its skills install — you do this once.</p>
+        <div class="skills-first-rows">${rows.map(choice).join('')}</div>
+        <p class="skills-dialog-note">Suggested choices apply until you choose. Official doesn’t skip the review by itself: if you choose “Review each skill” for Ouroboros, its Official skills are reviewed too. A review sends the skill’s files to your review models.</p>
+        <p class="skills-dialog-note">You choose once. You can change it later in Skills → Sources.</p>`;
+}
+
+/** First start of the public hub (B3). Resolves {id: trust} or null (Later). */
+export function openFirstStartDialog(rows = []) {
+    return new Promise((resolve) => {
         const host = mountDialog({
             title: 'How should skills from the Ouroboros hub install?', wide: true, onSettle: resolve,
-            bodyHtml: `<p>Ouroboros comes connected to its public hub. Confirm how its skills install — you do this once.</p>
-                <div class="skills-first-rows">${rows.map(choice).join('')}</div>
-                <p class="skills-dialog-note">Suggested choices are selected. Official doesn’t skip the review by itself: if you choose “Review each skill” for Ouroboros, its Official skills are reviewed too. A review sends the skill’s files to your review models.</p>
-                <p class="skills-dialog-note">You choose once. You can change it later in Skills → Sources.</p>`,
+            bodyHtml: firstStartTrustHtml(rows),
         });
         host.actions.innerHTML = '<button type="button" class="btn btn-default" data-dialog-cancel>Later</button><button type="button" class="btn btn-primary" data-first-ok>Confirm</button>';
         host.body.addEventListener('click', (event) => {

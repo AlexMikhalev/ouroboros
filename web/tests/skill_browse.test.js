@@ -149,6 +149,7 @@ test('a card: name opens the sheet, Official only on endorsed entries, unknown p
     assert.match(renderBrowseCard(item('ouroboros-community/happy_farm'), { state: { status: '', action: '' } }), />No votes yet</);
     const builtin = renderBrowseCard(item('builtin/telegram'), { state: { status: '', action: '' } });
     assert.match(builtin, /Built in<\/span>/);
+    assert.equal((builtin.match(/data-official-mark/g) || []).length, 1);
     assert.match(builtin, /Comes with the app · updates with Ouroboros/);
     const long = renderBrowseCard({ ...item('ouroboros/weather'), description: 'x '.repeat(400) }, { state: { status: '', action: '' } });
     assert.match(long, /data-clamped/);

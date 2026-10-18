@@ -121,7 +121,7 @@ test('explicit confirmation creates exactly one ordinary skill_publish task from
     assert.match(payload.constraints, /python -m ouroboros\.betterleaks_runtime install/);
     assert.match(payload.constraints, /No account or authentication change is authorized/);
     assert.match(payload.constraints, /missing or corrupt/);
-    assert.match(payload.context, /explicitly confirmed public submission/);
+    assert.match(payload.context, /explicitly confirmed publication/);
     assert.match(payload.context, /evidence for the next LLM turn/);
     assert.match(payload.context, /"state":"needs_attention"/);
     assert.match(payload.context, /"reason_code":"review_blockers"/);

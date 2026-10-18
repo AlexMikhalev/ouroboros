@@ -83,7 +83,7 @@ def test_browse_install_says_its_consequence_and_follows_the_host(skills_browser
         skills.wait_for_request("/api/skill-catalog/install")
         assert "Installing…" in duck.inner_text()
         listing.append({"name": "duckduckgo", "source": "ouroboroshub", "description": "Web search", "version": "1.0.0",
-                        "enabled": True, "review_status": "pending", "review_gate": {"executable_review": True, "reason": "trusted_source"},
+                        "enabled": True, "review_status": "pending", "review_gate": {"executable_review": True, "blocking_reason": "trusted_source"},
                         "content_hash": DIGEST["ouroboros/duckduckgo"], "payload_root": "skills/ouroboroshub/duckduckgo",
                         "grants": {}, "permissions": ["net", "tool"], "category": ["search"],
                         "install": {"source": {"id": "ouroboros", "kind": "hub", "name": "Ouroboros", "part": "official"},
@@ -159,6 +159,7 @@ def test_the_hub_rows_are_confirmed_once_with_their_suggested_trust(skills_brows
         dialog = page.locator(".skills-dialog")
         dialog.wait_for()
         assert "How should skills from the Ouroboros hub install?" in dialog.inner_text()
+        assert "Suggested choices apply until you choose." in dialog.inner_text()
         rows = dialog.locator(".skills-first-row")
         assert rows.nth(0).locator('[aria-checked="true"]').inner_text() == "Install without review"
         assert rows.nth(1).locator('[aria-checked="true"]').inner_text() == "Review each skill"

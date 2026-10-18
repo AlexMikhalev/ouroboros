@@ -108,3 +108,99 @@ def test_untick_all_installs_nothing_and_an_unreadable_list_keeps_the_host_defau
         page.wait_for_timeout(25)
     payload = _completion(ui)[0]
     assert "starter_skills" not in payload and "skill_source_trust" not in payload, "the host's default list stays"
+
+
+def _fresh_offer():
+    import copy
+    answer = copy.deepcopy(STARTER)
+    answer['groups'] = [{**group, 'items': [item for item in group['items'] if item.get('builtin')]}
+                        for group in answer['groups']]
+    answer['groups'] = [group for group in answer['groups'] if group['items']]
+    for source in answer['sources']:
+        if source['kind'] == 'hub':
+            source['state'] = 'reading'
+    return answer
+
+
+@pytest.fixture(params=['chromium', 'webkit'])
+def starter_ui(request, monkeypatch):
+    # Select inside the isolated test process: the safe launcher strips this
+    # optional harness setting from the caller's environment.
+    monkeypatch.setenv('OUROBOROS_UI_BROWSER_ENGINE', request.param)
+    ui = request.getfixturevalue('subscription_ui')
+    ui['engine'] = request.param
+    return ui
+
+
+@pytest.mark.parametrize('width,theme', [(width, theme) for width in (1280, 390) for theme in ('light', 'dark')])
+def test_fresh_root_offer_arrives_after_summary_preserving_owner_ticks(starter_ui, width, theme):
+    ui = starter_ui
+    page = ui['page']
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.add_init_script(f"localStorage.setItem('ouroboros.theme', '{theme}')")
+    pending = []
+    reads = []
+
+    def offer(route):
+        reads.append(route.request.url)
+        if len(reads) == 1:
+            route.fulfill(content_type='application/json', body=json.dumps(_fresh_offer()))
+        else:
+            pending.append(route)
+
+    page.route('**/api/onboarding/starter-skills', offer)
+    page.goto(ui['url'] + '/onboarding')
+    page.locator('#quick-start-btn:not([hidden])').click()
+    row = page.locator('.skills-starter-row')
+    row.wait_for()
+    assert 'Reading the Ouroboros hub…' in row.inner_text()
+    assert 'default starter list once it can read the hub' in row.inner_text()
+    page.locator('[data-starter-toggle]').click()
+    page.locator('[data-starter-item="builtin/telegram"]').uncheck()
+    page.locator('[data-starter-panel]').scroll_into_view_if_needed()
+    engine = ui['engine']
+    capture(page, f'starter-{engine}-{width}-{theme}-reading')
+    for _ in range(200):
+        if pending:
+            break
+        page.wait_for_timeout(25)
+    assert pending
+    pending.pop(0).fulfill(content_type='application/json', body=json.dumps(STARTER))
+    page.locator('[data-starter-item="ouroboros/duckduckgo"]').wait_for()
+    assert not page.locator('[data-starter-item="builtin/telegram"]').is_checked()
+    assert page.locator('[data-starter-item="ouroboros/duckduckgo"]').is_checked()
+    assert 'Reading the Ouroboros hub' not in row.inner_text()
+    builtin = page.locator('.skills-starter-card', has=page.locator('[data-starter-item="builtin/telegram"]'))
+    assert builtin.locator('[data-mark="official"]').count() == 1
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert page.locator('[data-starter-panel]').evaluate('el => el.scrollWidth <= el.clientWidth + 1')
+    capture(page, f'starter-{engine}-{width}-{theme}-ready')
+    page.locator('#next-btn').click()
+    for _ in range(200):
+        if _completion(ui):
+            break
+        page.wait_for_timeout(25)
+    assert _completion(ui)[0]['starter_skills'] == ['ouroboros/pdf_tools', 'ouroboros/word_tools',
+                                                   'ouroboros/duckduckgo', 'ouroboros/memory-atlas', 'ouroboros/anti-slop']
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_finish_while_hub_is_reading_uses_defaults_only_if_ticks_untouched(starter_ui, changed):
+    ui = starter_ui
+    page = _summary(ui, answer=_fresh_offer(), width=390)
+    if changed:
+        page.locator('[data-starter-toggle]').click()
+        page.locator('[data-starter-all="0"]').click()
+    else:
+        assert 'default starter list once it can read the hub' in page.locator('.skills-starter-row').inner_text()
+    page.locator('#next-btn').click()
+    for _ in range(200):
+        if _completion(ui):
+            break
+        page.wait_for_timeout(25)
+    payload = _completion(ui)[0]
+    if changed:
+        assert payload['starter_skills'] == []
+    else:
+        assert 'starter_skills' not in payload
+    assert payload['skill_source_trust'] == {'ouroboros': 'trusted', 'ouroboros-community': 'review'}

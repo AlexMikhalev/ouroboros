@@ -356,7 +356,12 @@ def test_skills_late_enrichment_keeps_local_toggle_and_publish_pending(skills_br
         skills.release('/api/state', {'github_token_configured': False})
         page.wait_for_timeout(100)
         assert page.evaluate('keptPublish === document.querySelector(".skills-submit-hub") && keptPublish.disabled && keptToggle.disabled && !keptToggle.checked')
-        # No hub or git source: nothing to choose, the preflight runs for the skill's default destination.
+        # With no connected destination, Publish still offers My skills; keeping the
+        # default must send the same empty preflight body as before.
+        destination_dialog = page.locator('.skills-dialog')
+        assert destination_dialog.locator('[data-create-my-skills]').count() == 1
+        assert skills.posted('/api/skill-sources/my-skills') == []
+        destination_dialog.locator('[data-dialog-ok]').click()
         skills.release('/api/skills/weather/publish-preflight', {'ok': True, 'skill': 'weather',
             'repository': 'fixture/hub', 'state': 'ready', 'task_start_allowed': True})
         page.locator('.confirm-dialog').wait_for()

@@ -71,6 +71,9 @@ test('the Official promise is bound to the source that set it and follows its tr
     assert.match(officialPromise({ name: 'Ouroboros', trust: 'review' }), /Ouroboros still reviews it, because you chose to review each skill/);
     assert.match(officialMarkHtml(), /^<button type="button" class="skills-mark" data-mark="official" data-official-mark aria-haspopup="dialog">/);
     assert.match(officialMarkHtml({ control: false }), /^<span class="skills-mark"/);
+    assert.match(officialMarkHtml({ sourceId: 'builtin' }), /data-official-source="builtin"/);
+    assert.match(officialMarkHtml({ sourceId: 'x"<y' }), /data-official-source="x&quot;&lt;y"/);
+    assert.match(officialPromise({ name: 'Built in', trust: 'trusted' }), /the Built in source, so it installs without review/);
 });
 
 test('permissions read as plain words, once each', () => {

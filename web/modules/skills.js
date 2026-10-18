@@ -18,7 +18,7 @@ import { createSkillBrowse } from './skill_browse.js';
 import { createSkillSources, unconfirmedHubRows } from './skill_sources_view.js';
 import { openSkillDetailSheet } from './skill_detail_sheet.js';
 import {
-    openCompareDialog, openOfficialExplanation, openPublishDestinationDialog, openSkipReviewDialog, openUpdateDialog,
+    openCompareDialog, openOfficialExplanation, openPublishDestinationDialog, openSkipReviewDialog, openUpdateDialog, updateWithoutReview,
 } from './skill_dialogs.js';
 import { plural, popularityText, repoLabel, routeExternalLink, versionText } from './skill_presentation.js';
 import { runSkillPublishFlow } from './skill_publish_flow.js';
@@ -600,8 +600,15 @@ export function initSkills(ctx = {}) {
         return true;
     }
 
-    async function updateSkill(name) {
+    async function updateSkill(name, skipReview = false) {
         const skill = await currentSkill(name);
+        if (skipReview) {
+            const result = await updateWithoutReview(skill);
+            if (!result) return false;
+            showToast(`${name}: updating to ${skill.install.update_rejected.version} without review`, 'warn');
+            emitSkillLifecycle('update', name, result);
+            return true;
+        }
         const update = skill.install?.update_available;
         if (!update?.digest) throw new Error('No update is waiting for this skill.');
         let mode = 'replace';
@@ -610,7 +617,7 @@ export function initSkills(ctx = {}) {
             mode = await openUpdateDialog({
                 name, sourceName: installedSourceLabel(skill), update,
                 installedVersion: skill.install.release?.version, currentVersion: skill.version,
-                baseKnown: skill.install.base_known !== false, editedByOwner: skill.review_gate?.reason === 'owner_edit',
+                baseKnown: skill.install.base_known !== false, editedByOwner: skill.review_gate?.blocking_reason === 'owner_edit',
             });
             if (!mode) return false;
         }
@@ -660,12 +667,9 @@ export function initSkills(ctx = {}) {
         const skill = installedByName()?.get(name) || await currentSkill(name);
         const sources = await store.sources().catch(() => []);
         const choices = publishDestinations(skill, sources);
-        let destination = null;
-        if (choices.length) {
-            const value = await openPublishDestinationDialog({ name, choices, changed: Boolean(skill.install) });
-            if (!value) return false;
-            destination = destinationFromChoice(value);
-        }
+        const value = await openPublishDestinationDialog({ name, choices, changed: Boolean(skill.install) });
+        if (!value) return false;
+        const destination = destinationFromChoice(value);
         const outcome = await runSkillPublishFlow(name, { destination });
         if (!outcome.started) return false;
         showToast(`${name}: publication task ${outcome.task?.task_id || ''} started — see chat`, 'ok');
@@ -692,6 +696,10 @@ export function initSkills(ctx = {}) {
         const details = card?.querySelector('.skills-details');
         if (!details) return;
         details.open = true;
+        if (installedByName()?.get(name)?.install?.update_rejected) {
+            const history = details.querySelector('.skills-review-history');
+            if (history) history.open = true;
+        }
         const findings = details.querySelector('[data-skill-findings]');
         if (findings) findings.open = true;
         (findings || details).scrollIntoView({ block: 'nearest' });
@@ -736,6 +744,7 @@ export function initSkills(ctx = {}) {
         if (action === 'attest_review') return attest(name);
         if (action === 'repair') return repair(name);
         if (action === 'update') return updateSkill(name);
+        if (action === 'update_without_review') return updateSkill(name, true);
         if (action === 'uninstall') return uninstall(name);
         if (action === 'delete') return deleteLocal(name, options.payloadRoot);
         if (action === 'submit_hub') return publish(name);
@@ -784,7 +793,7 @@ export function initSkills(ctx = {}) {
         const mark = event.target.closest('[data-official-mark]');
         if (mark) {
             await store.sources().catch(() => null);
-            openOfficialExplanation(mark, officialSource());
+            openOfficialExplanation(mark, (cache.sourcesValue || []).find((source) => source.id === mark.dataset.officialSource) || officialSource());
             return;
         }
         const goto = event.target.closest('[data-skills-goto]');
