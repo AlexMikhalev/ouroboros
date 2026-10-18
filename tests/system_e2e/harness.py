@@ -97,14 +97,11 @@ SCENARIOS = {
     # must reach the workers already running, not only the pool's next generation.
     "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience; hot-adoption variant: enable after boot dispatches in an ALREADY-SPAWNED worker with no restart", LANE_MOCK),
     # Ф4 wave 3a (plan §8: commit triad+scope BOTH enforcement classes +
-    # stale-rejection; acceptance loop). Renumbered at integration: the parallel
+    # stale-rejection). Renumbered at integration: the parallel
     # wave-3b lane claimed S11-S13 first; S14 (plan review) retired with its engine.
     "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
     "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; post-verdict revalidation", LANE_MOCK),
-    # S17 drives the deleted task-acceptance machine (its scripted author calls the removed
-    # task_acceptance_review tool); the row retires together with its tests in
-    # test_system_scenarios_w3a.py, which still carry the test_s17_* names.
-    "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
+    # S17 (the acceptance loop) retired with the task-acceptance machine.
     # Ф4 wave 4 (plan §8 remainder: update variations, chat-lineage cancel,
     # absorb kill-recovery, delegated interactive answer).
     "S18": ("managed update carrier path: diverged fork, span-confined VERSION conflict auto-resolved, carriers transferred to the official version", LANE_MOCK),
