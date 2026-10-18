@@ -543,18 +543,16 @@ def _ceiling() -> Optional[int]:
     return review_max_cycles()
 
 
-def _hold_refused(ctx: Any, llm_trace: Dict[str, Any], subject_sha: str, hold: Any) -> bool:
-    """Blocking with an owed review and the ceiling unchanged since its refusal: the refusal shown stands."""
+def _hold_refused(ctx: Any, record_id: str, hold: Any) -> bool:
+    """Blocking with an owed review and the ceiling unchanged since its refusal: the refusal shown stands (read
+    from its own record, whatever answer the trace's runs speak for now)."""
     from ouroboros import review_ledger as ledger
 
-    run = next((item for item in llm_trace.get("review_runs") or [] if isinstance(item, dict)
-                and item.get("surface") == RESULT_KIND and item.get("binding_hash") == subject_sha
-                and not item.get("superseded_by_revision")), None)
     try:
-        record = ledger.load_record(ledger.ledger_root(ctx), str((run or {}).get("record_id") or ""))
+        record = ledger.load_record(ledger.ledger_root(ctx), record_id) if record_id else None
     except ValueError:
-        record = {"verdict": {"aggregate": "NOT_DISPATCHED"}, "dispatch_refusal": {}}
-    hold(_findings_text(record, blocking=True))
+        record = None
+    hold(_findings_text(record or {"verdict": {"aggregate": "NOT_DISPATCHED"}, "dispatch_refusal": {}}, blocking=True))
     return True
 
 
@@ -634,8 +632,8 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
     if record is None and subject.diff_sha in refused:
         if not (required and _blocking_enforcement()):
             return _after_refusal(llm_trace, subject.diff_sha)
-        if refused[subject.diff_sha] == _ceiling():  # still spent: the refusal shown stands, nothing new is written
-            return _hold_refused(ctx, llm_trace, subject.diff_sha, hold)
+        if refused[subject.diff_sha]["ceiling"] == _ceiling():  # still spent: the refusal shown stands, nothing is written
+            return _hold_refused(ctx, refused[subject.diff_sha]["record_id"], hold)
         # A raised ceiling lets the owed review run now (below).
     # The only review of this exact answer may have judged an earlier request (the owner's words changed since):
     # one still running is collected at $0 under its own subject, a settled one is asked about once (owner, 18.10).
@@ -714,7 +712,8 @@ def result_review_at_delivery(ctx: Any, content: str, llm_trace: Dict[str, Any],
         return False
     refused = str((record.get("verdict") or {}).get("aggregate") or "") == "NOT_DISPATCHED"
     if refused:
-        ctx._result_review_refused = {**(getattr(ctx, "_result_review_refused", None) or {}), subject.diff_sha: _ceiling()}
+        ctx._result_review_refused = {**(getattr(ctx, "_result_review_refused", None) or {}), subject.diff_sha: {
+            "ceiling": _ceiling(), "record_id": str(record.get("record_id") or "")}}
     blocking = required and enforcement == "blocking"
     shown = getattr(ctx, "_result_review_shown", None)
     if not isinstance(shown, set):

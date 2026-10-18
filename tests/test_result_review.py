@@ -827,3 +827,19 @@ def test_another_call_of_the_same_answer_reviews_the_current_request_not_the_run
     reviewed = review_ledger.load_record(root, other["record_id"])["subject"]["diff_sha"]
     assert words in rr._retained_subject_text(ctx, reviewed), "the current request was reviewed"
     assert review_ledger.load_record(root, first["record_id"])["subject"] == before["subject"]
+
+
+def test_alternating_answers_at_a_spent_blocking_ceiling_hold_with_each_refusal_never_crash(tmp_path, monkeypatch):
+    """A -> B -> A -> B under Blocking with the allowance spent: every delivery of a refused answer holds with its
+    own refusal (read from its record, though another answer's run superseded its trace run), never raises."""
+    from ouroboros.tools import review_result as rr
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    sends: list[dict] = []
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends, {"t1": CRITICAL}))
+    trace, shown = {"tool_calls": []}, []
+    for answer in ("FINAL ANSWER: 2", "FINAL ANSWER: 3", "FINAL ANSWER: 2", "FINAL ANSWER: 3"):
+        assert rr.result_review_at_delivery(ctx, answer, trace, shown.append) is True, answer
+    assert "raises the review ceiling" in shown[-1] and len(sends) == 3
