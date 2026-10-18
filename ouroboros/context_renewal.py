@@ -15,8 +15,8 @@ Ouroboros's outward dialogue; the mind's authored notes (actor capsules) and a p
 notes; the current review decisions; the address records the refusal passes wrote since the
 newest note; and the mind's own prose since its newest note, including the text it wrote beside
 a tool call. The record lists every tool unit since the newest note with its typed facts, shown
-or never shown, and the address of every source the mind restored since that note (restored sources
-carry the whole unit, so they leave the view and restore again from there). Complete tool units, replies the notes
+or never shown, and the address of every source the mind restored (restored sources carry the whole
+unit, so they leave the view and restore again from there). Complete tool units, replies the notes
 already cover, host state the host sends afresh (facts, clock, roster and skill snapshots,
 bound and unchanged), superseded review copies and earlier address records leave the view;
 one host record names the checkpoint that holds them exactly. A renewal that would remove no
@@ -60,10 +60,10 @@ def _restored_address(row: Dict[str, Any]) -> Dict[str, Any]:
     return {"checkpoint_ref": meta["checkpoint_ref"], "unit_id": meta["unit_id"], "raw_sha256": meta["source_unit_sha256"]}
 
 
-def restored_since_note(messages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Addresses of the sources the mind restored after its newest note, in order."""
-    newest = _newest_note(messages)
-    return [address for i, row in enumerate(messages) if i > newest and (address := _restored_address(row))]
+def restored_sources(messages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Addresses of the sources the mind restored in this view, in order (a restore made in the same call as
+    a note sits before that note)."""
+    return [address for row in messages if (address := _restored_address(row))]
 
 
 def units_since_note(messages: Sequence[Dict[str, Any]], observation: Any) -> str:
@@ -78,7 +78,8 @@ def units_since_note(messages: Sequence[Dict[str, Any]], observation: Any) -> st
     from ouroboros.context_source_view import _exposed_units, _unit_facts
 
     newest = _newest_note(messages)
-    units = [unit for unit in compaction.context_units(list(messages), scope="tool") if unit.start > newest]
+    units = [unit for unit in compaction.context_units(list(messages), scope="tool")
+             if unit.start > newest and compaction.unit_kind(messages, unit) == "tool"]  # calls, not records
     shown = _exposed_units(list(messages), units, observation if isinstance(observation, dict) else {})
     return "\n".join(f"{_unit_facts(messages, unit)}\n  {'shown to me' if unit.unit_id in shown else 'never shown to me'}"
                      for unit in units)
@@ -114,7 +115,7 @@ def renewal_seed(messages: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
             prose = _plain_text(row.get("content")) if role == "assistant" and i > newest_note else None
             if prose and prose.strip():
                 kept.append({"role": "assistant", "content": prose})  # my words beside the call stay
-        elif i > newest_note and _restored_address(row):
+        elif _restored_address(row):
             left["restored_sources"] += 1  # the whole unit the mind restored: its address goes in the record
         elif (_capsule_metadata(row)[0] or kind == RENEWAL_RECORD_NAME) and i > newest_note:
             kept.append(row)  # address records and earlier renewal indexes since my newest note: what left, with facts
@@ -155,7 +156,7 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
     except (OSError, ValueError):
         return False  # no exact source, no renewal: every address must resolve (BIBLE P1)
     index = units_since_note(messages, getattr(getattr(tools, "_ctx", None), "_last_context_observation", None))
-    restored = restored_since_note(messages)
+    restored = restored_sources(messages)
     seed.append(bound_host_row(RENEWAL_RECORD_NAME, (
         "[Host record: working view renewed after the provider refused this conversation's size. Same task; "
         "nothing summarized; no model called.] Kept, in order: the assignment, every delivered message and "
@@ -165,7 +166,7 @@ def renew_after_refusal(limit_ctx: Any, tools: Any) -> bool:
         f"of {before} rows: {json.dumps(source, ensure_ascii=False, sort_keys=True)}."
         + (f"\nTool units since my newest note (they left the view; each stays exact there):\n{index}" if index
            else "")
-        + (f"\nSources I restored since my newest note (restore_unit_refs brings each back): "
+        + (f"\nSources I restored (they left the view; restore_unit_refs brings each back): "
            f"{json.dumps(restored, ensure_ascii=False, sort_keys=True)}" if restored else ""))))
     schemas = getattr(limit_ctx, "tool_schemas", None)
     if estimate_context_prompt_tokens(seed, schemas) >= estimate_context_prompt_tokens(messages, schemas):

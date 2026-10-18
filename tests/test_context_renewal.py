@@ -155,8 +155,20 @@ def test_a_source_the_mind_restored_leaves_the_renewed_view_by_its_address(tmp_p
     assert renew_after_refusal(limit_ctx, SimpleNamespace(_ctx=SimpleNamespace(messages=rows))) is True
     record = rows[-1]["content"]
     assert rows[-1][HOST_CONTEXT_KIND_KEY] == RENEWAL_RECORD_NAME and "1 sources I restored" in record
-    listed = json.loads(record.split("(restore_unit_refs brings each back): ", 1)[1])
+    listed = json.loads(record.split("restore_unit_refs brings each back): ", 1)[1])
     assert listed == [{key: ref[key] for key in ("checkpoint_ref", "unit_id", "raw_sha256")}]
+    # Review r4 (Fable A2): the index lists calls only; a restored source or a pass record is no call.
+    assert "Tool units since my newest note" not in record
+    # Review r4 (Fable A1): a restore made in the same call as a note sits before that note; it leaves and is
+    # listed too, so the pointer is not one checkpoint deeper.
+    note_at = max(i for i, row in enumerate(folded) if cc._capsule_metadata(row)[0]
+                  and (cc._capsule_metadata(row)[1] or {}).get("authorship") == "actor")
+    together = [*folded[:note_at], *restored, *folded[note_at:], _owner(OWNER_LATER)]
+    seed, left = renewal_seed(together)
+    assert left["restored_sources"] == 1 and restored[0] not in seed
+    from ouroboros.context_renewal import restored_sources
+
+    assert restored_sources(together) == listed
 
 
 def test_a_second_renewal_keeps_the_first_renewals_index_until_a_newer_note(tmp_path):
