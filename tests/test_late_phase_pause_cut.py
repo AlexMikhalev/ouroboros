@@ -111,8 +111,10 @@ def _spawned(call):
 
 
 def _join(threads):
+    # A liveness bound, not a speed claim: a finished late phase returns at once, and on a loaded
+    # machine the mocked phase has taken up to ~15 s.
     for thread in threads:
-        thread.join(10)
+        thread.join(60)
         assert not thread.is_alive()
 
 
