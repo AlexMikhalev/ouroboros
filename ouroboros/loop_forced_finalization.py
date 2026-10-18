@@ -815,17 +815,20 @@ def _forced_physical_context(ctx: _RoundLimitContext, messages: List[Dict[str, A
     plan = getattr(tools_ctx, "context_fit_plan", None)
     if plan is None or str(ctx.active_model or "") != str(getattr(plan, "model", "") or ""):
         return None
+    from ouroboros.context_anchor import main_input_anchor
     from ouroboros.context_fit import measure_main_fit
     from ouroboros.loop_model_call import _main_context_profile, _physical_context_for_fit, _remember_main_fit
     from ouroboros.observability import new_execution_id
+    from ouroboros.transcript_prefix import rewrite_epoch
 
     mode = str(getattr(tools_ctx, "active_context_mode", "") or "")
     mode = mode if mode in {"max", "low", "nano"} else "max"
     round_id = f"{ctx.accumulated_usage.setdefault('execution_id', new_execution_id())}:round:{ctx.round_idx}"
+    anchor, accepted = main_input_anchor(ctx.accumulated_usage, plan, rewrite_epoch=rewrite_epoch(tools_ctx))
     disposition = measure_main_fit(
         plan, messages, getattr(ctx, "tool_schemas", None), profile=_main_context_profile(plan, mode),
         rendered_mode=mode, round_id=round_id, reasoning_effort=ctx.active_effort,
-        automatic_pass_used=(str(plan.route_fp or ""), round_id) in _loop()._context_reclaim_materializations(tools_ctx))
+        anchor=anchor, accepted_input_tokens=accepted)
     _remember_main_fit(ctx, disposition)
     return _physical_context_for_fit(disposition)
 

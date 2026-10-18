@@ -7,7 +7,6 @@
 import { bindTabStrip, renderPageHeader, renderTabStrip } from './page_header.js';
 import { bindMenu } from './ui_interactions.js';
 import { openConfirmDialog } from './confirm_dialog.js';
-import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
 import { apiClient, apiFetch, skillSourcesApi } from './api_client.js';
 import {
@@ -45,8 +44,7 @@ function skillsPageTemplate() {
     return `
         <section class="page app-page-glass" id="page-skills">
             ${renderPageHeader({
-                title: 'Skills',
-                icon: PAGE_ICONS.skills,
+                page: 'skills',
                 description: PAGE_DESCRIPTION,
                 actionsHtml: '<button id="skills-update-all" class="btn btn-default btn-sm" hidden>Update all</button><button id="skills-refresh" class="btn btn-default btn-sm">Refresh</button>',
                 tabsHtml: renderTabStrip({
