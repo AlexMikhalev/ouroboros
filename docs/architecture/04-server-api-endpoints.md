@@ -128,8 +128,12 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/update/preflight` | |
 | POST | `/api/update/apply` | |
 | GET | `/api/cost-breakdown` | |
-| GET | `/api/storage` | passive |
-| POST | `/api/storage/measure` | starts or joins the walk |
+| GET | `/api/storage` | passive; `?count=<finished_at>` omits an unchanged count |
+| POST | `/api/storage/measure` | start/join child count |
+| POST | `/api/storage/measure/cancel` | stop child; saved count stays |
+| POST | `/api/storage/free/preview` | pure preview; 202, start/join |
+| POST | `/api/storage/free` | `StorageFreeRequest` `{plan, groups}`; exact plan ids; 202, `started`/`reason` |
+| POST | `/api/storage/free/cancel` | stop preview/run; retain completed work |
 | GET | `/api/evolution-data` | |
 | GET | `/api/projects` | optional `chat_id`: that active room from the full registry, beyond sidebar limits (missing → empty `projects`; unreadable → error) |
 | POST | `/api/projects` | |

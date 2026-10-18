@@ -12,9 +12,9 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D02 | LLM client, routing & providers | 43 | 0 |
 | D03 | Context assembly, fit & compaction | 20 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
-| D05 | Tool surfaces: files, code, shell, media, external | 40 | 0 |
+| D05 | Tool surfaces: files, code, shell, media, external | 39 | 0 |
 | D06 | Review stack | 91 | 0 |
-| D07 | Delegation, subagents & Claudexor | 70 | 0 |
+| D07 | Delegation, subagents & Claudexor | 69 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 67 | 0 |
 | D09 | Cancellation, owner control & process custody | 23 | 0 |
 | D10 | Git, update & release machinery | 33 | 0 |
@@ -23,12 +23,12 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 59 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 29 | 0 |
-| D16 | Observability, usage accounting & cost | 21 | 0 |
+| D16 | Observability, usage accounting & cost | 22 | 0 |
 | D17 | Projects, workspaces & task results | 42 | 0 |
-| D18 | Launcher, packaging, platform & shared substrate | 28 | 0 |
+| D18 | Launcher, packaging, platform & shared substrate | 29 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **784** | **0** |
+| **total** | | **785** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -52,7 +52,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D14** | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · |
 | **D15** | ✓ | · | ✓ | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | ✓ | ✓ | ✓ | · |
 | **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · |
-| **D17** | ✓ | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
+| **D17** | ✓ | · | · | ✓ | · | ✓ | · | ✓ | · | · | ✓ | ✓ | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
 | **D18** | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | · |
 | **D19** | · | · | · | · | · | · | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | · |
 | **D20** | · | · | · | ✓ | ✓ | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **117**
+- lazy-only cross-domain pairs: **118**
   - D01->D10
   - D01->D11
   - D02->D05
@@ -161,6 +161,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D16->D09
   - D16->D11
   - D17->D02
+  - D17->D05
   - D17->D07
   - D17->D09
   - D17->D13
@@ -347,7 +348,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D05 — Tool surfaces: files, code, shell, media, external
 
-- `ouroboros/artifact_storage.py`
 - `ouroboros/artifacts.py`
 - `ouroboros/browser_policy.py`
 - `ouroboros/chat_uploads.py`
@@ -489,7 +489,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/claudexor_exit_facts.py`
 - `ouroboros/claudexor_observations.py`
 - `ouroboros/claudexor_runtime.py`
-- `ouroboros/claudexor_runtime_retention.py`
 - `ouroboros/claudexor_startup_failure.py`
 - `ouroboros/configured_subagents.py`
 - `ouroboros/delegate_activity.py`
@@ -925,6 +924,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/process_logging.py`
 - `ouroboros/source_retention.py`
 - `ouroboros/storage.py`
+- `ouroboros/storage_free.py`
 - `ouroboros/usage_accounting.py`
 - `ouroboros/usage_admission.py`
 - `ouroboros/usage_journal.py`
@@ -984,6 +984,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/confined_files.py`
 - `ouroboros/desktop_autostart.py`
 - `ouroboros/desktop_notifications.py`
+- `ouroboros/force_remove.py`
 - `ouroboros/jsonl_tail.py`
 - `ouroboros/launcher_appearance.py`
 - `ouroboros/launcher_background.py`

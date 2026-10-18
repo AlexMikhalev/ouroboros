@@ -313,6 +313,40 @@ def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dic
     return budget_info
 
 
+def storage_fact(data_root: Any) -> Optional[Dict[str, Any]]:
+    """The last finished storage count as one compact fact for the mind: when it was counted,
+    what Ouroboros owns, the growth since the count before, free and total space of the data
+    folder's disk. None when nothing was counted yet (never zero). No threshold, tier or warning
+    stands in for judgment here: the mind reads the numbers (``query_data(kind="storage")`` holds
+    the per-place detail). The saved file is read through the storage owner's identity cache;
+    free space is read fresh."""
+    import shutil
+
+    from ouroboros import storage
+
+    try:
+        saved = storage.count.saved(data_root)
+    except Exception:
+        log.debug("storage count unreadable for the runtime fact", exc_info=True)
+        return None
+    if not saved:
+        return None
+    latest, previous = saved["latest"], saved["previous"]
+    count = storage.with_growth(latest, previous)
+    try:
+        usage = shutil.disk_usage(str(data_root))
+        free, total = usage.free, usage.total
+    except OSError:
+        free = total = None
+    return {
+        "counted_at": latest["finished_at"],
+        "bytes": latest["bytes"],
+        "basis": latest.get("basis"),
+        "previous_at": previous["finished_at"] if isinstance(previous, dict) else None,
+        "growth_bytes": count.get("growth_bytes"),
+        "free_bytes": free,
+        "volume_total_bytes": total,
+    }
 
 
 def _delegation_capability_fact() -> Optional[Dict[str, Any]]:

@@ -1,6 +1,7 @@
 """Real-reader counts for filtered storage reads; no wall-clock gates."""
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -78,3 +79,24 @@ def test_listing_does_not_write_to_runtime_or_inspected_root(tmp_path, monkeypat
     after = {path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mtime_ns)
              for path in tmp_path.rglob("*") if path.is_file()}
     assert after == before
+
+
+def test_a_flat_folder_of_three_hundred_thousand_entries_is_counted_completely(tmp_path):
+    """A1 at the scale the old entry bound (250 000) refused: the blob folder of a real install.
+    No time, entry or depth bound; every file lands in the count, none in `unreadable`."""
+    from ouroboros.storage import measure
+
+    data = tmp_path / "data"
+    blobs = data / "observability" / "blobs"
+    blobs.mkdir(parents=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    for index in range(300_000):
+        fd = os.open(str(blobs / f"{index:06x}.gz"), flags, 0o600)
+        os.write(fd, b"g")
+        os.close(fd)
+    table = [{"id": "model_calls", "group": "records", "roots": [(str(data), ("observability",))]}]
+    record = measure(data, places=table, sleep=lambda _s: None)
+    [place] = record["places"]
+    assert (place["files"], place["logical_bytes"], place["unreadable"]) == (300_000, 300_000, 0)
+    assert place["parts"] == [{"name": "blobs", "bytes": place["bytes"], "files": 300_000}]
+    assert record["files"] == 300_000
