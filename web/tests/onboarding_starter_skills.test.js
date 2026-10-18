@@ -109,7 +109,7 @@ function pollingRow(read) {
     const timers = new Map();
     const row = createStarterSkillsRow({ read, now: () => time,
         setTimer(fn, ms) { timers.set(++id, { fn, ms }); return id; }, clearTimer(key) { timers.delete(key); } });
-    return { row, timers, async tick() {
+    return { row, timers, advance(ms) { time += ms; }, async tick() {
         const [key, timer] = [...timers][0];
         timers.delete(key);
         assert.equal(timer.ms, 3000);
@@ -164,6 +164,7 @@ test('polling is bounded to three minutes and an untouched failed hub still leav
     let calls = 0;
     const poll = pollingRow(async () => { calls += 1; return freshOffer(); });
     await poll.row.loading;
+    poll.row.mount(fakeHost());
     while (poll.timers.size) await poll.tick();
     assert.equal(calls, 61, 'one initial read and at most sixty three-second polls');
     assert.equal('starter_skills' in poll.row.payload(), false);
@@ -180,6 +181,7 @@ test('destroy cancels polling and ignores an in-flight answer', async () => {
     let calls = 0;
     const poll = pollingRow(() => ++calls === 1 ? freshOffer() : new Promise((done) => { resolve = done; }));
     await poll.row.loading;
+    poll.row.mount(fakeHost());
     const pending = poll.tick();
     poll.row.destroy();
     resolve(STARTER);
@@ -188,8 +190,29 @@ test('destroy cancels polling and ignores an in-flight answer', async () => {
     assert.equal(poll.timers.size, 0);
     const mounted = pollingRow(async () => freshOffer());
     await mounted.row.loading;
+    mounted.row.mount(fakeHost());
     mounted.row.destroy();
     assert.equal(mounted.timers.size, 0);
+});
+
+test('the polling window starts on Summary mount after a long setup and does not reset on remount', async () => {
+    let calls = 0;
+    const poll = pollingRow(async () => { calls += 1; return freshOffer(); });
+    await poll.row.loading;
+    assert.equal(calls, 1, 'the initial offer can be prefetched');
+    assert.equal(poll.timers.size, 0, 'earlier wizard steps do not spend the polling window');
+    poll.advance(300_000);
+    poll.row.mount(fakeHost());
+    assert.equal(poll.timers.size, 1, 'Summary starts polling even after five minutes in setup');
+    await poll.tick();
+    assert.equal(calls, 2);
+    poll.row.mount(fakeHost());
+    assert.equal(poll.timers.size, 1, 'rerendering Summary does not add a poller');
+    while (poll.timers.size) await poll.tick();
+    assert.equal(calls, 61, 'three minutes are measured from first mount');
+    poll.row.mount(fakeHost());
+    assert.equal(poll.timers.size, 0, 'remounting does not renew the bounded window');
+    poll.row.destroy();
 });
 
 test('built-in starter cards carry one Official mark next to Built in and disclose suggested trust', async () => {

@@ -42,14 +42,14 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
     let disposeFade = null;
     let destroyed = false;
     let timer = null;
-    const deadline = now() + 180_000;
+    let deadline = null;
     const items = () => state.groups.flatMap((group) => group.items);
     const hubs = () => state.sources.filter((source) => source.kind === 'hub' || state.rows.some((row) => row.id === source.id));
     const reading = () => hubs().some((source) => source.state === 'reading');
     const useDefaults = () => !state.ticksChanged && hubs().some((source) => source.state !== 'ready');
 
     async function refresh() {
-        if (destroyed || now() > deadline) return;
+        if (destroyed || (deadline !== null && now() > deadline)) return;
         try {
             const data = await read();
             if (destroyed) return;
@@ -76,7 +76,7 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
         }
         if (destroyed) return;
         paint();
-        if (reading() && now() + 3000 <= deadline) timer = setTimer(refresh, 3000);
+        if (deadline !== null && reading() && now() + 3000 <= deadline) timer = setTimer(refresh, 3000);
     }
     const loading = Promise.resolve().then(refresh);
 
@@ -173,6 +173,10 @@ export function createStarterSkillsRow({ read = () => skillSourcesApi.starterSki
             host?.removeEventListener('change', onChange);
             host = node || null;
             if (!host) return;
+            if (deadline === null) {
+                deadline = now() + 180_000;
+                if (state.status !== 'loading' && reading()) timer = setTimer(refresh, 3000);
+            }
             host.addEventListener('click', onClick);
             host.addEventListener('change', onChange);
             paint();
