@@ -1414,23 +1414,36 @@ def _task_proven_over(task_id: str, data_dir: Any, live: Any) -> bool:
         return False  # unreadable or unknown ownership never authorizes GC
 
 
+def snapshot_released(entry: Dict[str, Any], open_snapshot_ids: set, *, data_dir: Any = None, live: Any = None) -> bool:
+    """The one proof a delegated snapshot goes by, for the custody GC and the owner's free action
+    alike (its preview offers exactly what this answers): the keep-set does not name it, its task is
+    proven over (``live``: the supervisor's probe unless given), fresh readable custody does not hold it."""
+    from ouroboros import delegate_custody as custody
+
+    if live is None:
+        from supervisor.queue import task_settlement_liveness as live
+    snap = str(entry.get("snapshot_id") or "")
+    try:
+        return snap not in open_snapshot_ids and _task_proven_over(str(entry.get("task_id") or ""), data_dir, live) \
+            and not custody.custody_log_unreadable(_data_dir(data_dir)) \
+            and snap not in custody.open_snapshot_ids(_data_dir(data_dir))
+    except Exception:
+        return False
+
+
 def prune_execution_snapshots(
     open_snapshot_ids: set,
     *,
     worktree_root: Optional[Any] = None,
     data_dir: Optional[Any] = None,
     only: Optional[Any] = None,
+    live: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Retire snapshots only after their task is proven over and custody releases them.
-
-    The supplied keep-set is conservative; fresh custody is checked before each removal.
-    A provisional snapshot can precede START_REQUESTED, so absent custody is not proof
-    its owner is over. Unknown task/process/custody state keeps even a missing checkout's
-    row and pin. ``only`` restricts the pass; surviving trees keep ``removal_failed``.
-    """
-    from ouroboros import delegate_custody as custody
-    from supervisor.queue import task_settlement_liveness
-
+    """Retire snapshots only after their task is proven over and custody releases them
+    (``snapshot_released``, ``live`` as there; the keep-set is conservative, fresh custody is checked
+    before each removal). A provisional snapshot can precede START_REQUESTED, so absent custody is not
+    proof its owner is over; unknown task/process/custody state keeps even a missing checkout's row
+    and pin. ``only`` restricts the pass; surviving trees keep ``removal_failed``."""
     open_ids = {str(s) for s in (open_snapshot_ids or set())}
     chosen = None if only is None else {str(s) for s in only}
     removed: List[str] = []
@@ -1441,20 +1454,10 @@ def prune_execution_snapshots(
         snap = str(entry.get("snapshot_id") or "")
         if chosen is not None and snap not in chosen:
             continue
-        try:
-            removable = snap not in open_ids and _task_proven_over(
-                str(entry.get("task_id") or ""), data_dir, task_settlement_liveness) \
-                and not custody.custody_log_unreadable(_data_dir(data_dir)) \
-                and snap not in custody.open_snapshot_ids(_data_dir(data_dir))
-        except Exception:
-            removable = False
-        if not removable:
+        if not snapshot_released(entry, open_ids, data_dir=data_dir, live=live):
             kept.append(snap)
             continue
-        if remove_execution_snapshot(snap, worktree_root=worktree_root, data_dir=data_dir):
-            removed.append(snap)
-        else:
-            kept.append(snap)
+        (removed if remove_execution_snapshot(snap, worktree_root=worktree_root, data_dir=data_dir) else kept).append(snap)
     return {"removed": removed, "kept": kept}
 
 

@@ -82,6 +82,10 @@ test('places keep server order under their five groups; an absent place is omitt
     assert.equal(rows.find((row) => row.id === 'app_state').bytes, null);
     assert.equal(rows.find((row) => row.id === 'working_copies').otherDisk, true);
     assert.match(rows.find((row) => row.id === 'engine').split, /^Run history 76 GB · Account data 59 GB · Engine files 11 GB$/);
+    // The split reads its two parts by name, wherever the server ranks them among the listed parts.
+    const ranked = [...Array(8)].map((_, index) => ({ name: `copy-${index}`, bytes: 1 * GB, files: 1 }));
+    const engine = place('engine', 'engine', 146 * GB, { parts: [...ranked, { name: 'profiles', bytes: 59 * GB, files: 1 }, { name: 'projects', bytes: 76 * GB, files: 1 }] });
+    assert.match(placeRows(count({ places: [engine] }), 7)[0].split, /^Run history 76 GB · Account data 59 GB · Engine files 11 GB$/);
     const groups = groupRows(rows);
     assert.deepEqual(groups.map((group) => [group.id, group.bytes, group.growth]), [
         ['records', 156 * GB, 20 * GB], ['engine', 146 * GB, 4 * GB], ['work', 64 * GB, 18 * GB],

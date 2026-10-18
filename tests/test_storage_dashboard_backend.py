@@ -174,6 +174,27 @@ def test_nested_roots_count_once_in_their_own_place_and_siblings_land_in_the_rem
     assert [part["name"] for part in _row(record, "memory_skills")["parts"]] == ["state/skills/s"]
 
 
+def test_the_engine_lists_its_named_parts_whatever_their_rank_and_other_places_do_not(tmp_path, walk):
+    """The client's three-part engine line reads `projects` and `profiles` by name, so the walker lists
+    them beyond the largest eight instead of folding them into the remainder; under any other place
+    the same names rank like every other part."""
+    data = tmp_path / "data"
+    for base in (data / storage.ENGINE_DIR, data / "state"):
+        for index in range(storage._LARGEST_PARTS):
+            _write(base / f"big{index}" / "b.bin", 20_000 + index)
+        _write(base / "projects" / "p.bin", 5)
+        _write(base / "profiles" / "q.bin", 3)
+    record = _count(data)
+    engine = _row(record, "engine")
+    names = [part["name"] for part in engine["parts"]]
+    assert len(names) == storage._LARGEST_PARTS + 2 and set(names[storage._LARGEST_PARTS:]) == {"projects", "profiles"}
+    assert engine["rest"] == {"count": 0, "bytes": 0}
+    assert sum(part["bytes"] for part in engine["parts"]) == engine["bytes"]
+    state = _row(record, "app_state")
+    assert len(state["parts"]) == storage._LARGEST_PARTS and not {"projects", "profiles"} & {part["name"] for part in state["parts"]}
+    assert state["rest"]["count"] == 2 and state["rest"]["bytes"] == state["bytes"] - sum(part["bytes"] for part in state["parts"])
+
+
 def test_two_places_resolving_to_one_folder_walk_it_once(tmp_path, walk):
     data = tmp_path / "data"
     _write(data / "projects" / "p" / "p.bin", 31)
