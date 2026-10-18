@@ -5285,6 +5285,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     flex: 0 0 auto;
     margin: 2px 0 12px;
     padding: 0 var(--space-5);
+    container: skillschrome / inline-size;
 }
 
 .skills-search-chrome[hidden] {
@@ -5425,6 +5426,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .skills-tab-panel {
     margin-top: 4px;
+    container: skillspane / inline-size;
 }
 
 /* === design-system:migrated-begin (Skills page: Installed, Browse, Sources, detail sheet, dialogs) === */
@@ -5700,7 +5702,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-list-status { margin-bottom: var(--space-2); }
 .skills-empty { margin: var(--space-3) 0; color: var(--text-meta); font-size: var(--type-body); line-height: var(--line-body); }
 .skills-empty p { margin: 0 0 var(--space-2); }
-@media (max-width: 640px) {
+@container skillschrome (max-width: 600px) {
     .skills-browse-filter { flex: 1 1 auto; }
     .skills-browse-filter > select.ui-control { flex: 1 1 auto; }
     .skills-search-chrome .skills-search { flex-basis: 100%; }
@@ -5770,7 +5772,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 }
 .skills-trust-value.is-suggested { color: var(--status-warn-fg); }
 .skills-sources-foot p { margin: var(--space-2) 0 0; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
-@media (max-width: 640px) {
+@container skillspane (max-width: 600px) {
     .skills-source-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "meta" "actions"; }
     .skills-source-actions { justify-content: space-between; }
     .skills-trust-value { text-align: left; }
@@ -5784,7 +5786,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-dialog-error { margin: 0; }
 .skills-add-field { display: grid; gap: var(--space-1); }
 .skills-add-field > span { color: var(--text-meta); font-size: var(--type-meta); font-weight: 600; }
-.skills-first-rows { display: grid; gap: var(--space-2); }
+.skills-first-rows { display: grid; gap: var(--space-2); container: skillsfirst / inline-size; }
 .skills-first-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
@@ -5809,7 +5811,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     line-height: var(--line-body);
 }
 .skills-mark-popup p { margin: 0 0 var(--space-2); }
-@media (max-width: 640px) { .skills-first-row { grid-template-columns: minmax(0, 1fr); } }
+@container skillsfirst (max-width: 520px) { .skills-first-row { grid-template-columns: minmax(0, 1fr); } }
 
 /* The detail sheet: the delivered-document reader's geometry (a full sheet on a phone). */
 .skills-detail-sheet .document-reader-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); white-space: normal; }
