@@ -410,8 +410,8 @@
   {
     "id": "test_styles_cover_chat_header_controls_and_grouped_cards",
     "path": "web/style.css",
-    "kind": "contains",
-    "value": ".chat-live-card[data-expanded=\"1\"] > .chat-live-timeline {"
+    "kind": "regex",
+    "value": "\\.chat-live-card\\[data-expanded=\"1\"\\] > \\.chat-live-timeline(?:,[^{,]+)*\\s*\\{\\s*display: flex;"
   },
   {
     "id": "test_styles_cover_chat_header_controls_and_grouped_cards",
