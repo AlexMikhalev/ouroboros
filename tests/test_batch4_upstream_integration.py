@@ -156,7 +156,8 @@ def test_sent_review_settles_after_pause_and_author_close_with_original_group(en
     until(lambda: operation.closed)
     from ouroboros.task_results import load_task_result
 
-    until(lambda: load_task_result(f.root, TASK)["review_operations"][operation.owner_id]["state"] == "unpublished")
+    # A closed operation removes its pointer from the task row.
+    until(lambda: operation.owner_id not in (load_task_result(f.root, TASK).get("review_operations") or {}))
     # The recorded seat is collected through the per-seat collector every surface shares (no new send).
     assert _collect(result, f) == ("PASS", review_operation.COLLECTED)
     assert observations == [None]
