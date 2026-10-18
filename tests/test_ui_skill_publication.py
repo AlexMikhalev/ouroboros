@@ -61,7 +61,7 @@ def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_s
             page.click('[data-nav-page="skills"]')
             page.wait_for_selector(f'.skills-card[data-skill="{names[1]}"]')
             measurements = []
-            for viewport, sidebar in [(719, 280), (1100, 560), (1440, 280)]:
+            for viewport, sidebar in [(720, 280), (1100, 560), (1440, 280)]:  # 720 = the docked layout's first width (layout.js)
                 page.set_viewport_size({'width': viewport, 'height': 900})
                 page.evaluate("width => document.getElementById('app').style.setProperty('--sidebar-width', `${width}px`)", sidebar)
                 for name in names:

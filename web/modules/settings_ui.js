@@ -1,5 +1,4 @@
 import { renderPageHeader, renderSegmentedField, renderTabStrip, bindTabStrip } from './page_header.js';
-import { PAGE_ICONS } from './page_icons.js';
 import { renderAgentAccountsSection, renderAgentsServiceBanner } from './harness_accounts.js';
 import { renderSubagentsSection } from './subagents_settings.js';
 import { languageBlockHtml } from './settings_language.js';
@@ -255,12 +254,10 @@ function secretSettingsSection() {
 export function renderSettingsPage() {
     return `
         ${renderPageHeader({
-            title: 'Settings',
-            icon: PAGE_ICONS.settings,
+            page: 'settings',
             description: 'Configure providers, secrets, models, behavior, source control, and runtime controls.',
             tabsHtml: `
                 <div class="settings-tabs-bar">
-                    <button type="button" class="settings-mobile-back" data-settings-back hidden>Settings</button>
                     ${renderTabStrip({
                         items: SETTINGS_TABS.map((item) => ({ ...item,
                             tabId: `settings-tab-${item.value}`, panelId: `settings-panel-${item.value}` })),
