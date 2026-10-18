@@ -867,6 +867,7 @@ def current_work_in_room(drive_root: Any, task_bindings: Any, matches: Callable[
 
 
 async def api_state(request: Request) -> JSONResponse:
+    """``StateResponse``, never stored: an open page compares its ``sha`` to spot a new build."""
     try:
         from ouroboros.config import (
             get_context_mode,
@@ -895,7 +896,7 @@ async def api_state(request: Request) -> JSONResponse:
         supervisor_ready = _state_attr(request, "supervisor_ready_event")
         get_supervisor_error = _state_attr(request, "get_supervisor_error")
         app_start = float(_state_attr(request, "app_start", time.time()) or time.time())
-        return JSONResponse({
+        response = JSONResponse({
             "uptime": int(time.time() - app_start),
             "workers_alive": snap["workers_alive"],
             "workers_total": snap["workers_total"],
@@ -989,7 +990,9 @@ async def api_state(request: Request) -> JSONResponse:
             "served_ui": _served_ui_state(request),
         })
     except Exception as exc:
-        return json_exception(exc)
+        response = json_exception(exc)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _task_bindings_safe(request: Request, *, availability=None) -> dict:
