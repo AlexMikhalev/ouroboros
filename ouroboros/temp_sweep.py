@@ -21,12 +21,26 @@ ATOMIC_TEMP_DIRS = ("state", "logs", "memory", "projects", "task_results")
 _ATOMIC_TEMP_PRUNED = (("state", "headless_tasks"), ("state", "review_checkouts"), ("state", "cx"))
 
 
+# A file name is at most 255 bytes on the filesystems Ouroboros runs on (a physical limit).
+_NAME_MAX_BYTES = 255
+
+
 def atomic_temp_path(path: pathlib.Path) -> pathlib.Path:
     """The sibling temp name every atomic writer uses, ``.{name}.tmp.<pid>.<tid>.<uuid>``: the one
     signature this sweep reaps, so a hard kill's leftover is reclaimed instead of surviving beside
-    the file it was meant to replace (and, in an artifact folder, being listed as a deliverable)."""
+    the file it was meant to replace (and, in an artifact folder, being listed as a deliverable).
+    A name too long to fit beside that suffix keeps a prefix and a digest of the whole name."""
     path = pathlib.Path(path)
-    return path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
+    suffix = f".tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
+    stem = path.name
+    room = _NAME_MAX_BYTES - 1 - len(suffix.encode("utf-8"))
+    if len(stem.encode("utf-8")) > room:
+        import hashlib
+
+        digest = "~" + hashlib.sha256(stem.encode("utf-8")).hexdigest()[:12]
+        keep = stem.encode("utf-8")[:max(0, room - len(digest))].decode("utf-8", "ignore")
+        stem = keep + digest
+    return path.with_name(f".{stem}{suffix}")
 
 
 def _atomic_temp_candidates(root: pathlib.Path) -> Iterator[pathlib.Path]:
