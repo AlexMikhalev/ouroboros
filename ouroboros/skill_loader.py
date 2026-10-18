@@ -1313,6 +1313,23 @@ def _classify_skill_source(
     return SKILL_SOURCE_EXTERNAL
 
 
+_LEGACY_UNIX_REMOTE_PLATFORM = "legacy_remote_platform=win32"
+
+
+def _native_platform_visible(skill_dir: pathlib.Path, manifest: SkillManifest) -> bool:
+    """Matching seeds, plus an upgraded Unix remote choice retained on Windows."""
+    if manifest.applies_to_platform():
+        return True
+    from ouroboros.contracts.skill_manifest import host_platform
+
+    if host_platform() != "win32" or skill_dir.name != "unix_computer_use":
+        return False
+    try:
+        return _LEGACY_UNIX_REMOTE_PLATFORM in (skill_dir / ".seed-origin").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+
+
 def _load_skill_location_candidates(
     candidates: tuple[_SkillLocationCandidate, ...],
     *,
@@ -1356,6 +1373,8 @@ def _load_skill_location_candidates(
         loaded.source = _classify_skill_source(
             candidate.skill_dir, location=candidate.location, drive_root=drive_root,
         )
+        if loaded.source == "native" and not _native_platform_visible(candidate.skill_dir, loaded.manifest):
+            continue  # a launcher seed for another platform is not part of this install
         skills.append(loaded)
 
     skills.sort(key=lambda skill: (skill.name, str(skill.skill_dir)))
@@ -1385,12 +1404,8 @@ def discover_selected_skill_candidates(
     """
     canonical_name = _sanitize_skill_name(name)
     candidates = tuple(
-        candidate
-        for candidate in _skill_location_inventory(
-            drive_root,
-            repo_path=repo_path,
-            selected_manifestless_name=canonical_name,
-        )
+        candidate for candidate in _skill_location_inventory(
+            drive_root, repo_path=repo_path, selected_manifestless_name=canonical_name)
         if candidate.name == canonical_name
     )
     return _load_skill_location_candidates(
@@ -1406,21 +1421,15 @@ def discover_skill_identity(
     *,
     repo_path: str | None = None,
 ) -> List[LoadedSkill]:
-    """Load one identity with ORDINARY discovery semantics, nothing else read.
+    """Execution resolver: ordinary discovery/collision rules for one identity.
 
-    Same inventory and collision rules as ``discover_skills`` restricted to one
-    canonical name — no manifestless opt-in, so a directory without a manifest
-    beside a valid skill of the same name stays invisible here exactly as it is
-    to passive discovery. This is the resolver every EXECUTION caller uses
-    (liveness, reconcile, the extension child); the repair/publication lanes
-    keep ``discover_selected_skill_candidates`` and its deliberately stricter
-    manifestless ambiguity.
+    A manifestless peer stays invisible, exactly as in passive discovery.
+    Liveness, reconcile and extension children all use this resolver; the
+    repair/publication lanes keep ``discover_selected_skill_candidates`` and
+    its deliberately stricter manifestless ambiguity.
     """
     safe = _sanitize_skill_name(name)
-    candidates = tuple(
-        item for item in _skill_location_inventory(drive_root, repo_path=repo_path)
-        if item.name == safe
-    )
+    candidates = tuple(item for item in _skill_location_inventory(drive_root, repo_path=repo_path) if item.name == safe)
     return _load_skill_location_candidates(candidates, drive_root=drive_root)
 
 

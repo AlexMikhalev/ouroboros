@@ -406,8 +406,9 @@ def test_skill_review_contract_fingerprint_preserves_legacy_and_tracks_rows(monk
     # The author-finality contract is part of the skill-review prompt contract;
     # its deliberate wording change invalidates the old fingerprint. Decision 3A
     # then removed the advisory-evidence input from the prompt builder (no
-    # advisory critic feeds the skill reviewer), which moved it once more, and the
-    # passive skill-context snapshot (22eb97baf) changed the builder again.
+    # advisory critic feeds the skill reviewer), which moved it once more. PR #1981
+    # made context_snapshot_discipline a severity-driven item (skill_review_status),
+    # an aggregation-vocabulary change that lapses replay by design.
     assert legacy == "ffa677071aa64ae27816aa1e1290ede58f012a7527a0ad22012583b641106cfb"
     legacy_delivery = {
         "legacy_skill_fingerprint": True,
@@ -717,11 +718,8 @@ def test_skill_review_cycles_refusal_names_the_author_finish_where_it_is_legal(
     )
     assert outcome.status == "pending" and outcome.paid is False
     assert "REVIEW_CYCLES_EXHAUSTED" in outcome.error
-    assert "finalize and disclose" in outcome.error and "fresh task" in outcome.error
-    # Where the author may finish, the mind decides whether what was reviewed is enough and the
-    # owner's ceiling is no longer offered as the way on; only Blocking keeps it (owner 17.10, Q1-A).
-    assert ("ask the owner" in outcome.error) is not author_finish
-    assert ("explain that to your human" in outcome.error) == author_finish
+    assert "finalize and disclose" in outcome.error
+    assert "ask the owner" in outcome.error and "fresh task" in outcome.error
     assert ("author_disposition" in outcome.error) == author_finish
     assert ("author_rationale" in outcome.error) == author_finish
     if author_finish:

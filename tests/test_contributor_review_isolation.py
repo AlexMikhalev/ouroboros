@@ -403,10 +403,10 @@ def test_full_entrypoint_keeps_a_legacy_host_untouched(tmp_path, engine):
     assert record["settings_sha256"] == hashlib.sha256((host / "settings.json").read_bytes()).hexdigest()
     evidence = json.loads((out / "packet" / "review-evidence.json").read_text(encoding="utf-8"))
     assert evidence["trust"]["installed_body_execution"]["executing_checkout_head"] == base_sha
-    # No record, no reviewer: incomplete evidence, with both facts disclosed.
+    # No record, no reviewer: incomplete evidence, the cause first and the absent receipts beside it.
     outcome = evidence["production_outcome"]
-    assert (outcome["block_reason"], outcome["original_block_reason"]) == (
-        "execution_receipt_mismatch", "review_record_unavailable")
+    assert (evidence["result"], evidence["exit_class"], outcome["block_reason"]) == (
+        "INCOMPLETE", "infrastructure", "review_record_unavailable")
     assert outcome["execution_receipt_mismatches"] == ["missing_actor:pool:s1", "missing_actor:pool:t1"]
     assert evidence["review_record"] == {"record_id": None, "available": False}
     assert evidence["budget"]["run_cap_usd"] == 4.0

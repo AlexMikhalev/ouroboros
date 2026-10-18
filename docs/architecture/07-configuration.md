@@ -29,7 +29,6 @@ Providers name the output budget differently: OpenRouter and Anthropic-compatibl
 | `LLMClient.chat()` / `chat_async()` defaults | 65,536 |
 | Main task loop (`loop_llm_call.MAIN_LOOP_MAX_TOKENS`) | 65,536 |
 | `LLMClient.vision_query()` and VLM tools (`analyze_screenshot`, `vlm_query`) | 32,768 |
-| Context compaction round summaries | 32,768 |
 | Review synthesis dedup | 16,384 |
 | Scratchpad consolidation, Light memory drafts (`consolidator.LIGHT_ANSWER_CEILING_TOKENS`) | 16,384 |
 | Post-task evolution promotion decision (`post_task_evolution`) | 8,192 |

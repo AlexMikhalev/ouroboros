@@ -94,7 +94,7 @@ def _normalized(address: Any) -> Dict[str, Any]:
 
 def stored_address(root: Any, entry: ds.Row) -> Dict[str, Any]:
     """Content identity, with an imported physical hint or a new SQL coordinate."""
-    legacy = ds.legacy_address(root, entry.seq)
+    legacy = ds.legacy_address(root, entry.seq) if entry.stream == "chat" else None
     address = row_address(entry.row, gen=legacy[0], line=legacy[1]) if legacy else row_address(entry.row)
     if legacy is None:
         address["hint"]["seq"] = entry.seq
@@ -113,7 +113,7 @@ def _same_row(row: Dict[str, Any], wanted: Dict[str, Any]) -> bool:
     return _row_chat_id(row) == wanted["chat_id"] and str(row.get("ts") or "") == wanted["ts"]
 
 
-def resolve_row(root: Any, address: Any) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+def resolve_row(root: Any, address: Any, *, stream: str = "chat") -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """Resolve a content identity, checking hints and then indexed chat/time candidates.
 
     Missing coverage raises the store's typed importing/failure outcome. A recorded
@@ -123,16 +123,16 @@ def resolve_row(root: Any, address: Any) -> Tuple[Optional[Dict[str, Any]], Dict
     hint = wanted["hint"]
     hinted = []
     if type(hint.get("seq")) is int:
-        entry = ds.row_at(root, "chat", hint["seq"])
+        entry = ds.row_at(root, stream, hint["seq"])
         hinted = [entry] if entry is not None else []
-    elif hint.get("gen") and type(hint.get("line")) is int:
+    elif stream == "chat" and hint.get("gen") and type(hint.get("line")) is int:
         hinted = ds.legacy_candidates(root, hint["gen"], hint["line"])
     for entry in hinted:
         if _same_row(entry.row, wanted) and source_row_id(entry.row).startswith(wanted["row_sha256"]):
             return entry.row, _resolved(root, entry)
-    candidates = ds.rows_by_identity(root, wanted["chat_id"], wanted["ts"])
+    candidates = ds.rows_by_identity(root, wanted["chat_id"], wanted["ts"], stream=stream)
     if wanted["chat_id"] == 1:
-        candidates += ds.rows_by_identity(root, None, wanted["ts"])
+        candidates += ds.rows_by_identity(root, None, wanted["ts"], stream=stream)
     candidates.sort(key=lambda entry: entry.seq)
     matches = [entry for entry in candidates if source_row_id(entry.row).startswith(wanted["row_sha256"])]
     distinct = {source_row_id(entry.row): stored_address(root, entry) for entry in matches}
@@ -140,10 +140,10 @@ def resolve_row(root: Any, address: Any) -> Tuple[Optional[Dict[str, Any]], Dict
         return None, {"status": "row_ambiguous", "candidates": list(distinct.values())}
     if matches:
         return matches[0].row, _resolved(root, matches[0])
-    ds.require_imported(root, "chat")
+    ds.require_imported(root, stream)
     if candidates:
         return None, {"status": "row_mismatch", "candidates": [stored_address(root, entry) for entry in candidates]}
-    gaps = dp.skipped_between(root, "chat")
+    gaps = dp.skipped_between(root, stream)
     if gaps:
         return None, {"status": "row_unreadable", "unreadable": [
             {"path": "state/dialog.sqlite", "offset": gap.seq, "length": gap.length, "kind": gap.kind} for gap in gaps]}

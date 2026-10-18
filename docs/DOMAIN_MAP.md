@@ -10,7 +10,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 49 | 0 |
 | D02 | LLM client, routing & providers | 43 | 0 |
-| D03 | Context assembly, fit & compaction | 20 | 0 |
+| D03 | Context assembly, fit & compaction | 22 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 38 | 0 |
 | D06 | Review stack | 91 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 28 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **776** | **0** |
+| **total** | | **778** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -296,6 +296,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 - `ouroboros/capability_evidence.py`
 - `ouroboros/context.py`
+- `ouroboros/context_anchor.py`
 - `ouroboros/context_budget.py`
 - `ouroboros/context_compaction.py`
 - `ouroboros/context_fit.py`
@@ -303,6 +304,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/context_input_selection.py`
 - `ouroboros/context_layout.py`
 - `ouroboros/context_mode_compat.py`
+- `ouroboros/context_renewal.py`
 - `ouroboros/context_runtime_facts.py`
 - `ouroboros/context_source_view.py`
 - `ouroboros/main_context_authority.py`

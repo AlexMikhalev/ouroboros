@@ -179,7 +179,7 @@ def test_census_keeps_the_direct_kind_for_a_post_task_wait(tmp_path, monkeypatch
 # so the client never keeps a list of tool names.
 
 
-def test_the_routing_verb_table_is_the_one_owner_of_the_family():
+def test_the_routing_verb_table_is_the_one_owner_of_the_family(tmp_path):
     from ouroboros.tool_capabilities import ROUTING_VERBS, routing_action_for_tool
     from ouroboros.tools.control_events import _emit_control_event
 
@@ -189,10 +189,11 @@ def test_the_routing_verb_table_is_the_one_owner_of_the_family():
     # The typed action on task_done is keyed by the events those same tools emit.
     for tool, events in ROUTING_VERBS.items():
         for event_type in events:
-            ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=".")
+            # A deferred promote records its emission under the drive root: never the checkout.
+            ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=str(tmp_path))
             assert _emit_control_event(ctx, {"type": event_type}) == "deferred"
             assert ctx._typed_routing_action_emitted == event_type
-    ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=".")
+    ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=str(tmp_path))
     _emit_control_event(ctx, {"type": "cancel_task"})
     assert not hasattr(ctx, "_typed_routing_action_emitted")
 

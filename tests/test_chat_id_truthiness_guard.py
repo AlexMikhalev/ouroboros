@@ -64,8 +64,8 @@ ALLOWED = {
         1,
         "lineage_chat_id() again: 0 means the run was never homed, and pushing "
         "an unhomed answer into a partition with no reader would add rows to the "
-        "chat log a benchmark parses for its final answer. (A silent wake's custody "
-        "line joined the text condition; the chat-id half is unchanged.)",
+        "chat log a benchmark parses for its final answer. A wake's silent finish "
+        "(#1814) changed only the answer condition, not this chat test.",
     ),
 }
 

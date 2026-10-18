@@ -62,7 +62,7 @@ def _capsule_request(child: pathlib.Path, task_id: str, handles: list) -> dict:
     checkpoint = cc._persist_reclaim_checkpoint(messages, request, SimpleNamespace(fingerprint="c" * 64, units=[]),
                                                 drive_root=child, task_id=task_id)
     unit = dataclasses.replace(unit, source_refs=(*unit.source_refs, *({"source_ref": ref} for ref in handles)))
-    capsule, _ = cc._capsule_message(cc._SelectedUnit(unit, 0, ""), "summary",
+    capsule, _ = cc._capsule_message(unit, "summary",
                                      [cc._part(unit.unit_id, unit.source_text)], checkpoint, request)
     assert cc._capsule_metadata(capsule)[1] is not None  # the walk follows a valid capsule's sources
     return observability.persist_call(child, task_id=task_id, call_id="capsule-request", call_type="llm_request",
