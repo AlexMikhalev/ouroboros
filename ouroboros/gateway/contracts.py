@@ -1389,14 +1389,15 @@ class LogTailResponse(TypedDict, total=False):
 
 
 class OnboardingCompleteRequest(TypedDict, total=False):
-    """Open setup-settings payload plus subscription declarations and actor draft.
-    These are not authority: subscriptionsConnected requests a live account read;
-    the server independently proves fresh-install status before applying."""
+    """Open setup-settings payload plus subscription declarations, actor draft and starter choices. None is
+    authority: subscriptionsConnected requests a live account read; the server re-proves fresh install."""
 
     subscriptionsConnected: bool
     skipSubscriptionPresets: bool
     OUROBOROS_SUBAGENTS: Dict[str, Any]
     allow_empty_review_pool: bool  # confirms saving agents that leave no review row
+    starter_skills: List[str]  # catalog ids installed once after completion; absent: the default starter list
+    skill_source_trust: Dict[str, str]  # {hub row id: trusted|review}; marks those rows confirmed
 
 
 class OnboardingSubagentsPreviewResponse(TypedDict):
@@ -1425,8 +1426,7 @@ class OnboardingPresetProjection(TypedDict):
 
 
 class OnboardingCompleteResponse(TypedDict):
-    """Settings, next-boot mode, safety default and completion persist atomically.
-    Preset and one-shot marker join that write only when preset.applied is true."""
+    """Settings, next-boot mode, safety default and completion persist atomically; preset and marker if applied."""
 
     ok: bool
     status: str

@@ -127,14 +127,17 @@ export function cancelHarnessMaintenance(operationId) {
 }
 
 /**
- * Run the read-only publication preflight for one selected skill. Domain
- * states, including repairable findings, remain successful JSON responses;
- * only transport/admission refusals reject through fetchJson.
+ * Run the read-only publication preflight for one selected skill and the
+ * destination the owner chose (omitted = the skill's origin, else the hub); the
+ * answer's `repository` is the one the publish task binds.
+ * Domain states, including repairable findings, remain successful JSON
+ * responses; only transport/admission refusals reject through fetchJson.
  * @param {string} skill
+ * @param {import('./skill_source_contract_types.js').SkillPublishDestinationChoice|null} [destination]
  * @returns {Promise<import('./api_types.js').SkillPublishPreflightResponse>}
  */
-export function skillPublishPreflight(skill) {
-    return jsonPost(`/api/skills/${encodeURIComponent(skill)}/publish-preflight`, {});
+export function skillPublishPreflight(skill, destination = null) {
+    return jsonPost(`/api/skills/${encodeURIComponent(skill)}/publish-preflight`, destination ? { destination } : {});
 }
 
 /**
@@ -323,6 +326,68 @@ export function extensionRoutePath(skill, route, params = null) {
     const query = params instanceof URLSearchParams && String(params) ? `?${params}` : '';
     return `${extensionRoutePrefix(skill)}${cleanRoute}${query}`;
 }
+
+/**
+ * Skill sources and their catalogs (one lifecycle for every source kind). The
+ * catalog is served from the host's per-source cache and never waits for the
+ * network; `refresh` asks the host to re-read its sources in the background.
+ * Shapes: skill_source_contract_types.js (fixtures: web/tests/fixtures/skills_v4/).
+ */
+const sourcePath = (id) => `/api/skill-sources/${encodeURIComponent(id)}`;
+// Writes answer {ok:false, code, error} on refusal; the callers read that as a thrown error
+// whose `body` keeps the typed refusal.
+const STRICT = { rejectOkFalse: true };
+/** @typedef {import('./skill_source_contract_types.js').SkillSourceChangeResponse} SkillSourceChangeResponse */
+export const skillSourcesApi = {
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillSourcesResponse>} */
+    list: () => fetchJson('/api/skill-sources', { cache: 'no-store' }),
+    /**
+     * @param {import('./skill_source_contract_types.js').SkillSourceProbeRequest} target
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillSourceProbeResponse>}
+     */
+    probe: (target) => jsonPost('/api/skill-sources/probe', target),
+    /**
+     * @param {import('./skill_source_contract_types.js').SkillSourceAddRequest} source
+     * @returns {Promise<SkillSourceChangeResponse>}
+     */
+    add: (source) => jsonPost('/api/skill-sources', source, STRICT),
+    /** Create or connect the owner's private GitHub repository (only on an explicit click). */
+    mySkills: () => jsonPost('/api/skill-sources/my-skills', {}, STRICT),
+    /**
+     * @param {string} id
+     * @param {import('./skill_source_contract_types.js').SkillSourceChangeRequest} changes
+     * @returns {Promise<SkillSourceChangeResponse>}
+     */
+    update: (id, changes) => jsonPost(sourcePath(id), changes, STRICT),
+    /** @returns {Promise<SkillSourceChangeResponse>} */
+    remove: (id) => jsonPost(`${sourcePath(id)}/remove`, {}, STRICT),
+    /** @returns {Promise<SkillSourceChangeResponse>} */
+    refresh: (id) => jsonPost(`${sourcePath(id)}/refresh`, {}, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogResponse>} */
+    catalog: ({ refresh = false } = {}) => fetchJson(`/api/skill-catalog${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' }),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogSearchResponse>} */
+    search: ({ q = '', source = '' } = {}, init = {}) => fetchJson(`/api/skill-catalog/search?${new URLSearchParams({ q, ...(source ? { source } : {}) })}`, { cache: 'no-store', ...init }),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogItemDetailResponse>} */
+    item: (sourceId, name, init = {}) => fetchJson(`/api/skill-catalog/item/${encodeURIComponent(sourceId)}/${encodeURIComponent(name)}`, { cache: 'no-store', ...init }),
+    /**
+     * `replace` confirms replacing the other skill of the same name.
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillCatalogInstallResponse>}
+     */
+    install: (id, { turnOnWhenReady = true, replace = false } = {}) => jsonPost('/api/skill-catalog/install',
+        { id, turn_on_when_ready: turnOnWhenReady, ...(replace ? { replace: true } : {}) }, STRICT),
+    /**
+     * The exact candidate the owner saw (`digest`) against the local revision it was shown with
+     * (`localDigest`): either one changing makes the host refuse instead of acting on a stale dialog.
+     * @param {'replace'|'keep'|'merge'} mode
+     * @returns {Promise<import('./skill_source_contract_types.js').SkillUpdateResponse>}
+     */
+    updateSkill: (name, mode, digest, localDigest = '', { skipReview = false } = {}) => jsonPost(`/api/skills/${encodeURIComponent(name)}/update`,
+        { mode, digest, ...(localDigest ? { local_digest: localDigest } : {}), ...(skipReview ? { skip_review: true } : {}) }, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').SkillUninstallResponse>} */
+    uninstallSkill: (name) => jsonPost(`/api/skills/${encodeURIComponent(name)}/uninstall`, {}, STRICT),
+    /** @returns {Promise<import('./skill_source_contract_types.js').StarterSkillsResponse>} */
+    starterSkills: () => fetchJson('/api/onboarding/starter-skills', { cache: 'no-store' }),
+};
 
 export function updateStrategyForPlan(plan = {}) {
     if (!plan.available) return '';

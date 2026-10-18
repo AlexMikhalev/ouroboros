@@ -42,7 +42,7 @@ Plan from the complete retained room — both speakers, options and answers exac
 
 Treat the task's dated focus as data, not owner instructions. Strictly read its canonical result, distinguishing absence/failure; update same-round facts and remeasure (`tests/test_self_focus_context.py`).
 
-Predicted pressure buys no helper. Actual refusal follows ARCHITECTURE §6’s recovery order; unseen bodies have a separate late source-only rescue. Checkpoint originals first; helpers replace only fully covered units with smaller signed views. Actor notes may fold completed working prose/tools without shrinking, preserving governing human words, recorded outward speech, newer arrivals and opaque protocol. Local notes keep positions unless selected for merging; exposure uses physical evidence, not call IDs. Test final sealed requests, cold restoration and both sides of dialogue: `tests/test_compaction.py`, `tests/test_main_authored_context.py`, `tests/test_context_source_view.py`, `tests/test_delivery_dialogue_context.py`.
+Predicted pressure buys no fold; a typed size refusal is measured and recovered by the two model-free passes (ARCHITECTURE §6). No helper summarizer: `compact_context` without `working_note` is `authored_note_required`. Actor notes may fold completed working prose/tools without shrinking, preserving governing human words, recorded outward speech, newer arrivals and opaque protocol. Local notes keep positions unless selected for merging; exposure uses physical evidence, not call IDs. Test final sealed requests, cold restoration and both sides of dialogue: `tests/test_compaction.py`, `tests/test_main_authored_context.py`, `tests/test_context_source_view.py`, `tests/test_delivery_dialogue_context.py`.
 
 ### Invariant: No silent truncation
 
