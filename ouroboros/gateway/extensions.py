@@ -477,7 +477,7 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
                 "env_from_settings": list(loaded.manifest.env_from_settings or []),
                 "scheduled_tasks": list(getattr(loaded.manifest, "scheduled_tasks", []) or []),
                 "ui_tab": loaded.manifest.ui_tab,
-                "contributes": loaded.manifest.contributes,
+                "contributes": list(getattr(loaded.manifest, "contributes", []) or []),
             },
             "enabled": loaded.enabled,
             **review_fields,
