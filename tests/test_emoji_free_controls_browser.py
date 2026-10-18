@@ -34,7 +34,7 @@ def test_applied_hurry_and_authored_progress(direct_server_with_data, request, e
         for row in rows:
             _emit_ws_frame(page, row)
         card = page.locator('.chat-live-card[data-task-id="emoji-hurry"]')
-        card.locator('[data-live-summary-button]').click()
+        card.locator('[data-live-disclosure]').click()
         text = card.inner_text()
         host_clean = "Fallback: host route" in text and "⚡ Fallback: host route" not in text
         assert "⚡ Fallback: model quote" in text and "⚡ Fallback: narrator quote" in text, text

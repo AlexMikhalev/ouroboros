@@ -3,7 +3,6 @@ import { confirmHubUpdate, hubVersionText, initOuroborosHub } from './ouroborosh
 import { bindTabStrip, renderPageHeader, renderTabStrip } from './page_header.js';
 import { bindMenu } from './ui_interactions.js';
 import { openConfirmDialog } from './confirm_dialog.js';
-import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
 import { apiClient, apiFetch } from './api_client.js';
 import { patchInstalledSkillEnrichment, renderInstalledSkillCard, renderReviewFindingsList, renderSkillHubBadges } from './skill_card_renderer.js';
@@ -34,8 +33,7 @@ function skillsPageTemplate() {
     return `
         <section class="page app-page-glass" id="page-skills">
             ${renderPageHeader({
-                title: 'Skills',
-                icon: PAGE_ICONS.skills,
+                page: 'skills',
                 description: 'Skills extend Ouroboros with new tools, routes, and widgets. Each skill is reviewed for safety before you turn it on.',
                 actionsHtml: '<button id="skills-refresh" class="btn btn-default btn-sm">Refresh</button>',
                 tabsHtml: renderTabStrip({

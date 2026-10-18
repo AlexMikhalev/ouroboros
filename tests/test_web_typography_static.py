@@ -581,7 +581,9 @@ def test_chat_transcript_reserves_composer_space_as_one_flex_spacer():
     assert len(bases) == 1
     assert "content: '';" in bases[0]
     assert "flex: 0 0 calc(var(--chat-input-reserve, 108px) - 8px);" in bases[0]
-    mobile = [body for _, body in spacers if "env(safe-area-inset-bottom" in body]
+    # The stack layout's spacer adds the shell's bottom inset (ui.css --inset-bottom: the system safe area and,
+    # inside Telegram, the host's), never a raw env() of its own.
+    mobile = [body for _, body in spacers if "var(--inset-bottom)" in body]
     assert len(mobile) == 1
     assert "- 8px" in mobile[0]
     panel = [body for selector, body in spacers if selector == ".chat-instance-panel .chat-messages::after"]
