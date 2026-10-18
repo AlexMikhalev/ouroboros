@@ -108,11 +108,22 @@ def test_an_old_copy_goes_once_its_task_is_terminal_and_proven_not_live(world, r
     assert "done" not in {row["task_id"] for row in sw.list_worktrees(data_dir=data)}
 
 
-def test_a_missing_checkout_goes_whatever_the_probe_says(world):
+def test_a_missing_checkout_keeps_its_row_and_branch_until_ownership_is_proven_over(world, monkeypatch):
     repo, data, root = world
     gone = _copy(world, "gone")
     shutil.rmtree(gone)
-    assert _prune(world, retention_days=9999, live=lambda _task: True) == {"removed": 1, "kept": 0}
+    before = _registry_mtime(data)
+    for status, answer in (("running", False), ("completed", True), ("completed", None)):
+        write_task_result(data, "gone", status)
+        assert _prune(world, retention_days=9999, live=lambda _task: answer) == {"removed": 0, "kept": 1}
+        assert _registry_mtime(data) == before
+        assert _git(repo, "branch", "--list", "subagent/gone*").stdout.strip()
+    assert _prune(world, retention_days=9999) == {"removed": 0, "kept": 1}
+    with monkeypatch.context() as process:
+        process.setattr(body_candidate, "live_lineage_processes", lambda *_args: [4242])
+        assert _prune(world, retention_days=9999, live=lambda _task: False) == {"removed": 0, "kept": 1}
+    assert _prune(world, retention_days=9999, live=lambda _task: False) == {"removed": 1, "kept": 0}
+    assert _git(repo, "branch", "--list", "subagent/gone*").stdout == ""
 
 
 def test_only_restricts_the_pass_and_an_unchanged_row_set_leaves_the_registry_untouched(world):

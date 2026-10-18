@@ -1507,12 +1507,9 @@ def prune_orphans(
     live: Optional[Any] = None,
     only: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Reconciliation on the custody cadence (and the owner's free action): drop worktrees
-    whose checkout is missing or whose task has provably ended, then reconcile git's own
-    worktree metadata. Patch artifacts live in the task drive, independent of the worktree,
-    so removal never loses results.
+    """Reconcile worktrees on the custody cadence and the owner's free action.
 
-    A plain copy past retention goes only with proof its task is over: its task row is
+    A plain copy missing or past retention goes only with proof its task is over: its row is
     terminal, ``live(task_id)`` (the supervisor's liveness probe: True live, False proven
     not live, None unknown) answers False, and no lineage process lives. Without a probe,
     or with an unknown answer, age alone deletes nothing. ``only`` restricts the pass to
@@ -1560,8 +1557,8 @@ def prune_orphans(
                 continue
             else:
                 path_exists = bool(entry.get("path")) and Path(entry["path"]).exists()
-                if path_exists and not (float(entry.get("created_at") or 0) < cutoff
-                                        and _task_proven_over(task_id, data_dir, live)):
+                if (path_exists and float(entry.get("created_at") or 0) >= cutoff) \
+                        or not _task_proven_over(task_id, data_dir, live):
                     continue
         if _retire_worktree(entry, root, data_dir, branch):
             removed += 1
