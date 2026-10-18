@@ -134,7 +134,7 @@ def legacy_release_declaration(skill_dir: pathlib.Path, sidecar: Dict[str, Any])
     return None
 
 
-def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
+def release_declaration(skill_dir: pathlib.Path, manifest: Any = None, *, bucket: Optional[str] = None) -> Any:
     """Raw dependency declaration of the release in ``skill_dir``.
 
     ``manifest`` is the already parsed manifest of the same directory, when the caller
@@ -143,7 +143,7 @@ def release_declaration(skill_dir: pathlib.Path, manifest: Any = None) -> Any:
     from ouroboros.utils import read_json_dict
 
     root = pathlib.Path(skill_dir)
-    bucket = payload_bucket(root)
+    bucket = payload_bucket(root) if bucket is None else bucket
     for name in _DECLARATION_SIDECARS:
         sidecar = root / name
         if not is_per_install_note(name, bucket) or not sidecar.is_file():
@@ -246,7 +246,7 @@ def payload_digest(
     root = pathlib.Path(skill_dir).resolve()
     pairs = _payload_file_digests(root, manifest_entry=manifest_entry, manifest_scripts=manifest_scripts,
                                   bucket=bucket)
-    return release_digest_from_file_digests(pairs, release_declaration(root, manifest))
+    return release_digest_from_file_digests(pairs, release_declaration(root, manifest, bucket=bucket))
 
 
 def _legacy_reduce(file_digests: Iterable[Tuple[str, bytes]]) -> str:
