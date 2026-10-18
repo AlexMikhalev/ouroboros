@@ -341,6 +341,19 @@ def test_a_live_retry_is_the_current_episode_of_its_original(stored, tmp_path):
     assert not any(action == "stop_earlier" for action, _ in actions)
 
 
+def test_a_retry_and_the_helpers_it_started_are_one_work(stored, tmp_path):
+    """Helpers that name the retry as their root still belong to the original's work: one row, the retry live."""
+    stored["held"] = {"task_id": "held", "status": "interrupted", "chat_id": 42}
+    stored["t-retry"] = {"task_id": "t-retry", "status": "running", "chat_id": 42, "original_task_id": "held"}
+    retry = row("t-retry", original_task_id="held")
+    helper = row("h", parent_task_id="t-retry", root_task_id="t-retry")
+    snap = wp.works_snapshot(tmp_path, [retry, helper], {"t-retry": {"original_task_id": "held"}})
+    [work] = snap["works"]
+    assert work["work_id"] == "held" and work["episode"] == {"task_id": "t-retry", "live": True}
+    assert work["members"]["ids"] == ["t-retry", "h"] and work["activity"] == "working"
+    assert not any(entry["action"] == "stop_earlier" for entry in work["controls"])
+
+
 def test_a_held_continue_keeps_its_earlier_attempt_stop_without_a_live_member(stored, tmp_path):
     """Its writer may be an unbound start, a handoff or a process no queue row or run names."""
     stored["p"] = {"task_id": "p", "status": "failed", "chat_id": 42}

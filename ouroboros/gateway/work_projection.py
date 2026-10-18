@@ -78,7 +78,8 @@ def _continuation(source: Mapping[str, Any]) -> dict:
 
 def _work_of(root_id: str, raw: Mapping[str, Mapping[str, Any]], obs: _Observations,
              memo: Dict[str, Tuple[str, str]]) -> Tuple[str, str]:
-    """(work_id, work name) of one episode root: its own stamp, else its recorded predecessor edges."""
+    """(work_id, work name) of one episode root: its own stamp, else its recorded predecessor edges (a Continue's
+    predecessor, a timeout retry's original)."""
     if root_id in memo:
         return memo[root_id]
     chain: List[str] = []
@@ -93,7 +94,7 @@ def _work_of(root_id: str, raw: Mapping[str, Mapping[str, Any]], obs: _Observati
         if continuation.get("work_id"):
             work_id, name = str(continuation["work_id"]), str(continuation.get("work_name") or "")
             break
-        predecessor = str(continuation.get("predecessor_task_id") or "")
+        predecessor = str(continuation.get("predecessor_task_id") or source.get("original_task_id") or "")
         if not predecessor:
             work_id, name = current, _first_name(source)
             break
