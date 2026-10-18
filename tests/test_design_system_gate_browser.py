@@ -119,7 +119,7 @@ def seed_page(ui, width, height, telegram=False, touch=None):
     if telegram:
         page.add_init_script(TG_STUB)
         # Put the host flag on the real document before any app script runs.
-        html = (WEB / 'index.html').read_text().replace('<html', '<html data-ouroboros-host="telegram"', 1)
+        html = (WEB / 'index.html').read_text(encoding='utf-8').replace('<html', '<html data-ouroboros-host="telegram"', 1)
         page.route(ui['url'] + '/', lambda r: r.fulfill(content_type='text/html', body=html))
     payloads = {
         '/api/projects': {'projects': PROJECTS},
