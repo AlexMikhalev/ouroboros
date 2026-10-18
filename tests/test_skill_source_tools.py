@@ -35,8 +35,88 @@ def ctx(tmp_path, monkeypatch):
 
 
 def _call(tool, ctx, **kwargs):
+    return _typed_call(tool, ctx, **kwargs).text
+
+
+def _typed_call(tool, ctx, **kwargs):
+    from ouroboros.tools.tool_result import (
+        ToolResult, _install_tool_result_sidecar, _published_tool_result, _restore_tool_result_sidecar,
+    )
+
     entry = next(e for e in tools.get_tools() if e.name == tool)
-    return entry.handler(ctx, **kwargs)
+    sentinel = object()
+    token = _install_tool_result_sidecar(ctx, sentinel)
+    try:
+        text = entry.handler(ctx, **kwargs)
+        published = _published_tool_result(ctx, sentinel)
+    finally:
+        _restore_tool_result_sidecar(token)
+    assert isinstance(published, ToolResult), f"{tool} did not publish a typed result"
+    assert published.text == text
+    return published
+
+
+@pytest.mark.parametrize("tool, arguments, code, status", [
+    ("skill_sources", {"action": "unknown"}, "TOOL_ARG_ERROR", "argument_error"),
+    ("skill_sources", {"action": "remove", "source_id": "builtin"}, "TOOL_ERROR", "error"),
+    ("skill_install", {"id": "https://example.test/skill", "reason": "r"}, "TOOL_ARG_ERROR", "argument_error"),
+    ("skill_install", {"id": "builtin/skill", "reason": " "}, "TOOL_ARG_ERROR", "argument_error"),
+    ("skill_install", {"id": "builtin/skill", "reason": "r", "replace": True}, "TOOL_ERROR", "error"),
+    ("skill_update", {"name": "skill", "mode": "later"}, "TOOL_ARG_ERROR", "argument_error"),
+    ("skill_update", {"name": "absent", "mode": "replace"}, "TOOL_ERROR", "error"),
+])
+def test_refusals_publish_argument_or_host_errors(tmp_path, monkeypatch, tool, arguments, code, status):
+    from ouroboros.loop_tool_execution import _typed_execution_failure, _typed_result_metadata
+
+    monkeypatch.setattr(tools, "_cyber", lambda: False)
+    context = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
+    result = _typed_call(tool, context, **arguments)
+    assert result.status == "error" and result.code == code
+    assert _typed_execution_failure(True, result)
+    assert _typed_result_metadata(tool, result.text, True, result)["status"] == status
+
+
+@pytest.mark.parametrize("failure", ["probe", "source"])
+def test_source_host_failures_publish_tool_error(ctx, monkeypatch, failure):
+    context, _drive, _reviews, _hub = ctx
+    monkeypatch.setattr(tools, "_cyber", lambda: True)
+    if failure == "probe":
+        monkeypatch.setattr("ouroboros.skill_source_catalog.probe_source",
+                            lambda *a, **kw: {"error": "Repository is unavailable."})
+        arguments = {"action": "add", "url": "https://example.test/skills.git"}
+    else:
+        arguments = {"action": "remove", "source_id": "no-longer-connected"}
+    result = _typed_call("skill_sources", context, **arguments)
+    assert (result.status, result.code) == ("error", "TOOL_ERROR")
+
+
+@pytest.mark.parametrize("tool", ["skill_sources", "skill_search", "skill_install", "skill_update"])
+def test_successful_calls_publish_ok(ctx, tool):
+    context, _drive, _reviews, _hub = ctx
+    _call("skill_search", context)
+    if tool == "skill_update":
+        _call("skill_install", context, id="ouroboros/weather", reason="forecast")
+    arguments = {"skill_sources": {}, "skill_search": {"query": "weather"},
+                 "skill_install": {"id": "ouroboros/weather", "reason": "forecast"},
+                 "skill_update": {"name": "weather", "mode": "keep"}}[tool]
+    result = _typed_call(tool, context, **arguments)
+    assert (result.status, result.code) == ("ok", "OK")
+    assert isinstance(json.loads(result.text), dict)
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+def test_invalid_self_check_is_an_argument_error(ctx, tool):
+    context, drive, _reviews, _hub = ctx
+    _call("skill_search", context)
+    arguments = {"id": "ouroboros-community/notes", "reason": "notes"}
+    if tool == "skill_update":
+        _call("skill_install", context, **arguments)
+        arguments = {"name": "notes", "mode": "replace"}
+    result = _typed_call(tool, context, **arguments, check="self", check_notes="")
+    assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR")
+    assert '"code": "bad_check"' in result.text
+    if tool == "skill_install":
+        assert read_install_record(drive, "notes") is None
 
 
 def test_the_four_tools_are_registered_with_schemas():

@@ -506,6 +506,25 @@ CURRENT_PRODUCER_CONTRACTS = {
     "SEARCH_NOT_FOUND": (False, "ok"),
     "FILE_NOT_FOUND": (False, "ok"),
     "native:LEGACY_WARNING:FILE_NOT_FOUND": (False, "ok"),
+    # Skills v4 sources are new producers, absent from the retired oracle. Plain
+    # *_ERROR markers are legacy errors; *_REFUSED markers are legacy warnings.
+    # The live tools publish argument errors or host failures explicitly, including
+    # bad-check arguments returned by the installer. Keep the old golden intact.
+    "SKILL_INSTALL_ERROR": (True, "error"),
+    "SKILL_INSTALL_REFUSED": (False, "ok"),
+    "SKILL_SOURCES_ERROR": (True, "error"),
+    "SKILL_SOURCES_REFUSED": (False, "ok"),
+    "SKILL_UPDATE_ERROR": (True, "error"),
+    "SKILL_UPDATE_REFUSED": (False, "ok"),
+    "native:TOOL_ARG_ERROR:SKILL_INSTALL_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_INSTALL_REFUSED": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_SOURCES_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_UPDATE_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_UPDATE_REFUSED": (True, "argument_error"),
+    "native:TOOL_ERROR:SKILL_INSTALL_REFUSED": (True, "error"),
+    "native:TOOL_ERROR:SKILL_SOURCES_ERROR": (True, "error"),
+    "native:TOOL_ERROR:SKILL_SOURCES_REFUSED": (True, "error"),
+    "native:TOOL_ERROR:SKILL_UPDATE_REFUSED": (True, "error"),
     # Owner decision (PR #1636): an exact edit that leaves .py/.json unparsable is
     # applied and reported, never refused; the warning is a successful call.
     "SYNTAX_WARNING": (False, "ok"),
