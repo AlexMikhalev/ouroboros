@@ -78,6 +78,8 @@ class InstallResult:
     # default for a failed install (400). Preserves registry semantics end-to-end.
     error_status: int = 0
     provenance: Dict[str, Any] = field(default_factory=dict)
+    error_code: str = ""
+    candidate: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -414,6 +416,7 @@ def install_skill(
     target_name_override: str = "",
     install_record: Optional[Dict[str, Any]] = None,
     retain_update: bool = False,
+    expected_digest: str = "",
 ) -> InstallResult:
     """Install one skill; ``overwrite=True`` is required for replacement.
 
@@ -569,25 +572,29 @@ def install_skill(
             adapter_result.sanitized_name,
             target_dir,
         )
-    from ouroboros.skill_install_record import retain_update_snapshot, restore_update_snapshot, write_install_record
+    from ouroboros.skill_install_record import (keep_previous_payload, retain_update_snapshot,
+                                               restore_update_snapshot, write_install_record)
 
-    landed_record = _registry_install_record(drive_root, adapter_result.sanitized_name, staged.staging_dir,
-                                             slug=cleaned_slug, version=target_version, record=install_record)
-    rollback_snapshot = snapshot_payload_state(
-        drive_root,
-        adapter_result.sanitized_name,
-        target_dir,
-        include_state_provenance=True,
-    )
-    if retain_update:
-        retain_update_snapshot(rollback_snapshot, landed_record)
+    landed_record: Dict[str, Any] = {}
+    rollback_snapshot = None
     def restore() -> None:
         if landed_record.get("pending_update"):
-            restore_update_snapshot(drive_root, adapter_result.sanitized_name, "review_unfinished")
-        else:
+            restore_update_snapshot(drive_root, adapter_result.sanitized_name, "landing_failed")
+        elif rollback_snapshot is not None:
             restore_payload_state(rollback_snapshot, restore_state_provenance=True)
 
     try:
+        landed_record = _registry_install_record(drive_root, adapter_result.sanitized_name, staged.staging_dir,
+                                                 slug=cleaned_slug, version=target_version, record=install_record)
+        if expected_digest and landed_record["release"]["digest"] != expected_digest:
+            staged.cleanup()
+            return fail("ClawHub now offers different bytes; look at the release again.",
+                        sanitized_name=adapter_result.sanitized_name, error_code="candidate_changed",
+                        error_status=409, candidate=landed_record["release"], **package)
+        rollback_snapshot = snapshot_payload_state(drive_root, adapter_result.sanitized_name, target_dir,
+                                                   include_state_provenance=True)
+        if retain_update:
+            retain_update_snapshot(rollback_snapshot, landed_record)
         _land_staged_into_data_plane(staged, target_dir, overwrite=overwrite or repair_partial_existing)
     except Exception as exc:
         restore()
@@ -678,9 +685,7 @@ def install_skill(
                 restore()
     if deps_status != "failed" and not landed_record.get("pending_update"):
         if retain_update:
-            from ouroboros.skill_source_install import _keep_previous
-
-            _keep_previous(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
+            keep_previous_payload(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
         else:
             discard_payload_snapshot(rollback_snapshot)
     _progress("Done")
@@ -804,6 +809,7 @@ def update_skill(
     progress_callback: Optional[Callable[[str], None]] = None,
     auto_review: bool = True,
     acceptance_options: Optional[Dict[str, Any]] = None,
+    expected_digest: str = "",
 ) -> InstallResult:
     """Reinstall by resolving the original slug from persisted provenance.
 
@@ -842,10 +848,11 @@ def update_skill(
     slug = str(record.get("slug") or "").strip()
     if not slug:
         return InstallResult(False, sanitized_name, error="provenance is missing slug")
-    from ouroboros.skill_source_install import settle_before_replacement
+    from ouroboros.skill_install_record import read_install_record, settle_pending_update
 
-    settle_before_replacement(drive_root, sanitized_name)
-    from ouroboros.skill_install_record import read_install_record
+    if settle_pending_update(drive_root, sanitized_name, force=True).get("status") == "restore_failed":
+        return InstallResult(False, sanitized_name, error="The previous update could not be restored; its evidence was kept.",
+                             error_code="restore_failed", error_status=409)
 
     previous = read_install_record(drive_root, sanitized_name) or {}
     carried = {key: previous[key] for key in ("source", "official", "installed_by", "turn_on_when_ready",
@@ -881,10 +888,9 @@ def update_skill(
         target_name_override=sanitized_name,
         install_record=carried if carried.get("source") else None,
         retain_update=True,
+        expected_digest=expected_digest,
     )
     if auto_review:
-        from ouroboros.skill_source_install import settle_pending_update
-
         settle_pending_update(drive_root, sanitized_name)
     if was_live and (
         not getattr(result, "ok", False)

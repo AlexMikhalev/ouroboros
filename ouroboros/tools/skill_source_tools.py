@@ -15,6 +15,7 @@ import pathlib
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
 _OWNER_SOURCE = {
     "type": "object",
@@ -68,17 +69,20 @@ def _handle_skill_sources(ctx: ToolContext, action: str = "list", url: str = "",
 
     drive = _drive(ctx)
     if action not in {"list", "add", "trust", "remove"}:
-        return "⚠️ SKILL_SOURCES_ERROR: action is list, add, trust or remove."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ SKILL_SOURCES_ERROR: action is list, add, trust or remove."))
     if action != "list":
         problem = _owner_instruction_error(ctx, owner_source)
         if problem:
-            return f"⚠️ SKILL_SOURCES_REFUSED: {problem}."
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+                text=f"⚠️ SKILL_SOURCES_REFUSED: {problem}."))
         try:
             rows = load_sources()
             if action == "add":
                 probe = probe_source(drive, url=url, path=path)
                 if probe.get("error"):
-                    return f"⚠️ SKILL_SOURCES_ERROR: {probe['error']}"
+                    return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+                        text=f"⚠️ SKILL_SOURCES_ERROR: {probe['error']}"))
                 rows, _row = with_added_source(rows, kind=str(probe["kind"]), url=url, path=path,
                                                name=name or str(probe.get("suggested_name") or "source"),
                                                trust=trust or "review")
@@ -88,13 +92,15 @@ def _handle_skill_sources(ctx: ToolContext, action: str = "list", url: str = "",
                 rows = without_source(rows, source_id)
             save_sources(rows)
         except SkillSourceError as exc:
-            return f"⚠️ SKILL_SOURCES_ERROR: {exc}"
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+                text=f"⚠️ SKILL_SOURCES_ERROR: {exc}"))
     out: List[Dict[str, Any]] = []
     for row in load_sources():
         _snapshot, status = snapshot_for(drive, row)
         out.append({**row, **status})
-    return _dump({"sources": out, "note": "trusted installs without review; review reviews each skill. "
-                                          "A trust change never rewrites an existing install."})
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump({
+        "sources": out, "note": "trusted installs without review; review reviews each skill. "
+                                "A trust change never rewrites an existing install."})))
 
 
 def _compact(item: Dict[str, Any], drive: pathlib.Path) -> Dict[str, Any]:
@@ -137,10 +143,10 @@ def _handle_skill_search(ctx: ToolContext, query: str = "", source: str = "", ca
                     items.extend(registry_items(row, " ".join(words)))
                 except Exception as exc:
                     notes.append(f"{row['name']}: {exc}")
-    return _dump({"count": len(items), "items": [_compact(item, drive) for item in items[:_MAX_RESULTS]],
-                  "omitted": max(0, len(items) - _MAX_RESULTS), "notes": notes,
-                  "categories": view["categories"],
-                  "hint": "Install with skill_install(id, reason); the id is <source>/<name>."})
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump({
+        "count": len(items), "items": [_compact(item, drive) for item in items[:_MAX_RESULTS]],
+        "omitted": max(0, len(items) - _MAX_RESULTS), "notes": notes, "categories": view["categories"],
+        "hint": "Install with skill_install(id, reason); the id is <source>/<name>."})))
 
 
 def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", replace: bool = False,
@@ -149,13 +155,16 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
 
     item_id = str(id or "").strip()
     if "/" not in item_id or "://" in item_id or item_id.startswith(("git@", "/", "~")):
-        return "⚠️ SKILL_INSTALL_ERROR: id is a catalog id <source>/<name> from skill_search, never a URL."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ SKILL_INSTALL_ERROR: id is a catalog id <source>/<name> from skill_search, never a URL."))
     if not str(reason or "").strip():
-        return "⚠️ SKILL_INSTALL_ERROR: reason is required: say why this work needs the skill."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ SKILL_INSTALL_ERROR: reason is required: say why this work needs the skill."))
     if replace:
         problem = _owner_instruction_error(ctx, owner_source)
         if problem:
-            return f"⚠️ SKILL_INSTALL_REFUSED: replacing another skill of the same name: {problem}."
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+                text=f"⚠️ SKILL_INSTALL_REFUSED: replacing another skill of the same name: {problem}."))
     drive = _drive(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
@@ -165,7 +174,11 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
             message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
-        return "⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())
+        if exc.status == 400:
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())))
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text="⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
         start_review(drive, result["name"])
         result["next"] = ("The review runs now in the skill lifecycle lane; the skill turns on when it leaves no "
@@ -175,7 +188,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     result["message"] = (f"Installed {result.get('name')} from {result['source'].get('name')} "
                          f"({basis_text.get(result.get('basis'), 'reviewed before it runs')})"
                          f"; reason: {reason}. Keys granted: {', '.join(acceptance.get('granted_keys') or []) or 'none'}.")
-    return _dump(result)
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump(result)))
 
 
 def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", digest: str = "", local_digest: str = "",
@@ -184,7 +197,8 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
 
     skill = str(name or "").strip()
     if not skill or mode not in {"replace", "keep", "merge"}:
-        return "⚠️ SKILL_UPDATE_ERROR: name and mode (replace, keep or merge) are required."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ SKILL_UPDATE_ERROR: name and mode (replace, keep or merge) are required."))
     drive = _drive(ctx)
     try:
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
@@ -193,16 +207,21 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
-        return "⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())
+        if exc.status == 400:
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())))
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text="⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
         start_review(drive, skill)
-    return _dump(result)
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump(result)))
 
 
 _CHECK_PROPERTIES = {
     "check": {"type": "string", "enum": ["review", "self"], "description":
               "Choose depth by what the skill can touch: review (default, configured panel), or self after reading "
-              "the exact release and explaining why it may run. A trusted source ignores this choice."},
+              "the exact release and explaining why it may run. A release whose panel review found blockers "
+              "needs the owner's Skip; a self-check does not overrule a panel. A trusted source ignores this choice."},
     "check_notes": {"type": "string", "description": "self requires 1..2000 characters recording what you read and why."},
 }
 

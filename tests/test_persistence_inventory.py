@@ -778,7 +778,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``state/skill_starter.json`` and the per-bucket install staging ``skills/*/.staging/*-*``.
 # 401 -> 402 (source views): ``state/skill_sources/repos/*/views/*`` holds per-path
 # snapshots; ``catalog.json`` now has either the repository root or a view as its parent.
-EXPECTED_SCAN_PATHS = 402
+# 402 -> 404 (update retention): ``state/skills/*/update_backup.json`` and the
+# now-derived existing rollback location ``skills/*/.rollback/*.*``.
+EXPECTED_SCAN_PATHS = 404
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -935,6 +937,34 @@ def _covers(scan_path: str, pattern: str, scan_prefix_ok: bool = True) -> bool:
 
 
 # --- tests -----------------------------------------------------------------
+
+
+def test_update_backup_inventory_names_its_pending_and_partial_restore_lifetime():
+    row = next(line for line in DOC.read_text(encoding="utf-8").splitlines()
+               if line.startswith("| `state/skills/<name>/` owner state"))
+    assert "`update_backup.json`" in row
+    assert "only while a review-basis update is pending" in row
+    assert "removed when it settles or the skill is uninstalled" in row
+    assert "kept as evidence after a partial restore" in row
+    assert "state/skills/*/update_backup.json" in scan_data_paths()
+
+
+def test_skill_architecture_keeps_the_authority_rationales():
+    text = (REPO / "docs/architecture/13-external-skills-layer.md").read_text(encoding="utf-8")
+    for rationale in (
+        "because collapsing any two turns a UI toggle into execution authority",
+        "Discovery confers no trust",
+        "a review PASS installs no dependencies; `enabled=true` does not prove readiness",
+        "so retry history stays explainable without a UI counter becoming review authority",
+    ):
+        assert rationale in text
+
+
+def test_skill_update_docs_name_all_rejection_reasons():
+    for filename in ("CREATING_SKILLS.md", "CLIENT_CONTRACT.md"):
+        text = (REPO / "docs" / filename).read_text(encoding="utf-8")
+        for reason in ("review_blockers", "review_unfinished", "preflight_failed", "landing_failed"):
+            assert f"`{reason}`" in text, (filename, reason)
 
 
 def test_scan_is_populated_and_pinned():

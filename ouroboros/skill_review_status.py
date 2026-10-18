@@ -217,7 +217,7 @@ def _acceptance_reason(acceptance: Any, current_hash: str) -> str:
 _ACCEPTANCE_SUMMARIES = {
     "trusted_source": "Installed unchanged from a source the owner trusts; no review is required for these exact bytes.",
     "self_check": "Ouroboros read this exact release and recorded why it may run.",
-    "owner_skip": "The owner skipped the review for these exact bytes at install.",
+    "owner_skip": "The owner skipped the review for these exact bytes.",
     "owner_edit": "The owner, or Ouroboros on the owner's instruction, edited these exact bytes.",
 }
 
@@ -235,7 +235,7 @@ def skill_review_gate(
     callers without one retain the frozen gate key set.
 
     ``acceptance`` adds the local bases that need no critic PASS for the current
-    bytes (trusted source, install-time owner Skip, owner edit); a deterministic
+    bytes (trusted source, owner Skip, owner edit); a deterministic
     preflight failure recorded for the current bytes still refuses them. A skill
     installed from a source that reviews each skill (``acceptance["strict_review"]``)
     keeps blocker findings non-executable even under Advisory, until the owner skips

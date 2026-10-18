@@ -1672,6 +1672,8 @@ For `skill_install` and `skill_update`, Ouroboros chooses `check: "review"`
 release, with `check_notes` of 1–2000 characters explaining why it may run.
 Choose the depth by what the skill can touch: its code, keys, permissions and
 effects. A self-check records `basis: "self_check"`; an edit invalidates it.
+A release whose panel review found blockers needs the owner's Skip;
+Ouroboros's own check does not overrule a panel.
 A trusted source ignores this choice and says so in the result. Both acceptance
 paths retain preflight, the owner's auto-grant setting, dependencies and readiness.
 There is no one-reviewer depth in these tools.
@@ -1698,8 +1700,10 @@ fetched.
 
 A review-basis replacement stays off while reviewed and keeps the previous
 payload, lifecycle state and install record durably. Executable new bytes keep
-the update; blockers, preflight failure or an interrupted review restore the
-previous copy and its state, recording `update_rejected`. An owner Skip during
+the update; blockers (`review_blockers`), preflight failure (`preflight_failed`),
+an interrupted review (`review_unfinished`), or files/dependencies that could
+not be installed (`landing_failed`) restore the previous copy and its state,
+recording `update_rejected` with that reason. An owner Skip during
 review accepts the new bytes. After a rejection, **Update without review**
 (`skip_review: true`, replace only) installs that release with exact-digest
 `owner_skip` acceptance; preflight still runs. A later update clears the rejection.
