@@ -81,15 +81,24 @@ _CTX_LIMIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"context limit:\s*[0-9][0-9,]*\s*\+\s*[0-9][0-9,]*\s*>\s*([0-9][0-9,]*)", re.I),
     re.compile(r"maximum number of tokens allowed\s*\(?\s*([0-9][0-9,]*)", re.I),
 )
-#: The refused request's own size where the provider states it beside the limit (same wordings).
-_CTX_REQUESTED_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"resulted in\s*([0-9][0-9,]*)\s*tokens", re.I),
-    re.compile(r"you requested (?:about\s*)?([0-9][0-9,]*)\s*tokens", re.I),  # OpenRouter / OpenAI
+#: The refused request's own input where the provider states it beside the limit: OpenAI ("N in the messages",
+#: "your messages resulted in N tokens"), Anthropic ("prompt is too long: N tokens", "context limit: N + R")
+#: and Gemini ("input token count (N)"); OpenRouter states parts ("N of text input, M of tool input").
+_CTX_INPUT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"([0-9][0-9,]*)\s*in the messages", re.I),
+    re.compile(r"resulted in\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"prompt is too long:\s*([0-9][0-9,]*)\s*tokens", re.I),
     re.compile(r"context limit:\s*([0-9][0-9,]*)\s*\+", re.I),
     re.compile(r"input token count\s*\(?\s*([0-9][0-9,]*)", re.I),
 )
+_CTX_INPUT_PART = re.compile(r"([0-9][0-9,]*)\s*of [a-z]+ input", re.I)
+#: The reply the refused request reserved ("R in the completion" / "in the output", Anthropic's "+ R").
+_CTX_REPLY_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"([0-9][0-9,]*)\s*in the (?:completion|output)", re.I),
+    re.compile(r"context limit:\s*[0-9][0-9,]*\s*\+\s*([0-9][0-9,]*)", re.I),
+)
+#: OpenAI's and OpenRouter's "you requested (about) N tokens" is a total: the input plus that reserved reply.
+_CTX_TOTAL_PATTERN = re.compile(r"you requested (?:about\s*)?([0-9][0-9,]*)\s*tokens", re.I)
 
 
 def gateway_double_counted_cache(prompt_tokens: int, cached_tokens: int) -> bool:
@@ -100,16 +109,25 @@ def gateway_double_counted_cache(prompt_tokens: int, cached_tokens: int) -> bool
     return bool(cached_tokens) and abs(int(prompt_tokens) - 2 * int(cached_tokens)) <= 1
 
 
-def _parse_ctx_requested_number(text: str) -> int:
-    """The refused request's input size as the provider stated it in an overflow message, or 0."""
-    for pat in _CTX_REQUESTED_PATTERNS:
-        m = pat.search(str(text or ""))
-        if m:
-            try:
+def _parse_ctx_requested(text: str) -> Tuple[int, int, int]:
+    """``(input, reply, total)`` of a refused request as the provider stated them beside its limit; 0 = unstated.
+
+    A stated input count wins, OpenRouter's input parts are summed, and a total beside its reply share gives
+    the input as the difference. A bare total stays a total: it already holds the reply that request reserved.
+    """
+    text = str(text or "")
+
+    def first(patterns: Tuple[re.Pattern[str], ...]) -> int:
+        for pat in patterns:
+            m = pat.search(text)
+            if m:
                 return int(m.group(1).replace(",", ""))
-            except (ValueError, TypeError):
-                continue
-    return 0
+        return 0
+
+    reply = first(_CTX_REPLY_PATTERNS)
+    total = first((_CTX_TOTAL_PATTERN,))
+    stated = first(_CTX_INPUT_PATTERNS) or sum(int(n.replace(",", "")) for n in _CTX_INPUT_PART.findall(text))
+    return stated or (total - reply if reply and total > reply else 0), reply, total
 
 
 def _parse_ctx_limit_number(text: str) -> int:

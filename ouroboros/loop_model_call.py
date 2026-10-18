@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
-from ouroboros.context_budget import WHOLE_CATEGORY  # noqa: F401 -- re-exported for the refusal pins
+from ouroboros.context_budget import WHOLE_CATEGORY
 from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import REBOUND_PHYSICAL_CONTEXT_KEY, REFUSED_CANDIDATE_KEY, TRANSPORT_DEATHS_KEY
 from ouroboros.loop_round_limits import _coarsen_memory_view, _run_emergency_address_pass
@@ -670,6 +670,7 @@ def _rebind_context_fit_plan(
                 "effective_mode": mode,
                 "evidence_status": rebound.status,
                 "window_tokens": rebound.window_tokens,
+                "known_window": known_window,  # a floored window keeps its number, not its authority
                 "projected_prompt_tokens": projected_prompt_tokens,
                 "view_kept": messages[0] == shown,  # the system view sent before this rebind, byte for byte
             },
@@ -1396,10 +1397,11 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 # The refusal path (owner 7A, revised 17.10.2026): the provider's typed refusal of this very request is a
 # measurement (``_refusal_target``). Two model-free passes, each earning one strictly smaller retry: the
 # first replaces superseded host state and bodies a usable turn already showed; the second, only after a
-# further refusal, lowers the granularity of memory, then books, then addresses bodies no turn has shown
-# (disclosed). Each pass runs once per round whatever the route, so a configured fallback receives the
-# view as applied and walks nothing again. The fallback chain and the end of the path follow in the caller.
-REFUSAL_PASSES: Tuple[Tuple[str, ...], ...] = (("host_copies", "bodies"), ("floor", "unseen_bodies"))
+# further refusal, lowers the granularity of memory (books too when memory falls short of the excess), then
+# addresses bodies no turn has shown (disclosed), and books leave last for what remains. Each pass runs once
+# per round whatever the route, so a configured fallback receives the view as applied and walks nothing
+# again. The fallback chain and the end of the path follow in the caller.
+REFUSAL_PASSES: Tuple[Tuple[str, ...], ...] = (("host_copies", "bodies"), ("floor", "unseen_bodies", "books"))
 WAKE_DELIVERY_STEP = "wake_delivery"  # the change applied before the passes, when there was one
 #: The round a provider refused this conversation for size (``context_renewal`` reads it): a configured
 #: fallback that then fails for another reason never cancels the renewal the size refusal earned.
@@ -1408,27 +1410,28 @@ CONTEXT_REFUSAL_ROUND_KEY = "_context_refusal_round"
 
 def _refusal_window(ctx: _RoundModelCallContext, fit: Any,
                     refused: Any = None) -> Tuple[Optional[int], int, int, int]:
-    """``(stated limit or None, the refused size, the return-after-fold slack, the reply it reserved)``.
+    """``(stated limit or None, the refused input, the return-after-fold slack, the reply it reserved)``.
 
-    A provider's stated limit (OpenAI, Anthropic and Gemini wordings) with its own count of the refused
-    input when it states one, or a local serving instance's exact window and input (``refused``: its
-    pre-send ``context_window_tokens`` and ``input_tokens``), measure it; otherwise the refused estimate
+    A provider's stated limit (OpenAI, OpenRouter, Anthropic and Gemini wordings) with its own count of the
+    refused request when it states one, or a local serving instance's exact window and input (``refused``:
+    its pre-send ``context_window_tokens`` and ``input_tokens``), measure it; otherwise the refused estimate
     stands. The slack is the owner's return-after-fold eighth (L33 2=A) of the stated window,
     else of the known window, else of the larger of the reading and the largest input accepted here.
     """
-    from ouroboros.capability_evidence import _parse_ctx_limit_number, _parse_ctx_requested_number
+    from ouroboros.capability_evidence import _parse_ctx_limit_number, _parse_ctx_requested
     from ouroboros.context_fit import reclaim_low_water_margin
 
     measurement = fit.measurement
     message = str(ctx.accumulated_usage.get("_last_llm_provider_message") or "")
     stated = _parse_ctx_limit_number(message) or None
-    # The provider's own count of the refused input beats the estimate when it states both; a stated limit
+    # The provider's own count of the refused request beats the estimate when it states both; a stated limit
     # beside a COLD estimate measures nothing (chars/4 under-counts code and Cyrillic): unknown, as before.
-    provider_size = _parse_ctx_requested_number(message) if stated else 0
+    stated_input, stated_reply, stated_total = _parse_ctx_requested(message) if stated else (0, 0, 0)
+    reply = stated_reply or measurement.reply_allowance_tokens
+    provider_size = stated_input or max(0, stated_total - reply)  # a bare total already holds its reply
     if stated and not provider_size and measurement.anchor_input_tokens is None:
         stated = None
     size = provider_size or measurement.estimated_input_tokens
-    reply = measurement.reply_allowance_tokens
     exact_window, exact_input = (int(getattr(refused, key, 0) or 0) for key in ("context_window_tokens", "input_tokens"))
     if exact_window and exact_input:  # the instance's own counts, with the reply its exact request reserved
         stated, size = exact_window, exact_input
@@ -1438,14 +1441,14 @@ def _refusal_window(ctx: _RoundModelCallContext, fit: Any,
     return stated, size, reclaim_low_water_margin(None, window) if window else 0, reply
 
 
-def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Optional[int]:
-    """Tokens the next candidate sheds, measured on this refusal; None when nothing comparable measures it.
+def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) -> Tuple[Optional[int], int]:
+    """``(tokens the next candidate sheds, the slack in them)`` measured on this refusal; None: nothing measures it.
 
-    A stated limit L (``_refusal_window``) gives ``size + reply - L`` with the provider's own count of the
-    refused input, or an anchored estimate (a cold one beside a limit measures nothing). Without one, the anchored estimate E
-    over the largest input this model accepted here, A, gives ``E - A``; E at or below A contradicts the
-    reading, and a cold E compares with nothing: unknown. Both add the return-after-fold slack. The refused
-    size is recorded, so the facts state no optimistic room for this model again.
+    A stated limit L (``_refusal_window``) gives ``input + reply - L`` with the provider's own count of the
+    refused request, or an anchored estimate (a cold one beside a limit measures nothing). Without one, the
+    anchored estimate E over the largest input this model accepted here, A, gives ``E - A``; E at or below A
+    contradicts the reading, and a cold E compares with nothing: unknown. Both add the return-after-fold
+    slack. The refused input is recorded, so the facts state no optimistic room for this model again.
     """
     from ouroboros.context_anchor import record_refused_input
 
@@ -1453,13 +1456,11 @@ def _refusal_target(ctx: _RoundModelCallContext, fit: Any, refused: Any = None) 
     stated, size, slack, reply = _refusal_window(ctx, fit, refused)
     record_refused_input(ctx.accumulated_usage, ctx.context_fit_plan, size)  # the provider's count when it stated one
     if stated:
-        return max(0, size + reply - stated) + slack
-    if measurement.anchor_input_tokens is None:
-        return None
+        return max(0, size + reply - stated) + slack, slack
     accepted = measurement.accepted_input_tokens
-    if not accepted or measurement.estimated_input_tokens <= accepted:
-        return None
-    return measurement.estimated_input_tokens - accepted + slack
+    if measurement.anchor_input_tokens is None or not accepted or measurement.estimated_input_tokens <= accepted:
+        return None, slack
+    return measurement.estimated_input_tokens - accepted + slack, slack
 
 
 def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, cost: float, *,
@@ -1480,7 +1481,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
     fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
     if fit is None:
         return None, cost, ctx.active_context_mode
-    target, slack = _refusal_target(ctx, fit, failed_capture), _refusal_window(ctx, fit, failed_capture)[2]
+    target, slack = _refusal_target(ctx, fit, failed_capture)
     for steps in ((WAKE_DELIVERY_STEP,),) * bool(prepared) + REFUSAL_PASSES:
         if steps != (WAKE_DELIVERY_STEP,):
             key = (fit.measurement.round_id, "+".join(steps))  # once per round, never re-armed for a route
@@ -1513,7 +1514,7 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
             return _skipped("failed_candidate_not_comparable")
         failed_capture = latest
         fit = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True) or fit
-        target, slack = _refusal_target(ctx, fit, failed_capture), _refusal_window(ctx, fit, failed_capture)[2]
+        target, slack = _refusal_target(ctx, fit, failed_capture)
     return None, cost, ctx.active_context_mode
 
 
@@ -1547,20 +1548,28 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
     narrows by the deficit against a known window, and only with neither by everything it can give. Books
     stay when memory met the measured excess (the owner's books-last order; the plan's return-after-fold
     goal addresses other bodies first), otherwise they become their navigation form for the rest of the
-    task; the slack falls to unseen bodies.
+    task; the slack falls to unseen bodies, and the books step takes only what those could not give.
     """
     if step in ("host_copies", "bodies", "unseen_bodies"):
         goal = None if step == "host_copies" else target
         receipt = _run_emergency_address_pass(ctx, fit, rung=step, goal_tokens=goal)
         return max(0, int(receipt.reclaimed_tokens or 0)) if receipt.status == "applied" else None
-    if step != "floor":
-        return None
-    before = fit.measurement.estimated_input_tokens
+    if step not in ("floor", "books") or (step == "books" and ctx.active_context_mode != "max"):
+        return None  # outside Max the books already show as navigation
+    current = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True) if step == "books" else fit
+    before = (current or fit).measurement.estimated_input_tokens
 
     def shed_since_before(default: int) -> int:
         after = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
         return max(0, before - after.measurement.estimated_input_tokens) if after is not None else default
 
+    def books_to_navigation(saved: int) -> Optional[int]:
+        mode = ctx.active_context_mode
+        _reproject_actual_overflow_low(ctx)
+        return shed_since_before(saved) if ctx.active_context_mode != mode else None
+
+    if step == "books":
+        return books_to_navigation(0)
     # The measured excess, else the deficit against a known window, else everything memory can give.
     slack = _refusal_window(ctx, fit)[2] if slack is None else slack
     excess = max(1, target - slack) if target else (fit.measurement.capacity_deficit_tokens or WHOLE_CATEGORY)
@@ -1568,8 +1577,5 @@ def _apply_refusal_step(ctx: _RoundModelCallContext, step: str, fit: Any, target
     saved = shed_since_before(0) if coarsened else 0
     if target and saved >= excess:
         return saved  # memory met the measured excess: books stay, the slack falls to unseen bodies
-    mode = ctx.active_context_mode
-    _reproject_actual_overflow_low(ctx)
-    if ctx.active_context_mode != mode:
-        return shed_since_before(saved)
-    return saved if coarsened else None
+    shed = books_to_navigation(saved)
+    return shed if shed is not None else (saved if coarsened else None)

@@ -198,7 +198,7 @@ def _steps_applied(monkeypatch, outcome=lambda step: True):
     return steps
 
 
-PASS_ONE, PASS_TWO = ("exec:round:1", "host_copies+bodies"), ("exec:round:1", "floor+unseen_bodies")
+PASS_ONE, PASS_TWO = ("exec:round:1", "host_copies+bodies"), ("exec:round:1", "floor+unseen_bodies+books")
 
 
 def test_fallback_success_preserves_complete_candidate_fit_facts(tmp_path):
@@ -299,7 +299,7 @@ def test_refusal_target_is_measured_from_a_stated_limit_or_the_accepted_floor_el
     context.accumulated_usage["_last_llm_provider_message"] = message
     fit = _fit(estimated_input=estimate, anchor_input=anchor, anchor_round=3, accepted_input=accepted,
                reply_allowance=65_536)
-    assert loop_model_call._refusal_target(context, fit) == target
+    assert loop_model_call._refusal_target(context, fit)[0] == target
     # The refused size is recorded whatever the target: the facts stop stating free room for this model.
     assert refused_input(context.accumulated_usage, context.context_fit_plan) == estimate
 
@@ -339,7 +339,7 @@ def test_each_pass_earns_one_retry_and_the_second_pass_runs_only_after_a_refused
     msg, _cost, mode = loop._call_round_model(context)
     assert msg["content"] == "fits" and mode == "max"
     assert len(sends) == (3 if second_refused else 2)
-    expected = ["host_copies", "bodies"] + (["floor", "unseen_bodies"] if second_refused else [])
+    expected = ["host_copies", "bodies"] + (["floor", "unseen_bodies", "books"] if second_refused else [])
     assert [step for step, _target in steps] == expected
     assert all(target is None for _step, target in steps)  # a cold first request measures no target
     assert context.tools._ctx._context_overflow_retries == ({PASS_ONE, PASS_TWO} if second_refused else {PASS_ONE})
@@ -365,7 +365,7 @@ def test_a_pass_that_changes_nothing_earns_no_retry_and_the_next_pass_still_runs
     monkeypatch.setattr(loop, "last_physical_attempt_capture", lambda: _failed_capture())
     msg, _cost, _mode = loop._call_round_model(context)
     assert msg["content"] == "fits" and len(sends) == 2  # no retry was bought for the unchanged candidate
-    assert [step for step, _target in steps] == ["host_copies", "bodies", "floor", "unseen_bodies"]
+    assert [step for step, _target in steps] == ["host_copies", "bodies", "floor", "unseen_bodies", "books"]
     assert context.tools._ctx._context_overflow_retries == {PASS_ONE, PASS_TWO}
 
 
@@ -528,7 +528,7 @@ def test_equal_context_releases_retry_before_provider_send(tmp_path, monkeypatch
     assert msg is None
     assert provider_sends == 1  # both passes ran; each equal candidate was released before any send
     skipped = [event for event in events if event.get("reason") == "context_candidate_not_strictly_smaller"]
-    assert [event["rung"] for event in skipped] == ["host_copies+bodies", "floor+unseen_bodies"]
+    assert [event["rung"] for event in skipped] == ["host_copies+bodies", "floor+unseen_bodies+books"]
 
 
 def test_strict_shrink_predicate_uses_failed_physical_reserve():

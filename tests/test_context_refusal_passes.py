@@ -26,37 +26,82 @@ def _ctx(message=""):
                            context_fit_plan=SimpleNamespace(provider="claudexor", model="codex=gpt-6-astra"))
 
 
+def _target(ctx, fit, refused=None):
+    return lmc._refusal_target(ctx, fit, refused)[0]
+
+
+def _refused_size(ctx):
+    (size,) = ctx.accumulated_usage[REFUSED_INPUTS_KEY].values()
+    return size
+
+
 def test_the_target_is_measured_on_this_conversation_or_stays_unknown():
     ctx = _ctx()
     # 86aa r1482: E = its raw 848,751 at its own density 874,829/795,458; A = the largest input Codex accepted.
-    assert lmc._refusal_target(ctx, _fit(933_440)) == 933_440 - 921_840 + 115_230  # + ceil(A/8), L33 2=A
+    assert lmc._refusal_target(ctx, _fit(933_440)) == (933_440 - 921_840 + 115_230, 115_230)  # + ceil(A/8), L33 2=A
     assert ctx.accumulated_usage[REFUSED_INPUTS_KEY]  # recorded: the facts stop stating free room
-    assert lmc._refusal_target(_ctx(), _fit(900_000)) is None  # E at or below A contradicts the reading
-    assert lmc._refusal_target(_ctx(), _fit(933_440, anchor=None)) is None  # a cold count sizes nothing
+    assert _target(_ctx(), _fit(900_000)) is None  # E at or below A contradicts the reading
+    assert _target(_ctx(), _fit(933_440, anchor=None)) is None  # a cold count sizes nothing
     stated = _ctx("This model's maximum context length is 400,000 tokens.")
-    assert lmc._refusal_target(stated, _fit(390_000, accepted=None, reply=20_000)) == 10_000 + 50_000
-    # Anthropic and Gemini wordings state both numbers; the provider's own count beats the estimate.
-    for message, size, limit in (
-            ("prompt is too long: 215000 tokens > 200000 maximum", 215_000, 200_000),
-            ("input length and `max_tokens` exceed context limit: 190000 + 65536 > 200000", 190_000, 200_000),
+    assert _target(stated, _fit(390_000, accepted=None, reply=20_000)) == 10_000 + 50_000
+    # Anthropic and Gemini wordings state both numbers; the provider's own count beats the estimate,
+    # and a reply the refused request reserved, where stated, is the one the retry reserves again.
+    for message, size, reply, limit in (
+            ("prompt is too long: 215000 tokens > 200000 maximum", 215_000, 8_192, 200_000),
+            ("input length and `max_tokens` exceed context limit: 190000 + 65536 > 200000", 190_000, 65_536, 200_000),
             ("The input token count (1050000) exceeds the maximum number of tokens allowed (1048576).",
-             1_050_000, 1_048_576),
+             1_050_000, 8_192, 1_048_576),
             ("This model's maximum context length is 128000 tokens. However, your messages resulted in "
-             "131000 tokens.", 131_000, 128_000)):
-        assert lmc._refusal_target(_ctx(message), _fit(1, anchor=None, accepted=None, reply=8_192)) == (
-            max(0, size + 8_192 - limit) + -(-limit // 8)), message
+             "131000 tokens.", 131_000, 8_192, 128_000)):
+        refusal = _ctx(message)
+        assert _target(refusal, _fit(1, anchor=None, accepted=None, reply=8_192)) == (
+            max(0, size + reply - limit) + -(-limit // 8)), message
+        assert _refused_size(refusal) == size, message
     # A local serving instance that refused before sending gives its own exact counts (#1018 lane).
     local = SimpleNamespace(input_tokens=34_000, context_window_tokens=32_768)
-    assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192), local) == (
+    assert _target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192), local) == (
         34_000 + 8_192 - 32_768 + 4_096)
-    assert lmc._refusal_target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192)) is None  # cold, numberless
+    assert _target(_ctx(), _fit(30_000, anchor=None, accepted=None, reply=8_192)) is None  # cold, numberless
     # A stated limit beside a COLD estimate measures nothing (chars/4 under-counts code and Cyrillic): unknown;
-    # with the provider's own count of the refused input it measures even the first refusal (review r2, 18.10).
-    assert lmc._refusal_target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) is None
-    sized = _ctx("This endpoint's maximum context length is 400000 tokens. However, you requested about 410000 tokens")
-    assert lmc._refusal_target(sized, _fit(300_000, anchor=None, accepted=None, reply=20_000)) == 30_000 + 50_000
-    assert sized.accumulated_usage[REFUSED_INPUTS_KEY]["claudexor|codex=gpt-6-astra"] == 410_000 or 410_000 in (
-        sized.accumulated_usage[REFUSED_INPUTS_KEY].values())  # the provider's count is the refused size
+    # with the provider's own count of the refused request it measures even the first refusal (review r2, 18.10).
+    assert _target(stated, _fit(390_000, anchor=None, accepted=None, reply=20_000)) is None
+
+
+def test_a_providers_requested_total_holds_the_reply_once():
+    """Review r3 (18.10): "you requested (about) N tokens" is the input plus the reply that request reserved.
+
+    Read as input, it added the reply twice: 96,072 instead of 30,536 on OpenAI's own wording."""
+    openai = _ctx("This model's maximum context length is 200000 tokens. However, you requested 205536 tokens "
+                  "(140000 in the messages, 65536 in the completion). Please reduce the length of the messages "
+                  "or completion.")
+    assert lmc._refusal_target(openai, _fit(1, anchor=None, accepted=None, reply=20_000)) == (5_536 + 25_000, 25_000)
+    assert _refused_size(openai) == 140_000
+    openrouter = _ctx("This endpoint's maximum context length is 128000 tokens. However, you requested about 129782 "
+                      "tokens (928 of text input, 854 of tool input, 128000 in the output). Please reduce the length "
+                      "of either one, or use the \"middle-out\" transform to compress your prompt automatically.")
+    assert _target(openrouter, _fit(1, anchor=None, accepted=None, reply=20_000)) == 1_782 + 16_000
+    assert _refused_size(openrouter) == 1_782
+    parts = _ctx("This endpoint's maximum context length is 200000 tokens. However, you requested about 237000 tokens "
+                 "(205000 of text input, 32000 in the output).")
+    assert _target(parts, _fit(205_000, accepted=None, reply=32_000)) == 37_000 + 25_000  # anchored E agrees
+    # A bare total already holds its reply: the excess is the total over the limit, the input the rest.
+    bare = _ctx("This endpoint's maximum context length is 400000 tokens. However, you requested about 410000 tokens")
+    assert _target(bare, _fit(300_000, anchor=None, accepted=None, reply=20_000)) == 10_000 + 50_000
+    assert _refused_size(bare) == 390_000
+
+
+def test_the_size_parser_reads_input_reply_and_total_apart():
+    from ouroboros.capability_evidence import _parse_ctx_requested
+
+    assert _parse_ctx_requested("However, you requested 205536 tokens (140000 in the messages, 65536 in the "
+                                "completion).") == (140_000, 65_536, 205_536)
+    assert _parse_ctx_requested("you requested about 129782 tokens (928 of text input, 854 of tool input, "
+                                "128000 in the output)") == (1_782, 128_000, 129_782)
+    assert _parse_ctx_requested("you requested about 237000 tokens (32000 in the output)") == (205_000, 32_000, 237_000)
+    assert _parse_ctx_requested("you requested about 410000 tokens") == (0, 0, 410_000)  # a total, never an input
+    assert _parse_ctx_requested("context limit: 190000 + 65536 > 200000") == (190_000, 65_536, 0)
+    assert _parse_ctx_requested("The input token count (1050000) exceeds the limit") == (1_050_000, 0, 0)
+    assert _parse_ctx_requested("Your input exceeds the context window of this model") == (0, 0, 0)
 
 
 def test_bodies_shed_only_what_the_host_copies_left_of_the_target(monkeypatch):
@@ -139,5 +184,32 @@ def test_a_local_pre_send_refusal_uses_the_reply_its_exact_request_reserved():
     """Review r2 (18.10): a 131,072 window, 125,000 exact input and the 8,192 reply floor of the refused
     request exceed by 2,120, not by the estimate's 14,688-token reply."""
     local = SimpleNamespace(input_tokens=125_000, context_window_tokens=131_072, max_completion_tokens=8_192)
-    target = lmc._refusal_target(_ctx(), _fit(100_000, anchor=None, accepted=None, reply=14_688), local)
-    assert target == 2_120 + -(-131_072 // 8)
+    assert _target(_ctx(), _fit(100_000, anchor=None, accepted=None, reply=14_688), local) == 2_120 + -(-131_072 // 8)
+
+
+def test_books_leave_last_for_the_slack_unseen_bodies_could_not_give(monkeypatch):
+    """Review r3 (18.10): memory met the excess and no unseen body was left, so the retry would go out at the
+    wall; books take only that rest (plan items 5 and 16), and stay when unseen bodies paid it."""
+    import ouroboros.loop as loop
+
+    calls, sizes, unseen = [], [], {}
+    monkeypatch.setattr(lmc, "_coarsen_memory_view", lambda _ctx, _fit, *, saving=None: calls.append(("floor", saving)) or True)
+    monkeypatch.setattr(lmc, "_reproject_actual_overflow_low",
+                        lambda ctx: calls.append(("books",)) or setattr(ctx, "active_context_mode", "low"))
+    monkeypatch.setattr(loop, "_measure_round_main_fit", lambda _ctx, **_kw: _fit(sizes.pop(0)))
+    monkeypatch.setattr(lmc, "_run_emergency_address_pass", lambda _ctx, _fit, *, rung, goal_tokens=None: (
+        calls.append((rung, goal_tokens)) or SimpleNamespace(status=unseen.get("status", "no_eligible"),
+                                                             reclaimed_tokens=unseen.get("shed", 0))))
+    stated = _ctx("This model's maximum context length is 400,000 tokens.")  # slack 50,000
+    second = lmc.REFUSAL_PASSES[1]
+    sizes[:] = [880_000, 880_000, 830_000]  # after the floor; before and after the books step
+    assert lmc._apply_refusal_pass(stated, second, _fit(900_000, accepted=None), 70_000) is True
+    assert calls == [("floor", 20_000), ("unseen_bodies", 50_000), ("books",)]
+    assert stated.active_context_mode == "low"
+    calls.clear()
+    paid = _ctx("This model's maximum context length is 400,000 tokens.")
+    unseen.update(status="applied", shed=50_000)
+    sizes[:] = [880_000]
+    assert lmc._apply_refusal_pass(paid, second, _fit(900_000, accepted=None), 70_000) is True
+    assert calls == [("floor", 20_000), ("unseen_bodies", 50_000)]  # the slack was paid: books stay
+    assert paid.active_context_mode == "max"

@@ -29,8 +29,6 @@ HOST_CONTEXT_KIND_KEY = "_host_context_kind"
 
 # Provenance is typed at delivery, never inferred from text (17.10.2026: a one-letter owner
 # answer "A" matched every host row as a substring and shielded 94k tokens of obsolete
-#: An unknown reclaim target: the step takes everything its category can give (the refusal passes).
-WHOLE_CATEGORY = 2**31 - 1
 # state). A row of the owner's or a principal's inbound words carries ``OWNER_WORDS_KIND``;
 # Ouroboros's outward words carry ``owner_dialogue``. Such rows are their own rows, never
 # merged with other content, and no host or helper rewrite takes them.
@@ -87,6 +85,8 @@ NANO_MIN_HEADROOM_TOKENS = 8_192
 # not a measured optimum; change it here and only here
 # (tests/test_context_budget_ssot.py pins it).
 RECLAIM_LOW_WATER_DIVISOR = 8
+#: An unknown reclaim target: the step takes everything its category can give (the refusal passes).
+WHOLE_CATEGORY = 2**31 - 1
 
 # Working room the memory view's physical floor leaves under a known route
 # window: two low-water levels of the reclaim pass above, ceil(W / divisor)
