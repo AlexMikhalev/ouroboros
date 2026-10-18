@@ -164,9 +164,8 @@ def test_a_departed_author_leaves_at_once_and_its_launched_reviewer_still_finish
         thread.join(10)
     until(lambda: review_pause.review_operation_state(detached["owner_id"]) == "closed")
     assert [label for label, _at in model.rounds] == ["first", "follow-up"], "the reviewer finished its own check"
-    # A binding without the departure keeps the synchronous wait: nothing detaches without mail or Pause.
-    with review_pause.receptive_author(review_pause.receptive_binding(f.ctx)):
-        assert review_pause.author_detaches(SimpleNamespace(wait=None), []) is False
+    assert review_pause.departed_binding(SimpleNamespace(drive_root=None, task_id=TASK)) is None, \
+        "an author without a drive and task is never departed: it keeps the synchronous wait"
 
 
 @pytest.mark.parametrize("preparation_boundary", ["model_preparation", "before_episode_binding"])

@@ -489,8 +489,12 @@ def test_an_old_records_debt_pinned_source_still_downloads_and_stays_exact(tmp_p
         response = client.get(f"/api/tasks/indebted/artifacts/{pathlib.PurePosixPath(ref['path']).name}",
                               params={"source": ref["path"]})
         assert response.status_code == 200 and hashlib.sha256(response.content).hexdigest() == ref["sha256"]
-        assert review_source_projection(tmp_path, "indebted", ref["sha256"])["status"] != "unavailable"
+        owed = "the owed subject text"
+        projected = review_source_projection(tmp_path, "indebted", ref["sha256"], 0, len(owed))
+        assert projected.get("text") == owed and projected["source_ref"] == ref, projected
+        assert review_source_projection(tmp_path, "other", ref["sha256"], 0, len(owed))["status"] == "unavailable"
         stored = artifacts.task_artifact_dir_path(tmp_path, "indebted") / ref["path"]
         stored.write_bytes(b"another text")
         assert client.get(f"/api/tasks/indebted/artifacts/{pathlib.PurePosixPath(ref['path']).name}",
                           params={"source": ref["path"]}).status_code == 404, "altered bytes fail their digest"
+        assert review_source_projection(tmp_path, "indebted", ref["sha256"], 0, len(owed))["status"] == "unavailable"
