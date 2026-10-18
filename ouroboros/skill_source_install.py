@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.skill_install_record import (
     clear_install_record,
+    discard_update_snapshot,
     install_basis_fields,
     read_install_record,
     read_update_snapshot,
@@ -411,8 +412,13 @@ def settle_pending_update(drive_root: pathlib.Path, name: str, *, expected_diges
     pending = data["pending_update"]
     if expected_digest and expected_digest != pending["digest"]:
         return {"status": "superseded"}
+    record = read_install_record(drive_root, name) or {}
+    release = record.get("release") or {}
+    if not data.get("restore_started") and (record.get("pending_update") != pending
+                                            or release.get("digest") != pending["digest"]):
+        discard_update_snapshot(drive_root, name)
+        return {"status": "superseded"}
     loaded = find_skill(drive_root, name, repo_path=get_skills_repo_path())
-    release = (read_install_record(drive_root, name) or {}).get("release") or {}
     current = loaded is not None and release.get("digest") == pending["digest"]
     if not data.get("restore_started") and current and not loaded.load_error \
             and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
@@ -477,6 +483,8 @@ def install_item(drive_root: pathlib.Path, item_id: str, *, replace: bool = Fals
     if plan["already_installed"]:
         return {**base, "name": plan["name"], "already_installed": True, "version": item.get("version", "")}
     _select_check(plan, check=check, check_notes=check_notes, task_id=task_id)
+    if plan.get("occupant"):
+        settle_before_replacement(drive_root, plan["name"])
     if row["kind"] == "registry":
         record = _install_registry(drive_root, plan, actor=actor, reason=reason, task_id=task_id,
                                    turn_on_when_ready=turn_on_when_ready, repo_dir=repo_dir, progress=progress)

@@ -176,6 +176,68 @@ def test_uninstall_pending_update_cannot_resurrect_on_startup(release):
     assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
 
 
+@pytest.mark.parametrize("same_bytes", [False, True])
+def test_replacing_pending_update_with_other_source_survives_old_settlement(release, same_bytes):
+    drive, folder, row, item = release
+    _pending(release)
+    pending_digest = item["digest"]
+    row.update(id="other", name="Other", url="https://example.invalid/other")
+    item["id"] = "other/demo"
+    if not same_bytes:
+        (folder / "other.txt").write_text("replacement from another source", encoding="utf-8")
+        item["digest"] = tree_release_digest(folder)
+    replacement = installer.run_in_lane(drive, "install", "demo", lambda: installer.install_item(
+        drive, item["id"], replace=True))
+    assert replacement["ok"] and replacement["replaced"]
+    # The replacing transaction owns supersession, even when the bytes coincide.
+    assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
+    assert installer.settle_pending_update(drive, "demo", expected_digest=pending_digest)["status"] == "none"
+    installer.settle_pending_updates_at_startup(drive)
+    assert find_skill(drive, "demo").content_hash == item["digest"]
+    record = read_install_record(drive, "demo")
+    assert record["source"]["id"] == "other"
+    assert "update_rejected" not in record
+
+
+@pytest.mark.parametrize("replacement", ["different_release", "same_release", "uninstalled"])
+def test_stale_snapshot_is_discarded_without_restoring_newer_state(release, replacement):
+    from ouroboros.skill_install_record import clear_install_record, write_install_record
+
+    drive, _folder, _row, item = release
+    _pending(release)
+    payload = find_skill(drive, "demo").skill_dir
+    record = read_install_record(drive, "demo")
+    record.pop("pending_update")
+    record["source"] = {"id": "other", "kind": "hub", "name": "Other"}
+    if replacement == "different_release":
+        (payload / "other.txt").write_text("newer install", encoding="utf-8")
+        record["release"]["digest"] = tree_release_digest(payload)
+    write_install_record(drive, "demo", record)
+    if replacement == "uninstalled":
+        import shutil
+        shutil.rmtree(payload)
+        clear_install_record(drive, "demo")
+    expected = read_install_record(drive, "demo")
+    assert installer.settle_pending_update(drive, "demo", expected_digest=item["digest"]) == {"status": "superseded"}
+    installer.settle_pending_updates_at_startup(drive)
+    assert read_install_record(drive, "demo") == expected
+    if replacement == "uninstalled":
+        assert find_skill(drive, "demo") is None
+    else:
+        assert find_skill(drive, "demo").content_hash == record["release"]["digest"]
+    assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
+
+
+def test_old_completion_leaves_newer_pending_snapshot_intact(release):
+    drive, _folder, _row, item = release
+    old_digest, _ = _pending(release)
+    backup = skill_state_dir(drive, "demo") / "update_backup.json"
+    saved = backup.read_bytes()
+    assert installer.settle_pending_update(drive, "demo", expected_digest=old_digest) == {"status": "superseded"}
+    assert backup.read_bytes() == saved
+    assert read_install_record(drive, "demo")["pending_update"]["digest"] == item["digest"]
+
+
 @pytest.mark.parametrize("trust,auto_review", [("review", False), ("trusted", False), ("review", True)])
 def test_registry_update_uses_new_trust_and_retains_review_rollback(tmp_path, monkeypatch, trust, auto_review):
     from ouroboros.marketplace.clawhub import ClawHubSkillSummary
