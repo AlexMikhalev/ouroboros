@@ -867,7 +867,7 @@ def update_skill(
     try:
         carried.update(install_basis_fields(str(carried.get("basis") or "review"), **(acceptance_options or {})))
     except ValueError as exc:
-        return InstallResult(False, sanitized_name, error=str(exc), error_status=400)
+        return InstallResult(False, sanitized_name, error=str(exc), error_code="bad_check", error_status=400)
     # Preserve live extension state across unload/swap when possible.
     was_live = False
     try:

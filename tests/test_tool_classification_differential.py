@@ -38,6 +38,7 @@ from tests.tool_classification_corpus import (
     harvest_producers,
     typed_result,
 )
+from tests.test_skill_install_checks import registry_release
 
 GOLDEN_PATH = pathlib.Path(__file__).resolve().parent / "fixtures" / "legacy_tool_classification_0f715831.json"
 
@@ -545,6 +546,44 @@ def test_current_producer_contracts_have_explicit_live_answers(subject, detail):
     identifier = subject.rsplit(":", 1)[-1]
     case = Case("current:" + subject, subject, "read_file", "⚠️ " + identifier + detail, code)
     assert _live_answer(case) == CURRENT_PRODUCER_CONTRACTS[subject]
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+@pytest.mark.parametrize("failure", ["staged_hash", "landing", "bad_check", "empty_notes"])
+def test_registry_failures_keep_the_current_producer_contract(registry_release, monkeypatch, tool, failure):
+    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.tools.registry import ToolContext
+    from tests.test_skill_source_tools import _typed_call
+
+    drive, storage, registry = registry_release
+    registry["latest"] = "2.0.0"
+    if tool == "skill_install":
+        drive = drive.parent / "fresh-install"
+    previous = read_install_record(drive, "demo")
+
+    def fail(*args, **kwargs):
+        raise OSError("injected registry disk failure")
+
+    arguments = {"id": "clawhub/demo", "reason": "r"} if tool == "skill_install" else {
+        "name": "demo", "mode": "replace"}
+    bad_arguments = failure in {"bad_check", "empty_notes"}
+    if bad_arguments:
+        arguments.update(check="unknown" if failure == "bad_check" else "self", check_notes="")
+    else:
+        monkeypatch.setattr(storage, "_registry_install_record" if failure == "staged_hash"
+                            else "_land_staged_into_data_plane", fail)
+    result = _typed_call(tool, ToolContext(repo_dir=drive.parent, drive_root=drive), **arguments)
+    expected_code = "TOOL_ARG_ERROR" if bad_arguments else "TOOL_ERROR"
+    assert (result.status, result.code) == ("error", expected_code)
+    if bad_arguments:
+        assert '"code": "bad_check"' in result.text
+    else:
+        assert "injected registry disk failure" in result.text
+    is_error = _typed_execution_failure(True, result)
+    actual = (is_error, _typed_result_metadata(tool, result.text, is_error, result)["status"])
+    assert actual == CURRENT_PRODUCER_CONTRACTS[f"native:{expected_code}:{tool.upper()}_REFUSED"]
+    current = read_install_record(drive, "demo")
+    assert (current or {}).get("release") == (previous or {}).get("release")
 
 
 def test_spent_execution_budget_publishes_the_actual_scheduling_refusal(tmp_path, monkeypatch):

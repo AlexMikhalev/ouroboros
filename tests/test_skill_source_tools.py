@@ -63,6 +63,7 @@ def _typed_call(tool, ctx, **kwargs):
     ("skill_install", {"id": "builtin/skill", "reason": " "}, "TOOL_ARG_ERROR", "argument_error"),
     ("skill_install", {"id": "builtin/skill", "reason": "r", "replace": True}, "TOOL_ERROR", "error"),
     ("skill_update", {"name": "skill", "mode": "later"}, "TOOL_ARG_ERROR", "argument_error"),
+    ("skill_update", {"name": "", "mode": "replace"}, "TOOL_ARG_ERROR", "argument_error"),
     ("skill_update", {"name": "absent", "mode": "replace"}, "TOOL_ERROR", "error"),
 ])
 def test_refusals_publish_argument_or_host_errors(tmp_path, monkeypatch, tool, arguments, code, status):
@@ -74,6 +75,25 @@ def test_refusals_publish_argument_or_host_errors(tmp_path, monkeypatch, tool, a
     assert result.status == "error" and result.code == code
     assert _typed_execution_failure(True, result)
     assert _typed_result_metadata(tool, result.text, True, result)["status"] == status
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+@pytest.mark.parametrize("http_status", [400, 502])
+@pytest.mark.parametrize("error_code, expected", [("bad_check", "TOOL_ARG_ERROR"),
+                                                  ("registry_host_failed", "TOOL_ERROR")])
+def test_installer_error_classification_uses_code_not_http_status(tmp_path, monkeypatch, tool, http_status,
+                                                                error_code, expected):
+    from ouroboros import skill_source_install as installer
+
+    def fail(*args, **kwargs):
+        raise installer.SkillInstallError(error_code, "injected producer failure", http_status)
+
+    monkeypatch.setattr(installer, "install_item" if tool == "skill_install" else "update_installed", fail)
+    arguments = {"id": "clawhub/demo", "reason": "r"} if tool == "skill_install" else {
+        "name": "demo", "mode": "replace"}
+    result = _typed_call(tool, ToolContext(repo_dir=tmp_path, drive_root=tmp_path), **arguments)
+    assert (result.status, result.code) == ("error", expected)
+    assert f'"code": "{error_code}"' in result.text
 
 
 @pytest.mark.parametrize("failure", ["probe", "source"])

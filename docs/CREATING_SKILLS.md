@@ -1681,13 +1681,16 @@ There is no one-reviewer depth in these tools.
 A git repository is a source in one of two shapes:
 
 - **A plain skills repository**: every folder (or the root) holding a
-  `SKILL.md` or `skill.json` is a skill, described by its manifest. A private
-  repository works when this computer's git can fetch it.
+  `SKILL.md` or `skill.json` is a skill, described by its manifest.
 - **A hub**: `hub.json` at the root, one `entries/<name>.json` per skill
   (description, one or two categories, owner, version, `source` hosted at
   `skills/<name>` or pointing at the author's repository at an exact commit,
   release `digest`, `withdrawn`), the maintainer's `official.json`
   (endorsements bound to digests) and `categories.json`.
+
+Private github.com HTTPS sources use the configured GitHub token after an
+anonymous read is refused for authentication; other repositories use this
+computer's git credentials.
 
 Every install verifies its copy against the release digest: the SHA-256 of
 each payload file plus the manifest's raw dependency declaration
@@ -1737,10 +1740,11 @@ hub, unless the owner picks another:
   the skill is published; otherwise it waits for that repository's
   maintainers.
 
-**My skills** is an optional private `<login>/ouroboros-skills` repository,
-created or connected when you choose it with your configured GitHub token.
-It is added as a trusted git source and carries your skills between your
-Ouroboros installations.
+**My skills** is optional: `<login>/ouroboros-skills` carries skills between
+your Ouroboros installations. When you choose it, your configured GitHub token
+creates a private repository or connects an existing repository, which may be
+public. A newly connected source is trusted; reconnecting keeps your saved
+name, trust and confirmation.
 
 The result reports separately whether the files reached the repository
 (`files_published`: `pull_request` or `merged`) and whether a catalog lists

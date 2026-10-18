@@ -174,7 +174,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
             message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
-        if exc.status == 400:
+        if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())))
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
@@ -207,7 +207,7 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except SkillInstallError as exc:
-        if exc.status == 400:
+        if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())))
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
