@@ -732,10 +732,15 @@ textarea.ui-control { resize: vertical; }
    A small control keeps its look and, under a finger, gains an invisible hit area centred on it and at least the
    touch minimum each way: the pseudo-element reaches out only on the sides that fall short (a 32px-tall capsule
    gains 6px above and below, nothing sideways). Composition keeps at least that overshoot between neighbouring
-   controls, so hit areas never overlap (the composer rows part by --space-2). The one recipe; pages add the class. */
-.ui-hit-area { position: relative; }
+   controls, so hit areas never overlap (the composer rows part by --space-2). The one recipe; pages add the class.
+   A page's links take it too, so a link inside a sentence keeps the sentence's lines instead of growing a box. */
+.ui-hit-area,
+:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
+    position: relative;
+}
 @media (pointer: coarse) {
-    .ui-hit-area::after {
+    .ui-hit-area::after,
+    :is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href]::after {
         content: "";
         position: absolute;
         inset: min(0px, calc((100% - var(--touch-target-min)) / 2));

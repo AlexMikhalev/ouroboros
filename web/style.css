@@ -94,8 +94,9 @@ html[data-layout="stack"] .shell-icon-control {
 }
 /* A window too short for the zones (the head, three list rows and the foot no longer fit): the whole column is
    the ONE scroller with the head sticky, and the list shows every row in flow, so a finger or a wheel moves one
-   thing (the gate counts the sidebar's scrollers). */
-@media (max-height: 540px) {
+   thing (the gate counts the sidebar's scrollers). Finger rows are 44px, so a touch column runs out of room
+   sooner (measured: 586px of zones with 30 Projects). */
+@media (max-height: 540px), (pointer: coarse) and (max-height: 600px) {
     #primary-sidebar .nav-projects { flex: 0 0 auto; min-height: 0; }
     #primary-sidebar .nav-projects-list { flex: 0 0 auto; overflow-y: visible; }
 }
@@ -605,21 +606,10 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     margin-top: var(--space-2);
 }
 
-.nav-section-label {
-    padding: var(--space-3) var(--space-3) var(--space-1);
-    color: var(--text-muted);
-    font-size: 10px;
-}
-
 .nav-chevron {
     flex: 0 0 auto;
     color: var(--text-muted);
     transition: transform 0.15s ease;
-}
-
-
-#divider {
-    display: none;
 }
 
 /* Main content in the shell grid. */
@@ -710,11 +700,10 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     min-inline-size: var(--page-control-min, 0px);
     min-block-size: var(--page-control-min, 0px);
 }
+/* Links stay inline, where the minimum above does not apply (their touch area is the hit recipe in ui.css), and
+   wrap before they widen a column. */
 :is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
-    display: inline-flex;
-    align-items: center;
     overflow-wrap: anywhere;
-    max-inline-size: 100%;
 }
 
 .files-sidebar {
@@ -3563,6 +3552,14 @@ html[data-layout="stack"] #primary-sidebar {
     transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 200ms ease;
     padding-bottom: calc(var(--space-3) + var(--inset-bottom));
     touch-action: pan-y;  /* a sideways finger is the drawer's (drawer_drag.js); up and down scroll the list */
+}
+/* The same on the room: a page's vertical scroller hands a sideways finger to the drawer. touch-action starts over
+   at every scroller, so it is declared on the scrollers themselves; a code block or a table inside scrolls sideways
+   as its own scroller. */
+html[data-layout="stack"] :is(#chat-messages, .chat-messages, .files-list, .files-sidebar, .files-preview-content,
+    .skills-scroll, .widgets-scroll, .settings-scroll, .costs-scroll, .activity-scroll, .evolution-container,
+    #log-entries, .updates-scroll) {
+    touch-action: pan-y pinch-zoom;
 }
 html[data-layout="stack"] .sidebar-head {
     padding-top: 0;
@@ -9604,5 +9601,3 @@ html[data-layout="stack"] .project-panel.open {
 :root[data-theme] :is(.chat-capsule, .chat-swarm, .chat-send-inline, .app-tab, .filter-chip, .chat-load-older-btn) {
     transition: var(--motion-tone);
 }
-
-

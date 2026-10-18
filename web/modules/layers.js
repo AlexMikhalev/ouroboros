@@ -1,9 +1,10 @@
 /** One stack of layers over the room (docs/DESIGN.md "Shell", plan P2).
  *
- * A layer is anything that lies over the page and is dismissed as one thing: the phone drawer, the Project panel,
- * later the Shade and the dialogs (they keep their own focus traps today; the seam is `push`/`remove`). Every way of
- * leaving ends in the same place: Escape, the scrim, ×, the browser's or Android's Back and Telegram's Back all call
- * `pop()`, which closes exactly one layer, the top one, through the layer's own `onClose`. The owner of a layer's
+ * A layer is anything that lies over the page and is dismissed as one thing: the phone drawer and the Project panel.
+ * Dialogs, menus and the Shade keep their own focus traps and Escape. Every way of leaving ends in the same place:
+ * Escape, the scrim, × call `pop()`, which closes exactly one layer, the top one, through the layer's own `onClose`;
+ * the browser's or Android's Back and Telegram's Back call `back()`, which first gives an open dialog over the layer
+ * its Escape (the dialog is what is on top) and otherwise pops. The owner of a layer's
  * state keeps owning it: it calls `push` when it opens and `remove` when it closes (both idempotent), and `onClose` is
  * where the stack asks the owner to close.
  *
@@ -13,8 +14,9 @@
  * task, so "close the drawer, open the Project" never leaves a stray entry (the b2 mockup's finding). No URL is ever
  * written: the desktop shell and the Telegram mini app have no address bar (tests/test_navigation_shell_static.py).
  *
- * Inert: a modal layer makes everything outside it inert (siblings along its ancestor path; what the page had
- * already made inert is left alone); a non-modal layer (the docked Project panel) leaves the sidebar live. Focus goes
+ * Inert: a modal layer makes the rest of the shell inert (siblings along its ancestor path inside the shell's
+ * container, never `<body>`'s other children, where dialogs, menus and toasts opened over the layer live; what the page
+ * had already made inert is left alone); a non-modal layer (the docked Project panel) leaves the sidebar live. Focus goes
  * into the layer on open and returns to the opener on close. Every listener has a disposer. */
 
 const LAYER_STATE = { ouroLayers: 1 };
@@ -35,7 +37,7 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
         listeners.forEach((fn) => { try { fn(snapshot); } catch (err) { console.error('layers: listener failed', err); } });
     }
 
-    // ---- inert: the topmost modal layer's siblings along its path to <body>, and everything below it in the stack
+    // ---- inert: the topmost modal layer's siblings along its path up to the shell's container, and everything below it
     function syncInert() {
         for (const el of inerted) el.inert = false;
         inerted.clear();
@@ -46,7 +48,7 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
         for (const el of stack.slice(modalIndex).flatMap((layer) => layer.live || [])) above.add(el);
         const keep = (node) => node === modal.el || [...above].some((el) => el === node || node.contains?.(el) || el.contains?.(node));
         let node = modal.el;
-        while (node && node !== doc.body && node.parentElement) {
+        while (node?.parentElement && node.parentElement !== doc.body) {
             for (const sibling of node.parentElement.children) {
                 if (sibling === node || keep(sibling) || sibling.inert || sibling.tagName === 'SCRIPT') continue;
                 sibling.inert = true;
@@ -80,12 +82,12 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
     const onPopState = () => {
         if (hist.skip > 0) { hist.skip -= 1; return; }
         hist.armed = false;
-        if (stack.length) pop('history');
+        if (stack.length) back('history');
     };
 
     // ---- Escape closes the top layer unless something inside already took the key (a menu, the Shade, a dialog)
     const onKeydown = (event) => {
-        if (event.key !== 'Escape' || event.defaultPrevented || !stack.length) return;
+        if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !stack.length) return;
         if (doc?.querySelector?.('dialog[open]')) return;  // a native modal dialog owns Escape until it adapts
         event.preventDefault();
         pop('escape');
@@ -154,12 +156,19 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
         return true;
     }
 
-    /** Change a layer's facts in place (a Project panel that turns modal when the layout stacks). */
-    function configure(id, patch) {
-        const layer = get(id);
-        if (!layer) return false;
-        Object.assign(layer, patch);
-        settle();
+    /** Back (system, browser, Telegram): a dialog the page opened over the layers is on top, so it takes the press
+     * as its Escape (the dialogs close on Escape through ui_interactions.bindDialogFocus; a bare native dialog that
+     * nothing answered closes as its own Escape would close it) and the layer stays; otherwise the top layer closes. */
+    function back(reason = 'history') {
+        const dialogs = [...(doc?.querySelectorAll?.('dialog[open], [aria-modal="true"]') || [])]
+            .filter((el) => el.getClientRects?.().length && !stack.some((layer) => layer.el === el));
+        const dialog = dialogs[dialogs.length - 1];
+        if (!dialog || !win?.KeyboardEvent) return pop(reason);
+        const target = dialog.contains(doc.activeElement) ? doc.activeElement : dialog;
+        const escape = new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+        target.dispatchEvent(escape);
+        if (!escape.defaultPrevented && dialog.tagName === 'DIALOG') dialog.close?.();
+        reconcileHistory();
         return true;
     }
 
@@ -182,7 +191,7 @@ export function createLayerStack({ win = globalThis.window, doc = globalThis.doc
     }
 
     return {
-        push, remove, pop, configure, onChange, destroy,
+        push, remove, pop, back, onChange, destroy,
         top: () => top()?.id || null,
         has,
         size: () => stack.length,

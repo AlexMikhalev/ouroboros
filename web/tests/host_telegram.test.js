@@ -56,6 +56,7 @@ function fakeWorld({ sdk = null, host = true, color = '#ffffff' } = {}) {
     const stack = { count: 0, popped: [], listeners: new Set(), size() { return this.count; },
         onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
         pop(reason) { this.popped.push(reason); this.count = Math.max(0, this.count - 1); this.emit(); },
+        back(reason) { this.pop(reason); },
         emit() { this.listeners.forEach((fn) => fn({ size: this.count })); } };
     const theme = { source: null, refreshed: 0, setSystemSource(fn) { this.source = fn; return () => { this.source = null; }; }, refreshSystem() { this.refreshed += 1; } };
     return { doc, win, rootStyle, timers, listeners, script, stack, theme };
@@ -94,7 +95,7 @@ test('the SDK present at boot: ready, expand, swipes off, chrome painted, insets
     sdk.app.safeAreaInset.bottom = 0;
     sdk.fire('safeAreaChanged');
     assert.equal(w.rootStyle.get('--tg-safe-area-inset-bottom'), '0px');
-    // Back is hidden with an empty stack, shown while a layer is open, and its click pops one layer.
+    // Back is hidden with an empty stack, shown while a layer is open, and its click is the stack's Back.
     assert.equal(sdk.app.BackButton.isVisible, false);
     w.stack.count = 2; w.stack.emit();
     assert.equal(sdk.app.BackButton.isVisible, true);

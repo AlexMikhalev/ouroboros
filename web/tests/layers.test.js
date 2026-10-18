@@ -22,6 +22,8 @@ function makeDoc() {
             },
             focus() { doc.activeElement = this; },
             querySelector() { return null; },
+            getClientRects() { return this.shown === false ? [] : [{}]; },
+            dispatchEvent(event) { for (let x = this; x; x = x.parentElement) x.onkey?.(event); return !event.defaultPrevented; },
         };
         if (parent) { n.parentElement = parent; parent.children.push(n); }
         return n;
@@ -29,6 +31,8 @@ function makeDoc() {
     doc.body = node('body');
     doc.body.querySelector = () => null;
     doc.querySelector = (selector) => (selector === 'dialog[open]' && doc.dialogOpen ? {} : null);
+    doc.dialogs = [];
+    doc.querySelectorAll = () => doc.dialogs;
     doc.activeElement = doc.body;
     return { doc, node };
 }
@@ -41,6 +45,10 @@ function makeWin() {
         addEventListener(type, fn) { listeners.set(type, fn); },
         removeEventListener(type) { listeners.delete(type); },
         fire(type, event = {}) { listeners.get(type)?.(event); },
+        KeyboardEvent: class {
+            constructor(type, init) { Object.assign(this, { type, defaultPrevented: false }, init); }
+            preventDefault() { this.defaultPrevented = true; }
+        },
     };
     return win;
 }
@@ -169,12 +177,55 @@ test('a modal layer makes everything outside it inert; a non-modal one leaves th
     assert.equal(scrim.inert, false, 'the scrim stays tappable under the modal drawer');
     // A layer above a modal one stays live.
     w.layers.remove('drawer');
-    w.layers.configure('project', { modal: true });
+    w.layers.push({ id: 'project', el: w.panel, modal: true, onClose() {} });
     w.layers.push({ id: 'drawer', el: w.sidebar, modal: false, onClose() {} });
     assert.equal(w.sidebar.inert, false);
     assert.equal(w.content.inert, true);
     w.layers.destroy();
     assert.equal(w.content.inert, false, 'destroy releases what it inerted');
+});
+
+test('what is opened over the shell beside it (a dialog, a menu, a toast) stays live under a modal layer', () => {
+    const w = world();
+    const reconnect = w.node('div', w.doc.body);  // mounted before the layer opens
+    w.layers.push({ id: 'project', el: w.panel, modal: true, onClose() {} });
+    assert.equal(w.content.inert, true, 'the rest of the shell is inert');
+    assert.equal(reconnect.inert, false);
+    const dialog = w.node('div', w.doc.body);  // mounted while it is open, then the owner re-syncs its layer
+    w.layers.push({ id: 'project', el: w.panel, modal: true, onClose() {} });
+    assert.equal(dialog.inert, false);
+    assert.equal(w.content.inert, true);
+    w.layers.destroy();
+});
+
+test('Back gives a dialog over the layers its Escape and keeps the layer; with no dialog it pops', async () => {
+    const w = world();
+    const closed = [];
+    w.layers.push({ id: 'drawer', el: w.sidebar, onClose: () => { closed.push('drawer'); w.layers.remove('drawer'); } });
+    await tick();
+    const dialog = w.node('div', w.doc.body);
+    const field = w.node('input', dialog);
+    const keys = [];
+    dialog.onkey = (event) => { keys.push(event.key); event.preventDefault(); w.doc.dialogs = []; };
+    w.doc.dialogs = [dialog];
+    field.focus();
+    w.win.fire('popstate');
+    assert.deepEqual(keys, ['Escape'], 'the dialog, from its focused field, took the press');
+    assert.deepEqual(closed, [], 'the drawer under it stays');
+    await tick();
+    assert.deepEqual(w.win.history.calls.at(-1), ['push', { ouroLayers: 1 }, ''], 'the entry is re-armed');
+    // A hidden dialog is not on top; a bare native dialog that nothing answers is closed as its Escape would.
+    const hidden = w.node('div', w.doc.body);
+    hidden.shown = false;
+    const native = w.node('dialog', w.doc.body);
+    native.close = () => { native.closed = true; w.doc.dialogs = []; };
+    w.doc.dialogs = [native, hidden];
+    w.layers.back('host-back');
+    assert.equal(native.closed, true);
+    assert.deepEqual(closed, []);
+    w.layers.back('host-back');
+    assert.deepEqual(closed, ['drawer']);
+    w.layers.destroy();
 });
 
 test('focus goes into the layer on open and back to the opener on close', () => {

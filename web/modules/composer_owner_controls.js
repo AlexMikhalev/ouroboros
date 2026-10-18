@@ -421,7 +421,8 @@ function createCapsule({
     };
     const onDocKeyDown = (event) => {
         keyboardFocus = true;
-        if (event.key !== 'Escape' || !state.open) return;
+        if (event.key !== 'Escape' || !state.open || event.defaultPrevented) return;
+        event.preventDefault();  // the capsule took this Escape: the Project room under it stays open
         state.pinned = false;
         setOpen(false);
         head.focus({ preventScroll: true });

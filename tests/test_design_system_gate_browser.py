@@ -62,9 +62,14 @@ MEASURE = """root => {
     const doc = document.scrollingElement;
     // The 44px rule is a touch rule: it applies when the pointer is coarse, and it measures the HIT area, not the
     // box. A control passes when its centre ±21px (clipped to the viewport) lands on it or on something inside it
-    // (an invisible hit extension counts); otherwise its box is reported.
+    // (an invisible hit extension counts); otherwise its box is reported. A control below the fold is brought into
+    // view first, where a finger would meet it.
     const coarse = matchMedia('(pointer: coarse)').matches;
     const hits = (e, r) => {
+        if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {
+            e.scrollIntoView({block: 'center', inline: 'nearest'});
+            r = e.getBoundingClientRect();
+        }
         const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
         const clampX = x => Math.min(Math.max(x, 0), innerWidth - 1);
         const clampY = y => Math.min(Math.max(y, 0), innerHeight - 1);
@@ -105,8 +110,9 @@ def gate_ui(request, monkeypatch):
     return ui
 
 
-def seed_page(ui, width, height, telegram=False):
-    page = ui['new_page'](viewport={'width': width, 'height': height}, has_touch=width < 720)
+def seed_page(ui, width, height, telegram=False, touch=None):
+    # A narrow page is a phone (touch); a wide one is a desk unless the test drives a finger itself.
+    page = ui['new_page'](viewport={'width': width, 'height': height}, has_touch=width < 720 if touch is None else touch)
     page.set_default_timeout(10_000)
     origin = urlparse(ui['url']).netloc
     page.route('**/*', lambda r: r.fallback() if urlparse(r.request.url).netloc == origin else r.abort())
@@ -250,7 +256,7 @@ def test_projects_scroll_by_touch_without_a_second_sidebar_scroller(subscription
     # CDP is Chromium-specific. The geometry matrix above covers both engines.
     if os.environ.get('OUROBOROS_UI_BROWSER_ENGINE', 'chromium') != 'chromium':
         pytest.skip('CDP Input.dispatchTouchEvent requires Chromium')
-    page = seed_page(subscription_ui, width, height)
+    page = seed_page(subscription_ui, width, height, touch=True)
     try:
         page.goto(subscription_ui['url'] + '/')
         page.wait_for_selector('#nav-projects-list [data-project-id]', state='attached')

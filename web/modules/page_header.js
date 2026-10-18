@@ -24,13 +24,12 @@ export function renderMobileNavToggle() {
  * paragraph right after the header (`.app-page-lede`), and a tab strip as its own strip under it, so the row
  * stays one row. `named` says the sidebar's chosen row already names this place: on a desk such a header shows no
  * title (the h2 stays for readers) and, with no actions, no bar at all; a Project keeps its name. No icon anywhere:
- * `icon` is accepted for the callers that still pass one and ignored.
+ * the place is named by words, never a glyph (owner 5A).
  */
 export function renderPageHeader({
     page = '',   // a registry id: the title is its label unless `title` says otherwise
     title,
     titleId = '',
-    icon = '',  // eslint-disable-line no-unused-vars -- the place is named by words, never a glyph (owner 5A)
     description = '',
     leadingHtml,
     toolbarHtml = '',

@@ -13,8 +13,8 @@
 /* ---- the status control ---------------------------------------------------------------------------
    The short word in its status ink, then one mark (three dots or one), as on the sidebar's rows; nothing is
    filled. Pressing is the only fill: a neutral tint on hover and while open.
-   It follows the title, so a longer word takes the title's room, never a neighbour's; it stays whole until the
-   title reaches its floor, and is said whole in the control's name either way. */
+   It follows the title and takes only room the title leaves; on a short row it shows its mark alone, and the
+   control's name says the whole status either way. */
 .rw-trigger {
     --rw-dot: var(--text-disabled);
     gap: var(--space-2);
@@ -43,6 +43,14 @@
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .project-panel-bar .app-page-title-block { flex: 1 1 0; min-width: 0; }
+/* A title row too short for the name, the word and the mark keeps the name and the mark: the word goes whole
+   instead of showing a cut fragment ("Wor…"). The title block is sized by the bar (flex-basis 0), so it can be the
+   container. */
+html[data-layout="stack"] .chat-page-header > .app-page-title-block,
+.project-panel-bar .app-page-title-block { container: rw-title / inline-size; }
+@container rw-title (max-width: 15rem) {
+    .rw-trigger .status-badge { display: none; }
+}
 /* The real badge (setStatus writes it) is bare text inside the control. */
 .rw-trigger .status-badge {
     display: block;

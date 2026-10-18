@@ -21,9 +21,15 @@ def _read(rel: str) -> str:
 def test_the_hit_extension_recipe_lives_once_in_ui_css_and_the_small_controls_carry_it():
     ui = _read("web/ui.css")
     assert ui.count(FORMULA) == 1
-    recipe = ui.split(".ui-hit-area::after {", 1)[1].split("}", 1)[0]
-    assert 'content: ""' in recipe and "position: absolute" in recipe and FORMULA in recipe
-    assert "@media (pointer: coarse)" in ui.split(".ui-hit-area { position: relative; }", 1)[1].split(".ui-hit-area::after", 1)[0]
+    base = ui.split("\n.ui-hit-area,", 1)[1].split("}", 1)[0]
+    assert "position: relative" in base
+    coarse = ui.split("\n.ui-hit-area,", 1)[1].split("@media (pointer: coarse) {", 1)[1].split("}\n}", 1)[0]
+    assert ".ui-hit-area::after" in coarse
+    assert 'content: ""' in coarse and "position: absolute" in coarse and FORMULA in coarse
+    # A page's links take the same recipe instead of a 44px box, so a link inside a sentence keeps its lines.
+    assert "a[href]::after" in coarse and "a[href]" in base
+    page_links = _read("web/style.css").split(".settings-shell) a[href] {", 1)[1].split("}", 1)[0]
+    assert "inline-flex" not in page_links and "min-block-size" not in page_links
     for rel in ("web/style.css", "web/settings.css", "web/room_work.css", "web/onboarding.css"):
         assert FORMULA not in _read(rel), f"{rel} repeats the recipe"
     for rel, markers in CARRIERS.items():

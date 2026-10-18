@@ -31,8 +31,7 @@ export function isTelegramHost({ win = globalThis.window, doc = globalThis.docum
 export function hostCall(target, method, minVersion, ...args) {
     const fn = target?.[method];
     if (typeof fn !== 'function') return false;
-    const app = target?.isVersionAtLeast ? target : target?.__webApp;
-    if (minVersion && typeof app?.isVersionAtLeast === 'function' && !app.isVersionAtLeast(minVersion)) return false;
+    if (minVersion && typeof target?.isVersionAtLeast === 'function' && !target.isVersionAtLeast(minVersion)) return false;
     try { fn.apply(target, args); return true; } catch { return false; }
 }
 
@@ -62,10 +61,9 @@ export function createTelegramHost({
     const webApp = () => win?.Telegram?.WebApp || null;
     const call = (method, minVersion, ...args) => hostCall(app, method, minVersion, ...args);
     const callOn = (member, method, minVersion, ...args) => {
-        const target = app?.[member];
-        if (!target) return false;
-        if (target && !target.__webApp) { try { Object.defineProperty(target, '__webApp', { value: app, enumerable: false }); } catch { /* frozen */ } }
-        return hostCall(target, method, minVersion, ...args);
+        // A member (BackButton) is gated by the app's own version.
+        if (minVersion && typeof app?.isVersionAtLeast === 'function' && !app.isVersionAtLeast(minVersion)) return false;
+        return hostCall(app?.[member], method, '', ...args);
     };
     const on = (event, handler) => {
         if (typeof app?.onEvent !== 'function') return;
@@ -95,7 +93,7 @@ export function createTelegramHost({
     }
 
     // ---- the host's Back control follows the layer stack and closes one layer
-    const onBack = () => { layers?.pop?.('host-back'); };
+    const onBack = () => { layers?.back?.('host-back'); };
     function syncBack(snapshot = { size: layers?.size?.() || 0 }) {
         callOn('BackButton', snapshot.size > 0 ? 'show' : 'hide', '6.1');
     }

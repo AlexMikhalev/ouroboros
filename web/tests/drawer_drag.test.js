@@ -20,13 +20,14 @@ function fakeEl(name) {
 }
 function withStyle(el) { el.style = { setProperty: (k, v) => el.styleProps.set(k, v), removeProperty: (k) => el.styleProps.delete(k) }; return el; }
 
-function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRAG, layersSize = 0 } = {}) {
+function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRAG, blockers = null } = {}) {
     const listeners = new Map();
     const add = (map) => (type, fn) => { map.set(type, [...(map.get(type) || []), fn]); };
     const remove = (map) => (type, fn) => { map.set(type, (map.get(type) || []).filter((x) => x !== fn)); };
     const docListeners = new Map();
     const styles = new Map();
-    const doc = { body: fakeEl('body'), addEventListener: add(docListeners), removeEventListener: remove(docListeners), listeners: docListeners };
+    const doc = { body: fakeEl('body'), addEventListener: add(docListeners), removeEventListener: remove(docListeners), listeners: docListeners,
+        querySelectorAll: () => blockers || [] };
     const win = { addEventListener: add(listeners), removeEventListener: remove(listeners), listeners,
         getComputedStyle: (el) => styles.get(el) || { touchAction: 'auto', overflowX: 'visible' }, performance: { now: () => clock.t } };
     const clock = { t: 1000 };
@@ -36,11 +37,11 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
     const state = { open, set: [] };
     const flags = { interactive: new Set(), sideways: new Set(), blocked: false, selection: false };
     const dispose = bindDrawerDrag({
-        sidebar, scrim, layers: { size: () => layersSize }, isOpen: () => state.open,
+        sidebar, scrim, isOpen: () => state.open,
         setOpen: (v) => { state.set.push(v); state.open = v; scrim.hidden = !v; },
         isStack: () => stack, isCoarse: () => coarse, win, doc, enabled,
         isInteractive: (el) => flags.interactive.has(el), isSideways: (el) => flags.sideways.has(el),
-        isBlocked: () => flags.blocked, hasSelection: () => flags.selection,
+        ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
     const fire = (type, event) => (docListeners.get(type) || []).forEach((fn) => fn(event));
     const pointer = (type, { x, y, id = 1, pointerType = 'touch', target = room, isPrimary = true, dt = 16 }) => {
@@ -100,8 +101,12 @@ test('a start is eligible only on a quiet surface, past the edge, with nothing o
     open(docked); assert.deepEqual(docked.state.set, [], 'docked: no drawer to drag'); docked.dispose();
     const fine = world({ coarse: false });
     open(fine); assert.deepEqual(fine.state.set, [], 'a fine pointer: no drag'); fine.dispose();
-    const layered = world({ layersSize: 1 });
-    open(layered); assert.deepEqual(layered.state.set, [], 'a Project layer over the room: no drag'); layered.dispose();
+    // The real blocker test reads what is shown: a closed menu that stays mounted (Files' context menu, a model
+    // list) does not block; an open one does.
+    const mounted = world({ blockers: [{ getClientRects: () => [] }] });
+    open(mounted); assert.deepEqual(mounted.state.set, [true], 'a mounted, hidden menu does not block'); mounted.dispose();
+    const shown = world({ blockers: [{ getClientRects: () => [] }, { getClientRects: () => [{}] }] });
+    open(shown); assert.deepEqual(shown.state.set, [], 'an open menu owns the finger'); shown.dispose();
     assert.match(INTERACTIVE_SELECTOR, /input, textarea/); assert.match(SIDEWAYS_SELECTOR, /\[data-scroll-x\]/); assert.match(BLOCKING_SELECTOR, /dialog\[open\]/);
 });
 
@@ -182,7 +187,7 @@ test('a slow release commits past half (open) or 30% (close); a fast one commits
 test('a second finger, pointercancel, lost capture or a resize restore the start with no commit', () => {
     const w = world();
     const start = () => { w.pointer('pointerdown', { x: 100, y: 300 }); w.pointer('pointermove', { x: 112, y: 300 }); w.pointer('pointermove', { x: 260, y: 300 }); assert.equal(w.dragging(), true); };
-    start(); w.pointer('pointerdown', { x: 200, y: 400, id: 2 });
+    start(); w.pointer('pointerdown', { x: 200, y: 400, id: 2, isPrimary: false });  // a real second touch is not primary
     assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);
     start(); w.fire('pointercancel', { pointerId: 1 });
     assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);

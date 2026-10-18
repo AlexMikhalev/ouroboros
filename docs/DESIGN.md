@@ -2120,7 +2120,7 @@ less than 360 px beside it, the panel takes the whole content area.
 
 **Navigation.** Places come from one registry (`web/modules/pages.js`): it renders
 the navigation rows, names the titles and feeds the shell gate, so a new page is
-one registry row and is checked at phone widths with no further work. The column
+a registry row and its module, checked at phone widths with no further work. The column
 has three zones: a pinned head (Main Chat), one scrolling collection (Projects,
 the column's only scroller) and a pinned foot (Files, Skills, Widgets, Dashboard,
 Settings, then the version and the update). The order follows §5; no label is set
@@ -2137,23 +2137,24 @@ field, a control, selected text or anything that scrolls sideways, pulls the
 drawer with the finger, and dragging it back closes it (`web/modules/drawer_drag.js`,
 switched off by one constant). Every gesture has a visible control.
 
-**Layers and dismissal.** What opens over the room — the drawer, the Project
-panel, a dialog, a menu, the Shade — is a layer in one stack
-(`web/modules/layers.js`). Escape, ×, a press on the scrim, the system or browser
-Back and Telegram's Back close the topmost layer and only it. While a layer is
+**Layers and dismissal.** The drawer and the Project panel are layers in one
+stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own
+Escape and outside-press dismissal. Escape, ×, a press on the scrim close the
+topmost layer and only it; the system or browser Back and Telegram's Back close
+what is on top: a dialog over a layer first, then the layer. While a layer is
 open the page holds exactly one same-address history entry, so Back closes it
 instead of leaving the app; navigation itself is still never written into the
-address. A modal layer makes the rest inert and returns focus to its opener on
-close. The interface draws one close glyph and one More glyph
-(`web/modules/page_icons.js`).
+address. A modal layer makes the rest of the shell inert (never what opens over
+it) and returns focus to its opener on close. The shell draws one close glyph and
+one More glyph (`web/modules/page_icons.js`).
 
 **Page header.** One component (`web/modules/page_header.js`) draws every page's
 header and the Project panel's, as one row that never wraps. No decorative icon.
 On docked, a page the column already names shows no title; status, actions and
 tabs remain, and a header with nothing to show draws no bar. A Project shows its
 name. In the stack layout the row is at most 56 px: ☰, the place's name, its
-status, then Panic and ⋯; the name wins over the status word, which yields to its
-dot first. Whenever the bar itself is narrow, on a phone or in a narrow window,
+status, then Panic and ⋯; the name wins over the status word, which a short row
+drops whole, keeping its mark. Whenever the bar itself is narrow, on a phone or in a narrow window,
 Restart and the budget move into ⋯ — the same controls, placed by the bar's
 width. Tabs sit under the row; a page's description is its first paragraph, and a
 history note hangs under the bar, neither inside it.
@@ -2169,8 +2170,9 @@ applies only where a pointer can hover (`@media (hover: hover)`).
 
 **Touch and containment.** Under a coarse pointer every target is at least 44 px
 (`--touch-target-min`); a control whose look is smaller keeps its look and gains
-the invisible hit area of the one `.ui-hit-area` recipe in `web/ui.css`. Nothing
-that acts is hidden until hover. No page scrolls sideways at any width; only
+the invisible hit area of the one `.ui-hit-area` recipe in `web/ui.css`, which a
+link inside a sentence takes too so the sentence keeps its lines. Nothing that
+acts is hidden until hover there. No page scrolls sideways at any width; only
 code, tables and tab strips scroll sideways, inside themselves, with a fade where
 content hides. Text wraps before it widens a column.
 

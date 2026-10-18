@@ -198,16 +198,12 @@ function syncNavigationState() {
     if (navDrawerBackdrop) navDrawerBackdrop.hidden = !drawerOpen;
     // In the stack layout the closed drawer is off screen: inert and out of the tab order.
     if (primarySidebar) primarySidebar.inert = isStackLayout() && !drawerOpen;
-    // The drawer is a modal layer (its scrim stays live); the Project panel is one too, modal only where it
-    // covers the room (stack).
+    // The drawer is a modal layer (its scrim stays live); the Project panel's layer, modal only where it covers the
+    // room (stack), is pushed below once the panel is shown.
     if (drawerOpen) {
         layers.push({ id: 'drawer', el: primarySidebar, modal: true, live: [navDrawerBackdrop].filter(Boolean),
             onClose: () => setMobileDrawerOpen(false) });
     } else layers.remove('drawer');
-    if (activeProjectId) {
-        layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
-            onClose: () => closeProjectPanel() });
-    } else layers.remove('project');
 
     document.querySelectorAll('[data-nav-page]').forEach((button) => {
         const isActive = !activeProjectId && button.dataset.navPage === state.activePage;
@@ -248,6 +244,11 @@ function syncNavigationState() {
         }
         document.body.classList.toggle('project-panel-open', Boolean(activeProjectId));
     }
+    // After the unhide, so focus can go into the panel when it opens.
+    if (activeProjectId) {
+        layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
+            onClose: () => closeProjectPanel() });
+    } else layers.remove('project');
 }
 
 // Docked: the Project panel is the frosted overlay over the content area and takes the whole
@@ -285,7 +286,7 @@ document.addEventListener('click', (event) => {
 navDrawerBackdrop?.addEventListener('click', () => setMobileDrawerOpen(false));
 // The drawer follows a finger (drawer_drag.js; DRAWER_DRAG switches it off); ☰ and × remain its controls.
 const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
-    sidebar: primarySidebar, scrim: navDrawerBackdrop, layers,
+    sidebar: primarySidebar, scrim: navDrawerBackdrop,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
 }) : () => {};

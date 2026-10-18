@@ -36,7 +36,9 @@ def test_registry_matches_the_init_map_and_the_page_sections():
         if page_id == "chat":
             assert "title = pageLabel('chat')" in header, "Main's header title is the registry label"
         else:
-            assert f"title: '{label}'" in header, f"{page_id}: the header title must be the registry label verbatim"
+            # The header names the place by its registry id, so the title IS the label (no second copy to drift).
+            assert f"page: '{page_id}'" in header, f"{page_id}: the header must read its title from the registry"
+            assert f"title: '{label}'" not in header, f"{page_id}: a literal title copies the registry label"
     # Every init app.js calls for a page is in the registry (the shell's pages, not the Dashboard's panels).
     page_inits = {init for init in inits if init in {r[4] for r in rows}}
     assert page_inits == {r[4] for r in rows}

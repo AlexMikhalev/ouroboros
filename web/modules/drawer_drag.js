@@ -25,19 +25,20 @@ export const INTERACTIVE_SELECTOR = 'input, textarea, select, button, a[href], s
     + '[role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="slider"], [contenteditable]:not([contenteditable="false"])';
 // What scrolls sideways itself: code, tables, tab strips, anything that declares it.
 export const SIDEWAYS_SELECTOR = 'pre, code, table, .md-table-wrap, .app-tab-strip, [data-scroll-x]';
-// What lies over the room and owns the finger while it is open: a dialog, the reader, a menu, the Shade.
+// What lies over the room and owns the finger while it is open (shown, not merely mounted): a dialog, the reader,
+// a menu, the Shade. A Project open on the phone is the room: the drag opens the drawer over it, as ☰ does.
 export const BLOCKING_SELECTOR = 'dialog[open], .marketplace-modal-backdrop, .ui-popup, .task-control-menu, '
     + '.chat-photo-menu, .rw-shade:not([hidden]), details.chat-header-more[open]';
 
 const clamp = (value) => Math.min(1, Math.max(0, value));
 
 export function bindDrawerDrag({
-    sidebar, scrim, layers, isOpen, setOpen, isStack, isCoarse,
+    sidebar, scrim, isOpen, setOpen, isStack, isCoarse,
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
     isInteractive = (el) => Boolean(el?.closest?.(INTERACTIVE_SELECTOR)),
     isSideways = (el) => Boolean(el?.closest?.(SIDEWAYS_SELECTOR)),
-    isBlocked = () => Boolean(doc?.querySelector?.(BLOCKING_SELECTOR)),
+    isBlocked = () => [...(doc?.querySelectorAll?.(BLOCKING_SELECTOR) || [])].some((el) => el.getClientRects?.().length),
     hasSelection = () => Boolean(String(win?.getSelection?.()?.toString?.() || '').length),
 } = {}) {
     if (!enabled || !sidebar || !scrim) return () => {};
@@ -63,7 +64,7 @@ export function bindDrawerDrag({
         if (event.clientX < DRAG.edgeStart) return false;
         if (sidebar.contains?.(target) || scrim.contains?.(target)) return false;
         if (isInteractive(target) || isSideways(target) || hasSelection()) return false;
-        if (isBlocked() || (layers?.size?.() || 0) > 0) return false;
+        if (isBlocked()) return false;
         if (chainKeepsGesture(target)) return false;
         return true;
     }
@@ -87,8 +88,8 @@ export function bindDrawerDrag({
     };
 
     function onDown(event) {
+        if (g && event.pointerId !== g.id) { restore(); return; }  // a second finger: back to where we started
         if (!event.isPrimary || event.pointerType !== 'touch') return;
-        if (g) { restore(); return; }  // a second finger: back to where we started
         if (!isStack() || !isCoarse()) return;
         const open = Boolean(isOpen());
         if (open ? !eligibleCloseStart(event) : !eligibleOpenStart(event)) return;
