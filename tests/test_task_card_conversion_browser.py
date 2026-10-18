@@ -30,6 +30,7 @@ from tests.test_chat_addressing_browser import ToolCallOnlyModel
 from tests._shared import producer_evidence_dir
 from tests.test_owner_wait_integration import wait_clone as clone_fixture
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
+from tests.ui_console_errors import PageErrors
 
 wait_clone = clone_fixture
 pytestmark = [pytest.mark.serial, pytest.mark.ui_browser]
@@ -111,8 +112,7 @@ def test_running_direct_turn_converts_to_project_and_its_answer_follows(
             with sync_playwright() as pw:
                 browser = getattr(pw, engine).launch()
                 page = browser.new_page(viewport={"width": width, "height": 900}, has_touch=width < 980)
-                errors = []
-                page.on("pageerror", lambda error: errors.append(str(error)))
+                errors = PageErrors(page, engine)
                 page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
                 page.add_init_script(f"localStorage.setItem('ouroboros.theme', '{theme}')")
                 try:
@@ -261,7 +261,7 @@ def test_running_direct_turn_converts_to_project_and_its_answer_follows(
                     page.wait_for_selector("#project-panel:not([hidden])")
                     page.locator("#project-panel").get_by_text('The converted turn finished its work.', exact=False).first.wait_for(timeout=30000)
                     page.screenshot(path=str(evidence / "reloaded-project.png"), full_page=True, animations="disabled")
-                    assert not errors, errors
+                    assert not errors.unexpected(), errors
                     (evidence / "receipt.json").write_text(json.dumps({
                         "engine": engine, "theme": theme, "width": width, "task": task, "at_click": at_click,
                         "from_task_response": payload, "binding": binding,
