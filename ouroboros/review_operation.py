@@ -875,7 +875,7 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
     from ouroboros.gateways.claudexor import final_attempt_facts
     from ouroboros.review_records import ReviewActorRecord
     from ouroboros.review_verdict_extraction import canonicalize_session_verdict
-    from ouroboros.triad_review import default_output_contract, review_output_shape
+    from ouroboros.triad_review import default_output_contract, request_output_shape
 
     try:
         gateway = read_owned_gateway()
@@ -937,7 +937,7 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
                                  error=f"delegated review run {run_id} ended {state or 'without a state'}",
                                  operation_id=operation_id, operation_state="late_settled",
                                  recovery_binding=binding)
-    shape = review_output_shape(request.surface)
+    shape = request_output_shape(request)
     canonical, method, _unused = canonicalize_session_verdict(
         text, conformance_passed=str(summary.get("outputConformance") or "").lower() == "passed",
         contract=str((request.policy or {}).get("output_contract") or "") or default_output_contract(shape),

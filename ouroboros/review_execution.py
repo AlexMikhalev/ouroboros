@@ -45,6 +45,7 @@ from ouroboros.delegate_custody_usage import (
 from ouroboros.triad_review import (
     TWO_PART_SESSION_OUTPUT_SCHEMA,
     default_output_contract,
+    request_output_shape,
     review_output_shape,
 )
 from ouroboros.deadline_utils import (
@@ -339,7 +340,7 @@ class ReviewSlotExecutor:
 
     def _output_contract(self) -> str:
         contract = str((self.assignment.request.policy or {}).get("output_contract") or "")
-        return contract or default_output_contract(review_output_shape(self.assignment.request.surface))
+        return contract or default_output_contract(request_output_shape(self.assignment.request))
 
     def prompt_payload(self) -> Dict[str, Any]:
         """Route-owned projection of what will actually be sent (for the durable
@@ -526,7 +527,7 @@ REVIEW_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
+def review_session_output_schema(surface: str, shape: str = "") -> Optional[Dict[str, Any]]:
     """The session verdict schema, shaped to the SURFACE's own clean contract.
 
     The shared schema admits ``{"findings": []}`` — the honest clean verdict for an
@@ -534,8 +535,9 @@ def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     rows (PASS included): its schema demands ``minItems: 1`` and the downstream parser
     still verifies exact item coverage. The commit gate's ``two_part`` shape asks for
     contract B's one object; a ``report`` surface for NO schema — its prose passes verbatim.
+    ``shape`` is the request's own when it names one (``triad_review.request_output_shape``).
     """
-    shape = review_output_shape(surface)
+    shape = shape or review_output_shape(surface)
     if shape in ("report", "two_part"):
         return {"two_part": TWO_PART_SESSION_OUTPUT_SCHEMA}.get(shape)
     if shape == "plan_reply":
@@ -1338,7 +1340,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 slot_id=slot.slot_id,
                 timeout_sec=logical_timeout,
                 logical_key_extra=(self.assignment.call_id,),
-                output_schema=review_session_output_schema(request.surface),
+                output_schema=review_session_output_schema(request.surface, request_output_shape(request)),
                 session_route=session_route_for_review_slot(slot),
                 retry_state=self._retry_state,
                 reconcile_only=bool(getattr(request, "reconcile_only", False)),
@@ -1362,7 +1364,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         # Array/object surfaces REQUEST the structured verdict; a report surface
         # asks for no schema, so neither its absence nor its non-conformance is
         # a landing of any reason.
-        schema_requested = review_session_output_schema(request.surface) is not None
+        schema_requested = review_session_output_schema(request.surface, request_output_shape(request)) is not None
         if schema_requested and not facts["schema_asked"]:
             # An effective transport that cannot carry the schema is a landing
             # below the ask, disclosed rather than silently downgraded (D4).
@@ -1444,7 +1446,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
-            shape=review_output_shape(self.assignment.request.surface),
+            shape=request_output_shape(self.assignment.request),
         )
         usage = dict(self._session_usage)
         deltas = list(self._deltas)

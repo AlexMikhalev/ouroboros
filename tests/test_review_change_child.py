@@ -48,8 +48,11 @@ def tree(tmp_path, monkeypatch, fake_route):
 
     def unique_start(self, request, **kwargs):
         root = Path(request['scope']['root'])
-        FakeGateway.reviewed.append({'root': str(root), 'tree': shared.git(root, 'write-tree'),
-                                     'diff': shared.git(root, 'diff', '--cached')})
+        try:
+            tree, diff = shared.git(root, 'write-tree'), shared.git(root, 'diff', '--cached')
+        except AssertionError:  # a result subject's root is the folder holding its text, not a checkout
+            tree = diff = None
+        FakeGateway.reviewed.append({'root': str(root), 'tree': tree, 'diff': diff})
         result = start(self, request, **kwargs)
         return {**result, 'runId': f'run-{len(_starts())}'}
 
@@ -86,11 +89,15 @@ def test_public_split_drive_shares_paid_ceiling(tree, monkeypatch, first_author,
     assert len([row for row in load_state(parent.drive_root).attempts if row.paid]) == 1
 
 
-def test_an_acting_child_can_ask_for_a_review_of_its_own_result(tree):
+def test_an_acting_child_can_ask_for_a_review_of_its_own_result(tree, monkeypatch):
     """No result review is forced on a child, but its schema offers one: the same pool, its own record."""
     parent, child, _project = tree
+    # A result seat answers the one result question; under a JSON schema a clean answer is no findings.
+    monkeypatch.setattr(FakeGateway, 'detail', _terminal_detail('{"findings": []}', conformance='passed'))
     result = _call(child, subject='result', answer='The child bumped VALUE to 2.')
     assert result['aggregate'] == 'PASS' and result['subject']['kind'] == 'result', result
+    (start,) = _starts()
+    assert start['outputSchema']['required'] == ['findings'], 'a result seat is asked for findings, not change/coupling'
     assert load_record(parent.drive_root, result['record_id'])['task_id'] == child.task_id
 
 
@@ -370,7 +377,7 @@ def test_review_grants_no_commit_control_or_self_approval(tree):
     _, child, _ = tree
     reg = _registry(child)
     for tool in ('commit_reviewed', 'vcs_commit_reviewed', 'request_restart',
-                 'promote_to_stable', 'enable_tools', 'skill_review', 'task_acceptance_review'):
+                 'promote_to_stable', 'enable_tools', 'skill_review'):
         assert reg.get_schema_by_name(tool) is None, tool
         assert 'BLOCKED' in reg.execute(tool, {}), tool
     assert not _starts()

@@ -47,7 +47,7 @@ from ouroboros.deadline_utils import caller_deadline_arguments, owner_deadline_e
 from ouroboros.event_usage import event_token_counts
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
-from ouroboros.triad_review import review_output_shape
+from ouroboros.triad_review import request_output_shape
 from ouroboros.delegate_custody_usage import observe_failed_review_send
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
@@ -696,7 +696,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         max_tokens = int(request.max_tokens or slot.max_tokens)
         self._sizing_hint = native_episode_transcript_bound(request, slot)
         self._refresh_window()
-        shape = review_output_shape(request.surface)
+        shape = request_output_shape(request)
         # The operation's durable task root keeps continuation sources readable.
         # Explicit native_data_root still wins; only our own scratch is removed.
         data_root = str(self._source_root() or "").strip()
@@ -1398,7 +1398,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
-            shape=review_output_shape(self.assignment.request.surface),
+            shape=request_output_shape(self.assignment.request),
         )
         usage = dict(self._episode_usage)
         deltas: List[Dict[str, Any]] = list(self._episode_deltas)

@@ -287,7 +287,7 @@ def prepare_result_review(ctx: Any, subject: Any, *, goal: str = "", scope: str 
                 "need in place, nothing is copied for you.\n\n---\n\n# THE SUBJECT\n\n" + subject.diff_text)
         digest = hashlib.sha256(task.encode("utf-8")).hexdigest()
         tasks[index], shas[index], texts[digest] = task, digest, task
-        policies[index] = {"output_contract": REVIEW_JSON_ARRAY_CONTRACT}
+        policies[index] = {"output_contract": REVIEW_JSON_ARRAY_CONTRACT, "output_shape": "array"}
         manifests.append({"slot_id": str(row_plan["slot_ids"][index]), "delivery": "retrieving", "parts": ["result"],
                           "brief_chars": len(task), "sha": {"brief": digest}})
     row_plan.update(session_tasks=tasks, session_policies=policies, brief_shas=shas)

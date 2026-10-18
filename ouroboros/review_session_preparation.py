@@ -12,13 +12,13 @@ from typing import Any, Dict, Optional
 
 from ouroboros.deadline_utils import bounded_seconds
 from ouroboros.delegate_start_instructions import HOST_FACTS_INSTRUCTION
-from ouroboros.triad_review import default_output_contract, review_output_shape
+from ouroboros.triad_review import default_output_contract, request_output_shape
 
 
 def render_review_session_prompt(request: Any, slot: Any, task: str) -> str:
     """The session wrapper, shared by source preparation's exact first-send measurement."""
     contract = str((request.policy or {}).get("output_contract") or "")
-    contract = contract or default_output_contract(review_output_shape(request.surface))
+    contract = contract or default_output_contract(request_output_shape(request))
     access = str(getattr(slot, "session_access", "") or "readonly")
     return "\n".join((
         ("You are an independent Ouroboros reviewer slot running as a read-only agent session."

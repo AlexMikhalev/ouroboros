@@ -292,6 +292,15 @@ def review_output_shape(surface: str) -> str:
     return REVIEW_OUTPUT_SHAPES.get(str(surface or ""), "array")
 
 
+def request_output_shape(request: Any) -> str:
+    """The shape one request's seat answers: its policy's own ``output_shape`` when it names one (a
+    result wave rides the commit surface but asks contract A), else its surface's. The ask, the
+    session schema and the canonicalizer all read this one fact, so they never disagree."""
+    shape = str((getattr(request, "policy", None) or {}).get("output_shape") or "")
+    return shape if shape in {"array", "two_part", "report", "plan_reply"} else review_output_shape(
+        str(getattr(request, "surface", "") or ""))
+
+
 def default_output_contract(shape: str) -> str:
     """The prompt contract a retrieving row is asked for when its surface hands
     over no ``policy["output_contract"]`` — keyed by the same shape the
