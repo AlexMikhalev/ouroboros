@@ -70,6 +70,7 @@ def test_fetch_credentials_are_scoped_to_github_https(credentials, tmp_path, mon
         headers = {key: value for key, value in config.items() if key.lower().endswith(".extraheader")}
         assert headers == ({"http.https://github.com/.extraheader": f"AUTHORIZATION: basic {ENCODED}"}
                            if retry and i % 2 else {})
+        assert config.get("credential.helper") == ("" if retry and i % 2 else None)
         assert env["GIT_TERMINAL_PROMPT"] == "0"
     for argv, _env in calls:
         assert TOKEN not in repr(argv) and ENCODED not in repr(argv)
@@ -123,9 +124,59 @@ def test_only_authentication_refusals_retry_once_with_a_configured_token(
     with pytest.raises(transport.SkillSourceFetchError) as exc:
         transport.fetch_tree(tmp_path / "clone", "https://github.com/example/private", "main")
     retry = bool(token) and authentication
-    assert attempts == (["1", "2"] if retry else ["1"])
+    assert attempts == (["1", "3"] if retry else ["1"])
     assert ("configured GitHub token was refused" in str(exc.value)) == retry
     assert failure in str(exc.value)
+
+
+def test_token_retry_never_asks_this_computers_credential_helpers(credentials, tmp_path, monkeypatch):
+    """A refused token must not make git erase a login a credential helper stored; the
+    anonymous read still uses the helpers (private repositories this computer can read)."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git is not installed")
+    calls = tmp_path / "helper-calls.txt"
+    helper = tmp_path / "helper.sh"
+    helper.write_text(f'#!/bin/sh\necho "$1" >> "{calls}"\n'
+                      'if [ "$1" = get ]; then echo username=stored; echo password=stored-login; fi\n',
+                      encoding="utf-8")
+    helper.chmod(0o755)
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(f'[credential]\n\thelper = {helper}\n'
+                         f'[credential "https://github.com"]\n\thelper = {helper}\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))  # never this computer's real helpers
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in ("GIT_ASKPASS", "SSH_ASKPASS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
+    envs = []
+
+    def run(argv, *, env, **kwargs):
+        if argv[1] == "fetch":
+            envs.append(env)
+            return 128, "", AUTH_REFUSAL
+        return 0, "", ""
+
+    monkeypatch.setattr("supervisor.git_ops._run_git_process_bounded", run)
+    with pytest.raises(transport.SkillSourceFetchError):
+        transport.fetch_tree(tmp_path / "clone", "https://github.com/example/private", "main")
+    anonymous, retry = envs
+    request = "protocol=https\nhost=github.com\npath=example/private\n"
+
+    def credential(action, env, extra=""):
+        return subprocess.run([git, "credential", action], input=request + extra + "\n", env=env,
+                              cwd=tmp_path, capture_output=True, text=True, timeout=30)
+
+    assert "username=stored" in credential("fill", anonymous).stdout
+    credential("reject", anonymous, "username=stored\npassword=stored-login\n")
+    assert set(calls.read_text(encoding="utf-8").split()) == {"get", "erase"}
+    calls.unlink()
+    assert credential("fill", retry).returncode != 0  # nothing to fill, and no prompt
+    credential("reject", retry, "username=stored\npassword=stored-login\n")
+    assert not calls.exists()
 
 
 @pytest.mark.parametrize("phase", ["anonymous", "authenticated"])

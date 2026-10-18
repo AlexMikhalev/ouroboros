@@ -3,7 +3,8 @@
 A hub and a plain skills repository are both read from a clone under
 ``data/state/skill_sources/repos/<key>/repo`` (the two public hub rows share one clone because they read
 one repository). GitHub HTTPS reads try anonymously first, then retry an authentication refusal once
-with the configured token; other sources use this computer's git credentials. Reads are local files;
+with the configured token alone (no credential helper, so its refusal never erases a stored login);
+other sources use this computer's git credentials. Reads are local files;
 a refresh fetches the newest commit of the configured
 branch (or the pinned commit) and is started in the background by whoever shows or searches a catalog.
 A pointer entry's author repository is fetched at its exact commit into ``pointers/<key>/repo``.
@@ -103,10 +104,14 @@ def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_S
         if code and args[0] == "fetch" and secrets and any(marker in str(err or out).lower() for marker in (
                 "could not read username", "could not read password", "authentication failed",
                 "repository not found", "returned error: 401", "returned error: 403")):
+            # The empty helper clears this computer's credential helpers for the retry: a
+            # refused token must not make git erase the login a helper stored.
             index = int(env.get("GIT_CONFIG_COUNT") or "0")
-            env = {**env, "GIT_CONFIG_COUNT": str(index + 1),
+            env = {**env, "GIT_CONFIG_COUNT": str(index + 2),
                    f"GIT_CONFIG_KEY_{index}": "http.https://github.com/.extraheader",
-                   f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {secrets[1]}"}
+                   f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {secrets[1]}",
+                   f"GIT_CONFIG_KEY_{index + 1}": "credential.helper",
+                   f"GIT_CONFIG_VALUE_{index + 1}": ""}
             authenticated = True
             code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
     except Exception as exc:
