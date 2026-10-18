@@ -8,7 +8,9 @@ OUROBOROS_STARTER_SKILLS_TURN_ON (default true) decides first enablement. An ins
 that never shows onboarding (headless, Colab, a preset) runs the same installer at its first start with
 the default list. ``state/skill_starter.json`` records the outcome so the installer never runs twice:
 built-ins work offline, and a hub skill that could not be fetched yet is retried at a later start. An
-existing install that upgrades gets nothing installed; Browse shows the recommended shelf instead.
+existing install that upgrades gets only the bundled default-on built-ins, once (``skill_builtin``);
+Browse shows the recommended shelf instead. The marker's ``defaults_offered`` names the default-on
+built-ins an install was already offered, by its starter (ticked or not) or at an update.
 """
 
 from __future__ import annotations
@@ -134,6 +136,16 @@ def starter_groups(drive_root: pathlib.Path, *, rows: Optional[List[Dict[str, An
     }
 
 
+def record_defaults_offered(drive_root: pathlib.Path, names: List[str]) -> None:
+    """Default-on built-ins this install was offered: no later start offers them again. Never raises."""
+    try:
+        done = set(read_marker(drive_root).get("defaults_offered") or [])
+        if names and not set(names) <= done:
+            _write_marker(drive_root, defaults_offered=sorted(done | set(names)))
+    except Exception:
+        log.warning("Starter skill default offer could not be recorded", exc_info=True)
+
+
 def _install_one(drive_root: pathlib.Path, item_id: str, rows: List[Dict[str, Any]],
                  repo_dir: Optional[pathlib.Path]) -> Dict[str, Any]:
     from ouroboros.config import get_starter_skills_turn_on
@@ -174,6 +186,11 @@ def run_starter(drive_root: pathlib.Path, ids: Optional[List[str]], *, origin: s
         chosen = list(ids) if ids is not None else starter_ids(drive_root, settings, builtin_rows, repo_dir=repo_dir)
         marker = _write_marker(drive_root, state="running", origin=origin, requested=chosen,
                                resolve_default=ids is None)
+        from ouroboros.skill_builtin import bundled_skills_dir, default_on_names
+
+        # This list presented the default-on built-ins (ticked by default; an owner's untick stands).
+        record_defaults_offered(drive_root, default_on_names(
+            pathlib.Path(repo_dir) / "skills" if repo_dir is not None else bundled_skills_dir()))
         results = dict(marker.get("results") or {})
         def install(item_id: str) -> None:
             if (results.get(item_id) or {}).get("status") not in {"installed", "skipped", "failed"}:

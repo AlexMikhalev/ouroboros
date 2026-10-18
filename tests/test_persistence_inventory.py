@@ -791,7 +791,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # now-derived existing rollback location ``skills/*/.rollback/*.*``.
 # 387 -> 412: both changes together (the skill-source paths above on the startup-architecture
 # count; ``state/native_seed.json`` is now written by ``ouroboros/skill_builtin.py``).
-EXPECTED_SCAN_PATHS = 412
+# 412 -> 413 (computer use on by default): the one-time offer reads the earlier launcher's
+# ``skills/native/.post-bootstrap-seed-*`` markers so a default the owner removed stays removed.
+EXPECTED_SCAN_PATHS = 413
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

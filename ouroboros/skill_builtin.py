@@ -11,7 +11,10 @@ no synthetic review verdict is written, and grants follow the ordinary auto-gran
 setting.
 
 A new install gets only the built-ins its starter selection ticks (the starter installer
-calls ``install_builtin_skill``); an existing install keeps what it has. Built-ins ride
+calls ``install_builtin_skill``; the maintainer's default-on built-ins for this host come
+ticked). An existing install keeps what it has and gets each default-on built-in once at an
+update: installed and asked to turn on when ready, or, when already installed with no
+enablement choice, asked to turn on; a removal or an Off stands. Built-ins ride
 app releases: at startup an unmodified built-in whose bundled version changed is re-seeded
 in place, keeping its enablement, its Telegram state and the owner's grants while the
 requested keys and permissions are unchanged; a copy with local changes is kept and the
@@ -389,6 +392,54 @@ def _bundled_names(seed_root: pathlib.Path) -> Optional[List[str]]:
         return None
 
 
+def default_on_names(seed_root: pathlib.Path) -> List[str]:
+    """Bundled built-ins the maintainer turns on by default on this host (``"default_on"`` in
+    ``skills/builtin.json``)."""
+    from ouroboros.utils import read_json_dict
+
+    index = read_json_dict(pathlib.Path(seed_root) / "builtin.json") or {}
+    names = [str(item.get("name") or "") for item in index.get("skills") or []
+             if isinstance(item, dict) and item.get("default_on") is True]
+    return [name for name in names if name and _is_seed(pathlib.Path(seed_root) / name)
+            and applies_here(pathlib.Path(seed_root) / name)]
+
+
+def _offer_default_builtins(drive: pathlib.Path, seed_root: pathlib.Path, logger: Any, failures: List[str]) -> None:
+    """An existing install gets each default-on built-in once (a new install's starter presents them)."""
+    from ouroboros.skill_install_record import read_install_record, write_install_record
+    from ouroboros.skill_loader import skill_state_dir_path
+    from ouroboros.skill_starter import read_marker, record_defaults_offered
+
+    marker = read_marker(drive)
+    if str(marker.get("state") or "") in {"", "fresh", "running", "error"}:
+        return  # the install's own starter has yet to present them
+    done = set(marker.get("defaults_offered") or [])
+    native = drive / "skills" / "native"
+    offered: List[str] = []
+    for name in default_on_names(seed_root):
+        if name in done:
+            continue
+        target = native / name
+        if target.exists():
+            if (target / SEED_MARKER).is_file() and not (skill_state_dir_path(drive, name) / "enabled.json").exists():
+                record = read_install_record(drive, name)
+                if record is not None and record.get("turn_on_when_ready") is not True:
+                    write_install_record(drive, name, {**record, "turn_on_when_ready": True})
+            offered.append(name)  # a markerless payload is the owner's own
+            continue
+        if (native / f".post-bootstrap-seed-{name}").exists():
+            offered.append(name)  # an earlier release offered it; the owner removed it
+            continue
+        result = install_builtin_skill(name, drive_root=drive, seed_dir=seed_root, turn_on_when_ready=True,
+                                       installed_by="ouroboros", reason="on by default for this computer")
+        if result.get("ok"):
+            offered.append(name)
+        else:
+            failures.append(name)  # e.g. another installed skill holds the name: offered once it is gone
+            logger.warning("Default-on built-in %s was not installed: %s", name, result.get("error"))
+    record_defaults_offered(drive, offered)
+
+
 def _requested_on(drive: pathlib.Path, skill: Any) -> bool:
     """An install that asked to turn on when ready and has no enablement choice yet."""
     from ouroboros.skill_install_record import read_install_record
@@ -522,6 +573,11 @@ def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj:
     except Exception:
         failures.append("release")
         logger.warning("Removed built-in release raised", exc_info=True)
+    try:
+        _offer_default_builtins(drive, seed_root, logger, failures)
+    except Exception:
+        failures.append("defaults")
+        logger.warning("Default-on built-in offer raised", exc_info=True)
     names = _bundled_names(seed_root)
     if names is None or _builtins_needing_dependencies(drive, names, logger) != []:
         failures.append("dependencies")  # unknown readiness is not completion

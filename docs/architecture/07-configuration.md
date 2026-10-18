@@ -165,7 +165,7 @@ One row per key (`settings_defaults.py`). Env-only rows have no settings.json ca
 | MCP_ENABLED | false | MCP client toggle (§6 MCP and browser-facing external tools) |
 | MCP_SERVERS | [] | MCP server list; persisted in settings, never env-exported |
 | MCP_TOOL_TIMEOUT_SEC | 60 | Per-MCP-tool timeout |
-| OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | Derives two hub rows; builds with a non-GitHub raw URL instead set `OUROBOROS_SKILL_SOURCES` with the git address |
+| OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | Derives the two hub rows; a non-GitHub raw URL needs `OUROBOROS_SKILL_SOURCES` with the git address |
 | OUROBOROS_CLAWHUB_REGISTRY_URL | `https://clawhub.ai/api/v1` | ClawHub registry URL |
 | OUROBOROS_SKILL_SOURCES | "" | Skill source list (§13); empty = derived from the keys above, unwritten |
 | OUROBOROS_STARTER_SKILLS | "" | Starter catalog ids from any source; absent/"" = recommended, `[]` or "[]" = none; built-ins install before git reads |

@@ -158,7 +158,7 @@ def test_a_legacy_unix_remote_choice_on_windows_survives_off_reseed_and_on(data,
     (state / "active_connection.txt").write_text("bench\n", encoding="utf-8")
     retained = {name: (state / name).read_bytes() for name in ("connections.json", "active_connection.txt", "enabled.json")}
     assert reseed(data) == 1
-    assert not (native / WINDOWS).exists()  # an existing install is offered nothing new
+    assert not (native / WINDOWS).exists()  # a re-seed alone installs nothing new
     assert_peer_matches(data)
     assert UNIX in names(data)
     assert "legacy_remote_platform=win32" in (native / UNIX / ".seed-origin").read_text(encoding="utf-8").splitlines()
@@ -736,3 +736,139 @@ def test_unknown_dependency_readiness_never_certifies_the_pass(windows_installed
         assert boot() is None
     assert skill_builtin._bundled_names(data / "no-such-seed-tree") is None
     assert boot() == identity
+
+
+# ── computer use is on by default (owner decision 16.10; question 4 = A on 18.10) ──
+
+def _starter(drive, state, **fields):
+    from ouroboros.skill_starter import _write_marker
+
+    _write_marker(drive, state=state, **fields)
+
+
+def _boot(drive, monkeypatch):
+    """One startup's built-in work, its dependency pass run inline."""
+    monkeypatch.setattr(skill_builtin, "threading", SimpleNamespace(Thread=_SyncThread))
+    (drive / "state" / "native_seed.json").unlink(missing_ok=True)
+    return skill_builtin.ensure_builtin_skills(drive, repo_dir=REPO, log_obj=log)
+
+
+@pytest.fixture
+def lifecycle(monkeypatch):
+    installs = []
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
+    _stub_lifecycle_effects(monkeypatch)
+    return installs
+
+
+@pytest.mark.parametrize("platform,own,other", [("darwin", UNIX, WINDOWS), ("linux", UNIX, WINDOWS),
+                                                ("win32", WINDOWS, UNIX)])
+def test_a_new_install_starts_with_its_own_computer_use_skill_ticked_and_on(data, monkeypatch, lifecycle,
+                                                                             platform, own, other):
+    from ouroboros import skill_starter
+
+    on(monkeypatch, platform)
+    rows = [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(rows))
+    assert skill_builtin.default_on_names(SEEDS) == [own]
+    ticked = skill_starter.default_starter_ids(data, rows, repo_dir=REPO)
+    assert f"builtin/{own}" in ticked and f"builtin/{other}" not in ticked
+
+    marker = skill_starter.run_starter(data, None, origin="first_start", repo_dir=REPO)
+
+    assert marker["results"][f"builtin/{own}"]["status"] == "installed"
+    assert marker["defaults_offered"] == [own]
+    _dependency_pass(data, [own], log)  # dependencies an offline first start missed
+    assert load_enabled(data, own) is True and not (data / "skills" / "native" / other).exists()
+    assert lifecycle == ([["comtypes==1.4.17"]] if own == WINDOWS else [])
+
+
+def test_an_unticked_default_stays_off_the_install(data, monkeypatch, lifecycle):
+    from ouroboros import skill_starter
+
+    on(monkeypatch, "win32")
+    monkeypatch.setenv("OUROBOROS_SKILL_SOURCES", json.dumps(
+        [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]))
+    skill_starter.run_starter(data, ["builtin/telegram"], origin="onboarding", repo_dir=REPO)
+    assert _boot(data, monkeypatch) == 0
+    assert not (data / "skills" / "native" / WINDOWS).exists()
+
+
+def test_an_existing_windows_install_gets_the_windows_skill_once_on_update(data, monkeypatch, lifecycle):
+    on(monkeypatch, "win32")
+    _starter(data, "upgrade")
+
+    _boot(data, monkeypatch)
+
+    assert load_enabled(data, WINDOWS) is True and lifecycle == [["comtypes==1.4.17"]]
+    skill = find_skill(data, WINDOWS)
+    assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+    from ouroboros.skill_starter import read_marker
+
+    assert read_marker(data)["defaults_offered"] == [WINDOWS]
+    shutil.rmtree(data / "skills" / "native" / WINDOWS)  # the owner removes it
+    _boot(data, monkeypatch)
+    assert not (data / "skills" / "native" / WINDOWS).exists()
+
+
+@pytest.mark.parametrize("choice", [None, {"enabled": False, "actor": "owner_ui"}])
+def test_an_existing_unix_copy_is_turned_on_once_unless_the_owner_chose(data, monkeypatch, lifecycle, choice):
+    on(monkeypatch, "darwin")
+    native = earlier_install(data)
+    state = data / "state" / "skills" / UNIX
+    if choice is not None:
+        (state / "enabled.json").write_text(json.dumps(choice), encoding="utf-8")
+    connections = (state / "connections.json").read_bytes()
+    _starter(data, "upgrade")
+
+    _boot(data, monkeypatch)
+
+    assert skill_builtin._version(native / UNIX) == "0.5.0"
+    assert load_enabled(data, UNIX) is (choice is None)
+    assert (state / "connections.json").read_bytes() == connections
+    if choice is None:
+        save_enabled(data, UNIX, False, actor="owner_ui")  # a later Off stands at every start after it
+        _boot(data, monkeypatch)
+        assert load_enabled(data, UNIX) is False
+
+
+def test_a_default_an_earlier_release_offered_and_the_owner_removed_stays_removed(data, monkeypatch, lifecycle):
+    on(monkeypatch, "win32")
+    native = data / "skills" / "native"
+    native.mkdir(parents=True)
+    (native / f".post-bootstrap-seed-{WINDOWS}").write_text("offered\n", encoding="utf-8")
+    _starter(data, "upgrade")
+    _boot(data, monkeypatch)
+    assert not (native / WINDOWS).exists() and lifecycle == []
+
+
+def test_a_new_install_offers_nothing_before_its_starter_runs(data, monkeypatch, lifecycle):
+    on(monkeypatch, "win32")
+    _starter(data, "fresh")
+    _boot(data, monkeypatch)
+    assert not (data / "skills" / "native" / WINDOWS).exists()
+
+
+def test_a_name_held_by_another_skill_keeps_the_default_owed(data, monkeypatch, lifecycle):
+    on(monkeypatch, "win32")
+    held = data / "skills" / "external" / WINDOWS
+    held.mkdir(parents=True)
+    (held / "SKILL.md").write_text(f"---\nname: {WINDOWS}\ndescription: mine\nversion: 1.0.0\ntype: instruction\n---\nMine.\n",
+                                   encoding="utf-8")
+    _starter(data, "upgrade")
+    _boot(data, monkeypatch)
+    assert not (data / "skills" / "native" / WINDOWS).exists() and receipt(data) is None
+    from ouroboros.skill_starter import read_marker
+
+    assert WINDOWS not in (read_marker(data).get("defaults_offered") or [])
+
+
+def test_the_trust_opt_out_offers_without_acceptance_or_dependencies(data, monkeypatch, lifecycle):
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "false")
+    on(monkeypatch, "win32")
+    _starter(data, "upgrade")
+    _boot(data, monkeypatch)
+    skill = find_skill(data, WINDOWS)
+    assert skill is not None and not skill.review.gate_for(skill.content_hash)["executable_review"]
+    assert load_enabled(data, WINDOWS) is False and lifecycle == []

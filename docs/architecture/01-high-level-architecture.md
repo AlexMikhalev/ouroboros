@@ -312,14 +312,14 @@ ouroboros/ — agent core and shared runtime (§6)
   review_status_projection.py — Commit-review status projection over `review_state` records; re-exported by review_evidence.py
   semantic_dedup.py — LLM-first semantic dedup, fail-open None; consumed by review_state
   betterleaks_runtime.py — Pinned Betterleaks runtime resolver (six platform artifacts, packaged resource first)
-  skill_loader.py — Discovers data buckets and connected local folders (legacy `OUROBOROS_SKILLS_REPO_PATH` derives My folder); `.self_authored.json`; state in `data/state/skills/<name>/` (§13)
+  skill_loader.py — Discovers data buckets and connected folders (`OUROBOROS_SKILLS_REPO_PATH` is My folder); state in `data/state/skills/<name>/` (§13)
   skill_catalogue.py — compact whole-record skill index pages and named full diagnostics with a physical manifest read address (§13)
   skill_context_snapshot.py — Optional skill facts at the append-only tail; visible-base lease renewal (§6)
   skill_readiness.py — Execution readiness and next actions from review, hash, enablement, grants, dependencies and peer conflicts
   skill_peer_inventory.py, skill_conflicts.py — execution-time peers without payload reads: the `SkillPeer` projection and the one conflict verdict (§13)
   skill_dependencies.py — Dependency-spec resolution and installed-readiness probe for skills
   skill_repair_admission.py — selected-skill development admission against an immutable `base_content_hash`; no long shell lock or rollback (§6 Skills and extensions)
-  skill_owner_attestation.py — Skip review / Turn on anyway: the owner accepts any skill's exact bytes without LLM review (§13)
+  skill_owner_attestation.py — Skip review / Turn on anyway: the owner accepts exact bytes without LLM review (§13)
   skill_identity.py, skill_install_record.py, skill_acceptance.py, skill_builtin.py — Release digest and record conversion; install record; install-basis/owner-edit acceptance; the built-in source (§13)
   skill_publish_snapshot.py, skill_publish_scanner.py, skill_publish_result.py, skill_publish_github.py, skill_publish_client.py, skill_publish_eligibility.py, skill_publish_destination.py — Publication leaves: captured bytes, Betterleaks evidence, attempt/receipt, token HTTPS transport, author authority, destination and hub entry (§6 Skill publication)
   skill_review_status.py — The review gate → `executable_review` (§13): verdicts, Advisory author acceptance, install-basis and owner facts
@@ -560,7 +560,7 @@ ouroboros/ — agent core and shared runtime (§6)
 
 `ouroboros.cli` is a client of the same gateway and queue; there is no second task engine. Its parser (`ouroboros/cli.py`) is the command-surface SSOT. Streaming commands reserve stdout for the final answer, patch, result or JSONL and send progress to stderr, so automation can pipe results.
 
-`marketplace ouroboroshub` aliases `marketplace sources`; a bare install name resolves to its public hub offer. Catalog ids select any connected source.
+`marketplace ouroboroshub` aliases `marketplace sources`; a bare name resolves to the public hub; catalog ids reach any source.
 
 `POST /api/tasks` creates an ordinary managed root (§4); the CLI refuses any `delegation_role` other than `root`, and only `schedule_subagent` creates children. Admission reserves the task id and a worker-pool slot under one queue lock, off the HTTP event loop, so a cancelled HTTP waiter never cancels an admitted task; unconfirmed persistence answers 503 `unconfirmed` and keeps the row. Attachments are copied into the effective task drive before enqueue; a stored artifact reference is no host-path authority.
 
