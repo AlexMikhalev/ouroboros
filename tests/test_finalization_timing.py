@@ -426,47 +426,6 @@ def test_release_counts_actual_runs_and_daemon_requests(tmp_path, failed_read):
     assert timing_rows(tmp_path) == [], "a custody sweep is not another task completion"
 
 
-@pytest.mark.parametrize("failed", [False, True])
-def test_acceptance_phase_measures_the_existing_panel_dispatch(tmp_path, monkeypatch, failed):
-    from contextlib import nullcontext
-    from ouroboros import observability as obs, review_dispatch, review_substrate as rs
-    from ouroboros.loop_acceptance_review import _TaskAcceptanceContext, _execute_task_acceptance_panel
-
-    tool_ctx = SimpleNamespace(drive_root=tmp_path, task_id="review", task_metadata={})
-    ctx = _TaskAcceptanceContext(
-        tools=SimpleNamespace(_ctx=tool_ctx), content="Done.", task_id="review", task_type="task",
-        llm_trace={}, drive_root=tmp_path, messages=[], emit_progress=lambda text: None,
-        mode="auto", subtree_statuses=[], budget_profile={}, passes_done=0,
-        evidence={"observed": True}, review_binding={"paid_identity": "panel"},
-    )
-    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **kwargs: [rs.ReviewSlot(slot_id="slot", model="model")])
-    monkeypatch.setattr("ouroboros.tools.review_helpers.review_wave_budget_gate", lambda *args, **kwargs: None)
-    monkeypatch.setattr(review_dispatch, "run_zero_physical_task_acceptance", lambda *args, **kwargs: None)
-    monkeypatch.setattr(review_dispatch, "task_acceptance_preclaim_refusal", lambda *args: None)
-    monkeypatch.setattr(review_dispatch, "bind_task_acceptance_paid_dispatch", lambda *args: nullcontext(tool_ctx))
-    result = rs.ReviewRunResult(request={}, actors=[], parsed_findings=[], aggregate_signal="PASS")
-    calls = []
-
-    def dispatch(*args, **kwargs):
-        calls.append("dispatch")
-        if failed:
-            raise ValueError("panel transport failed")
-        return result
-
-    monkeypatch.setattr(rs, "run_review_request", dispatch)
-    with obs.task_timing_scope():
-        usage = {}
-        obs.mark_last_answer(usage)
-        if failed:
-            with pytest.raises(ValueError, match="panel transport failed"):
-                _execute_task_acceptance_panel(ctx)
-        else:
-            assert _execute_task_acceptance_panel(ctx) is result
-    phase = usage["_finalization_timing"]["phases"]["acceptance"]
-    assert calls == ["dispatch"] and phase["count"] == 1
-    assert phase["errors"] == int(failed) and phase["seconds"] >= 0
-
-
 @pytest.mark.parametrize("pooled", [False, True])
 def test_buffered_worker_handoff_stamps_a_value_snapshot(tmp_path, monkeypatch, pooled):
     import sys

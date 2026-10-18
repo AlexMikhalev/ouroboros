@@ -341,7 +341,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
 RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # v6.87.7: the depth cap conflated how DEEP delegation nests with how STRONG a descendant is.
     "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT",
-    # knobs are retired (the review-cycle cap OUROBOROS_REVIEW_MAX_CYCLES bounds plan review).
+    # The acceptance improvement-pass and plan-swarm knobs are retired (OUROBOROS_REVIEW_MAX_CYCLES bounds
+    # paid result, commit and skill waves; plan asks stand outside it).
     "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES",
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
