@@ -529,7 +529,7 @@ def test_explicit_post_refusal_low_projection_remains_available(tmp_path, monkey
     tool_ctx = SimpleNamespace(memory_view_facts=shown, _execution_trace={VIEW_TRACE_KEY: dict(shown)})
     ctx = SimpleNamespace(active_context_mode="max", context_fit_plan=built, messages=messages, tool_schemas=[],
                           tools=SimpleNamespace(_ctx=tool_ctx), task_id="t", round_idx=1,
-                          event_queue=None, drive_logs=tmp_path)
+                          event_queue=None, drive_logs=tmp_path, accumulated_usage={})
     events = []
     monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda *_a, **_kw: events.append(_a[-1]))
     # This helper is entered by the typed-refusal caller, not by a prediction.

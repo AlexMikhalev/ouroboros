@@ -225,7 +225,9 @@ def test_owner_continue_sends_two_local_notes_grouped_reviews_and_exact_dialogue
     (note,) = [row for row in assembled if row.get(HOST_CONTEXT_KIND_KEY) == PREDECESSOR_NOTES_NAME]
     assert assembled.index(note) == 2 and FIRST in note["content"] and SECOND in note["content"]
     pointer = receipt["selected_review_history_view"]
-    assert pointer["source_ref"]["path"] in note["content"]
+    from ouroboros.main_context_authority import WORKING_NOTES_FIELD
+
+    assert load_task_result(ctx.drive_root, ctx.task_id)[WORKING_NOTES_FIELD]["path"] in note["content"]  # last fold's
     assert f"get_task_result(task_id={ctx.task_id!r}, include_authority=True)" in note["content"]
     payload = json.loads(_get_task_result(successor, ctx.task_id, include_authority=True))
     assert payload["authority"][review_history_view.SELECTED_VIEW_FIELD] == pointer

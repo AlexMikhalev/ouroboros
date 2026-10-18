@@ -1379,6 +1379,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
         return (*retried, ctx.active_context_mode)
     if msg is not None or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") != "context_overflow":
         return msg, cost, ctx.active_context_mode
+    ctx.accumulated_usage[CONTEXT_REFUSAL_ROUND_KEY] = ctx.round_idx  # this round's size refusal, passes or not
 
     # Snapshot immediately: a reclaim summarizer is itself physically receipted
     # and would otherwise replace the failed Main candidate in the ContextVar.
@@ -1474,7 +1475,6 @@ def _recover_context_overflow(ctx: _RoundModelCallContext, failed_capture: Any, 
         _emit_overflow_retry_skipped(ctx, reason)
         return None, cost, ctx.active_context_mode
 
-    ctx.accumulated_usage[CONTEXT_REFUSAL_ROUND_KEY] = ctx.round_idx
     if not _failed_capture_is_comparable(failed_capture):
         return _skipped("failed_candidate_not_comparable")
     done = _loop()._context_overflow_retries(ctx.tools._ctx)

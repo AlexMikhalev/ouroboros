@@ -212,14 +212,15 @@ def publish_working_notes(ctx: Any, messages: Any) -> Optional[Dict[str, Any]]:
 
     Every actor capsule of the folded view, in order, is retained once as exact bytes and named by
     ``WORKING_NOTES_FIELD``; a successor reads them as its notes row (``predecessor_notes_message``),
-    whether or not the fold touched review history. A view with no notes left clears the field. A
-    failed write keeps the fold: the notes stay in the transcript and its checkpoints.
+    whether or not the fold touched review history. A view with no notes left clears the field, and a
+    view whose notes are already named leaves the result untouched. A failed write keeps the fold: the
+    notes stay in the transcript and its checkpoints.
     """
     import logging
 
     from ouroboros.artifacts import store_actor_source_bytes
     from ouroboros.context_compaction import _capsule_metadata
-    from ouroboros.task_results import write_task_result
+    from ouroboros.task_results import load_task_result, write_task_result
 
     def note_text(row: Mapping[str, Any]) -> str:
         capsule, meta = _capsule_metadata(row)
@@ -237,6 +238,8 @@ def publish_working_notes(ctx: Any, messages: Any) -> Optional[Dict[str, Any]]:
             ref = store_actor_source_bytes(root, task, category="context_checkpoints",
                                            source_id="working-notes-" + hashlib.sha256(raw).hexdigest(), data=raw,
                                            extension="json")
+        if (load_task_result(root, task) or {}).get(WORKING_NOTES_FIELD) == ref:
+            return ref  # the same notes are already named (a restore, a schema-only view)
         write_task_result(root, task, "running", strict_existing_dict=True, _field_projector=lambda existing, _new: {
             "status": existing.get("status") or "running", WORKING_NOTES_FIELD: ref})
         return ref

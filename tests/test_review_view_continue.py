@@ -57,6 +57,7 @@ def test_successor_startup_brief_notes_row_exact_read_and_new_gate_unchanged(har
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.context import _task_authority_projection
     from ouroboros.context_compaction import context_units, unit_kind
+    from ouroboros.main_context_authority import WORKING_NOTES_FIELD
     from ouroboros.review_history_view import capture_review_history_messages, SELECTED_VIEW_FIELD
     from ouroboros.task_results import load_task_result, load_plan_review_state
     from ouroboros.tools.control import _get_task_result
@@ -82,12 +83,13 @@ def test_successor_startup_brief_notes_row_exact_read_and_new_gate_unchanged(har
     assert 'historical_review_context' not in json.dumps(prefix) and 'plan_review_authority' not in prefix
     assert NOTE not in json.dumps(prefix) and LONG not in str(messages)
     assert tail == [], 'a fresh successor has no review rows of its own'
-    # The notes row: the predecessor's selected account, verbatim, right after the assignment,
-    # naming its exact retained source.
+    # The notes row: the predecessor's notes as its last fold named them (here with its selected
+    # review account), verbatim, right after the assignment, naming their exact retained source.
     assert NOTE in note['content'] and note['content'].count('[Actor-authored working view') == 1
     assert f"get_task_result(task_id={ctx.task_id!r}, include_authority=True)" in note['content']
+    working = load_task_result(ctx.drive_root, ctx.task_id)[WORKING_NOTES_FIELD]
+    assert working['path'] in note['content'] and working['sha256'] in note['content']
     ref = receipt['selected_review_history_view']['source_ref']
-    assert ref['path'] in note['content'] and ref['sha256'] in note['content']
     # Foldable by the existing unit rules: one dialogue unit of kind user; the assignment is never one.
     units = context_units(messages, scope='dialogue')
     assert [unit.start for unit in units] == [2] and unit_kind(messages, units[0]) == 'user'
@@ -112,15 +114,22 @@ def test_successor_startup_brief_notes_row_exact_read_and_new_gate_unchanged(har
     assert Path(ctx.drive_root).is_dir()
 
 
-def test_continue_lost_selected_source_is_a_typed_gap_row_without_copying_authority(harness):
+@pytest.mark.parametrize('lost', ['working_notes', 'legacy_selection'])
+def test_continue_lost_notes_source_is_a_typed_gap_row_without_copying_authority(harness, lost):
     from ouroboros.artifacts import task_artifact_dir_path
     from ouroboros.context import _task_authority_projection
-    from ouroboros.task_results import load_plan_review_state, load_task_result
+    from ouroboros.main_context_authority import WORKING_NOTES_FIELD
+    from ouroboros.task_results import load_plan_review_state, load_task_result, write_task_result
     from ouroboros.review_history_view import SELECTED_VIEW_FIELD
     ctx = first_plan(harness)
     _, receipt, _ = _apply(ctx, _capture(ctx), review_notes=notes_for(ctx))
     env, task = successor(ctx)
-    ref = receipt['selected_review_history_view']['source_ref']
+    ref = load_task_result(ctx.drive_root, ctx.task_id)[WORKING_NOTES_FIELD]  # the source the row reads
+    if lost == 'legacy_selection':  # a record written before working notes: the row reads the selection
+        write_task_result(ctx.drive_root, ctx.task_id, 'running', strict_existing_dict=True,
+                          _field_projector=lambda existing, _new: {'status': existing.get('status'),
+                                                                   WORKING_NOTES_FIELD: None})
+        ref = receipt['selected_review_history_view']['source_ref']
     (task_artifact_dir_path(ctx.drive_root, ctx.task_id, create=False) / ref['path']).unlink()
     gate = deepcopy(load_plan_review_state(ctx.drive_root, task['id']))
     runtime = _task_authority_projection(env, task)
