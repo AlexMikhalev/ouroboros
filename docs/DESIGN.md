@@ -2130,10 +2130,10 @@ has a pinned head (Main Chat), one collection (Projects, the column's only
 scroller) and the tools right after it (Files, Skills, Widgets, Dashboard,
 Settings, then the version and the update), which reach the bottom edge only
 when the Projects do not fit: free room stays under the last row, never between
-them. Collapsed, the Projects keep the ones whose dots show (work running, queued
-or waiting), the open one and the one under the keyboard; the rest wait behind
-"Show all N". The order follows §5; no label is set
-in capitals. A short window first compacts rows (fine pointer only), then lets the
+them. Each Project has a sibling Pin toggle: outline at rest, filled in Project
+colour when pressed, never an open gesture. Pins lead; §5 orders within each group.
+Collapsed keeps pins, live dots, the open and keyboard rows; others wait behind
+"Show all N". Labels are not capitals. A short window first compacts rows (fine pointer only), then lets the
 whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
 place is chosen at a time, and pressing a place opens it, never closes it.
 

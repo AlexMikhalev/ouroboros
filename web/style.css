@@ -6862,7 +6862,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    no left active bar) — a dropdown list, not standalone tabs. */
 .nav-project-item {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    grid-template-columns: minmax(0, 1fr) repeat(2, var(--nav-control-h));
     align-items: center;
     width: 100%;
     border-radius: var(--radius-sm);
@@ -7003,7 +7003,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 
 /* A row's ⋯: visible at rest where there is no hover (a phone); under a mouse it appears with the row's hover or
    focus, so actions never depend on hover (DESIGN "actions never depend on hover"). */
-.nav-project-kebab {
+.nav-project-kebab,
+.nav-project-pin {
     width: var(--nav-control-h);
     height: var(--nav-control-h);
     display: inline-flex;
@@ -7017,7 +7018,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     border-radius: var(--radius-sm);
 }
 
-.nav-project-kebab > svg {
+.nav-project-kebab > svg,
+.nav-project-pin > svg {
     width: 18px;
     height: 18px;
 }
@@ -7028,23 +7030,30 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     .nav-project-item:focus-within .nav-project-kebab {
         opacity: 1;
     }
-    .nav-project-kebab:hover {
+    .nav-project-kebab:hover,
+    .nav-project-pin:hover {
         color: var(--text-primary);
         background: var(--tone-quiet-hover);
     }
 }
 
-.nav-project-kebab:focus-visible {
+.nav-project-kebab:focus-visible,
+.nav-project-pin:focus-visible {
     color: var(--text-primary);
     background: var(--tone-quiet-hover);
 }
 
 /* Hover paint is not a focus ring: the kebab had only the paint, so a keyboard
    user could not tell it was focused (docs/DESIGN.md "Focus"). */
-.nav-project-kebab:focus-visible {
+.nav-project-kebab:focus-visible,
+.nav-project-pin:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: -2px;
 }
+
+.nav-project-pin[aria-pressed="true"] { color: var(--project); }
+.nav-project-pin[aria-pressed="true"] .pin-head { fill: currentColor; }
+.nav-project-pin[aria-disabled="true"] { cursor: wait; }
 
 /* New Project dialog */
 .new-project-dialog {

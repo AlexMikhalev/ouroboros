@@ -15,7 +15,7 @@ import { initFiles } from './modules/files.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
 import { apiClient } from './modules/api_client.js';
-import { openNewProjectDialog, openProjectRowMenu } from './modules/project_create.js';
+import { openNewProjectDialog, openProjectRowMenu, repositionProjectRowMenu } from './modules/project_create.js';
 
 import { initLogs } from './modules/logs.js';
 import { initEvolution } from './modules/evolution.js';
@@ -116,6 +116,7 @@ const projectPaintRequests = new Map();
 const projectReveals = new Map();
 let knownProjectsJson = '';
 let lastProjectRows = [];
+const pendingProjectPins = new Set();
 let projectActivityRows = new Map();
 let projectActivityIndex = buildProjectActivityIndex();
 let activitySocketDisconnected = false;
@@ -634,7 +635,7 @@ function syncProjectsCollapse() {
         if (!item.classList.contains('nav-project-item')) continue;
         total += 1;
         // A row under the keyboard or with its menu open stays until focus leaves it (the list's focusout below).
-        const keep = !collapsed || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'))
+        const keep = !collapsed || item.hasAttribute('data-pinned') || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'))
             || item.contains(document.activeElement) || Boolean(item.querySelector('[aria-expanded="true"]'));
         item.hidden = !keep;
         if (keep) shown += 1;
@@ -679,6 +680,7 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
             _unread: String(p.lifecycle || 'active') === 'active' && isUnread(p),
         }))
         .sort((a, b) => {
+            if ((a.pinned === true) !== (b.pinned === true)) return a.pinned === true ? -1 : 1;
             if (a._unread !== b._unread) return a._unread ? -1 : 1;  // unread to the top
             return recency(b).localeCompare(recency(a));
         });
@@ -687,7 +689,7 @@ function renderProjectsNav(projects, projectChatIds, activityIndex = projectActi
     }
     if (rows.some(p => p._unread)) refreshSharedProjectSeen();
     const json = JSON.stringify(rows.map(p => [
-        p.id, p.name, p.chat_id, p.lifecycle, p.visible_revision, p._unread, p.delete_error,
+        p.id, p.name, p.chat_id, p.lifecycle, p.visible_revision, p._unread, p.delete_error, p.pinned === true,
     ]));
     // Activity is a projection over the existing census and must not rebuild
     // the keyed menu: replacing rows here would steal focus from an open menu,
@@ -814,10 +816,11 @@ function refreshSharedProjectSeen() {
         .finally(() => { sharedSeenRead = null; });
 }
 
-// Paint the collapsible, scrollable projects list from the cached rows.
+// Keep keyed controls (and menu anchors) when pinning reorders the list.
 function paintProjectsNav() {
     const rows = lastProjectRows;
-    navProjectsList.textContent = '';
+    const keyed = new Map([...navProjectsList.children].map(item => [item.dataset.navProjectId, item]));
+    const focused = document.activeElement;
     navProjects.hidden = false;
     const unreadCount = rows.filter((project) => project._unread).length;
     if (navProjectsCount) {
@@ -826,75 +829,110 @@ function paintProjectsNav() {
         if (unreadCount) navProjectsCount.setAttribute('aria-label', navProjectsCount.title);
         else navProjectsCount.removeAttribute('aria-label');
     }
-    for (const project of rows) {
+    for (const [index, project] of rows.entries()) {
         const deleting = String(project.lifecycle || 'active') === 'deleting';
-        const item = document.createElement('div');
-        item.className = `nav-project-item${deleting ? ' is-deleting' : ''}`;
-        const btn = document.createElement('button');
-        btn.className = 'nav-row nav-project-row';
-        btn.type = 'button';
-        btn.dataset.projectId = project.id;
-        btn.title = deleting
-            ? `${project.name || project.id} — Deleting…${project.delete_error ? ` ${project.delete_error}` : ''}`
-            : (project.name || project.id);
-        btn.disabled = deleting;
-        const label = document.createElement('span');
-        label.className = 'nav-row-label';
-        label.textContent = project.name || project.id;
-        btn.appendChild(label);
-        const activityMarker = document.createElement('span');
-        activityMarker.className = 'nav-activity-marker chat-live-typing';
-        for (let i = 0; i < 3; i += 1) activityMarker.appendChild(document.createElement('span'));
-        btn.appendChild(activityMarker);
-        if (project._unread && !deleting) {
-            const dot = document.createElement('span');
-            dot.className = 'nav-unread-dot';
-            dot.title = 'Unread messages';
-            btn.appendChild(dot);
-            btn.classList.add('has-unread');
-        }
-        // The action control is a sibling button, never nested interactive UI.
-        let trailing;
-        if (deleting) {
-            trailing = document.createElement('span');
-            trailing.className = 'nav-project-deleting-status';
-            trailing.textContent = 'Deleting…';
-            trailing.title = project.delete_error || 'Cancellation and cleanup are in progress';
-        } else {
-            const kebab = document.createElement('button');
-            kebab.type = 'button';
-            kebab.className = 'nav-project-kebab';
-            kebab.innerHTML = SHELL_ICONS.more;  // the shell's one ⋯ (page_icons.js)
-            kebab.title = tr('project.kebab_title', 'Project actions');
-            kebab.setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
-            kebab.addEventListener('click', (event) => {
-                event.stopPropagation();
-                openProjectRowMenu(project, {
-                    apiClient,
-                    anchorEl: kebab,
+        let item = keyed.get(project.id);
+        keyed.delete(project.id);
+        if (item && item.classList.contains('is-deleting') !== deleting) { item.remove(); item = null; }
+        if (!item) {
+            item = document.createElement('div');
+            item.dataset.navProjectId = project.id;
+            item.className = `nav-project-item${deleting ? ' is-deleting' : ''}`;
+            const btn = document.createElement('button');
+            btn.className = 'nav-row nav-project-row';
+            btn.type = 'button';
+            btn.dataset.projectId = project.id;
+            const label = document.createElement('span');
+            label.className = 'nav-row-label';
+            const marker = document.createElement('span');
+            marker.className = 'nav-activity-marker chat-live-typing';
+            for (let i = 0; i < 3; i += 1) marker.appendChild(document.createElement('span'));
+            btn.append(label, marker);
+            item.appendChild(btn);
+            if (deleting) {
+                const status = document.createElement('span');
+                status.className = 'nav-project-deleting-status';
+                status.textContent = 'Deleting…';
+                item.appendChild(status);
+            } else {
+                btn.addEventListener('click', () => openProjectPanel(item.project, { openOnly: true }));
+                const pin = document.createElement('button');
+                pin.type = 'button';
+                pin.className = 'nav-project-pin';
+                pin.innerHTML = SHELL_ICONS.pin;
+                pin.addEventListener('click', () => toggleProjectPin(item.project));
+                const kebab = document.createElement('button');
+                kebab.type = 'button';
+                kebab.className = 'nav-project-kebab';
+                kebab.innerHTML = SHELL_ICONS.more;
+                kebab.title = tr('project.kebab_title', 'Project actions');
+                kebab.addEventListener('click', () => openProjectRowMenu(item.project, {
+                    apiClient, anchorEl: kebab,
                     onChanged: (change = {}) => {
                         if (change.optimistic && change.projectId) {
                             const row = lastProjectRows.find(p => p.id === change.projectId);
                             if (row) { row.lifecycle = 'deleting'; row._unread = false; }
                             if (navState.activeProjectId === change.projectId) closeProjectPanel();
-                            knownProjectsJson = '';
                             paintProjectsNav();
-                            return;
-                        }
+                        } else refreshProjectsNav();
                         knownProjectsJson = '';
-                        refreshProjectsNav();
                     },
-                });
-            });
-            trailing = kebab;
+                }));
+                item.append(pin, kebab);
+            }
         }
-        if (project.id === navState.activeProjectId) btn.classList.add('active');
-        // Pressing a row opens its Project; pressing the open one again keeps it open (like every reference).
-        if (!deleting) btn.addEventListener('click', () => openProjectPanel(project, { openOnly: true }));
-        item.append(btn, trailing);
-        navProjectsList.appendChild(item);
+        item.project = project;
+        item.toggleAttribute('data-pinned', project.pinned === true);
+        const btn = item.querySelector('.nav-project-row');
+        btn.disabled = deleting;
+        btn.querySelector('.nav-row-label').textContent = project.name || project.id;
+        btn.classList.toggle('active', project.id === navState.activeProjectId);
+        btn.classList.toggle('has-unread', project._unread && !deleting);
+        const unread = btn.querySelector('.nav-unread-dot');
+        if (project._unread && !deleting && !unread) {
+            const dot = document.createElement('span');
+            dot.className = 'nav-unread-dot';
+            dot.title = 'Unread messages';
+            btn.appendChild(dot);
+        } else if (!project._unread || deleting) unread?.remove();
+        const pin = item.querySelector('.nav-project-pin');
+        if (pin) {
+            pin.setAttribute('aria-disabled', String(pendingProjectPins.has(project.id)));
+            pin.setAttribute('aria-pressed', String(project.pinned === true));
+            pin.title = fmt(project.pinned === true ? 'Unpin {name}' : 'Pin {name}', { name: project.name || project.id });
+            pin.setAttribute('aria-label', pin.title);
+            item.querySelector('.nav-project-kebab').setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
+        } else item.querySelector('.nav-project-deleting-status').title = project.delete_error || 'Cancellation and cleanup are in progress';
+        if (navProjectsList.children[index] !== item) navProjectsList.insertBefore(item, navProjectsList.children[index] || null);
     }
+    for (const item of keyed.values()) item.remove();
+    repositionProjectRowMenu();
+    // Moving an existing node can blur it even though its identity survives.
+    if (focused?.isConnected && navProjectsList.contains(focused) && focused !== document.activeElement) focused.focus({ preventScroll: true });
     patchProjectActivityMarkers(projectActivityIndex);
+}
+
+async function toggleProjectPin(project) {
+    if (pendingProjectPins.has(project.id)) return;
+    pendingProjectPins.add(project.id);
+    paintProjectsNav();
+    try {
+        const { project: saved } = await apiClient.projectUpdate(project.id, { pinned: project.pinned !== true });
+        if (saved?.id !== project.id || typeof saved.pinned !== 'boolean') throw new Error('Pin state was not confirmed');
+        // Pre-response reads cannot overwrite this confirmation. The next forced
+        // read shares the existing sequencer; only pinned is merged into the summary.
+        stateSnapshots.retire();
+        const row = lastProjectRows.find(p => p.id === project.id);
+        if (row) row.pinned = saved.pinned;
+        knownProjectsJson = '';
+        renderProjectsNav(lastProjectRows, Array.from(state.projectChatIds));
+    } catch (err) {
+        showToast(fmt('Could not save project pin: {error}', { error: err?.body?.error || err.message }), 'error');
+    } finally {
+        pendingProjectPins.delete(project.id);
+        paintProjectsNav();
+        refreshProjectsNav();
+    }
 }
 
 document.getElementById('nav-projects-add')?.addEventListener('click', async (event) => {

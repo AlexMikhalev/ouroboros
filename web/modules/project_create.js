@@ -208,6 +208,11 @@ export function openNewProjectDialog({ apiClient, onCreated }) {
 }
 
 let closeOpenProjectRowMenu = null;
+let repositionOpenProjectRowMenu = null;
+
+export function repositionProjectRowMenu() {
+    repositionOpenProjectRowMenu?.();
+}
 
 // Accessible row menu: Rename/Delete only. `project` is a sidebar read model;
 // callbacks refresh the authoritative registry projection.
@@ -284,8 +289,11 @@ export async function openProjectRowMenu(project, { apiClient, anchorEl, onChang
         onClose: () => {
             menu.remove();
             anchorEl.setAttribute('aria-expanded', 'false');
-            if (closeOpenProjectRowMenu === close) closeOpenProjectRowMenu = null;
+            if (closeOpenProjectRowMenu === close) {
+                closeOpenProjectRowMenu = repositionOpenProjectRowMenu = null;
+            }
         },
     });
     closeOpenProjectRowMenu = close;
+    repositionOpenProjectRowMenu = () => anchorEl.isConnected ? binding.reposition() : close();
 }

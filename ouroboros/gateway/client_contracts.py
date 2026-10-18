@@ -333,10 +333,11 @@ class ProjectCreateResponse(TypedDict):
     init_git_skipped: NotRequired[List[str]]
 
 
-class ProjectUpdateRequest(TypedDict):
-    """``POST /api/projects/{project_id}/update``: rename, the one mutable field."""
+class ProjectUpdateRequest(TypedDict, total=False):
+    """``POST /api/projects/{project_id}/update``: name and/or pin; at least one."""
 
     name: str  # 1 to 80 characters
+    pinned: bool
 
 
 class ProjectUpdateResponse(TypedDict):

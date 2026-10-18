@@ -24,4 +24,5 @@ export const SHELL_ICONS = {
     more: strokeIcon('<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>'),
     chevron: strokeIcon('<path d="m9 18 6-6-6-6"/>', 16),
     plus: strokeIcon('<path d="M12 5v14M5 12h14"/>', 16),
+    pin: strokeIcon('<path class="pin-head" d="M16 3H8l1 6-3 3v3h12v-3l-3-3 1-6Z"/><path d="M12 15v6"/>', 16),
 };
