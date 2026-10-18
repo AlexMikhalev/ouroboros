@@ -123,11 +123,16 @@ test('Browse offers the current update after rejection, including a newer releas
     for (const row of fixture('extensions_fix_r2.json').skills) {
         for (const modified of [false, true]) {
             row.install.modified = modified;
-            const entry = { ...item('ouroboros/weather'), name: row.name };
+            const entry = { ...item('ouroboros/weather'), name: row.name, source_id: row.install.source.id };
             const state = browseCardState(entry, { installed: row });
-            assert.match(state.action, /data-browse-action="update"/);
-            assert.doesNotMatch(state.action, /Open in Installed/);
-            assert.ok(text(state.status).includes(`v${row.install.update_available.version} available`));
+            if (row.install.update_available) {
+                assert.match(state.action, /data-browse-action="update"/);
+                assert.doesNotMatch(state.action, /Open in Installed/);
+                assert.ok(text(state.status).includes(`v${row.install.update_available.version} available`));
+            } else {
+                assert.match(state.action, modified ? />Details</ : /Open in Installed/);
+                assert.doesNotMatch(state.action, /data-browse-action="update"/);
+            }
         }
     }
     const row = fixture('extensions_fix_r2.json').skills[0];
