@@ -57,6 +57,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+    /* The clip box reaches a little past the line so descenders (g, p, y) are not cut; the margin gives the room back. */
+    padding-block: 0.15em;
+    margin-block: -0.15em;
 }
 /* A row too short for the name, the word and the mark keeps the name and the mark: the word goes whole instead of
    showing a cut fragment ("Wor…"); room_work.js measures it (fitWord). */

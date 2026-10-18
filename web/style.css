@@ -1026,6 +1026,14 @@ html[data-layout="docked"] .app-page-header[data-sidebar-names] .app-page-title 
 html[data-layout="docked"] .app-page-header[data-empty] {
     display: none;
 }
+/* In the macOS desktop window the band under the transparent title bar is the window's handle
+   (launcher_window_chrome.py: a plain press there moves the window, a press on a control stays the page's). An
+   empty header keeps that band as a plain strip, so a page's tabs and controls start below it. */
+:root[data-window-chrome="integrated"][data-layout="docked"] .app-page-header[data-empty] {
+    display: block;
+    height: var(--window-chrome-top);
+    padding: 0;
+}
 
 /* The page's first quiet paragraph: body copy in the secondary ink, never header chrome. */
 .app-page-lede {
@@ -8633,7 +8641,8 @@ html[data-layout="stack"] .project-panel.open {
     align-items: center;
     gap: var(--space-2);
 }
-.chat-message-actions > .chat-message-copy { position: relative; }
+/* In the row the copy control is a flex item: the corner offsets above must not move it (relative keeps its hit area). */
+.chat-message-actions > .chat-message-copy { position: relative; inset: auto; }
 /* Under a finger the 24px Reply and Copy keep their look and gain the shared hit area (ui.css .ui-hit-area); the pair
    parts by the hit area's overshoot so the two targets never overlap. */
 @media (pointer: coarse) {
