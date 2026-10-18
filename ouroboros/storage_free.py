@@ -3,7 +3,8 @@
 A pure *preview* lists what the app's own retirers would remove now, in two groups: G1, the work
 folders of finished tasks (direct and helper drives whose row is terminal and whose task the
 supervisor's liveness probe proves not live), and G2, working copies of finished work (plain
-worktrees with the same proof, delegated snapshots custody no longer holds open, own-body
+worktrees with the same proof, delegated snapshots by the custody GC's own proof
+(``subagent_worktrees.snapshot_released``: task proven over, custody closed and readable), own-body
 candidates whose owner is terminal with no live lineage process). The preview changes nothing:
 no file under the data root (the task rows are read through the read-only fact reader, never the
 drive pass's projection fill), no event row, no settlement call; its sizes come from the storage
@@ -370,7 +371,7 @@ class FreeSpace:
                                                               layout, inside_wait=inside))
             groups.append(group)
         if GROUP_WORKING_COPIES in self._offered:
-            from ouroboros.subagent_worktrees import list_worktrees
+            from ouroboros.subagent_worktrees import list_worktrees, snapshot_released
 
             group = {"id": GROUP_WORKING_COPIES, "candidates": [], "in_use": 0, "unreadable": 0}
             rows = list_worktrees(data_dir=root)  # the soft reader: a malformed registry lists nothing
@@ -391,13 +392,15 @@ class FreeSpace:
                     continue  # nothing on disk to free; the cadence forgets the row
                 kind, task_id = str(row.get("kind") or ""), str(row.get("task_id") or "")
                 if kind == "delegated_exec":
+                    # Offered by the retirer's own proof (D6): a snapshot whose task is not proven
+                    # over, or that custody holds, is in use; unreadable custody is shown, never freed.
                     snapshot = str(row.get("snapshot_id") or "")
                     if open_ids is None:
                         group["unreadable"] += 1
-                    elif snapshot in open_ids:
-                        group["in_use"] += 1
-                    else:
+                    elif snapshot_released(row, open_ids, data_dir=root, live=live):
                         group["candidates"].append(_Candidate(GROUP_WORKING_COPIES, f"snapshot:{snapshot}", path, "delegated"))
+                    else:
+                        group["in_use"] += 1
                     continue
                 over = body_candidate._recorded_terminal(task_id, root) and not body_candidate.live_lineage_processes(root, task_id)
                 if kind != "body_candidate":
@@ -611,7 +614,7 @@ class FreeSpace:
             task_id = item.key.split(":", 1)[1]
             if item.layout == "delegated":
                 if open_ids is not None:
-                    prune_execution_snapshots(open_ids, data_dir=root, only=[task_id])
+                    prune_execution_snapshots(open_ids, data_dir=root, only=[task_id], live=live)
             else:
                 prune_orphans(data_dir=root, retention_days=0, live=live, only=[task_id])
             if not item.path.exists():

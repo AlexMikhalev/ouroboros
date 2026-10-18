@@ -535,6 +535,45 @@ def test_working_copies_of_finished_work_are_freed_and_a_running_ones_stays(tmp_
     assert {row["task_id"] for row in sw.list_worktrees(data_dir=root)} == {"busy"}
 
 
+def test_a_delegated_snapshot_is_offered_only_by_the_retirers_own_proof(tmp_path, monkeypatch):
+    """The preview offers exactly what ``prune_execution_snapshots`` would remove, by the one proof
+    (``subagent_worktrees.snapshot_released``): a snapshot whose task is proven over with custody
+    closed is listed and freed; one whose owner is live, unknown (no task row yet: the provisioning
+    window) or whose custody is open is in use, unlisted and untouched by the run."""
+    from ouroboros import delegate_custody as custody
+    from tests._store_shared import seed_result
+
+    root = tmp_path / "data"
+    repo, wtroot = tmp_path / "repo", tmp_path / "wtroot"
+    _init_repo(repo)
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(wtroot))
+    root.mkdir()
+    handles = {}
+    for task_id in ("over", "live", "unknown", "held"):
+        handles[task_id] = sw.provision_execution_snapshot(target_root=repo, task_id=task_id, snapshot_id=f"snap-{task_id}",
+                                                           worktree_root=wtroot, data_dir=root)
+        if task_id != "unknown":
+            seed_result(root, task_id, document(task_id, "completed"))
+    custody.record_started(root, custody.RunCustody(run_id="run-held", task_id="held", snapshot_id="snap-held",
+                                                    execution_root=handles["held"].path))
+    # The run frees by the probe the preview offered by (the owner's), handed to the retirer; the
+    # supervisor's own answers unknown here, as it does outside the supervisor process.
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: None)
+    _fake_sizer(monkeypatch)
+    owner = _owner({"live": True})
+    view = _preview(owner, root, tmp_path)
+    copies = _group(view, "working_copies")
+    assert [item["id"] for item in copies["items"]] == ["snapshot:snap-over"]
+    assert (copies["count"], copies["in_use"], copies["unreadable"]) == (1, 3, 0)
+
+    view = _run(owner, root, tmp_path, groups=("working_copies",))
+    assert view["state"] == "done" and (view["run"]["removed"], view["run"]["kept"]) == (1, [])
+    assert not Path(handles["over"].path).exists()
+    assert all(Path(handles[task_id].path).is_dir() for task_id in ("live", "unknown", "held"))
+    assert {row["snapshot_id"] for row in sw.list_worktrees(data_dir=root)} == {"snap-live", "snap-unknown", "snap-held"}
+
+
 @pytest.mark.parametrize("kind", ["plain", "delegated"])
 def test_stop_between_working_copies_leaves_the_rest_and_reports_a_stopped_run(tmp_path, monkeypatch, kind):
     """Each copy is one retirer call with a stop check before it: a Stop that lands while the first
@@ -551,10 +590,10 @@ def test_stop_between_working_copies_leaves_the_rest_and_reports_a_stopped_run(t
     for task_id in ("first", "second", "third"):
         if kind == "plain":
             paths[task_id] = Path(sw.provision_worktree(repo_dir=repo, task_id=task_id, worktree_root=wtroot, data_dir=root).path)
-            seed_result(root, task_id, document(task_id, "completed"))
         else:
             paths[task_id] = Path(sw.provision_execution_snapshot(target_root=repo, task_id=task_id, snapshot_id=f"snap-{task_id}",
                                                                   worktree_root=wtroot, data_dir=root).path)
+        seed_result(root, task_id, document(task_id, "completed"))  # both retirers need the task proven over
     _fake_sizer(monkeypatch)
     owner = _owner({})
     view = _preview(owner, root, tmp_path)
