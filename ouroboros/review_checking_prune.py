@@ -26,7 +26,10 @@ a checkout made before the marker is owned only through a recorded round of that
 only once older than the retention period. Targeted ``git worktree remove`` retires only this
 checkout's registration. A rejoin rebuilds a retired checkout at its frozen tree. An unreadable
 review state or a busy or unreadable seat keeps every such checkout; an unreadable marker or task
-row keeps its own.
+row keeps its own. Isolated-checkout reuse and retirement share no per-token lock:
+a rejoin starting after the custody judgment can reuse the tree and then lose it
+during removal. The pass lock only serializes pruners; the seat/view locks above
+protect other objects. Rebuilding after completed retirement does not close that race.
 """
 from __future__ import annotations
 

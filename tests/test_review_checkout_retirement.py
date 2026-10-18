@@ -195,3 +195,22 @@ def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_
     _git(subject.repo, "worktree", "unlock", str(entry / "repo"))
     report = _prune(subject)
     assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists()
+
+
+def test_published_rejoin_custody_keeps_the_copy_and_a_retired_rejoin_rebuilds_the_frozen_tree(subject):
+    entry = _retain(subject)
+    with isolated_checkout(subject.ctx, subject.spec, retain=lambda: {"seats": ["rejoined"]},
+                           token=lambda _identity: subject.name) as rejoined:
+        _attempt(subject, "reviewing")  # published before the retirement judgment
+        report = _prune(subject)
+        assert report["checkouts_removed"] == 0 and report["checkouts_kept"] == 1, report
+        assert pathlib.Path(rejoined.checkout) == entry / "repo"
+        assert (entry / "repo" / "a.txt").read_text() == "two\n"
+        tree = rejoined.tree_sha
+    _attempt(subject, "succeeded")
+    assert _prune(subject)["checkouts_removed"] == 1 and not entry.exists()
+    with isolated_checkout(subject.ctx, subject.spec, token=lambda _identity: subject.name) as rebuilt:
+        assert pathlib.Path(rebuilt.checkout) == entry / "repo"
+        assert (entry / "repo" / "a.txt").read_text() == "two\n"
+        assert rebuilt.tree_sha == tree == _git(rebuilt.checkout, "write-tree")
+    assert not entry.exists()
