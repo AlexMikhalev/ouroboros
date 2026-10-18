@@ -91,6 +91,44 @@ def test_a_row_a_build_supplied_keeps_its_managed_mark_through_an_edit(env, monk
     assert row["trust"] == "review" and row["managed"] is True, "the mark locks nothing and no edit clears it"
 
 
+def test_removing_settings_folder_clears_path_in_the_same_write(env, monkeypatch):
+    import os
+    from ouroboros import skill_loader, skill_sources
+    from ouroboros.gateway import owner_settings
+
+    client, drive, _hub, tmp_path = env
+    folder = write_skill(tmp_path / "private", "private_skill").parent
+    extra = write_skill(tmp_path / "extra", "extra_skill").parent
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(folder))
+    added = client.post("/api/skill-sources", json={"path": str(extra), "name": "Extra", "trust": "review"})
+    assert added.status_code == 200
+    snapshots = []
+    original = owner_settings._owner_update_settings
+
+    def write(*args, **kwargs):
+        result = original(*args, **kwargs)
+        snapshots.append(json.loads((tmp_path / "settings.json").read_text(encoding="utf-8")))
+        return result
+
+    monkeypatch.setattr(owner_settings, "_owner_update_settings", write)
+    removed_extra = client.post("/api/skill-sources/extra/remove")
+    assert removed_extra.status_code == 200
+    assert os.environ["OUROBOROS_SKILLS_REPO_PATH"] == str(folder)
+    # Keep another folder present while removing the Settings-linked row.
+    assert client.post("/api/skill-sources", json={"path": str(extra), "name": "Extra", "trust": "review"}).status_code == 200
+    snapshots.clear()
+    removed = client.post(f"/api/skill-sources/{skill_sources.LOCAL_ID}/remove")
+    assert removed.status_code == 200, removed.text
+    assert len(snapshots) == 1
+    assert snapshots[0]["OUROBOROS_SKILLS_REPO_PATH"] == ""
+    assert skill_sources.LOCAL_ID not in {row["id"] for row in json.loads(snapshots[0][skill_sources.SOURCES_SETTING])}
+    assert os.environ["OUROBOROS_SKILLS_REPO_PATH"] == ""
+    assert {s.name for s in skill_loader.discover_skills(drive)} == {"extra_skill"}
+    # The saved document and the projected list agree after a reload; payloads stay in place.
+    assert skill_sources.source_by_id(skill_sources.load_sources(snapshots[0]), skill_sources.LOCAL_ID) is None
+    assert folder.is_dir() and extra.is_dir()
+
+
 def test_catalog_search_and_detail(env):
     client, _drive, _hub, _tmp = env
     view = client.get("/api/skill-catalog")

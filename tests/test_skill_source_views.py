@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 
 import pytest
@@ -41,9 +42,9 @@ def test_connected_local_folders_load_in_place_through_review(tmp_path, monkeypa
     assert "hello from skill" in result
     monkeypatch.setenv(sources.SOURCES_SETTING, json.dumps(sources.without_source(rows, row["id"])))
     assert loader.discover_skills(drive) == [] and folder.is_dir()
-    # A materialized list owns its local roots; the old setting cannot resurrect a removed row.
+    # Settings can connect its own folder even after a source list has been saved.
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(folder.parent))
-    assert loader.discover_skills(drive) == []
+    assert loader.find_skill(drive, "local_skill").skill_dir == folder.resolve()
     monkeypatch.delenv(sources.SOURCES_SETTING)
     assert loader.find_skill(drive, "local_skill").skill_dir == folder.resolve()
     # Existing no-adopt protection also applies to connected folders.
@@ -56,6 +57,33 @@ def test_connected_local_folders_load_in_place_through_review(tmp_path, monkeypa
     with pytest.raises(SkillInstallError) as refused:
         plan_install(drive, "ouroboros-community/local_skill", rows=hub_rows, replace=True)
     assert refused.value.code == "name_taken" and folder.is_dir()
+
+
+@pytest.mark.parametrize("saved_folder", [False, True])
+def test_settings_folder_follows_current_path_with_a_saved_list(tmp_path, monkeypatch, saved_folder):
+    from ouroboros import skill_loader as loader
+
+    old = write_skill(tmp_path / "old", "old_skill").parent
+    new = write_skill(tmp_path / "new", "new_skill").parent
+    extra = write_skill(tmp_path / "extra", "extra_skill").parent
+    rows, _ = sources.with_added_source([], kind="local", path=str(extra), name="Extra", trust="review")
+    if saved_folder:
+        rows.append({"id": sources.LOCAL_ID, "name": "Private", "kind": "local", "path": str(old),
+                     "trust": "trusted", "confirmed": False})
+    monkeypatch.setenv(sources.SOURCES_SETTING, json.dumps(rows))
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(new))
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: pytest.fail("inventory reread settings"))
+    drive = tmp_path / "data"
+    assert {s.name for s in loader.discover_skills(drive)} == {"new_skill", "extra_skill"}
+    assert loader.find_skill(drive, "new_skill").skill_dir == (new / "new_skill").resolve()
+    effective = sources.load_sources(dict(os.environ))
+    linked = sources.source_by_id(effective, sources.LOCAL_ID)
+    assert linked["path"] == str(new)
+    if saved_folder:
+        assert (linked["name"], linked["trust"], linked["confirmed"]) == ("Private", "trusted", False)
+    assert {s.name for s in loader.discover_skills(drive, repo_path=str(old))} == {"old_skill", "extra_skill"}
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    assert {s.name for s in loader.discover_skills(drive)} == {"extra_skill"}
 
 
 def test_local_source_collision_and_duplicate_roots_keep_global_identity(tmp_path, monkeypatch):

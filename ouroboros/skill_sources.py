@@ -4,7 +4,8 @@ One owner-editable settings key, ``OUROBOROS_SKILL_SOURCES`` (a JSON list), name
 trust choice: ``trusted`` installs without review, ``review`` reviews each skill. While the key is absent
 the list is DERIVED from the older settings and never written: the built-in skills, the public hub as two
 rows over one repository (its maintainer's Official endorsements and the community entries), ClawHub and
-the optional local folder. The first change materializes the list. Changing a row's trust never rewrites
+the optional local folder. The first change materializes the list; My folder always follows
+``OUROBOROS_SKILLS_REPO_PATH``, and removing it clears that setting. Changing a row's trust never rewrites
 an existing install: the basis an install was made under lives in its install record. Adding a source is
 an owner act (the UI, or Ouroboros on the owner's instruction, or Cyber Pro); this module only validates
 and persists the list. An enterprise build ships its own list as settings data; a row it marks
@@ -25,6 +26,7 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger(__name__)
 
 SOURCES_SETTING = "OUROBOROS_SKILL_SOURCES"
+FOLDER_SETTING = "OUROBOROS_SKILLS_REPO_PATH"
 KINDS = ("builtin", "hub", "git", "local", "registry")
 TRUSTS = ("trusted", "review")
 PARTS = ("official", "community")
@@ -104,6 +106,19 @@ def _flag(settings: Dict[str, Any], key: str, default: str) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _with_settings_folder(rows: List[Dict[str, Any]], settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """My folder is a view of the Settings path; other local sources are independent."""
+    folder = str(settings.get(FOLDER_SETTING) or "").strip()
+    linked = source_by_id(rows, LOCAL_ID)
+    if not folder:
+        return [row for row in rows if row["id"] != LOCAL_ID]
+    path = str(pathlib.Path(folder).expanduser())
+    if linked is not None:
+        return [{**row, "path": path} if row["id"] == LOCAL_ID else row for row in rows]
+    return [*rows, {"id": LOCAL_ID, "name": "My folder", "kind": "local", "path": path,
+                   "trust": "review", "confirmed": True}]
+
+
 def derived_sources(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The list an install without ``OUROBOROS_SKILL_SOURCES`` behaves as (never written by itself)."""
     from ouroboros.config import SETTINGS_DEFAULTS
@@ -123,11 +138,7 @@ def derived_sources(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
     registry = str(settings.get("OUROBOROS_CLAWHUB_REGISTRY_URL") or "").strip()
     rows.append({"id": CLAWHUB_ID, "name": "ClawHub", "kind": "registry",
                  **({"url": registry} if registry else {}), "trust": "review", "confirmed": True})
-    folder = str(settings.get("OUROBOROS_SKILLS_REPO_PATH") or "").strip()
-    if folder:
-        rows.append({"id": LOCAL_ID, "name": "My folder", "kind": "local",
-                     "path": str(pathlib.Path(folder).expanduser()), "trust": "review", "confirmed": True})
-    return rows
+    return _with_settings_folder(rows, settings)
 
 
 def normalize_source(row: Any) -> Dict[str, Any]:
@@ -205,7 +216,7 @@ def parse_sources(raw: Any) -> List[Dict[str, Any]]:
 
 
 def load_sources(settings: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """The effective list: the saved one, or the derived one while nothing is saved.
+    """The saved or derived list, with My folder projected from the current Settings path.
 
     A saved value that does not validate falls back to the derived list and is logged; the Sources page
     shows the problem through ``sources_problem``.
@@ -218,7 +229,7 @@ def load_sources(settings: Optional[Dict[str, Any]] = None) -> List[Dict[str, An
     if raw in (None, "", []):
         return derived_sources(settings)
     try:
-        return parse_sources(raw)
+        return _with_settings_folder(parse_sources(raw), settings)
     except SkillSourceError:
         log.warning("Saved %s is invalid; using the derived source list", SOURCES_SETTING, exc_info=True)
         return derived_sources(settings)
@@ -241,7 +252,7 @@ def source_by_id(rows: List[Dict[str, Any]], source_id: str) -> Optional[Dict[st
 
 
 def save_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Validate and persist ``rows`` as the owner's list (one key, under the settings lock)."""
+    """Persist the list and its Settings folder together under the settings lock."""
     from ouroboros.gateway.owner_settings import (
         _owner_update_settings,
         fields_on_saved_document,
@@ -250,9 +261,11 @@ def save_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     valid = parse_sources(rows)
     value = json.dumps(valid, ensure_ascii=False, separators=(",", ":"))
+    folder = source_by_id(valid, LOCAL_ID)
+    fields = {SOURCES_SETTING: value, FOLDER_SETTING: str((folder or {}).get("path") or "")}
     with settings_document_mutation():
-        _owner_update_settings(fields_on_saved_document({SOURCES_SETTING: value}))
-        os.environ[SOURCES_SETTING] = value  # projected under the same lock as the commit
+        _owner_update_settings(fields_on_saved_document(fields))
+        os.environ.update(fields)  # projected under the same lock as the commit
     return valid
 
 

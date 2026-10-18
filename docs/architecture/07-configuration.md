@@ -1,6 +1,6 @@
 # 7. Configuration (ouroboros/config.py)
 
-Settings have one home and default; the table projects `config.SETTINGS_DEFAULTS`. Writers and migrations are below.
+Settings have one home and default; the table projects `config.SETTINGS_DEFAULTS`, never a second authority.
 
 `ouroboros/config.py` is the import surface: the path constants (`APP_ROOT`, `REPO_DIR`, `DATA_DIR`, `SETTINGS_PATH`, `PID_FILE`, `PORT_FILE`), `RESTART_EXIT_CODE`, `AGENT_SERVER_PORT`, `load_settings()`/`save_settings()`, `apply_settings_to_env()`, `normalize_runtime_mode()` (one clamp for save, read coercion and onboarding), `get_runtime_mode()`, `get_skills_repo_path()`, the PID lock. The vocabularies live in the leaves it re-exports (§10 invariant 3), so a new key and its default belong to a leaf, never the facade. `settings_scales.IMMEDIATE_SETTINGS` and `RESTART_REQUIRED_SETTINGS` name keys that bite the running process at once or await a restart; a key in neither applies to the next task. `update_channels.py` owns the update channel and update-network defaults.
 
@@ -40,7 +40,7 @@ Providers name the output budget differently: OpenRouter and Anthropic-compatibl
 
 ### Default settings
 
-A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaults.py`), one row per key. Env-only rows are operator environment levers with no settings.json carrier; the alias and `(migrated)` rows name retired keys the read seam converts.
+One row per key (`settings_defaults.py`). Env-only rows have no settings.json carrier; alias and `(migrated)` rows name retired keys converted at read.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -162,7 +162,7 @@ A registry of `config.SETTINGS_DEFAULTS` (defaults canonical in `settings_defaul
 | OUROBOROS_CONTEXT_MODE | max | Main's `nano`/`low`/`max` and initial project copy; owner-selected outside Cyber. Review remains independent (§6 Context fitting) |
 | OUROBOROS_CONTEXT_MODE_AUTO_LOW | false | Provenance tombstone, not a toggle: normalization writes `false`; a persisted `low` is honoured only beside it (`context_mode_compat.py`) |
 | OUROBOROS_RUNTIME_MODE | advanced | Effective Access light/advanced/pro/cyber_pro, persisted as the next-boot value (§6 Safety and runtime mode) |
-| OUROBOROS_SKILLS_REPO_PATH | "" | Extra skills checkout path (expanded at read time, never cloned or pulled) |
+| OUROBOROS_SKILLS_REPO_PATH | "" | Skills Repo Path: read in place as My folder (`my-folder`), even with a saved source list; removing that row clears this path. Other folders stay connected. |
 | MCP_ENABLED | false | MCP client toggle (§6 MCP and browser-facing external tools) |
 | MCP_SERVERS | [] | MCP server list; persisted in settings, never env-exported |
 | MCP_TOOL_TIMEOUT_SEC | 60 | Per-MCP-tool timeout |
