@@ -63,6 +63,12 @@ def _now() -> str:
     return utc_now_iso()
 
 
+def _revision(root: pathlib.Path) -> int:
+    """The store revision now (one meta read): what a pass beginning here has seen."""
+    with store.open_store(root, write=False) as txn:
+        return txn.revision()
+
+
 # ---- jobs ------------------------------------------------------------------------------------
 
 def _promotion_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any], child: bool) -> bool:
@@ -197,10 +203,10 @@ def _packing_due(root: pathlib.Path, row: Dict[str, Any], facts: Dict[str, Any],
     """Evidence may wait when archived usage segments wait, or when loose evidence exists and the
     terminal rows moved since the last pass, or the last pass unlinked (one more look is owed: it
     records the moved directories' stamps), or it left candidates unfinished (``pending``: deferred
-    by a held custody lock, busy files, faults) and the store has been written since (the contender
-    that held the lock or the file writes its receipt; nothing but a write re-arms it, so a
-    persistent fault costs one pass per store change, never a tight loop); in the child the
-    unfinished work runs whenever the child runs for another reason."""
+    by a held custody lock, busy files, faults) and the store has been written since that pass began
+    (the contender that held the lock or the file writes its receipt, during the pass or after it;
+    nothing but a write re-arms it, so a persistent fault costs one pass per store change, never a
+    tight loop); in the child the unfinished work runs whenever the child runs for another reason."""
     inputs = _packing_inputs(root)
     unfinished = bool(row.get("pending")) and (child or facts["revision"] != row.get("revision"))
     return inputs["archive_pending"] or (inputs["loose"] and (
@@ -212,11 +218,16 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
     packing pass with its own fresh census. The inputs are read before the pass and recorded after
     it, so a task closing during the pass makes the next look differ. A pass that unlinked records
     ``quiet: False``; one that left candidates deferred, busy or faulted records their count as
-    ``pending`` with the store revision its own record leaves (``_packing_due`` re-arms on the next
-    write). A raised discovery or pass records nothing: the job stays due for the next look."""
+    ``pending`` with the store revision it has seen: the one its own record leaves when nothing
+    else wrote during the pass, else the one the pass began at, since a write during the pass (the
+    contender's receipt, committed after the deferral and before this record) is one the pass has
+    not seen, and recording the later revision would swallow it (``_packing_due`` re-arms on the
+    next write; a quiet install then retries once and rests until the store moves again). A raised
+    discovery or pass records nothing: the job stays due for the next look."""
     from ouroboros import evidence_packer, evidence_packs as packs
 
     inputs = _packing_inputs(root)
+    began = _revision(root)  # the census reads the store after this point
     report: Dict[str, Any] = {"status": "completed", **dict.fromkeys(evidence_packer.COUNTERS, 0)}
     if evidence_packer.packing_pending(root, should_stop):
         report = evidence_packer.run_pass(root)
@@ -224,9 +235,10 @@ def _packing_run(root: pathlib.Path, should_stop: Callable[[], bool]) -> Dict[st
     if should_stop():
         return {"state": "pending", "items": report["examined"]}
     pending = report["deferred"] + report["busy"] + report["faults"]
-    with store.open_store(root, write=True) as txn:  # one write: the row and the revision it leaves
+    with store.open_store(root, write=True) as txn:  # one write: the row and the revision it has seen
+        seen = txn.revision() + 1 if txn.revision() == began else began
         maintenance_jobs.record_in(txn, "evidence_packing", state="done", terminal=inputs["terminal"],
-                                   quiet=not report["unlinked"], pending=pending, revision=txn.revision() + 1,
+                                   quiet=not report["unlinked"], pending=pending, revision=seen,
                                    packed=report["packed"], examined=report["examined"])
     return {"state": "done", "items": report["examined"]}
 
