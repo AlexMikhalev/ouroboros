@@ -34,7 +34,8 @@ export const STORAGE_GROUPS = [
 ];
 
 // Server place id -> the words this screen says about it. `parts` offers the "Largest parts" disclosure,
-// `split` the engine's three parts. A place this client does not know is shown by its id.
+// `split` the engine's three parts (`projects` and `profiles` read by name: the server lists them whatever
+// their rank). A place this client does not know is shown by its id.
 const PLACE_WORDS = {
     model_calls: { label: 'Model call records', why: 'The exact prompts and answers behind every decision. Kept; this screen cannot delete them.', parts: true },
     engine: { label: 'Agent engine', why: 'Kept by the engine. Not a cache.', split: true },

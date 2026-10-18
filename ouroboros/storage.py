@@ -78,6 +78,8 @@ PLACES: Tuple[Tuple[str, str, Any], ...] = (
     ("program", "other", "REPO_DIR"),
 )
 _LARGEST_PARTS = 8
+# Parts the client reads by name whatever their rank (the engine's three-part line): always listed.
+_NAMED_PARTS: Dict[str, Tuple[str, ...]] = {"engine": ("projects", "profiles")}
 _PACE_EVERY = 512  # stat calls between one-millisecond sleeps: pacing one disk, not judgment
 _PROGRESS_SEC = 0.25
 _LINE_BYTES = 65536
@@ -97,7 +99,8 @@ class StoragePart(TypedDict):
 
 
 class StorageRest(TypedDict):
-    """The parts beyond the largest eight, summed."""
+    """The parts beyond the largest eight, summed; a place's named parts (``_NAMED_PARTS``) are
+    listed whatever their rank, never summed here."""
 
     count: int
     bytes: int
@@ -289,10 +292,11 @@ class _Walk:
             self._progress(current, counted, files)
 
 
-def _walk_roots(roots: List[Tuple[str, Tuple[str, ...]]], walk: _Walk) -> Dict[str, Any]:
+def _walk_roots(roots: List[Tuple[str, Tuple[str, ...]]], walk: _Walk, named: Tuple[str, ...] = ()) -> Dict[str, Any]:
     """Count every ROOT (``(base, parts)``) completely: allocated and logical bytes, files,
-    unreadable entries, and the depth-1 parts. A root the platform cannot list at all leaves the
-    place unknown (``bytes`` None) rather than zero; an absent root is a truthful empty."""
+    unreadable entries, and the depth-1 parts (the largest eight, plus NAMED ones whatever their
+    rank). A root the platform cannot list at all leaves the place unknown (``bytes`` None) rather
+    than zero; an absent root is a truthful empty."""
     counted = logical = files = unreadable = 0
     present = listed = False
     parts: Dict[str, List[int]] = {}
@@ -398,15 +402,15 @@ def _walk_roots(roots: List[Tuple[str, Tuple[str, ...]]], walk: _Walk) -> Dict[s
         while frames:
             leave()
     ranked = sorted(parts.items(), key=lambda item: (-item[1][0], item[0]))
-    largest = [{"name": name, "bytes": total[0], "files": total[1]} for name, total in ranked[:_LARGEST_PARTS]]
-    rest = ranked[_LARGEST_PARTS:]
+    shown = ranked[:_LARGEST_PARTS] + [item for item in ranked[_LARGEST_PARTS:] if item[0] in named]
+    rest = [item for item in ranked[_LARGEST_PARTS:] if item[0] not in named]
     return {
         "present": present,
         "bytes": None if present and unreadable and not listed else counted,
         "logical_bytes": logical,
         "files": files,
         "unreadable": unreadable,
-        "parts": largest,
+        "parts": [{"name": name, "bytes": total[0], "files": total[1]} for name, total in shown],
         "rest": {"count": len(rest), "bytes": sum(total[0] for _name, total in rest)},
     }
 
@@ -487,7 +491,7 @@ def measure(data_root: Any, *, places: Optional[List[Dict[str, Any]]] = None, io
     seen: Set[Tuple[int, int]] = set()  # linked files count once across the whole count
     for row, roots, own in resolved:
         walk = _Walk(every - own, seen=seen, progress=report(row["id"]), clock=clock, sleep=sleep)
-        counted = _walk_roots(roots, walk)
+        counted = _walk_roots(roots, walk, _NAMED_PARTS.get(row["id"], ()))
         same_volume = all(_same_device(os.path.join(base, *parts), volume_device) for base, parts in roots)
         place: StoragePlace = {"id": row["id"], "group": row["group"],
                                "roots": [os.path.join(base, *parts) for base, parts in roots],

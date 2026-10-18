@@ -12,7 +12,7 @@
  */
 
 /**
- * The parts beyond the largest eight, summed.
+ * The parts beyond the largest eight, summed; the engine's `projects` and `profiles` are listed whatever their rank.
  * @typedef {Object} StorageRest
  * @property {number} count
  * @property {number} bytes
