@@ -88,7 +88,8 @@ def author(after_wake, answer=ANSWER):
     addressed message) wait in prose, then, once the review settled or the conversation came back,
     ``after_wake``."""
     def step(messages):
-        if _seen(messages, RESUMED) or _seen(messages, SETTLED, role="user"):
+        # Host facts arrive as user rows; a system prompt may describe the same markers.
+        if _seen(messages, RESUMED, role="user") or _seen(messages, SETTLED, role="user"):
             return after_wake(messages)
         if _seen(messages, LEFT, role="tool"):
             return waits()
@@ -537,7 +538,7 @@ def test_the_review_change_grant_alone_parks_for_a_result_but_a_change_needs_its
         "subject": "index", "reason": "Check the staged change."}, "change")]}
 
     def step(messages):
-        if _seen(messages, RESUMED) or _seen(messages, SETTLED, role="user"):
+        if _seen(messages, RESUMED, role="user") or _seen(messages, SETTLED, role="user"):
             return deliver()
         if _seen(messages, LEFT, role="tool"):
             return waits()

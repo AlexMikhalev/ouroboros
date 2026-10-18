@@ -59,8 +59,9 @@ def left_review(messages):
 
 
 def woke(messages):
-    """Whether the review this author left settled or its conversation came back."""
-    return seen(messages, RESUMED) or seen(messages, SETTLED, role="user")
+    """Whether the review this author left settled or its conversation came back (host facts are user rows;
+    the production system prompt may describe the same markers)."""
+    return seen(messages, RESUMED, role="user") or seen(messages, SETTLED, role="user")
 
 
 def resumed_note(messages):
