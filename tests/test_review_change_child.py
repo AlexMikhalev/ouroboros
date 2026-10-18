@@ -86,13 +86,22 @@ def test_public_split_drive_shares_paid_ceiling(tree, monkeypatch, first_author,
     assert len([row for row in load_state(parent.drive_root).attempts if row.paid]) == 1
 
 
+def test_an_acting_child_can_ask_for_a_review_of_its_own_result(tree):
+    """No result review is forced on a child, but its schema offers one: the same pool, its own record."""
+    parent, child, _project = tree
+    result = _call(child, subject='result', answer='The child bumped VALUE to 2.')
+    assert result['aggregate'] == 'PASS' and result['subject']['kind'] == 'result', result
+    assert load_record(parent.drive_root, result['record_id'])['task_id'] == child.task_id
+
+
 @pytest.mark.parametrize('subject', ['index', 'worktree', 'base..head'])
 def test_ordinary_child_can_request_independent_review(tree, subject):
     parent, child, project = tree
     schema = _registry(child).get_schema_by_name('review_change')
     assert schema is not None
     props = schema['function']['parameters']['properties']
-    assert props['subject']['enum'] == ['index', 'worktree', 'base..head']
+    assert props['subject']['enum'] == ['index', 'worktree', 'base..head', 'result']
+    assert 'answer' in props and 'system' not in props['subject']['enum']
     assert props['surface']['enum'] == ['change', 'preflight']
     args = {'subject': subject}
     if subject == 'base..head':
