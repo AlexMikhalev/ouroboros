@@ -272,7 +272,7 @@ def refresh_source(drive_root: pathlib.Path, row: Dict[str, Any], *, wait_sec: f
         base = _inside(clone, str(row.get("path") or "")) or clone
         if (clone / "hub.json").is_file():
             snapshot = parse_hub_tree(clone)
-            snapshot["signals"] = _parse_signals(fetch_signals(clone))
+            snapshot["signals"] = _parse_signals(fetch_signals(clone, url=row["url"]))
         else:
             snapshot = parse_plain_tree(base, repo_name=pathlib.PurePosixPath(str(row.get("url") or "")).stem)
             snapshot["path"] = base.relative_to(clone).as_posix() if base != clone else ""
