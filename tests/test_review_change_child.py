@@ -86,9 +86,18 @@ def test_public_split_drive_shares_paid_ceiling(tree, monkeypatch, first_author,
     assert len([row for row in load_state(parent.drive_root).attempts if row.paid]) == 1
 
 
-def test_an_acting_child_can_ask_for_a_review_of_its_own_result(tree):
+def test_an_acting_child_can_ask_for_a_review_of_its_own_result(tree, monkeypatch):
     """No result review is forced on a child, but its schema offers one: the same pool, its own record."""
     parent, child, _project = tree
+
+    def start(self, request, *, idempotency_key=''):
+        # The tree's start hook records the Git tree a change review read; a result subject's
+        # folder is no Git checkout, so this seat starts without that record.
+        self.start_requests.append(dict(request))
+        self.start_keys.append(str(idempotency_key))
+        return {'runId': f'run-{len(_starts())}', 'runDir': '/tmp/fake-run'}
+
+    monkeypatch.setattr(FakeGateway, 'start_run', start)
     result = _call(child, subject='result', answer='The child bumped VALUE to 2.')
     assert result['aggregate'] == 'PASS' and result['subject']['kind'] == 'result', result
     assert load_record(parent.drive_root, result['record_id'])['task_id'] == child.task_id
