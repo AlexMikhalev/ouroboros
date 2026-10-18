@@ -516,7 +516,7 @@ def test_the_seed_receipt_waits_until_a_boot_finds_every_dependency_ready(window
     monkeypatch.setattr(launcher_bootstrap, "_start_native_seed_dependency_pass", lambda *args: passes.append(1))
 
     for _boot in range(2):
-        launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+        launcher_bootstrap._ensure_native_seed_version(REPO, data, log, start_dependency_pass=True)
         assert not receipt.exists()
     assert len(reseeded) == 2 and len(passes) == 2 and installs == []
 
@@ -527,6 +527,28 @@ def test_the_seed_receipt_waits_until_a_boot_finds_every_dependency_ready(window
     launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
     assert len(reseeded) == 3  # fast path from here on
 
+
+
+def test_the_launcher_leaves_dependency_installation_to_the_python_server(windows_seeded, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros import config
+
+    data, installs, _reconciles = windows_seeded
+    receipt = data / "state" / "native_seed.json"
+    monkeypatch.setattr(config, "REPO_DIR", REPO)
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(launcher_bootstrap, "_native_seed_identity", lambda repo: {"seed_tree": "fixed"})
+    monkeypatch.setattr(launcher_bootstrap, "_seed_skills_into", lambda *a, **k: 0)
+    monkeypatch.setattr(launcher_bootstrap, "_migrate_control_file_hashes", lambda *a: True)
+    monkeypatch.setattr(launcher_bootstrap, "_per_skill_version_resync", lambda *a, **k: 0)
+    monkeypatch.setattr(launcher_bootstrap, "cleanup_orphaned_seed_markers", lambda *a: True)
+    started = []
+    monkeypatch.setattr(launcher_bootstrap, "_start_native_seed_dependency_pass", lambda *a: started.append(1))
+
+    launcher_bootstrap.bootstrap_native_skills(SimpleNamespace(repo_dir=REPO, data_dir=data, log=log))
+    assert started == [] and installs == [] and not receipt.exists()
+    launcher_bootstrap.ensure_data_skills_seeded()
+    assert started == [1] and not receipt.exists()
 
 
 def test_unknown_dependency_readiness_never_certifies_the_seed(windows_seeded, monkeypatch):

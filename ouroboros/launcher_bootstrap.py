@@ -1163,7 +1163,7 @@ def ensure_data_skills_seeded() -> int:
     from ouroboros.config import DATA_DIR, REPO_DIR
 
     return _ensure_native_seed_version(pathlib.Path(REPO_DIR), pathlib.Path(DATA_DIR),
-                                       _logging.getLogger(__name__))
+                                       _logging.getLogger(__name__), start_dependency_pass=True)
 
 
 def _native_seed_identity(repo_dir: pathlib.Path) -> dict[str, Any] | None:
@@ -1204,7 +1204,8 @@ def _shipped_seed_names(seed_dir: pathlib.Path) -> list[str] | None:
         return None
 
 
-def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> int:
+def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any,
+                                *, start_dependency_pass: bool = False) -> int:
     """One shared launcher/server completion, published only after the whole seed pass.
 
     The identity is the committed seed tree plus the declared post-bootstrap seeds, so
@@ -1258,7 +1259,9 @@ def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path
             atomic_write_json(receipt, identity)
         except OSError:
             log_obj.warning("Native seed receipt not recorded; the next boot reconciles again", exc_info=True)
-    _start_native_seed_dependency_pass(seed_dir, drive_root, log_obj)
+    if start_dependency_pass:
+        # Only the server is Python: a packaged launcher has a frozen sys.executable.
+        _start_native_seed_dependency_pass(seed_dir, drive_root, log_obj)
     return copied + upgraded
 
 
@@ -1299,7 +1302,7 @@ def cleanup_orphaned_seed_markers(
 
 
 def bootstrap_native_skills(context: BootstrapContext) -> None:
-    """Share the server's seed-version receipt, including upgrade and downgrade resync."""
+    """Share seed-version reconciliation; leave dependency installation to the server."""
     _ensure_native_seed_version(context.repo_dir, context.data_dir, context.log)
 
 
