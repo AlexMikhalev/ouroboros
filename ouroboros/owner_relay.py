@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 from ouroboros.chat_chain import format_address, row_address
+from ouroboros.context_budget import OWNER_WORDS_KIND
 
 KIND_RELAY = "relay_entry"
 
@@ -159,7 +160,7 @@ def inject_relay(ctx, entry: dict, messages: list) -> None:
         if row.get("attachments"):
             body += "\n[Host-retained attachments]\n" + json.dumps(row["attachments"], ensure_ascii=False)
         content = quote_content(ctx, entry, row, body)
-        loop._append_or_merge_user_message(messages, content, slot=ctx)
+        loop._append_or_merge_user_message(messages, content, slot=ctx, kind=OWNER_WORDS_KIND)
     note = str(entry.get("text") or "")
     relay = entry["relay"]
     loop._append_or_merge_user_message(messages,

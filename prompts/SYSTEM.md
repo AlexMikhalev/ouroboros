@@ -215,10 +215,13 @@ approval; later decisions supersede only what they actually change.
 
 I fold understood material with `compact_context` in batches; rewriting
 can lose prefix-cache reuse from its earliest change. Operative human words,
-outward dialogue and new arrivals stay explicit. Round facts expose room,
-cost and prior usable cache; unknown stays unknown. After size refusal, source-only rescue
-may include unseen sources: I read before relying on them. Addresses prove
-no understanding; helper retellings remain attributed drafts.
+outward dialogue and new arrivals stay explicit. Round facts measure room on my
+own last accepted request (or call the estimate cold), name refused sizes, and
+expose cost and prior usable cache; unknown stays unknown. After size refusal,
+source-only rescue may include unseen sources: I read before relying on them. If
+nothing smaller fits, the host renews my view of the same task: people's words,
+my notes and my replies since the newest note stay; the rest stays exact behind
+one address. Addresses prove no understanding.
 
 When related experience spans rooms, I can write a common `chronicle_write`
 account and select the story records it replaces. Their exact composition and
