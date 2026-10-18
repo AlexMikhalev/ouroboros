@@ -124,6 +124,7 @@ D20 = "Presence"
 "ouroboros/agent_task_pipeline.py" = "D01"
 "ouroboros/anthropic_native_custody.py" = "D02"
 "ouroboros/argv_budget.py" = "D13"
+"ouroboros/artifact_storage.py" = "D05"
 "ouroboros/artifacts.py" = "D05"
 "ouroboros/chat_uploads.py" = "D05"
 "ouroboros/repo_diff_capture.py" = "D05"
@@ -137,6 +138,7 @@ D20 = "Presence"
 "ouroboros/claudexor_daemon.py" = "D07"
 "ouroboros/claudexor_exit_facts.py" = "D07"
 "ouroboros/claudexor_runtime.py" = "D07"
+"ouroboros/claudexor_runtime_retention.py" = "D07"
 "ouroboros/claudexor_startup_failure.py" = "D07"
 "ouroboros/cli.py" = "D18"
 "ouroboros/client_surface.py" = "D11"
@@ -408,6 +410,7 @@ D20 = "Presence"
 "ouroboros/owner_words.py" = "D17"  # the owner's words that caused a work tree, carried by value to helpers
 "ouroboros/packaged_cli.py" = "D18"
 "ouroboros/packaged_cli_install.py" = "D18"
+"ouroboros/force_remove.py" = "D18"  # the permission-granting recursive removal every retirer of a copied tree shares
 "ouroboros/platform_layer.py" = "D18"
 "ouroboros/platform_win32_abi.py" = "D18"
 "ouroboros/post_task_checkpoint.py" = "D01"
@@ -575,6 +578,7 @@ D20 = "Presence"
 "ouroboros/subagent_runtime.py" = "D07"
 "ouroboros/subagent_work_order.py" = "D07"
 "ouroboros/subagent_worktrees.py" = "D07"
+"ouroboros/worktree_removal.py" = "D07"  # checkout deletion failure evidence and process-local retries
 "ouroboros/workspace_copies.py" = "D07"
 "ouroboros/body_candidate.py" = "D07"  # own-body authoring candidate: one more kind of task-owned isolated copy
 "ouroboros/body_adoption.py" = "D10"  # restart-bound adoption of one exact candidate commit (authorize/arm/finalize)
@@ -745,7 +749,8 @@ D20 = "Presence"
 "ouroboros/usage_journal.py" = "D16"
 "ouroboros/usage_ledger.py" = "D16"
 "ouroboros/usage_store.py" = "D16"
-"ouroboros/storage.py" = "D16"  # Dashboard Storage: the bounded data-folder measurement behind gateway/storage.py
+"ouroboros/storage.py" = "D16"  # Dashboard Storage: the complete count of every owned place behind gateway/storage.py
+"ouroboros/storage_free.py" = "D16"  # Dashboard Storage: the owner's free-space preview and run over the existing retirers
 "ouroboros/jsonl_tail.py" = "D18"
 "ouroboros/temp_sweep.py" = "D18"
 "ouroboros/utils.py" = "D18"
@@ -1047,6 +1052,7 @@ allowed = [
   "D16->D18",
   "D17->D01",
   "D17->D04",
+  "D17->D05",
   "D17->D06",
   "D17->D08",
   "D17->D11",
@@ -1170,7 +1176,6 @@ lazy_only = [
   "D16->D09",
   "D16->D11",
   "D17->D02",
-  "D17->D05",
   "D17->D07",
   "D17->D09",
   "D17->D13",

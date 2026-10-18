@@ -8,7 +8,11 @@ from typing import Any, Dict, List, Optional
 from ouroboros.cost_projection import CostPresentation
 from ouroboros.gateway.reference_contracts import ChatReferenceFields
 from ouroboros.storage import (  # noqa: F401 -- public re-exports
-    StorageCategory, StorageError, StorageMeasurement, StorageResponse,
+    StorageCount, StorageCounting, StorageError, StoragePart, StoragePlace, StorageResponse, StorageRest,
+    StorageVolume,
+)
+from ouroboros.storage_free import (  # noqa: F401 -- public re-exports
+    StorageFree, StorageFreeGroup, StorageFreeItem, StorageFreeKept, StorageFreeRequest, StorageFreeRun,
 )
 from ouroboros.gateway.claudexor_contracts import (  # noqa: F401 -- public re-exports
     ClaudexorReadState, ClaudexorStatusReads, ClaudexorPassiveReadError, ClaudexorQuotaResponse,
@@ -1562,7 +1566,9 @@ __all__ = [
     "OwnerHurryProjection",
     "EffortRange", "OwnerEffortRangeResponse",
     "LogTailResponse",
-    "StorageCategory", "StorageError", "StorageMeasurement", "StorageResponse",
+    "StorageCount", "StorageCounting", "StorageError", "StoragePart", "StoragePlace", "StorageResponse",
+    "StorageRest", "StorageVolume",
+    "StorageFree", "StorageFreeGroup", "StorageFreeItem", "StorageFreeKept", "StorageFreeRequest", "StorageFreeRun",
     "HTTP_ENDPOINTS",
     "WS_MESSAGE_TYPES",
 ]
