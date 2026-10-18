@@ -8,6 +8,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -403,3 +404,76 @@ def test_failed_removal_waits_for_changed_directory_identity_without_rewriting_f
     monkeypatch.setattr(sw, "_force_rmtree", real_remove)
     (path / "changed_again").touch()
     assert prune() and not path.exists() and sw.list_worktrees(data) == []
+
+
+_RETRY_IN_NEW_PROCESS = """
+import json, pathlib, sys
+from ouroboros import subagent_worktrees as wt
+from supervisor import queue
+data, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+kind, failing = sys.argv[3], sys.argv[4] == "fail"
+queue.task_settlement_liveness = lambda _: False
+attempts = []
+remove = wt._force_rmtree
+def attempt(path):
+    attempts.append(str(path))
+    if not failing:
+        remove(path)
+wt._force_rmtree = attempt
+removed = []
+registry = data / "state" / "subagent_worktrees.json"
+for _ in range(3):
+    if kind == "snapshot":
+        result = len(wt.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"])
+    else:
+        result = wt.prune_orphans(worktree_root=root, data_dir=data, retention_days=0, live=lambda _: False)["removed"]
+    removed.append(result)
+    state = (registry.read_bytes(), registry.stat().st_mtime_ns)
+    if len(removed) == 1:
+        first = state
+    else:
+        assert state == first, "unchanged failure rewrote its registry on a later pass"
+rows = wt.list_worktrees(data)
+print(json.dumps({"attempts": len(attempts), "removed": removed,
+                  "stamp": rows[0].get("removal_failed") if rows else None}))
+"""
+
+
+@pytest.mark.parametrize("kind", ["plain", "body", "snapshot"])
+def test_a_deep_survivor_retries_once_in_each_new_process(world, monkeypatch, kind):
+    repo, data, root = world
+    if kind == "snapshot":
+        path = pathlib.Path(sw.provision_execution_snapshot(
+            target_root=repo, task_id="done", snapshot_id="deep", worktree_root=root, data_dir=data).path)
+    else:
+        path = _copy(world, "done")
+        if kind == "body":
+            rows = sw._load_registry(data)
+            rows[0]["kind"] = "body_candidate"
+            sw._save_registry(rows, data)
+    write_task_result(data, "done", "completed")
+    _age(data)
+    held = path / "nested" / "deep" / "held.txt"
+    held.parent.mkdir(parents=True)
+    held.write_text("held by another process")
+    monkeypatch.setattr(sw, "_force_rmtree", lambda _: None)
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _: False)
+    if kind == "snapshot":
+        assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"] == []
+    else:
+        assert _prune(world, retention_days=0, live=lambda _: False)["removed"] == 0
+    [failed] = sw.list_worktrees(data)
+    held.unlink()  # release below the root does not change its saved stat identity
+    seen = path.stat()
+    assert failed["removal_failed_identity"] == [seen.st_dev, seen.st_ino, seen.st_mtime_ns, seen.st_ctime_ns]
+
+    def restarted(action):
+        child = subprocess.run([sys.executable, "-c", _RETRY_IN_NEW_PROCESS, str(data), str(root), kind, action],
+                               capture_output=True, text=True, timeout=120)
+        assert child.returncode == 0, child.stderr
+        return json.loads(child.stdout)
+
+    again = restarted("fail")
+    assert again == {"attempts": 1, "removed": [0, 0, 0], "stamp": failed["removal_failed"]}
+    assert restarted("remove") == {"attempts": 1, "removed": [1, 0, 0], "stamp": None}
+    assert not path.exists() and sw.list_worktrees(data) == []

@@ -563,6 +563,7 @@ D20 = "Presence"
 "ouroboros/subagent_runtime.py" = "D07"
 "ouroboros/subagent_work_order.py" = "D07"
 "ouroboros/subagent_worktrees.py" = "D07"
+"ouroboros/worktree_removal.py" = "D07"  # checkout deletion failure evidence and process-local retries
 "ouroboros/workspace_copies.py" = "D07"
 "ouroboros/body_candidate.py" = "D07"  # own-body authoring candidate: one more kind of task-owned isolated copy
 "ouroboros/body_adoption.py" = "D10"  # restart-bound adoption of one exact candidate commit (authorize/arm/finalize)

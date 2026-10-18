@@ -41,6 +41,7 @@ from ouroboros.force_remove import force_rmtree as _force_rmtree  # the shared p
 from ouroboros.utils import atomic_write_json, utc_now_iso
 from ouroboros.config import DATA_DIR, get_subagent_projects_root, get_subagent_worktree_root
 from ouroboros.retention import age_cutoff, get_gc_retention_days
+from ouroboros import worktree_removal
 
 log = logging.getLogger(__name__)
 
@@ -300,28 +301,14 @@ def _remove_paths(repo_dir: Path, wt_path: Path, branch: str, *, allowed_root: O
     return True
 
 
-def _removal_identity(row: Dict[str, Any]) -> Optional[List[int]]:
-    try:
-        seen = Path(row.get("path") or "").lstat()
-    except FileNotFoundError:
-        return []
-    except OSError:
-        return None
-    return [seen.st_dev, seen.st_ino, seen.st_mtime_ns, seen.st_ctime_ns]
-
-
-def _removal_unchanged(row: Dict[str, Any]) -> bool:
-    return "removal_failed_identity" in row and row["removal_failed_identity"] == _removal_identity(row)
-
-
 def _mark_removal_failed(match: Dict[str, Any], data_dir: Optional[Any], op: str) -> None:
     """Keep the first failure time and the surviving directory identity, under the lock."""
     rows = _load_registry(data_dir, strict=True, op=op)
-    failed = {**match, "removal_failed": match.get("removal_failed") or utc_now_iso(),
-              "removal_failed_identity": _removal_identity(match)}
-    if match in rows and failed != match:
-        rows[rows.index(match)] = failed
-        _save_registry(rows, data_dir)
+    if match in rows:
+        failed = worktree_removal.record_failure(match)
+        if failed != match:
+            rows[rows.index(match)] = failed
+            _save_registry(rows, data_dir)
 
 
 def _register_snapshot(handle: "ExecutionSnapshotHandle", excluded: List[Dict[str, Any]],
@@ -1374,10 +1361,10 @@ def remove_execution_snapshot(
 ) -> bool:
     """Remove a released snapshot, its baseline pin and registry row.
     Call only after explicit disposition or GC's ownership/custody proof.
-    A surviving tree keeps its row/pin; unchanged failed directories wait.
+    A surviving tree keeps its row/pin; unchanged failures wait until a new process.
     """
     entry = find_execution_snapshot(snapshot_id, data_dir)
-    if entry is None or _removal_unchanged(entry):
+    if entry is None or worktree_removal.unchanged(entry):
         return False
     root = _resolve_root(worktree_root)
     wt_path = Path(str(entry.get("path") or ""))
@@ -1401,6 +1388,7 @@ def remove_execution_snapshot(
             if ref.startswith(_BASELINE_REF_PREFIX):
                 _git_quiet(target, "update-ref", "-d", ref)
         _unregister_snapshot(str(entry.get("snapshot_id") or ""), data_dir, "remove_execution_snapshot")
+    worktree_removal.forget(entry)
     return True
 
 
@@ -1494,7 +1482,7 @@ def remove_worktree(
 def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: str,
                      lock_wait_sec: Optional[float] = None) -> bool:
     """Delete files without the shared lock, then reconcile only the unchanged row."""
-    if _removal_unchanged(match):
+    if worktree_removal.unchanged(match):
         return False
     wt_path = Path(match.get("path") or "")
     if _deletable(wt_path, root) and wt_path.exists():
@@ -1511,6 +1499,7 @@ def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: s
             return False
         rows.remove(match)
         _save_registry(rows, data_dir)
+    worktree_removal.forget(match)
     return True
 
 
@@ -1530,7 +1519,7 @@ def prune_orphans(
     or with an unknown answer, age alone deletes nothing. ``only`` restricts the pass to
     those task ids (the free action's previewed rows), leaving every other row untouched.
     The registry is written only when a row set or a row changed; a checkout that
-    survives removal keeps its first failure stamp and pin, waiting for its directory identity to change.
+    survives removal keeps its first failure stamp and pin; a new process or directory identity retries it.
     """
     retention = retention_days if retention_days is not None else get_gc_retention_days()
     cutoff = age_cutoff(retention)
@@ -1539,7 +1528,7 @@ def prune_orphans(
     entries = _load_registry(data_dir, strict=True, op="prune_orphans")
     selected = [entry for entry in entries if entry.get("kind") != _KIND_DELEGATED_EXEC
                 and (chosen is None or str(entry.get("task_id") or "") in chosen)
-                and not _removal_unchanged(entry)]
+                and not worktree_removal.unchanged(entry)]
     if not selected:
         return {"removed": 0, "kept": len(entries)}
     # Capture candidate evidence outside the lock; one decision batch then rechecks
