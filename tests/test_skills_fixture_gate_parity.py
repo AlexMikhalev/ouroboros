@@ -52,9 +52,6 @@ def test_every_fixture_review_gate_uses_real_host_keys():
 
 @pytest.mark.parametrize("reason", UI_REASONS)
 def test_every_ui_acceptance_reason_is_emitted_for_exact_bytes(reason):
-    # The UI lane runs before CORE-A is integrated; remove this expected gap after integration.
-    if reason == "self_check" and reason not in ACCEPTANCE_REASONS:
-        pytest.xfail("Common brief A: CORE-A has not added self_check on this lane's base")
     assert reason in ACCEPTANCE_REASONS
     basis = {"trusted_source": "trusted", "owner_skip": "owner_skip", "owner_edit": "owner_edit", "self_check": "self_check"}[reason]
     acceptance = {"basis": basis, "release_digest": "d" * 64,
