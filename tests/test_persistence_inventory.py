@@ -793,7 +793,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # count; ``state/native_seed.json`` is now written by ``ouroboros/skill_builtin.py``).
 # 412 -> 413 (computer use on by default): the one-time offer reads the earlier launcher's
 # ``skills/native/.post-bootstrap-seed-*`` markers so a default the owner removed stays removed.
-EXPECTED_SCAN_PATHS = 413
+# 413 -> 414: the saved storage count ``state/storage_measurement.json`` (``ouroboros/storage.py``;
+# the last two finished counts the Dashboard gauge and the mind's storage fact read) has its own row
+# in section 2.
+EXPECTED_SCAN_PATHS = 414
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

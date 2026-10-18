@@ -29,8 +29,7 @@ def test_docked_header_hides_a_title_the_sidebar_names_and_an_empty_bar():
     assert "font-size: var(--type-section)" in title and "font-weight: 500" in title
     assert "white-space: nowrap" in title and "text-overflow: ellipsis" in title
     assert ".app-page-icon" not in css and "app-page-description" not in css
-    lede = _rule(css, ".app-page-lede {")
-    assert "var(--type-body)" in lede and "var(--text-secondary)" in lede
+    assert ".app-page-lede" not in css, "a page has no caption line"
 
 
 def test_stack_header_is_one_row_of_at_most_56px_with_restart_and_budget_inside_the_menu():

@@ -64,9 +64,10 @@ html[data-layout="stack"] .shell-icon-control {
 }
 
 /* The sidebar is three zones (docs/DESIGN.md "Shell"): a pinned head (Main Chat), the Projects list as the ONE
-   scroller, a pinned foot (the tools, the version, the update). Row heights follow the pointer: a finger gets the
-   touch minimum, a mouse a quieter row, and a short window with a mouse compacts the rows first. A window too short
-   even for that (the list keeps three rows) falls back to the whole column scrolling with the head sticky. */
+   scroller, and the tools, the version and the update right after it; free room stays under the last row. Row
+   heights follow the pointer: a finger gets the touch minimum, a mouse a quieter row, and a short window with a
+   mouse compacts the rows first. A window too short even for that falls back to the whole column scrolling with
+   the head sticky. */
 #primary-sidebar {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
@@ -158,9 +159,6 @@ html[data-layout="stack"] .shell-icon-control {
     z-index: -1;
     pointer-events: auto;
 }
-:root[data-window-chrome="integrated"] .project-panel-bar {
-    padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
-}
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
 :root[data-window-chrome="integrated"][data-layout="stack"] .drawer-head {
     padding-top: max(calc(var(--chrome-inset) + var(--inset-top)), calc(var(--space-2) + var(--window-chrome-top)));
@@ -186,8 +184,7 @@ body.resizing-panels { user-select: none; }
 @media (hover: hover) {
     .resize-handle:hover { background: var(--accent-10); }
 }
-html[data-layout="stack"] .resize-handle,
-html[data-project-fill] .project-panel > .resize-handle { display: none; }
+html[data-layout="stack"] .resize-handle { display: none; }
 
 /* The version is a readable fact in the meta ink (owner Q6=A), beside the update capsule. */
 #nav-version {
@@ -267,10 +264,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 .nav-activity-marker[hidden] { display: none; }
 
 /* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins for the still states. Confirmed work is the
-   crimson live ink (DESIGN principle 3: "live dots"), like the room's status sentence; a wait is the one amber. */
+   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name. */
 .nav-activity-marker.chat-live-typing span { background: currentColor; }
-.nav-activity-marker[data-state="working"] span { background: var(--accent); }
 .nav-activity-marker[data-state="waiting"] span { background: var(--amber); }
 .nav-activity-marker[data-state="queued"],
 .nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
@@ -305,7 +300,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     background: var(--accent);
 }
 
-/* Unread is the crimson accent (a live fact for you), never red (danger) and never a glow (owner Q6=A). */
+/* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
+   a Project row's own unread dot is the quieter red dot in a soft ring (.nav-unread-dot). */
 .unread-badge {
     position: absolute;
     top: 4px;
@@ -325,13 +321,15 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 }
 
 .nav-project-row { position: relative; }
+/* A small red dot in a soft ring: noticed, never louder than the name. */
 .nav-unread-dot {
     flex: 0 0 auto;
     margin-left: auto;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--red);
+    box-shadow: 0 0 0 2px var(--accent-18);
 }
 
 @media (hover: hover) {
@@ -962,8 +960,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 /* The one header (page_header.js; DESIGN "Shell"): one row, `☰ · title · status … actions · ×`. The leading
    slot holds ☰ (shown by the stack layout), the title row the place's name and the room's status, the toolbar the
-   actions, the trailing slot a Project's ×. A description and a tab strip are not in the row: the lede is the
-   page's first quiet paragraph after it, the tabs their own strip. */
+   actions, the trailing slot a Project's ×. A tab strip is not in the row: it is its own strip under it, and a
+   page has no caption line. */
 .page-header,
 .app-page-header {
     display: grid;
@@ -1033,17 +1031,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     display: block;
     height: var(--window-chrome-top);
     padding: 0;
-}
-
-/* The page's first quiet paragraph: body copy in the secondary ink, never header chrome. */
-.app-page-lede {
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 0 var(--page-header-padding-x) var(--space-3);
-    max-width: calc(76ch + 2 * var(--page-header-padding-x));
-    color: var(--text-secondary);
-    font-size: var(--type-body);
-    line-height: var(--line-body);
 }
 
 .app-page-toolbar,
@@ -4991,12 +4978,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .cost-empty-cell { color: var(--text-muted); text-align: center; }
 
 /* === design-system:migrated-begin (Dashboard Storage tab) === */
-/* Dashboard Storage (the passive, owner-triggered measurement view): shared card, type,
-   spacing and tone tokens; only the bar's measured share arrives at runtime (--storage-share). */
+/* Dashboard Storage (the owner-started count and the free-space tray): shared card, type, spacing
+   and tone tokens; only the bar's measured share arrives at runtime (--storage-share). */
 .storage-root { min-height: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .storage-summary, .storage-panel { padding: var(--space-4); }
 .storage-summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .storage-summary-text { min-width: 0; }
+/* The tab's one live region: screen readers hear its phase sentence; sighted owners read the summary. */
+.storage-announce { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .storage-total {
     color: var(--text-primary);
     font-size: var(--type-page);
@@ -5005,86 +4994,141 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     overflow-wrap: anywhere;
 }
 .storage-total.is-unknown,
-.storage-row-size.is-unknown,
-.storage-group-size.is-unknown { color: var(--text-meta); }
+.storage-place-size.is-unknown { color: var(--text-meta); }
 .storage-kicker,
 .storage-meta,
-.storage-coverage,
-.storage-footnote,
 .storage-group-why,
-.storage-group-note,
-.storage-row-why { color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+.storage-place-why,
+.storage-place-split,
+.storage-place-delta { color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
 .storage-meta { margin-top: var(--space-1); }
-.storage-notes { margin-top: var(--space-3); }
-.storage-notes:empty { display: none; }
-.storage-coverage { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; }
-.storage-status { margin: 0; }
-.storage-icon { display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
-.storage-body { min-height: 0; }
-.storage-panel > .storage-meta { margin: 0 0 var(--space-2); }
-.storage-bar {
+.storage-card-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--type-section);
+    line-height: var(--line-title);
+    font-weight: 650;
+}
+.storage-summary-text > .storage-status { margin: var(--space-2) 0 0; }
+.storage-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.storage-summary-actions { flex: 0 0 auto; }
+/* A busy action keeps its focus (aria-disabled, not disabled) but stops looking pressable. */
+.storage-actions > .btn[aria-disabled="true"] { box-shadow: none; color: var(--text-meta); cursor: default; }
+.storage-progress {
     display: flex;
-    width: 100%;
-    min-height: 14px;
-    overflow: hidden;
-    border-radius: var(--radius-sm);
-    background: var(--surface-control);
-    border: 1px solid var(--surface-border);
+    align-items: baseline;
+    gap: var(--space-2);
+    margin: var(--space-1) 0 0;
+    color: var(--text-meta);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
 }
-/* Counted segments shrink in proportion so the fixed unknown marker is never clipped. */
-.storage-bar-seg {
-    flex: 0 1 calc(var(--storage-share, 0) * 1%);
-    min-width: 2px;
-    background: var(--accent);
-    border-inline-end: 1px solid var(--ui-card-bg);
-}
-.storage-bar-seg.is-unmeasured {
-    flex: 0 0 12px;
-    min-width: 12px;
-    background: repeating-linear-gradient(135deg, transparent 0 4px, var(--text-disabled) 4px 6px);
-    border-inline: 1px dashed var(--text-meta);
-}
+.storage-progress > .chat-live-typing { align-self: flex-start; margin-top: calc((var(--type-meta) * var(--line-meta) - 4px) / 2); }
+/* The places a first count has already finished, under its progress line: nothing is summed yet. */
+.storage-first-count { display: grid; gap: var(--space-1); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.storage-first-count > li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+
+/* The bar: five group shares of a finished count, a 2 px surface gap between neighbours (a 1 px
+   card-colour border is invisible in light), no track: a finished count fills it. */
+.storage-bar { display: flex; width: 100%; min-height: 14px; gap: 2px; margin-top: var(--space-3); overflow: hidden; border-radius: var(--radius-sm); }
+.storage-bar-seg { flex: 0 1 calc(var(--storage-share, 0) * 1%); min-width: 2px; background: var(--accent); }
 .storage-key { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-.storage-key.is-unmeasured { border: 1px dashed var(--text-meta); border-radius: 1px; background: transparent; }
-:is(.storage-bar-seg, .storage-key)[data-group="exact"] { background: var(--project); }
-:is(.storage-bar-seg, .storage-key)[data-group="kept"] { background: var(--accent-light); }
+:is(.storage-bar-seg, .storage-key)[data-group="records"] { background: var(--project); }
+:is(.storage-bar-seg, .storage-key)[data-group="engine"] { background: var(--status-info-fg); }
+:is(.storage-bar-seg, .storage-key)[data-group="work"] { background: var(--accent-light); }
 :is(.storage-bar-seg, .storage-key)[data-group="temporary"] { background: var(--status-warn-fg); }
 :is(.storage-bar-seg, .storage-key)[data-group="other"] { background: var(--text-secondary); }
-.storage-groups { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
-.storage-group { min-width: 0; }
-.storage-group-head { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
-.storage-group-title {
+
+/* Where it is: the five groups, each a head row (key · name · size · growth) over its places. */
+.storage-groups { display: grid; margin: var(--space-3) 0 0; padding: 0; list-style: none; }
+.storage-group { padding: var(--space-3) 0; border-top: 1px solid var(--surface-border-soft); }
+.storage-group:first-child { border-top: 0; }
+.storage-group-head,
+.storage-place {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto minmax(56px, auto);
+    column-gap: var(--space-2);
+    row-gap: 2px;
+    align-items: baseline;
+}
+.storage-group-head > .storage-key { grid-column: 1; grid-row: 1; align-self: center; }
+.storage-group-label { grid-column: 2; min-width: 0; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); font-weight: 650; overflow-wrap: anywhere; }
+.storage-place-size { grid-column: 3; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); text-align: end; white-space: nowrap; }
+.storage-place-delta { grid-column: 4; text-align: end; white-space: nowrap; }
+.storage-place-why,
+.storage-place-split { grid-column: 2 / -1; }
+.storage-group-body { display: grid; row-gap: 2px; margin: 2px 0 0 calc(8px + var(--space-2)); }
+.storage-group-places { display: grid; margin: var(--space-2) 0 0 calc(8px + var(--space-2)); padding: 0; list-style: none; }
+.storage-place.is-member { grid-template-columns: minmax(0, 1fr) auto minmax(56px, auto); padding-block: var(--space-2); border-top: 1px solid var(--surface-border-soft); }
+.storage-group-places > .storage-place:first-child { border-top: 0; }
+.storage-place-label { grid-column: 1; min-width: 0; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); font-weight: 500; overflow-wrap: anywhere; }
+.storage-place.is-member > .storage-place-size { grid-column: 2; }
+.storage-place.is-member > .storage-place-delta { grid-column: 3; }
+.storage-place.is-member > :is(.storage-place-why, .storage-place-split, .storage-parts) { grid-column: 1 / -1; }
+
+/* Largest parts: the house disclosure gesture, listing a place's eight largest depth-1 parts. */
+.storage-groups .storage-parts { margin-top: var(--space-1); border-top: 0; padding-top: 0; }
+.storage-parts-list { display: grid; gap: var(--space-1); margin: var(--space-1) 0 0; padding: 0; list-style: none; }
+.storage-parts-list > li { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); overflow-wrap: anywhere; }
+.storage-parts-rest { justify-content: flex-start; }
+
+/* Temporary space: the tray closing the list card (layout B1). */
+.storage-tray { display: grid; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--surface-border); }
+.storage-tray:empty { display: none; }
+.storage-tray p { margin: 0; }
+.storage-tray-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-1) var(--space-3); }
+.storage-tray-sum { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); font-weight: 600; }
+.storage-tray-text { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); }
+.storage-free-groups { display: grid; margin: 0; padding: 0; list-style: none; }
+.storage-free-group {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    column-gap: var(--space-2);
+    row-gap: 2px;
+    align-items: baseline;
+    padding-block: var(--space-2);
+    border-top: 1px solid var(--surface-border-soft);
+}
+/* The checkbox sits on the name's first line, also when the name wraps. */
+.storage-free-group > .ui-checkbox { grid-column: 1; grid-row: 1; align-self: start; margin-top: calc((var(--type-body) * var(--line-body) - 14px) / 2); }
+.storage-free-label {
+    grid-column: 2;
     min-width: 0;
-    margin: 0;
     color: var(--text-primary);
     font-size: var(--type-body);
     line-height: var(--line-body);
-    font-weight: 650;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+    cursor: pointer;
 }
-.storage-group-size { margin-inline-start: auto; color: var(--text-meta); font-size: var(--type-body); white-space: nowrap; }
-.storage-group-count { margin-inline-start: var(--space-2); color: var(--text-meta); font-size: var(--type-meta); font-weight: 400; }
-.storage-group-why { margin: var(--space-1) 0 var(--space-2); }
-.storage-group-note { margin: var(--space-2) 0 0; }
-.storage-list { display: grid; gap: var(--space-1); margin: 0; padding: 0 0 0 var(--space-4); list-style: none; }
-.storage-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
-    align-items: baseline;
-    gap: var(--space-2);
-    padding-block: var(--space-1);
-    border-top: 1px solid var(--surface-border-soft);
-}
-.storage-row-label { min-width: 0; color: var(--text-meta); font-size: var(--type-body); line-height: var(--line-body); overflow-wrap: anywhere; }
-.storage-row-why { min-width: 0; }
-.storage-row-size { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); text-align: end; white-space: nowrap; }
-.storage-footnote { margin: 0; padding-inline: var(--space-1); }
+.storage-free-size { grid-column: 3; color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); white-space: nowrap; }
+.storage-free-why { grid-column: 2 / -1; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+/* One offered group: no checkbox column, the name is plain text. */
+.storage-free-groups.is-single > .storage-free-group { grid-template-columns: minmax(0, 1fr) auto; }
+.storage-free-groups.is-single .storage-free-label { grid-column: 1; cursor: auto; }
+.storage-free-groups.is-single .storage-free-size { grid-column: 2; }
+.storage-free-groups.is-single .storage-free-why { grid-column: 1 / -1; }
+.storage-tray .storage-largest { margin-top: 0; border-top: 0; padding-top: 0; }
+.storage-largest > .storage-meta { margin-top: var(--space-2); }
+.storage-largest-list { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.storage-largest-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-3); }
+.storage-largest-name { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); overflow-wrap: anywhere; }
+.storage-largest-size { color: var(--text-primary); font-size: var(--type-body); line-height: var(--line-body); white-space: nowrap; }
+.storage-largest-group { grid-column: 1 / -1; color: var(--text-meta); font-size: var(--type-meta); line-height: var(--line-meta); }
+.storage-tray > .storage-actions > .storage-meta { margin: 0; }
 
+/* A phone stacks everything: full-width capsules, Measure first, Stop under it; size on the name's
+   line, growth under it. */
 @media (max-width: 640px) {
     .storage-summary-head { align-items: stretch; flex-direction: column; }
-    .storage-refresh { align-self: flex-start; }
-    .storage-row { grid-template-columns: minmax(0, 1fr) auto; }
-    .storage-row-why { grid-column: 1 / -1; grid-row: 2; }
-    .storage-row-size { grid-column: 2; grid-row: 1; }
+    .storage-summary-actions { align-self: stretch; }
+    .storage-actions { flex-direction: column; align-items: stretch; }
+    .storage-actions > .btn { width: 100%; }
+    .storage-group-head { grid-template-columns: 8px minmax(0, 1fr) auto; }
+    .storage-group-head > .storage-place-delta { grid-column: 2 / -1; text-align: start; }
+    .storage-place.is-member { grid-template-columns: minmax(0, 1fr) auto; }
+    .storage-place.is-member > .storage-place-delta { grid-column: 1 / -1; text-align: start; }
+    .storage-free-groups.is-single > .storage-free-group { grid-template-columns: minmax(0, 1fr) auto; }
 }
 /* === design-system:migrated-end === */
 
@@ -6772,8 +6816,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    Multi-project sidebar + right thread panel (v6.32.0)
    =========================================================================== */
 
-/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. It keeps
-   at least three rows; a shorter window scrolls the whole column instead (the head stays sticky). */
+/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. A window
+   too short for it scrolls the whole column instead (the head stays sticky). */
 .nav-projects {
     display: flex;
     flex-direction: column;
@@ -6781,8 +6825,18 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     width: 100%;
     align-items: stretch;
     margin: var(--space-1) 0 var(--space-2);
-    flex: 1 1 auto;
-    min-height: calc(var(--nav-row-h) + 3 * var(--nav-item-h) + 2px);
+    /* As tall as its rows, shrinking to scroll them when they do not fit: the tools follow it, so a short or
+       collapsed list leaves its room under the last row, never between the zones. */
+    flex: 0 1 auto;
+    min-height: 0;
+}
+
+/* Collapsed Projects keep their live rows; the rest wait behind one quiet row in the names' column. */
+.nav-projects-show-all {
+    min-height: var(--nav-item-h);
+    padding-left: var(--nav-label-x);
+    font-size: var(--type-body);
+    color: var(--text-meta);
 }
 
 .nav-projects-list {
@@ -7236,10 +7290,10 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     display: none;
 }
 
-/* Docked, when Main would keep less than the minimum beside the panel (app.js measures; layout.js decides): the
-   panel takes the whole content area and keeps its frosted overlay nature. */
-html[data-project-fill] .project-panel {
-    width: calc(100vw - var(--sidebar-width));
+/* Docked, the panel lies beside Main at its own width (its handle resizes it apart from the sidebar's), over the
+   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). */
+html[data-layout="docked"] .project-panel {
+    max-width: calc(100vw - var(--sidebar-width));
 }
 
 /* The stack layout: the project thread is a full-width layer over the room. */

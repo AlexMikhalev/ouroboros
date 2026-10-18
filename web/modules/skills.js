@@ -36,7 +36,6 @@ const LIFECYCLE_VISIBLE_STATUSES = new Set(['queued', 'running', 'failed']);
 const INSTALLED_FILTERS = [
     ['all', 'All'], ['needs', 'Needs you'], ['updates', 'Updates'], ['off', 'Off'], ['made', 'Made here'],
 ];
-const PAGE_DESCRIPTION = 'Skills give Ouroboros new abilities — tools, widgets and integrations. Each one comes from a source you connected.';
 const WORK_POLL_MS = 3000;
 const REVIEW_POLL_MS = 15000;
 
@@ -45,7 +44,6 @@ function skillsPageTemplate() {
         <section class="page app-page-glass" id="page-skills">
             ${renderPageHeader({
                 page: 'skills',
-                description: PAGE_DESCRIPTION,
                 actionsHtml: '<button id="skills-update-all" class="btn btn-default btn-sm" hidden>Update all</button><button id="skills-refresh" class="btn btn-default btn-sm">Refresh</button>',
                 tabsHtml: renderTabStrip({
                     items: SKILLS_TABS, active: 'installed', dataAttr: 'data-tab', activeClass: 'is-active',
