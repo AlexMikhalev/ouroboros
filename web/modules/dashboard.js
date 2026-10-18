@@ -22,7 +22,6 @@ export function initDashboard({ state }) {
     page.innerHTML = `
         ${renderPageHeader({
             page: 'dashboard',
-            description: 'Monitor logs, activity, costs, updates, storage, and evolution from one view.',
             tabsHtml: renderTabStrip({
                 items: DASHBOARD_TABS.map((tab) => ({
                     ...tab,

@@ -64,9 +64,10 @@ html[data-layout="stack"] .shell-icon-control {
 }
 
 /* The sidebar is three zones (docs/DESIGN.md "Shell"): a pinned head (Main Chat), the Projects list as the ONE
-   scroller, a pinned foot (the tools, the version, the update). Row heights follow the pointer: a finger gets the
-   touch minimum, a mouse a quieter row, and a short window with a mouse compacts the rows first. A window too short
-   even for that (the list keeps three rows) falls back to the whole column scrolling with the head sticky. */
+   scroller, and the tools, the version and the update right after it; free room stays under the last row. Row
+   heights follow the pointer: a finger gets the touch minimum, a mouse a quieter row, and a short window with a
+   mouse compacts the rows first. A window too short even for that falls back to the whole column scrolling with
+   the head sticky. */
 #primary-sidebar {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
@@ -158,9 +159,6 @@ html[data-layout="stack"] .shell-icon-control {
     z-index: -1;
     pointer-events: auto;
 }
-:root[data-window-chrome="integrated"] .project-panel-bar {
-    padding-left: max(14px, calc(var(--window-chrome-clearance) + var(--project-panel-width) - 100vw));
-}
 :root[data-window-chrome="integrated"][data-layout="stack"] .project-panel-bar { padding-left: max(14px, var(--window-chrome-clearance)); }
 :root[data-window-chrome="integrated"][data-layout="stack"] .drawer-head {
     padding-top: max(calc(var(--chrome-inset) + var(--inset-top)), calc(var(--space-2) + var(--window-chrome-top)));
@@ -186,8 +184,7 @@ body.resizing-panels { user-select: none; }
 @media (hover: hover) {
     .resize-handle:hover { background: var(--accent-10); }
 }
-html[data-layout="stack"] .resize-handle,
-html[data-project-fill] .project-panel > .resize-handle { display: none; }
+html[data-layout="stack"] .resize-handle { display: none; }
 
 /* The version is a readable fact in the meta ink (owner Q6=A), beside the update capsule. */
 #nav-version {
@@ -267,10 +264,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 .nav-activity-marker[hidden] { display: none; }
 
 /* Same specificity as the later shared `.chat-live-typing span` accent rule
-   would lose on order; name the composed marker so the row ink wins for the still states. Confirmed work is the
-   crimson live ink (DESIGN principle 3: "live dots"), like the room's status sentence; a wait is the one amber. */
+   would lose on order; name the composed marker so the row ink wins: the dots never out-shout the name. */
 .nav-activity-marker.chat-live-typing span { background: currentColor; }
-.nav-activity-marker[data-state="working"] span { background: var(--accent); }
 .nav-activity-marker[data-state="waiting"] span { background: var(--amber); }
 .nav-activity-marker[data-state="queued"],
 .nav-activity-marker[data-state="unknown"] { opacity: 0.55; }
@@ -305,7 +300,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
     background: var(--accent);
 }
 
-/* Unread is the crimson accent (a live fact for you), never red (danger) and never a glow (owner Q6=A). */
+/* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
+   a Project row's own unread dot is the quieter red dot in a soft ring (.nav-unread-dot). */
 .unread-badge {
     position: absolute;
     top: 4px;
@@ -325,13 +321,15 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 }
 
 .nav-project-row { position: relative; }
+/* A small red dot in a soft ring: noticed, never louder than the name. */
 .nav-unread-dot {
     flex: 0 0 auto;
     margin-left: auto;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--red);
+    box-shadow: 0 0 0 2px var(--accent-18);
 }
 
 @media (hover: hover) {
@@ -962,8 +960,8 @@ html[data-project-fill] .project-panel > .resize-handle { display: none; }
 
 /* The one header (page_header.js; DESIGN "Shell"): one row, `☰ · title · status … actions · ×`. The leading
    slot holds ☰ (shown by the stack layout), the title row the place's name and the room's status, the toolbar the
-   actions, the trailing slot a Project's ×. A description and a tab strip are not in the row: the lede is the
-   page's first quiet paragraph after it, the tabs their own strip. */
+   actions, the trailing slot a Project's ×. A tab strip is not in the row: it is its own strip under it, and a
+   page has no caption line. */
 .page-header,
 .app-page-header {
     display: grid;
@@ -1033,17 +1031,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     display: block;
     height: var(--window-chrome-top);
     padding: 0;
-}
-
-/* The page's first quiet paragraph: body copy in the secondary ink, never header chrome. */
-.app-page-lede {
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 0 var(--page-header-padding-x) var(--space-3);
-    max-width: calc(76ch + 2 * var(--page-header-padding-x));
-    color: var(--text-secondary);
-    font-size: var(--type-body);
-    line-height: var(--line-body);
 }
 
 .app-page-toolbar,
@@ -6772,8 +6759,8 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
    Multi-project sidebar + right thread panel (v6.32.0)
    =========================================================================== */
 
-/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. It keeps
-   at least three rows; a shorter window scrolls the whole column instead (the head stays sticky). */
+/* The middle zone: the Projects header pinned at its top, the list below it the sidebar's ONE scroller. A window
+   too short for it scrolls the whole column instead (the head stays sticky). */
 .nav-projects {
     display: flex;
     flex-direction: column;
@@ -6781,8 +6768,18 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     width: 100%;
     align-items: stretch;
     margin: var(--space-1) 0 var(--space-2);
-    flex: 1 1 auto;
-    min-height: calc(var(--nav-row-h) + 3 * var(--nav-item-h) + 2px);
+    /* As tall as its rows, shrinking to scroll them when they do not fit: the tools follow it, so a short or
+       collapsed list leaves its room under the last row, never between the zones. */
+    flex: 0 1 auto;
+    min-height: 0;
+}
+
+/* Collapsed Projects keep their live rows; the rest wait behind one quiet row in the names' column. */
+.nav-projects-show-all {
+    min-height: var(--nav-item-h);
+    padding-left: var(--nav-label-x);
+    font-size: var(--type-body);
+    color: var(--text-meta);
 }
 
 .nav-projects-list {
@@ -7236,10 +7233,10 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     display: none;
 }
 
-/* Docked, when Main would keep less than the minimum beside the panel (app.js measures; layout.js decides): the
-   panel takes the whole content area and keeps its frosted overlay nature. */
-html[data-project-fill] .project-panel {
-    width: calc(100vw - var(--sidebar-width));
+/* Docked, the panel lies beside Main at its own width (its handle resizes it apart from the sidebar's), over the
+   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). */
+html[data-layout="docked"] .project-panel {
+    max-width: calc(100vw - var(--sidebar-width));
 }
 
 /* The stack layout: the project thread is a full-width layer over the room. */
