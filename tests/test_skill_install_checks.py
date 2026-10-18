@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -10,6 +11,28 @@ from ouroboros.skill_install_record import read_install_record, update_install_r
 from ouroboros.skill_loader import find_skill
 from ouroboros.skill_source_catalog import tree_release_digest
 from tests._skill_source_fixtures import write_skill
+
+
+def test_owner_skip_summary_describes_exact_bytes_without_install_timing():
+    from ouroboros.skill_review_status import skill_review_gate
+
+    gate = skill_review_gate("pending", current_hash="release", acceptance={
+        "basis": "owner_skip", "release_digest": "release"})
+    assert gate["summary"] == "The owner skipped the review for these exact bytes."
+
+
+def test_check_guidance_defers_panel_blockers_to_owner_skip():
+    from ouroboros.tools.skill_source_tools import _SCHEMAS
+
+    for tool in ("skill_install", "skill_update"):
+        description = _SCHEMAS[tool]["properties"]["check"]["description"]
+        assert "panel review found blockers" in description
+        assert "owner's Skip" in description
+        assert "self-check does not overrule a panel" in description
+    doc = (pathlib.Path(__file__).resolve().parents[1] / "docs/CREATING_SKILLS.md").read_text(encoding="utf-8")
+    doc = " ".join(doc.split())
+    assert "panel review found blockers needs the owner's Skip" in doc
+    assert "own check does not overrule a panel" in doc
 
 
 @pytest.fixture

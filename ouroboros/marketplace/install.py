@@ -572,7 +572,8 @@ def install_skill(
             adapter_result.sanitized_name,
             target_dir,
         )
-    from ouroboros.skill_install_record import retain_update_snapshot, restore_update_snapshot, write_install_record
+    from ouroboros.skill_install_record import (keep_previous_payload, retain_update_snapshot,
+                                               restore_update_snapshot, write_install_record)
 
     landed_record: Dict[str, Any] = {}
     rollback_snapshot = None
@@ -684,8 +685,6 @@ def install_skill(
                 restore()
     if deps_status != "failed" and not landed_record.get("pending_update"):
         if retain_update:
-            from ouroboros.skill_install_record import keep_previous_payload
-
             keep_previous_payload(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
         else:
             discard_payload_snapshot(rollback_snapshot)

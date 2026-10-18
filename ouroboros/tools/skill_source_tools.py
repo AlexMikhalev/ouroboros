@@ -202,7 +202,8 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
 _CHECK_PROPERTIES = {
     "check": {"type": "string", "enum": ["review", "self"], "description":
               "Choose depth by what the skill can touch: review (default, configured panel), or self after reading "
-              "the exact release and explaining why it may run. A trusted source ignores this choice."},
+              "the exact release and explaining why it may run. A release whose panel review found blockers "
+              "needs the owner's Skip; a self-check does not overrule a panel. A trusted source ignores this choice."},
     "check_notes": {"type": "string", "description": "self requires 1..2000 characters recording what you read and why."},
 }
 
