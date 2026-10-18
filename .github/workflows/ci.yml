@@ -1887,6 +1887,22 @@ jobs:
           test -L "$SBOM_ROOT/Applications"
           unlink "$SBOM_ROOT/Applications"
           echo "sbom_path=$SBOM_ROOT" >> "$GITHUB_OUTPUT"
+          # A stapled DMG means build.sh notarized this build. Then the app copied
+          # out of it must carry its own ticket and pass Gatekeeper as a user's Mac
+          # judges it: codesign alone passed v7.7.0, whose app Gatekeeper rejected.
+          DMG="${{ steps.release_asset.outputs.path }}"
+          if xcrun stapler validate "$DMG" >/dev/null 2>&1; then
+            xcrun stapler validate "$SBOM_ROOT/Ouroboros.app"
+            spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 \
+              | tee "$RUNNER_TEMP/gatekeeper-dmg.txt"
+            spctl --assess --type exec -vv "$SBOM_ROOT/Ouroboros.app" 2>&1 \
+              | tee "$RUNNER_TEMP/gatekeeper-app.txt"
+            grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/gatekeeper-dmg.txt"
+            grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/gatekeeper-app.txt"
+            echo "macos_notarization=notarized" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos_notarization=not_notarized" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Smoke final Linux archive
         id: smoke_linux
@@ -2081,6 +2097,11 @@ jobs:
           EXTRA_CHECKS=()
           if [ "${{ matrix.proof_id }}" = "macos-arm64" ]; then
             EXTRA_CHECKS+=(--check applications_shortcut --check install_cli_command --check arm64_main_executable)
+            NOTARIZATION="${{ steps.smoke_macos.outputs.macos_notarization }}"
+            if [ "$NOTARIZATION" = "notarized" ]; then
+              EXTRA_CHECKS+=(--check stapled_app --check stapled_dmg --check gatekeeper_app --check gatekeeper_dmg)
+            fi
+            EXTRA_CHECKS+=(--macos-notarization "$NOTARIZATION")
           fi
           python scripts/release_proof.py record-smoke \
             --proof-id "${{ matrix.proof_id }}" \
