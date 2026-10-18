@@ -210,20 +210,15 @@ def test_tombstone_filename_is_forgery_guarded():
     assert "uninstalled" in SKILL_OWNER_STATE_STEMS
 
 
-def test_startup_prune_sweeps_run_the_tombstone_sweep(tmp_path, monkeypatch):
+def test_every_reconcile_pass_runs_the_tombstone_sweep(tmp_path, monkeypatch):
     import ouroboros.server_maintenance as sm
 
     state = _seed_state(tmp_path, "dead")
     grants = (state / "grants.json").read_bytes()
     write_uninstall_tombstone(tmp_path, "dead", source="clawhub")
     monkeypatch.setattr(sm, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(sm, "_STARTUP_PRUNES_OWED", [True])
-    monkeypatch.setattr(sm, "_STARTUP_TREES_OWED", [False])
-    monkeypatch.setattr(sm, "_STARTUP_SOURCE_PRUNES_OWED", [False])
-    monkeypatch.setattr(sm, "_startup_worktree_prune", lambda: None)
-    monkeypatch.setattr(sm, "_prune_delegated_snapshots", lambda: None)
 
-    sm._run_deferred_startup_prunes()
+    sm._run_reconcile_prunes()
 
     assert sorted(path.name for path in state.iterdir()) == ["grants.json", UNINSTALL_TOMBSTONE_FILENAME]
     assert (state / "grants.json").read_bytes() == grants
