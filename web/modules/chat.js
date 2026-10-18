@@ -417,7 +417,7 @@ export function createChatInstance({
     const LIVE_CARD_CAP = 200;
     const liveCardBound = createLiveCardBound(LIVE_CARD_CAP);
     const liveCardRecords = new Map();
-    // The room's work status (room_work.js) over the server's projection (work_status.js), re-read on facts only.
+    // The server's work projection (work_status.js), re-read on facts only.
     let roomWork = null, workState = emptyWorkState();
     const reread = () => void refreshHeaderControlState(true);
     // A wait creates its task record; its open/closed state is one
@@ -536,7 +536,7 @@ export function createChatInstance({
     }
 
     function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
-        // Replay frames never touch the badge; syncChatStatus writes the producer's word, tone, mark and amber once.
+        // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
@@ -883,7 +883,7 @@ export function createChatInstance({
 
     function syncCancelRunButtonMutation(record) {
         if (!record?.root) return false;
-        // Resume only where the card's work offers it on this very task.
+        // Resume where the card's work offers it.
         const canResume = () => cardControls(workState, record.groupId).resume;
         const resumable = canResume();
         let changed = false;
@@ -917,7 +917,7 @@ export function createChatInstance({
         btn.className = 'btn btn-sm btn-default';
         btn.dataset.cancelRun = '1';
         btn.textContent = TASK_CONTROL_TRIGGER_LABEL;
-        // Pending cancel offers only hard escalation; dismiss keeps the run; a work's card offers its controls.
+        // Pending cancel offers only hard escalation; dismiss keeps the run.
         btn.addEventListener('click', (event) => {
             event.stopPropagation();
             openCardControls(btn, record, cardControls(workState, record.groupId).work, { activity: currentActivity(record),
@@ -1355,7 +1355,7 @@ export function createChatInstance({
             if (record.titleEl) record.titleEl.textContent = _pendingName;
         }
         resetLiveCardRecord(record);
-        // A live card the last complete projection does not name asks for a fresh read.
+        // A card the last complete body does not name asks for a read.
         if (!_historyReplayActive && workState.complete && !workState.members.has(normalizedGroupId)) reread();
         applyCardWorkViews(new Map([[normalizedGroupId, record]]), workState);
         const activity = activeDirectActivities.get(normalizedGroupId);
@@ -3314,7 +3314,7 @@ export function createChatInstance({
     // Active blocks host their own running indicator.
     const foregroundCards = () => Array.from(liveCardRecords.values()).filter((r) => isForegroundLiveCard(r) && !r.modelWaiting);
 
-    // The server's room; the socket, own sends, readiness and own Stop press are this client's facts.
+    // The server's room under this client's own facts.
     function deriveChatStatus() {
         return roomStatusView(workState, { connected: ws.isConnected ? ws.isConnected() : true, ready: hostStart.ready(),
             boot: hostStart.status().bootPhase,
@@ -3479,12 +3479,9 @@ export function createChatInstance({
 
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
-        // A typing frame is a submission receipt, never liveness: it pulls the
-        // authoritative census at once and retires the linked `Sending...`
-        // only once that census has answered, so the header steps from
-        // Sending... straight to Thinking... when the census lists the turn
-        // (hydration retires the cmid itself) and to Online otherwise, never
-        // through a blank in between.
+        // A typing frame is a submission receipt, never liveness: it re-reads the
+        // state at once and retires the linked `Sending...` only once that read
+        // answers, so the room steps from Sending... to the server's word.
         const cmid = String(msg.client_message_id || '');
         if (!cmid) return;
         void refreshHeaderControlState(true).then(() => {
@@ -3634,7 +3631,7 @@ export function createChatInstance({
         // frames without chat_id default to the main chat.
         if (!isMyLogThread(msg)) return;
         withRemoteActivity(() => updateLiveCardFromLogEvent({ ...msg.data, _live_tool_frame: !msg.data._historical }));
-        if (!msg.data._historical && ['task_done', 'task_model_wait'].includes(msg.data.type)) reread();  // a terminal or a model wait
+        if (!msg.data._historical && ['task_done', 'task_model_wait'].includes(msg.data.type)) reread();
     });
 
     // Admission names the card and its future Project. The broadcast has only
