@@ -230,6 +230,9 @@
     --chat-attach-thumb-size: 28px;
     /* The smallest comfortable touch target; a coarse pointer (a phone) raises it to a finger's 44px (below). */
     --touch-target-min: 36px;
+    /* The hit extension's inset (the recipe below): out only on the sides that fall short of the touch minimum. The
+       percentage resolves where it is used, against the control's own box. */
+    --ui-hit-inset: min(0px, calc((100% - var(--touch-target-min)) / 2));
     --vvh: 100dvh;
     /* The shell's insets (DESIGN "Shell"): the system's safe area, reported by the browser as env() and inside
        Telegram as --tg-safe-area-inset-* (the SDK writes them inline; host_telegram.js mirrors its object; the same
@@ -732,18 +735,14 @@ textarea.ui-control { resize: vertical; }
    A small control keeps its look and, under a finger, gains an invisible hit area centred on it and at least the
    touch minimum each way: the pseudo-element reaches out only on the sides that fall short (a 32px-tall capsule
    gains 6px above and below, nothing sideways). Composition keeps at least that overshoot between neighbouring
-   controls, so hit areas never overlap (the composer rows part by --space-2). The one recipe; pages add the class.
-   A page's links take it too, so a link inside a sentence keeps the sentence's lines instead of growing a box. */
-.ui-hit-area,
-:is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href] {
-    position: relative;
-}
+   controls, so hit areas never overlap (the composer rows part by --space-2). The one recipe, inset by the one
+   --ui-hit-inset; controls add the class, and style.css gives a page's links the same extension. */
+.ui-hit-area { position: relative; }
 @media (pointer: coarse) {
-    .ui-hit-area::after,
-    :is(.files-layout, .skills-scroll, .skills-search-chrome, .widgets-scroll, .dashboard-shell, .settings-shell) a[href]::after {
+    .ui-hit-area::after {
         content: "";
         position: absolute;
-        inset: min(0px, calc((100% - var(--touch-target-min)) / 2));
+        inset: var(--ui-hit-inset);
     }
 }
 
