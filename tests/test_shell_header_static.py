@@ -82,3 +82,19 @@ def test_main_title_is_the_registry_label_and_the_panel_bar_keeps_its_hooks():
     room_work = _read("web/modules/room_work.js")
     assert "panel?.querySelector?.('.project-panel-bar')" in room_work
     assert "bar?.querySelector('.app-page-title-row')" in room_work
+
+
+def test_the_status_word_clips_past_its_line_so_descenders_stay_whole():
+    # The word ellipsizes (overflow hidden); its clip box reaches past the line and the margin gives the room back,
+    # so the tail of g, p or y is never cut ("Working" lost its g).
+    badge = _rule(_read("web/room_work.css"), ".rw-trigger .status-badge {")
+    assert "overflow: hidden" in badge and "text-overflow: ellipsis" in badge
+    assert "padding-block: 0.15em" in badge and "margin-block: -0.15em" in badge
+
+
+def test_the_desktop_title_band_keeps_an_empty_header_as_a_plain_strip():
+    css = _read("web/style.css")
+    band = _rule(css, ':root[data-window-chrome="integrated"][data-layout="docked"] .app-page-header[data-empty] {')
+    assert "display: block" in band and "height: var(--window-chrome-top)" in band and "padding: 0" in band
+    # Outside the desktop window an empty header still takes no room.
+    assert "display: none" in _rule(css, 'html[data-layout="docked"] .app-page-header[data-empty] {')
