@@ -1,9 +1,9 @@
 """macOS notarization in the release proof: receipt, evidence and notes.
 
 v7.7.0 shipped a DMG whose app Gatekeeper rejected while every signature
-verified. The macOS receipt therefore records the notarization state the final
-DMG smoke observed, and a notarized claim must carry the staple and Gatekeeper
-proofs; Windows Authenticode follows the same shape in test_release_proof.py.
+verified. Configuration selects the macOS state as it does for Windows
+Authenticode (test_release_proof.py): a signed stable build must prove both
+stapled tickets and Gatekeeper acceptance of the copied-out app.
 """
 import json
 import os
@@ -119,25 +119,32 @@ def test_workflow_records_the_observed_macos_notarization(tmp_path: Path, observ
     assert release_proof._notarization_state(receipt, receipt["checks"]) == {"status": observed}
 
 
+OK = "accepted\nsource=Notarized Developer ID"
+
+
 @pytest.mark.parametrize(
-    ("prerelease", "signing", "validate_rc", "spctl", "expected"),
+    ("prerelease", "signing", "dmg_rc", "app_rc", "dmg_spctl", "app_spctl", "expected"),
     [
-        ("false", "true", 0, "accepted\nsource=Notarized Developer ID", "notarized"),
+        ("false", "true", 0, 0, OK, OK, "notarized"),
         # A service or ticket error during validation stops the release; it is
         # never relabelled as an unnotarized build (it was notarized and stapled).
-        ("false", "true", 68, "accepted\nsource=Notarized Developer ID", None),
-        ("false", "true", 0, "rejected\nsource=Unnotarized Developer ID", None),
+        ("false", "true", 68, 0, OK, OK, None),
+        # v7.7.0: the DMG passes, the app copied out of it is rejected.
+        ("false", "true", 0, 0, OK, "rejected\nsource=Unnotarized Developer ID", None),
+        ("false", "true", 0, 0, OK, "accepted\nsource=Developer ID", None),
+        ("false", "true", 0, 65, OK, OK, None),  # the app lacks its own ticket
         # Gatekeeper switched off on the runner accepts everything: no proof.
-        ("false", "true", 0, "accepted\noverride=security disabled", None),
+        ("false", "true", 0, 0, OK, "accepted\noverride=security disabled", None),
         # Prereleases build unsigned by policy; forks without a certificate too.
-        ("true", "true", 0, "", "not_notarized"),
-        ("false", "false", 0, "", "not_notarized"),
+        ("true", "true", 0, 0, "", "", "not_notarized"),
+        ("false", "false", 0, 0, "", "", "not_notarized"),
     ],
 )
 def test_smoke_decides_notarization_from_configuration_and_proves_it(
-    tmp_path: Path, prerelease: str, signing: str, validate_rc: int, spctl: str, expected: str | None
+    tmp_path: Path, prerelease: str, signing: str, dmg_rc: int, app_rc: int,
+    dmg_spctl: str, app_spctl: str, expected: str | None,
 ):
-    """Execute the final-DMG smoke's notarization block with a fake xcrun/spctl."""
+    """Execute the final-DMG smoke's notarization block with per-target fakes."""
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("workflow shell execution requires bash")
@@ -149,16 +156,22 @@ def test_smoke_decides_notarization_from_configuration_and_proves_it(
              .replace("${{ needs.release-preflight.outputs.is_prerelease }}", prerelease))
     fake = tmp_path / "bin"
     fake.mkdir()
-    (fake / "xcrun").write_text(f'#!/bin/sh\necho "xcrun $*" >> "$CALLS"\nexit {validate_rc}\n',
-                                encoding="utf-8")
-    (fake / "spctl").write_text(f'#!/bin/sh\necho "spctl $*" >> "$CALLS"\nprintf \'{spctl}\\n\'\n'
-                                f'case "{spctl}" in rejected*) exit 3 ;; esac\n', encoding="utf-8")
-    for tool in ("xcrun", "spctl"):
+    fakes = {
+        "xcrun": 'echo "xcrun $*" >> "$CALLS"\n'
+                 'case "$*" in *Ouroboros.app*) exit "$APP_RC" ;; esac\nexit "$DMG_RC"\n',
+        "spctl": 'echo "spctl $*" >> "$CALLS"\n'
+                 'case "$*" in *"--type exec"*) out="$APP_SPCTL" ;; *) out="$DMG_SPCTL" ;; esac\n'
+                 'printf \'%s\\n\' "$out"\ncase "$out" in rejected*) exit 3 ;; esac\n',
+    }
+    for tool, body in fakes.items():
+        # LF on every OS: bash rejects CRLF scripts on the Windows shards.
+        (fake / tool).write_text("#!/bin/sh\n" + body, encoding="utf-8", newline="\n")
         (fake / tool).chmod(0o755)
     output, calls = tmp_path / "output", tmp_path / "calls"
     env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}", HAS_APPLE_SIGNING=signing,
                SBOM_ROOT=str(tmp_path / "sbom"), RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output),
-               CALLS=str(calls))
+               CALLS=str(calls), DMG_RC=str(dmg_rc), APP_RC=str(app_rc),
+               DMG_SPCTL=dmg_spctl, APP_SPCTL=app_spctl)
     result = subprocess.run([bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", block],
                             cwd=tmp_path, env=env, capture_output=True, text=True)
 

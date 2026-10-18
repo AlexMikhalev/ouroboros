@@ -1021,7 +1021,7 @@ class TestMacOSSigning:
             '  "notarytool submit") printf \'{"id": "sub-1", "status": "%s"}\' "$FAKE_STATUS" ;;\n'
             '  "stapler staple"|"stapler validate") exit "$FAKE_STAPLE_RC" ;;\n'
             "esac\n",
-            encoding="utf-8",
+            encoding="utf-8", newline="\n",  # bash rejects CRLF on the Windows shards
         )
         (fake / "xcrun").chmod(0o755)
         script = (
@@ -1078,8 +1078,6 @@ class TestMacOSSigning:
             src.index('staple "$DMG_PATH"'),
         ]
         assert order == sorted(order), "the stapled app must be what the DMG contains"
-        # The outcome no longer degrades to a warning.
-        assert "NOTARIZE_OUTCOME" not in src
 
     def test_build_sh_drops_debug_symbols_and_pyobjc_tests_before_pyinstaller(self, tmp_path):
         """Executes build.sh's own payload prune: debug-symbol bundles and pyobjc's

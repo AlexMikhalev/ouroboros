@@ -128,9 +128,9 @@ AUTHENTICODE_PROOF_ID = "windows-x64"
 AUTHENTICODE_SMOKE_CHECKS = frozenset(
     {"authenticode_signer", "timestamp", "signed_payload_archive_match"}
 )
-# build.sh notarizes whenever Apple credentials are configured and fails
-# otherwise; the smoke reads the state from the final DMG. A notarized receipt
-# must prove both stapled tickets and Gatekeeper acceptance of the copied-out app.
+# Like Windows signing, configuration selects the macOS state: a signed stable
+# build must prove both stapled tickets and Gatekeeper acceptance of the
+# copied-out app or the release stops; every other build is not_notarized.
 NOTARIZATION_PROOF_ID = "macos-arm64"
 NOTARIZATION_SMOKE_CHECKS = frozenset(
     {"stapled_app", "stapled_dmg", "gatekeeper_app", "gatekeeper_dmg"}
