@@ -68,8 +68,8 @@ the same thing sit together: when your diff adds a row, read its neighbours.
 | Copy code | `btn btn-default` | modules/harness_login_cards.js | 1 |
 | Copy command | `btn btn-default` | modules/harness_login_cards.js | 2 |
 | Copy link | `btn btn-default` | modules/harness_login_cards.js | 1 |
+| Create or connect «My skills» on GitHub | `btn btn-default` | modules/skill_dialogs.js | 1 |
 | Create project | `btn btn-primary` | modules/project_create.js | 1 |
-| Create «My skills» — a private repository on your GitHub | `btn btn-default` | modules/skill_dialogs.js | 1 |
 | Dashboard | `nav-row` | index.html | 1 |
 | Delete | `btn btn-xs btn-danger` | modules/activity.js | 1 |
 | Delete | `files-context-item files-context-item-danger` | modules/files.js | 1 |

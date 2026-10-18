@@ -19,7 +19,7 @@ import { installedTime } from './ui_helpers.js';
 import { hasSemanticVerdict, lifecycleMeta } from './review_presentation.js';
 import {
     buttonHtml, chipHtml, grantPhrases, officialMarkHtml, permissionWords, plural, relativeAge,
-    shortDate, skipReviewButtonHtml, trayHtml, versionText,
+    shortDate, skipReviewButtonHtml, trayHtml, updateRejectionSentence, versionText,
 } from './skill_presentation.js';
 
 function hasSkillUiTab(skill, live = {}) {
@@ -284,6 +284,8 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
             actions: smallButton('Grant access', name, 'grant', `data-keys="${escapeHtml([...keys, ...permissions].join(','))}"`) }));
     }
 
+    const updateAction = update && !install?.pending_update
+        ? smallButton(modified || install?.base_known === false ? 'Update…' : 'Update', name, 'update') : '';
     if (withdrawn) {
         needs = true;
         const when = shortDate(withdrawn.at);
@@ -291,12 +293,18 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
             sentence: withdrawn.version
                 ? `Version ${escapeHtml(withdrawn.version)} was withdrawn by ${escapeHtml(sourceName)}${withdrawn.reason ? `: ${escapeHtml(withdrawn.reason)}` : '.'}`
                 : `${escapeHtml(sourceName)} withdrew ${escapeHtml(versionText(install?.release?.version) || 'this version')}${when ? ` on ${escapeHtml(when)}` : ''}${withdrawn.reason ? `: ${escapeHtml(withdrawn.reason)}` : '.'}`,
-            note: 'It won’t be installed anew. You can uninstall it.',
-            actions: smallButton('Uninstall', name, 'uninstall') }));
+            note: withdrawn.version && updateAction
+                ? `You can update to ${escapeHtml(versionText(update.version))}, or uninstall it.`
+                : 'It won’t be installed anew. You can uninstall it.',
+            actions: (withdrawn.version ? updateAction : '') + smallButton('Uninstall', name, 'uninstall') }));
     } else if (install?.update_rejected) {
         needs = true;
-        trays.push(trayHtml({ sentence: `The update to ${escapeHtml(install.update_rejected.version)} didn’t pass its review, so the previous version runs.`,
-            actions: smallButton('See findings', name, 'read_findings') + smallButton('Update without review', name, 'update_without_review') }));
+        const rejected = install.update_rejected;
+        trays.push(trayHtml({ sentence: escapeHtml(updateRejectionSentence(rejected)),
+            note: updateAction ? `${escapeHtml(versionText(update.version) || 'A new version')} is available.` : '',
+            actions: updateAction
+                + (['review_blockers', 'preflight_failed'].includes(rejected.reason) ? smallButton('See findings', name, 'read_findings') : '')
+                + (update?.digest && update.digest === rejected.digest ? smallButton('Update without review', name, 'update_without_review') : '') }));
     } else if (update && !install?.pending_update) {
         const v = escapeHtml(versionText(update.version) || 'A new version');
         trays.push(modified || install?.base_known === false
@@ -454,7 +462,7 @@ export function reviewSentence(skill) {
     if (ready && accepted === 'owner_edit') return 'Edited by you here; it runs without a new review.';
     if (ready && accepted === 'self_check') {
         const notes = String(install?.check?.notes || '');
-        return `Ouroboros read it before installing and recorded why: “${boundedText(notes, 240)}”.`;
+        return `Ouroboros read it before accepting it and recorded why: “${boundedText(notes, 240)}”.`;
     }
     if (ready && skill.review_profile === 'native_seed') return 'Comes with the app; it runs without a separate review.';
     if (ready && skill.review_status === 'warnings') return 'Reviewed on this computer · passed with notes.';

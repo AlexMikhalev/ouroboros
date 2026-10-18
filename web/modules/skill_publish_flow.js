@@ -1,5 +1,6 @@
 import { createTask, skillPublishPreflight } from './api_client.js';
 import { openConfirmDialog } from './confirm_dialog.js';
+import { publicationDisclosure } from './skill_presentation.js';
 
 export const SKILL_PUBLISH_STATES = Object.freeze([
     'ready',
@@ -148,7 +149,7 @@ export function skillPublishDetails(preflight = {}) {
 }
 
 /** Translate one backend-authored state into dialog copy without reclassifying it. */
-export function skillPublishDialogModel(preflight = {}) {
+export function skillPublishDialogModel(preflight = {}, { privateRepository = false } = {}) {
     const state = text(preflight.state);
     const presentation = STATE_PRESENTATION[state];
     const target = targetFromPreflight(preflight);
@@ -179,7 +180,7 @@ export function skillPublishDialogModel(preflight = {}) {
         canStart,
         dialog: {
             title: `${presentation.title}${titleTarget}`,
-            body: [summary, presentation.body].filter(Boolean).join('\n\n'),
+            body: [summary, presentation.body, canStart ? publicationDisclosure(privateRepository) : ''].filter(Boolean).join('\n\n'),
             alert: !canStart,
             confirmLabel: presentation.confirmLabel,
             cancelLabel: 'Cancel',
@@ -193,11 +194,12 @@ export function skillPublishDialogModel(preflight = {}) {
  * Build the exact ordinary managed-task request after explicit confirmation. The owner's
  * `destination` ({source_id, mode}) rides in `skill_publish_target`, where the publish tool reads it.
  */
-export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, destination = null } = {}) {
+export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, destination = null, privateRepository = false } = {}) {
     const { skill, repository } = targetFromPreflight(preflight);
     if (!validTaskStart(preflight)) {
         throw new Error('Publish preflight does not authorize a task start.');
     }
+    const disclosure = publicationDisclosure(privateRepository);
     const evidence = {
         state: text(preflight.state),
         publication_ready: preflight.publication_ready === true,
@@ -223,11 +225,11 @@ export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId, 
         source: 'web',
         ...(text(projectId) ? { project_id: text(projectId) } : { chat_id: 1 }),
         ...(chatId === undefined ? {} : { chat_id: chatId }),
-        description: `Publish the installed skill "${skill}" to "${repository}" by opening a GitHub pull request. Success requires a validated pull-request receipt for this exact skill and repository.`,
+        description: `Publish the installed skill "${skill}" to "${repository}" by opening a GitHub pull request. ${disclosure} Success requires a validated pull-request receipt for this exact skill and repository.`,
         type: 'skill_publish',
         expected_output: `Return only the validated GitHub pull-request URL opened in "${repository}" for the canonical skill "${skill}".`,
-        constraints: `Publication is authorized for the canonical skill "${skill}" and repository "${repository}". If the repository-pinned Betterleaks 1.8.1 runtime is reported missing or corrupt, this task may run only the repository-provided checksum-pinned Betterleaks 1.8.1 installer command: python -m ouroboros.betterleaks_runtime install. No other dependency or runtime change is authorized. No account or authentication change is authorized.`,
-        context: `The owner explicitly confirmed publication of "${skill}" to "${repository}". Recoverable tool errors are evidence for the next LLM turn, not completion. Use the typed stage, completed external effects, redacted facts, and repair hint as context for the agent's own judgment. Selected-preflight evidence: ${JSON.stringify(evidence)}`,
+        constraints: `Publication is authorized for the canonical skill "${skill}" and repository "${repository}". ${disclosure} If the repository-pinned Betterleaks 1.8.1 runtime is reported missing or corrupt, this task may run only the repository-provided checksum-pinned Betterleaks 1.8.1 installer command: python -m ouroboros.betterleaks_runtime install. No other dependency or runtime change is authorized. No account or authentication change is authorized.`,
+        context: `The owner explicitly confirmed publication of "${skill}" to "${repository}". ${disclosure} Recoverable tool errors are evidence for the next LLM turn, not completion. Use the typed stage, completed external effects, redacted facts, and repair hint as context for the agent's own judgment. Selected-preflight evidence: ${JSON.stringify(evidence)}`,
         metadata: {
             skill_publish_target: { skill, repository, ...(destination ? { destination } : {}) },
         },
@@ -245,6 +247,7 @@ export async function runSkillPublishFlow(skill, {
     projectId = '',
     chatId,
     destination = null,
+    privateRepository = false,
 } = {}) {
     const requestedSkill = text(typeof skill === 'string' ? skill : skill?.name);
     if (!requestedSkill) throw new Error('Skill name is required for publication.');
@@ -258,7 +261,7 @@ export async function runSkillPublishFlow(skill, {
         preflight = typed;
     }
 
-    const model = skillPublishDialogModel(preflight);
+    const model = skillPublishDialogModel(preflight, { privateRepository });
     const decision = await dialogImpl(model.dialog);
     if (!model.canStart) {
         return {
@@ -271,7 +274,7 @@ export async function runSkillPublishFlow(skill, {
         return { started: false, reason: 'cancelled', preflight };
     }
 
-    const payload = buildSkillPublishTask(preflight, { projectId, chatId, destination });
+    const payload = buildSkillPublishTask(preflight, { projectId, chatId, destination, privateRepository });
     const task = await createTaskImpl(payload);
     return { started: true, task, payload, preflight };
 }
