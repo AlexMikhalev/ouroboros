@@ -289,8 +289,7 @@ def with_added_source(rows: List[Dict[str, Any]], *, kind: str, url: str = "", p
             raise SkillSourceError(f"{row['name']} already reads this folder.")
     public = [r for r in derived_sources({}) if r["kind"] == "hub"]
     if kind == "hub" and public and url.rstrip("/").removesuffix(".git") == public[0]["url"]:
-        missing = [normalize_source({**r, "trust": trust, "confirmed": True}) for r in public
-                   if not source_by_id(rows, r["id"])]
+        missing = [normalize_source(r) for r in public if not source_by_id(rows, r["id"])]
         if missing:
             return [*rows, *missing], missing[0]
         raise SkillSourceError("The public hub is already connected.")

@@ -253,6 +253,11 @@ def test_frozen_hub_installed_endpoint_includes_hub_records_and_legacy_bucket(en
     write_install_record(drive, "other_hub", {"source": {"id": "elsewhere", "kind": "hub"},
                                              "entry": "other_hub", "basis": "review", "release": {"digest": "1" * 64}})
     write_skill(drive / "skills" / "external", "local")
+    # Plain git installs share the historical hub bucket but have an explicit non-hub origin.
+    for name, kind in (("plain_git", "git"), ("recorded_registry", "registry")):
+        write_skill(drive / "skills" / "ouroboroshub", name)
+        write_install_record(drive, name, {"source": {"id": name, "kind": kind}, "entry": name,
+                                         "basis": "review", "release": {"digest": "2" * 64}})
     registry_dir = write_skill(drive / "skills" / "clawhub", "registry")
     (registry_dir / ".clawhub.json").write_text('{"source": "clawhub"}', encoding="utf-8")
     write_provenance(drive, "registry", {"source": "clawhub", "slug": "registry"})

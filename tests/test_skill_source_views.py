@@ -218,18 +218,26 @@ def test_git_addresses_still_refuse_embedded_credentials(url):
         sources.validate_git_url(url)
 
 
-def test_readding_default_public_hub_restores_the_two_source_rows():
+@pytest.mark.parametrize("trust", ["trusted", "review"])
+def test_readding_default_public_hub_restores_the_two_source_rows(trust):
     defaults = sources.derived_sources({})
     public = next(row for row in defaults if row.get("part") == "official")
     remaining = [row for row in defaults if row["kind"] != "hub"]
-    rows, added = sources.with_added_source(remaining, kind="hub", url=public["url"], name="Hub", trust="review")
+    rows, added = sources.with_added_source(remaining, kind="hub", url=public["url"], name="Hub", trust=trust)
     hubs = [row for row in rows if row["kind"] == "hub"]
     assert {row["part"] for row in hubs} == {"official", "community"}
-    assert all(row["confirmed"] and row["trust"] == "review" for row in hubs)
+    assert {(row["part"], row["trust"], row["confirmed"]) for row in hubs} == {
+        ("official", "trusted", False), ("community", "review", False)}
     assert added in hubs
     ordinary, _ = sources.with_added_source(remaining, kind="hub", url="https://github.com/another/hub",
-                                            name="Another", trust="review")
+                                            name="Another", trust=trust)
     assert len(ordinary) == len(remaining) + 1 and "part" not in ordinary[-1]
+    assert ordinary[-1]["trust"] == trust and ordinary[-1]["confirmed"] is True
+    # Reconnecting one missing row preserves the surviving row's explicit choice.
+    chosen = {**public, "name": "Chosen", "trust": "review", "confirmed": True}
+    restored, _ = sources.with_added_source([*remaining, chosen], kind="hub", url=public["url"], name="Hub", trust=trust)
+    assert sources.source_by_id(restored, chosen["id"]) == chosen
+    assert sources.source_by_id(restored, sources.HUB_COMMUNITY_ID) == next(r for r in hubs if r["part"] == "community")
 
 
 def test_legacy_converted_hub_install_gains_the_current_endorsement(tmp_path):
