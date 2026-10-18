@@ -578,7 +578,7 @@ def install_skill(
     rollback_snapshot = None
     def restore() -> None:
         if landed_record.get("pending_update"):
-            restore_update_snapshot(drive_root, adapter_result.sanitized_name, "review_unfinished")
+            restore_update_snapshot(drive_root, adapter_result.sanitized_name, "landing_failed")
         elif rollback_snapshot is not None:
             restore_payload_state(rollback_snapshot, restore_state_provenance=True)
 
@@ -684,9 +684,9 @@ def install_skill(
                 restore()
     if deps_status != "failed" and not landed_record.get("pending_update"):
         if retain_update:
-            from ouroboros.skill_source_install import _keep_previous
+            from ouroboros.skill_install_record import keep_previous_payload
 
-            _keep_previous(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
+            keep_previous_payload(rollback_snapshot.backup_dir, adapter_result.sanitized_name)
         else:
             discard_payload_snapshot(rollback_snapshot)
     _progress("Done")
@@ -849,10 +849,11 @@ def update_skill(
     slug = str(record.get("slug") or "").strip()
     if not slug:
         return InstallResult(False, sanitized_name, error="provenance is missing slug")
-    from ouroboros.skill_source_install import settle_before_replacement
+    from ouroboros.skill_install_record import read_install_record, settle_pending_update
 
-    settle_before_replacement(drive_root, sanitized_name)
-    from ouroboros.skill_install_record import read_install_record
+    if settle_pending_update(drive_root, sanitized_name, force=True).get("status") == "restore_failed":
+        return InstallResult(False, sanitized_name, error="The previous update could not be restored; its evidence was kept.",
+                             error_code="restore_failed", error_status=409)
 
     previous = read_install_record(drive_root, sanitized_name) or {}
     carried = {key: previous[key] for key in ("source", "official", "installed_by", "turn_on_when_ready",
@@ -891,8 +892,6 @@ def update_skill(
         expected_digest=expected_digest,
     )
     if auto_review:
-        from ouroboros.skill_source_install import settle_pending_update
-
         settle_pending_update(drive_root, sanitized_name)
     if was_live and (
         not getattr(result, "ok", False)

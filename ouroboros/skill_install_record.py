@@ -23,6 +23,8 @@ import base64
 import json
 import logging
 import pathlib
+import re
+import shutil
 from typing import Any, Dict, List, Optional
 
 from ouroboros.skill_loader import skill_state_dir, skill_state_dir_path
@@ -159,12 +161,32 @@ def read_update_snapshot(drive_root: pathlib.Path, name: str) -> tuple[Any, Dict
     data = read_json_dict(update_backup_path(drive_root, name)) or {}
     if not data:
         return None, {}
+    try:
+        lifecycle = {key: base64.b64decode(value) if value is not None else None
+                     for key, value in data["lifecycle_state"].items()}
+        previous = json.loads(lifecycle.get(INSTALL_RECORD_FILENAME) or b"{}")
+        kind = (previous.get("source") or {}).get("kind")
+        if not kind and (data.get("state_provenance") or {}).get("source") == "clawhub":
+            kind = "registry"  # sidecar-era registry install, before install.json
+        bucket = {"builtin": "native", "hub": "ouroboroshub", "git": "ouroboroshub", "registry": "clawhub"}[kind]
+        target = pathlib.Path(drive_root) / "skills" / bucket / name
+        backup = None
+        if data.get("backup_dir"):
+            leaf = pathlib.Path(data["backup_dir"]).name
+            if not re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}", leaf):
+                raise ValueError("invalid backup name")
+            backup = target.parent / ".rollback" / f"{name}.{leaf.rsplit('.', 1)[1]}"
+        if pathlib.Path(data["target_dir"]).resolve() != target.resolve() or (
+                backup is not None and pathlib.Path(data["backup_dir"]).resolve() != backup.resolve()):
+            raise ValueError("mismatched stored path")
+    except (KeyError, TypeError, ValueError, OSError):
+        log.warning("Update snapshot paths do not match the bucket and name for %s; kept evidence at %s",
+                    name, update_backup_path(drive_root, name), exc_info=True)
+        return None, data
     snapshot = PayloadRollbackSnapshot(
-        drive_root=pathlib.Path(drive_root), skill_name=name, target_dir=pathlib.Path(data["target_dir"]),
-        backup_dir=pathlib.Path(data["backup_dir"]) if data.get("backup_dir") else None,
+        drive_root=pathlib.Path(drive_root), skill_name=name, target_dir=target, backup_dir=backup,
         state_provenance=data.get("state_provenance"),
-        lifecycle_state={key: base64.b64decode(value) if value is not None else None
-                         for key, value in data["lifecycle_state"].items()},
+        lifecycle_state=lifecycle,
         payload_restored=bool(data.get("payload_restored")),
     )
     return snapshot, data
@@ -208,6 +230,77 @@ def restore_update_snapshot(drive_root: pathlib.Path, name: str, reason: str) ->
         return False
     path.unlink()
     return True
+
+
+def keep_previous_payload(path: Optional[pathlib.Path], name: str) -> None:
+    """Retain one previous payload per name beside its bucket (``.rollback/<name>.previous``)."""
+    if path is None or not path.exists():
+        return
+    keep = path.parent / f"{name}.previous"
+    try:
+        if keep.exists():
+            shutil.rmtree(keep)
+        path.rename(keep)
+    except OSError:
+        log.warning("Could not retain the previous payload of %s at %s", name, path, exc_info=True)
+
+
+def settle_pending_update(drive_root: pathlib.Path, name: str, *, expected_digest: str = "",
+                          force: bool = False, landing_failed: bool = False) -> Dict[str, Any]:
+    """Settle the kept update snapshot inside the existing lifecycle lane, regardless of review caller."""
+    from ouroboros.config import get_skills_repo_path, load_settings
+    from ouroboros.skill_loader import find_skill
+    from ouroboros.skill_review_runner import _running_job_interrupt_reason, review_job_state_path
+    from ouroboros.skill_review_status import preflight_failed
+    from ouroboros.utils import read_json_dict
+
+    snapshot, data = read_update_snapshot(drive_root, name)
+    if snapshot is None:
+        return {"status": "restore_failed" if data else "none"}
+    pending = data["pending_update"]
+    if expected_digest and expected_digest != pending["digest"]:
+        return {"status": "superseded"}
+    record = read_install_record(drive_root, name) or {}
+    release = record.get("release") or {}
+    if not data.get("restore_started") and (record.get("pending_update") != pending
+                                            or release.get("digest") != pending["digest"]):
+        discard_update_snapshot(drive_root, name)
+        return {"status": "superseded"}
+    loaded = find_skill(drive_root, name, repo_path=get_skills_repo_path())
+    current = loaded is not None and release.get("digest") == pending["digest"]
+    if not landing_failed and not data.get("restore_started") and current and not loaded.load_error \
+            and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
+        update_install_record(drive_root, name, pending_update=None, update_rejected=None)
+        keep_previous_payload(snapshot.backup_dir, name)
+        update_backup_path(drive_root, name).unlink()
+        return {"status": "accepted"}
+    job = read_json_dict(review_job_state_path(drive_root, name)) or {}
+    if not force and not data.get("restore_started") and job.get("status") == "running" \
+            and _running_job_interrupt_reason(job) is None:
+        return {"status": "review_running"}
+    reason = "landing_failed" if landing_failed else "review_unfinished"
+    if not landing_failed and current and not loaded.review.is_stale_for(loaded.content_hash):
+        if preflight_failed(loaded.review.findings):
+            reason = "preflight_failed"
+        elif loaded.review.status == "blockers":
+            reason = "review_blockers"
+    try:
+        from ouroboros.extension_loader import unload_extension
+
+        unload_extension(name)
+    except Exception:
+        log.debug("unload before restoring %s failed", name, exc_info=True)
+    restored = restore_update_snapshot(drive_root, name, reason)
+    if restored:
+        try:
+            from ouroboros.extension_loader import reconcile_extension
+            from ouroboros.skill_lifecycle_actions import _sync_schedules
+
+            reconcile_extension(name, drive_root, load_settings)
+            _sync_schedules(drive_root, get_skills_repo_path())
+        except Exception:
+            log.warning("Restored update of %s needs extension reconciliation", name, exc_info=True)
+    return {"status": "restored" if restored else "restore_failed", "reason": reason}
 
 
 def _legacy_hub_source(catalog_url: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:

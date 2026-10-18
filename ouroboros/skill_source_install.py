@@ -38,7 +38,8 @@ from ouroboros.skill_install_record import (
     discard_update_snapshot,
     install_basis_fields,
     read_install_record,
-    read_update_snapshot,
+    keep_previous_payload,
+    settle_pending_update,
     restore_update_snapshot,
     retain_update_snapshot,
     update_backup_path,
@@ -173,19 +174,6 @@ def _move_aside(skill_dir: pathlib.Path, name: str) -> pathlib.Path:
     return aside
 
 
-def _keep_previous(path: Optional[pathlib.Path], name: str) -> None:
-    """Retain one previous payload per name beside its bucket (``.rollback/<name>.previous``)."""
-    if path is None or not path.exists():
-        return
-    keep = path.parent / f"{name}.previous"
-    try:
-        if keep.exists():
-            shutil.rmtree(keep)
-        path.rename(keep)
-    except OSError:
-        log.warning("Could not retain the previous payload of %s at %s", name, path, exc_info=True)
-
-
 def _unload(name: str) -> None:
     try:
         from ouroboros.extension_loader import unload_extension
@@ -226,15 +214,15 @@ def _land_builtin(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
                              "release": {**builtin.get("release", {}), **record["release"]}})
     except Exception:
         if record.get("pending_update"):
-            restore_update_snapshot(drive_root, name, "review_unfinished")
+            restore_update_snapshot(drive_root, name, "landing_failed")
         else:
             restore_payload_state(rollback)
         if aside is not None and not occupant_dir.exists():
             aside.rename(occupant_dir)
         raise
     if not record.get("pending_update"):
-        _keep_previous(rollback.backup_dir, name)
-    _keep_previous(aside, name)
+        keep_previous_payload(rollback.backup_dir, name)
+    keep_previous_payload(aside, name)
     return read_install_record(pathlib.Path(drive_root), name) or {}
 
 
@@ -283,15 +271,15 @@ def _land_release(drive_root: pathlib.Path, plan: Dict[str, Any], record: Dict[s
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         if record.get("pending_update"):
-            restore_update_snapshot(drive_root, name, "review_unfinished")
+            restore_update_snapshot(drive_root, name, "landing_failed")
         else:
             restore_payload_state(rollback)
         if aside is not None and not occupant_dir.exists():
             aside.rename(occupant_dir)
         raise
     if not record.get("pending_update"):
-        _keep_previous(rollback.backup_dir, name)
-    _keep_previous(aside, name)
+        keep_previous_payload(rollback.backup_dir, name)
+    keep_previous_payload(aside, name)
     return written
 
 
@@ -395,59 +383,6 @@ def start_review(drive_root: pathlib.Path, name: str, *, repo_dir: Optional[path
                     drive_root, name, expected_digest=digest))
 
     threading.Thread(target=_run, daemon=True, name=f"skill-install-review-{name}").start()
-
-
-def settle_pending_update(drive_root: pathlib.Path, name: str, *, expected_digest: str = "",
-                          force: bool = False) -> Dict[str, Any]:
-    """Settle the kept update snapshot inside the existing lifecycle lane, regardless of review caller."""
-    from ouroboros.config import get_skills_repo_path, load_settings
-    from ouroboros.skill_loader import find_skill
-    from ouroboros.skill_review_runner import _running_job_interrupt_reason, review_job_state_path
-    from ouroboros.skill_review_status import preflight_failed
-    from ouroboros.utils import read_json_dict
-
-    snapshot, data = read_update_snapshot(drive_root, name)
-    if snapshot is None:
-        return {"status": "none"}
-    pending = data["pending_update"]
-    if expected_digest and expected_digest != pending["digest"]:
-        return {"status": "superseded"}
-    record = read_install_record(drive_root, name) or {}
-    release = record.get("release") or {}
-    if not data.get("restore_started") and (record.get("pending_update") != pending
-                                            or release.get("digest") != pending["digest"]):
-        discard_update_snapshot(drive_root, name)
-        return {"status": "superseded"}
-    loaded = find_skill(drive_root, name, repo_path=get_skills_repo_path())
-    current = loaded is not None and release.get("digest") == pending["digest"]
-    if not data.get("restore_started") and current and not loaded.load_error \
-            and loaded.review.gate_for(loaded.content_hash)["executable_review"]:
-        update_install_record(drive_root, name, pending_update=None, update_rejected=None)
-        _keep_previous(snapshot.backup_dir, name)
-        update_backup_path(drive_root, name).unlink()
-        return {"status": "accepted"}
-    job = read_json_dict(review_job_state_path(drive_root, name)) or {}
-    if not force and not data.get("restore_started") and job.get("status") == "running" \
-            and _running_job_interrupt_reason(job) is None:
-        return {"status": "review_running"}
-    reason = "review_unfinished"
-    if current and not loaded.review.is_stale_for(loaded.content_hash):
-        if preflight_failed(loaded.review.findings):
-            reason = "preflight_failed"
-        elif loaded.review.status == "blockers":
-            reason = "review_blockers"
-    _unload(name)
-    restored = restore_update_snapshot(drive_root, name, reason)
-    if restored:
-        try:
-            from ouroboros.extension_loader import reconcile_extension
-            from ouroboros.skill_lifecycle_actions import _sync_schedules
-
-            reconcile_extension(name, drive_root, load_settings)
-            _sync_schedules(drive_root, get_skills_repo_path())
-        except Exception:
-            log.warning("Restored update of %s needs extension reconciliation", name, exc_info=True)
-    return {"status": "restored" if restored else "restore_failed", "reason": reason}
 
 
 def settle_pending_updates_at_startup(drive_root: pathlib.Path) -> None:

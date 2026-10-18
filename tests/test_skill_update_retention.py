@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import threading
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ from ouroboros.skill_loader import SkillReviewState, find_skill, load_enabled, s
 from ouroboros.skill_review import SkillReviewOutcome
 from ouroboros.skill_review_runner import run_skill_review_lifecycle_blocking
 from ouroboros.skill_source_catalog import tree_release_digest
-from tests.test_skill_install_checks import release
+from tests.test_skill_install_checks import registry_release, release
 
 
 def _pending(release):
@@ -79,17 +80,16 @@ def test_clean_review_keeps_new_release_and_drops_durable_state(release):
 
 def test_startup_restores_interrupted_update_and_leaves_running_review(release, monkeypatch):
     import os
-    from ouroboros.skill_starter import at_startup
     from ouroboros.utils import utc_now_iso
 
     drive, _folder, _row, item = release
     previous, _ = _pending(release)
     job = skill_state_dir(drive, "demo") / "review_job.json"
     job.write_text(json.dumps({"status": "running", "pid": os.getpid(), "last_heartbeat_at": utc_now_iso()}), encoding="utf-8")
-    at_startup(drive, {}, provider_ready=False)
+    installer.settle_pending_updates_at_startup(drive)
     assert find_skill(drive, "demo").content_hash == item["digest"]
     job.write_text(json.dumps({"status": "interrupted"}), encoding="utf-8")
-    at_startup(drive, {}, provider_ready=False)
+    installer.settle_pending_updates_at_startup(drive)
     assert find_skill(drive, "demo").content_hash == previous
     assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "review_unfinished"
 
@@ -110,26 +110,31 @@ def test_review_exception_restores_previous_without_waiting_for_restart(release)
 def test_owner_skip_during_review_keeps_new_bytes(release, edited):
     from ouroboros.skill_lifecycle_actions import run_skill_action
     from ouroboros.skill_lifecycle_queue import lend_lifecycle_lane
+    from ouroboros.skill_review import _persist_reviewed_outcome
 
     drive, _folder, _row, item = release
     _pending(release)
     waiting, finish = threading.Event(), threading.Event()
-    errors = []
+    errors, outcomes = [], []
     def slow_review(ctx, name):
+        reviewed = find_skill(drive, name)
         with lend_lifecycle_lane():
             waiting.set()
-            assert finish.wait(20)
-        return SkillReviewOutcome(skill_name=name, status="blockers", content_hash=item["digest"])
+            assert finish.wait(60)
+        return _persist_reviewed_outcome(
+            ctx, reviewed, drive,
+            SkillReviewOutcome(skill_name=name, status="blockers", content_hash=item["digest"]),
+            history=[], review_rebuttal="", contract_fp="", rebuttal_sha="")
     ctx = SimpleNamespace(drive_root=drive, repo_dir=drive.parent, messages=[])
     def run():
         try:
-            run_skill_review_lifecycle_blocking(ctx, "demo", review_impl=slow_review, repo_path="")
+            outcomes.append(run_skill_review_lifecycle_blocking(ctx, "demo", review_impl=slow_review, repo_path=""))
         except Exception as exc:
             errors.append(exc)
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        assert waiting.wait(20)
+        assert waiting.wait(60)
         if edited:
             (find_skill(drive, "demo").skill_dir / "owner.txt").write_text("owner edit", encoding="utf-8")
         accepted = find_skill(drive, "demo").content_hash
@@ -137,41 +142,42 @@ def test_owner_skip_during_review_keeps_new_bytes(release, edited):
                                   _owner_actor="owner_ui", repo_path="")
         assert result["ok"], result
         assert "pending_update" not in read_install_record(drive, "demo")
+        accepted_review = (skill_state_dir(drive, "demo") / "review.json").read_bytes()
     finally:
         finish.set()
-        thread.join(30)
+        thread.join(60)
     assert not thread.is_alive() and not errors
+    assert outcomes[0]["status"] == "pending" and "not persisted" in outcomes[0]["error"]
+    assert (skill_state_dir(drive, "demo") / "review.json").read_bytes() == accepted_review
     assert find_skill(drive, "demo").content_hash == accepted
     assert find_skill(drive, "demo").review.gate_for(accepted)["executable_review"]
 
 
 def test_partial_restore_retains_evidence_and_never_replaces_payload_twice(release, monkeypatch):
     from ouroboros.marketplace import install as storage
-    from ouroboros.skill_starter import at_startup
 
     drive, _folder, _row, _item = release
     previous, _ = _pending(release)
     real_restore = storage.restore_lifecycle_state
     with monkeypatch.context() as patch:
         patch.setattr(storage, "restore_lifecycle_state", lambda *a: ["injected state write failure"])
-        at_startup(drive, {}, provider_ready=False)
+        installer.settle_pending_updates_at_startup(drive)
     payload = find_skill(drive, "demo").skill_dir
     assert find_skill(drive, "demo").content_hash == previous
     (payload / "owner.txt").write_text("edit after partial restore", encoding="utf-8")
     assert (skill_state_dir(drive, "demo") / "update_backup.json").exists()
     assert storage.restore_lifecycle_state is real_restore
-    at_startup(drive, {}, provider_ready=False)
+    installer.settle_pending_updates_at_startup(drive)
     assert (payload / "owner.txt").read_text(encoding="utf-8") == "edit after partial restore"
     assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "review_unfinished"
 
 
 def test_uninstall_pending_update_cannot_resurrect_on_startup(release):
-    from ouroboros.skill_starter import at_startup
 
     drive, _folder, _row, _item = release
     _pending(release)
     assert installer.uninstall_installed(drive, "demo")["ok"]
-    at_startup(drive, {}, provider_ready=False)
+    installer.settle_pending_updates_at_startup(drive)
     assert find_skill(drive, "demo") is None
     assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
 
@@ -236,6 +242,138 @@ def test_old_completion_leaves_newer_pending_snapshot_intact(release):
     assert installer.settle_pending_update(drive, "demo", expected_digest=old_digest) == {"status": "superseded"}
     assert backup.read_bytes() == saved
     assert read_install_record(drive, "demo")["pending_update"]["digest"] == item["digest"]
+
+
+def test_registry_adapter_does_not_import_source_orchestration():
+    import ast
+    from ouroboros.marketplace import install as storage
+
+    tree = ast.parse(pathlib.Path(storage.__file__).read_text(encoding="utf-8"))
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                and node.module == "ouroboros.skill_source_install"]
+
+
+@pytest.mark.parametrize("field", ["target_dir", "backup_dir"])
+def test_update_restore_ignores_mismatched_paths_and_keeps_evidence(release, tmp_path, caplog, field):
+    from ouroboros.skill_install_record import discard_update_snapshot, restore_update_snapshot
+
+    drive, _folder, _row, item = release
+    _pending(release)
+    backup_file = skill_state_dir(drive, "demo") / "update_backup.json"
+    data = json.loads(backup_file.read_text(encoding="utf-8"))
+    kept_payload = pathlib.Path(data["backup_dir"])
+    unrelated = tmp_path / "elsewhere" / pathlib.Path(data[field]).name
+    unrelated.mkdir(parents=True)
+    marker = unrelated / "keep.txt"
+    marker.write_text("unrelated files", encoding="utf-8")
+    data[field] = str(unrelated)
+    backup_file.write_text(json.dumps(data), encoding="utf-8")
+    evidence = backup_file.read_bytes()
+    assert not restore_update_snapshot(drive, "demo", "review_unfinished")
+    discard_update_snapshot(drive, "demo")
+    assert marker.read_text(encoding="utf-8") == "unrelated files"
+    assert kept_payload.is_dir() and backup_file.read_bytes() == evidence
+    assert find_skill(drive, "demo").content_hash == item["digest"]
+    assert "paths do not match" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["source_land", "source_record", "builtin_copy", "builtin_digest"])
+def test_update_landing_failure_restores_with_landing_reason(release, tmp_path, monkeypatch, failure):
+    drive, folder, row, item = release
+    if failure.startswith("builtin"):
+        folder.parent.rename(tmp_path / "skills")
+        folder = tmp_path / "skills" / "demo"
+        row["kind"] = "builtin"
+        monkeypatch.setattr("ouroboros.config.REPO_DIR", tmp_path)
+    previous, _ = _pending((drive, folder, row, item))
+    installer.settle_pending_update(drive, "demo", force=True)
+    def fail(*args, **kwargs):
+        raise OSError("injected landing failure")
+    if failure.startswith("builtin"):
+        monkeypatch.setattr("ouroboros.skill_builtin.install_builtin_skill", lambda *a, **kw: {
+            "ok": False, "code": "copy_failed" if failure == "builtin_copy" else "digest_mismatch",
+            "error": "injected landing failure"})
+    elif failure == "source_record":
+        monkeypatch.setattr(installer, "write_install_record", fail)
+    else:
+        monkeypatch.setattr("ouroboros.marketplace.fetcher.land_staged_tree", fail)
+    with pytest.raises((OSError, installer.SkillInstallError), match="injected landing failure"):
+        installer.update_installed(drive, "demo", mode="replace", rows=[row])
+    assert find_skill(drive, "demo").content_hash == previous
+    assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "landing_failed"
+    assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["land", "record", "dependencies"])
+def test_registry_landing_failure_restores_with_landing_reason(registry_release, monkeypatch, failure):
+    drive, storage, registry = registry_release
+    previous = read_install_record(drive, "demo")
+    registry["latest"] = "2.0.0"
+    def fail(*args, **kwargs):
+        raise OSError("injected registry failure")
+    if failure == "dependencies":
+        adapt = storage.adapt_openclaw_skill
+        def with_deps(*args, **kwargs):
+            result = adapt(*args, **kwargs)
+            result.provenance["install_specs"]["auto"] = [{"kind": "pip", "package": "demo"}]
+            return result
+        monkeypatch.setattr(storage, "adapt_openclaw_skill", with_deps)
+        monkeypatch.setattr(storage, "install_isolated_dependencies", fail)
+    elif failure == "record":
+        from ouroboros.skill_install_record import write_install_record
+        def write(drive, name, record):
+            if record["release"]["version"] == "2.0.0":
+                fail()
+            return write_install_record(drive, name, record)
+        monkeypatch.setattr("ouroboros.skill_install_record.write_install_record", write)
+    else:
+        monkeypatch.setattr(storage, "_land_staged_into_data_plane", fail)
+    result = storage.update_skill(drive, drive.parent, sanitized_name="demo")
+    assert not result.ok and "injected registry failure" in result.error
+    assert find_skill(drive, "demo").content_hash == previous["release"]["digest"]
+    assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "landing_failed"
+
+
+def test_dependency_failure_after_review_restores_with_landing_reason(release, monkeypatch):
+    drive, _folder, _row, _item = release
+    previous, _ = _pending(release)
+    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review",
+                        lambda *a, **kw: ("failed", "injected dependency failure"))
+    result = _review(drive, "clean")
+    assert result["deps_status"] == "failed"
+    assert find_skill(drive, "demo").content_hash == previous
+    assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "landing_failed"
+
+
+def test_startup_returns_before_slow_update_settlement_finishes(tmp_path, monkeypatch):
+    from ouroboros.skill_starter import at_startup
+
+    entered, release_settle, finished, returned = (threading.Event() for _ in range(4))
+    errors = []
+    def slow_settle(drive):
+        entered.set()
+        try:
+            assert release_settle.wait(60)
+        finally:
+            finished.set()
+    monkeypatch.setattr(installer, "settle_pending_updates_at_startup", slow_settle)
+    def startup():
+        try:
+            assert at_startup(tmp_path, {}, provider_ready=False) == ""
+            returned.set()
+        except Exception as exc:
+            errors.append(exc)
+    caller = threading.Thread(target=startup)
+    caller.start()
+    try:
+        assert entered.wait(30)
+        assert returned.wait(5), "startup waited for the restore instead of scheduling it"
+        assert not finished.is_set()
+    finally:
+        release_settle.set()
+        caller.join(60)
+        assert finished.wait(30)
+    assert not caller.is_alive() and not errors
 
 
 @pytest.mark.parametrize("trust,auto_review", [("review", False), ("trusted", False), ("review", True)])

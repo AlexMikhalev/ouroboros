@@ -1448,6 +1448,7 @@ def run_skill_review_lifecycle_blocking(
                 setattr(outcome, f"extension_{key}", value)
         return outcome
 
+    outcome = None
     try:
         outcome = run_lifecycle_job_blocking(
             kind="review",
@@ -1499,7 +1500,8 @@ def run_skill_review_lifecycle_blocking(
 
             run_in_lane(drive_root, "update_settle", skill_name, lambda: settle_pending_update(
                 drive_root, skill_name, expected_digest=owned_job.get("update_digest")
-                or bound_content_hash.get("value") or content_hash))
+                or bound_content_hash.get("value") or content_hash,
+                landing_failed=getattr(outcome, "deps_status", "") == "failed"))
 
     try:
         from ouroboros.skill_loader import discover_skills

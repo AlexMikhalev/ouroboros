@@ -251,7 +251,8 @@ def at_startup(drive_root: pathlib.Path, settings: Dict[str, Any], *, provider_r
         from ouroboros.skill_source_install import settle_pending_updates_at_startup
 
         convert_legacy_records(drive_root)
-        settle_pending_updates_at_startup(drive_root)
+        threading.Thread(target=settle_pending_updates_at_startup, args=(drive_root,),
+                         daemon=True, name="skill-update-settle").start()
         marker = read_marker(drive_root)
         state = str(marker.get("state") or "")
         onboarded = bool(str(settings.get("OUROBOROS_ONBOARDING_COMPLETED_AT") or "").strip())
