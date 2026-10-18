@@ -337,9 +337,9 @@ def participant_views(record: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def pending_asks(record: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """Asks with at least one participant still pending (dispatched, no settled answer)."""
+    """Asks with a counted participant pending; advisers retain their own custody only."""
     return [ask for ask in record.get("asks") or []
-            if any(p.get("status") == "pending" for p in ask.get("participants") or [])]
+            if any(p.get("owner_marked") and p.get("status") == "pending" for p in ask.get("participants") or [])]
 
 
 def asks_dispatched(record: Mapping[str, Any]) -> int:
@@ -789,12 +789,24 @@ def append_attempt(root: Any, task_id: str, attempt: Mapping[str, Any]) -> Dict[
     return _update_plan_record(root, task_id, _append)
 
 
+def _ask_panel_outcomes(ask: Dict[str, Any]) -> None:
+    from ouroboros.review_ledger import panel_not_reached
+    from ouroboros.reviewer_slot_config import review_cost_facts
+
+    rows = ask.get("participants") or []
+    for row in rows:
+        row.update(review_cost_facts(row.get("cost"), route=str(row.get("route") or ""), model=str(row.get("model") or "")))
+    if "panel" in ask:
+        ask["panel"]["not_reached"] = panel_not_reached(rows)
+
+
 def append_ask(root: Any, task_id: str, ask: Mapping[str, Any]) -> Dict[str, Any]:
     """Record one dispatched ask (participants with their typed dispatch state)."""
     def _append(record: Dict[str, Any]) -> Dict[str, Any]:
         if any(str(a.get("ask_id") or "") == str(ask.get("ask_id") or "") for a in record.get("asks", [])):
             raise PlanRecordInvalid(f"PLAN_RECORD_INVALID: ask {ask.get('ask_id')!r} is already recorded")
         record["asks"] = [*record.get("asks", []), copy.deepcopy(dict(ask))]
+        _ask_panel_outcomes(record["asks"][-1])
         return record
 
     return _update_plan_record(root, task_id, _append)
@@ -814,6 +826,7 @@ def update_participant(root: Any, task_id: str, *, ask_id: str, seat_id: str, fa
                     if facts.get("status") == "pending" and str(participant.get("status") or "pending") != "pending":
                         return record
                     participant.update(copy.deepcopy(dict(facts)))
+                    _ask_panel_outcomes(ask)
                     return record
         raise PlanRecordInvalid(f"PLAN_RECORD_INVALID: no participant {seat_id!r} in ask {ask_id!r}")
 

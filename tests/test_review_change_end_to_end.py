@@ -271,19 +271,21 @@ def test_in_cyber_pro_commit_reviewed_composes_its_panel_from_the_pool_and_recor
     assert sent == ["s1", "scout"]  # the rest of the pool was not paid
     panel = record["panel"]
     assert (panel["composition"], panel["chosen_by"], panel["reason"], panel["reason_missing"]) == (
-        "composed", "author", REASON, False)
+        "composed", "ouroboros", REASON, False)
     assert (panel["assigned"], panel["additional"], panel["seats"], panel["additional_seats"]) == (["s1"], ["scout"], 1, 1)
     assert panel["reviewers_requested"] == ["s1", "scout"]
     assert {row["seat_id"]: row["additional"] for row in record["rows"]} == {"s1": False, "scout": True}
     assert record["verdict"]["aggregate"] == "PASS" and record["mode"] == "cyber_pro"
 
 
-def test_below_cyber_pro_the_whole_pool_judges_the_commit_and_named_rows_only_add(staged_body, tmp_path, monkeypatch):
+def test_blocking_widens_the_commit_panel_and_records_the_request(staged_body, tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     record, sent = _gate_with_critic(staged_body, tmp_path, monkeypatch, mode="pro", reviewers=["t1", "scout"])
     assert sent == ["s1", "scout", "t1", "t2"]
     panel = record["panel"]
     assert (panel["composition"], panel["chosen_by"], panel["reason_missing"], panel["reviewers_subset_ignored"]) == (
-        "full_pool", "owner", False, True)
+        "full_pool", "ouroboros", False, True)
+    assert panel["widened_from"] == ["t1", "scout"]
     assert (sorted(panel["assigned"]), panel["additional"], panel["seats"]) == (["s1", "t1", "t2"], ["scout"], 3)
     assert record["verdict"]["aggregate"] == "PASS"
 
