@@ -114,7 +114,14 @@ class HistoryCursorError(ValueError):
 
 
 def parse_around(value):
-    """The task an around read lands on: ``task:<task_id>``, the one address it takes (400 otherwise)."""
+    """An exact stored row or a task card; those are distinct navigation semantics."""
+    if str(value or "").startswith("row:"):
+        from ouroboros.chat_chain import parse_address
+        try:
+            parse_address(value)
+        except ValueError:
+            raise HistoryCursorError("history_around_invalid", 400) from None
+        return value
     kind, _sep, task_id = str(value or "").partition(":")
     if kind != "task" or not task_id or len(task_id) > 128 or any(char.isspace() for char in task_id):
         raise HistoryCursorError("history_around_invalid", 400)
@@ -422,16 +429,16 @@ class HistorySource:
 
 
 def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens, notes="", warm=None,
-                        around=None, thread_filter=None):
+                        around=None, thread_filter=None, row_target=None):
     """``lens``: the room's ``RoomLens`` per stream (``history._room_lens``); ``notes``:
     ``notes_stamp``; ``warm``: the room rule's lineage batch read, given rows before they are counted;
-    ``around``: ``task:<id>``, the page around that task (``_select_around``); ``thread_filter``: the
+    ``around``: a task or exact row (``row_target`` is its resolved source/seq); ``thread_filter``: the
     room rule and stored-chat coercion it decides membership with (``room_member_predicate``)."""
     if around is not None:
         if cursor:
             raise HistoryCursorError("history_around_invalid", 400)  # a page starts at one place
         return _select_around(data_dir, thread_id, view, parse_around(around), quotas, predicates, lens, notes, warm,
-                              room_member_predicate(*thread_filter))
+                              room_member_predicate(*thread_filter), row_target)
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
     if continuation and continuation["kind"] == "after" and (
             continuation["notes"] != notes or _settled_since(data_dir, continuation["tasks"])):
@@ -476,13 +483,14 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             **({key: continuation[key] for key in ("tasks", "newest", "lifecycle")} if after else {})}
 
 
-def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens, notes, warm, member):
+def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens, notes, warm, member, row_target=None):
     """The page around one task in this room (DESIGN "Room work status"): per stream, a quarter of
     the quota of the room's rows before the task's earliest row of the room, that row, and the rest
     after it -- never a walk of the room from the present. ``anchor`` says what was found: ``found``
     and the row a client lands on, ``moved`` (the task's rows belong to another room) or ``absent``
     (the store holds no row of it a client could show; while the archive still imports that is not
-    known yet: 503 ``migrating``). A stream holding none of the task's rows has no known place near
+    known yet: 503 ``migrating``). ``row_target`` instead pins one resolved source/seq, with no task
+    fallback. A stream holding none of the target's rows has no known place near
     it: the page and the chain it starts carry none of that stream (its quota is 0, so its coverage
     is unknown) and the page names the gap (``around_unpositioned``)."""
     quotas = dict(quotas)
@@ -495,10 +503,17 @@ def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens,
         reader.warm = warm
         page["upper"][source] = reader.upper
         progress = source == "progress"
-        state, pivots[source] = reader.task_pivot(task_id, lambda row, progress=progress: member(row, progress),
-                                                  lambda row, progress=progress: member.in_room(row, progress))
+        if row_target is not None:
+            entry = ds.row_at(data_dir, source, row_target["seq"]) if source == row_target["source"] else None
+            pivots[source] = reader._entries([entry])[0] if entry and member(entry.row, progress) else None
+            state = "none"
+            if pivots[source] is not None:
+                quotas["progress" if progress else "human"] = max(1, quotas["progress" if progress else "human"])
+        else:
+            state, pivots[source] = reader.task_pivot(task_id, lambda row, progress=progress: member(row, progress),
+                                                      lambda row, progress=progress: member.in_room(row, progress))
         states.add(state)
-    if not any(pivots.values()) and any(reader.floor for reader in readers.values()):
+    if not row_target and not any(pivots.values()) and any(reader.floor for reader in readers.values()):
         raise StoreMigrating("Dialogue history is still importing")  # its rows may be in a segment not imported yet
     for source, quota in (("chat", "human"), ("progress", "progress")):
         reader, pivot, counts, want = readers[source], pivots[source], predicates[source], quotas[quota]
@@ -514,8 +529,9 @@ def _select_around(data_dir, thread_id, view, task_id, quotas, predicates, lens,
         if 0 < reader.floor == lower:
             page["importing"].append(source)
     anchor = pivots["chat"] or pivots["progress"]
-    page["anchor"] = ({"state": "found", "task_id": task_id, "history_id": anchor["history_id"]} if anchor else
-                      {"state": "moved" if "moved" in states else "absent", "task_id": task_id})
+    identity = {"row_address": task_id, "chat_id": thread_id} if row_target else {"task_id": task_id}
+    page["anchor"] = ({"state": "found", **identity, "history_id": anchor["history_id"]} if anchor else
+                      {"state": "unavailable" if row_target else "moved" if "moved" in states else "absent", **identity})
     return page
 
 
