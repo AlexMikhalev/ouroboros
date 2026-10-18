@@ -2,8 +2,9 @@
  * a frame deadline. Frames only settle geometry after those owners are ready.
  * No fetch, pager, message cache or timer lives here.
  */
-// About 200ms at 60Hz: a drag that pauses that long lays every row out once, then goes on lazily.
-const WIDTH_HELD_FRAMES = 12;
+// A width that moves again within MOVE_FRAMES frames keeps moving (a drag, a live window resize); one that then
+// holds WIDTH_HELD_FRAMES frames (about 200ms at 60Hz) has stopped: a drag paused that long is laid out once.
+const MOVE_FRAMES = 3, WIDTH_HELD_FRAMES = 12;
 
 export function createChatReadingPosition({ visible, alive, ready, feed, anchors, changed, afterWrite, activity, updateButton }) {
     let generation = 0, scheduled = false;
@@ -26,22 +27,26 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
             else if (wait) owedEnd(true);
         }));
     };
-    // While the feed's width moves, its rows off the screen keep their size (style.css: lazy rows under
-    // [data-resizing]) and only those near the screen are laid out again. Once the width has held for
-    // WIDTH_HELD_FRAMES frames, every row is laid out at the final width and the place is re-applied in that frame.
-    // A feed shown again (no width before) is not a move.
-    let rowsWidth = feed.clientWidth, heldFrames = -1;
-    const holdLazyRows = () => requestAnimationFrame(() => {
-        if (++heldFrames < WIDTH_HELD_FRAMES) { holdLazyRows(); return; }
-        heldFrames = -1;
+    // While the feed's width keeps moving, its rows off the screen keep their size (style.css: lazy rows under
+    // [data-resizing]) and only those near the screen are laid out again. A width that moves once (a window
+    // jump, a layout switch) is laid out at once, as before. Once a moving width has held, every row is laid out at
+    // the final width and the place is re-applied in that frame. The feed's own box counts, not its content width:
+    // a scrollbar appearing as history fills the feed is no move, and neither is a feed shown again.
+    let rowsWidth = feed.offsetWidth, sinceMove = -1, lazy = false;
+    const countFrames = () => requestAnimationFrame(() => {
+        if (++sinceMove < (lazy ? WIDTH_HELD_FRAMES : MOVE_FRAMES)) { countFrames(); return; }
+        sinceMove = -1;
+        if (!lazy) return;
+        lazy = false;
         feed.toggleAttribute?.('data-resizing', false);
         if (alive()) state.reflow();
     });
     const noteWidth = () => {
-        const now = feed.clientWidth;
+        const now = feed.offsetWidth;
         if (now && rowsWidth && now !== rowsWidth) {
-            if (heldFrames < 0) { feed.toggleAttribute?.('data-resizing', true); holdLazyRows(); }
-            heldFrames = 0;
+            if (sinceMove < 0) countFrames();
+            else if (!lazy) { lazy = true; feed.toggleAttribute?.('data-resizing', true); }
+            sinceMove = 0;
         }
         rowsWidth = now;
     };

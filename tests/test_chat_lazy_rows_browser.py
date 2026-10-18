@@ -1,11 +1,13 @@
 """Lazy rows in the real app over real retained history (owner 18.10, 5A).
 
-While the window narrows, the rows off the screen keep the size they were laid out at and the browser lays out
-only the rows near the screen (style.css, chat_reading_position.js). Once the width holds, every row is laid out
-again: the passage being read is where it was, scrolling up through the loaded history moves every row by exactly
-the scroll, an older page lands above the passage without moving it, and a reader at the newest message stays
-there. A rule that left rows lazy at rest fails here in WebKit: a row taking its real size only as it nears the
-screen moves the passage being read.
+While a feed's width keeps moving (the sidebar's or a Project panel's handle dragged frame by frame), the rows off
+the screen keep the size they were laid out at and the browser lays out only the rows near the screen (style.css,
+chat_reading_position.js). Opening a room, a scrollbar appearing and a single window jump are laid out at once, as
+before. Once the width holds, every row is laid out again: the passage being read is where it was, scrolling up
+through the loaded history moves every row by exactly the scroll, an older page lands above the passage without
+moving it, and a reader at the newest message stays there. With the rows lazy at rest this fails in both engines:
+in WebKit a row taking its real size only as it nears the screen moves the passage being read, and Chromium ends
+short of the newest message.
 """
 from __future__ import annotations
 
@@ -21,15 +23,46 @@ pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 _WORDS = ("history keeps every passage where the reader left it while the column narrows and widens again "
           "and the rows far above wait with the size they last had").split()
 
-# What the feed's rows are doing: marked for a width move, rows under the lazy rule, and rows whose contents the
+# Every time a feed is marked lazy or unmarked, from the first parse on.
+_RECORD_MARKS = """() => {
+    window.__lazyMarks = [];
+    new MutationObserver(records => { for (const record of records) window.__lazyMarks.push(
+        {id: record.target.id, on: record.target.hasAttribute('data-resizing')}); })
+        .observe(document, {subtree: true, attributes: true, attributeFilter: ['data-resizing']});
+}"""
+# What the feed's rows are doing: marked for a moving width, rows under the lazy rule, and rows whose contents the
 # browser actually skips (a first child that is shown, yet not rendered because its row is lazy), of all rows.
 _LAZY = """feed => {
     const root = document.querySelector(feed), rows = [...root.children];
     const skipped = row => { const child = row.firstElementChild;
         return Boolean(child?.checkVisibility() && !child.checkVisibility({contentVisibilityAuto: true})); };
-    return {marked: root.hasAttribute('data-resizing'), rows: rows.length, width: root.clientWidth,
+    return {marked: root.hasAttribute('data-resizing'), rows: rows.length,
         lazy: rows.filter(row => getComputedStyle(row).contentVisibility === 'auto').length,
-        skipped: rows.filter(skipped).length};
+        skipped: rows.filter(skipped).length,
+        marks: window.__lazyMarks.filter(mark => mark.id === root.id).length};
+}"""
+# The real resize handle dragged one step per frame there and back (app.js writes the width once per frame), with
+# the feed's state sampled every frame.
+_DRAG = """async ([feed, handleSelector, steps]) => {
+    const root = document.querySelector(feed), handle = document.querySelector(handleSelector);
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const skipped = row => { const child = row.firstElementChild;
+        return Boolean(child?.checkVisibility() && !child.checkVisibility({contentVisibilityAuto: true})); };
+    const box = handle.getBoundingClientRect(), y = box.top + Math.min(200, box.height / 2);
+    let x = box.left + box.width / 2;
+    const send = type => handle.dispatchEvent(new PointerEvent(type, {bubbles: true, cancelable: true, clientX: x,
+        clientY: y, pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1}));
+    const seen = [];
+    send('pointerdown');
+    for (let i = 0; i < steps; i += 1) {
+        x += i < steps / 2 ? 5 : -5;
+        send('pointermove');
+        await frame();
+        seen.push({marked: root.hasAttribute('data-resizing'), skipped: [...root.children].filter(skipped).length,
+            width: root.offsetWidth});
+    }
+    send('pointerup');
+    return seen;
 }"""
 # The row the reading owner anchors on: the first one whose bottom is inside the feed's box.
 _PASSAGE = """feed => {
@@ -88,31 +121,40 @@ def _read_at(page, feed, fraction):
     return page.evaluate(_PASSAGE, feed)
 
 
-def _narrow(page, feed, widths, passage):
-    """Each window width in turn. Once the feed's own width moved it is marked lazy, and the passage keeps its place
-    (a step the feed's width did not follow, a Project panel at its widest, is recorded as not moved)."""
-    seen = []
-    for width in widths:
-        before = page.locator(feed).evaluate("root => root.clientWidth")
-        page.set_viewport_size({"width": width, "height": 850})
-        page.evaluate(_FRAMES)  # the window's new width lands and the feed's resize observer reports it
-        page.wait_for_function("""([feed, id, offset, before]) => {
-            const root = document.querySelector(feed);
-            const node = [...root.querySelectorAll(':scope > [data-history-id]')].find(n => n.dataset.historyId === id);
-            const placed = node && Math.abs(node.getBoundingClientRect().top - root.getBoundingClientRect().top - offset) <= 2;
-            return placed && (root.clientWidth === before || root.hasAttribute('data-resizing'));
-        }""", arg=[feed, passage["id"], passage["offset"], before], timeout=5_000)
-        state = page.evaluate(_LAZY, feed)
-        seen.append({**state, "moved": state["width"] != before})
-    return seen
-
-
 def _held(page, feed):
     """At rest: the width held, the mark is gone, every row is laid out again."""
     page.wait_for_function("feed => !document.querySelector(feed).hasAttribute('data-resizing')", arg=feed,
                            timeout=10_000)
     page.evaluate(_FRAMES)
     return page.evaluate(_LAZY, feed)
+
+
+def _jump(page, feed, passage, width):
+    """One window jump is laid out at once: the feed is never marked, the passage keeps its place."""
+    marks = page.evaluate(_LAZY, feed)["marks"]
+    page.set_viewport_size({"width": width, "height": 850})
+    page.wait_for_function("""([feed, id, offset]) => {
+        const root = document.querySelector(feed);
+        const node = [...root.querySelectorAll(':scope > [data-history-id]')].find(n => n.dataset.historyId === id);
+        return node && Math.abs(node.getBoundingClientRect().top - root.getBoundingClientRect().top - offset) <= 2;
+    }""", arg=[feed, passage["id"], passage["offset"]], timeout=5_000)
+    page.evaluate(_FRAMES)
+    page.evaluate(_FRAMES)
+    state = page.evaluate(_LAZY, feed)
+    assert state["marks"] == marks and state["lazy"] == 0, ("a single jump makes no row lazy", state)
+
+
+def _drag(page, feed, handle, passage, rows):
+    """The handle dragged frame by frame: the rows far off the screen are skipped meanwhile; once the width holds no
+    row is lazy and the passage is where it was read."""
+    seen = page.evaluate(_DRAG, [feed, handle, 40])
+    assert len({frame["width"] for frame in seen}) > 10, ("the feed's width followed the handle", seen)
+    assert any(frame["marked"] for frame in seen), seen
+    assert max(frame["skipped"] for frame in seen) > rows // 2, ("the browser skipped the rows off the screen", seen)
+    after = _held(page, feed)
+    assert after["lazy"] == after["skipped"] == 0, after
+    placed = page.evaluate(_OFFSET, [feed, passage["id"]])
+    assert abs(placed - passage["offset"]) <= 1, (passage, placed)
 
 
 @pytest.mark.parametrize("browser_engine", ["chromium", "webkit"])
@@ -124,20 +166,15 @@ def test_lazy_rows_keep_the_passage_history_scroll_and_older_pages_exact(direct_
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 850})
+            page.add_init_script(f"({_RECORD_MARKS})()")
             _open(page, direct_server_with_data["url"])
             rest = _held(page, MAIN)
-            assert rest["rows"] > 100 and rest["lazy"] == rest["skipped"] == 0, rest
+            assert rest["rows"] > 100 and rest["lazy"] == rest["skipped"] == rest["marks"] == 0, (
+                "opening the room (its history filling the feed, a scrollbar appearing) makes no row lazy", rest)
 
             passage = _read_at(page, MAIN, 0.55)
-            during = _narrow(page, MAIN, range(1240, 990, -30), passage)
-            moved = [state for state in during if state["moved"]]
-            assert len(moved) >= 5 and all(state["marked"] and state["lazy"] == state["rows"] for state in moved), during
-            assert max(state["skipped"] for state in during) > rest["rows"] // 2, (
-                "the browser skipped the rows off the screen while the width moved", during)
-            after = _held(page, MAIN)
-            assert after["lazy"] == after["skipped"] == 0, after
-            placed = page.evaluate(_OFFSET, [MAIN, passage["id"]])
-            assert abs(placed - passage["offset"]) <= 1, (passage, placed)
+            _jump(page, MAIN, passage, 1180)
+            _drag(page, MAIN, "#primary-sidebar > .resize-handle", passage, rest["rows"])
 
             # Every row was laid out at the held width: nothing above the passage changes size as it nears the
             # screen, so scrolling up moves each row by exactly the scroll.
@@ -157,12 +194,10 @@ def test_lazy_rows_keep_the_passage_history_scroll_and_older_pages_exact(direct_
             climb = page.evaluate(_CLIMB, [MAIN, 240])
             assert climb["top"] == 0 and not climb["misses"], climb
 
-            # Following the newest message, a resize keeps the reader there once the width holds.
+            # Following the newest message, a drag keeps the reader there once the width holds.
             page.locator("#chat-scroll-bottom").evaluate("node => node.click()")
             _assert_at_newest(page, MAIN, "Lazy row 0419")
-            for width in (1060, 1120, 1180, 1240, 1280):
-                page.set_viewport_size({"width": width, "height": 850})
-                page.evaluate(_FRAMES)
+            page.evaluate(_DRAG, [MAIN, "#primary-sidebar > .resize-handle", 30])
             _held(page, MAIN)
             _assert_at_newest(page, MAIN, "Lazy row 0419")
             _idle(page, MAIN)
@@ -171,9 +206,9 @@ def test_lazy_rows_keep_the_passage_history_scroll_and_older_pages_exact(direct_
 
 
 @pytest.mark.parametrize("browser_engine", ["chromium", "webkit"])
-def test_a_project_panel_feed_is_lazy_only_while_its_width_moves(direct_server_with_data, browser_engine):
-    """The Project panel's feed narrows with the window (its width follows the viewport): the same lazy rows, the
-    same exact passage and history once the width holds."""
+def test_a_project_panel_feed_is_lazy_only_while_its_width_keeps_moving(direct_server_with_data, browser_engine):
+    """The Project panel's own handle: the same lazy rows while it is dragged, the same exact passage and history
+    once the width holds."""
     from ouroboros.projects_registry import create_project
     from playwright.sync_api import sync_playwright
 
@@ -186,19 +221,14 @@ def test_a_project_panel_feed_is_lazy_only_while_its_width_moves(direct_server_w
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 850})
+            page.add_init_script(f"({_RECORD_MARKS})()")
             _open(page, direct_server_with_data["url"])
             feed = _open_project(page, project)
             rest = _held(page, feed)
-            assert rest["rows"] > 100 and rest["lazy"] == rest["skipped"] == 0, rest
+            assert rest["rows"] > 100 and rest["lazy"] == rest["skipped"] == rest["marks"] == 0, rest
 
             passage = _read_at(page, feed, 0.5)
-            during = _narrow(page, feed, range(1240, 990, -30), passage)
-            moved = [state for state in during if state["moved"]]
-            assert moved and all(state["marked"] and state["lazy"] == state["rows"] for state in moved), during
-            assert max(state["skipped"] for state in during) > rest["rows"] // 2, during
-            after = _held(page, feed)
-            assert after["lazy"] == after["skipped"] == 0, after
-            assert abs(page.evaluate(_OFFSET, [feed, passage["id"]]) - passage["offset"]) <= 1, passage
+            _drag(page, feed, "#project-panel > .resize-handle", passage, rest["rows"])
             climb = page.evaluate(_CLIMB, [feed, 240])
             assert climb["steps"] > 5 and climb["top"] == 0 and not climb["misses"], climb
         finally:

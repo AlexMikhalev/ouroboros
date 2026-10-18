@@ -1,5 +1,5 @@
-"""Lazy rows (owner 18.10, 5A): while a feed's width moves, the browser lays out only its rows near the screen; at
-rest every row is laid out, so history paging, landings and the scroll position stay exact.
+"""Lazy rows (owner 18.10, 5A): while a feed's width keeps moving, the browser lays out only its rows near the screen;
+at rest every row is laid out, so history paging, landings and the scroll position stay exact.
 
 A window-resize step on the owner's Main (150 rows, WebKit 1108x680) lays out in ~28ms with lazy rows instead of
 ~49ms. A rule that leaves rows lazy at rest moved the passage being read by hundreds of pixels per scroll step in
@@ -44,12 +44,14 @@ def test_feed_rows_remember_their_size_and_are_lazy_only_while_the_width_moves()
                 f"{path.name} {selector}: a feed's rows are lazy only while its width moves")
 
 
-def test_the_reading_owner_marks_a_width_move_and_reapplies_the_place_once_it_holds():
+def test_the_reading_owner_marks_a_moving_width_and_reapplies_the_place_once_it_holds():
     js = _read("web/modules/chat_reading_position.js")
     note = js.split("const noteWidth = () => {", 1)[1].split("\n    };", 1)[0]
-    assert "toggleAttribute?.('data-resizing', true)" in note, "a width move marks the feed"
+    assert "const now = feed.offsetWidth;" in note, "the feed's own box: a scrollbar appearing is no move"
     assert "now && rowsWidth" in note, "a feed shown again (no width before) is not a move"
-    held = js.split("const holdLazyRows = () =>", 1)[1].split("\n    });", 1)[0]
+    assert "else if (!lazy) { lazy = true; feed.toggleAttribute?.('data-resizing', true); }" in note, (
+        "only a width that moves again soon (a drag, a live resize) marks the feed; one jump is laid out at once")
+    held = js.split("const countFrames = () =>", 1)[1].split("\n    });", 1)[0]
     unmark = held.index("toggleAttribute?.('data-resizing', false)")
     assert held.index("state.reflow()", unmark) > unmark, "the place is re-applied after every row is laid out again"
     reflow = js.split("        reflow() {", 1)[1].split("\n        },", 1)[0]

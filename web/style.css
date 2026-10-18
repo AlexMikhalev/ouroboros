@@ -1622,13 +1622,13 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     contain-intrinsic-size: auto 160px;
 }
 
-/* Lazy rows while the column's width moves (a window resize, the sidebar's or a Project panel's handle):
-   chat_reading_position.js marks the feed [data-resizing] for the move, and the browser lays out only the rows near
-   the screen; every other row keeps the size it was last laid out at (the `auto` above remembers it; 160px stands
-   in only for a row never laid out). Once the width holds, the mark goes, every row is laid out at the final width
-   and the reading place is re-applied in that same frame. Never lazy at rest: a row that takes its real size only
-   as it nears the screen moves the passage being read in WebKit, and landings, history pages and the bottom are
-   measured against exact rows (tests/test_chat_lazy_rows_browser.py). */
+/* Lazy rows while the column's width keeps moving (a live window resize, the sidebar's or a Project panel's handle):
+   chat_reading_position.js marks the feed [data-resizing], and the browser lays out only the rows near the screen;
+   every other row keeps the size it was last laid out at (the `auto` above remembers it; 160px stands in only for a
+   row never laid out). Once the width holds, the mark goes, every row is laid out at the final width and the
+   reading place is re-applied in that same frame. Never lazy at rest: a row that takes its real size only as it
+   nears the screen moves the passage being read in WebKit, and landings, history pages and the bottom are measured
+   against exact rows (tests/test_chat_lazy_rows_browser.py). */
 :is(#chat-messages, .chat-messages)[data-resizing] > * {
     content-visibility: auto;
 }
