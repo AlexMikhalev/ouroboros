@@ -716,8 +716,8 @@ checks the actual caller, resolved member source, selected revision and source
 eligibility before invoking this same attestation. The model interprets the
 owner's words; a formatted reference alone grants nothing. Without a review
 panel, exact bytes are accepted only by: a trusted source (`trusted`); Ouroboros's
-own recorded check of that release (`self_check`, its notes in `install.json`; it
-never overrules a panel's blockers); the owner's Skip review or "Update without
+own recorded check of that release, only in Cyber Pro (`self_check`, its notes in
+`install.json`; outside Cyber Pro it admits nothing); the owner's Skip review or "Update without
 review" of that release (owner attestation, `owner_skip`); and an owner edit: the
 admitted selected-skill task the owner's own door started records `owner_edit.json`
 for each revision it writes. Each binds to exact bytes; any later edit leaves it.
