@@ -40,6 +40,8 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tests.ui_console_errors import PageErrors
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = Path("docs/examples/separate_ui")
 CADDY_ENV = "SEPARATE_UI_CADDY"
@@ -683,8 +685,7 @@ class BrowserSession:
         self.context = self.browser.new_context(viewport={"width": viewport[0], "height": viewport[1]}, **options)
         self.context.add_init_script(_RECORD_LOADS)
         self.page = self.context.new_page()
-        self.errors: list[str] = []
-        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.errors = PageErrors(self.page, name)
 
     def loads(self) -> list[str]:
         return self.page.evaluate("() => JSON.parse(sessionStorage.getItem('__loads') || '[]')")
@@ -728,8 +729,7 @@ class BrowserSession:
         }""", [path, headers or {}])
 
     def unexpected_errors(self) -> list[str]:
-        # WebKit reports a fetch that a navigation cancelled as an access-control failure.
-        return [e for e in self.errors if not (self.name == "webkit" and e.endswith("due to access control checks."))]
+        return self.errors.unexpected()
 
     def close(self) -> None:
         self.browser.close()
