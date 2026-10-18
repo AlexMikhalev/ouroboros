@@ -15,7 +15,13 @@ import ouroboros.review_substrate as substrate
 from ouroboros import review_ledger
 from ouroboros.tools.review_change import ReviewChangeArgumentError, parse_request, run_review_change
 from tests import _contributor_packet_shared as shared
+from tests._review_session_route_shared import (  # noqa: F401
+    FakeGateway, _owned_gateway_uses_each_test_transport, _terminal_detail, fake_route as _fake_route,
+)
+from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
 from tests.test_review_change_end_to_end import _foreign_project
+
+fake_route = _fake_route  # the shared offline Claudexor fixture, requested by name below
 
 CRITICAL = '[{"item": "missing_section", "verdict": "FAIL", "severity": "critical", "reason": "The question asked for three findings; the reply gives two."}]'
 
@@ -194,6 +200,36 @@ def test_blocking_holds_the_same_failed_result_until_it_changes_and_passes(tmp_p
     answers.clear()  # the revised result satisfies the reviewers
     assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False
     assert len(sends) == 6
+    current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
+    assert [run["aggregate_signal"] for run in current] == ["PASS"]
+
+
+def test_a_required_root_result_is_reviewed_through_a_real_session_seat(tmp_path, monkeypatch, fake_route):
+    """The Required floor on the real Claudexor session route (offline gateway): the seat is asked for the
+    findings array, never the change/coupling object; its critical finding holds a Blocking delivery and its
+    clean answer on the revised result delivers it."""
+    import json
+
+    from ouroboros.tools.review_result import result_review_at_delivery
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, enforcement="blocking")
+    _produced_answer_protocol(monkeypatch)
+    set_review_pool(monkeypatch, pool_roster(pool_seat(
+        "independent", "fake-review=fake-small", kind="agent_session", access="readonly")))
+    start = FakeGateway.start_run
+    monkeypatch.setattr(FakeGateway, "start_run", lambda self, request, **kwargs: {
+        **start(self, request, **kwargs), "runId": f"run-{len(self.start_requests)}-{len(FakeGateway.instances)}"})
+    critical = {"findings": [{"item": "missing_section", "verdict": "FAIL", "severity": "critical",
+                              "reason": "The question asked for three findings; the reply gives two."}]}
+    monkeypatch.setattr(FakeGateway, "detail", _terminal_detail(json.dumps(critical), conformance="passed"))
+    shown, trace = [], {"tool_calls": []}
+
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append) is True
+    assert "three findings" in shown[0], shown
+    monkeypatch.setattr(FakeGateway, "detail", _terminal_detail('{"findings": []}', conformance="passed"))
+    assert result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False
+    starts = [body for gateway in FakeGateway.instances for body in gateway.start_requests]
+    assert len(starts) == 2 and all(body["outputSchema"]["required"] == ["findings"] for body in starts), starts
     current = [run for run in trace["review_runs"] if not run.get("superseded_by_revision")]
     assert [run["aggregate_signal"] for run in current] == ["PASS"]
 
