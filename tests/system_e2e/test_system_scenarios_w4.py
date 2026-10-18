@@ -826,7 +826,9 @@ S22_SCRIPT = [
 
 
 @pytest.mark.parametrize("status", ["reviewing", "reviewed", "failed"])
-def test_s22_script_collects_feedback_before_an_explicit_author_decision(status):
+def test_w4_s22_script_collects_feedback_before_an_explicit_author_decision(status):
+    """The S22 script collects review feedback before its explicit author decision. A default-lane
+    unit test of the script, not a scenario: no ``test_s<N>_`` name, no integration/serial markers."""
     reference = {"surface": "commit", "task_id": "s22", "attempt": 1}
     feedback = {"review_reference": reference,
                 "review_outcome": {"status": status, "phase": "review_only"}}
