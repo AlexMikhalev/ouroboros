@@ -1552,7 +1552,8 @@ def prune_orphans(
 
     for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
         with _ops_lock(root, op="prune"):
-            if entry not in _load_registry(data_dir, strict=True, op="prune_orphans"):
+            rows = _load_registry(data_dir, strict=True, op="prune_orphans")
+            if entry not in rows:
                 continue
             task_id = str(entry.get("task_id") or "")
             if chosen is not None and task_id not in chosen:
@@ -1562,6 +1563,9 @@ def prune_orphans(
                 verdict = verdicts.get(str(entry.get("path") or "")) or {"remove": False}
                 if not verdict["remove"] or not body_candidate.verdict_holds(entry, verdict, data_dir=data_dir):
                     continue
+                if not entry.get("retiring"):
+                    rows[rows.index(entry)] = entry = {**entry, "retiring": True}
+                    _save_registry(rows, data_dir)  # transfer must lose before deletion starts
                 if verdict.get("keep_branch"):
                     branch = ""
             elif entry.get("kind") == _KIND_DELEGATED_EXEC:
