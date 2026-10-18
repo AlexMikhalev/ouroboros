@@ -42,7 +42,7 @@ from ouroboros.preflight_receipts import bind_execution_exhibit
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
     PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, load_record, new_record_id,
-    panel_facts, reduce_verdict, revise_record, row_verdict, seat_findings, settle_pending_payload, write_record,
+    panel_facts, reduce_verdict, revise_record, row_verdict, seat_findings, write_record,
 )
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
@@ -729,19 +729,21 @@ def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_k
     record.panel = {**panel, **wave.panel.facts}
 
 
+_SUBJECT_IDENTITY = ("root_kind", "root", "kind", "base", "head", "tree_sha", "diff_sha", "governance_root")
+
+
 def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, Any], bool]:
-    """Write the one record (a rejoin revises the record its open operation left pending, keeping that
-    dispatch's provenance: the subject, brief, rebuttal and fingerprints its seats read); an unwritten
-    record is answered from memory and says so."""
+    """Write the one record (a rejoin revises the record its open operation left pending, keeping what that
+    dispatch's seats read: the subject's identity, the brief and the fingerprints with the reuse key over its
+    rebuttal; the seats' answers, refs and custody facts are the settling wave's); an unwritten record is
+    answered from memory and says so."""
     def settle(prior: Dict[str, Any]) -> Dict[str, Any]:
         fresh = record.to_dict()
         if prior.get("state") != "pending":
             return fresh
-        settled = settle_pending_payload(prior, fresh)
-        # What custody still holds is the settling wave's fact, never the dispatch's.
-        retention = {key: (fresh.get("subject") or {}).get(key) for key in ("retained_checkout", "retention")
-                     if key in (fresh.get("subject") or {})}
-        return {**settled, "subject": {**dict(settled.get("subject") or {}), **retention}}
+        identity = {key: value for key, value in dict(prior.get("subject") or {}).items() if key in _SUBJECT_IDENTITY}
+        return {**fresh, **{key: prior[key] for key in ("brief", "fingerprints") if key in prior},
+                "subject": {**dict(fresh.get("subject") or {}), **identity}}
 
     try:
         revised = revise_record(drive, record.record_id, settle) if rejoin else None
