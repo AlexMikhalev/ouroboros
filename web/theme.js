@@ -87,10 +87,10 @@
        sidebar as a column from LAYOUT.dockedMinWidth up; `stack` below it folds the
        sidebar into a drawer and every room into a full-width layer. Written here,
        before CSS, so the first paint is already the right shell, and kept current by
-       the window's own media-query change (a resize, a rotation). The two numbers
-       live here once; web/modules/layout.js is the ES-module door everything else
-       reads them through (tests/test_shell_layout_static.py). */
-    const LAYOUT = Object.freeze({ dockedMinWidth: 720, projectBesideMainMinWidth: 360 });
+       the window's own media-query change (a resize, a rotation). The number lives
+       here once; web/modules/layout.js is the ES-module door everything else reads it
+       through (tests/test_shell_layout_static.py). */
+    const LAYOUT = Object.freeze({ dockedMinWidth: 720 });
     const layoutQuery = typeof window.matchMedia === 'function'
         ? window.matchMedia(`(min-width: ${LAYOUT.dockedMinWidth}px)`)
         : null;

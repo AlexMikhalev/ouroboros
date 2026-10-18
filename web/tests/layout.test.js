@@ -35,11 +35,12 @@ function bootTheme({ docked = true, media = true } = {}) {
     return { root, window, layoutQuery, handlers, events };
 }
 
-test('theme.js paints the layout before CSS and publishes the numbers once', () => {
+test('theme.js paints the layout before CSS and publishes its number once', () => {
     const wide = bootTheme({ docked: true });
     assert.equal(wide.root.dataset.layout, 'docked');
     assert.equal(wide.window.ouroLayout.dockedMinWidth, 720);
-    assert.equal(wide.window.ouroLayout.projectBesideMainMinWidth, 360);
+    // The Project panel keeps its own width beside Main (owner 18.10, 4A): no fill threshold.
+    assert.equal('projectBesideMainMinWidth' in wide.window.ouroLayout, false);
     assert.equal(wide.window.ouroLayout.layout, 'docked');
     assert.ok(Object.isFrozen(wide.window.ouroLayout), 'the facts are read-only');
     assert.equal(bootTheme({ docked: false }).root.dataset.layout, 'stack');
@@ -61,7 +62,7 @@ test('a resize or rotation across the switch repaints and announces once', () =>
 
 test('layout.js reads the painted attribute, falls back to the facts, and hears changes', async () => {
     const mod = await import('../modules/layout.js');
-    const w = { ouroLayout: { dockedMinWidth: 720, projectBesideMainMinWidth: 360, layout: 'stack' }, listeners: new Map(),
+    const w = { ouroLayout: { dockedMinWidth: 720, layout: 'stack' }, listeners: new Map(),
         addEventListener(type, fn) { this.listeners.set(type, fn); }, removeEventListener(type) { this.listeners.delete(type); } };
     assert.equal(mod.currentLayout({ root: { dataset: { layout: 'docked' } }, w }), 'docked');
     assert.equal(mod.currentLayout({ root: { dataset: {} }, w }), 'stack', 'no attribute yet: the facts answer');
@@ -76,14 +77,7 @@ test('layout.js reads the painted attribute, falls back to the facts, and hears 
     assert.equal(w.listeners.size, 0, 'the subscription has a disposer');
 });
 
-test('the Project panel fills the content area only when Main would keep less than the minimum', async () => {
-    const { projectPanelFillsContent } = await import('../modules/layout.js');
-    const w = { ouroLayout: { dockedMinWidth: 720, projectBesideMainMinWidth: 360, layout: 'docked' } };
-    // 1280 wide, 280 sidebar, 440 panel: Main keeps 560.
-    assert.equal(projectPanelFillsContent({ viewportWidth: 1280, sidebarWidth: 280, panelWidth: 440, w }), false);
-    // 980 wide, 280 sidebar, 352 panel: Main would keep 348.
-    assert.equal(projectPanelFillsContent({ viewportWidth: 980, sidebarWidth: 280, panelWidth: 352, w }), true);
-    // Exactly the minimum beside it stays beside it.
-    assert.equal(projectPanelFillsContent({ viewportWidth: 1000, sidebarWidth: 280, panelWidth: 360, w }), false);
-    assert.equal(projectPanelFillsContent({ viewportWidth: 1000, sidebarWidth: 280, panelWidth: 361, minMain: 360 }), true);
+test('the Project panel has no fill rule: it keeps its own width beside Main', async () => {
+    const mod = await import('../modules/layout.js');
+    assert.equal('projectPanelFillsContent' in mod, false);
 });
