@@ -913,7 +913,12 @@ def isolated_checkout(ctx: Any, spec: ReviewSubjectSpec, *,
     so does a wave that fails while reading a checkout an earlier wave retained:
     its custody was never established, so the earlier owner's claim stands. A kept
     or crash-left checkout carries ``checkout.json`` (its task), by which the custody
-    pass retires it once no review can read it (``review_checking_prune``)."""
+    pass retires it after observing released custody (``review_checking_prune``).
+
+    Reuse and retirement share no per-token lock. A rejoin beginning after the
+    retirement custody check can lose a checkout it just reused; published custody
+    guards and rebuilding after completed retirement do not close this race.
+    """
     from ouroboros.tool_access_paths import canonical_data_root
 
     spec = _normalized_spec(ctx, spec)

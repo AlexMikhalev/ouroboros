@@ -995,9 +995,10 @@ def _startup_custody_sweep() -> None:
 
 def _prune_delegated_snapshots() -> None:
     """C1 delegated execution snapshots: GC cross-checked against custody. A snapshot
-    stays while its run is open/undisposed OR a pending invocation names it; the rest
-    (disposed, closed, refused) is torn down with its pinned baseline ref, on every custody
-    pass. Fail-soft like every step there, so the pass never dies on a GC error.
+    stays while its run is open/undisposed OR a pending invocation names it. Closed
+    snapshots go only once their owning task is proven terminal and not live (including
+    lineage processes); a provisional snapshot can precede the start request. Custody
+    is re-read before each removal. Fail-soft like every step in the custody pass.
 
     FAIL-CLOSED on an unreadable custody log (CR1-1): the keep-set replays the
     custody rows and ``_iter_rows`` swallows its own OSError, so an unreadable log

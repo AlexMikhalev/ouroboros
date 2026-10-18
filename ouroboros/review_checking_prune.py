@@ -23,10 +23,13 @@ once no review can still read it: its task is terminal and not live, no active r
 (``state/advisory_review.json``) names its round, no live review operation runs for the task and
 no seat that still holds a copy checks from it. Its owner is the task its ``checkout.json`` names;
 a checkout made before the marker is owned only through a recorded round of that state, and goes
-only once older than the retention period. Then ``git worktree prune`` runs in its subject
-repository. A rejoin of a round whose checkout went rebuilds it at its frozen tree. An unreadable
+only once older than the retention period. Targeted ``git worktree remove`` retires only this
+checkout's registration. A rejoin rebuilds a retired checkout at its frozen tree. An unreadable
 review state or a busy or unreadable seat keeps every such checkout; an unreadable marker or task
-row keeps its own.
+row keeps its own. Isolated-checkout reuse and retirement share no per-token lock:
+a rejoin starting after the custody judgment can reuse the tree and then lose it
+during removal. The pass lock only serializes pruners; the seat/view locks above
+protect other objects. Rebuilding after completed retirement does not close that race.
 """
 from __future__ import annotations
 
@@ -157,20 +160,23 @@ def _checkout_hold(data_root: Any, entry: pathlib.Path, *, rounds: tuple, source
 
 
 def _remove_checkout(entry: pathlib.Path) -> str:
-    """Delete one isolated checkout, then prune its entry in the subject repository; ``""`` or the error."""
+    """Remove only this checkout and its Git registration; keep it on a Git refusal."""
     from ouroboros.subagent_worktrees import _force_rmtree
     from ouroboros.tools.review_subject import _git_bytes
 
     repo, common = entry / "repo", None
     if (repo / ".git").is_file():
-        rc, out, _err = _git_bytes(repo, ["rev-parse", "--git-common-dir"])
+        rc, out, err = _git_bytes(repo, ["rev-parse", "--git-common-dir"])
         text = out.decode("utf-8", "replace").strip()
         common = (repo / text).resolve(strict=False) if rc == 0 and text else None
+        if common is None or not common.is_dir():
+            return f"{entry.name}: Git common directory unavailable: {err.decode('utf-8', 'replace').strip()}"
+        rc, _out, err = _git_bytes(common, ["--git-dir", str(common), "worktree", "remove", "--force", str(repo)])
+        if rc:
+            return f"{entry.name}: Git worktree removal failed: {err.decode('utf-8', 'replace').strip()}"
     _force_rmtree(entry)
     if entry.exists() or entry.is_symlink():
         return f"{entry.name}: the checkout survived its removal"
-    if common is not None and common.is_dir():
-        _git_bytes(common, ["--git-dir", str(common), "worktree", "prune"])
     return ""
 
 
