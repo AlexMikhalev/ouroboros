@@ -764,8 +764,10 @@ def read_task_result_source_bytes(
     review = result.get("review_projection")
     panels = review.get("panels") if isinstance(review, dict) else []
     refs = [row.get("applied_source_ref") for row in (panels if isinstance(panels, list) else []) if isinstance(row, dict)]
-    if isinstance(observations := result.get("completion_observations"), dict):
-        refs.append(observations.get("source_ref"))
+    # completion observations, and the historical source an older record's acceptance debt pinned (read-only)
+    for key in ("completion_observations", "acceptance_debt"):
+        if isinstance(value := result.get(key), dict):
+            refs.append(value.get("source_ref"))
     for ref in refs:
         if isinstance(ref, dict) and ref.get("path") == source_path and pathlib.PurePosixPath(source_path).name == name:
             return read_actor_source_bytes(drive_root, validate_task_id(result.get("task_id")), ref)

@@ -459,3 +459,38 @@ def test_the_record_route_serves_only_this_tasks_own_old_acceptance_record(tmp_p
         stored = artifacts.task_artifact_dir_path(tmp_path, "applied") / ref["path"]
         stored.write_bytes(stored.read_bytes().replace(b"answer A", b"answer B"))
         assert get(ref["path"]).status_code == 404, "altered bytes fail their digest"
+
+
+def test_an_old_records_debt_pinned_source_still_downloads_and_stays_exact(tmp_path):
+    """An older task's acceptance debt pinned the exact subject it owed a historical review of. That
+    machine is gone, but its published link keeps serving those exact bytes (read-only history), and
+    the model's digest reader keeps projecting them; altered bytes or a foreign task resolve nothing."""
+    import hashlib
+    import pathlib
+
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ouroboros import artifacts
+    from ouroboros.gateway.tasks import api_task_artifact
+    from ouroboros.task_finalization import review_source_projection
+    from ouroboros.task_results import write_task_result
+
+    ref = artifacts.store_actor_source_bytes(tmp_path, "indebted", category="context_checkpoints",
+                                             source_id="acceptance-subject", data=b"the owed subject text",
+                                             extension="txt")
+    write_task_result(tmp_path, "indebted", "completed", result="The delivered answer.",
+                      acceptance_debt={"source_ref": ref, "status": "owed"})
+
+    app = Starlette(routes=[Route("/api/tasks/{task_id}/artifacts/{name}", api_task_artifact)])
+    app.state.drive_root = tmp_path
+    with TestClient(app) as client:
+        response = client.get(f"/api/tasks/indebted/artifacts/{pathlib.PurePosixPath(ref['path']).name}",
+                              params={"source": ref["path"]})
+        assert response.status_code == 200 and hashlib.sha256(response.content).hexdigest() == ref["sha256"]
+        assert review_source_projection(tmp_path, "indebted", ref["sha256"])["status"] != "unavailable"
+        stored = artifacts.task_artifact_dir_path(tmp_path, "indebted") / ref["path"]
+        stored.write_bytes(b"another text")
+        assert client.get(f"/api/tasks/indebted/artifacts/{pathlib.PurePosixPath(ref['path']).name}",
+                          params={"source": ref["path"]}).status_code == 404, "altered bytes fail their digest"
