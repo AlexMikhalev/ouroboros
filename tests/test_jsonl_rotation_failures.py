@@ -31,7 +31,9 @@ def _seed(root, name="events.jsonl"):
 def _append(path, event):
     # Default append can fall back to unlocked writes: success alone proves nothing.
     assert append_jsonl(path, {"event": event}, require_lock=True, lock_timeout_sec=0)
-    return (json.dumps({"event": event}) + "\n").encode()
+    # append_jsonl's ordinary descriptor uses the platform's text-mode newline.
+    # Keep the oracle byte-exact, including mixed LF seed / CRLF append on Windows.
+    return (json.dumps({"event": event}) + os.linesep).encode()
 
 
 def _recover(root, path, expected):
@@ -322,7 +324,7 @@ def test_rotation_oserror_keeps_real_supervisor_dispatching(
         phases.append("assign")
         row = {"event": f"tick {len(attempts)}"}
         assert append_jsonl(path, row, require_lock=True, lock_timeout_sec=0)
-        expected += (json.dumps(row) + "\n").encode()
+        expected += (json.dumps(row) + os.linesep).encode()
         if len(attempts) == 4:
             rec.stop.set()
 
@@ -350,8 +352,7 @@ def test_rotation_oserror_keeps_real_supervisor_dispatching(
     archives = list((tmp_path / "archive").glob(f"{name}_*.jsonl"))
     assert len(archives) == 1 and archives[0].read_bytes() == expected
     assert path.read_bytes() == b""
-    assert append_jsonl(path, {"event": "recovered"}, require_lock=True, lock_timeout_sec=0)
-    expected += b'{"event": "recovered"}\n'
+    expected += _append(path, "recovered")
     assert archives[0].read_bytes() + path.read_bytes() == expected
     assert list(iter_jsonl_chain_objects(path)) == [json.loads(line) for line in expected.splitlines()]
 
