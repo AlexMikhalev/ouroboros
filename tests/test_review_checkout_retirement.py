@@ -169,3 +169,29 @@ def test_a_dead_controllers_pointer_of_another_surface_is_removed_never_settled(
     assert report["retired"] == [{"task_id": TASK, "owner_id": "op-dead"}], report
     assert set(load_task_result(tmp_path, TASK)["review_operations"]) == {"op-live"}, "a live controller keeps its pointer"
     assert review_operation.recover_orphaned_acceptance_operations(tmp_path)["retired"] == []
+
+
+def test_checkout_retirement_targets_only_its_registration_and_keeps_an_offline_owner_worktree(subject):
+    entry = _retain(subject)
+    offline = subject.repo.parent / "owners-offline-checkout"
+    _git(subject.repo, "worktree", "add", "--detach", str(offline), "HEAD")
+    offline.rename(offline.with_name("temporarily-unmounted"))
+    before = _git(subject.repo, "worktree", "list", "--porcelain")
+    assert str(offline) in before and str(entry / "repo") in before
+
+    report = _prune(subject)
+    after = _git(subject.repo, "worktree", "list", "--porcelain")
+    assert report["checkouts_removed"] == 1 and not entry.exists(), report
+    assert str(entry / "repo") not in after
+    assert str(offline) in after, "another owner's unavailable checkout must retain its registration"
+
+
+def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_can_be_removed(subject):
+    entry = _retain(subject)
+    _git(subject.repo, "worktree", "lock", "--reason", "reader retains this copy", str(entry / "repo"))
+    report = _prune(subject)
+    assert report["errors"] and report["checkouts_removed"] == 0
+    assert (entry / "repo" / "a.txt").read_text() == "two\n"
+    _git(subject.repo, "worktree", "unlock", str(entry / "repo"))
+    report = _prune(subject)
+    assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists()
