@@ -280,15 +280,16 @@ def _foreign_work_line(owner: str, work: Dict[str, List[str]]) -> str:
     D7 keeps them visible to every reader, but only their owner reads and acknowledges its results, and
     decides its patches while it lives; a copy of every run's line in every task's context was most of
     the Health section (17.10: 223 lines, ~110k characters, nearly all about other tasks). The reader
-    sees each owner once: the counts, the run ids, the authority rule and the exact reader of a run.
+    sees each owner once: the counts, the run ids, the authority rule and the owner's record, which
+    any task can read (a run's own reader resolves only in its owner's lineage).
     """
     parts = [f"{label}: {', '.join(work[key])}" for key, label in (
         ("unread", "results not read to EOF"), ("patches", "patches awaiting apply/reject")) if work[key]]
     line = (f"{'WARNING' if work['patches'] else 'INFO'}: ANOTHER TASK'S DELEGATED WORK — owner task {owner}: "
             + "; ".join(parts) + ". Only the owner reads and acknowledges its results and decides its patches "
             "while it lives; once it is terminal, a live top-level task may reject them from any root or apply "
-            "them from the recorded target (integrate_delegated_patch; the disposition row records who acted). "
-            "A run's record: query_data(op='json', kind='run', ids=['<run_id>']).")
+            "them from the recorded target or a fresh payload binding (integrate_delegated_patch; the disposition "
+            f"row records who acted). The owner's record: query_data(op='json', kind='task_result', ids=['{owner}']).")
     if work["yours"]:
         run_id = work["yours"][0] if len(work["yours"]) == 1 else "<run_id>"
         line += (f" Your active root matches the target of {', '.join(work['yours'])}: once the owner is terminal, "

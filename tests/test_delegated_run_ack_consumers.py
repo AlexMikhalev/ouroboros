@@ -365,5 +365,16 @@ def test_a_foreign_reader_sees_the_owners_unread_runs_on_one_line_without_a_read
     assert len(rows) == 1 and "results not read to EOF: " in rows[0]
     assert "run-new" in rows[0] and "run-old" in rows[0]
     assert "Only the owner reads and acknowledges its results" in rows[0] and "read_file" not in rows[0]
+    # Review r2 (18.10): the reader the line names resolves from the foreign reader itself.
+    from ouroboros.tools.query_data import _query_data
+    from ouroboros.tools.registry import ToolContext
+
+    assert f"query_data(op='json', kind='task_result', ids=['{ROOT}'])" in rows[0]
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(geo.canonical, ROOT, "running")  # every owner task has its row in production
+    intruder = ToolContext(repo_dir=geo.repo, drive_root=geo.canonical, task_id="intruder")
+    record = json.loads(_query_data(intruder, op="json", kind="task_result", ids=[ROOT]))
+    assert record["status"] == "ok", record
     owner = build_health_invariants(env, task_id=ROOT, attempt_key="1")
     assert "NEVER READ — run run-old" in owner and "read_file" in owner  # the owner keeps each run's line

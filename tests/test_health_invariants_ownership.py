@@ -54,7 +54,8 @@ def test_non_owner_sees_one_line_per_owner_task_and_no_call_shaped_instruction(t
     assert "integrate_delegated_patch(run_id='run-p'" not in text
     assert "once it is terminal, a live top-level task may reject them from any root" in rows[0]
     assert "apply them from the recorded target" in rows[0] and "disposition row records who acted" in rows[0]
-    assert "query_data(op='json', kind='run', ids=['<run_id>'])" in rows[0]
+    assert "query_data(op='json', kind='task_result', ids=['task-owner'])" in rows[0]  # readable from any task
+    assert "or a fresh payload binding" in rows[0]
     assert "read_file" not in text
 
 
