@@ -667,10 +667,10 @@ export function initSkills(ctx = {}) {
         const skill = installedByName()?.get(name) || await currentSkill(name);
         const sources = await store.sources().catch(() => []);
         const choices = publishDestinations(skill, sources);
-        const value = await openPublishDestinationDialog({ name, choices, changed: Boolean(skill.install) });
-        if (!value) return false;
-        const destination = destinationFromChoice(value);
-        const outcome = await runSkillPublishFlow(name, { destination });
+        const choice = await openPublishDestinationDialog({ name, choices, changed: Boolean(skill.install) });
+        if (!choice) return false;
+        const destination = destinationFromChoice(choice.value);
+        const outcome = await runSkillPublishFlow(name, { destination, privateRepository: choice.private === true });
         if (!outcome.started) return false;
         showToast(`${name}: publication task ${outcome.task?.task_id || ''} started — see chat`, 'ok');
         emitSkillLifecycle('submit_hub', name);

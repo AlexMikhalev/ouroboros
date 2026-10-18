@@ -34,6 +34,13 @@ export function updateRejectionSentence(release) {
     return `Update to ${release.version}: ${cause}; the previous version runs.`;
 }
 
+/** Publication visibility follows the selected destination's host fact. */
+export function publicationDisclosure(privateRepository = false) {
+    return privateRepository === true
+        ? "Everything in the skill's folder goes to your private repository."
+        : "Everything in the skill's folder becomes public.";
+}
+
 function timeOf(value) {
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
     const parsed = Date.parse(String(value || ''));

@@ -58,6 +58,28 @@ test('the browser renders all five backend-authored states without reclassifying
     }
 });
 
+test('publication confirmation and task preserve the selected public or private disclosure', async () => {
+    for (const privateRepository of [true, false, undefined]) {
+        const disclosure = privateRepository === true
+            ? "Everything in the skill's folder goes to your private repository."
+            : "Everything in the skill's folder becomes public.";
+        const result = await runSkillPublishFlow('demo', {
+            privateRepository,
+            destination: { source_id: 'my-skills', mode: 'entry' },
+            preflightImpl: async () => preflight(),
+            dialogImpl: async (model) => { assert.ok(model.body.includes(disclosure), model.body); return true; },
+            createTaskImpl: async () => ({ ok: true }),
+        });
+        assert.equal(result.started, true);
+        for (const field of ['description', 'constraints', 'context']) {
+            assert.ok(result.payload[field].includes(disclosure), `${field}: ${result.payload[field]}`);
+            assert.equal(result.payload[field].includes('becomes public'), privateRepository !== true);
+        }
+        assert.deepEqual(result.payload.metadata.skill_publish_target.destination, { source_id: 'my-skills', mode: 'entry' },
+            'visibility copy adds no fields to the shared destination contract');
+    }
+});
+
 test('a typed hard block renders and starts no task even without a canonical target', async () => {
     const blocked = preflight('hard_block', {
         ok: false,

@@ -204,3 +204,38 @@ def test_finish_while_hub_is_reading_uses_defaults_only_if_ticks_untouched(start
     else:
         assert 'starter_skills' not in payload
     assert payload['skill_source_trust'] == {'ouroboros': 'trusted', 'ouroboros-community': 'review'}
+
+
+def test_summary_still_polls_after_five_minutes_in_earlier_setup(starter_ui):
+    ui = starter_ui
+    page = ui['page']
+    page.set_default_timeout(60_000)
+    page.set_viewport_size({'width': 390, 'height': 900})
+    page.add_init_script("""
+        const actualNow = Date.now;
+        window.setupElapsed = 0;
+        Date.now = () => actualNow() + window.setupElapsed;
+    """)
+    reads = []
+
+    def offer(route):
+        reads.append(route.request.url)
+        route.fulfill(content_type='application/json', body=json.dumps(_fresh_offer() if len(reads) == 1 else STARTER))
+
+    page.route('**/api/onboarding/starter-skills', offer)
+    page.goto(ui['url'] + '/onboarding', wait_until='networkidle', timeout=120_000)
+    page.locator('#quick-start-btn:not([hidden])').wait_for()
+    assert len(reads) == 1
+    page.evaluate('window.setupElapsed = 300_000')
+    page.locator('#quick-start-btn').click()
+    row = page.locator('.skills-starter-row')
+    row.wait_for()
+    assert 'Reading the Ouroboros hub' in row.inner_text()
+    page.wait_for_function("document.querySelector('.skills-starter-row').textContent.includes('10 · 6 ticked')")
+    assert len(reads) == 2
+    assert 'Reading the Ouroboros hub' not in row.inner_text()
+    page.locator('[data-starter-toggle]').click()
+    assert page.locator('[data-starter-item="ouroboros/duckduckgo"]').is_checked()
+    page.locator('[data-starter-panel]').scroll_into_view_if_needed()
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    capture(page, f"starter-{ui['engine']}-390-r2-delayed-summary")

@@ -9,7 +9,7 @@ import { skillSourcesApi } from './api_client.js';
 import { bindDialogFocus, bindMenu } from './ui_interactions.js';
 import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import {
-    displayAddress, officialPromise, permissionWords, plural, updateRejectionSentence, versionText,
+    displayAddress, officialPromise, permissionWords, plural, publicationDisclosure, updateRejectionSentence, versionText,
 } from './skill_presentation.js';
 
 let activeClose = null;
@@ -193,22 +193,26 @@ export function openCompareDialog({ mine = {}, other = {} }) {
     });
 }
 
-/** Where a skill is published (B10). choices: [{value, label, detail}]. Resolves the value or null. */
+/** Where a skill is published (B10). Resolves the selected choice, including its visibility, or null. */
 export function openPublishDestinationDialog({ name, choices = [], changed = false, createMySkills = () => skillSourcesApi.mySkills() }) {
     return new Promise((resolve) => {
         const host = mountDialog({ title: `Publish ${name}`, wide: true, onSettle: resolve });
         const destinations = choices.length ? [...choices] : [{ value: 'default', label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
         let selected = destinations[0].value;
-        let created = false;
+        let connected = null;
+        const current = () => destinations.find((choice) => choice.value === selected);
         const paint = (error = '') => {
             host.body.innerHTML = `<p>${changed ? 'Where should your changed version go?' : 'Where should it go?'}</p>
                 ${choiceCardsHtml(destinations, selected, { label: 'Destination' })}
-                ${created ? '' : '<button type="button" class="btn btn-default" data-create-my-skills>Create «My skills» — a private repository on your GitHub</button>'}
+                ${connected ? `<p class="ui-status" data-tone="ok" role="status" data-my-skills-status>${escapeHtml(connected.status)}</p>` : '<button type="button" class="btn btn-default" data-create-my-skills>Create or connect «My skills» on GitHub</button>'}
                 ${error ? `<p class="skills-dialog-note" role="alert">${escapeHtml(error)}</p>` : ''}
-                <p class="skills-dialog-note">The skill’s folder goes to the selected repository. Ouroboros first checks it for secrets and problems.</p>`;
+                <p class="skills-dialog-note" data-publication-disclosure></p>
+                <p class="skills-dialog-note">Ouroboros first checks it for secrets and problems.</p>`;
             host.actions.innerHTML = '<button type="button" class="btn btn-default" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-primary" data-dialog-ok>Check and publish</button>';
-            bindChoiceCards(host.body.querySelector('[role="radiogroup"]'), (value) => { selected = value; });
-            host.actions.querySelector('[data-dialog-ok]').addEventListener('click', () => host.close(selected));
+            const disclose = () => { host.body.querySelector('[data-publication-disclosure]').textContent = publicationDisclosure(current()?.private); };
+            bindChoiceCards(host.body.querySelector('[role="radiogroup"]'), (value) => { selected = value; disclose(); });
+            disclose();
+            host.actions.querySelector('[data-dialog-ok]').addEventListener('click', () => host.close(current()));
             host.body.querySelector('[data-create-my-skills]')?.addEventListener('click', async (event) => {
                 event.currentTarget.disabled = true;
                 event.currentTarget.textContent = 'Connecting My skills…';
@@ -219,7 +223,7 @@ export function openPublishDestinationDialog({ name, choices = [], changed = fal
                     const index = destinations.findIndex((item) => item.value === choice.value);
                     if (index < 0) destinations.push(choice); else destinations[index] = choice;
                     selected = choice.value;
-                    created = true;
+                    connected = choice;
                     paint();
                 } catch (err) {
                     if (host.dialog.isConnected) paint(err.message);
@@ -236,8 +240,11 @@ export async function createMySkillsDestination(create) {
     try {
         const answer = await create();
         if (answer?.ok !== true || !answer.source?.id) throw { body: answer };
-        return { value: `source:${answer.source.id}`, label: `${answer.source.name} — your private repository`,
-            detail: `Publish to ${answer.repository}; your other Ouroboros installs can read it when you connect this source.` };
+        const visibility = answer.private === true ? 'private' : 'public';
+        return { value: `source:${answer.source.id}`, private: answer.private === true,
+            label: `${answer.source.name} — ${answer.repository} (${visibility})`,
+            status: `${answer.created ? 'Created' : 'Connected'} ${answer.repository} (${visibility}).`,
+            detail: 'Your other Ouroboros installs can read it when you connect this source.' };
     } catch (error) {
         const code = error?.body?.code;
         throw new Error({

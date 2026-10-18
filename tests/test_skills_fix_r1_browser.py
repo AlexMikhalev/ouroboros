@@ -162,7 +162,7 @@ def test_source_warning_and_my_skills_opt_in(skills_browser, browser_name, width
         dialog = page.locator('.skills-dialog')
         dialog.wait_for()
         assert skills.posted('/api/skill-sources/my-skills') == [], 'opening Publish has no repository side effect'
-        assert dialog.get_by_role('button', name='Create «My skills» — a private repository on your GitHub').count() == 1
+        assert dialog.get_by_role('button', name='Create or connect «My skills» on GitHub').count() == 1
         _contained(page)
         page.locator('.toast').wait_for(state='detached', timeout=10_000)
         capture(page, browser_name, width, f'{theme}-publish-my-skills')
@@ -173,14 +173,14 @@ def test_source_warning_and_my_skills_opt_in(skills_browser, browser_name, width
             assert next_step in dialog.locator('[role="alert"]').inner_text()
             assert dialog.locator('[data-dialog-ok]').is_enabled()
 
-        skills.answers['/api/skill-sources/my-skills'] = {'ok': True, 'created': True, 'repository': 'owner/ouroboros-skills',
+        skills.answers['/api/skill-sources/my-skills'] = {'ok': True, 'created': True, 'private': True, 'repository': 'owner/ouroboros-skills',
             'source': {'id': 'my-skills', 'name': 'My skills', 'kind': 'git', 'url': 'https://github.com/owner/ouroboros-skills',
                        'trust': 'trusted', 'confirmed': True}}
         dialog.locator('[data-create-my-skills]').click()
         chosen = dialog.locator('[data-choice="source:my-skills"]')
         chosen.wait_for()
         assert chosen.get_attribute('aria-checked') == 'true'
-        assert 'private repository' in chosen.inner_text()
+        assert 'owner/ouroboros-skills (private)' in chosen.inner_text()
         assert dialog.locator('[data-create-my-skills]').count() == 0
         assert skills.posted('/api/skills/update_rejected/publish-preflight') == []
         _contained(page)

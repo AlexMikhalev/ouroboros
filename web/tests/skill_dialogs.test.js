@@ -53,11 +53,16 @@ test('first-start trust discloses that suggestions apply and keeps either suppli
 
 test('My skills selects the source from both create and connect answers', async () => {
     for (const created of [false, true]) {
-        const choice = await createMySkillsDestination(async () => ({ ok: true, created,
-            repository: 'owner/ouroboros-skills', source: { id: 'owner-skills', name: 'My skills' } }));
-        assert.equal(choice.value, 'source:owner-skills');
-        assert.match(choice.label, /private repository/);
-        assert.match(choice.detail, /owner\/ouroboros-skills/);
+        for (const privateValue of [true, false, undefined, 'true']) {
+            const choice = await createMySkillsDestination(async () => ({ ok: true, created, private: privateValue,
+                repository: 'owner/ouroboros-skills', source: { id: 'owner-skills', name: 'My renamed skills' } }));
+            const visibility = privateValue === true ? 'private' : 'public';
+            assert.equal(choice.value, 'source:owner-skills');
+            assert.equal(choice.private, privateValue === true);
+            assert.match(choice.label, /My renamed skills/);
+            assert.ok(choice.label.includes(`owner/ouroboros-skills (${visibility})`));
+            assert.equal(choice.status, `${created ? 'Created' : 'Connected'} owner/ouroboros-skills (${visibility}).`);
+        }
     }
 });
 
