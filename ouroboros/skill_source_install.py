@@ -653,8 +653,6 @@ def uninstall_installed(drive_root: pathlib.Path, name: str) -> Dict[str, Any]:
         raise SkillInstallError("not_from_source", f"{name} was made on this computer; use Delete to remove it.")
     _unload(name)
     shutil.rmtree(skill_dir)  # nothing seeds built-ins at startup, so a removed one stays removed
-    from ouroboros.skill_install_record import discard_update_snapshot
-
     discard_update_snapshot(pathlib.Path(drive_root), name)
     (skill_state_dir_path(pathlib.Path(drive_root), name) / DEPS_STATE_FILENAME).unlink(missing_ok=True)
     source = str(((record or {}).get("source") or {}).get("id") or loaded.location)

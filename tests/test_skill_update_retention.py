@@ -14,10 +14,10 @@ from ouroboros.skill_loader import SkillReviewState, find_skill, load_enabled, s
 from ouroboros.skill_review import SkillReviewOutcome
 from ouroboros.skill_review_runner import run_skill_review_lifecycle_blocking
 from ouroboros.skill_source_catalog import tree_release_digest
-from tests.test_skill_install_checks import registry_release, release
+from tests.test_skill_install_checks import registry_release, release  # noqa: F401  (fixtures)
 
 
-def _pending(release):
+def _pending(release):  # noqa: F811
     drive, folder, row, item = release
     row["trust"] = "trusted"
     installer.install_item(drive, item["id"])
@@ -48,7 +48,7 @@ def _review(drive, status):
 
 
 @pytest.mark.parametrize("status,reason", [("blockers", "review_blockers"), ("pending", "preflight_failed")])
-def test_failed_review_restores_previous_payload_state_and_execution(release, status, reason):
+def test_failed_review_restores_previous_payload_state_and_execution(release, status, reason):  # noqa: F811
     drive, _folder, _row, item = release
     previous, saved = _pending(release)
     record = read_install_record(drive, "demo")
@@ -68,7 +68,7 @@ def test_failed_review_restores_previous_payload_state_and_execution(release, st
     assert record["release"] == json.loads(saved["install.json"])["release"]
 
 
-def test_clean_review_keeps_new_release_and_drops_durable_state(release):
+def test_clean_review_keeps_new_release_and_drops_durable_state(release):  # noqa: F811
     drive, _folder, _row, item = release
     _pending(release)
     assert (skill_state_dir(drive, "demo") / "update_backup.json").is_file()
@@ -78,7 +78,7 @@ def test_clean_review_keeps_new_release_and_drops_durable_state(release):
     assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
 
 
-def test_startup_restores_interrupted_update_and_leaves_running_review(release, monkeypatch):
+def test_startup_restores_interrupted_update_and_leaves_running_review(release, monkeypatch):  # noqa: F811
     import os
     from ouroboros.utils import utc_now_iso
 
@@ -167,7 +167,7 @@ def test_startup_restores_landing_before_new_install_record(request, tmp_path, m
     assert not (state / "update_backup.json").exists()
 
 
-def test_review_exception_restores_previous_without_waiting_for_restart(release):
+def test_review_exception_restores_previous_without_waiting_for_restart(release):  # noqa: F811
     drive, _folder, _row, _item = release
     previous, _ = _pending(release)
     def fail(*a):
@@ -180,7 +180,7 @@ def test_review_exception_restores_previous_without_waiting_for_restart(release)
 
 
 @pytest.mark.parametrize("edited", [False, True])
-def test_owner_skip_during_review_keeps_new_bytes(release, edited):
+def test_owner_skip_during_review_keeps_new_bytes(release, edited):  # noqa: F811
     from ouroboros.skill_lifecycle_actions import run_skill_action
     from ouroboros.skill_lifecycle_queue import lend_lifecycle_lane
     from ouroboros.skill_review import _persist_reviewed_outcome
@@ -226,7 +226,7 @@ def test_owner_skip_during_review_keeps_new_bytes(release, edited):
     assert find_skill(drive, "demo").review.gate_for(accepted)["executable_review"]
 
 
-def test_partial_restore_retains_evidence_and_never_replaces_payload_twice(release, monkeypatch):
+def test_partial_restore_retains_evidence_and_never_replaces_payload_twice(release, monkeypatch):  # noqa: F811
     from ouroboros.marketplace import install as storage
 
     drive, _folder, _row, _item = release
@@ -245,7 +245,7 @@ def test_partial_restore_retains_evidence_and_never_replaces_payload_twice(relea
     assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "review_unfinished"
 
 
-def test_uninstall_pending_update_cannot_resurrect_on_startup(release):
+def test_uninstall_pending_update_cannot_resurrect_on_startup(release):  # noqa: F811
 
     drive, _folder, _row, _item = release
     _pending(release)
@@ -256,7 +256,7 @@ def test_uninstall_pending_update_cannot_resurrect_on_startup(release):
 
 
 @pytest.mark.parametrize("same_bytes", [False, True])
-def test_replacing_pending_update_with_other_source_survives_old_settlement(release, same_bytes):
+def test_replacing_pending_update_with_other_source_survives_old_settlement(release, same_bytes):  # noqa: F811
     drive, folder, row, item = release
     _pending(release)
     pending_digest = item["digest"]
@@ -279,7 +279,7 @@ def test_replacing_pending_update_with_other_source_survives_old_settlement(rele
 
 
 @pytest.mark.parametrize("replacement", ["different_release", "same_release", "uninstalled"])
-def test_stale_snapshot_is_discarded_without_restoring_newer_state(release, replacement):
+def test_stale_snapshot_is_discarded_without_restoring_newer_state(release, replacement):  # noqa: F811
     from ouroboros.skill_install_record import clear_install_record, write_install_record
 
     drive, _folder, _row, item = release
@@ -307,7 +307,7 @@ def test_stale_snapshot_is_discarded_without_restoring_newer_state(release, repl
     assert not (skill_state_dir(drive, "demo") / "update_backup.json").exists()
 
 
-def test_old_completion_leaves_newer_pending_snapshot_intact(release):
+def test_old_completion_leaves_newer_pending_snapshot_intact(release):  # noqa: F811
     drive, _folder, _row, item = release
     old_digest, _ = _pending(release)
     backup = skill_state_dir(drive, "demo") / "update_backup.json"
@@ -327,7 +327,7 @@ def test_registry_adapter_does_not_import_source_orchestration():
 
 
 @pytest.mark.parametrize("field", ["target_dir", "backup_dir"])
-def test_update_restore_ignores_mismatched_paths_and_keeps_evidence(release, tmp_path, caplog, field):
+def test_update_restore_ignores_mismatched_paths_and_keeps_evidence(release, tmp_path, caplog, field):  # noqa: F811
     from ouroboros.skill_install_record import discard_update_snapshot, restore_update_snapshot
 
     drive, _folder, _row, item = release
@@ -351,7 +351,7 @@ def test_update_restore_ignores_mismatched_paths_and_keeps_evidence(release, tmp
 
 
 @pytest.mark.parametrize("failure", ["source_land", "source_record", "builtin_copy", "builtin_digest"])
-def test_update_landing_failure_restores_with_landing_reason(release, tmp_path, monkeypatch, failure):
+def test_update_landing_failure_restores_with_landing_reason(release, tmp_path, monkeypatch, failure):  # noqa: F811
     drive, folder, row, item = release
     if failure.startswith("builtin"):
         folder.parent.rename(tmp_path / "skills")
@@ -378,7 +378,7 @@ def test_update_landing_failure_restores_with_landing_reason(release, tmp_path, 
 
 
 @pytest.mark.parametrize("failure", ["land", "record", "dependencies"])
-def test_registry_landing_failure_restores_with_landing_reason(registry_release, monkeypatch, failure):
+def test_registry_landing_failure_restores_with_landing_reason(registry_release, monkeypatch, failure):  # noqa: F811
     drive, storage, registry = registry_release
     previous = read_install_record(drive, "demo")
     registry["latest"] = "2.0.0"
@@ -407,7 +407,7 @@ def test_registry_landing_failure_restores_with_landing_reason(registry_release,
     assert read_install_record(drive, "demo")["update_rejected"]["reason"] == "landing_failed"
 
 
-def test_dependency_failure_after_review_restores_with_landing_reason(release, monkeypatch):
+def test_dependency_failure_after_review_restores_with_landing_reason(release, monkeypatch):  # noqa: F811
     drive, _folder, _row, _item = release
     previous, _ = _pending(release)
     monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review",

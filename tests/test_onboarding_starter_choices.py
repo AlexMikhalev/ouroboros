@@ -9,7 +9,7 @@ import pytest
 from tests.test_onboarding_complete_endpoint import WIZARD_PAYLOAD, onboarding  # noqa: F401  (fixture)
 
 
-def test_starter_choices_and_hub_trust_join_the_one_completion_write(onboarding):
+def test_starter_choices_and_hub_trust_join_the_one_completion_write(onboarding):  # noqa: F811
     trust = {"ouroboros": "trusted", "ouroboros-community": "review"}
     response = onboarding.client.post("/api/onboarding/complete", json={
         **WIZARD_PAYLOAD, "starter_skills": ["builtin/telegram", "ouroboros/duckduckgo"],
@@ -26,7 +26,7 @@ def test_starter_choices_and_hub_trust_join_the_one_completion_write(onboarding)
     {"skill_source_trust": {"no-such-source": "trusted"}},
     {"starter_skills": "builtin/telegram"},
 ])
-def test_malformed_starter_choices_save_nothing_and_start_nothing(onboarding, choices):
+def test_malformed_starter_choices_save_nothing_and_start_nothing(onboarding, choices):  # noqa: F811
     response = onboarding.client.post("/api/onboarding/complete", json={**WIZARD_PAYLOAD, **choices})
     assert response.status_code == 400, response.text
     assert not onboarding.settings_path.exists() and "starter" not in onboarding.calls

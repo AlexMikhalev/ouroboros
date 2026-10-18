@@ -38,7 +38,7 @@ from tests.tool_classification_corpus import (
     harvest_producers,
     typed_result,
 )
-from tests.test_skill_install_checks import registry_release
+from tests.test_skill_install_checks import registry_release  # noqa: F401  (fixtures)
 
 GOLDEN_PATH = pathlib.Path(__file__).resolve().parent / "fixtures" / "legacy_tool_classification_0f715831.json"
 
@@ -553,7 +553,7 @@ def test_current_producer_contracts_have_explicit_live_answers(subject, detail):
 
 @pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
 @pytest.mark.parametrize("failure", ["staged_hash", "landing", "bad_check", "empty_notes"])
-def test_registry_failures_keep_the_current_producer_contract(registry_release, monkeypatch, tool, failure):
+def test_registry_failures_keep_the_current_producer_contract(registry_release, monkeypatch, tool, failure):  # noqa: F811
     from ouroboros.skill_install_record import read_install_record
     from ouroboros.tools.registry import ToolContext
     from tests.test_skill_source_tools import _typed_call
