@@ -294,12 +294,15 @@ def test_combined_upgrade_keeps_question_duty_and_lazy_review_selection(tmp_path
             assert txn.row(tid, "review_collection_pending") == (0 if shape == "review-v2" else None)
     assert set(obligations.members(tmp_path, "owner_questions")) == {"asked"}
     assert "review_collection_pending" not in store.FLAG_COLUMNS.values()
-    # A conservative selector alone, even 1, grants no new authority to block packing, and neither does
-    # the owner-question duty: packing reads the terminal status alone.
+    # The upgraded rows pack (NULL or 0: no body with the selector recorded an open review); the
+    # owner-question duty grants no authority to block packing. A selector of 1 does, and only because
+    # it names a review that may still read the task's loose handles (evidence pack idiom).
+    with store.open_store(tmp_path, write=False) as txn:
+        assert evidence_packs.task_packable(txn, "quiet") and evidence_packs.task_packable(txn, "asked")
     with store.open_store(tmp_path, write=True) as txn:
         txn.conn.execute("UPDATE tasks SET review_collection_pending=1 WHERE task_id='quiet'")
     with store.open_store(tmp_path, write=False) as txn:
-        assert evidence_packs.task_packable(txn, "quiet") and evidence_packs.task_packable(txn, "asked")
+        assert not evidence_packs.task_packable(txn, "quiet") and evidence_packs.task_packable(txn, "asked")
     task_store.patch_document(tmp_path, "asked", lambda row: {**row, "owner_quiz": {"q": {"state": "closed"}}})
     assert obligations.members(tmp_path, "owner_questions") == {}
 

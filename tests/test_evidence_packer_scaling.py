@@ -263,7 +263,7 @@ def _former_blocker(root, index, task):
     if kind == 0:
         _reserve(root, task)
     elif kind == 1:
-        _result(root, task, review_operations={"op": {"surface": "multi_model_review", "state": "dispatched"}})
+        _result(root, task, review_operations={"op": {"surface": "multi_model_review", "state": "closed"}})
     elif kind == 2:
         _result(root, task, canonical_terminal_projection_origin="terminal_transition")
     elif kind == 3:

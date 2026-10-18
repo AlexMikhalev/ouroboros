@@ -1,5 +1,5 @@
-"""Terminal = packable: a task's loose evidence is packed once its row is terminal, whatever duty, money,
-delivery or review fact it carries; a live task's evidence waits for its own pass; later evidence becomes
+"""Terminal = packable: a task's loose evidence is packed once its row is terminal, whatever duty, money or
+delivery fact it carries; a task under an open review waits like a live one; later evidence becomes
 the next generation; only the generations an unlink relies on are re-read; a referenced record that is
 neither loose nor packed is reported, never invented; the census reads the store once and closes it
 before any directory probe; new packs put small members first."""
@@ -60,8 +60,8 @@ BLOCKERS = {
     "money_unresolved": lambda root, t, mp: _money(root, t, "unresolved", mp),
     "delivery_pending": lambda root, t, mp: terminal_delivery.register_pending_delivery(
         root, {"delivery_id": f"owed-{t}", "task_id": t, "chat_id": 1}),
-    "review_pointer_dispatched": lambda root, t, mp: _result(
-        root, t, review_operations={"op": {"surface": "multi_model_review", "state": "dispatched"}}),
+    "review_pointer_closed": lambda root, t, mp: _result(
+        root, t, review_operations={"op": {"surface": "multi_model_review", "state": "closed"}}),
     "projection_and_synthesis_owed": lambda root, t, mp: _result(
         root, t, canonical_terminal_projection_origin="terminal_transition"),
     "acceptance_debt": lambda root, t, mp: _result(root, t, acceptance_debt={"debt_id": "d1"}),
@@ -89,6 +89,42 @@ def test_a_terminal_task_packs_whatever_former_blocker_it_carries(root, monkeypa
     assert packs.handle_bytes(root, "done", handle["path"]) == handle_raw
     packer.run_pass(root)  # the look its own unlinks owe
     assert packer.changed_tasks(root) == []
+
+
+@pytest.mark.parametrize("surface", ["task_acceptance", "multi_model_review"])
+def test_a_terminal_task_under_an_open_review_waits_like_a_live_one_until_the_review_closes(root, surface):
+    """P1b, both directions: an open review operation of a terminal task is a live reader (an agent-session
+    reviewer was handed the absolute path of the retained packet), so the task is neither packed nor its
+    shared blob unlinked, the packet path stays, and the task rests; the pointer closing moves its stamp,
+    and the next pass packs and unlinks everything, the packet still readable through the resolver."""
+    from ouroboros.acceptance_retrieving import PACKET_SOURCE_ID, _source_path
+    from ouroboros.artifacts import store_actor_source_bytes
+
+    raw = b'{"shared": "evidence"}'
+    done, _ = _task(root, "done", blobs=1, payloads=[raw])
+    refs, handle = _task(root, "reviewed", blobs=2, payloads=[raw, b'{"own": true}'])
+    packet = b'{"goal": "accept the delivered answer", "evidence": "' + b"y" * 4000 + b'"}'
+    ref = store_actor_source_bytes(root, "reviewed", category="context_checkpoints", source_id=PACKET_SOURCE_ID,
+                                   data=packet, extension="json")
+    path = pathlib.Path(_source_path(root, "reviewed", ref))
+    pointer = {"surface": surface, "state": "dispatched", "retry_key": "task_acceptance:d1",
+               "controller": {"pid": 1, "birth": "b", "session": "s"}}
+    _result(root, "reviewed", acceptance_debt={"debt_id": "d1"}, review_operations={"owner-1": pointer})
+    assert _packable(root, "done") and not _packable(root, "reviewed")
+    report = packer.run_pass(root)
+    assert (report["packed"], report["kept"], report["reading"], report["live"], report["swept"]) == (1, 1, 1, 0, 2)
+    assert report["unlinked"] == 1  # the packed task's own handle; the shared blob stays for the reader
+    assert path.exists() and _loose(refs[0]) and _loose(refs[1]) and _handle_path(root, "reviewed", handle).exists()
+    assert not packs.published_generations(root, "reviewed") and packs.blob_bytes(root, done[0]) == raw
+    packer.run_pass(root)
+    assert packer.changed_tasks(root) == []  # the reviewed task rests until its review fact moves
+    _result(root, "reviewed", acceptance_debt={"debt_id": "d1"}, review_operations={"owner-1": {**pointer, "state": "closed"}})
+    assert packer.changed_tasks(root) == ["reviewed"] and _packable(root, "reviewed")
+    report = packer.run_pass(root)
+    assert (report["packed"], report["unlinked"], report["kept"], report["reading"]) == (1, 4, 0, 0)
+    assert not path.exists() and not any(_loose(r) for r in refs) and not _handle_path(root, "reviewed", handle).exists()
+    assert packs.handle_bytes(root, "reviewed", ref["path"]) == packet
+    assert packs.blob_bytes(root, refs[0]) == raw and packs.blob_bytes(root, refs[1]) == b'{"own": true}'
 
 
 @pytest.mark.parametrize("status", LIVE)
@@ -197,10 +233,11 @@ def test_missing_records_are_reported_and_the_rest_packs(root):
     assert packer.changed_tasks(root) == []  # a recorded gap is not re-examined until its folder moves
 
 
-@pytest.mark.parametrize("change", ["row_elsewhere", "money", "delivery", "duty", "own_manifest"])
+@pytest.mark.parametrize("change", ["row_elsewhere", "money", "delivery", "duty", "own_manifest", "own_review"])
 def test_only_this_tasks_own_evidence_defers_its_unlink(root, monkeypatch, change):
     """P6: a store write elsewhere, money, a delivery or a duty between the census and the section no
-    longer defer the candidate; a new manifest of THIS task during the section still does."""
+    longer defer the candidate; a new manifest of THIS task during the section still does, and so does a
+    review of THIS task opening then (its reader may hold a loose path): the pack is kept, nothing unlinked."""
     refs, handle = _task(root, "packing", blobs=1)
     _task(root, "other", status="running", blobs=1)
     write = packs.write_pack
@@ -215,6 +252,8 @@ def test_only_this_tasks_own_evidence_defers_its_unlink(root, monkeypatch, chang
             assert terminal_delivery.register_pending_delivery(root, {"delivery_id": "owed", "task_id": "packing", "chat_id": 1})
         elif change == "duty":
             obligations.add(root, "custody_open", "invocation:late", {"request": {"task_id": "packing"}})
+        elif change == "own_review":
+            _result(root, "packing", review_operations={"op": {"surface": "task_acceptance", "state": "dispatched"}})
         else:
             late = _blob(root, b'{"late": true}')
             obs.write_call_manifest(root, task_id="packing", call_id="late", manifest={"ref": late})
@@ -228,6 +267,13 @@ def test_only_this_tasks_own_evidence_defers_its_unlink(root, monkeypatch, chang
         assert report["unlinked"] == 0 and _loose(refs[0]) and _handle_path(root, "packing", handle).exists()
         assert "packing" in packer.changed_tasks(root)
         assert packer.run_pass(root)["unlinked"] == 3  # generation 2 for the late member, then everything goes
+    elif change == "own_review":
+        assert report["unlinked"] == 0 and _loose(refs[0]) and _handle_path(root, "packing", handle).exists()
+        assert "packing" in packer.changed_tasks(root)
+        assert packer.run_pass(root)["unlinked"] == 0 and _loose(refs[0])  # kept while the review is open
+        _result(root, "packing", review_operations={"op": {"surface": "task_acceptance", "state": "closed"}})
+        assert packer.run_pass(root)["unlinked"] == 2  # the generation already written serves the unlink
+        assert not _loose(refs[0]) and not _handle_path(root, "packing", handle).exists()
     else:
         assert report["unlinked"] == 2 and not _loose(refs[0]) and not _handle_path(root, "packing", handle).exists()
     assert packs.blob_bytes(root, refs[0]).startswith(b'{"message"')

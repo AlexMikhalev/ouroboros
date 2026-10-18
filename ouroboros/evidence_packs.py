@@ -606,13 +606,23 @@ def pending_restore_bytes(root: Any) -> int:
 
 
 
-def task_packable(txn: store.Txn, task_id: str) -> bool:
-    """A task is packed once its row is terminal; no duty, money or delivery fact is consulted
-    (packing moves verified bytes, never content: a later write becomes the next generation)."""
+def row_packable(status: Any, review_pending: Any) -> bool:
+    """The packing rule over a row's two indexed facts: the status is terminal, and no review of the
+    task may still read its loose files (``review_collection_pending`` 1 names an open review
+    operation of any surface or an acceptance not yet collected, whose agent-session reader holds a
+    retained handle's absolute path; NULL is a row no body with the selector ever wrote, so no such
+    reader exists, and the selector stays a derived fact, never a retention duty). No duty, money or
+    delivery fact is consulted (packing moves verified bytes, never content: a later write becomes
+    the next generation)."""
     from ouroboros.task_status import SETTLED_STATUSES
 
-    status = txn.row(str(task_id), "status")
-    return status is not None and str(status) in SETTLED_STATUSES
+    return status is not None and str(status) in SETTLED_STATUSES and review_pending != 1
+
+
+def task_packable(txn: store.Txn, task_id: str) -> bool:
+    """``row_packable`` over the task's row (``False`` without one)."""
+    row = txn.row(str(task_id), "status", "review_collection_pending")
+    return row is not None and row_packable(*row)
 
 
 
