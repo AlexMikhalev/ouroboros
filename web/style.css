@@ -7948,6 +7948,23 @@ html[data-layout="stack"] .project-panel.open {
     border-radius: 0;
 }
 
+/* The tile's own button opens the image in the reader; its `•••` menu stays separate. */
+.chat-photo-open {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.chat-photo-open:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: -2px;
+}
+
 /* One photo alone keeps its own ratio up to the token height, whoever sent it:
    an Ouroboros single-photo bubble or an owner bubble with one image. */
 .chat-bubble:not(.is-multiple) .chat-gallery-grid:not(.is-multiple) .chat-gallery-item {
@@ -8332,6 +8349,21 @@ html[data-layout="stack"] .project-panel.open {
 
 .document-reader-status p { margin: 0; }
 .document-reader-status.is-error { color: var(--text-primary); }
+
+/* An image: Fit shows it whole and never enlarges it; Actual size scrolls its own pixels. */
+.document-reader-body.is-image {
+    display: grid;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+
+.document-reader-image {
+    max-width: 100%;
+    max-height: 100%;
+    margin: auto;
+    object-fit: contain;
+}
+
+.document-reader-body.is-actual .document-reader-image { max-width: none; max-height: none; }
 
 /* A phone reads the document on a full sheet; Close returns to the same place in the chat. */
 @media (max-width: 620px) {

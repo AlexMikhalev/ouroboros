@@ -72,18 +72,19 @@ READER_STATE = """() => {
 }"""
 
 
-def _send_files_mock(paths, calls):
+def _send_files_mock(paths, calls, *, tool="send_file", captions=None):
+    """The mock model's first turn calls the real ``tool`` (``send_file`` or ``send_photo``) once per path."""
     state = {"sent": False}
 
     def handler(request_handler):
         request = json.loads(request_handler.rfile.read(int(request_handler.headers.get("content-length") or 0)))
-        names = {tool.get("function", {}).get("name") for tool in request.get("tools") or []}
+        names = {entry.get("function", {}).get("name") for entry in request.get("tools") or []}
         message = {"role": "assistant", "content": "The files are delivered."}
-        if not state["sent"] and "send_file" in names:
+        if not state["sent"] and tool in names:
             state["sent"] = True
             message = {"role": "assistant", "content": "", "tool_calls": [{
                 "id": f"reader-file-{index}", "type": "function", "function": {
-                    "name": "send_file", "arguments": json.dumps({"file_path": str(path), "caption": ""}),
+                    "name": tool, "arguments": json.dumps({"file_path": str(path), "caption": (captions or {}).get(path.name, "")}),
                 },
             } for index, path in enumerate(paths)]}
             calls.extend(path.name for path in paths)

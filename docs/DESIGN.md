@@ -961,38 +961,39 @@ an older Failed remains that task's result even after a different task succeeds.
 
 ### Document reading
 
-A Markdown or plain-text file Ouroboros delivers in chat can be read in the app:
-its card says `Read`, which opens a reading dialog over the conversation (on a
-phone a full sheet), and Close or Escape returns to the same place in the chat
-with focus back on the card. Leaving that chat's screen (another page, a Project
-room over Main, a notification) closes the reader; files staged in the composer
-stay. Other files keep the card's Open / Download dialog; the reader keeps Open
-and Download too.
+A Markdown or plain-text file Ouroboros delivers in chat reads in the app: its
+card's `Read` opens a reading dialog over the conversation (a full sheet on a
+phone). Photos, the owner's pictures and delivered PNG, JPEG, GIF, WebP or AVIF
+files (`View`) open there too. Other files, SVG included, keep the card's Open /
+Download dialog; the reader keeps both, a photo's `•••` its actions. Close,
+Escape or the backdrop return to the same place, focus on the card. Leaving that
+chat's screen (another page, a Project room over Main, a notification) closes
+the reader; composer files stay.
 
-- It shows the delivered copy, never what a file path holds now. A copy that is
-  missing, failed its integrity check, changed after delivery or cannot be read
-  on this device says so in the reader, with Retry only where retrying can
-  help; nothing else is shown in its place.
-- Name, type and size are the reader's header, not Ouroboros's words: a
-  document is not a chat message and adds none. Like model text, the name and
-  the document are never translated; the reader's own controls are.
+- It shows the delivered copy (an image: what its tile shows), never what a
+  file path holds now. A copy missing, failing its integrity check, changed
+  after delivery or not showable here says so, with Retry only where it can
+  help; nothing else takes its place.
+- Its header (name or a photo's caption, type, size) adds no chat message and,
+  like the document, is never translated; its controls are.
+- An image opens at `Fit` (whole, never enlarged); `Actual size` scrolls its
+  own pixels.
 - Markdown reads as a document: a single line break inside a paragraph is soft
   (an explicit hard break stays), at the reading size and heading ladder of a
   rich answer (§1). Everything else follows "Rendered Markdown keeps its
   author's structure and text": raw HTML and SVG stay literal, images stay
-  references and never load, and a relative link, which would point into a
-  folder the reader does not open, reads as its words. `Source` shows the
-  decoded text unformatted (a leading byte-order mark dropped, invalid bytes
-  read as �), so it is not a byte view. Nothing is editable; all text is
-  selectable.
+  references and never load, and a relative link (into a folder the reader
+  does not open) reads as its words. `Source` shows the decoded text
+  unformatted (a leading byte-order mark dropped, invalid bytes read as �), not
+  a byte view. Nothing is editable; all text is selectable.
 - Plain text reads monospaced and wraps; only a table or code block scrolls
   sideways, inside itself.
-- The reader reads at most the first 1 MiB. A longer file shows that prefix
-  with a note saying how much is shown and that Download has the whole; a
-  character cut by the limit is withheld, not reported as damage. Bytes that are
-  not UTF-8 show as � with a note; a file with NUL bytes is not shown as text.
-  A read that has not finished within 30 seconds stops and says so with Retry;
-  nothing retries by itself.
+- The reader reads at most the first 1 MiB. A longer file shows that prefix,
+  noting how much is shown and that Download has the whole; a character cut by
+  the limit is withheld, not reported as damage. Bytes that are not UTF-8 show
+  as � with a note; a file with NUL bytes is not shown as text. A read or image
+  unfinished after 30 seconds stops and says so with Retry; nothing retries by
+  itself.
 
 ### History edges
 
@@ -1349,16 +1350,16 @@ file (owner choice 1C/2A/3A/4A/5A/6A with mobile first-class).
   the existing file card (no PDF viewer). A preview the engine cannot show (HEIC
   in Chromium, an unsupported codec) becomes an ordinary card with Open/Download
   and "Preview unavailable"; a file deleted since it was sent, or whose size or
-  mtime no longer matches the recorded stat witness (a replace or rewrite that
-  changed either), is the inert card "Unavailable". The witness is not a hash and
-  nothing rehashes per view: a same-size replacement that restores the mtime is
-  not detected and shows as the original.
+  mtime no longer matches the recorded stat witness, is the inert card
+  "Unavailable". The witness is not a hash and nothing rehashes per view: a
+  same-size replacement that restores the mtime is not detected and shows as the
+  original.
 - **Actions never depend on hover:** the photo `•••` and file cards are always
   visible and finger-sized under a coarse pointer; a long name wraps to two lines
   and the card's dialog shows it whole. Open/Save succeed only when the desktop
   bridge says so; a copied link is a fallback, never reported as opened.
-  The photo's Copy to clipboard puts the image itself there or says it could
-  not (Open in new tab and Download stay); it never copies an address instead.
+  The photo's Copy to clipboard puts the image itself there, never an address,
+  or says it could not (Open in new tab and Download stay).
 - **Handing a file to a task adds nothing on success:** it arrives in the task's
   own message. A file the host could not attach is named in one wrapping line
   right under the owner's words ("Not attached to the task: …", from the routing

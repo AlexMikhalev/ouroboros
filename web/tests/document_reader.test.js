@@ -13,6 +13,7 @@ import {
 import { renderChatMarkdown } from '../modules/chat_markdown.js';
 import { createChatMedia } from '../modules/chat_media.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
+import { syncQuestionMaterials } from '../modules/result_files.js';
 import { uploadView } from './helpers/attachment_views.js';
 
 const encoder = new TextEncoder();
@@ -53,6 +54,12 @@ test('the reader opens Markdown and plain text only, by extension first', () => 
     assert.equal(documentReaderKind('README', 'text/markdown; charset=utf-8'), 'markdown');
     assert.equal(documentReaderKind('LICENSE', 'text/plain'), 'text');
     assert.equal(documentReaderKind('blob', 'application/octet-stream'), '');
+    // Raster images open in the reader's image view; SVG stays a file whatever it is called.
+    assert.deepEqual(['a.png', 'b.JPG', 'c.jpeg', 'd.gif', 'e.webp', 'f.avif'].map((name) => documentReaderKind(name, '')),
+        Array(6).fill('image'));
+    assert.equal(documentReaderKind('chart', 'image/png'), 'image');
+    assert.equal(documentReaderKind('vector', 'image/svg+xml'), '');
+    assert.equal(documentReaderKind('photo.heic', 'image/heic'), '');
 });
 
 test('inline delivered bytes decode whole or as an explicit bounded prefix', async () => {
@@ -677,6 +684,257 @@ test('the document name, size line and text are marked authored; the reader chro
             [true, true, true]);
         assert.deepEqual(['.document-reader-body', '[data-reader-action="close"]', '[data-reader-view="source"]'].map(authored),
             [false, false, false]);
+    } finally {
+        fx.restore();
+    }
+});
+
+// --- Images (DESIGN "Document reading"): the same reader shows the source a tile displays ---
+
+const ARTIFACT_PNG = '/api/tasks/task-1/artifacts/chart.png';
+const imageFile = (src, extra = {}) => ({ kind: 'image', src, filename: 'chart.png', meta: 'PNG', canOpen: true, ...extra });
+
+// Every <img> the reader creates, in order: a load is one detached image the test settles by hand.
+function imageCapture(doc) {
+    const images = [];
+    const make = doc.createElement;
+    doc.createElement = (tag) => {
+        const node = make(tag);
+        if (tag === 'img') images.push(node);
+        return node;
+    };
+    return images;
+}
+
+test('an image opens Fit first, switches to Actual size, and returns focus without scrolling the chat', async () => {
+    const fx = readerFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const tile = fx.item('chart.png');
+        const returned = [];
+        tile.card.focus = (options) => { returned.push(options); fx.doc.activeElement = tile.card; };
+        assert.equal(fx.reader.open(imageFile(ARTIFACT_PNG, { title: 'Quarterly chart' }),
+            { owner: tile.node, returnFocus: tile.card, pointer: true }), true);
+        const body = fx.dialog().querySelector('.document-reader-body');
+        assert.deepEqual([fx.view().title, fx.view().status, body.getAttribute('aria-label'), body.getAttribute('aria-busy')],
+            ['Quarterly chart', 'Loading the image…', 'Image', 'true']);
+        assert.equal(fx.held.pending.length, 0, 'an image is not read as document bytes');
+        assert.deepEqual(images.map((img) => [img.getAttribute('src'), img.getAttribute('alt')]), [[ARTIFACT_PNG, 'Quarterly chart']]);
+        images[0].dispatch('load');
+        await settle();
+        assert.deepEqual([body.children[0], body.getAttribute('aria-busy')], [images[0], 'false']);
+        assert.deepEqual([body.classList.contains('is-image'), body.classList.contains('is-actual')], [true, false]);
+        const views = fx.dialog().querySelectorAll('[data-reader-view]');
+        assert.equal(fx.dialog().querySelector('.document-reader-views').hidden, false);
+        assert.deepEqual(views.map((button) => [button.dataset.readerView, button.textContent, button.getAttribute('aria-pressed')]),
+            [['fit', 'Fit', 'true'], ['actual', 'Actual size', 'false']]);
+        views[1].click();
+        assert.deepEqual([body.classList.contains('is-actual'), views[1].getAttribute('aria-pressed')], [true, 'true']);
+        assert.deepEqual([body.children[0], images.length], [images[0], 1], 'the decoded image is kept, nothing loads again');
+        fx.dialog().dispatch('keydown', { key: 'Escape' });
+        assert.equal(fx.dialog(), null);
+        // In place before showModal (the engine's own close restores it) and back after close: never scrolled.
+        assert.deepEqual(returned, [{ preventScroll: true }, { preventScroll: true }], 'the chat keeps its place');
+        assert.equal(fx.doc.activeElement, tile.card, 'focus is back on the tile');
+    } finally {
+        fx.restore();
+    }
+});
+
+test('a superseded, closed or released image load paints nothing and its late events find no listener', async () => {
+    const fx = readerFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const a = fx.item('a.png');
+        const b = fx.item('b.png');
+        fx.reader.open(imageFile('data:image/png;base64,AAAA'), { owner: a.node, returnFocus: a.card });
+        fx.reader.open(imageFile(ARTIFACT_PNG, { filename: 'b.png' }), { owner: b.node, returnFocus: b.card });
+        assert.equal(fx.doc.body.querySelectorAll('.document-reader').length, 1);
+        assert.deepEqual([images[0].getAttribute('src'), images[0].listeners.get('load').size], [null, 0],
+            'the superseded load is dropped with its listeners');
+        images[0].dispatch('load');
+        await settle();
+        assert.deepEqual([fx.view().title, fx.view().status], ['b.png', 'Loading the image…']);
+        fx.reader.release(a.node);
+        assert.ok(fx.dialog(), "another message's release keeps it");
+        fx.reader.release(b.node);
+        assert.equal(fx.dialog(), null, 'the message that opened it takes it along');
+        assert.equal(images[1].getAttribute('src'), null);
+        for (const type of ['load', 'error']) images[1].dispatch(type);
+        await settle();
+        assert.equal(fx.dialog(), null, 'a late load or error reopens nothing');
+        fx.reader.open(imageFile(ARTIFACT_PNG), { owner: a.node, returnFocus: a.card });
+        fx.reader.destroy();
+        assert.equal(images[2].getAttribute('src'), null, 'destroy drops the pending load too');
+    } finally {
+        fx.restore();
+    }
+});
+
+test('a failed image says so; Retry loads the same source, and refused inline bytes offer no Retry', async () => {
+    const fx = readerFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const tile = fx.item('chart.png');
+        fx.reader.open(imageFile(ARTIFACT_PNG), { owner: tile.node, returnFocus: tile.card });
+        images[0].dispatch('error');
+        await settle();
+        assert.equal(fx.view().status, 'Could not load the image. Retry, or download it to open it in another app.Retry');
+        fx.dialog().querySelector('[data-reader-action="retry"]').click();
+        assert.deepEqual(images.map((img) => img.getAttribute('src')), [null, ARTIFACT_PNG], 'the same source, no other address');
+        assert.equal(fx.doc.activeElement, fx.dialog().querySelector('.document-reader-body'));
+        images[1].dispatch('load');
+        await settle();
+        assert.equal(fx.dialog().querySelector('.document-reader-body').children[0], images[1]);
+        fx.reader.close();
+        fx.reader.open(imageFile('data:image/heic;base64,AAAA'), { owner: tile.node, returnFocus: tile.card });
+        images[2].dispatch('error');
+        await settle();
+        assert.equal(fx.view().status, 'This app cannot show the image. Download it to open it in another app.');
+        assert.equal(fx.dialog().querySelector('[data-reader-action="retry"]'), null, 'no Retry where it cannot help');
+        assert.equal(fx.dialog().querySelector('[data-reader-action="download"]').hidden, false);
+    } finally {
+        fx.restore();
+    }
+});
+
+test('an image that outlasts the bound stops, says so and waits for Retry; close clears the bound', async () => {
+    const timers = boundTimers();
+    const fx = readerFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const tile = fx.item('chart.png');
+        fx.reader.open(imageFile(ARTIFACT_PNG), { owner: tile.node, returnFocus: tile.card });
+        assert.equal(timers.live.size, 1);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await settle();
+        assert.equal(fx.view().status,
+            `The image did not arrive within ${DOCUMENT_READER_TIMEOUT_MS / 1000} seconds, so loading stopped.Retry`);
+        assert.deepEqual([images.length, images[0].getAttribute('src')], [1, null], 'the stopped load is dropped; nothing retries by itself');
+        fx.dialog().querySelector('[data-reader-action="retry"]').click();
+        assert.deepEqual([images.length, timers.live.size], [2, 1]);
+        fx.reader.close();
+        assert.equal(timers.live.size, 0, 'closing clears the bound of the pending load');
+    } finally {
+        fx.restore();
+        timers.restore();
+    }
+});
+
+test('a delivered photo tile previews in the chat; Open stays explicit; the tile closes with the bubble holding it', async () => {
+    const fx = mediaFixture();
+    const images = imageCapture(fx.doc);
+    const outside = [];
+    globalThis.window = {
+        open: (...args) => outside.push(['window.open', ...args]),
+        pywebview: { api: { open_file_with_default_app: async (url, name) => { outside.push(['bridge', url, name]); return { ok: true }; } } },
+    };
+    try {
+        const photo = (second, extra = {}) => ({ type: 'photo', role: 'assistant', task_id: 'task-p', mime: 'image/png',
+            download_url: `/api/tasks/task-p/artifacts/chat-media-${second}.png`, ts: `2026-10-18T00:00:0${second}Z`, ...extra });
+        const bubbles = [photo(1), photo(2, { caption: 'The second chart' })].map((msg) => {
+            const bubble = fx.media.buildMediaBubble(msg);
+            assert.equal(fx.media.buildGallery('photos', msg, bubble), true);
+            return bubble;
+        });
+        // One task's photos share the first bubble's grid; the second bubble is never inserted.
+        assert.deepEqual([fx.feed.children.length, bubbles[1].isConnected], [1, false]);
+        const [wrapper] = fx.feed.children;
+        const [first, second] = wrapper.querySelectorAll('.chat-gallery-item');
+        const tile = second.querySelector('.chat-photo-open');
+        assert.equal(tile.querySelector('img.chat-photo').getAttribute('alt'), 'Photo attachment', 'the image names its button');
+        tile.click();
+        assert.deepEqual(outside, [], 'the tile opens nothing outside the app');
+        const reader = fx.reader();
+        assert.deepEqual(['.document-reader-title', '.document-reader-meta'].map((selector) => reader.querySelector(selector).textContent),
+            ['The second chart', 'PNG']);
+        assert.equal(images.at(-1).getAttribute('src'), '/api/tasks/task-p/artifacts/chat-media-2.png', 'the source the tile shows');
+        reader.querySelector('[data-reader-action="open"]').click();
+        await settle();
+        assert.deepEqual(outside, [['bridge', '/api/tasks/task-p/artifacts/chat-media-2.png', 'image.png']], "the reader's Open goes out on purpose");
+        fx.media.release(bubbles[1]);
+        assert.ok(fx.reader(), 'the emptied bubble that never reached the feed owns nothing');
+        fx.media.release(wrapper);
+        assert.equal(fx.reader(), null, 'evicting the bubble that now holds the tile closes its preview');
+        images.at(-1).dispatch('load');
+        await settle();
+        tile.click();
+        assert.equal(fx.reader(), null, 'a late load and a released tile open nothing');
+        // The ••• menu keeps Open in new tab for a fresh photo, an inline one through window.open.
+        const inline = fx.media.buildMediaBubble({ type: 'photo', role: 'assistant', mime: 'image/png', image_base64: 'AAAA' });
+        fx.feed.append(inline);
+        inline.querySelector('[data-photo-action="open"]').click();
+        assert.deepEqual(outside.at(-1), ['window.open', 'data:image/png;base64,AAAA', '_blank', 'noopener']);
+        inline.querySelector('.chat-photo-open').click();
+        assert.equal(fx.reader().querySelector('[data-reader-action="open"]').hidden, true, 'inline bytes have no address to open');
+        assert.equal(first.isConnected, true);
+    } finally {
+        fx.restore();
+    }
+});
+
+test("an owner's uploaded image previews from its upload route and its preview closes when the tile becomes a card", async () => {
+    const fx = mediaFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const bubble = fx.doc.createElement('div');
+        bubble.innerHTML = '<div class="sender">You</div><div class="message">Look</div>';
+        fx.feed.append(bubble);
+        const view = uploadView('shot.png', 'image');
+        assert.equal(fx.media.mountAttachments(bubble, [view], 'Look'), true);
+        bubble.querySelector('.chat-photo-open').click();
+        assert.deepEqual(['.document-reader-title', '.document-reader-meta'].map((selector) => fx.reader().querySelector(selector).textContent),
+            ['shot.png', 'PNG · 2.0 KB']);
+        assert.equal(images.at(-1).getAttribute('src'), view.url);
+        images.at(-1).dispatch('load');
+        await settle();
+        assert.equal(fx.reader().querySelector('.document-reader-body').children[0], images.at(-1));
+        // The tile's own thumbnail then fails: the HEAD says the file is there, so it becomes an honest card.
+        globalThis.fetch = async (_url, init) => ({ ok: true, status: 200, method: init?.method });
+        bubble.querySelector('img.chat-photo').dispatch('error');
+        await settle();
+        assert.equal(fx.reader(), null, 'the tile became a card, and its preview went with it');
+        assert.equal(bubble.querySelector('.chat-photo-open'), null);
+        assert.match(bubble.querySelector('.chat-file-meta').textContent, /Preview unavailable/);
+    } finally {
+        fx.restore();
+    }
+});
+
+test('a delivered raster card and a question image preview; SVG and a current-path image keep the file dialog', () => {
+    const fx = mediaFixture();
+    const images = imageCapture(fx.doc);
+    try {
+        const card = (msg) => {
+            const bubble = fx.media.buildDocumentBubble(msg);
+            fx.feed.append(bubble);
+            return bubble.querySelector('.chat-file-card');
+        };
+        const dialog = () => fx.doc.body.querySelector('.chat-file-dialog');
+        const svg = card({ ...fx.delivered('vector.svg', 1, 'task-s'), mime: 'image/svg+xml' });
+        svg.click();
+        assert.deepEqual([dialog().open, fx.reader()], [true, null], 'SVG keeps Open/Download');
+        const png = card({ ...fx.delivered('chart.png', 2, 'task-i'), mime: 'image/png' });
+        assert.equal(png.querySelector('.chat-file-more').textContent, 'View');
+        png.click();
+        assert.equal(dialog().open, false, 'one transient at a time');
+        assert.equal(fx.reader().querySelector('.document-reader-title').textContent, 'chart.png');
+        assert.deepEqual([images.at(-1).getAttribute('src'), fx.held.pending.length], ['/api/tasks/task-i/artifacts/chart.png', 0]);
+        fx.media.closeTransient();
+        const current = card({ ...fx.delivered('shot.png', 3, 'task-c'), mime: 'image/png', download_url: '/api/files/download?path=shot.png' });
+        assert.notEqual(current.querySelector('.chat-file-more').textContent, 'View');
+        current.click();
+        assert.deepEqual([dialog().open, fx.reader()], [true, null], 'a current file path is not the delivered copy');
+        fx.media.closeTransient();
+        // A question's image material is the same card (result_files.syncQuestionMaterials).
+        const question = fx.doc.createElement('div');
+        fx.feed.append(question);
+        syncQuestionMaterials(question, [{ task_id: 'task-q', name: 'comparison.png', sha256: 'x' }], fx.media.buildDocumentBubble);
+        question.querySelector('.chat-file-card').click();
+        assert.deepEqual([fx.reader().querySelector('.document-reader-title').textContent, images.at(-1).getAttribute('src')],
+            ['comparison.png', '/api/tasks/task-q/artifacts/comparison.png']);
+        fx.media.release(question);
+        assert.equal(fx.reader(), null, 'the question that holds the material takes its preview along');
     } finally {
         fx.restore();
     }

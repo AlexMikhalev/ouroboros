@@ -111,8 +111,11 @@ export function paintAttachmentOutcome(bubble, annotation) {
     return true;
 }
 
+const metaText = (view, atoms, note = '') => [atoms.fileExtension(view.name), atoms.humanSize(view.size), note]
+    .filter(Boolean).join(' · ');
+
 function cardHtml(view, atoms, note = view.available ? '' : tr('media.attachment_unavailable', 'Unavailable')) {
-    const meta = [atoms.fileExtension(view.name), atoms.humanSize(view.size), note].filter(Boolean).join(' · ');
+    const meta = metaText(view, atoms, note);
     return `<div class="chat-file-item${view.available ? '' : ' is-unavailable'}">
         <button type="button" class="chat-file-card" ${view.available ? 'aria-haspopup="dialog"' : 'disabled aria-disabled="true"'}
             aria-label="${escapeHtmlAttr(`${view.name}${meta ? ` — ${meta}` : ''}`)}">
@@ -148,8 +151,7 @@ export function buildAttachmentBlock(atoms, rawViews) {
     block.innerHTML = [
         images.length ? `<div class="chat-gallery-grid${images.length > 1 ? ' is-multiple' : ''}">${images.map((view) => `
             <figure class="chat-gallery-item">
-                <img class="chat-photo" src="${escapeHtmlAttr(view.url)}" alt="${escapeHtmlAttr(view.name)}" loading="lazy" decoding="async">
-                ${atoms.photoActionsHtml()}
+                ${atoms.photoHtml(view.url, view.name, ' loading="lazy" decoding="async"')}
             </figure>`).join('')}</div>` : '',
         players.map((view) => `<div class="chat-attachment-player">${atoms.playerHtml({
             audio: view.kind === 'audio', src: view.url, title: view.name })}</div>`).join(''),
@@ -159,7 +161,7 @@ export function buildAttachmentBlock(atoms, rawViews) {
     images.forEach((view, index) => {
         const item = figures[index];
         if (!item) return;
-        atoms.wirePhotoActions(item, view.url, sourceOf(view), view.name, view.mime);
+        atoms.wirePhotoActions(item, view.url, sourceOf(view), view.name, view.mime, { meta: metaText(view, atoms) });
         atoms.listen(item.querySelector('.chat-photo'), 'error', () => degrade(atoms, block, item, view), { once: true }, item);
     });
     const playerRoots = block.querySelectorAll('.chat-attachment-player');
