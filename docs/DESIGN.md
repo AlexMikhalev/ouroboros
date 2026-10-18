@@ -236,7 +236,7 @@ Two failure modes this table exists to prevent, both observed in this codebase:
 The brand red is **one value**, `--accent`. Every appearance of it is either
 that token, the named roles built on it (`--accent-light` for accent text, the crimson ink on light,
 `--accent-dim` for a fill, `--focus-accent-border` / `--focus-accent-ring` for
-focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-65`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
+focus), or a rung of the accent alpha ladder (`--accent-04` … `--accent-55`; the crimson tone and its hover are `--accent-10` and `--accent-14`).
 A new alpha is a rung added to the ladder, never an `rgba()` literal in a rule:
 the ladder is what makes "make the accent calmer" a one-line change instead of
 a grep.
@@ -602,8 +602,7 @@ Two shapes carry a tone, and they are not interchangeable:
   *is* the status and has nothing else to carry it.
 
 Surfaces whose tone is a class suffix rather than `data-tone`
-(`.skills-status-*`, `.skills-badge-*`, `.toast-*`, `.marketplace-state-*`,
-`.chat-live-phase`, `.log-phase`, `.evo-runtime-pill`, `.widget-table-status`,
+(`.toast-*`, `.chat-live-phase`, `.log-phase`, `.evo-runtime-pill`, `.widget-table-status`,
 `.widget-metric` / `.widget-callout`) name the same tokens. A surface that
 paints only its edge (a card tinted by its state, a callout's left rule) takes
 the border and leaves its own background alone; a toast keeps its glass
@@ -625,11 +624,10 @@ Project/task scope verification waits are static amber; `resumed` questions no
 longer wait. A wait on the same producer row suppresses its working motion; an
 independent working row keeps motion, and the row's accessible name states both
 facts. Unknown or unconfirmed census state stays static and explicitly
-unavailable. Working dots take the crimson live ink (principle 3: "live dots"),
-like the room's status sentence; the wait is the one amber; queued and unknown
-dots stay static in the row's own foreground at a quieter step, following its
-hover and selected ink; no row paints them in a saturated project colour of its
-own. In a Project row the dots and the unread dot each own a reserved
+unavailable. Unlike the room's live status, the sidebar's dots take the row's
+own foreground, so they never out-shout the title and follow its hover and selected ink;
+the wait is the one hue, and no row paints them in a saturated project colour of
+its own. In a Project row the dots and the unread dot each own a reserved
 trailing column, so both sit at one x across rows whether or not the other is
 present, whatever the name length, and while the sibling kebab is hovered,
 focused or has its menu open; a deleting row draws only `Deleting…`, its census
@@ -641,8 +639,9 @@ without the bounce.
 
 ### Project unread dot
 
-A Project row's unread dot, and the Projects count, mean *there is a new message
-in this Project's conversation that you have not read*, never *something moved*;
+A Project row's unread dot (a small red dot in a soft ring) and the Projects
+count mean *there is a new message in this Project's conversation that you have
+not read*, never *something moved*;
 activity dots, notifications, toasts, task controls and Stop/Panic keep their
 own meaning, unaffected by it.
 
@@ -1866,13 +1865,14 @@ has migrated. Migrated today:
 - `web/style.css` regions paired by `design-system:migrated-begin` /
   `design-system:migrated-end`: harness accounts; Dashboard → Updates (status
   card, one action row, collapsed Recovery with one restore list) and Storage;
+  the Skills page (Installed, Browse, Sources, the detail sheet, its dialogs);
   chat typography, foreground and status colour. Chat geometry retains local
   literals per the viewport reserve contract; shared palette channels keep
   translucent glass coherent across themes.
 - the global `.muted`, `.form-section h3` and shared `.ui-status` tone rules
 
-The remaining page-specific typography in skills, marketplace, widgets, logs
-and evolution is historical. Their adopted common controls follow the shared
+The remaining page-specific typography in widgets, logs and evolution is
+historical. Their adopted common controls follow the shared
 family; unrelated page rules keep their literals until their own pass. Migrate
 each selected family completely and remove its replaced recipes in the same
 change. Do not introduce a half-tokenised second field family or describe a
@@ -2119,15 +2119,20 @@ choice, set before first paint from the one constant `web/theme.js` exposes and
 `web/modules/layout.js` reads; shell rules key off the attribute, components adapt
 to their own box with container queries, and no page adds a width breakpoint of
 its own. The surface fact sent with a message reads the same switch. On docked,
-the Project panel is a frosted overlay of the content area; when Main would keep
-less than 360 px beside it, the panel takes the whole content area.
+the Project panel lies beside Main at its own width over the dimmed room; its
+handle resizes it apart from the sidebar's, and it is never wider than the
+content area.
 
 **Navigation.** Places come from one registry (`web/modules/pages.js`): it renders
 the navigation rows, names the titles and feeds the shell gate, so a new page is
 a registry row and its module, checked at phone widths with no further work. The column
-has three zones: a pinned head (Main Chat), one scrolling collection (Projects,
-the column's only scroller) and a pinned foot (Files, Skills, Widgets, Dashboard,
-Settings, then the version and the update). The order follows §5; no label is set
+has a pinned head (Main Chat), one collection (Projects, the column's only
+scroller) and the tools right after it (Files, Skills, Widgets, Dashboard,
+Settings, then the version and the update), which reach the bottom edge only
+when the Projects do not fit: free room stays under the last row, never between
+them. Collapsed, the Projects keep the ones whose dots show (work running, queued
+or waiting), the open one and the one under the keyboard; the rest wait behind
+"Show all N". The order follows §5; no label is set
 in capitals. A short window first compacts rows (fine pointer only), then lets the
 whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
 place is chosen at a time, and pressing a place opens it, never closes it.
@@ -2160,8 +2165,8 @@ name. In the stack layout the row is at most 56 px: ☰, the place's name, its
 status, then Panic and ⋯; the name wins over the status word, which a short row
 drops whole, keeping its mark. Whenever the bar itself is narrow, on a phone or in a narrow window,
 Restart and the budget move into ⋯ — the same controls, placed by the bar's
-width. Tabs sit under the row; a page's description is its first paragraph, and a
-history note hangs under the bar, neither inside it.
+width. Tabs sit under the row and a history note hangs under the bar, neither
+inside it; a page has no caption line, its sidebar row and its tabs name it.
 
 **Doors and containers.** An object whose only job is to take you somewhere is a
 door: the whole object is the target and one state layer covers all of it (a file

@@ -20,9 +20,8 @@ export function renderMobileNavToggle() {
  * The one header of every page AND the Project panel (docs/DESIGN.md "Shell", plan P5): one row, one height,
  * one title style, one close control. `☰ · title · status … actions · ×`: the leading slot holds ☰ (the stack
  * layout shows it), the title row takes the room's status after the title (room_work.js), the toolbar and the
- * trailing slot end the row. A description is not header chrome: it is rendered as the page's first quiet
- * paragraph right after the header (`.app-page-lede`), and a tab strip as its own strip under it, so the row
- * stays one row. `named` says the sidebar's chosen row already names this place: on a desk such a header shows no
+ * trailing slot end the row. A page has no caption line: the sidebar's row and its tabs name it. A tab strip is
+ * its own strip under the row, so the row stays one row. `named` says the sidebar's chosen row already names this place: on a desk such a header shows no
  * title (the h2 stays for readers) and, with no actions, no bar at all; a Project keeps its name. No icon anywhere:
  * the place is named by words, never a glyph (owner 5A).
  */
@@ -30,7 +29,6 @@ export function renderPageHeader({
     page = '',   // a registry id: the title is its label unless `title` says otherwise
     title,
     titleId = '',
-    description = '',
     leadingHtml,
     toolbarHtml = '',
     trailingHtml = '',
@@ -53,9 +51,6 @@ export function renderPageHeader({
     const trailing = trailingHtml
         ? `<div class="app-page-trailing">${trailingHtml}</div>`
         : '';
-    const lede = description
-        ? `<p class="app-page-lede">${escapeHtml(description)}</p>`
-        : '';
     const tabs = tabsHtml
         ? `<div class="app-page-tabs">${tabsHtml}</div>`
         : '';
@@ -75,7 +70,6 @@ export function renderPageHeader({
             ${toolbar}
             ${trailing}
         </div>
-        ${lede}
         ${tabs}
     `;
 }

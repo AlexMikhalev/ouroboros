@@ -422,3 +422,305 @@ def test_a_short_phone_drawer_has_one_scroller_the_whole_column(shell_ui, tmp_pa
         page.close()
     assert facts['coarse'] is True and facts['projects'] == len(PROJECTS) and facts['layers'] == ['drawer'], facts
     assert [row['node'] for row in facts['scrollers']] == ['primary-sidebar'], facts
+
+
+def saved_history(tmp_path):
+    """The real history endpoint over two saved rows, so the feed draws bubbles with Copy and Reply."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from ouroboros import dialogue_store
+    from ouroboros.gateway.history import make_chat_history_endpoint
+    root = tmp_path / 'history'
+    root.mkdir()
+    for minute, (direction, role, text) in enumerate([('in', 'user', 'Please check the build before the release.'),
+                                                       ('out', 'assistant', 'The build is green; nothing to fix.')]):
+        dialogue_store.append(root, 'chat', {'chat_id': 1, 'user_id': 1, 'direction': direction, 'role': role,
+                                             'text': text, 'ts': f'2026-10-18T10:0{minute}:00Z'})
+    client = TestClient(Starlette(routes=[Route('/api/chat/history', make_chat_history_endpoint(root))]))
+
+    def respond(route):
+        response = client.get('/' + route.request.url.split('/', 3)[3])
+        route.fulfill(status=response.status_code, content_type='application/json', body=response.content)
+    return client, respond
+
+
+ACTION_ROWS = """() => [...document.querySelectorAll('#chat-messages .chat-message-actions')]
+    .filter((row) => row.offsetParent && row.children.length >= 2)
+    .map((row) => [...row.children].filter((c) => c.offsetParent).map((c) => {
+        const r = c.getBoundingClientRect();
+        return {name: c.className, top: Math.round(r.top * 10) / 10, bottom: Math.round(r.bottom * 10) / 10};
+    }))"""
+
+
+@pytest.mark.parametrize('width', [1280, 390])
+def test_copy_and_reply_sit_side_by_side_on_one_line(shell_ui, tmp_path, width):
+    page = seed_page(shell_ui, width, 860)
+    client, respond = saved_history(tmp_path)
+    facts = {'engine': shell_ui['engine'], 'width': width}
+    try:
+        page.route('**/api/chat/history**', respond)
+        boot(page, shell_ui)
+        page.wait_for_selector('#chat-messages .chat-message-actions .chat-message-copy', timeout=20_000)
+        facts['rows'] = page.evaluate(ACTION_ROWS)
+    finally:
+        evidence(tmp_path, f'shell-copy-reply-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+        client.close()
+    assert facts['rows'], facts
+    for row in facts['rows']:
+        assert len(row) >= 2 and any('copy' in c['name'] for c in row) and any('reply' in c['name'] for c in row), facts
+        assert max(c['top'] for c in row) - min(c['top'] for c in row) <= 0.5, facts
+        assert max(c['bottom'] for c in row) - min(c['bottom'] for c in row) <= 0.5, facts
+
+
+TITLE_BAND = """band => {
+    // launcher_window_chrome.py's own press filter: a plain press off any control moves the window.
+    const CONTROLS = 'a[href], button, input, select, textarea, summary, label, iframe, video, audio, '
+        + '[contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], '
+        + '[role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], '
+        + '[role="radio"], [role="switch"], [role="slider"], [role="textbox"]';
+    const left = document.getElementById('primary-sidebar').getBoundingClientRect().right;
+    const caught = {};
+    for (let y = 4; y < band; y += 6) {
+        for (let x = left + 4; x < innerWidth - 8; x += 12) {
+            const t = document.elementFromPoint(x, y);
+            const control = t?.closest(CONTROLS);
+            if (control) caught[control.tagName.toLowerCase() + '.' + [...control.classList].slice(0, 2).join('.')] = y;
+        }
+    }
+    const tab = document.querySelector('.page.active .app-tab');
+    return {caught, firstTabTop: tab ? Math.round(tab.getBoundingClientRect().top) : null};
+}"""
+
+
+@pytest.mark.parametrize('page_name', ['dashboard', 'settings'])
+def test_the_desktop_title_band_over_a_page_moves_the_window(shell_ui, tmp_path, page_name):
+    """macOS desktop window: the transparent title bar's band over a page holds no control, its tabs start below."""
+    page = seed_page(shell_ui, 1280, 860)
+    facts = {'engine': shell_ui['engine'], 'page': page_name}
+    try:
+        boot(page, shell_ui)
+        # What launcher_window_chrome.py writes into the document once the integrated title bar is applied.
+        page.evaluate("""() => { const root = document.documentElement; root.dataset.windowChrome = 'integrated';
+            root.style.setProperty('--window-chrome-top', '52px'); root.style.setProperty('--window-chrome-start', '78px'); }""")
+        page.locator(f'[data-nav-page="{page_name}"]').click()
+        page.locator(f'#page-{page_name}').wait_for(state='visible')
+        settle(page)
+        facts['band'] = page.evaluate(TITLE_BAND, 52)
+    finally:
+        evidence(tmp_path, f'shell-title-band-{page_name}-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['band']['caught'] == {}, facts
+    assert facts['band']['firstTabTop'] is not None and facts['band']['firstTabTop'] >= 52, facts
+
+
+def live_state(project_ids):
+    """The /api/state snapshot with work running in these Projects (the census the sidebar's dots read)."""
+    return {'supervisor_ready': True, 'projects': PROJECTS, 'project_chat_ids': [p['chat_id'] for p in PROJECTS],
+            'active_chat_activities_complete': True,
+            'active_chat_activities': [{'activity_id': f'work-{pid}', 'root_task_id': f'work-{pid}', 'project_id': pid,
+                                        'phase': 'working'} for pid in project_ids]}
+
+
+SIDEBAR_FACTS = """() => {
+    const side = document.getElementById('primary-sidebar');
+    const rows = [...side.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden);
+    const zone = document.getElementById('nav-projects').getBoundingClientRect();
+    const files = side.querySelector('[data-nav-page="files"]').getBoundingClientRect();
+    const all = document.getElementById('nav-projects-show-all');
+    return {rows: rows.map((e) => e.querySelector('[data-project-id]').dataset.projectId),
+            gapToTools: Math.round(files.top - zone.bottom), filesTop: Math.round(files.top),
+            sidebarBottom: Math.round(side.getBoundingClientRect().bottom),
+            showAll: all && !all.hidden ? all.textContent.trim() : null,
+            expanded: document.getElementById('nav-projects-toggle').getAttribute('aria-expanded')};
+}"""
+
+
+@pytest.mark.parametrize('width,height', [(1108, 680), (390, 844)])
+def test_collapsed_projects_keep_the_live_ones_and_the_tools_follow(shell_ui, tmp_path, width, height):
+    page = seed_page(shell_ui, width, height)
+    live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    facts = {'engine': shell_ui['engine'], 'size': [width, height]}
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=live_state(live)))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
+                               timeout=20_000)
+        if width < 720:
+            open_drawer(page)
+        facts['open'] = page.evaluate(SIDEBAR_FACTS)
+        page.locator('#nav-projects-toggle').click()
+        settle(page)
+        facts['collapsed'] = page.evaluate(SIDEBAR_FACTS)
+        page.locator('#nav-projects-show-all').click()
+        settle(page)
+        facts['show_all'] = page.evaluate(SIDEBAR_FACTS)
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+    collapsed = facts['collapsed']
+    assert collapsed['expanded'] == 'false' and sorted(collapsed['rows']) == sorted(live), facts
+    assert collapsed['showAll'] == f'Show all {len(PROJECTS)}', facts
+    # The tools follow the Projects zone: no empty room between them (the free room is under the last row).
+    assert collapsed['gapToTools'] <= 24 and collapsed['filesTop'] < collapsed['sidebarBottom'] - 200, facts
+    assert facts['open']['expanded'] == 'true' and len(facts['open']['rows']) == len(PROJECTS), facts
+    assert facts['show_all']['expanded'] == 'true' and len(facts['show_all']['rows']) == len(PROJECTS), facts
+    assert facts['show_all']['showAll'] is None, facts
+
+
+DOT_FACTS = """() => {
+    const dot = document.querySelector('#nav-projects-list .nav-unread-dot');
+    const marker = document.querySelector('#nav-projects-list .nav-activity-marker[data-state="working"]');
+    const row = marker?.closest('.nav-project-row');
+    const ds = dot ? getComputedStyle(dot) : null;
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--red)';
+    document.body.append(probe);
+    const red = getComputedStyle(probe).color;
+    probe.remove();
+    return {dot: ds && {background: ds.backgroundColor, ring: ds.boxShadow}, red,
+            working: marker ? getComputedStyle(marker.querySelector('span')).backgroundColor : null,
+            rowInk: row ? getComputedStyle(row).color : null};
+}"""
+
+
+def test_sidebar_dots_are_a_red_unread_ring_and_working_dots_in_the_row_ink(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    unread = [dict(p, visible_revision=3) if i == 2 else p for i, p in enumerate(PROJECTS)]
+    state = dict(live_state([PROJECTS[5]['id']]), projects=unread)
+    facts = {'engine': shell_ui['engine']}
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=state))
+        page.route('**/api/projects', lambda route: route.fulfill(json={'projects': unread}))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelector('#nav-projects-list .nav-unread-dot') && "
+                               "document.querySelector('#nav-projects-list .nav-activity-marker[data-state=\"working\"]')",
+                               timeout=20_000)
+        facts.update(page.evaluate(DOT_FACTS))
+    finally:
+        evidence(tmp_path, f'shell-sidebar-dots-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['dot']['background'] == facts['red'], facts
+    assert facts['dot']['ring'] not in ('', 'none'), facts
+    assert facts['working'] == facts['rowInk'], facts
+
+
+PANEL_FACTS = """() => {
+    const panel = document.getElementById('project-panel').getBoundingClientRect();
+    const side = document.getElementById('primary-sidebar').getBoundingClientRect();
+    const handle = document.querySelector('#project-panel > .resize-handle');
+    return {panel: Math.round(panel.width), left: Math.round(panel.left), sidebarRight: Math.round(side.right),
+            handle: Boolean(handle && handle.getClientRects().length),
+            fill: document.documentElement.hasAttribute('data-project-fill')};
+}"""
+
+
+@pytest.mark.parametrize('width', [1108, 800])
+def test_the_project_panel_keeps_its_own_width_beside_main(shell_ui, tmp_path, width):
+    """The owner's widths (sidebar 282, panel 581): beside Main at its own width with its handle; a window too
+    narrow for it gets a panel as wide as the content area, never over the sidebar."""
+    page = seed_page(shell_ui, width, 680)
+    facts = {'engine': shell_ui['engine'], 'width': width}
+    try:
+        page.route('**/api/ui/preferences', lambda route: route.fulfill(
+            json={'sidebar_width': 282, 'project_panel_width': 581, 'project_seen_revision': {}}))
+        boot(page, shell_ui)
+        page.wait_for_function("() => getComputedStyle(document.documentElement).getPropertyValue('--project-panel-width').trim() === '581px'",
+                               timeout=20_000)
+        open_project(page)
+        settle(page)
+        facts.update(page.evaluate(PANEL_FACTS))
+    finally:
+        evidence(tmp_path, f'shell-project-panel-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['fill'] is False and facts['handle'] is True, facts
+    content = width - facts['sidebarRight']
+    assert facts['panel'] == min(581, content), facts
+    assert facts['left'] >= facts['sidebarRight'], facts
+
+
+FOCUS = """() => { const a = document.activeElement;
+    return a === document.body ? 'body' : a.id || (a.dataset.projectId ? 'project:' + a.dataset.projectId
+        : a.dataset.navPage ? 'page:' + a.dataset.navPage : a.className); }"""
+
+
+def test_the_keyboard_stays_in_the_projects_when_a_collapse_hides_its_control(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    current = {'state': live_state(live)}
+    facts = {'engine': shell_ui['engine']}
+    hidden = "id => document.querySelector(`[data-project-id=\"${id}\"]`).closest('[hidden]') !== null"
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
+                               timeout=20_000)
+        page.locator('#nav-projects-toggle').click()
+        facts['show_all_name'] = page.locator('#nav-projects-show-all').get_attribute('aria-label')
+        page.locator('#nav-projects-show-all').focus()
+        page.keyboard.press('Enter')
+        settle(page)
+        facts['after_show_all'] = page.evaluate(FOCUS)
+        page.keyboard.press('Tab')
+        facts['next_tab'] = page.evaluate(FOCUS)
+        # Collapse again, put the keyboard on a live row, then its work ends in a complete census: the row stays
+        # under the keyboard and goes behind "Show all" once focus leaves the Projects.
+        page.locator('#nav-projects-toggle').click()
+        page.locator(f'[data-project-id="{live[0]}"]').focus()
+        current['state'] = live_state(live[1:])
+        page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+        page.wait_for_function(f"() => !document.querySelector('[data-project-id=\"{live[0]}\"]').closest('.nav-project-item').hasAttribute('data-live')",
+                               timeout=20_000)
+        settle(page)
+        facts['focused_row_hidden'] = page.evaluate(hidden, live[0])
+        facts['focus_while_quiet'] = page.evaluate(FOCUS)
+        page.locator('[data-nav-page="chat"]').focus()
+        settle(page)
+        facts['row_hidden_after_leave'] = page.evaluate(hidden, live[0])
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-focus-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['show_all_name'] == f'Show all {len(PROJECTS)} Projects', facts
+    assert facts['after_show_all'].startswith('project:'), facts
+    assert facts['next_tab'] not in ('page:files', 'body'), facts
+    assert facts['focused_row_hidden'] is False and facts['focus_while_quiet'] == f'project:{live[0]}', facts
+    assert facts['row_hidden_after_leave'] is True, facts
+
+
+def test_collapsed_projects_follow_the_census_and_keep_the_open_one(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    current = {'state': live_state([PROJECTS[3]['id']])}
+    facts = {'engine': shell_ui['engine']}
+    rows = "() => [...document.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden).map((e) => e.querySelector('[data-project-id]').dataset.projectId)"
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 1",
+                               timeout=20_000)
+        page.locator('#nav-projects-toggle').click()
+        facts['one'] = page.evaluate(rows)
+        for name, ids_now in (('three', [PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), ('none', [])):
+            current['state'] = live_state(ids_now)
+            page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+            page.wait_for_function(f"() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === {len(ids_now)}",
+                                   timeout=20_000)
+            settle(page)
+            facts[name] = page.evaluate(rows)
+        # The open Project stays in a collapsed list though nothing runs there; once it closes it goes.
+        open_project(page, 12)
+        settle(page)
+        facts['open'] = page.evaluate(rows)
+        page.keyboard.press('Escape')
+        page.wait_for_function("() => window.__ouroLayers.ids().length === 0")
+        page.locator('[data-nav-page="chat"]').focus()
+        settle(page)
+        facts['closed'] = page.evaluate(rows)
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-census-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['one'] == [PROJECTS[3]['id']], facts
+    assert sorted(facts['three']) == sorted([PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), facts
+    assert facts['none'] == [], facts
+    assert facts['open'] == [PROJECTS[12]['id']], facts
+    assert facts['closed'] == [], facts
