@@ -670,7 +670,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 page.wait_for_timeout(100)
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 3
                 assert page.evaluate("() => window.__finishTransitions") == 1
-                _wait_status(page, "Online")
+                # The room says what the server lists, here the finished root again; its card stays finished, unread.
+                _wait_status(page, "Working")
 
                 rehome_card = '.chat-live-card[data-task-id="rehome-root"]'
                 state["activities"] = [_activity("rehome-root")]
@@ -688,20 +689,20 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 state["activities"] = [_activity("rehome-root", 9)]
                 with page.expect_response("**/api/state*", timeout=10_000):
                     page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-                page.wait_for_function(
-                    "(sel) => document.querySelector(sel + ' [data-cancel-run]') === null",
-                    arg=rehome_card,
-                )
+                # The work lives in its Project now: Main's room no longer lists it, and Main's card stays the
+                # work's portal with the work's own Stop (DESIGN "Work portal"), never a marker's.
+                _wait_status(page, "Online")
+                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 1
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 3
                 assert page.locator(rehome_card).get_attribute("data-finished") == "0"
                 page.evaluate("() => window.__ouroWs.emit('chat', {type: 'chat', role: 'assistant', is_progress: true, chat_id: 9, task_id: 'rehome-root', cancelable: true, content: 'Project work continues.'})")
-                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 0
+                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 1
                 history["messages"] = [{"text": "Historical project progress.", "role": "assistant", "is_progress": True, "task_id": "rehome-root", "cancelable": True, "project_mirror": True}]
                 with page.expect_response("**/api/chat/history*", timeout=10_000):
                     page.evaluate("() => window.__ouroWs.emit('open', {previouslyConnected: true})")
                 page.wait_for_selector(rehome_card)
                 assert page.get_by_text("Historical project progress.").count() >= 1
-                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 0
+                page.wait_for_selector(f"{rehome_card} [data-cancel-run]")
 
                 # A later rehome snapshot clears an earlier candidate and response.
                 # cannot finish the still-running card.
@@ -756,7 +757,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 )
                 page.wait_for_timeout(150)
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 4
-                _wait_status(page, "Online")
+                # The room says what the server lists, here the finished root again; its card stays finished.
+                _wait_status(page, "Working")
 
                 # Durable fallback settles a reusable logical slot without
                 # permanently blocking its next Working cycle.
@@ -805,7 +807,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     }""",
                     arg=reusable_card,
                 )
-                _wait_status(page, "Working")
+                # The server lists no work here: the reopened card alone never lights the room.
+                _wait_status(page, "Online")
                 page.evaluate(
                     """() => window.__ouroWs.emit('log', {
                         type: 'log', chat_id: 1,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from tests import _dialogue as dialogue_test
 
 import json
+import time
 import urllib.request
 
 import pytest
@@ -21,9 +22,10 @@ pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
     from playwright.sync_api import sync_playwright
+    from ouroboros.task_results import load_task_result
 
     fixture = direct_server_with_data
-    root, task_id = fixture["data_dir"], "tool-only-pause"
+    root, task_id, turn_id = fixture["data_dir"], "tool-only-pause", "direct-turn"
     fixture["stop_server"]()
     logs = root / "logs"
     logs.mkdir(exist_ok=True)
@@ -40,17 +42,30 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
             **calls[1], "task_id": "unrelated", "invocation_id": f"unrelated-{index}"}) + "\n", encoding="utf-8")
     results = root / "task_results"
     results.mkdir(exist_ok=True)
+    # An earlier version saved this answered root's upkeep as the owner's Pause, for a Resume.
     seed_result(root, task_id, {"_schema_version": 1, "task_id": task_id,
         "status": "completed", "suggested_name": "Read source records", "_is_direct_chat": True,
         "root_phase_checkpoint": {"post_task_synthesis": "paused"}})
+    # A direct turn still running: its card comes from its own progress row.
+    dialogue_store.append(root, "progress", {"task_id": turn_id, "chat_id": 1,
+        "content": "Reading the saved sources", "ts": "2026-10-04T09:02:00Z"})
     fixture["start_server"]()
+    # A Pause now ends the upkeep at once, so the maintenance pass ends that saved remainder once, disclosed.
+    deadline, checkpoint = time.monotonic() + 60, {}
+    while time.monotonic() < deadline:
+        checkpoint = (load_task_result(root, task_id) or {}).get("root_phase_checkpoint") or {}
+        if checkpoint.get("post_task_synthesis") == "degraded":
+            break
+        time.sleep(0.2)
+    assert checkpoint.get("post_task_synthesis") == "degraded", checkpoint
+    assert str(checkpoint.get("post_task_stop_reason") or "").startswith("owner_pause:skipped="), checkpoint
     census = {"phase": "budget_pausing", "pause_cause": "owner"}
     with urllib.request.urlopen(fixture["url"] + "/api/state", timeout=10) as response:
         state = json.load(response)
 
     def state_route(route):
         data = dict(state)
-        rows = [{"activity_id": task_id, "chat_id": 1, "kind": "direct_chat", **census}]
+        rows = [{"activity_id": turn_id, "chat_id": 1, "kind": "direct_chat", **census}]
         # The server's own work projection of the controlled row: its word, reason and controls.
         data.update(active_chat_activities=rows, active_chat_activities_complete=True,
                     supervisor_ready=True, **work_fields(rows))
@@ -68,42 +83,52 @@ def test_speechless_history_and_direct_resume(direct_server_with_data, engine):
                 page.goto(fixture["url"], wait_until="domcontentloaded")
                 card = page.locator(f'.chat-live-card[data-task-id="{task_id}"]')
                 card.wait_for(state="visible")
-                page.wait_for_function("() => document.querySelector('[data-live-phase-secondary]')?.textContent.includes('Pausing')")
-                assert card.locator("[data-resume-run]").count() == 0
-                assert card.locator("[data-cancel-run]").is_visible()
+                # The ended upkeep leaves the answer Done, with nothing to resume or stop.
+                page.wait_for_function("id => document.querySelector(`.chat-live-card[data-task-id='${id}']`)?.dataset.finished === '1'", arg=task_id)
                 assert card.locator("[data-live-phase]").inner_text() == "Done"
+                assert card.locator("[data-resume-run]").count() == 0
+                assert card.locator("[data-cancel-run]").count() == 0
+                assert card.locator("[data-live-title]").inner_text() == "Read source records"
                 assert page.locator(".chat-bubble.assistant:not(.typing-bubble)").count() == 0
                 assert "24 tool calls" in card.inner_text()
                 assert "outcome unknown" not in card.inner_text(), "unrelated archives cannot unsettle known calls"
+                # The running direct turn's Pause is still settling: the work's word and who paused it.
+                turn = page.locator(f'.chat-live-card[data-task-id="{turn_id}"]')
+                turn.wait_for(state="visible")
+                page.wait_for_function("id => document.querySelector(`.chat-live-card[data-task-id='${id}'] [data-live-phase]`)?.textContent === 'Pausing… · by you'", arg=turn_id)
+                assert turn.locator("[data-resume-run]").count() == 0
+                assert turn.locator("[data-cancel-run]").is_visible()
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-pausing.png"), full_page=True)
 
                 census["phase"] = "budget_paused"
                 page.reload(wait_until="domcontentloaded")
-                resume = card.locator("[data-resume-run]")
+                resume = turn.locator("[data-resume-run]")
                 resume.wait_for(state="visible")
                 assert resume.inner_text() == "Resume"
-                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · by you"
-                assert card.locator("[data-live-title]").inner_text() == "Read source records"
+                assert turn.locator("[data-live-phase]").inner_text() == "Paused · by you"
                 assert page.locator("#chat-messages").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
                 assert resume.evaluate("el => { const r=el.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth; }")
-                card.locator("[data-cancel-run]").click()
+                turn.locator("[data-cancel-run]").click()
                 assert page.locator('[role="menuitem"]', has_text="Resume").count() == 0
                 assert page.locator('[role="menuitem"]', has_text="Stop now").is_visible()
                 page.keyboard.press("Escape")
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-paused.png"), full_page=True)
                 card.locator(":scope > [data-live-summary-button]").click()
-                assert card.locator(".chat-live-line").count() == 1
-                assert "24 tool calls" in card.locator(".chat-live-line").inner_text()
+                lines = card.locator(".chat-live-line")
+                # The tool calls, then the answer's own Done line.
+                assert lines.count() == 2, lines.all_inner_texts()
+                assert "24 tool calls" in lines.nth(0).inner_text() and lines.nth(1).inner_text().startswith("Done")
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"task-evidence-{engine}-{width}-expanded.png"), full_page=True)
-                card.locator("[data-live-line-toggle]").click()
-                assert "Only recent tool history was read." in card.locator(".chat-live-line-body").inner_text()
+                tools = lines.nth(0)
+                tools.locator("[data-live-line-toggle]").click()
+                assert "Only recent tool history was read." in tools.locator(".chat-live-line-body").inner_text()
                 page.screenshot(path=str(diagnostic_directory(root.parent, "task-evidence") / f"tool-history-bounded-{engine}-{width}.png"), full_page=True)
 
                 # The controlled projection offers the door; the real server still
-                # refuses a root with no resumable queue/fence authority.
+                # refuses a turn with no resumable queue/fence authority.
                 resume.click()
                 page.locator(".toast", has_text="Resume refused").wait_for(state="visible")
-                assert card.locator("[data-live-phase-secondary]").inner_text() == "Paused · by you"
+                assert turn.locator("[data-live-phase]").inner_text() == "Paused · by you"
                 assert card.locator("[data-live-phase]").inner_text() == "Done"
                 context.close()
         finally:
