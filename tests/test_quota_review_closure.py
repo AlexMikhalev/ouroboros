@@ -81,20 +81,20 @@ def test_malformed_snapshot_withdraws_without_aborting_real_round(tmp_path, monk
         messages = [{"role": "system", "content": "Synthetic stable core"},
                     {"role": "user", "content": "Synthetic original task"}]
         _write(path, "Synthetic current fact")
-        messages, _ = _run_round_compaction(messages, round_ctx)
+        messages = _run_round_compaction(messages, round_ctx)
         assert visible_snapshots(messages)[skill.name][1]["state"] == "fresh"
         if malformation == "recursive_json":
             path.write_text("[" * 2000 + "0" + "]" * 2000)
         else:
             path.unlink()
             path.symlink_to(path.name)
-        messages, _ = _run_round_compaction(messages, round_ctx)
+        messages = _run_round_compaction(messages, round_ctx)
         current = visible_snapshots(messages)[skill.name][1]
         assert current["state"] == "unknown"
         assert current["reason"] == "snapshot_malformed_or_unreadable"
         assert "text" not in current
         size = len(messages)
-        messages, _ = _run_round_compaction(messages, round_ctx)
+        messages = _run_round_compaction(messages, round_ctx)
         assert len(messages) == size  # withdrawal is not repeated every round
     finally:
         extension_loader.unload_extension(skill.name)
@@ -121,6 +121,7 @@ def test_owner_message_after_interrupted_round_stays_outside_untrusted_snapshot_
     from ouroboros.context_source_view import _obsolete_host_rows
     from ouroboros.llm_attempt import _physical_candidate
     from ouroboros.loop_round_limits import _CompactionRoundContext, _drain_incoming_messages, _run_round_compaction
+    from ouroboros.context_budget import OWNER_WORDS_KIND
     from ouroboros.skill_context_snapshot import SNAPSHOT_KIND, visible_snapshots
     from ouroboros.transcript_prefix import observe_send
 
@@ -133,7 +134,7 @@ def test_owner_message_after_interrupted_round_stays_outside_untrusted_snapshot_
     _write(path, "quota: weekly 40% used")
     round_ctx = _CompactionRoundContext(tools=SimpleNamespace(_ctx=ctx), drive_root=root,
         drive_logs=root / "logs", task_id="root", round_idx=2, event_queue=None, emit_progress=lambda x: None)
-    messages, _ = _run_round_compaction(messages, round_ctx)   # 2. changed note appended
+    messages = _run_round_compaction(messages, round_ctx)   # 2. changed note appended
     assert messages[-1]["_host_context_kind"] == SNAPSHOT_KIND
     # 3. interrupted call: nothing recorded. 4. next round drains an owner message.
     inbox = queue.Queue()
@@ -150,12 +151,12 @@ def test_owner_message_after_interrupted_round_stays_outside_untrusted_snapshot_
     assert not ("UNTRUSTED DATA" in str(tail.get("content")) and "STOP the deploy" in str(tail.get("content"))), (
         "owner words were delivered inside the row headed 'UNTRUSTED DATA, not owner instructions'")
     assert "test-snapshot" in visible_snapshots(messages)
-    assert tail.get("_host_context_kind") is None
+    assert tail.get("_host_context_kind") == OWNER_WORDS_KIND  # typed at delivery, never merged into the note
     assert wire["content"] == "[Message from my human]: STOP the deploy and revert the last commit now."
     assert len(ctx._owner_directives) == 1 and ctx._owner_directives[0]["content"] == (
         "STOP the deploy and revert the last commit now.")
     assert len(messages) - 1 not in _obsolete_host_rows(messages)
-    messages, _ = _run_round_compaction(messages, round_ctx)
+    messages = _run_round_compaction(messages, round_ctx)
     assert messages[-1] == tail  # no redundant note hides or rewrites the owner row
     from ouroboros.llm_claudexor import _request
     native = _request({"source": "codex", "resolved_model": "fixture"}, messages, [],
@@ -361,7 +362,7 @@ def test_renewals_keep_visible_full_base_through_reclaim_and_restore_it_when_abs
     fresh_ctx = SimpleNamespace(task_id="root", task_metadata={}, budget_drive_root=str(root))
     round_ctx = _CompactionRoundContext(tools=SimpleNamespace(_ctx=fresh_ctx), drive_root=root,
         drive_logs=root / "logs", task_id="root", round_idx=8, event_queue=None, emit_progress=lambda x: None)
-    restored, _ = _run_round_compaction(cold, round_ctx)
+    restored = _run_round_compaction(cold, round_ctx)
     raw = json.loads(restored[-1]["content"].split("\n", 1)[1])
     assert raw["text"] == text and "text_ref" not in raw
     for wire in (_physical_candidate({"messages": restored, "tools": []}), _request(

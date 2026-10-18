@@ -5,7 +5,7 @@ Extracted from loop.py (v7 L-B split); loop.py re-exports every name."""
 
 from __future__ import annotations
 
-from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY
+from ouroboros.context_budget import HOST_CONTEXT_KIND_KEY, bound_host_row
 from ouroboros.config import runtime_setting
 
 import hashlib
@@ -102,10 +102,10 @@ def _extract_plain_text_from_content(content: Any) -> str:
 
 
 def _append_or_merge_user_message(
-    messages: List[Dict[str, Any]], text: str, *, slot: Any = None,
+    messages: List[Dict[str, Any]], text: str, *, slot: Any = None, kind: str = "",
 ) -> None:
-    """Append a user message, merging only when its tail is known unsent."""
-    _append_or_merge_user_content(messages, text, slot=slot)
+    """Append a user message, merging only when its tail is known unsent (``kind``: typed, never merged)."""
+    _append_or_merge_user_content(messages, text, slot=slot, kind=kind)
 
 
 def transcript_growth_signature(messages: List[Dict[str, Any]]) -> Tuple[int, int]:
@@ -156,16 +156,18 @@ def _evict_stale_image_blocks(messages: List[Dict[str, Any]], *, incoming: int =
 
 
 def _append_or_merge_user_content(
-    messages: List[Dict[str, Any]], content: Any, *, slot: Any = None,
+    messages: List[Dict[str, Any]], content: Any, *, slot: Any = None, kind: str = "",
 ) -> None:
     """Append user content without flattening multipart blocks.
 
     ``slot`` is the execution slot the send observer parks the previous send's
     digests on (the loop's ToolContext). Merge only when that recorded send
-    proves the tail absent; an unknown or sent tail stays intact.
+    proves the tail absent; an unknown or sent tail stays intact. ``kind`` types
+    the row at delivery (``context_budget.OWNER_WORDS_KIND``): a typed row is its
+    own row, and nothing merges into a typed tail, so provenance never has to be
+    recovered from text.
     """
     from ouroboros.transcript_prefix import unsent_in_previous_send
-    from ouroboros.review_history_view import REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY
 
     if isinstance(content, list):
         incoming_images = sum(
@@ -174,11 +176,10 @@ def _append_or_merge_user_content(
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
-    if not (messages and unsent_in_previous_send(slot, messages[-1]) and not any(
-        key in messages[-1] for key in (HOST_CONTEXT_KIND_KEY, REVIEW_CONTEXT_INDEX_KEY, REVIEW_HISTORY_MESSAGE_KEY)
-    )):
-        # Unknown/sent rows and typed host/review data keep their framing intact.
-        messages.append({"role": "user", "content": content})
+    if kind or not (messages and unsent_in_previous_send(slot, messages[-1])
+                    and set(messages[-1]) <= {"role", "content"}):
+        # Typed words, unknown or sent content and any typed tail stay intact (slot-less producers too).
+        messages.append({"role": "user", **({HOST_CONTEXT_KIND_KEY: kind} if kind else {}), "content": content})
         return
     if messages and messages[-1].get("role") == "user":
         prior = messages[-1].get("content")
@@ -646,18 +647,37 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     reserve = usage.get("_context_reply_allowance_tokens")
     capacity = usage.get("_context_capacity_total_tokens") if measured else None
     target = usage.get("_context_target_total_tokens") if measured else None
-    basis = str(usage.get("_context_measurement_basis") or "cold_estimate")
+    # The estimate's provenance (``context_anchor``): the input this model accepted on an earlier round of
+    # THIS conversation, or a cold chars/4 count; and the largest input it accepted, a floor under its window.
+    anchor, anchor_round = usage.get("_context_anchor_input_tokens"), usage.get("_context_anchor_round")
+    accepted = usage.get("_context_accepted_input_tokens") if measured else None
+    reading = usage.get("_context_window_reading_tokens") if measured else None
+    from ouroboros.context_anchor import refused_input
+
+    refused = refused_input(usage, getattr(ctx, "context_fit_plan", None)) if measured else None
     parts = [_round_fact(ctx, tool_ctx), f"mode {ctx.active_context_mode}", f"model {ctx.active_model}"]
-    parts.append("window unknown" if capacity is None else f"window {int(capacity):,}")
+    notes = [note for note in (f"largest accepted input {int(accepted):,}" if accepted else "",
+                               f"refused at ~{int(refused):,}" if refused else "") if note]
+    largest = f" ({'; '.join(notes)})" if notes else ""
+    if capacity is None and reading is not None and accepted:
+        parts.append(f"window above {int(accepted):,}: this model accepted that input, the stated {int(reading):,} is below it")
+    else:
+        parts.append(("window unknown" if capacity is None else f"window {int(capacity):,}") + largest)
     if target is not None:
         parts.append(f"target {int(target):,}")
     if estimate is None:
         parts.append("input unmeasured")
     else:
-        parts.append(f"input ~{int(estimate):,} before this line ({basis}) + reply {int(reserve or 0):,}")
-        # Free room is the window's; the economy target is its own fact, measured with the reply floor.
-        parts.append(f"free {int(capacity) - int(estimate) - int(reserve or 0):,}" if capacity is not None
-                     else "free unknown")
+        how = ("cold chars/4 estimate: no usable measurement of this model here yet" if anchor is None else
+               ("after a rewrite, " if usage.get("_context_anchor_rewritten") else "")
+               + f"round {anchor_round} accepted {int(anchor):,}, {int(estimate) - int(anchor):+,} since")
+        parts.append(f"input ~{int(estimate):,} before this line ({how}) + reply {int(reserve or 0):,}")
+        # Free room is the window's, stated only on a measured input; the economy target is its own fact.
+        bound = int(accepted or 0) - int(estimate) - int(reserve or 0)  # the window holds what it accepted
+        parts.append(f"free ~{int(capacity) - int(estimate) - int(reserve or 0):,}"
+                     if capacity is not None and anchor is not None and not refused else
+                     f"free at least ~{bound:,} (below an input this model accepted)"
+                     if anchor is not None and bound > 0 else "free unknown")
         if target is not None:
             floor = int(usage.get("_context_response_reserve_tokens") or reserve or 0)
             excess = int(estimate) + floor - int(target)
@@ -666,6 +686,10 @@ def context_facts_line(ctx: Any, *, money: Optional[Dict[str, Any]] = None,
     components = _context_components(ctx, measured=measured)
     if components:
         parts.append("largest " + ", ".join(f"{label} ~{tokens:,}" for label, tokens in components))
+    from ouroboros.context_compaction import _capsule_metadata
+
+    # The mind's own folds stay countable to it (17.10.2026: after 42 folds it told the owner it never folded).
+    parts.append(f"own notes in view {sum(1 for row in ctx.messages if (_capsule_metadata(row)[1] or {}).get('authorship') == 'actor')}")
     previous = usage.get("_last_round_cache_usage") or {}
     read, total = previous.get("cached_tokens"), previous.get("prompt_tokens")
     share = (f"{int(read):,}/{int(total):,} tokens ({100 * read / total:.1f}%)"
@@ -934,7 +958,7 @@ def append_context_facts(ctx: Any, *, money: Optional[Dict[str, Any]] = None) ->
         money = {"wallet": observed["wallet"], "tree": observed["tree"],
                  "cost_ceiling": getattr(tool_ctx, "_cost_ceiling", None)}
     line = context_facts_line(ctx, money=money, measured=measured, focus_fact=focus_fact)
-    ctx.messages.append({"role": "user", HOST_CONTEXT_KIND_KEY: CONTEXT_FACTS_NAME, "content": line})
+    ctx.messages.append(bound_host_row(CONTEXT_FACTS_NAME, line))
     usage["_context_facts_round"] = ctx.round_idx
     usage["_context_facts_key"] = key
     usage["_context_facts_line"] = line

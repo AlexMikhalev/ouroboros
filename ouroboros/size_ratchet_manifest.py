@@ -113,7 +113,6 @@ BAND_PATHS = {
     "ouroboros/chronicle_store.py": "Accounts and separate selections with frozen source versions belong to the single append-only chronicle authority and its existing reducer.",
     "ouroboros/cli.py": "The existing command-line transport keeps task-event negotiation, bounded replay deduplication and result rendering together; the additive cursor does not introduce a second CLI or task engine.",
     "ouroboros/context.py": "Main context assembly retains shared continuity and governance ordering; declared-source composition/validation belongs to context_input_selection.py, with four existing helpers moved unchanged. This cohesive extraction returns the assembler to the 1001-1500 band.",
-    "ouroboros/context_compaction.py": "Existing compaction owns propagation of typed model outcomes; unchanged semantic compaction policy.",
     "ouroboros/delegate_custody.py": "Shrank into the band after extracting invocation identity and its independent oracle into delegate_invocation; run custody and its facade retain their existing owner.",
     "ouroboros/delegate_interactions.py": "Current-question observation after a refused live message reuses the existing interaction delivery and wait memo owner; keeping the deadline, refusal and bounded envelope together avoids a second delivery policy. No new function or byte debt.",
     "ouroboros/delegate_recovery.py": "Native owner waits and delegated sessions share the existing planned-restart transaction and repeated-cleanup preservation owner.",

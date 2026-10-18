@@ -15,6 +15,7 @@ import pytest
 from tests._shared import producer_evidence_dir
 from tests._budget_pause_exact_helpers import _install_queue
 from tests.test_owner_continue import _interrupted
+from tests.ui_console_errors import PageErrors
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 WEB = Path(__file__).resolve().parents[1] / 'web'
@@ -253,8 +254,7 @@ def test_hard_bound_continue_reason_on_real_collapsed_chat_cards(tmp_path, monke
             browser = getattr(pw, engine).launch(headless=True)
             try:
                 page = browser.new_page(viewport={'width': width, 'height': 900}, has_touch=width < 980)
-                errors = []
-                page.on('pageerror', lambda error: errors.append(str(error)))
+                errors = PageErrors(page, engine)
                 page.route('**/api/**', respond)
                 for room in (1, 7):
                     page.goto(f'http://127.0.0.1:{server.server_port}/fixture?room={room}')
@@ -264,7 +264,7 @@ def test_hard_bound_continue_reason_on_real_collapsed_chat_cards(tmp_path, monke
                     for card in cards.values():
                         expect(card).to_have_count(1)
                         if card.get_attribute('data-expanded') == '1':
-                            card.locator('[data-live-summary-button]').click()
+                            card.locator('[data-live-disclosure]').click()
                     page.screenshot(path=str(evidence / f'continue-{engine}-{width}-room{room}.png'))
                     for kind in ('budget', 'expired'):
                         cards[kind].screenshot(path=str(evidence / f'continue-{engine}-{width}-room{room}-{kind}.png'))
@@ -302,7 +302,7 @@ def test_hard_bound_continue_reason_on_real_collapsed_chat_cards(tmp_path, monke
                     successor = load_task_result(tmp_path, f'ready-{room}')['continued_by']['successor_task_id']
                     assert sum(task['id'] == successor for task in workers.PENDING) == 1
                     page.screenshot(path=str(evidence / f'continue-{engine}-{width}-room{room}-continued.png'))
-                assert not errors
+                assert not errors.unexpected(), errors
             finally:
                 browser.close()
     finally:
