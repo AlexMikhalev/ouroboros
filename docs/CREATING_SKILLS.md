@@ -19,8 +19,8 @@ A **skill** is a small package that adds capabilities to Ouroboros:
 new tools the agent can call, HTTP routes the desktop app can fetch,
 WebSocket message handlers, and host-rendered widget UIs. Skills need exact-byte
 review or acceptance before they run. Disk copies use the configured review;
-source installs also support trusted-source acceptance or Ouroboros's recorded
-self-check (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
+source installs also support trusted-source acceptance and, in Cyber Pro only,
+Ouroboros's recorded self-check (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
 both payload-local `.self_authored.json` and owner-state
 `data/state/skills/<name>/self_authored.json` markers for provenance,
 but they still go through the same tri-model skill review before they
@@ -1698,16 +1698,16 @@ even under Advisory, until the owner skips the review. The basis a skill was
 installed under is recorded in `data/state/skills/<name>/install.json` and does
 not change when the source's trust changes later.
 
-For `skill_install` and `skill_update`, Ouroboros chooses `check: "review"`
-(the configured panel, the default) or `check: "self"` after reading the exact
-release, with `check_notes` of 1–2000 characters explaining why it may run.
-Choose the depth by what the skill can touch: its code, keys, permissions and
-effects. A self-check records `basis: "self_check"`; an edit invalidates it.
-A release whose panel review found blockers needs the owner's Skip;
-Ouroboros's own check does not overrule a panel.
-A trusted source ignores this choice and says so in the result. Both acceptance
-paths retain preflight, the owner's auto-grant setting, dependencies and readiness.
-There is no one-reviewer depth in these tools.
+For `skill_install` and `skill_update` from a source that reviews each skill,
+the configured review decides (`check: "review"`, the default): the skill runs
+when the reviewers leave no blockers, and outside Cyber Pro only the owner skips
+a review. In Cyber Pro, where Ouroboros acts on its own judgment, it may instead
+record its own check (`check: "self"` after reading the exact release, with
+`check_notes` of 1–2000 characters explaining why it may run). The record holds
+`basis: "self_check"`; an edit invalidates it, and outside Cyber Pro that basis
+admits nothing. A trusted source ignores this choice and says so in the result.
+Every acceptance path keeps preflight, the owner's auto-grant setting,
+dependencies and readiness. There is no one-reviewer depth in these tools.
 
 A git repository is a source in one of two shapes:
 

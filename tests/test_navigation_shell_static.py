@@ -65,6 +65,8 @@ def test_navigation_state_and_mobile_drawer_are_first_class():
     assert ".mobile-nav-toggle" in css
     # The sidebar's column follows the sidebar's own box.
     assert "grid-template-columns: auto minmax(0, 1fr);" in css.split("\n#app {", 1)[1].split("}", 1)[0]
+    assert "#app > #divider { display: none; }" in css
+    assert "#content {\n    grid-column: 2;" in css
     # One client-side route, read once on load and validated against the DOM
     # rather than a duplicated page list; never written back on navigation
     # (the desktop shell and the Telegram mini app have no address bar).

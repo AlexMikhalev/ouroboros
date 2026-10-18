@@ -4,7 +4,7 @@
 re-trusts or removes a source). ``skill_search`` finds catalog ids in the connected sources (ClawHub
 joins a text search). ``skill_install`` installs one by catalog id, never by URL: from a trusted source
 the skill gets the keys it asks for (under the owner's auto-grant setting) and turns on when ready; from
-a review source Ouroboros chooses the configured review or records a self-check of the exact release.
+a review source the configured review checks it (in Cyber Pro Ouroboros may record its own check instead).
 ``skill_update`` applies one update choice. Skipping without a check stays the owner's act.
 """
 
@@ -219,9 +219,10 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
 
 _CHECK_PROPERTIES = {
     "check": {"type": "string", "enum": ["review", "self"], "description":
-              "Choose depth by what the skill can touch: review (default, configured panel), or self after reading "
-              "the exact release and explaining why it may run. A release whose panel review found blockers "
-              "needs the owner's Skip; a self-check does not overrule a panel. A trusted source ignores this choice."},
+              "review (default): the configured reviewers check the exact release, and it runs when they leave no "
+              "blockers; outside Cyber Pro this is the only check, and only the owner skips a review. self: Cyber Pro "
+              "only, after you read the exact release and record why it may run; review findings stay evidence. "
+              "A trusted source ignores this choice."},
     "check_notes": {"type": "string", "description": "self requires 1..2000 characters recording what you read and why."},
 }
 
@@ -259,7 +260,7 @@ _SCHEMAS = {
         "description": (
             "Install one skill by catalog id from skill_search (never a URL). From a trusted source it gets the keys "
             "it asks for under the owner's auto-grant setting and turns on when ready; from a review source it "
-            "installs now, then uses the configured review or your recorded self-check. Choose by what it can touch. "
+            "installs now and the configured review decides (in Cyber Pro you may record your own check instead). "
             "After installing, tell the owner what you installed, why, and which keys it received."
         ),
         "properties": {
@@ -275,7 +276,7 @@ _SCHEMAS = {
         "description": (
             "Apply an update: replace replaces local edits (the previous copy is kept as .previous), keep skips "
             "this release, merge merges it into local changes. digest names the release you saw; local_digest "
-            "detects edits since you looked. Choose the configured review or a recorded self-check by what it can touch."
+            "detects edits since you looked. From a review source the configured review decides (Cyber Pro: your own check)."
         ),
         "properties": {
             "name": {"type": "string"},
