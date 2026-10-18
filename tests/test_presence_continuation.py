@@ -1,9 +1,18 @@
-"""#1536: a Presence author yields its conversation at a qualified review wait and returns.
+"""#1536: the shared reviewed Presence turn harness.
 
 The real gate (cap 1, cross-process files), Host execution registry, ``run_presence_turn``,
-loop, acceptance coordinator, direct wait, mailbox settlement and pipeline terminal run
-here; only the model and the reviewer transport are scripted. Git subprocesses create
-the disposable repository fixture.
+loop, review coordinator, direct wait, mailbox settlement and pipeline terminal run here;
+only the model and the reviewer transport are scripted. Git subprocesses create the
+disposable repository fixture. ``test_presence_continuation_host`` and
+``test_presence_queue_observations`` build on this harness.
+
+The scenarios that parked a Presence author at its own result's acceptance review and
+handed it the conversation back left with the task-acceptance machine: Presence speech is
+never held now, and a Required result review of it runs with nobody waiting and settles as
+a late mark (``review_result._presence_result_review``). The early release and the
+author's typed stance went with them. The continuation's seams (gate stop order, lend and
+reacquire, reentry, projection and pointer) stay covered in
+``test_presence_continuation_seams``.
 """
 
 from __future__ import annotations
@@ -11,7 +20,6 @@ from __future__ import annotations
 import contextvars
 import copy
 import json
-import pathlib
 import queue
 import subprocess
 import threading
@@ -23,13 +31,12 @@ import pytest
 from ouroboros import agent_task_pipeline as pipeline, loop, review_substrate
 from ouroboros.model_wait import task_model_wait_scope
 from ouroboros.presence_runner import (
-    PresenceTurnEvent, PresenceTurnExecutions, PresenceTurnGate, presence_turn_replay, run_presence_turn,
+    PresenceTurnEvent, PresenceTurnExecutions, PresenceTurnGate, run_presence_turn,
 )
 from ouroboros.review_records import ReviewSlot
-from ouroboros.task_results import load_task_result, write_task_result
+from ouroboros.task_results import write_task_result
 from ouroboros.tools.registry import ToolRegistry
 from tests.test_presence_runner import _admission
-from tests._dialogue import chat_rows
 
 ANSWER = "The status report is complete: all three checks passed."
 NEW_WORDS = "Please also mention the backup window."
@@ -74,9 +81,9 @@ def harness(tmp_path, monkeypatch):
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a: False)
     monkeypatch.setattr("ouroboros.tools.review_helpers.review_wave_budget_gate", lambda *_a, **_k: None)
-    monkeypatch.setattr("ouroboros.review_evidence.acceptance_packet_budget_chars", lambda *_: 2_000_000)
-    slots = [ReviewSlot(slot_id="acceptance-one", model="fixture/reviewer", effort="high", timeout_sec=30)]
-    monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: slots)
+    # One held reviewer seat is the whole review pool a result review draws from.
+    slots = [ReviewSlot(slot_id="reviewer-one", model="fixture/reviewer", effort="high", timeout_sec=30)]
+    monkeypatch.setattr("ouroboros.reviewer_slot_config.review_pool_slots", lambda *_a, **_kw: list(slots))
     data, repo = tmp_path / "data", tmp_path / "repo"
     data.mkdir()
     repo.mkdir()
@@ -119,36 +126,27 @@ def harness(tmp_path, monkeypatch):
 
         def execute(self):
             from ouroboros.review_dispatch import invoke_review_paid_stamp
-            from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
 
             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
             h.reviews.append(copy.deepcopy(self.assignment.request))
             h.entered.set()
             assert h.release.wait(30), "the test never released the reviewer"
-            vocabulary = acceptance_evidence_ref_vocabulary(self.assignment.request.evidence)
-            reference = next(key for key, basis in vocabulary.items() if basis in {"tool_record", "packet_section"})
-            text = json.dumps({
-                "verdict": h.verdict, "summary": "Independent review", "findings": [],
-                "outcome_tier": "solved" if h.verdict == "PASS" else "best_effort",
-                "completion_coach": "Deliver it." if h.verdict == "PASS" else "Mention the backup.",
-                "criteria_used": [{"criterion": "complete report", "status": "supported",
-                                   "evidence_refs": [reference]}],
-            })
+            # review_change's answer contract: an empty array is a clean answer.
+            text = "[]" if h.verdict == "PASS" else json.dumps([{
+                "item": "backup_window", "verdict": "FAIL", "severity": "critical",
+                "reason": "The status report should mention the backup window."}])
             return ReviewAttemptResult(message={"content": text}, raw_text=text,
                                        usage={"prompt_tokens": 5, "completion_tokens": 3,
                                               "physical_attempt_state": "settled"})
 
     monkeypatch.setattr(review_substrate, "_review_route_executor", lambda assignment, **_kw: HeldExecutor(assignment))
 
-    def model(_llm, messages, *_a, **kwargs):
+    def model(_llm, messages, *_a, **_kwargs):
         h.inputs.append(copy.deepcopy(messages))
         with h.lock:
             h.calls += 1
             step = h.script.pop(0) if isinstance(h.script, list) else h.script
         response = step(messages) if callable(step) else step
-        observer = kwargs.get("model_context_observer")
-        if callable(observer):  # as the real transport does: the context actually sent is observed
-            observer(messages)
         return response, 0.0
 
     monkeypatch.setattr(loop, "call_llm_with_retry", model)
@@ -162,7 +160,7 @@ def harness(tmp_path, monkeypatch):
             ctx.task_contract = {**task["task_contract"], "expected_output": "A complete status report."}
             # The agent's own RUNNING write: the contract is the root's review-cap authority.
             write_task_result(data, task["id"], "running", task_contract=ctx.task_contract, root_task_id=task["id"])
-            # Required reviews the report the turn retained (#1731); a declared output alone buys no panel.
+            # Required reviews the report the turn retained (#1731); a declared output alone buys no review.
             from ouroboros.artifacts import store_task_artifact_bytes
             store_task_artifact_bytes(data, task["id"], "report.txt", ANSWER.encode())
             ctx.task_attempt, ctx.current_chat_id = 1, task["chat_id"]
@@ -201,377 +199,3 @@ def harness(tmp_path, monkeypatch):
     h.release.set()
     if h.entered.is_set():
         assert settled.wait(15)
-
-
-class _QuickAgent:
-    """A second turn of the same conversation: answers at once, no review."""
-
-    def handle_task(self, task):
-        write_task_result(pathlib.Path(task["_data"]), task["id"], "completed", metadata=task["metadata"],
-                          result="Noted.", terminal_origin="model_final")
-        return [{"type": "presence_result", "outcome": "message", "text": "Noted.", "work_ref": ""}]
-
-
-def quick_turn(h, number=43, text=NEW_WORDS):
-    class Agent(_QuickAgent):
-        def handle_task(self, task):
-            task["_data"] = str(h.data)
-            return super().handle_task(task)
-
-    return run_presence_turn(admission=_admission(), event=event(number, text), repo_dir=h.repo, drive_root=h.data,
-                             agent_factory=lambda **_kw: Agent(), gate=h.gate)
-
-
-def test_blocking_author_yields_cap_one_and_returns_with_the_new_words(harness):
-    h = harness
-    first = event()
-
-    def after_wake(messages):
-        note = next((row["content"] for row in messages if "[PRESENCE CONVERSATION RESUMED]" in str(row.get("content"))),
-                    None)
-        assert note is not None, h.progress
-        assert NEW_WORDS in note and "telegram:bot-1:43" in note
-        return finish("final", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)
-
-    h.script = [finish("nominate", message=ANSWER), after_wake]
-    execution = h.start(first)
-    initial = execution.initial.result(timeout=30)
-    # The durable initial envelope: nothing released under Blocking, the same author continues.
-    assert (initial.status, initial.outcome, initial.text, initial.output_ref) == ("continuing", "deferred", "", "")
-    assert initial.continuation_ref == initial.task_id and not execution.result.done()
-    wait_for(lambda: (load_task_result(h.data, initial.task_id).get("owner_wait") or {}).get("state") == "waiting",
-             what="the review park")
-    row = load_task_result(h.data, initial.task_id)
-    assert row["status"] == "running" and row["presence_continuation"]["initial"]["outcome"] == "deferred"
-    assert row["owner_wait"]["reason"] == "review"
-    # Cap 1: the second event of the SAME conversation runs while the author is parked.
-    second = quick_turn(h)
-    assert second.text == "Noted." and not execution.result.done()
-    assert h.calls == 1  # the parked author bought no model round while waiting
-    # Replay of the first event returns the identical stored envelope, rerunning nothing.
-    from ouroboros.presence_runner import presence_event_identity
-
-    replayed = presence_turn_replay(h.data, initial.task_id, KEY, presence_event_identity(_admission().binding_id, first), 1)
-    assert replayed == initial
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert (final.status, final.outcome, final.text) == ("completed", "message", ANSWER)
-    assert final.output_ref.startswith("presence-output-") and final.continuation_ref == initial.task_id
-    assert h.calls == 2 and len(h.reviews) == 1
-    stored = load_task_result(h.data, initial.task_id)
-    assert stored["status"] == "completed" and stored["presence_continuation"]["initial"] == row["presence_continuation"]["initial"]
-    # The newer turn's pointer survives this late completion; the open ref is gone.
-    from ouroboros.presence_runner import _read_previous_turn
-
-    pointer = _read_previous_turn(h.data, KEY)
-    assert pointer["task_id"] == second.task_id and not pointer.get("open_turns")
-
-
-def test_advisory_early_release_keeps_the_author_and_never_sends_the_selection_twice(harness, monkeypatch):
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-
-    def after_wake(messages):
-        assert any("[PRESENCE CONVERSATION RESUMED]" in str(row.get("content")) for row in messages)
-        released = h.ctxs[0]._presence_released[0]
-        return finish("again", answer_sha256=released["sha256"])
-
-    h.script = [finish("nominate", message=ANSWER, pending_review="finish"), after_wake]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    assert (initial.status, initial.outcome, initial.text) == ("continuing", "message", ANSWER)
-    assert initial.output_ref.startswith("presence-output-") and not execution.result.done()
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    # The author re-finalized its released selection: no second send, the same author ended it.
-    assert (final.outcome, final.text, final.output_ref) == ("silent", "", "")
-    assert h.calls == 2
-    record = load_task_result(h.data, initial.task_id)["presence_continuation"]
-    assert record["outputs"] == [{"output_ref": initial.output_ref, "outcome": "message", "text": ANSWER}]
-    from ouroboros.presence_runner import _read_previous_turn
-
-    pointer = _read_previous_turn(h.data, KEY)  # no newer turn: the pointer names the released speech
-    assert (pointer["task_id"], pointer["message"], pointer.get("open_turns")) == (initial.task_id, ANSWER, None)
-    rows = chat_rows(h.data)
-    # Mode 0 history: the released output is logged once as authored speech, never again at the terminal.
-    assert [row["text"] for row in rows if row.get("direction") == "out"] == [ANSWER]
-
-
-def test_a_correction_with_identical_text_is_a_new_output(harness, monkeypatch):
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    h.script = [finish("nominate", message=ANSWER, pending_review="finish"),
-                lambda _messages: finish("correction", message=ANSWER, pending_review="wait")]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert final.outcome == "message" and final.text == ANSWER
-    assert final.output_ref and final.output_ref != initial.output_ref
-
-
-@pytest.mark.parametrize("version", [0, 1])
-def test_cyber_keeps_the_released_author_for_its_criticism(harness, monkeypatch, version):
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    # Cyber waits by default too (#1737): only the author's explicit finish releases early.
-    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
-    h.script = [finish("nominate", message=ANSWER, pending_review="finish"),
-                lambda _messages: finish("again", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)]
-    execution = h.start(event(version=version))
-    initial = execution.initial.result(timeout=30)
-    assert initial.status == "continuing" and not execution.result.done()
-    # Only a version-1 consumer takes the early output; a legacy one gets it with the terminal.
-    assert (initial.outcome, initial.text) == (("message", ANSWER) if version else ("deferred", ""))
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert h.calls == 2
-    assert (final.outcome, final.text) == (("silent", "") if version else ("message", ANSWER))
-
-
-def test_stop_while_parked_ends_without_another_call(harness):
-    from ouroboros.cancel_intents import request_cancel
-
-    h = harness
-    h.script = [finish("nominate", message=ANSWER)]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    request_cancel(h.data, initial.task_id, reason="owner stop", source="test")
-    try:
-        final = execution.result.result(timeout=60)
-    except Exception as exc:  # the loop's cancellation rail may also end typed
-        final = SimpleNamespace(outcome="", text="", error=exc)
-    assert h.calls == 1 and not h.script and final.text == ""  # no further call and no speech
-    # The conversation is free: the stopped author never took it back.
-    assert quick_turn(h).text == "Noted."
-
-
-def test_exhausted_rounds_never_publish_the_held_text_because_a_panel_passed(harness, monkeypatch):
-    h = harness
-    monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "1")  # the author parks on its last inline round
-    h.script = [finish("nominate", message=ANSWER), {"content": "Forced record without a declaration."}]
-    execution = h.start(event())
-    execution.initial.result(timeout=30)
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    # Rounds were not reset: the one forced call wrote a record without a declaration, so nothing speaks.
-    assert final.text == "" and final.outcome in {"silent", "deferred"}
-    assert h.calls == 2 and not h.script
-
-
-def test_live_tool_custody_keeps_the_conversation(harness, monkeypatch):
-    h = harness
-    monkeypatch.setattr("ouroboros.presence_continuation._custody_blockers",
-                        lambda _root, _task: [{"kind": "tool_handoff", "detail": "still running"}])
-    h.script = [finish("nominate", message=ANSWER),
-                lambda _messages: finish("final", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)]
-    execution = h.start(event())
-    wait_for(h.entered.is_set, what="the panel")
-    wait_for(lambda: (load_task_result(h.data, execution.turn_id) or {}).get("owner_wait", {}).get("state") == "waiting",
-             what="the park")
-    assert not execution.initial.done()  # nothing was published or lent
-    blocked = threading.Event()
-    threading.Thread(target=lambda: (h.gate.acquire(KEY).release(), blocked.set()), daemon=True).start()
-    assert not blocked.wait(1.5), "a held conversation was taken by another turn"
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert final.text == ANSWER and not load_task_result(h.data, execution.turn_id).get("presence_continuation")
-    assert blocked.wait(10)
-
-
-def test_stop_while_reacquiring_behind_another_turn_ends_without_a_call(harness):
-    from ouroboros.cancel_intents import request_cancel
-
-    h = harness
-    h.script = [finish("nominate", message=ANSWER)]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    holding, done = threading.Event(), threading.Event()
-
-    class Holder(_QuickAgent):
-        def handle_task(self, task):
-            task["_data"] = str(h.data)
-            holding.set()
-            assert done.wait(30)
-            return super().handle_task(task)
-
-    second = threading.Thread(target=lambda: run_presence_turn(
-        admission=_admission(), event=event(43, NEW_WORDS), repo_dir=h.repo, drive_root=h.data,
-        agent_factory=lambda **_kw: Holder(), gate=h.gate), daemon=True)
-    second.start()
-    assert holding.wait(10)
-    h.release.set()  # the panel settles: the author wakes and queues behind the second turn
-    wait_for(lambda: (load_task_result(h.data, initial.task_id).get("owner_wait") or {}).get("state") == "resumed",
-             what="the wake")
-    request_cancel(h.data, initial.task_id, reason="owner stop", source="test")
-    try:
-        final = execution.result.result(timeout=30)
-    except Exception:  # the loop's cancellation rail may also end typed
-        final = SimpleNamespace(text="")
-    assert final.text == "" and h.calls == 1  # it never took the conversation back nor called the model
-    assert second.is_alive()  # the conversation stayed with the turn that held it
-    done.set()
-    second.join(30)
-
-
-def resumed(messages):
-    return next(str(row["content"]) for row in messages if "[PRESENCE CONVERSATION RESUMED]" in str(row.get("content")))
-
-
-@pytest.mark.parametrize("failure", ["raises", "lost"])
-def test_an_unwritten_projection_lends_and_publishes_nothing(harness, monkeypatch, failure):
-    """Finding 1: a successor must never run without seeing the yielded author as open."""
-    from ouroboros import presence_runner
-
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    original = presence_runner.atomic_write_json
-
-    def write(path, value):
-        if pathlib.Path(path).name.startswith("last-") and value.get("continuing"):
-            if failure == "raises":
-                raise OSError("disk full")
-            return None  # a write that silently never landed: only the read-back sees it
-        return original(path, value)
-
-    monkeypatch.setattr(presence_runner, "atomic_write_json", write)
-
-    def after_panel(messages):
-        notes = [str(row.get("content")) for row in messages if "[PRESENCE RELEASE NOT PUBLISHED]" in str(row.get("content"))]
-        assert notes and "could not durably record it" in notes[-1]
-        assert not any("[PRESENCE CONVERSATION RESUMED]" in str(row.get("content")) for row in messages)
-        return finish("final", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)
-
-    h.script = [finish("nominate", message=ANSWER, pending_review="finish"), after_panel]
-    execution = h.start(event())
-    wait_for(h.entered.is_set, what="the panel")
-    wait_for(lambda: (load_task_result(h.data, execution.turn_id) or {}).get("owner_wait", {}).get("state") == "waiting",
-             what="the park")
-    assert not execution.initial.done()  # nothing published, no reservation returned
-    row = load_task_result(h.data, execution.turn_id)
-    assert not row.get("presence_continuation") and not getattr(h.ctxs[0], "_presence_released", None)
-    blocked = threading.Event()
-    threading.Thread(target=lambda: (h.gate.acquire(KEY).release(), blocked.set()), daemon=True).start()
-    assert not blocked.wait(1.5), "the conversation was lent without its projection"
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    # The chosen answer was never released early, so the terminal speaks it, exactly once.
-    assert (final.status, final.outcome, final.text) == ("completed", "message", ANSWER) and final.output_ref
-    assert execution.initial.result(timeout=1) is final and h.calls == 2
-    assert blocked.wait(10)
-
-
-def test_a_stop_after_the_wake_ends_before_a_free_conversation_is_taken_back(harness, monkeypatch):
-    """Finding 2: an immediately free conversation is never handed to a stopped author."""
-    from ouroboros import owner_wait
-    from ouroboros.cancel_intents import request_cancel
-
-    h = harness
-    original = owner_wait.direct_owner_wait
-
-    def wake_then_stop(ctx, checkpoint):
-        outcome = original(ctx, checkpoint)
-        request_cancel(h.data, ctx.task_id, reason="owner stop", source="test")
-        return outcome
-
-    monkeypatch.setattr(owner_wait, "direct_owner_wait", wake_then_stop)
-    h.script = [finish("nominate", message=ANSWER)]
-    execution = h.start(event())
-    execution.initial.result(timeout=30)
-    h.release.set()
-    try:
-        final = execution.result.result(timeout=60)
-    except Exception:  # the loop's cancellation rail may also end typed
-        final = SimpleNamespace(text="")
-    assert final.text == "" and h.calls == 1 and not h.script
-    assert h.ctxs[0]._presence_conversation_lost == "cancelled"  # seen at reacquisition, not later
-    assert quick_turn(h).text == "Noted."  # nothing stayed held
-
-
-def test_the_resuming_author_reads_sql_rows_across_a_legacy_rotation_attempt(harness):
-    """New chat rows are durable in SQL; the retired file rotator cannot hide them."""
-    from supervisor.state import rotate_jsonl_log_if_needed
-
-    h = harness
-    later = "And schedule the restore drill."
-
-    def after_wake(messages):
-        note = resumed(messages)
-        assert NEW_WORDS in note and later in note and "taken by turn" in note
-        assert "Coverage: every row of this conversation's canonical log since you yielded is listed." in note
-        return finish("final", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256)
-
-    h.script = [finish("nominate", message=ANSWER), after_wake]
-    execution = h.start(event())
-    execution.initial.result(timeout=30)
-    assert quick_turn(h).text == "Noted."
-    rotate_jsonl_log_if_needed(h.data, "chat.jsonl", "chat", max_bytes=1)
-    assert not (h.data / "logs" / "chat.jsonl").exists()
-    assert quick_turn(h, 44, later).text == "Noted."
-    h.release.set()
-    assert execution.result.result(timeout=60).text == ANSWER and h.calls == 2
-
-
-@pytest.mark.parametrize("stance", ["accepted", "rejected"])
-def test_an_advisory_fail_is_answered_by_the_same_author_with_a_typed_stance(harness, monkeypatch, stance):
-    """Finding 5: after a real FAIL the Presence author states its stance; no second panel is forced."""
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    h.verdict = "FAIL"
-    corrected = ANSWER + " The backup window is 02:00-03:00 UTC."
-
-    def after_feedback(messages):
-        assert "[PRESENCE CONVERSATION RESUMED]" in str(messages)
-        assert "acceptance-one: FAIL" in str(messages)  # the panel's verdict reached its author
-        if stance == "accepted":
-            return finish("correct", message=corrected, author_disposition="accepted",
-                          rationale="Added the backup window the review asked for.")
-        return finish("keep", answer_sha256=h.ctxs[0]._delivery_candidate.content_sha256, author_disposition="rejected",
-                      rationale="The backup window is out of scope for a status report.")
-
-    h.script = [finish("nominate", message=ANSWER), after_feedback]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    assert initial.status == "continuing"
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert final.text == (corrected if stance == "accepted" else ANSWER) and final.outcome == "message"
-    assert h.calls == 2 and len(h.reviews) == 1
-    decision = load_task_result(h.data, initial.task_id)["review_status"]["acceptance_decision"]
-    assert decision["reason"] == "author_finish" and decision["status"] == "finalized_unaccepted"
-    author = decision["author_disposition"]
-    assert (author["disposition"], author["action"], author["reviewer_signal"]) == (stance, "finish", "FAIL")
-    assert author["rationale"] and author["enforcement"] == "advisory"
-
-
-@pytest.mark.parametrize("stance", ["", "partial"])
-def test_an_advisory_fail_is_finished_without_a_separate_rationale(harness, monkeypatch, stance):
-    """The Presence door follows the common rule: an informed Advisory finish, stance optional, needs no rationale."""
-    h = harness
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    h.verdict = "FAIL"
-    corrected = ANSWER + " The backup window is 02:00-03:00 UTC."
-
-    def after_feedback(messages):
-        assert "acceptance-one: FAIL" in str(messages)
-        return finish("correct", message=corrected, **({"author_disposition": stance} if stance else {}))
-
-    h.script = [finish("nominate", message=ANSWER), after_feedback]
-    execution = h.start(event())
-    initial = execution.initial.result(timeout=30)
-    h.release.set()
-    final = execution.result.result(timeout=60)
-    assert final.text == corrected and h.calls == 2 and len(h.reviews) == 1
-    decision = load_task_result(h.data, initial.task_id)["review_status"]["acceptance_decision"]
-    assert (decision["reason"], decision["status"]) == ("author_finish", "finalized_unaccepted")
-    author = decision["author_disposition"]
-    assert (author["disposition"], author["reviewer_signal"], author["source"]) == (stance, "FAIL", "presence_finish")
-    assert author["rationale"] == "Explicit completion selection."
-
-
-def test_presence_finish_refuses_an_unknown_stance(harness):
-    from ouroboros.tools.presence import _finish_presence
-
-    ctx = SimpleNamespace(task_contract={"capability_ceiling": {}}, _completion_request=None)
-    text = _finish_presence(ctx, "message", message=ANSWER, author_disposition="approved", rationale="why")
-    assert "author_disposition" in text and ctx._completion_request is None
