@@ -24,9 +24,10 @@ from ouroboros import evidence_packs as packs, store
 log = logging.getLogger(__name__)
 # ``packed`` = new generations written; ``examined`` = candidates processed; ``verified_bytes`` = raw bytes re-read;
 # ``missing`` = referenced records neither loose nor packed; ``live``/``reading``/``storeless`` = folders still
-# holding loose evidence because their task runs / is terminal under an open review / has no store row.
+# holding loose evidence because their task runs / is terminal under an open review / has no store row;
+# ``deferred`` = candidates whose unlink waited for a held custody lock or a moved stamp (retried next pass).
 COUNTERS = ("packed", "examined", "swept", "candidates", "raw", "compressed", "verified_bytes",
-            "unlinked", "kept", "busy", "faults", "archived", "missing", "live", "reading", "storeless")
+            "unlinked", "kept", "busy", "faults", "archived", "missing", "live", "reading", "storeless", "deferred")
 
 
 _ROW_COLUMNS = ("status", "write_seq", "updated_at", "review_collection_pending")
@@ -291,7 +292,7 @@ def run_pass(root: pathlib.Path, *, sweep=None) -> Dict[str, Any]:
         report["packed"] += int(outcome.get("generation") is not None)
         report["raw"] += int(outcome.get("raw") or 0)
         report["compressed"] += int(outcome.get("packed") or 0)
-        for key in ("unlinked", "kept", "busy", "verified_bytes", "missing"):
+        for key in ("unlinked", "kept", "busy", "verified_bytes", "missing", "deferred"):
             report[key] += int(outcome.get(key) or 0)
         # A blob kept for a live sharer does not re-queue this task: the sharer's own pass unlinks it
         # once it closes (its stamp moves then); busy files and deferred candidates retry.
