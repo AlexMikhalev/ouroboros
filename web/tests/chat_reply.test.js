@@ -44,8 +44,9 @@ test('a saved row gets Reply beside Copy; a row without an address (an unsaved e
         f.replies.decorate(saved, owner('row:1@a#1'));
         assert.equal(saved.dataset.rowAddress, 'row:1@a#1');
         const actions = saved.children.find((child) => child.classList.contains('chat-message-actions'));
-        assert.deepEqual(actions.children.map((child) => child.className), ['chat-message-reply', 'chat-message-copy'],
+        assert.deepEqual(actions.children.map((child) => child.className.split(' ')[0]), ['chat-message-reply', 'chat-message-copy'],
             'one control row: Reply, then Copy');
+        assert.ok(actions.children[0].classList.contains('ui-hit-area'), 'Reply gains the shared finger hit area');
         assert.equal(actions.children[0].getAttribute('aria-label'), 'Reply', 'an icon-only control has a name');
         assert.ok(saved.classList.contains('has-reply'));
         const legacy = f.bubble('assistant', 'an answer');

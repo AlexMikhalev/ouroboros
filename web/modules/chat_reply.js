@@ -146,7 +146,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, onDo
         if (!bubbleRef(bubble)) return null;
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'chat-message-reply';
+        button.className = 'chat-message-reply ui-hit-area';
         button.innerHTML = REPLY_ICON;
         button.title = tr('chat.reply.reply', 'Reply');
         button.setAttribute('aria-label', tr('chat.reply.reply', 'Reply'));

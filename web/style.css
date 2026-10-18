@@ -8990,7 +8990,12 @@ html[data-layout="stack"] .project-panel.open {
     align-items: center;
     gap: var(--space-2);
 }
-.chat-message-actions > .chat-message-copy { position: static; }
+.chat-message-actions > .chat-message-copy { position: relative; }
+/* Under a finger the 24px Reply and Copy keep their look and gain the shared hit area (ui.css .ui-hit-area); the pair
+   parts by the hit area's overshoot so the two targets never overlap. */
+@media (pointer: coarse) {
+    .chat-message-actions { gap: calc(var(--touch-target-min) - var(--space-5)); }
+}
 
 .chat-message-copy:hover,
 .chat-message-copy:focus-visible,
