@@ -739,8 +739,10 @@ def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, 
     answered from memory and says so."""
     def settle(prior: Dict[str, Any]) -> Dict[str, Any]:
         fresh = record.to_dict()
-        if prior.get("state") != "pending":
+        retry = (prior.get("fingerprints") or {}).get("retry_key")
+        if not retry or retry != (fresh.get("fingerprints") or {}).get("retry_key"):
             return fresh
+        # The same round keeps what its seats read, also when a late collector settled it a moment earlier.
         identity = {key: value for key, value in dict(prior.get("subject") or {}).items() if key in _SUBJECT_IDENTITY}
         return {**fresh, **{key: prior[key] for key in ("brief", "fingerprints") if key in prior},
                 "subject": {**dict(fresh.get("subject") or {}), **identity}}

@@ -484,8 +484,12 @@ def test_a_raised_ceiling_lets_the_blocked_host_review_run(tmp_path, monkeypatch
     trace, shown = {"tool_calls": []}, []
     assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 2", trace, shown.append)
     assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append), "refused: held"
+    records = len(review_ledger.recent_records(review_ledger.ledger_root(ctx), ctx.task_id, limit=50, surface="result"))
+    assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append), "still refused: held"
     assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append), "still refused: held"
     assert "raises the review ceiling" in shown[-1]
+    assert len(review_ledger.recent_records(review_ledger.ledger_root(ctx), ctx.task_id, limit=50,
+                                           surface="result")) == records, "an unchanged ceiling writes no new refusal"
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
     monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", _seam(sends))
     assert rr.result_review_at_delivery(ctx, "FINAL ANSWER: 3", trace, shown.append) is False, shown[-1]
@@ -698,3 +702,37 @@ def test_a_running_review_whose_operation_was_lost_never_lets_a_required_result_
     assert [run["aggregate_signal"] for run in trace["review_runs"]] in (["FAIL"], ["DEGRADED"])
     assert "not delivered until a review passes it" in shown[0]
     assert len(sends) <= before + 3, "at most the floor's own one wave (recorded seats replay at $0)"
+
+
+def test_a_late_settlement_just_before_the_rejoin_write_keeps_the_rounds_provenance(tmp_path, monkeypatch):
+    """The left-review collector may settle the record an instant before the host's collection writes it: the
+    rejoin still keeps the round's brief and fingerprints, so the mind's identical call is reused at $0."""
+    from ouroboros.review_pause import _settle_left_record
+    from ouroboros.tools import review_change as rc
+    from ouroboros.tools.review_result import result_review_at_delivery
+    from tests.test_review_change_end_to_end import _pending_then_answering_seat
+
+    ctx = _floor_ctx(tmp_path, monkeypatch, mode="auto")
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
+    sends: list[dict] = []
+    answer, _starts = _pending_then_answering_seat("t2", "write-race")
+    monkeypatch.setattr(substrate.ReviewCoordinator, "_run_slot", shared.golden_physical_seam(sends, answer=answer))
+    args = dict(subject="result", answer="The sum is 12.", goal="Check the sum", review_rebuttal="It is 12, not 11.")
+    first = rc.run_review_change(ctx, **args)
+    assert first["state"] == "pending"
+    root = review_ledger.ledger_root(ctx)
+    original = review_ledger.load_record(root, first["record_id"])
+    write = rc._write
+
+    def late_settle_then_write(drive, record, *, rejoin=False):
+        if rejoin:
+            seats = [{"slot_id": row["seat_id"], "model": row["requested"]["model"], "parts": ["result"],
+                      "raw_text": "[]", "status": "completed", "operation_state": "settled"} for row in original["rows"]]
+            settled = _settle_left_record({"record_id": record.record_id, "drive_root": drive}, seats, final=False)
+            assert settled["state"] == "settled" and settled["verdict"]["aggregate"] == "PASS"
+        return write(drive, record, rejoin=rejoin)
+
+    monkeypatch.setattr(rc, "_write", late_settle_then_write)
+    assert result_review_at_delivery(ctx, args["answer"], {"tool_calls": []}, lambda _: None) is False
+    assert review_ledger.load_record(root, first["record_id"])["fingerprints"] == original["fingerprints"]
+    assert rc.run_review_change(ctx, **args)["reused"] is True
