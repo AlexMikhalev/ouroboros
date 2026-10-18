@@ -2404,7 +2404,9 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     min-height: calc(var(--space-5) + var(--space-1));
 }
 
-.chat-live-foot-end:not(:has(> :not([hidden]):not(:empty))) {
+/* Shown once it holds something. Written without :empty inside :has(): WebKit does not re-match that when a control
+   is added to the actions row later (a Continue offered after a reload stayed unpainted in Safari). */
+.chat-live-foot-end:not(:has(> .chat-live-review-summary:not([hidden]), > .chat-live-actions > *)) {
     display: none;
 }
 
