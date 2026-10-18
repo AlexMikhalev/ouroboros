@@ -528,6 +528,37 @@ def test_the_seed_receipt_waits_until_a_boot_finds_every_dependency_ready(window
     assert len(reseeded) == 3  # fast path from here on
 
 
+
+def test_unknown_dependency_readiness_never_certifies_the_seed(windows_seeded, monkeypatch):
+    data, installs, _reconciles = windows_seeded
+    receipt = data / "state" / "native_seed.json"
+    identity = {"schema_version": 1, "seed_tree": "fixed"}
+    monkeypatch.setattr(launcher_bootstrap, "_native_seed_identity", lambda repo_dir: identity)
+    monkeypatch.setattr(launcher_bootstrap, "_seed_skills_into", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(launcher_bootstrap, "_migrate_control_file_hashes", lambda *args: True)
+    monkeypatch.setattr(launcher_bootstrap, "_per_skill_version_resync", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(launcher_bootstrap, "cleanup_orphaned_seed_markers", lambda *args: True)
+    monkeypatch.setattr(launcher_bootstrap, "_start_native_seed_dependency_pass", lambda *args: None)
+    assert _native_seed_dependency_pass(data, [WINDOWS], log) == [WINDOWS] and len(installs) == 1
+
+    import ouroboros.skill_dependencies as deps
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("deps state unreadable")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(deps, "auto_install_specs_for_skill", unreadable)
+        assert deps.skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "")  # execution readers
+        launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+        assert not receipt.exists()
+    with monkeypatch.context() as broken:
+        broken.setattr(launcher_bootstrap, "_shipped_seed_names", lambda seed_dir: None)
+        launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+        assert not receipt.exists()
+    assert launcher_bootstrap._shipped_seed_names(data / "no-such-seed-tree") is None
+    launcher_bootstrap._ensure_native_seed_version(REPO, data, log)
+    assert json.loads(receipt.read_text(encoding="utf-8")) == identity
+
 def reviewed_external_skill(data_root):
     """An ordinary reviewed extension with one auto-installed dependency."""
     external = data_root / "skills" / "external" / "pinger"

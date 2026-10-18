@@ -850,7 +850,7 @@ def _seeds_with_dependency_work(drive_root: pathlib.Path, seed_names: list[str],
         found = [find_skill(drive_root, name, repo_path=repo_path) for name in seed_names]
         return [skill.name for skill in found
                 if skill is not None and skill.enabled and skill.manifest.is_extension()
-                and native_seed_trusted(skill) and skill_deps_not_ready(drive_root, skill)[1]]
+                and native_seed_trusted(skill) and skill_deps_not_ready(drive_root, skill, strict=True)[1]]
     except Exception:
         log_obj.warning("Native seed dependencies could not be inspected", exc_info=True)
         return None
@@ -1189,18 +1189,19 @@ def _start_native_seed_dependency_pass(seed_dir: pathlib.Path, drive_root: pathl
     """Start ``_native_seed_dependency_pass`` off the boot path for every shipped seed."""
     try:
         threading.Thread(
-            target=_native_seed_dependency_pass, args=(drive_root, _shipped_seed_names(seed_dir), log_obj),
+            target=_native_seed_dependency_pass, args=(drive_root, _shipped_seed_names(seed_dir) or [], log_obj),
             name="native-seed-dependencies", daemon=True,
         ).start()
     except OSError:  # pragma: no cover - defensive
         log_obj.warning("Native seed dependency pass not started", exc_info=True)
 
 
-def _shipped_seed_names(seed_dir: pathlib.Path) -> list[str]:
+def _shipped_seed_names(seed_dir: pathlib.Path) -> list[str] | None:
+    """Seed directory names, or ``None`` when the seed tree cannot be listed."""
     try:
         return sorted(entry.name for entry in seed_dir.iterdir() if entry.is_dir() and not entry.name.startswith("."))
     except OSError:
-        return []
+        return None
 
 
 def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path, log_obj: Any) -> int:
@@ -1249,8 +1250,9 @@ def _ensure_native_seed_version(repo_dir: pathlib.Path, drive_root: pathlib.Path
     except Exception:  # pragma: no cover - defensive
         failures.append("orphaned_markers")
         log_obj.warning("Orphaned seed-marker cleanup raised", exc_info=True)
-    if _seeds_with_dependency_work(drive_root, _shipped_seed_names(seed_dir), log_obj) != []:
-        failures.append("dependencies")
+    names = _shipped_seed_names(seed_dir)
+    if names is None or _seeds_with_dependency_work(drive_root, names, log_obj) != []:
+        failures.append("dependencies")  # unknown readiness is not completion
     if identity and not failures and identity == _native_seed_identity(repo_dir):
         try:
             atomic_write_json(receipt, identity)
