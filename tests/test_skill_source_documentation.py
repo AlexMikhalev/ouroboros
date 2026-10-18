@@ -40,11 +40,11 @@ def test_settings_folder_and_configuration_authority_are_documented():
 
 @pytest.mark.parametrize("path, facts, stale", [
     ("docs/architecture/13-external-skills-layer.md",
-     ("github.com HTTPS anonymously", "authentication refusals once with the configured GitHub token",
+     ("github.com HTTPS without the configured GitHub token", "authentication refusals once with it alone",
       "Other URLs use host credentials", "pre-update record restores an interrupted landing"),
      "Git caches in `state/skill_sources/` use host credentials"),
     ("docs/CREATING_SKILLS.md",
-     ("Private github.com HTTPS sources", "after an anonymous read is refused for authentication",
+     ("Private github.com HTTPS sources", "this computer's git credentials still apply) is refused for authentication",
       "existing repository, which may be public", "reconnecting keeps your saved name, trust and confirmation"),
      "It is added as a trusted git source"),
     ("docs/CLIENT_CONTRACT.md",

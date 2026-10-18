@@ -1719,9 +1719,9 @@ A git repository is a source in one of two shapes:
   release `digest`, `withdrawn`), the maintainer's `official.json`
   (endorsements bound to digests) and `categories.json`.
 
-Private github.com HTTPS sources use the configured GitHub token after an
-anonymous read is refused for authentication; other repositories use this
-computer's git credentials.
+Private github.com HTTPS sources use the configured GitHub token after a read
+without it (this computer's git credentials still apply) is refused for
+authentication; other repositories use this computer's git credentials.
 
 Every install verifies its copy against the release digest: the SHA-256 of
 each payload file plus the manifest's raw dependency declaration

@@ -125,7 +125,7 @@ def test_only_authentication_refusals_retry_once_with_a_configured_token(
         transport.fetch_tree(tmp_path / "clone", "https://github.com/example/private", "main")
     retry = bool(token) and authentication
     assert attempts == (["1", "3"] if retry else ["1"])
-    assert ("configured GitHub token was refused" in str(exc.value)) == retry
+    assert ("Retrying with the configured GitHub token failed too" in str(exc.value)) == retry
     assert failure in str(exc.value)
 
 
@@ -207,6 +207,6 @@ def test_fetch_errors_redact_credentials_from_messages_logs_and_cache(
     with caplog.at_level(logging.INFO, logger=transport.__name__):
         meta = transport.update_clone(tmp_path / "data", row)
     assert "synthetic failure" in meta["error"]
-    assert ("configured GitHub token was refused" in meta["error"]) == (phase == "authenticated")
+    assert ("Retrying with the configured GitHub token failed too" in meta["error"]) == (phase == "authenticated")
     rendered = json.dumps(meta) + caplog.text + (transport.repo_cache_dir(tmp_path / "data", row) / "meta.json").read_text(encoding="utf-8")
     assert TOKEN not in rendered and ENCODED not in rendered

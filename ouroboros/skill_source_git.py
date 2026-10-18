@@ -2,9 +2,10 @@
 
 A hub and a plain skills repository are both read from a clone under
 ``data/state/skill_sources/repos/<key>/repo`` (the two public hub rows share one clone because they read
-one repository). GitHub HTTPS reads try anonymously first, then retry an authentication refusal once
-with the configured token alone (no credential helper, so its refusal never erases a stored login);
-other sources use this computer's git credentials. Reads are local files;
+one repository). A GitHub HTTPS read first goes without the configured token (this computer's git
+credentials still apply), then retries an authentication refusal once with that token alone (no
+credential helper, so its refusal never erases a stored login); other sources use this computer's git
+credentials. Reads are local files;
 a refresh fetches the newest commit of the configured
 branch (or the pinned commit) and is started in the background by whoever shows or searches a catalog.
 A pointer entry's author repository is fetched at its exact commit into ``pointers/<key>/repo``.
@@ -96,14 +97,15 @@ def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_S
     from supervisor.git_ops import _run_git_process_bounded
 
     env, secrets = _git_env(url)
-    authenticated = False
+    first = None
     try:
         code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
-        # GitHub hides private repositories from anonymous readers. Other failures (DNS,
+        # GitHub hides private repositories from readers without access. Other failures (DNS,
         # missing refs, local I/O) cannot be repaired by sending a credential.
         if code and args[0] == "fetch" and secrets and any(marker in str(err or out).lower() for marker in (
                 "could not read username", "could not read password", "authentication failed",
                 "repository not found", "returned error: 401", "returned error: 403")):
+            first = str(err or out or "")
             # The empty helper clears this computer's credential helpers for the retry: a
             # refused token must not make git erase the login a helper stored.
             index = int(env.get("GIT_CONFIG_COUNT") or "0")
@@ -112,15 +114,16 @@ def _git(args: list[str], *, cwd: pathlib.Path, timeout: float = FETCH_TIMEOUT_S
                    f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {secrets[1]}",
                    f"GIT_CONFIG_KEY_{index + 1}": "credential.helper",
                    f"GIT_CONFIG_VALUE_{index + 1}": ""}
-            authenticated = True
             code, out, err = _run_git_process_bounded(["git", *args], timeout=timeout, cwd=cwd, env=env)
     except Exception as exc:
         code, out, err = 1, "", str(exc)
     if code != 0:
-        detail = " ".join(redact_known_values(str(err or out or ""), secrets).split())[:400]
-        detail = detail or f"git {args[0]} failed with exit code {code}"
-        if authenticated:
-            detail = f"The configured GitHub token was refused. {detail}"
+        def clean(text: Any) -> str:
+            return " ".join(redact_known_values(str(text or ""), secrets).split())
+
+        detail = clean(err or out)[:400] or f"git {args[0]} failed with exit code {code}"
+        if first is not None:  # both answers: a refused token can hide a mistyped or deleted repository
+            detail = f"{clean(first)[:300]} Retrying with the configured GitHub token failed too: {detail}"
         raise SkillSourceFetchError(detail) from None
     return str(out or "")
 
