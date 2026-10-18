@@ -143,6 +143,16 @@ def test_a_result_call_that_cannot_mean_anything_is_refused_before_payment(args,
         parse_request(args)
 
 
+def test_a_result_review_binds_no_workspace_target():
+    """A result review reads the task's own result, so it takes no vcs binding on a workspace (a Presence
+    behavior that grants review_change without a vcs root may still ask for one); change subjects stay bound."""
+    from ouroboros.tools.tool_resolution import _target_binding_operation
+
+    assert _target_binding_operation("review_change", {"subject": "result"}) is None
+    assert _target_binding_operation("review_change", {"subject": "index"}) == "vcs"
+    assert _target_binding_operation("review_change", {}) == "vcs"
+
+
 def test_the_result_subject_implies_its_surface():
     request = parse_request({"subject": "result", "answer": "Done."})
     assert (request.surface, request.answer) == ("result", "Done.")
