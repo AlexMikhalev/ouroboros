@@ -88,6 +88,8 @@ def test_retirement_wins_after_candidate_lookup(candidate, monkeypatch, explicit
     assert fresh["path"] != bound["path"] and Path(fresh["path"]).is_dir()
     assert git(fresh["path"], "status", "--porcelain") == ""
     assert body.find("predecessor", data) is None
+    facts = body.context_fact("successor", data)
+    assert [fact["path"] for fact in facts] == [fresh["path"]] and facts[0]["yours"]
     if survives:
         [retiring] = [row for row in wt.list_worktrees(data) if row["path"] == bound["path"]]
         assert retiring["retiring"] and retiring["task_id"] == "predecessor"

@@ -125,8 +125,10 @@ def context_fact(owner: str = "", data_dir: Optional[Any] = None, *, limit: int 
 
     The mind sees what exists and who owns it, so continuing one is a deliberate
     ``prepare_self_change(resume=...)`` and never an inference from a room or a date.
+    A candidate the GC is retiring is left out: no resume would accept it.
     """
-    rows = sorted(list_candidates(data_dir), key=lambda row: float(row.get("created_at") or 0), reverse=True)
+    rows = sorted((row for row in list_candidates(data_dir) if not row.get("retiring")),
+                  key=lambda row: float(row.get("created_at") or 0), reverse=True)
     shown: List[Dict[str, Any]] = [{
         "id": row.get("candidate_id"), "owner_task": row.get("task_id"), "branch": row.get("branch"),
         "path": row.get("path"), "base": str(row.get("base_sha") or "")[:12],
