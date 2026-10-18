@@ -9,7 +9,7 @@ import { skillSourcesApi } from './api_client.js';
 import { bindDialogFocus, bindMenu } from './ui_interactions.js';
 import { escapeHtmlAttr as escapeHtml } from './ui_primitives.js';
 import {
-    displayAddress, officialPromise, permissionWords, plural, publicationDisclosure, updateRejectionSentence, versionText,
+    canUpdateWithoutReview, displayAddress, officialPromise, permissionWords, plural, publicationDisclosure, updateRejectionSentence, versionText,
 } from './skill_presentation.js';
 
 let activeClose = null;
@@ -166,7 +166,7 @@ export function openUpdateDialog({ name, sourceName = '', update = {}, installed
 /** The rejected release, not a newer catalog candidate, is what the owner confirms. */
 export async function updateWithoutReview(skill, { dialog = openConfirmDialog, update = skillSourcesApi.updateSkill } = {}) {
     const release = skill.install?.update_rejected;
-    if (!release?.digest || release.digest !== skill.install?.update_available?.digest) return null;
+    if (!canUpdateWithoutReview(skill.install)) return null;
     const confirmed = await dialog({
         title: `Update ${skill.name} to ${release.version} without review?`,
         body: `${updateRejectionSentence(release)} This replaces your current copy with that exact version and lets it run without review. Your choice is recorded.`,
@@ -197,7 +197,7 @@ export function openCompareDialog({ mine = {}, other = {} }) {
 export function openPublishDestinationDialog({ name, choices = [], changed = false, createMySkills = () => skillSourcesApi.mySkills() }) {
     return new Promise((resolve) => {
         const host = mountDialog({ title: `Publish ${name}`, wide: true, onSettle: resolve });
-        const destinations = choices.length ? [...choices] : [{ value: 'default', label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
+        const destinations = choices.length ? [...choices] : [{ value: 'default', private: false, label: 'OuroborosHub', detail: 'Share it in the public catalog.' }];
         let selected = destinations[0].value;
         let connected = null;
         const current = () => destinations.find((choice) => choice.value === selected);
@@ -209,7 +209,7 @@ export function openPublishDestinationDialog({ name, choices = [], changed = fal
                 <p class="skills-dialog-note" data-publication-disclosure></p>
                 <p class="skills-dialog-note">Ouroboros first checks it for secrets and problems.</p>`;
             host.actions.innerHTML = '<button type="button" class="btn btn-default" data-dialog-cancel>Cancel</button><button type="button" class="btn btn-primary" data-dialog-ok>Check and publish</button>';
-            const disclose = () => { host.body.querySelector('[data-publication-disclosure]').textContent = publicationDisclosure(current()?.private); };
+            const disclose = () => { host.body.querySelector('[data-publication-disclosure]').textContent = publicationDisclosure(current()?.private, current()?.repository); };
             bindChoiceCards(host.body.querySelector('[role="radiogroup"]'), (value) => { selected = value; disclose(); });
             disclose();
             host.actions.querySelector('[data-dialog-ok]').addEventListener('click', () => host.close(current()));
@@ -240,10 +240,10 @@ export async function createMySkillsDestination(create) {
     try {
         const answer = await create();
         if (answer?.ok !== true || !answer.source?.id) throw { body: answer };
-        const visibility = answer.private === true ? 'private' : 'public';
-        return { value: `source:${answer.source.id}`, private: answer.private === true,
-            label: `${answer.source.name} — ${answer.repository} (${visibility})`,
-            status: `${answer.created ? 'Created' : 'Connected'} ${answer.repository} (${visibility}).`,
+        const visibility = answer.private === true ? ' (private)' : answer.private === false ? ' (public)' : '';
+        return { value: `source:${answer.source.id}`, private: typeof answer.private === 'boolean' ? answer.private : undefined,
+            repository: answer.repository, label: `${answer.source.name} — ${answer.repository}${visibility}`,
+            status: `${answer.created ? 'Created' : 'Connected'} ${answer.repository}${visibility}.`,
             detail: 'Your other Ouroboros installs can read it when you connect this source.' };
     } catch (error) {
         const code = error?.body?.code;

@@ -22,10 +22,13 @@ test('rejected update confirms its exact version and sends only that release aft
     }
 });
 
-test('owner skip is only offered for the current rejected candidate and states the actual cause', async () => {
-    for (const candidate of [null, { digest: 'newer' }]) {
-        await updateWithoutReview({ name: 'demo', install: { update_rejected: { digest: 'rejected' }, update_available: candidate } }, {
-            dialog: () => assert.fail('a missing or changed candidate must not be offered'),
+test('owner skip needs a rejected digest and is hidden only for a known different candidate', async () => {
+    for (const install of [
+        { update_rejected: { digest: 'rejected' }, update_available: { digest: 'newer' } },
+        { update_rejected: { version: '2.0' } }, {},
+    ]) {
+        await updateWithoutReview({ name: 'demo', install }, {
+            dialog: () => assert.fail('no exact rejected release is offered'),
             update: () => assert.fail('nothing was confirmed'),
         });
     }
@@ -33,6 +36,25 @@ test('owner skip is only offered for the current rejected candidate and states t
         await updateWithoutReview({ name: 'demo', install: {
             update_rejected: { version: '2.0', digest: 'd', reason }, update_available: { digest: 'd' },
         } }, { dialog: async (model) => { assert.ok(model.body.includes(cause)); return false; } });
+    }
+});
+
+test('owner skip with no catalog candidate confirms and sends the rejected release for registry and unread sources', async () => {
+    for (const kind of ['registry', 'git']) {
+        for (const candidate of [null, undefined]) {
+            for (const confirmed of [true, false, null, { confirmed: true }]) {
+                const calls = [];
+                const result = await updateWithoutReview({ name: 'demo', install: {
+                    source: { kind }, update_rejected: { version: '2.0', digest: 'rejected', reason: 'review_unfinished' },
+                    ...(candidate === undefined ? {} : { update_available: candidate }),
+                } }, {
+                    dialog: async (model) => { assert.match(model.title, /demo to 2\.0 without review/); return confirmed; },
+                    update: async (...args) => { calls.push(args); return { ok: true }; },
+                });
+                assert.deepEqual(calls, confirmed === true ? [['demo', 'replace', 'rejected', '', { skipReview: true }]] : []);
+                assert.deepEqual(result, confirmed === true ? { ok: true } : null);
+            }
+        }
     }
 });
 
@@ -56,12 +78,13 @@ test('My skills selects the source from both create and connect answers', async 
         for (const privateValue of [true, false, undefined, 'true']) {
             const choice = await createMySkillsDestination(async () => ({ ok: true, created, private: privateValue,
                 repository: 'owner/ouroboros-skills', source: { id: 'owner-skills', name: 'My renamed skills' } }));
-            const visibility = privateValue === true ? 'private' : 'public';
+            const visibility = privateValue === true ? ' (private)' : privateValue === false ? ' (public)' : '';
             assert.equal(choice.value, 'source:owner-skills');
-            assert.equal(choice.private, privateValue === true);
+            assert.equal(choice.private, typeof privateValue === 'boolean' ? privateValue : undefined);
+            assert.equal(choice.repository, 'owner/ouroboros-skills');
             assert.match(choice.label, /My renamed skills/);
-            assert.ok(choice.label.includes(`owner/ouroboros-skills (${visibility})`));
-            assert.equal(choice.status, `${created ? 'Created' : 'Connected'} owner/ouroboros-skills (${visibility}).`);
+            assert.ok(choice.label.includes(`owner/ouroboros-skills${visibility}`));
+            assert.equal(choice.status, `${created ? 'Created' : 'Connected'} owner/ouroboros-skills${visibility}.`);
         }
     }
 });
