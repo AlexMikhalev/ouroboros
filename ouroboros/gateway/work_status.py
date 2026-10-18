@@ -263,12 +263,15 @@ def controls_for(current: Optional[Mapping[str, Any]], current_row: Optional[Map
         target = str(current.get("task_id") or "")
         phase = str(current_row.get("phase") or "")
         codes = {entry.get("code") for entry in current.get("reasons") or ()}
-        # A live root, managed or a direct turn: the hurry, stop and Pause doors take both.
-        if current["activity"] == "working" and current.get("transition") == "none" and phase in _RUNNING_PHASES:
+        # A live root, managed or a direct turn, and an answered root's upkeep: the hurry, stop and Pause doors
+        # take them all; the Pause ends that upkeep at once.
+        if current["activity"] == "working" and current.get("transition") in {"none", "finalizing"} \
+                and phase in _RUNNING_PHASES:
             controls += [{"action": "wrap_up", "target": target}, {"action": "hurry", "target": target}]
-        # The Pause door takes a live root and an answered root's post-answer upkeep (it ends that upkeep at once).
-        if current.get("transition") in {"none", "finalizing"} and current["activity"] in {"working", "queued", "waiting"} \
-                and "earlier_work_unconfirmed" not in codes and phase not in {"budget_paused", "budget_pausing"}:
+        # A Pause still settling keeps its Pause: the door coalesces a repeat, which retries an uncertain reply.
+        if current.get("transition") in {"none", "finalizing", "pausing"} \
+                and current["activity"] in {"working", "queued", "waiting"} \
+                and "earlier_work_unconfirmed" not in codes and phase != "budget_paused":
             controls.append({"action": "pause", "target": target})
         if current["activity"] == "paused" and phase == "budget_paused" and codes & _RESUMABLE_CODES:
             controls.append({"action": "resume", "target": target})

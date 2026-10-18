@@ -321,11 +321,14 @@ def test_a_live_root_offers_wrap_up_hurry_pause_and_stop_managed_or_direct(kind)
 
 
 @pytest.mark.parametrize("kind", ["managed_task", "direct_chat"])
-def test_post_answer_upkeep_offers_the_pause_that_ends_it_and_a_pausing_one_does_not(kind):
+def test_post_answer_upkeep_keeps_its_controls_and_a_settling_pause_keeps_its_pause(kind):
     finishing = row("f", "finalizing", kind=kind)
-    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(finishing), finishing)] == ["pause", "stop"]
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(finishing), finishing)] == [
+        "wrap_up", "hurry", "pause", "stop"]
     pausing = row("f", "budget_pausing", kind=kind, pause_cause="owner")
-    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(pausing), pausing)] == ["stop"]
+    assert [entry["action"] for entry in ws.controls_for(ws.classify_member(pausing), pausing)] == ["pause", "stop"]
+    paused = row("f", "budget_paused", kind=kind, pause_cause="owner", can_resume=True)
+    assert "pause" not in [entry["action"] for entry in ws.controls_for(ws.classify_member(paused), paused)]
 
 
 def test_a_live_retry_is_the_current_episode_of_its_original(stored, tmp_path):
@@ -337,7 +340,9 @@ def test_a_live_retry_is_the_current_episode_of_its_original(stored, tmp_path):
     assert work["work_id"] == "held" and work["episode"] == {"task_id": "t-retry", "live": True}
     assert work["activity"] == "paused" and work["room"] == 42
     actions = [(entry["action"], entry["target"]) for entry in work["controls"]]
-    assert ("resume", "t-retry") in actions and ("stop", "t-retry") in actions
+    assert ("resume", "t-retry") in actions
+    # Stop ends the whole work: the retry, then its original's tree (a helper may still name that root).
+    assert [target for action, target in actions if action == "stop"] == ["t-retry", "held"]
     assert not any(action == "stop_earlier" for action, _ in actions)
 
 

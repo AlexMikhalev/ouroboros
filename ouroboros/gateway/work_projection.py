@@ -275,8 +275,10 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
             predecessor = str(_continuation(facts or {}).get("predecessor_task_id") or "")
             if predecessor and predecessor not in earlier and predecessor not in {current_id, current_root}:
                 earlier.append(predecessor)
+        # Stop ends the whole work: a retry's logical original carries its tree too (never an earlier attempt).
+        logical = [current_root] if current_root and current_root != current_id else []
         controls = ws.controls_for(current_state, current_row, earlier_live=earlier,
-                                   live_roots=([] if current_state is not None else [current_id]) + earlier)
+                                   live_roots=([] if current_state is not None else [current_id]) + logical + earlier)
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",
                     project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=controls)
         cmid = str(room_row.get("client_message_id") or "")
