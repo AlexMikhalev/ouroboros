@@ -129,11 +129,11 @@ Every path-addressed `/api/files/*` operation resolves its requested `path` and 
 | POST | `/api/update/apply` | |
 | GET | `/api/cost-breakdown` | |
 | GET | `/api/storage` | passive; `?count=<finished_at>` omits an unchanged count |
-| POST | `/api/storage/measure` | starts one count in a child, or joins the running one |
-| POST | `/api/storage/measure/cancel` | kills the running count; the saved count stays |
-| POST | `/api/storage/free/preview` | a pure preview of the finished work the retirers would remove now (202; a second preview joins) |
-| POST | `/api/storage/free` | `StorageFreeRequest` (`{plan, groups}`): frees exactly the previewed items through the existing retirers (202; `started`/`reason`) |
-| POST | `/api/storage/free/cancel` | stops the listing or the run; what was freed stays freed |
+| POST | `/api/storage/measure` | start/join child count |
+| POST | `/api/storage/measure/cancel` | stop child; saved count stays |
+| POST | `/api/storage/free/preview` | pure preview; 202, start/join |
+| POST | `/api/storage/free` | `StorageFreeRequest` `{plan, groups}`; exact plan ids; 202, `started`/`reason` |
+| POST | `/api/storage/free/cancel` | stop preview/run; retain completed work |
 | GET | `/api/evolution-data` | |
 | GET | `/api/projects` | optional `chat_id`: that active room from the full registry, beyond sidebar limits (missing → empty `projects`; unreadable → error) |
 | POST | `/api/projects` | |
