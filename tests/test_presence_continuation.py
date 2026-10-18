@@ -88,7 +88,8 @@ def author(after_wake, answer=ANSWER):
     addressed message) wait in prose, then, once the review settled or the conversation came back,
     ``after_wake``."""
     def step(messages):
-        if _seen(messages, RESUMED) or _seen(messages, SETTLED, role="user"):
+        # Host facts arrive as user rows; a system prompt may describe the same markers.
+        if _seen(messages, RESUMED, role="user") or _seen(messages, SETTLED, role="user"):
             return after_wake(messages)
         if _seen(messages, LEFT, role="tool"):
             return waits()
@@ -114,18 +115,15 @@ def event(number=42, text="Please prepare the status report", version=1):
 
 
 def reviewing_admission():
-    """The test admission whose positive ceiling also grants ``review_change`` and the ``vcs`` operation on the
-    active workspace every ``review_change`` call is bound to (``tool_resolution._target_binding_operation``,
-    even for subject=result): the author may review its own result."""
-    from ouroboros.presence_authority import (
-        PresenceCapabilityCeiling, PresenceResourceGrant, PresenceToolGrant, presence_ceiling_payload,
-    )
+    """The test admission whose positive ceiling also grants ``review_change`` and no resource at all: a result
+    review takes no workspace binding (``tool_resolution._target_binding_operation``), so the author may review its
+    own result with the tool grant alone."""
+    from ouroboros.presence_authority import PresenceCapabilityCeiling, PresenceToolGrant, presence_ceiling_payload
 
     admission = _admission()
     grants = tuple(sorted((*admission.capability_ceiling.tool_grants, PresenceToolGrant("review_change")),
                           key=lambda grant: grant.name))
     ceiling = PresenceCapabilityCeiling(**{**admission.capability_ceiling.__dict__, "tool_grants": grants,
-                                           "resource_grants": (PresenceResourceGrant("active_workspace", ("vcs",)),),
                                            "digest": "0" * 64})
     ceiling = PresenceCapabilityCeiling(**{**ceiling.__dict__, "digest": presence_ceiling_payload(ceiling)["digest"]})
     return dataclasses.replace(admission, capability_ceiling=ceiling)
@@ -144,6 +142,13 @@ def parked(h, task_id):
     """Whether the author waits at its review park."""
     wait = (load_task_result(h.data, task_id) or {}).get("owner_wait") or {}
     return wait.get("state") == "waiting" and wait.get("reason") == "review"
+
+
+def settlement_notices_done(timeout=30.0):
+    """A left review's settlement notice runs on its own thread after the seats settle
+    (``review_pause.notify_when_settled``); a teardown waits for it to finish."""
+    wait_for(lambda: not any(thread.name == "review-left-settlement" and thread.is_alive()
+                             for thread in threading.enumerate()), timeout, "the left review's settlement notice")
 
 
 @pytest.fixture
@@ -280,6 +285,7 @@ def harness(tmp_path, monkeypatch):
     h.release.set()
     if h.entered.is_set():
         assert settled.wait(15)
+        settlement_notices_done()
 
 
 class _QuickAgent:
@@ -521,3 +527,34 @@ def test_the_resuming_author_reads_sql_rows_across_a_legacy_rotation_attempt(har
     assert quick_turn(h, 44, later).text == "Noted."
     h.release.set()
     assert execution.result.result(timeout=60).text == ANSWER and h.calls == 3
+
+
+def test_the_review_change_grant_alone_parks_for_a_result_but_a_change_needs_its_root(harness):
+    """A result review takes no workspace binding: the tool grant alone lets the author review its own result
+    and park, while a change subject from the same author stays bound to its root and is refused without one."""
+    h = harness
+    assert not reviewing_admission().capability_ceiling.resource_grants  # no vcs root at all
+    change = {"content": None, "tool_calls": [call("review_change", {
+        "subject": "index", "reason": "Check the staged change."}, "change")]}
+
+    def step(messages):
+        if _seen(messages, RESUMED, role="user") or _seen(messages, SETTLED, role="user"):
+            return deliver()
+        if _seen(messages, LEFT, role="tool"):
+            return waits()
+        if _seen(messages, "PRESENCE_RESOURCE_BLOCKED", role="tool"):
+            return review()
+        return change
+
+    h.script = step
+    execution = h.start(event())
+    initial = execution.initial.result(timeout=30)
+    assert initial.status == "continuing"  # the result review parked the author
+    refusal = [str(row.get("content")) for row in h.inputs[1] if row.get("role") == "tool"]
+    assert len(refusal) == 1 and "PRESENCE_RESOURCE_BLOCKED" in refusal[0]  # the change review, before any seat
+    wait_for(lambda: parked(h, initial.task_id), what="the review park")
+    assert load_task_result(h.data, initial.task_id)["owner_wait"]["review_binding"].startswith("result-review:")
+    assert len(h.reviews) == 1
+    h.release.set()
+    final = execution.result.result(timeout=60)
+    assert (final.outcome, final.text) == ("message", ANSWER) and h.calls == 4 and len(h.reviews) == 1

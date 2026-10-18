@@ -4,8 +4,8 @@ The harness of ``test_presence_continuation`` supplies the real loop, review coo
 direct wait, mailbox settlement and pipeline terminal, and its kept trigger: the author
 reviews its own result, leaves that review for an addressed message and parks on it. Here
 the Host's own gate, execution registry, admission, in-flight budget and endpoints decide;
-the admitted behavior selects ``review_change`` and the workspace's ``vcs`` operation, so
-the Host's admission is the authority that lets the author review its result.
+the admitted behavior selects ``review_change``, so the Host's admission is the authority
+that lets the author review its result.
 """
 
 from __future__ import annotations
@@ -47,12 +47,11 @@ class _Quick:
 
 def _seed_reviewing_behavior(data_dir: pathlib.Path) -> str:
     """``test_host_service_api``'s fixture behavior, bound to any room of the account, whose owner also
-    selected ``review_change`` and the active workspace's ``vcs`` operation every review_change call is
-    bound to: its turns may review their own result."""
+    selected ``review_change``: its turns may review their own result (a result review takes no workspace
+    binding, so no resource is selected)."""
     from ouroboros.presence_bindings import PresenceBinding, PresenceEndpoint, new_presence_binding_id, save_presence_binding
     from ouroboros.presence_capabilities import (
-        PresenceResourceTarget, PresenceSelection, PresenceState, PresenceToolTarget, presence_state_fingerprint,
-        save_presence_state,
+        PresenceSelection, PresenceState, PresenceToolTarget, presence_state_fingerprint, save_presence_state,
     )
     from ouroboros.presence_profile import parse_presence_profile, presence_request_fingerprint
     from ouroboros.skill_loader import SkillReviewState, load_skill, save_enabled, save_review_state
@@ -64,9 +63,7 @@ def _seed_reviewing_behavior(data_dir: pathlib.Path) -> str:
         "type: instruction\npresence:\n  instructions: Participate helpfully.\n"
         "  capability_requests:\n    - id: history\n      kind: tool\n      required: true\n"
         "      purpose: Read history.\n    - id: review\n      kind: tool\n      required: true\n"
-        "      purpose: Review my own result.\n    - id: review-root\n      kind: resource\n"
-        "      required: true\n      operations: [vcs]\n      purpose: The root a review is bound to.\n"
-        "---\n# Helper\n",
+        "      purpose: Review my own result.\n---\n# Helper\n",
         encoding="utf-8",
     )
     loaded = load_skill(skill_dir, data_dir)
@@ -76,8 +73,7 @@ def _seed_reviewing_behavior(data_dir: pathlib.Path) -> str:
     profile = parse_presence_profile(loaded.manifest, skill_dir)
     assert profile is not None
     targets = {"history": PresenceToolTarget("builtin", "chat_history"),
-               "review": PresenceToolTarget("builtin", "review_change"),
-               "review-root": PresenceResourceTarget("active_workspace", ("vcs",))}
+               "review": PresenceToolTarget("builtin", "review_change")}
     save_presence_state(
         data_dir, loaded.name,
         PresenceState(tuple(PresenceSelection(presence_request_fingerprint(request), targets[request.request_id])
