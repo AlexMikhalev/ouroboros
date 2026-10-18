@@ -26,7 +26,7 @@ COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
 })
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
-    "inspect_harness", "maintain_harness",
+    "inspect_harness", "inspect_subagent", "maintain_harness",
     "finish_task",
     "read_file", "list_files", "write_file", "edit_text",
     "apply_patch", "edit_batch",
@@ -94,6 +94,7 @@ LOCAL_READONLY_SUBAGENT_MODE: str = "local_readonly_subagent"
 # by explicit product decision, so this mode is not a remote website sandbox.
 LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
     # the cheap lane and finds the work harder raises itself instead of failing or
@@ -155,6 +156,7 @@ ACTING_SUBAGENT_MODE: str = "acting_subagent"
 # explicitly granted per-child via TaskConstraint.external_tool_grants.
 ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
     # the cheap lane and finds the work harder raises itself instead of failing or
@@ -173,6 +175,9 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "forward_to_worker", "peek_task", "cancel_task", "discard_child_result",
     "resume_child_task",
     "verify_and_record",
+    # An independent look at the assigned work, never child approval or commit.
+    # review_change admits the physical subject before freezing or dispatching.
+    "review_change",
     "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chronicle_write",
     "chat_history",
     "tree_note", "tree_read", "override_delegation_constraint",
@@ -207,6 +212,7 @@ def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) 
 
 READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "read_file", "list_files",
     "search_code", "query_code", "query_data", "recent_tasks",
     "web_search", "chat_history",

@@ -61,7 +61,8 @@ There are three skill types:
 
 The **runtime ownership** of an installed skill is also tagged:
 
-- `native`: a built-in bundled with the app (e.g. `unix_computer_use`).
+- `native`: a built-in bundled with the app (e.g. `unix_computer_use` on macOS/Linux,
+  `windows_computer_use` on Windows).
 - `self_authored`: created by Ouroboros itself in the current data
   plane; marked by `.self_authored.json` and reviewed through the
   standard tri-model skill-review path.
@@ -76,7 +77,10 @@ directory name alone, is the ownership fact: an existing payload under
 `native/` without the marker is treated in place as user-managed `external`
 content. Ordinary top-level tasks can inspect, edit, run commands in, or
 delegate that payload without a migration. A marker-present built-in stays
-read/review-only, and new skills are still created under `external/`.
+read/review-only, and new skills are still created under `external/`. Windows keeps an
+enabled legacy Unix remote skill across later OFF/ON and updates (eligibility for
+remote machines, not local Windows support or execution authority;
+[startup rules](architecture/02-startup-onboarding-flow.md#packaged-seed-and-managed-checkout)).
 
 ## Manifest schema (`SKILL.md` frontmatter or `skill.json`)
 
@@ -91,6 +95,7 @@ description: Live weather widget    # required, short summary
 version: 0.2.1                      # required, free-form (semver recommended)
 type: extension                     # instruction | script | extension
 runtime: python3                    # script skills: python/python3/bash/node/deno/ruby/go; extension entry modules are Python plugin.py
+os: any                             # or [darwin, linux, win32]; governs new bundled offerings (legacy remote exception above)
 entry: plugin.py                    # type=extension only — relative to skill dir
 scripts:                            # type=script only
   - name: fetch.py                  # name resolves under scripts/ unless slashes/extensions
@@ -179,6 +184,30 @@ the `list_skills` index and the "Installed Skills" context section, whole in
 `list_skills(name=...)`, which also returns the `read_file` call for this
 manifest — so write it for the model, not for the human reviewer. Unknown keys or
 non-string values are refused at parse time.
+
+### Passive context snapshots (extensions only)
+
+A reviewed extension may declare `context_snapshot: {path: context-snapshot.json}`
+and the `context_snapshot` permission/grant. Its existing deterministic task or
+companion writes that relative path under its own skill state, atomically:
+`{"schema_version":1,"observed_at":"…Z","valid_until":"…Z","text":"…"}`.
+Dates must be finite timezone-aware ISO instants, observed ≤ valid and not in the
+future. The complete UTF-8 JSON file is bounded at 32768 bytes; malformed, missing,
+escaping or oversized files yield an explicit unknown, never clipped prose.
+
+Write compact deterministic facts, not instructions or relative-age counters.
+Keep changing poll timestamps out of `text`: the envelope dates date the visible
+claim. Main, project roots and consciousness receive a labelled UNTRUSTED tail
+note after compaction; children and Presence do not. No callback, model, network,
+refresh or scheduler is run by prompt preparation. Current enablement, review,
+grants, dependencies and publication must remain eligible. Revocation/expiry emits
+one withdrawal; it does not resend old facts. A changed material value appends a
+full note; timestamp-only renewal waits until the visible lease expires, then
+references that exact full text's source/text hashes with new dates. No delta
+chain or hidden memo is authority: reclaim keeps the required visible base, and
+an absent base after compaction/cold Resume causes a complete current note. This preserves the
+existing prefix, not a promise of provider cache hits. Source bytes are retained
+through observability; earlier notes remain historical, not current authority.
 
 Manifest refusals teach: every `SkillManifestError` carries the problem plus,
 where the parser knows the repair, a `fix_hint` rendered into the message
@@ -278,7 +307,8 @@ install:
 
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
-executable review and only under the skill's `.ouroboros_env` directory.
+executable review (a bundled native seed's launcher trust counts, so it needs
+no model review) and only under the skill's `.ouroboros_env` directory.
 Global package-manager specs remain manual setup guidance. Exact resources and
 explicit build actions use the same isolated install owner:
 
@@ -596,6 +626,7 @@ calls and runtime behaviours:
 
 | Permission | What it grants |
 |------------|----------------|
+| `context_snapshot` | Opt-in standing model context from the declared local snapshot, subject to the existing content-hash-bound grant (see Passive context snapshots). No injection or model-start authority. |
 | `net` | The skill may make outbound network calls. |
 | `fs` | The skill may write outside its state dir (review item still enforces confinement). |
 | `subprocess` | The skill may spawn child processes (review items + cwd-confinement still enforce). |
@@ -1634,8 +1665,8 @@ requires fresh reviewer approval. See ARCHITECTURE §13 for the shared runtime g
 ## Reference skills
 
 The simplest reference for each type lives in the OuroborosHub catalog
-(`razzant/OuroborosHub`); `unix_computer_use` ships bundled under
-`repo/skills/`:
+(`razzant/OuroborosHub`); `unix_computer_use` and `windows_computer_use` ship
+bundled under `repo/skills/`:
 
 - `weather` — `type: extension`, declarative form/key-value widget,
   reads no env keys.

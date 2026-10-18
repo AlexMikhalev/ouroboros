@@ -1,0 +1,574 @@
+"""Bundled built-ins by platform: what this host is offered, keeps, shows and readies.
+
+These run the built-in source's real install, re-seed, acceptance and dependency step over
+the payloads in ``repo/skills`` (and, for updates, over a real earlier Unix release from Git
+history). The host platform is pinned through ``skill_manifest.host_platform``; nothing here
+touches a desktop, a network or the live data root. Real Windows UI Automation is exercised
+only by ``tests/test_windows_computer_use_native.py``.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import logging
+import pathlib
+import shutil
+import subprocess
+import tarfile
+
+import pytest
+
+from ouroboros import skill_builtin
+from ouroboros.skill_builtin import _dependency_pass, install_builtin_skill, reseed_changed_builtins
+from ouroboros.skill_dependencies import skill_deps_not_ready
+from ouroboros.skill_loader import (
+    SkillReviewState,
+    discover_skills,
+    find_skill,
+    load_enabled,
+    save_enabled,
+    save_review_state,
+)
+from ouroboros.skill_peer_inventory import discover_skill_peers
+from tests._shared import clean_extension_runtime_state
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+SEEDS = REPO / "skills"
+UNIX = "unix_computer_use"
+WINDOWS = "windows_computer_use"
+UNIX_043 = "1e237c1bc89f0600a7362f69eddafdff4ddd1f2d"  # official history: os any, permissions with net
+log = logging.getLogger(__name__)
+
+
+@pytest.fixture
+def data(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "true")
+    root = tmp_path / "data"
+    (root / "skills").mkdir(parents=True)
+    monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", root / "settings.json")
+    return root
+
+
+def on(monkeypatch, platform: str) -> None:
+    monkeypatch.setattr("ouroboros.contracts.skill_manifest.host_platform", lambda: platform)
+
+
+def reseed(data_root, seeds=SEEDS):
+    return reseed_changed_builtins(data_root, seed_dir=seeds, log_obj=log)
+
+
+def names(data_root):
+    return {skill.name for skill in discover_skills(data_root)}
+
+
+def assert_peer_matches(data_root):
+    full = {skill.name: (skill.enabled, tuple(skill.conflicts)) for skill in discover_skills(data_root)}
+    peers = {skill.name: (skill.enabled, skill.conflicts) for skill in discover_skill_peers(data_root)}
+    assert peers == full
+
+
+def bumped_seeds(tmp_path, name):
+    """A copy of the bundled tree in which ``name`` has a newer version (a later app release)."""
+    seeds = tmp_path / "later" / "skills"
+    shutil.copytree(SEEDS, seeds, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    manifest = seeds / name / "SKILL.md"
+    version = skill_builtin._version(seeds / name)
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(f"version: {version}", "version: 9.9.9", 1),
+                        encoding="utf-8")
+    return seeds
+
+
+def git_payload(source: str, path: str, dest: pathlib.Path) -> None:
+    archived = subprocess.run(["git", "archive", f"{source}:{path}"], cwd=REPO,
+                              capture_output=True, check=True, timeout=30)
+    with tarfile.open(fileobj=io.BytesIO(archived.stdout)) as archive:
+        for member in archive:
+            if member.isfile():
+                target = dest / member.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.extractfile(member).read())
+
+
+def earlier_install(data_root, *, unix_marker=True) -> pathlib.Path:
+    """An install from an earlier release: Unix 0.4.3 (unrestricted, with ``net``) seeded."""
+    native = data_root / "skills" / "native"
+    native.mkdir(parents=True, exist_ok=True)
+    git_payload(UNIX_043, f"skills/{UNIX}", native / UNIX)
+    if unix_marker:
+        (native / UNIX / ".seed-origin").write_text(f"seeded_from={UNIX_043}\n", encoding="utf-8")
+    state = data_root / "state" / "skills" / UNIX
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "connections.json").write_text('{"active": "bench", "connections": {"bench": {"backend": '
+                                            '"osworld_http", "target": "http://10.0.0.5:5000"}}}\n', encoding="utf-8")
+    return native
+
+
+def state_bytes(data_root, name):
+    state = data_root / "state" / "skills" / name
+    return {path.name: path.read_bytes() for path in state.iterdir() if path.is_file()}
+
+
+# ── what each host is offered ──
+
+@pytest.mark.parametrize("platform,own,other", [
+    ("darwin", UNIX, WINDOWS), ("linux", UNIX, WINDOWS), ("win32", WINDOWS, UNIX),
+])
+def test_each_host_is_offered_and_installs_only_its_own_computer_use_skill(data, monkeypatch, platform, own, other):
+    from ouroboros.skill_source_catalog import builtin_snapshot
+    from ouroboros.skill_starter import starter_groups
+
+    on(monkeypatch, platform)
+    offered = {entry["name"] for entry in builtin_snapshot(REPO)["entries"]}
+    assert {own, "telegram"} <= offered and other not in offered
+    rows = [{"id": "builtin", "name": "Built in", "kind": "builtin", "trust": "trusted", "confirmed": True}]
+    starter = json.dumps(starter_groups(data, rows=rows, repo_dir=REPO))
+    assert f"builtin/{own}" in starter and f"builtin/{other}" not in starter
+
+    refused = install_builtin_skill(other, drive_root=data, seed_dir=SEEDS)
+    assert refused["ok"] is False and refused["code"] == "other_platform"
+    assert not (data / "skills" / "native" / other).exists()
+    installed = install_builtin_skill(own, drive_root=data, seed_dir=SEEDS, installed_by="owner")
+    assert installed["ok"], installed
+    skill = find_skill(data, own)
+    assert skill.review.gate_for(skill.content_hash)["blocking_reason"] == "trusted_source"
+    assert own in names(data) and other not in names(data)
+    assert_peer_matches(data)
+
+
+# ── the Unix copy kept on Windows for remote machines ──
+
+@pytest.mark.parametrize("actor", ["owner_ui", None])
+@pytest.mark.parametrize("backend", ["osworld_http", "ssh_macos"])
+def test_a_legacy_unix_remote_choice_on_windows_survives_off_reseed_and_on(data, monkeypatch, tmp_path, actor, backend):
+    from ouroboros import extension_loader, skill_lifecycle_actions
+
+    on(monkeypatch, "win32")
+    native = earlier_install(data)
+    state = data / "state" / "skills" / UNIX
+    if actor is None:
+        # Unknown provenance: manual ON and inherited early auto-ON look alike.
+        (state / "enabled.json").write_text('{"enabled": true}\n', encoding="utf-8")
+    else:
+        save_enabled(data, UNIX, True, actor=actor)
+    registry = {"active": "bench", "connections": {"bench": {
+        "backend": backend, "target": "http://10.0.0.5:5000", "ssh_alias": "bench-mac", "enabled": True}}}
+    (state / "connections.json").write_text(json.dumps(registry) + "\n", encoding="utf-8")
+    (state / "active_connection.txt").write_text("bench\n", encoding="utf-8")
+    retained = {name: (state / name).read_bytes() for name in ("connections.json", "active_connection.txt", "enabled.json")}
+    assert reseed(data) == 1
+    assert not (native / WINDOWS).exists()  # an existing install is offered nothing new
+    assert_peer_matches(data)
+    assert UNIX in names(data)
+    assert "legacy_remote_platform=win32" in (native / UNIX / ".seed-origin").read_text(encoding="utf-8").splitlines()
+    assert all((state / name).read_bytes() == value for name, value in retained.items())
+
+    # Real extension registration and resolved handlers; only the actual remote
+    # transport is replaced. This never opens a desktop, SSH session or socket.
+    calls = []
+
+    def exercise_remote():
+        extension_loader.reload_all(data, lambda: {})
+        assert UNIX in extension_loader.snapshot()["extensions"]
+        module = extension_loader._extension_modules[UNIX]
+
+        def osworld(self, conn, argv, *, timeout):
+            calls.append(("osworld_http", conn, argv, timeout))
+            return {"status": 200, "result": {"status": "success", "returncode": 0, "output": "remote-ok"}}
+
+        def ssh(self, conn, command, *, timeout):
+            calls.append(("ssh_macos", conn, command, timeout))
+            return 0, "remote-ok", ""
+
+        monkeypatch.setattr(module._ComputerUse, "_osworld_execute", osworld)
+        monkeypatch.setattr(module._ComputerUse, "_ssh_run", ssh)
+        tool = extension_loader.get_tool(extension_loader.extension_surface_name(UNIX, "remote_exec"))
+        assert tool is not None
+        result = json.loads(tool["handler"](command="printf remote-ok"))
+        assert result["ok"] and result["backend"] == backend
+        assert calls[-1][0] == backend
+        assert calls[-1][1] == registry["connections"]["bench"]
+        assert calls[-1][2] == (["bash", "-lc", "printf remote-ok"] if backend == "osworld_http" else "printf remote-ok")
+
+    monkeypatch.setattr(skill_lifecycle_actions, "_sync_schedules", lambda *args, **kwargs: None)
+    clean_extension_runtime_state()
+    try:
+        exercise_remote()
+        disabled = skill_lifecycle_actions._toggle(find_skill(data, UNIX), data, "", False, "owner_ui", "test OFF")
+        assert disabled["ok"] and not disabled["enabled"]
+        off = (state / "enabled.json").read_bytes()
+        assert extension_loader.get_tool(extension_loader.extension_surface_name(UNIX, "remote_exec")) is None
+        clean_extension_runtime_state()  # the next boot has no old module/registration
+        assert reseed(data) == 0
+        assert find_skill(data, UNIX) is not None and not find_skill(data, UNIX).enabled
+        assert_peer_matches(data)
+        extension_loader.reload_all(data, lambda: {})
+        assert UNIX not in extension_loader.snapshot()["extensions"]
+        # A later release's re-seed keeps the eligibility AND the newer OFF.
+        assert reseed(data, bumped_seeds(tmp_path, UNIX)) == 1
+        assert (state / "enabled.json").read_bytes() == off and not load_enabled(data, UNIX)
+        assert find_skill(data, UNIX) is not None
+        assert_peer_matches(data)
+        enabled = skill_lifecycle_actions._toggle(find_skill(data, UNIX), data, "", True, "owner_ui", "intentional ON")
+        assert enabled["ok"] and enabled["enabled"], enabled
+        exercise_remote()
+        assert all((state / name).read_bytes() == retained[name] for name in ("connections.json", "active_connection.txt"))
+        clean_extension_runtime_state()
+        shutil.rmtree(native / UNIX)
+        assert reseed(data) == 0 and find_skill(data, UNIX) is None
+    finally:
+        clean_extension_runtime_state()
+
+
+@pytest.mark.parametrize("choice", [{"enabled": False, "actor": "owner_ui"},
+                                    {"enabled": True, "actor": "native_seed"}, {"enabled": "true"}])
+def test_an_old_unix_copy_without_a_real_on_choice_stays_hidden_on_windows(data, monkeypatch, choice):
+    on(monkeypatch, "win32")
+    native = earlier_install(data)
+    state = data / "state" / "skills" / UNIX
+    (state / "enabled.json").write_text(json.dumps(choice), encoding="utf-8")
+    before = (state / "enabled.json").read_bytes()
+
+    assert reseed(data) == 1
+
+    assert UNIX not in names(data) and find_skill(data, UNIX) is None
+    assert_peer_matches(data)
+    assert "legacy_remote_platform" not in (native / UNIX / ".seed-origin").read_text(encoding="utf-8")
+    assert (state / "enabled.json").read_bytes() == before
+
+
+def test_legacy_visibility_confers_no_trust_when_builtin_trust_is_off(data, monkeypatch):
+    from ouroboros import extension_loader
+
+    on(monkeypatch, "win32")
+    earlier_install(data)
+    save_enabled(data, UNIX, True, actor="owner_ui")
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "false")
+    assert reseed(data) == 1
+    legacy = find_skill(data, UNIX)
+    assert legacy is not None and legacy.enabled
+    assert not legacy.review.gate_for(legacy.content_hash)["executable_review"]
+    assert_peer_matches(data)
+    clean_extension_runtime_state()
+    try:
+        assert extension_loader.load_extension(legacy, lambda: {}, drive_root=data) is not None
+        assert UNIX not in extension_loader.snapshot()["extensions"]
+        assert extension_loader.get_tool(extension_loader.extension_surface_name(UNIX, "remote_exec")) is None
+    finally:
+        clean_extension_runtime_state()
+
+
+@pytest.mark.parametrize("platform,name", [("darwin", UNIX), ("win32", WINDOWS)])
+def test_an_explicit_off_survives_a_later_release(data, monkeypatch, tmp_path, platform, name):
+    on(monkeypatch, platform)
+    assert install_builtin_skill(name, drive_root=data, seed_dir=SEEDS, installed_by="owner")["ok"]
+    save_enabled(data, name, False, actor="owner_ui")
+
+    assert reseed(data, bumped_seeds(tmp_path, name)) == 1
+
+    assert skill_builtin._version(data / "skills" / "native" / name) == "9.9.9"
+    assert load_enabled(data, name) is False
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_a_markerless_native_payload_stays_its_owners(data, monkeypatch, platform):
+    on(monkeypatch, platform)
+    native = earlier_install(data, unix_marker=False)
+    save_enabled(data, UNIX, True, actor="owner_ui")
+    before = state_bytes(data, UNIX)
+
+    assert reseed(data) == 0
+
+    assert skill_builtin._version(native / UNIX) == "0.4.3"
+    assert find_skill(data, UNIX).source == "external"
+    assert state_bytes(data, UNIX) == before
+    assert_peer_matches(data)
+
+
+def test_another_platforms_copy_left_by_an_earlier_release_stays_hidden_and_inert(data, monkeypatch):
+    """An earlier launcher copied every bundled seed; on macOS that left a Windows skill on disk."""
+    on(monkeypatch, "darwin")
+    native = data / "skills" / "native"
+    shutil.copytree(SEEDS / WINDOWS, native / WINDOWS, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # The narrow migration line is not a generic foreign-copy exemption.
+    (native / WINDOWS / ".seed-origin").write_text("seeded_from=skills\nlegacy_remote_platform=win32\n",
+                                                  encoding="utf-8")
+    save_enabled(data, WINDOWS, True, actor="native_seed")
+    before = state_bytes(data, WINDOWS)
+    installs = []
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(packages) or [])
+    from ouroboros import extension_loader
+    from ouroboros.skill_loader import summarize_skills
+
+    clean_extension_runtime_state()
+    try:
+        results = extension_loader.reload_all(data, lambda: {})
+        live = extension_loader.snapshot()["extensions"]
+    finally:
+        clean_extension_runtime_state()
+
+    assert WINDOWS not in names(data) and find_skill(data, WINDOWS) is None
+    assert_peer_matches(data)
+    assert WINDOWS not in results and WINDOWS not in live
+    assert WINDOWS not in json.dumps(summarize_skills(data))
+    assert reseed(data) == 0
+    assert _dependency_pass(data, [WINDOWS, UNIX], log) == [] and installs == []
+    assert state_bytes(data, WINDOWS) == before
+
+
+# ── the dependency step bytes accepted without a review get instead of a paid review ──
+
+@pytest.fixture
+def windows_installed(data, monkeypatch):
+    """A Windows install that asked to turn on when ready: accepted, off, comtypes not ready yet."""
+    on(monkeypatch, "win32")
+    assert install_builtin_skill(WINDOWS, drive_root=data, seed_dir=SEEDS, turn_on_when_ready=True,
+                                 installed_by="owner")["ok"]
+    installs, reconciles = [], []
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
+    monkeypatch.setattr("ouroboros.extension_loader.reconcile_extension",
+                        lambda name, *args, **kwargs: reconciles.append(name) or {"action": "extension_loaded"})
+    from ouroboros import skill_lifecycle_actions
+
+    monkeypatch.setattr(skill_lifecycle_actions, "_reconcile", lambda *args, **kwargs: {"action": "extension_loaded"})
+    monkeypatch.setattr(skill_lifecycle_actions, "_sync_schedules", lambda *args, **kwargs: None)
+    return data, installs, reconciles
+
+
+def test_the_boot_pass_readies_comtypes_and_turns_the_requested_install_on(windows_installed):
+    data, installs, reconciles = windows_installed
+    skill = find_skill(data, WINDOWS)
+    assert skill_deps_not_ready(data, skill)[1] == "status" and not skill.enabled
+    bundled = sorted(path.name for path in SEEDS.iterdir() if path.is_dir())
+
+    assert _dependency_pass(data, bundled, log) == [WINDOWS]
+
+    assert installs == [["comtypes==1.4.17"]] and reconciles == [WINDOWS]
+    assert skill_deps_not_ready(data, find_skill(data, WINDOWS)) == ("", "")
+    assert load_enabled(data, WINDOWS) is True
+    assert not (data / "state" / "skills" / WINDOWS / "review_job.json").exists()
+    # Ready dependencies are not installed twice.
+    assert _dependency_pass(data, [WINDOWS], log) == [] and len(installs) == 1
+
+
+def test_an_owner_off_waits_and_its_enable_installs_the_dependency(windows_installed):
+    from ouroboros import skill_lifecycle_actions
+
+    data, installs, _reconciles = windows_installed
+    save_enabled(data, WINDOWS, False, actor="owner_ui")
+    assert _dependency_pass(data, [WINDOWS], log) == [] and installs == []
+
+    result = skill_lifecycle_actions._toggle(find_skill(data, WINDOWS), data, "", True, "owner_ui", "test")
+
+    assert result["ok"] is True and result["enabled"] is True
+    assert installs == [["comtypes==1.4.17"]] and load_enabled(data, WINDOWS) is True
+
+
+def test_a_failed_install_names_the_failure_and_the_next_boot_retries(windows_installed, monkeypatch):
+    data, installs, reconciles = windows_installed
+
+    def offline(*args, **kwargs):
+        raise RuntimeError("pip install failed: no network")
+
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages", offline)
+    assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
+    assert load_enabled(data, WINDOWS) is False  # turning on waits for its dependencies
+    assert "no network" in json.loads((data / "state" / "skills" / WINDOWS / "deps.json").read_text(encoding="utf-8"))["error"]
+    assert reconciles == [WINDOWS]
+
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(list(packages)) or [])
+    assert _dependency_pass(data, [WINDOWS], log) == [WINDOWS]
+    assert installs == [["comtypes==1.4.17"]] and load_enabled(data, WINDOWS) is True
+
+
+def test_the_trust_opt_out_installs_without_acceptance_or_dependencies(data, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "false")
+    on(monkeypatch, "win32")
+    installs = []
+    monkeypatch.setattr("ouroboros.marketplace.isolated_deps._install_python_packages",
+                        lambda packages, *args, **kwargs: installs.append(packages) or [])
+
+    assert install_builtin_skill(WINDOWS, drive_root=data, seed_dir=SEEDS, turn_on_when_ready=True)["ok"]
+
+    skill = find_skill(data, WINDOWS)
+    assert not skill.review.gate_for(skill.content_hash)["executable_review"]
+    assert load_enabled(data, WINDOWS) is False
+    assert _dependency_pass(data, [WINDOWS], log) == [] and installs == []
+
+
+def test_bytes_a_review_admits_keep_the_review_route_for_dependencies(windows_installed):
+    from ouroboros.skill_acceptance import accepted_release_dependencies, accepted_without_review
+    from ouroboros.skill_install_record import write_install_record, read_install_record
+    from ouroboros.skill_readiness import _dependency_action
+
+    data, installs, _reconciles = windows_installed
+    accepted = find_skill(data, WINDOWS)
+    assert accepted_without_review(accepted)
+    assert _dependency_action(accepted, "review it")["tool"] == "toggle_skill"
+    # The same bytes admitted by a review row instead of an acceptance fact.
+    record = read_install_record(data, WINDOWS)
+    write_install_record(data, WINDOWS, {**record, "basis": "review"})
+    save_review_state(data, WINDOWS, SkillReviewState(status="clean", content_hash=accepted.content_hash,
+                                                      findings=[{"item": "x", "verdict": "PASS"}]))
+    reviewed = find_skill(data, WINDOWS)
+    assert reviewed.review.gate_for(reviewed.content_hash)["executable_review"]
+    assert not accepted_without_review(reviewed)
+    assert accepted_release_dependencies(data, reviewed) == ("", "") and installs == []
+    assert _dependency_action(reviewed, "review it") == {"phase": "dependencies", "tool": "skill_review",
+                                                         "reason": "review it"}
+
+
+# ── the startup receipt: an unchanged committed tree costs no payload work ──
+
+SKILL_TEMPLATE = "---\nname: NAME\ndescription: Receipt fixture.\nversion: VERSION\ntype: instruction\n---\nBody.\n"
+
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, timeout=30)
+
+
+def _write(skills, name, version):
+    (skills / name).mkdir(parents=True, exist_ok=True)
+    (skills / name / "SKILL.md").write_text(SKILL_TEMPLATE.replace("NAME", name).replace("VERSION", version),
+                                            encoding="utf-8")
+
+
+@pytest.fixture
+def seed_repo(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "true")
+    repo, drive = tmp_path / "repo", tmp_path / "data"
+    (drive / "skills").mkdir(parents=True)
+    monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", drive / "settings.json")
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@ouroboros")
+    for name in ("first", "second"):
+        _write(repo / "skills", name, "1.0.0")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "bundled tree")
+    for name in ("first", "second"):
+        assert install_builtin_skill(name, drive_root=drive, seed_dir=repo / "skills")["ok"]
+    return repo, drive
+
+
+def ensure(repo, drive):
+    return skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log, dependency_pass=False)
+
+
+def receipt(drive):
+    path = drive / "state" / "native_seed.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def test_an_unchanged_committed_tree_needs_no_payload_work(seed_repo, monkeypatch):
+    repo, drive = seed_repo
+    assert ensure(repo, drive) == 0
+    first = receipt(drive)
+    assert first["schema_version"] == 2 and first["seed_tree"]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an unchanged bundled tree must not be reconciled again")
+
+    monkeypatch.setattr(skill_builtin, "reseed_changed_builtins", forbidden)
+    monkeypatch.setattr(skill_builtin, "release_removed_builtins", forbidden)
+    assert ensure(repo, drive) == 0 and receipt(drive) == first
+
+
+def test_a_new_version_reseeds_and_names_the_new_tree(seed_repo):
+    repo, drive = seed_repo
+    ensure(repo, drive)
+    before = receipt(drive)
+    _write(repo / "skills", "first", "1.1.0")
+    _git(repo, "commit", "-qam", "first 1.1.0")
+
+    assert ensure(repo, drive) == 1
+
+    assert skill_builtin._version(drive / "skills" / "native" / "first") == "1.1.0"
+    assert receipt(drive)["seed_tree"] != before["seed_tree"]
+
+
+def test_a_dirty_tree_is_reconciled_without_a_receipt(seed_repo):
+    repo, drive = seed_repo
+    _write(repo / "skills", "second", "2.0.0")  # not committed
+
+    assert ensure(repo, drive) == 1
+
+    assert skill_builtin._version(drive / "skills" / "native" / "second") == "2.0.0"
+    assert receipt(drive) is None
+
+
+@pytest.mark.parametrize("phase", ["reseed", "release"])
+def test_a_failed_phase_writes_no_receipt_and_the_next_boot_retries(seed_repo, monkeypatch, phase):
+    repo, drive = seed_repo
+    ensure(repo, drive)
+    _write(repo / "skills", "first", "1.1.0")
+    _git(repo, "commit", "-qam", "first 1.1.0")
+    if phase == "reseed":
+        real = skill_builtin.install_builtin_skill
+        monkeypatch.setattr(skill_builtin, "install_builtin_skill",
+                            lambda *args, **kwargs: {"ok": False, "error": "disk full"})
+    else:
+        monkeypatch.setattr(skill_builtin, "release_removed_builtins", lambda *args, **kwargs: False)
+
+    ensure(repo, drive)
+    assert receipt(drive) is None  # the stale receipt went before the pass; none replaced it
+
+    monkeypatch.undo()
+    monkeypatch.setattr("ouroboros.config.SETTINGS_PATH", drive / "settings.json")
+    monkeypatch.setenv("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS", "true")
+    if phase == "reseed":
+        assert skill_builtin.install_builtin_skill is real
+    ensure(repo, drive)
+    assert receipt(drive) is not None
+    assert skill_builtin._version(drive / "skills" / "native" / "first") == "1.1.0"
+
+
+@pytest.mark.parametrize("pending", [["first"], None])
+def test_dependency_work_left_or_unknown_writes_no_receipt(seed_repo, monkeypatch, pending):
+    repo, drive = seed_repo
+    monkeypatch.setattr(skill_builtin, "_builtins_needing_dependencies", lambda *args: pending)
+    ensure(repo, drive)
+    assert receipt(drive) is None
+
+
+def test_an_earlier_launcher_receipt_reruns_the_pass_once(seed_repo, monkeypatch):
+    repo, drive = seed_repo
+    tree = subprocess.run(["git", "rev-parse", "HEAD:skills"], cwd=repo, capture_output=True, text=True,
+                          check=True).stdout.strip()
+    (drive / "state").mkdir(exist_ok=True)
+    (drive / "state" / "native_seed.json").write_text(json.dumps(
+        {"schema_version": 1, "repo": str(repo.resolve()), "seed_tree": tree, "post_bootstrap_seeds": []}),
+        encoding="utf-8")
+    calls = []
+    real = skill_builtin.reseed_changed_builtins
+    monkeypatch.setattr(skill_builtin, "reseed_changed_builtins", lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    ensure(repo, drive)
+    ensure(repo, drive)
+
+    assert calls == [1] and receipt(drive)["schema_version"] == 2
+
+
+def test_the_pass_starts_the_dependency_step_off_the_boot_path(seed_repo, monkeypatch):
+    repo, drive = seed_repo
+    started = []
+
+    class Thread:
+        def __init__(self, *, target, args, name, daemon):
+            started.append((name, daemon, target, args[1]))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(skill_builtin.threading, "Thread", Thread)
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)
+    assert [(name, daemon, target) for name, daemon, target, _names in started] == [
+        ("builtin-dependencies", True, skill_builtin._dependency_pass)]
+    assert started[0][3] == ["first", "second"]
+    started.clear()
+    skill_builtin.ensure_builtin_skills(drive, repo_dir=repo, log_obj=log)  # receipt matches: nothing to do
+    assert started == []

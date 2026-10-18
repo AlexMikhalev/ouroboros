@@ -350,9 +350,6 @@ LARGE_CONTEXT_SECTION_CHARS = 200_000
 # from the generic section warning: an oversized terminal result is replaced
 # by its authored continuation narrative, not merely logged and sent whole.
 PREDECESSOR_RESULT_INLINE_CHARS = 200_000
-CONTINUATION_NARRATIVE_LEGACY_GENERATIONS = 3
-CONTINUATION_NARRATIVE_LEGACY_TAIL_BYTES = 512 * 1024
-CONTINUATION_NARRATIVE_LEGACY_MAX_ROWS = 5_000
 
 # --- Native image blocks (v6.26.0 multimodal chat) ---------------------------
 # Char-equivalent for ONE image block in chars/4 token estimates (~1.1K tokens):
@@ -395,8 +392,8 @@ SCRATCHPAD_MAX_CONTENT_CHARS = 60_000
 # The money record (state/usage.sqlite) is not one of them: its readers address
 # summary rows and single attempts, so its size does not reach them.
 # events/tools/supervisor/task_reflections logs are ROTATION-BOUNDED since the
-# CPL4-C1..C4 rotation train (same 800KB rotator and supervisor tick as
-# chat/progress). 8MB = 10x the rotation cap: these warnings fire only if
+# CPL4-C1..C4 rotation train (800KB rotator and supervisor tick).
+# 8MB = 10x the rotation cap: these warnings fire only if
 # rotation is broken or missing — deliberate regression tripwires, not size
 # preferences (the pre-train 100MB values watched for replay degradation of
 # the then-unbounded live files; that duty moved to the archive-chain watch
@@ -405,12 +402,6 @@ EVENTS_LOG_WARN_BYTES = 8_000_000
 TOOLS_LOG_WARN_BYTES = 8_000_000
 SUPERVISOR_LOG_WARN_BYTES = 8_000_000
 TASK_REFLECTIONS_LOG_WARN_BYTES = 8_000_000
-# progress.jsonl is expected to be ROTATION-BOUNDED (the chat.jsonl rotation
-# pattern, 800KB cap in supervisor/state.py::rotate_chat_log_if_needed,
-# generalized to progress by the perf/lifecycle sprint). 8MB = 10x that cap:
-# this warning fires only if rotation is broken or missing — a deliberate
-# regression tripwire, not a size preference.
-PROGRESS_LOG_WARN_BYTES = 8_000_000
 # state/scheduled_tasks.json is a whole-document store the scheduler READS AND
 # REWRITES on every tick under the queue lock (supervisor/queue.py::
 # check_scheduled_tasks), and consumed one-shot follow-ups are RETAINED as

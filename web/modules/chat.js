@@ -14,6 +14,7 @@ import { attachmentCaption, attachmentViews, composerText, createComposerAttachm
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
 import { createMainWaiting } from './main_waiting.js';
+import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
 import { syncSettledItems } from './settled_card.js';
@@ -57,6 +58,7 @@ import { attachChatInputSizing } from './chat_input_sizing.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
 import { createChatReplies } from './chat_reply.js';
+import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
 import { clearTransientRoutingAnnotations } from './routing_receipt.js';
 import {
@@ -148,7 +150,6 @@ import {
     saveChatInputHistory,
     senderLabel,
     shouldFirePanic,
-    supervisorReady,
     taskCostMeta,
     taskCostProjection,
     unconfirmedForegroundCardIds,
@@ -211,7 +212,7 @@ export function createChatInstance({
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,
     onHistoryRetry = null,
-    onReadingLatest,
+    onReadingLatest, revealQuotedSource,
 }) {
     const container = mountEl || document.getElementById('content');
     const chatSessionId = getOrCreateChatSessionId(sessionStorage, globalThis.crypto);
@@ -319,7 +320,8 @@ export function createChatInstance({
     const wsDisposers = [];
     const onWs = (event, fn) => wsDisposers.push(ws.on(event, fn));
     const replies = createChatReplies({ chatId, feed: messagesDiv, input, key: storeKey('ouro_chat_reply'),
-        reading: () => reading, onDomWrite: withStableViewport });
+        reading: () => reading, onDomWrite: withStableViewport, history: () => historyReveal,
+        navigate: revealQuotedSource, present: () => !destroyed && isInstanceVisible() });
     const chatMedia = createChatMedia({
         chatSessionId,
         durableChatMediaUrl,
@@ -454,8 +456,7 @@ export function createChatInstance({
     // Local user submissions awaiting server confirmation (clientMessageId
     // -> { clientMessageId, timestamp }).
     const pendingSubmissions = new Map();
-    // В9: Starting… until a snapshot says supervisor_ready; a disconnect forgets it.
-    let hostReady = false;
+    const hostStart = createHostStart(); // В9 readiness and boot phases; a disconnect forgets both
     // Bounded conclusions retain known outcomes for later cards; reusable slots clear on settlement.
     const concludedDirectActivities = new Map();
     const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
@@ -535,11 +536,12 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one' }) {
+    function setStatus({ kind, text, tone = 'online', dots = 'one', title = '' }) {
         // Replay frames never touch the badge; syncChatStatus writes the producer's word, tone and dots once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
+        statusBadge.title = title; // a failed boot step's cause; empty otherwise
         statusBadge.dataset.tone = tone;
         statusBadge.dataset.dots = dots;
         roomWork?.update();
@@ -627,7 +629,7 @@ export function createChatInstance({
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
-        hostReady = supervisorReady(data) ?? hostReady;
+        hostStart.read(data);
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
             : data?.active_direct_turns;
@@ -2657,15 +2659,7 @@ export function createChatInstance({
                         let text = (msg.text || '').trim();
                         if (text) serverTexts.push(text);
                     }
-                    const combined = [...serverTexts, ...inputHistory];
-                    const deduped = [];
-                    const seen = new Set();
-                    for (let i = combined.length - 1; i >= 0; i--) {
-                        if (!seen.has(combined[i])) {
-                            deduped.unshift(combined[i]);
-                            seen.add(combined[i]);
-                        }
-                    }
+                    const deduped = [...new Set([...serverTexts, ...inputHistory].reverse())].reverse();
                     inputHistory.length = 0;
                     inputHistory.push(...deduped.slice(-50));
                     saveChatInputHistory(sessionStorage, CHAT_INPUT_HISTORY_KEY, inputHistory);
@@ -2736,7 +2730,7 @@ export function createChatInstance({
         // A destroyed page reports hidden===false, hence the lifecycle flag.
         isShown: () => !destroyed && !page.hidden,
         // A place still being restored is not where the reader is.
-        isReadingLatest: latest => !destroyed && !reading.pending && isInstanceVisible() && isAtNewestMessage(latest, {
+        isReadingLatest: latest => !destroyed && !reading.pending && !replies.revealing && isInstanceVisible() && isAtNewestMessage(latest, {
             ...newestFacts, atBottom: () => isNearBottom() && !historyPager.getState().canNewer,
         }),
         onReadingLatest, arriving: () => reading.arriving, delivered: newestFacts.delivered,
@@ -3114,8 +3108,8 @@ export function createChatInstance({
     let headerControlInterval = null;
     if (asPanel) {
         // Late panels missed socket open; seed from the socket and latest snapshot.
-        hostReady = supervisorReady(stateSnapshots.latest?.()) ?? hostReady;
-        const seed = computeDerivedChatStatus({ supervisorStarting: !hostReady });
+        hostStart.read(stateSnapshots.latest?.());
+        const seed = computeDerivedChatStatus(hostStart.status());
         if (ws.isConnected?.()) setStatus(seed);
     } else headerControlInterval = setInterval(refreshHeaderControlState, 3000);
     // Both Main and late panels hydrate once; each instance filters its chat.
@@ -3337,7 +3331,7 @@ export function createChatInstance({
             ...chatStatusCounts(activeDirectActivities, liveCardRecords.values(), (id) => modelWaits.waiting(id)),
             isConnected: ws.isConnected ? ws.isConnected() : true,
             pendingSubmissionsCount: pendingSubmissions.size,
-            supervisorStarting: !hostReady,
+            ...hostStart.status(),
         });
     }
 
@@ -3740,7 +3734,7 @@ export function createChatInstance({
             }
             return changed;
         });
-        hostReady = false;
+        hostStart.forget();
         hideTypingIndicatorOnly();
         syncChatStatus();
         syncHeaderControlState({ accounting: { available: false } });
@@ -3749,10 +3743,13 @@ export function createChatInstance({
     const revealQuestion = (taskId, quizId, options) => chatDecision.revealQuestion(
         taskId, quizId, projectId, chatId, appendQuizMessage, isInstanceVisible,
         () => { const current = reading.claim(); reading.stick = false; return current; }, reading.scroll, options);
+    const historyReveal = createHistoryReveal({ pager: historyPager, reading, feed: messagesDiv, records: liveCardRecords,
+        present: isInstanceVisible, expand: record =>
+            (explicitCardExpansion.set(record.groupId, true), setLiveCardExpanded(record, true)) });
     roomWork = createRoomWork({ page, asPanel, ws, statusBadge, messagesDiv, reading, stateSnapshots, revealQuestion,
         activeDirectActivities, liveCardRecords, pendingSubmissions, pendingSuggestedNames, modelWaits, stopEligible,
         cancelRunFromCard, refreshHeaderControlState, captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor,
-        historyPager, showLatest, hostReady: () => hostReady });
+        historyPager, showLatest, hostReady: hostStart.ready });
 
     return {
         page,
@@ -3763,6 +3760,7 @@ export function createChatInstance({
         showLatest,
         refreshHistory: readReceipt.refresh,
         revealQuestion,
+        revealSource: replies.reveal,
         cancelHistoryPaint: readReceipt.cancel,
         // app.js fans its already-existing /api/state refresh to every open
         // thread; panels gain convergence without acquiring their own poll.
@@ -3777,7 +3775,7 @@ export function createChatInstance({
         // app.js, when this room leaves the screen without being destroyed: the
         // modal a file card opened (reader, file dialog) closes and its read
         // stops; staged attachments and uploads are untouched.
-        closeTransient: () => { roomWork?.leave(); chatMedia.closeTransient(); },
+        closeTransient: () => { reading.cancel(); roomWork?.leave(); chatMedia.closeTransient(); },
         // Full teardown (P3): release every resource this instance acquired —
         // ws subscriptions, window/document listeners, the ResizeObserver, all
         // timers — then drop the buffered collections and remove the DOM last.

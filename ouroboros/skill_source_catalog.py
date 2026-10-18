@@ -290,8 +290,12 @@ def read_snapshot(drive_root: pathlib.Path, row: Dict[str, Any]) -> Optional[Dic
 
 
 def builtin_snapshot(repo_dir: pathlib.Path) -> Dict[str, Any]:
-    """The bundled skills folder as a source snapshot (memoized per process: it ships with the app)."""
-    key = str(pathlib.Path(repo_dir).resolve())
+    """The bundled skills folder as a source snapshot (memoized per process: it ships with the app);
+    a built-in whose manifest ``os`` excludes this host is not offered here."""
+    from ouroboros.contracts.skill_manifest import host_platform
+    from ouroboros.skill_builtin import applies_here
+
+    key = f"{pathlib.Path(repo_dir).resolve()}\0{host_platform()}"
     with _MEMO_LOCK:
         cached = _BUILTIN_MEMO.get(key)
     if cached is not None:
@@ -300,6 +304,8 @@ def builtin_snapshot(repo_dir: pathlib.Path) -> Dict[str, Any]:
     index = _read_json(root / "builtin.json")
     marks = {str(item.get("name")): item for item in ((index or {}).get("skills") or []) if isinstance(item, dict)}
     snapshot = parse_plain_tree(root)
+    snapshot["entries"] = [entry for entry in snapshot["entries"]
+                           if applies_here(root / entry["source"]["path"])]
     for entry in snapshot["entries"]:
         mark = marks.get(entry["name"], {})
         entry["category"] = [str(item) for item in mark.get("category") or []][:2]

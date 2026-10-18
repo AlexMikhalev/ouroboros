@@ -1,7 +1,7 @@
 """Starter skills: what a new install offers at first start, and the one-time installer.
 
 The starter list is ``OUROBOROS_STARTER_SKILLS`` (catalog ids; an enterprise build ships its own). Its
-default is every built-in skill and every Official hub skill the maintainer marked recommended.
+default is every built-in (for this host) and Official hub skill the maintainer marked recommended.
 Onboarding also offers configured ids from any source in their categories. An explicit [] selects none;
 only absent/blank means defaults. Completing it installs once in the background; the build's
 OUROBOROS_STARTER_SKILLS_TURN_ON (default true) decides first enablement. An install

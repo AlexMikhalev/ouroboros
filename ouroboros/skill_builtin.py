@@ -17,7 +17,12 @@ in place, keeping its enablement, its Telegram state and the owner's grants whil
 requested keys and permissions are unchanged; a copy with local changes is kept and the
 owner chooses on update. Nothing re-installs a built-in the owner removed.
 A built-in no longer bundled loses its launcher marker and keeps running as a skill that
-left its source.
+left its source. A built-in whose manifest ``os`` excludes this host is not offered or newly
+installed; an installed copy is still re-seeded (discovery hides it, except a Unix
+computer-use copy kept on Windows for remote machines). ``state/native_seed.json`` records
+the committed bundled tree the last complete pass reconciled, so an unchanged tree costs a
+receipt read and two Git queries; bytes accepted without a review get their declared
+dependencies at boot while enabled.
 """
 
 from __future__ import annotations
@@ -25,13 +30,16 @@ from __future__ import annotations
 import logging
 import pathlib
 import shutil
+import subprocess
 import tempfile
-from typing import Any, Dict, Optional
+import threading
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
 BUILTIN_SOURCE = {"id": "builtin", "kind": "builtin", "name": "Built in"}
 SEED_MARKER = ".seed-origin"
+RECEIPT_SCHEMA_VERSION = 2  # 1 was the launcher's native-seed pass
 _MANIFEST_NAMES = ("SKILL.md", "skill.json")
 
 
@@ -68,6 +76,39 @@ def _manifest(skill_dir: pathlib.Path) -> Any:
 def _version(skill_dir: pathlib.Path) -> str:
     manifest = _manifest(skill_dir)
     return str(getattr(manifest, "version", "") or "").strip() if manifest is not None else ""
+
+
+def applies_here(skill_dir: pathlib.Path) -> bool:
+    """Whether a bundled folder's manifest ``os`` covers this host; an unreadable manifest
+    counts (the loader shows it as broken)."""
+    manifest = _manifest(pathlib.Path(skill_dir))
+    return manifest is None or manifest.applies_to_platform()
+
+
+def _legacy_remote_line(drive: pathlib.Path, seed: pathlib.Path, target: pathlib.Path) -> str:
+    """Keep a Unix computer-use copy someone on Windows enabled for remote machines visible
+    after a release narrows the bundled manifest to macOS/Linux (``skill_loader``)."""
+    from ouroboros.contracts.skill_manifest import host_platform
+    from ouroboros.skill_loader import _LEGACY_UNIX_REMOTE_PLATFORM, skill_state_dir_path
+    from ouroboros.utils import read_json_dict
+
+    if target.name != "unix_computer_use" or not (target / SEED_MARKER).is_file():
+        return ""
+    try:
+        if _LEGACY_UNIX_REMOTE_PLATFORM in (target / SEED_MARKER).read_text(encoding="utf-8").splitlines():
+            return _LEGACY_UNIX_REMOTE_PLATFORM + "\n"
+    except (OSError, UnicodeError):
+        return ""
+    old = _manifest(target)
+    if host_platform() != "win32" or applies_here(seed) or old is None:
+        return ""
+    choice = read_json_dict(skill_state_dir_path(drive, target.name) / "enabled.json") or {}
+    # An actor-less ON may be the owner's or an early automatic one, so it is kept as it was;
+    # only a recorded launcher auto-ON is known not to be an owner choice.
+    if (old.os == "any" and "net" in (old.permissions or []) and choice.get("enabled") is True
+            and choice.get("actor") != "native_seed"):
+        return _LEGACY_UNIX_REMOTE_PLATFORM + "\n"
+    return ""
 
 
 def _write_record(drive_root: pathlib.Path, name: str, *, version: str, digest: str, base_digest: Optional[str],
@@ -124,6 +165,9 @@ def install_builtin_skill(
     target = drive / "skills" / "native" / name
     if target.exists() and not (target / SEED_MARKER).is_file():
         return {"ok": False, "name": name, "error": f"{name!r} in the native folder is user-managed; not replaced"}
+    if not target.exists() and not applies_here(seed):
+        return {"ok": False, "name": name, "code": "other_platform",
+                "error": f"built-in {name!r} is for another operating system"}
     resolved_target = target.resolve()
     occupants = [skill for skill in discover_skill_identity(drive, name)
                  if pathlib.Path(skill.skill_dir).resolve() != resolved_target]
@@ -133,10 +177,12 @@ def install_builtin_skill(
     native_root = drive / "skills" / "native"
     staging_root = native_root / ".staging"
     staging_root.mkdir(parents=True, exist_ok=True)
+    legacy_remote = _legacy_remote_line(drive, seed, target)
     staging = pathlib.Path(tempfile.mkdtemp(prefix=f"{name}-", dir=str(staging_root)))
     try:
         shutil.copytree(seed, staging / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        (staging / name / SEED_MARKER).write_text(f"seeded_from={seed_root.name}\nsource=builtin\n", encoding="utf-8")
+        (staging / name / SEED_MARKER).write_text(f"seeded_from={seed_root.name}\nsource=builtin\n{legacy_remote}",
+                                                  encoding="utf-8")
         from ouroboros.marketplace.fetcher import land_staged_tree
 
         land_staged_tree(staging / name, target, replacement_suffix="replaced-builtin")
@@ -178,7 +224,7 @@ def _changed_since_install(drive_root: pathlib.Path, name: str, target: pathlib.
 
 
 def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[pathlib.Path] = None,
-                            log_obj: Any = None) -> int:
+                            log_obj: Any = None, failures: Optional[List[str]] = None) -> int:
     """Re-seed in place the unmodified built-ins whose bundled version changed (marker-owned only).
 
     A copy with local changes against its recorded base is kept: the owner chooses on
@@ -220,6 +266,8 @@ def reseed_changed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[path
         if result.get("ok"):
             upgraded += 1
         else:
+            if failures is not None:
+                failures.append(seed.name)
             logger.warning("Built-in skill %s re-seed failed: %s", seed.name, result.get("error"))
     return upgraded
 
@@ -240,14 +288,15 @@ def _warn_equal_version_drift(seed: pathlib.Path, target: pathlib.Path, version:
 
 
 def release_removed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[pathlib.Path] = None,
-                             log_obj: Any = None) -> None:
+                             log_obj: Any = None) -> bool:
     """A built-in no longer bundled keeps its files and records; only the launcher
-    marker goes, so the copy is the owner's from now on."""
+    marker goes, so the copy is the owner's from now on. Returns whether every one went."""
     logger = log_obj or log
     seed_root = pathlib.Path(seed_dir or bundled_skills_dir())
     native_root = pathlib.Path(drive_root) / "skills" / "native"
     if not native_root.is_dir():
-        return
+        return True
+    complete = True
     for entry in native_root.iterdir():
         marker = entry / SEED_MARKER
         if not entry.is_dir() or entry.name.startswith(".") or not marker.is_file() or (seed_root / entry.name).is_dir():
@@ -256,7 +305,9 @@ def release_removed_builtins(drive_root: pathlib.Path, *, seed_dir: Optional[pat
             marker.unlink()
             logger.info("Built-in skill %r is no longer bundled; its installed copy is now user-managed.", entry.name)
         except OSError:
+            complete = False
             logger.warning("Failed to release removed built-in %s", entry, exc_info=True)
+    return complete
 
 
 def record_converted_builtin(drive_root: pathlib.Path, skill: Any, legacy: Any, *,
@@ -306,16 +357,123 @@ def record_converted_builtin(drive_root: pathlib.Path, skill: Any, legacy: Any, 
     return True
 
 
-def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj: Any = None) -> int:
-    """Startup work for an existing data root: the one-time identity conversion (with
-    install records for launcher-seeded built-ins), re-seeding changed built-ins, and
-    releasing built-ins the app no longer bundles. Returns the number re-seeded."""
+def _seed_identity(repo_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
+    """The committed bundled tree, read without its payloads; a dirty or unknown tree stays uncached."""
+    if not (repo_dir / ".git").exists():
+        return None
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "--", "skills"],
+                                cwd=str(repo_dir), capture_output=True, text=True, timeout=10)
+        if status.returncode or status.stdout.strip():
+            return None
+        tree = subprocess.run(["git", "rev-parse", "--verify", "HEAD:skills"], cwd=str(repo_dir),
+                              capture_output=True, text=True, timeout=10)
+        if tree.returncode or not tree.stdout.strip():
+            return None
+        return {"schema_version": RECEIPT_SCHEMA_VERSION, "repo": str(repo_dir.resolve()),
+                "seed_tree": tree.stdout.strip()}
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _bundled_names(seed_root: pathlib.Path) -> Optional[List[str]]:
+    try:
+        return sorted(entry.name for entry in seed_root.iterdir() if _is_seed(entry))
+    except OSError:
+        return None
+
+
+def _wants_dependencies(drive: pathlib.Path, skill: Any) -> bool:
+    """A built-in extension accepted without a review that is on, or whose install asked to turn
+    on when ready and has no explicit choice yet (it stays off until its dependencies are ready)."""
+    from ouroboros.skill_acceptance import accepted_without_review
+    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.skill_loader import skill_state_dir_path
+
+    if skill is None or skill.source != "native" or not skill.manifest.is_extension() or not accepted_without_review(skill):
+        return False
+    if skill.enabled:
+        return True
+    requested = (read_install_record(drive, skill.name) or {}).get("turn_on_when_ready") is True
+    return requested and not (skill_state_dir_path(drive, skill.name) / "enabled.json").exists()
+
+
+def _builtins_needing_dependencies(drive: pathlib.Path, names: List[str], logger: Any) -> Optional[List[str]]:
+    """Built-ins that want their isolated dependencies (``_wants_dependencies``) and do not have them
+    ready; ``None`` when they could not be inspected (callers treat that as work left)."""
+    try:
+        from ouroboros.config import get_skills_repo_path
+        from ouroboros.skill_dependencies import skill_deps_not_ready
+        from ouroboros.skill_loader import find_skill
+
+        repo_path = get_skills_repo_path() or None
+        found = [find_skill(drive, name, repo_path=repo_path) for name in names]
+        return [skill.name for skill in found
+                if _wants_dependencies(drive, skill) and skill_deps_not_ready(drive, skill, strict=True)[1]]
+    except Exception:
+        logger.warning("Built-in skill dependencies could not be inspected", exc_info=True)
+        return None
+
+
+def _dependency_pass(drive: pathlib.Path, names: List[str], logger: Any) -> List[str]:
+    """Ready the dependencies of built-ins that want them (``_wants_dependencies``), one lifecycle job
+    each, then turn on a requested one and reconcile the extension. Off the boot path; a failure stays
+    in ``deps.json`` for the Skills page and the next boot retries it (an owner's OFF waits for the
+    enable, which runs the same step)."""
+    pending = _builtins_needing_dependencies(drive, names, logger)
+    if not pending:
+        return []
+    try:
+        from ouroboros import extension_loader
+        from ouroboros.config import get_skills_repo_path, load_settings
+        from ouroboros.skill_acceptance import accepted_release_dependencies
+        from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+        from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_job_blocking
+        from ouroboros.skill_loader import find_skill
+
+        repo_path = get_skills_repo_path() or None
+    except Exception:
+        logger.warning("Built-in dependency pass could not start", exc_info=True)
+        return []
+
+    def step(name: str) -> Dict[str, Any]:
+        skill = find_skill(drive, name, repo_path=repo_path)
+        if not _wants_dependencies(drive, skill):
+            return {"deps_status": "skipped"}
+        status, error = accepted_release_dependencies(drive, skill, repo_path=repo_path)
+        turn_on = reconcile_turn_on_when_ready(drive, name, repo_path=repo_path, reason="dependencies ready at startup")
+        state = extension_loader.reconcile_extension(name, drive, load_settings, repo_path=repo_path)
+        return {"deps_status": status, "error": error, "turn_on": turn_on["action"],
+                "extension_action": state.get("action")}
+
+    for name in pending:
+        try:
+            run_lifecycle_job_blocking(
+                kind="deps", target=name, source="builtin", runner=lambda name=name: step(name),
+                dedupe_key=f"builtin-dependencies:{name}",
+                options=LifecycleJobOptions(drive_root=drive, result_error=lambda result: result.get("error", "")),
+            )
+        except Exception:
+            logger.warning("Built-in dependency step failed for %s", name, exc_info=True)
+    return pending
+
+
+def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj: Any = None,
+                          repo_dir: Optional[pathlib.Path] = None, dependency_pass: bool = True) -> int:
+    """Startup work for an existing data root: the one-time identity conversion (with install
+    records for launcher-seeded built-ins), then, unless ``state/native_seed.json`` already names
+    this committed bundled tree, re-seeding changed built-ins and releasing built-ins the app no
+    longer bundles. The receipt is removed before that pass and written only when it completed
+    with no built-in still needing dependencies; the dependency pass then runs off the boot path.
+    Returns the number re-seeded."""
     from ouroboros.config import DATA_DIR
     from ouroboros.skill_identity import convert_skill_identities
+    from ouroboros.utils import atomic_write_json, read_json_dict
 
     logger = log_obj or log
     drive = pathlib.Path(drive_root or DATA_DIR)
-    seed_root = bundled_skills_dir()
+    seed_root = pathlib.Path(repo_dir) / "skills" if repo_dir is not None else bundled_skills_dir()
+    repo = seed_root.parent
     try:
         convert_skill_identities(
             drive, log_obj=logger,
@@ -323,20 +481,45 @@ def ensure_builtin_skills(drive_root: Optional[pathlib.Path] = None, *, log_obj:
         )
     except Exception:
         logger.warning("Skill identity conversion raised", exc_info=True)
+    receipt = drive / "state" / "native_seed.json"
+    identity = _seed_identity(repo)
+    if identity and read_json_dict(receipt) == identity:
+        return 0
+    try:
+        receipt.unlink(missing_ok=True)  # a partly applied tree must not keep an older receipt
+    except OSError:
+        logger.warning("Built-in receipt could not be invalidated; reconciliation deferred", exc_info=True)
+        return 0
+    failures: List[str] = []
     upgraded = 0
     try:
-        upgraded = reseed_changed_builtins(drive, seed_dir=seed_root, log_obj=logger)
+        upgraded = reseed_changed_builtins(drive, seed_dir=seed_root, log_obj=logger, failures=failures)
     except Exception:
+        failures.append("reseed")
         logger.warning("Built-in skill re-seed raised", exc_info=True)
     try:
-        release_removed_builtins(drive, seed_dir=seed_root, log_obj=logger)
+        if not release_removed_builtins(drive, seed_dir=seed_root, log_obj=logger):
+            failures.append("release")
     except Exception:
+        failures.append("release")
         logger.warning("Removed built-in release raised", exc_info=True)
+    names = _bundled_names(seed_root)
+    if names is None or _builtins_needing_dependencies(drive, names, logger) != []:
+        failures.append("dependencies")  # unknown readiness is not completion
+    if identity and not failures and identity == _seed_identity(repo):
+        try:
+            atomic_write_json(receipt, identity)
+        except OSError:
+            logger.warning("Built-in receipt not recorded; the next boot reconciles again", exc_info=True)
+    if dependency_pass and names:
+        threading.Thread(target=_dependency_pass, args=(drive, names, logger),
+                         name="builtin-dependencies", daemon=True).start()
     return upgraded
 
 
 __all__ = [
     "BUILTIN_SOURCE",
+    "applies_here",
     "builtin_trust",
     "bundled_skills_dir",
     "ensure_builtin_skills",

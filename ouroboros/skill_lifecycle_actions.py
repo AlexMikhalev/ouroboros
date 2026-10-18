@@ -124,9 +124,13 @@ def _toggle(skill: Any, drive_root: Path, repo_path: str, enabled: bool, actor: 
             return _refusal(f"cannot enable until the review gate permits the current bytes: {need}", **facts)
         if not facts["grants"].get("all_granted", True):
             return _refusal("cannot enable until requested key and permission grants are approved", **facts)
+        from ouroboros.skill_acceptance import accepted_release_dependencies
         from ouroboros.skill_dependencies import skill_deps_not_ready
 
         deps_status, deps_reason = skill_deps_not_ready(drive_root, skill)
+        if deps_reason and accepted_release_dependencies(drive_root, skill, repo_path=repo_path)[0]:
+            # Bytes accepted without a review had no review job to install them; do it now.
+            deps_status, deps_reason = skill_deps_not_ready(drive_root, skill)
         if deps_reason:
             return _refusal("cannot enable until isolated dependencies are installed with a current fingerprint",
                             deps_status="stale" if deps_reason == "fingerprint" else deps_status, **facts)

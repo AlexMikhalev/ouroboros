@@ -12,6 +12,8 @@ pin each producer of that one fact.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -62,7 +64,7 @@ def test_facts_row_writes_the_facts_and_history_replays_them(tmp_path):
         llm_trace={"tool_calls": [{"tool": "start_task"}], "reasoning_notes": []},
         drive_logs=drive_logs,
     )
-    row = json.loads((drive_logs / "chat.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    row = json.loads(dialogue_test.log_text(drive_logs / "chat.jsonl").splitlines()[0])
     assert row["summary_kind"] == "host_task_facts" and row["text"] == ""
     assert row["_is_direct_chat"] is True
     assert row["typed_routing_action"] == "promote_chat_to_task"
