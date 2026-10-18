@@ -22,7 +22,8 @@ from ouroboros.presence_runner import PresenceTurnError, PresenceTurnGate, _buil
 from ouroboros.process_scope import task_scope_terminal_evidence
 from ouroboros.review_operation import controller_identity
 from ouroboros.task_results import is_reconciled_presence_placeholder, load_task_result, write_task_result
-from ouroboros.task_status import effective_task_result, execution_owner_record, reconcile_orphaned_running_tasks
+from ouroboros.task_status import (effective_task_result, execution_owner_record, reconcile_orphaned_running_tasks,
+                                    wait_for_effective_tasks)
 from ouroboros.task_store import patch_document
 from ouroboros.terminal_projection import terminal_projection_owed
 from tests import _dialogue as dialogue_test
@@ -172,13 +173,16 @@ def test_a_completed_turn_with_a_workspace_stays_completed(tmp_path):
     assert effective["status"] == "completed" and "status_reconciled_from" not in effective
     assert reconcile_orphaned_running_tasks(tmp_path) == 0
     assert retained_work_view(stored, ref, tmp_path)[1]["text"] == "Done."
-    # A root promoted from the turn speaks from the same carrier but is managed work: its workspace
-    # artifacts still finalize before it reads terminal.
+    # A root promoted from the turn speaks from the same carrier but is pooled work: its workspace
+    # artifacts still finalize before it reads terminal, and a wait keeps waiting until they do.
     write_task_result(tmp_path, "promoted-root", "completed", metadata={"presence": stored["metadata"]["presence"]},
+                      source="presence_promote", delegation_role="root", root_task_id="promoted-root",
+                      execution_owner=execution_owner_record(tmp_path, {"id": "promoted-root"}, "pooled"),
                       workspace_root=str(tmp_path / "external"), artifact_status="finalizing", result="Worker done.")
     promoted = effective_task_result(tmp_path, load_task_result(tmp_path, "promoted-root"), materialize_artifacts=False)
     assert (promoted["status"], promoted["child_status"], promoted["artifact_status"]) == (
         "running", "completed", "finalizing")
+    assert wait_for_effective_tasks(tmp_path, ["promoted-root"], timeout_sec=0)["all_terminal"] is False
 
 
 def test_an_executor_that_raises_records_its_end_and_is_settled_once(tmp_path):
