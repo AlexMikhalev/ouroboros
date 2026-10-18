@@ -159,8 +159,20 @@ def _checkout_hold(data_root: Any, entry: pathlib.Path, *, rounds: tuple, source
     return ""
 
 
+def _checkout_registration_gone(repo: pathlib.Path) -> bool:
+    """A deleted subject leaves a Git pointer to an absent registration; unreadable is not absent."""
+    pointer = (repo / ".git").read_text(encoding="utf-8").strip()
+    if not pointer.startswith("gitdir: ") or not pointer[8:]:
+        return False
+    try:
+        (repo / pointer[8:]).stat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def _remove_checkout(entry: pathlib.Path) -> str:
-    """Remove only this checkout and its Git registration; keep it on a Git refusal."""
+    """Remove this checkout after Git unregisters it or its registration is already gone."""
     from ouroboros.subagent_worktrees import _force_rmtree
     from ouroboros.tools.review_subject import _git_bytes
 
@@ -170,10 +182,12 @@ def _remove_checkout(entry: pathlib.Path) -> str:
         text = out.decode("utf-8", "replace").strip()
         common = (repo / text).resolve(strict=False) if rc == 0 and text else None
         if common is None or not common.is_dir():
-            return f"{entry.name}: Git common directory unavailable: {err.decode('utf-8', 'replace').strip()}"
-        rc, _out, err = _git_bytes(common, ["--git-dir", str(common), "worktree", "remove", "--force", str(repo)])
-        if rc:
-            return f"{entry.name}: Git worktree removal failed: {err.decode('utf-8', 'replace').strip()}"
+            if not _checkout_registration_gone(repo):
+                return f"{entry.name}: Git common directory unavailable: {err.strip()}"
+        else:
+            rc, _out, err = _git_bytes(common, ["--git-dir", str(common), "worktree", "remove", "--force", str(repo)])
+            if rc:
+                return f"{entry.name}: Git worktree removal failed: {err.strip()}"
     _force_rmtree(entry)
     if entry.exists() or entry.is_symlink():
         return f"{entry.name}: the checkout survived its removal"

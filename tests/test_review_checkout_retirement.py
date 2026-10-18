@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -186,15 +187,65 @@ def test_checkout_retirement_targets_only_its_registration_and_keeps_an_offline_
     assert str(offline) in after, "another owner's unavailable checkout must retain its registration"
 
 
-def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_can_be_removed(subject):
+def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_can_be_removed(subject, monkeypatch):
+    from ouroboros import server_maintenance as sm
+
     entry = _retain(subject)
     _git(subject.repo, "worktree", "lock", "--reason", "reader retains this copy", str(entry / "repo"))
-    report = _prune(subject)
-    assert report["errors"] and report["checkouts_removed"] == 0
+    with pytest.raises(subprocess.CalledProcessError) as refusal:
+        _git(subject.repo, "worktree", "remove", "--force", str(entry / "repo"))
+    message = refusal.value.stderr.strip()
+    assert "reader retains this copy" in message
+    monkeypatch.setattr(sm, "DATA_DIR", subject.data)
+    monkeypatch.setattr(sm, "_REVIEW_VIEWS_OWED", [False])
+    monkeypatch.setattr(sm, "_startup_live_task_ids", lambda *_args, **_kwargs: set())
+    sm._prune_review_checkouts()
+    events = [json.loads(line) for line in (subject.data / "logs" / "events.jsonl").read_text().splitlines()]
+    report = [event for event in events if event["type"] == "review_checkout_prune"][-1]["report"]
+    assert report["errors"] == [f"{entry.name}: Git worktree removal failed: {message}"]
+    assert report["checkouts_removed"] == 0
     assert (entry / "repo" / "a.txt").read_text() == "two\n"
     _git(subject.repo, "worktree", "unlock", str(entry / "repo"))
     report = _prune(subject)
     assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists()
+
+
+@pytest.mark.parametrize("replacement", [False, True], ids=["deleted", "recloned"])
+def test_checkout_of_a_deleted_subject_retires_only_after_review_custody_ends(subject, replacement):
+    entry = _retain(subject)
+    shutil.rmtree(subject.repo)
+    if replacement:
+        _repo(subject.repo)  # the new repository has no registration for this old checkout
+    _attempt(subject, "reviewing")
+    held = _prune(subject)
+    assert held["checkouts_kept"] == 1 and not held["errors"] and entry.is_dir(), held
+
+    _attempt(subject, "succeeded")
+    report = _prune(subject)
+    assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists(), report
+    if replacement:
+        assert len(_git(subject.repo, "worktree", "list").splitlines()) == 1
+        assert (subject.repo / "a.txt").read_text() == "two\n"
+
+
+@pytest.mark.parametrize("damage", ["common_dir", "git_pointer"])
+def test_existing_broken_git_metadata_keeps_the_checkout_and_reports_the_git_error(subject, damage):
+    entry = _retain(subject)
+    gitfile = entry / "repo" / ".git"
+    registration = pathlib.Path(gitfile.read_text().removeprefix("gitdir: ").strip())
+    metadata = registration / "commondir" if damage == "common_dir" else gitfile
+    original = metadata.read_bytes()
+    metadata.write_text("unavailable-metadata\n")
+    with pytest.raises(subprocess.CalledProcessError) as refusal:
+        _git(entry / "repo", "rev-parse", "--git-common-dir")
+
+    report = _prune(subject)
+    assert report["errors"] == [f"{entry.name}: Git common directory unavailable: {refusal.value.stderr.strip()}"]
+    assert report["checkouts_removed"] == 0 and (entry / "repo" / "a.txt").read_text() == "two\n"
+    assert registration.is_dir(), "a Git refusal alone does not prove the registration is gone"
+    metadata.write_bytes(original)
+    report = _prune(subject)
+    assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists(), report
 
 
 def test_published_rejoin_custody_keeps_the_copy_and_a_retired_rejoin_rebuilds_the_frozen_tree(subject):
