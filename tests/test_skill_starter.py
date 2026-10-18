@@ -185,3 +185,66 @@ def test_startup_classifies_the_data_root_before_the_builtin_startup_work(tmp_pa
                         lambda _drive, _settings, provider_ready: order.append(("sources", provider_ready)) or "fresh")
     assert skill_starter.skills_startup(tmp_path, {}, provider_ready=True) == "fresh"
     assert order == [("builtins", "fresh"), ("sources", True)]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_scheduled_starters_have_a_bounded_joinable_owner(tmp_path, monkeypatch, fails):
+    import threading
+
+    entered, release, finished = (threading.Event() for _ in range(3))
+
+    def run(*args, **kwargs):
+        entered.set()
+        assert release.wait(60)
+        finished.set()
+        if fails:
+            raise RuntimeError("starter failed")
+
+    monkeypatch.setattr(skill_starter, "run_starter", run)
+    thread = skill_starter.schedule_starter(tmp_path, None, origin="onboarding")
+    try:
+        assert entered.wait(60)
+        assert not skill_starter.join_starters(timeout=0)
+        assert thread.is_alive() and not finished.is_set()
+        release.set()
+        assert skill_starter.join_starters(timeout=60)
+        assert not thread.is_alive() and finished.is_set()
+        assert skill_starter.join_starters(timeout=0)
+    finally:
+        release.set()
+        thread.join(60)
+
+
+def test_shared_test_finalizer_joins_onboarding_work(tmp_path, monkeypatch, request):
+    import threading
+    from contextlib import contextmanager
+    from tests import conftest
+
+    assert "_join_starter_threads" in request.fixturenames
+    entered, release, finished = (threading.Event() for _ in range(3))
+
+    def run(*args, **kwargs):
+        entered.set()
+        assert release.wait(60)
+        finished.set()
+
+    monkeypatch.setattr(skill_starter, "run_starter", run)
+    finalizer = contextmanager(conftest._join_starter_threads.__wrapped__)
+    thread = None
+    try:
+        with finalizer(monkeypatch, None):
+            assert skill_starter.after_onboarding(tmp_path, None) == "scheduled"
+            assert entered.wait(60)
+            thread = next(t for t in threading.enumerate() if t.name == "starter-skills")
+            original_join = thread.join
+
+            def join(timeout=None):
+                release.set()  # completion is possible only once the owner actually joins
+                original_join(timeout)
+
+            monkeypatch.setattr(thread, "join", join)
+        assert finished.is_set() and not thread.is_alive()
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(60)

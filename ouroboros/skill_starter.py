@@ -17,6 +17,7 @@ import json
 import logging
 import pathlib
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
@@ -27,6 +28,8 @@ STARTER_SETTING = "OUROBOROS_STARTER_SKILLS"
 MARKER_FILENAME = "skill_starter.json"
 _RETRY_CODES = frozenset({"fetch_failed", "source_unread"})
 _LOCK = threading.Lock()
+_THREADS_LOCK = threading.Lock()
+_THREADS: set[threading.Thread] = set()
 
 
 def marker_path(drive_root: pathlib.Path) -> pathlib.Path:
@@ -212,8 +215,27 @@ def schedule_starter(drive_root: pathlib.Path, ids: Optional[List[str]], *, orig
             log.warning("Starter skill installation failed", exc_info=True)
 
     thread = threading.Thread(target=_run, daemon=True, name="starter-skills")
-    thread.start()
+    with _THREADS_LOCK:
+        _THREADS.difference_update([old for old in _THREADS if not old.is_alive()])
+        _THREADS.add(thread)
+        try:
+            thread.start()
+        except Exception:
+            _THREADS.discard(thread)
+            raise
     return thread
+
+
+def join_starters(timeout: float = 60.0) -> bool:
+    """Join scheduled starters within one deadline; return whether this owner is idle."""
+    deadline = time.monotonic() + timeout
+    with _THREADS_LOCK:
+        threads = list(_THREADS)
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    with _THREADS_LOCK:
+        _THREADS.difference_update([thread for thread in _THREADS if not thread.is_alive()])
+        return not _THREADS
 
 
 def _existing_install(drive_root: pathlib.Path, settings: Dict[str, Any]) -> bool:
@@ -318,6 +340,6 @@ def onboarding_skill_choices(body: Dict[str, Any], settings: Dict[str, Any]) -> 
 
 __all__ = [
     "MARKER_FILENAME", "STARTER_SETTING", "after_onboarding", "at_startup", "classify_first_start", "default_starter_ids",
-    "onboarding_skill_choices", "read_marker",
+    "join_starters", "onboarding_skill_choices", "read_marker",
     "run_starter", "schedule_starter", "skills_startup", "starter_groups", "starter_ids",
 ]
