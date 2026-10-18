@@ -345,6 +345,21 @@ def test_a_kept_folder_names_its_reason_and_the_next_run_frees_it(tmp_path, monk
     assert not (root / "task_drives" / "pending").exists()
 
 
+@pytest.mark.parametrize("code, reason", [
+    ("unread_mailbox_uncustodied", "results_pending"),  # late mail: the next pass unions and carries it
+    ("call_inventory_changed", "results_pending"),  # call records moved under the pass: re-armed next time
+    ("unread_mailbox_unreadable", "unreadable_record"),  # a torn mailbox is a read failure, not pending work
+    ("task_result_unreadable", "unreadable_record"),
+    ("custody_error: ValueError('torn')", "unreadable_record"),
+    ("generation_closed", "restart"),
+    ("not_own_drive", "other"),  # a code with no owner-facing group stays "for another reason"
+])
+def test_the_fail_closed_mailbox_and_call_inventory_codes_name_their_owner_facing_reason(code, reason):
+    from ouroboros.storage_free import _reason
+
+    assert _reason(code) == reason
+
+
 # ------------------------------------------------------------------ B8, B10
 
 

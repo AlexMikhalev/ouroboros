@@ -55,14 +55,16 @@ GROUP_WORKING_COPIES = "working_copies"
 GROUPS = (GROUP_WORK_FOLDERS, GROUP_WORKING_COPIES)
 LARGEST_ITEMS = 20
 # A retirer's typed reason -> the owner's reason (the client's sentences): results or messages
-# still being saved, in use again, busy right now, the task record unreadable, a restart.
+# still being saved (late mail and call records that moved under the pass included: the next pass
+# carries them), in use again, busy right now, the task record or its mailbox unreadable, a restart.
 _KEPT_REASONS = {
-    "results_pending": ("child_result_unadopted", "child_refs_pending", "call_inventory_pending", "inputs_uncustodied",
-                        "verification_receipts_uncustodied", "canonical_changed", "drive_occupant_changed",
-                        "canonical_not_settled", "post_work_open", "artifacts_not_terminal", "child_drive_mismatch"),
+    "results_pending": ("child_result_unadopted", "child_refs_pending", "call_inventory_pending", "call_inventory_changed",
+                        "inputs_uncustodied", "unread_mailbox_uncustodied", "verification_receipts_uncustodied",
+                        "canonical_changed", "drive_occupant_changed", "canonical_not_settled", "post_work_open",
+                        "artifacts_not_terminal", "child_drive_mismatch"),
     "in_use": ("task_live", "liveness_unknown", "owner_processes_live", "task_not_terminal", "parent_not_terminal"),
     "busy": ("custody_busy", "mailbox_busy"),
-    "unreadable_record": ("task_result_unreadable",),
+    "unreadable_record": ("task_result_unreadable", "unread_mailbox_unreadable"),
     "restart": ("generation_closed",),
 }
 
