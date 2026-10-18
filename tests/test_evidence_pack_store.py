@@ -4,7 +4,7 @@ import pytest
 from ouroboros import evidence_packer as packer, evidence_packs as packs, obligations, store
 from ouroboros import observability as obs
 from supervisor import terminal_delivery
-from tests.test_evidence_packs import _blob, _task, _result
+from tests.test_evidence_packs import _blob, _loose, _task, _result
 from tests.test_evidence_packs import root as root
 
 
@@ -123,4 +123,71 @@ def test_a_pass_that_left_work_unfinished_stays_due_until_the_store_moves(root):
         assert acquired and maintenance.run_job(root, "evidence_packing")["state"] == "done"
     assert maintenance_jobs.job(root, "evidence_packing")["pending"] == 1
     assert maintenance.run_job(root, "evidence_packing") is not None  # due in the child without any write
+    assert maintenance_jobs.job(root, "evidence_packing")["pending"] == 0
+
+
+def test_a_receipt_committed_during_the_pass_keeps_the_unfinished_work_due(root, monkeypatch):
+    """Both directions, through ``maintenance.run_job``. The real publisher
+    (``headless.prepare_terminal_task_files``) holds the task's custody while the pass defers its
+    unlink, then releases it and commits its receipt (``obligations.drive_finished``) BEFORE the pass
+    records itself. That write is one the pass has not seen: the server's next look is due without any
+    later write, and the retry finishes the work. A retry nothing writes during (the contender still
+    holds on) records the revision its own record leaves and rests until the store moves: one look
+    per store change, never one per tick."""
+    import threading
+    from ouroboros import headless, maintenance, maintenance_jobs
+    from ouroboros.task_custody import task_custody_lock
+
+    refs, handle = _task(root, "finished", blobs=1)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    outcome, real_finalize, real_pack = {}, headless._finalize_task_artifacts_locked, packs.pack_task
+
+    def hold_custody_until_the_pass_deferred(*args, **kwargs):
+        entered.set()
+        outcome["released"] = release.wait(20)
+        return real_finalize(*args, **kwargs)
+
+    def publisher():
+        try:
+            outcome["publisher"] = headless.prepare_terminal_task_files(root, {"id": "finished"})
+        finally:
+            finished.set()
+
+    def let_the_publisher_commit_before_the_record(*args, **kwargs):
+        result = real_pack(*args, **kwargs)
+        if not release.is_set():  # once: the first pass's deferral
+            release.set()
+            outcome["receipt_before_record"] = finished.wait(20)
+        return result
+
+    monkeypatch.setattr(headless, "_finalize_task_artifacts_locked", hold_custody_until_the_pass_deferred)
+    monkeypatch.setattr(packs, "pack_task", let_the_publisher_commit_before_the_record)
+    with store.open_store(root, write=False) as txn:
+        before = txn.revision()
+    worker = threading.Thread(target=publisher, name="terminal-publisher")
+    worker.start()
+    try:
+        assert entered.wait(20)
+        assert maintenance.run_job(root, "evidence_packing") == {"state": "done", "items": 1}
+    finally:
+        release.set()
+        worker.join(30)
+    assert not worker.is_alive() and outcome["publisher"]["error"] == "" and outcome["receipt_before_record"]
+    with store.open_store(root, write=False) as txn:
+        assert txn.revision() > before + 1  # the receipt and the pass's own record
+    assert packs.published_generations(root, "finished") and _loose(refs[0])  # packed; the unlink deferred
+    row = maintenance_jobs.job(root, "evidence_packing")
+    assert (row["pending"], row["quiet"]) == (1, True)
+    assert "evidence_packing" in maintenance.due(root)  # the receipt is a write the pass has not seen
+    assert maintenance.run_job(root, "evidence_packing")["state"] == "done"
+    assert not _loose(refs[0]) and packs.blob_bytes(root, refs[0])
+    assert maintenance_jobs.job(root, "evidence_packing")["pending"] == 0
+    with task_custody_lock(root, "held") as acquired:  # a contender that writes nothing during the retry
+        _task(root, "held", blobs=1)
+        assert acquired and maintenance.run_job(root, "evidence_packing")["state"] == "done"
+        assert maintenance_jobs.job(root, "evidence_packing")["pending"] == 1
+        assert "evidence_packing" not in maintenance.due(root)  # nothing written since the pass began
+    _result(root, "held", "completed", note="the contender's receipt, after the pass")
+    assert "evidence_packing" in maintenance.due(root)
+    assert maintenance.run_job(root, "evidence_packing")["state"] == "done"
     assert maintenance_jobs.job(root, "evidence_packing")["pending"] == 0
