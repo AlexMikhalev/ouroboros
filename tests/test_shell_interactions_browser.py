@@ -429,6 +429,7 @@ def saved_history(tmp_path):
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
+
     from ouroboros import dialogue_store
     from ouroboros.gateway.history import make_chat_history_endpoint
     root = tmp_path / 'history'
@@ -715,6 +716,76 @@ def test_a_handle_drag_moves_its_box_and_the_room_follows_it_frame_by_frame(shel
         assert 581 + 16 * 30 > facts['content'], facts
         assert max(f['panel'] for f in seen) <= facts['content'] + 0.5, ('it stops at the content area', facts)
         assert abs(facts['shown'][1] - facts['content']) <= 1, ('and keeps the width shown there', facts)
+
+
+def test_the_project_panel_sliding_in_never_widens_the_window(shell_ui, tmp_path):
+    """Docked, the panel slides in from 18px past the window's edge. Placed in #app (an absolute grid item), that
+    offset would widen the page, and a scrollIntoView during the slide (a Project opened on a question) would
+    scroll the whole window sideways; #app clips it. The slide is slowed so the check lands inside it."""
+    page = seed_page(shell_ui, 1108, 680)
+    facts = {'engine': shell_ui['engine']}
+    try:
+        boot(page, shell_ui)
+        page.add_style_tag(content='.project-panel { transition-duration: 4s !important; }')
+        open_project(page)
+        facts.update(page.evaluate("""() => {
+            const panel = document.getElementById('project-panel'), root = document.scrollingElement;
+            const sliding = getComputedStyle(panel).transform;
+            panel.querySelector('.project-panel-bar')?.scrollIntoView({block: 'center', inline: 'nearest'});
+            return {sliding, pageWidth: root.scrollWidth, window: innerWidth, scrollLeft: root.scrollLeft,
+                    sidebarLeft: document.getElementById('primary-sidebar').getBoundingClientRect().left};
+        }"""))
+    finally:
+        evidence(tmp_path, f'shell-panel-slide-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['sliding'] not in ('none', 'matrix(1, 0, 0, 1, 0, 0)'), ('checked while the panel slides', facts)
+    assert facts['pageWidth'] <= facts['window'], facts
+    assert facts['scrollLeft'] == 0 and facts['sidebarLeft'] == 0, facts
+
+
+def test_a_project_closed_mid_drag_keeps_its_stored_width(shell_ui, tmp_path):
+    """Escape while holding the Project panel's handle closes the panel; the release then finds no width shown,
+    and the stored width and the saved preference stay what they were (no 0px panel when it opens again)."""
+    page = seed_page(shell_ui, 1108, 680)
+    facts = {'engine': shell_ui['engine']}
+    saved = []
+
+    def preferences(route):
+        if route.request.method != 'GET':
+            saved.append(json.loads(route.request.post_data or '{}'))
+        route.fulfill(json={'sidebar_width': 282, 'project_panel_width': 581, 'project_seen_revision': {}})
+    try:
+        page.route('**/api/ui/preferences', preferences)
+        boot(page, shell_ui)
+        page.wait_for_function("() => getComputedStyle(document.documentElement).getPropertyValue('--project-panel-width').trim() === '581px'",
+                               timeout=20_000)
+        open_project(page)
+        settle(page)
+        page.evaluate("""async () => {
+            const handle = document.querySelector('#project-panel > .resize-handle');
+            const frame = () => new Promise(r => requestAnimationFrame(r));
+            const box = handle.getBoundingClientRect(), y = box.top + 200;
+            let x = box.left + box.width / 2;
+            const send = type => handle.dispatchEvent(new PointerEvent(type, {bubbles: true, cancelable: true,
+                clientX: x, clientY: y, pointerId: 9, pointerType: 'mouse', isPrimary: true, button: 0,
+                buttons: type === 'pointerup' ? 0 : 1}));
+            send('pointerdown');
+            for (let i = 0; i < 6; i += 1) { x -= 10; send('pointermove'); await frame(); }
+            window.__dragHandle = {send};
+        }""")
+        page.keyboard.press('Escape')
+        page.wait_for_function("() => document.getElementById('project-panel').hidden", timeout=5_000)
+        page.evaluate("() => window.__dragHandle.send('pointerup')")
+        page.wait_for_timeout(700)  # the save is debounced
+        facts['stored'] = page.evaluate("() => document.documentElement.style.getPropertyValue('--project-panel-width')")
+        facts['saved'] = [patch for patch in saved if 'project_panel_width' in patch]
+        open_project(page)
+        settle(page)
+        facts['reopened'] = page.evaluate("() => Math.round(document.getElementById('project-panel').getBoundingClientRect().width)")
+    finally:
+        evidence(tmp_path, f'shell-panel-closed-mid-drag-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['stored'] == '581px' and facts['saved'] == [] and facts['reopened'] == 581, facts
 
 
 FOCUS = """() => { const a = document.activeElement;

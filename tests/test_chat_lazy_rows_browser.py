@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tests.test_chat_history_paging_browser import MAIN, _FRAMES, _append, _assert_at_newest, _idle, _open, _step
+from tests.test_chat_history_paging_browser import _FRAMES, MAIN, _append, _assert_at_newest, _idle, _open, _step
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -209,9 +209,9 @@ def test_lazy_rows_keep_the_passage_history_scroll_and_older_pages_exact(direct_
 def test_a_project_panel_feed_is_lazy_only_while_its_width_keeps_moving(direct_server_with_data, browser_engine):
     """The Project panel's own handle: the same lazy rows while it is dragged, the same exact passage and history
     once the width holds."""
-    from ouroboros.projects_registry import create_project
     from playwright.sync_api import sync_playwright
 
+    from ouroboros.projects_registry import create_project
     from tests.test_chat_history_paging_browser import _open_project
 
     root = direct_server_with_data["data_dir"]

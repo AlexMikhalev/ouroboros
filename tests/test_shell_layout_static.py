@@ -74,11 +74,9 @@ def test_a_handle_drag_restyles_one_box_and_the_room_follows_it_by_layout():
     assert "width: var(--drag-width, var(--project-panel-width));" in css.split(".project-panel {", 1)[1].split("}", 1)[0]
     registered = css.split("@property --drag-width {", 1)[1].split("}", 1)[0]
     assert "inherits: false;" in registered and "syntax: '*';" in registered, "no element inherits a drag's width"
-    handle = _read("web/app.js").split("const makeHandle = ", 1)[1].split("makeHandle(document", 1)[0]
-    apply = handle.split("const apply = () => {", 1)[1].split("};", 1)[0]
-    assert "target.style.setProperty('--drag-width', `${wanted}px`);" in apply and "root." not in apply, apply
-    end = handle.split("const end = (e) => {", 1)[1].split("};", 1)[0]
-    assert end.index("root.style.setProperty(cssVar, `${shown}px`);") < end.index("target.style.removeProperty('--drag-width');")
+    assert "overflow-x: clip;" in css.split("\n#app {", 1)[1].split("}", 1)[0], "the sliding panel never widens the page"
+    # What a drag writes, and when, is behaviour: tests/test_shell_interactions_browser.py drags both handles (the
+    # stored widths change once, at the end; a Project closed mid-drag keeps its width).
 
 
 def test_the_layout_numbers_live_once_in_theme_js():

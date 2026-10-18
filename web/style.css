@@ -35,6 +35,9 @@ body {
     grid-template-columns: auto minmax(0, 1fr);
     height: var(--vvh);
     position: relative;
+    /* The docked Project panel slides in from 18px past the window's edge; clipped here, that offset never widens
+       the page, so a scrollIntoView during the slide cannot scroll the whole window sideways. */
+    overflow-x: clip;
 }
 
 /* App navigation shell: a docked sidebar column, a drawer in the stack layout. */
@@ -176,8 +179,8 @@ html[data-layout="stack"] .shell-icon-control {
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
 
-/* Resizable side-section drag handles (v6.33.0). Thin edge strips that set
-   --sidebar-width / --project-panel-width; absent in the stack layout (layout.js). */
+/* Resizable side-section drag handles (v6.33.0). Thin edge strips that resize the sidebar and the Project panel
+   (app.js: --drag-width while dragged, the stored width when the drag ends); absent in the stack layout (layout.js). */
 /* CW10 (v6.34.0): suppress text selection while dragging via a class, not a JS
    inline style (DEVELOPMENT.md: no element.style.* property mutations in UI JS). */
 body.resizing-panels { user-select: none; }

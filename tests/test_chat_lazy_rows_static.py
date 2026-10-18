@@ -5,7 +5,8 @@ A window-resize step on the owner's Main (150 rows, WebKit 1108x680) lays out in
 ~49ms. A rule that leaves rows lazy at rest moved the passage being read by hundreds of pixels per scroll step in
 WebKit (a row takes its real size only as it nears the screen) and left Chromium short of the newest message, so the
 lazy rule exists only under [data-resizing] and the reading owner removes the mark once the width holds,
-re-applying the place in that frame. tests/test_chat_lazy_rows_browser.py proves the behaviour in both engines.
+re-applying the place in that frame (web/tests/chat_reading_position.test.js pins the mark's lifecycle);
+tests/test_chat_lazy_rows_browser.py proves the behaviour in both engines.
 """
 from __future__ import annotations
 
@@ -43,16 +44,3 @@ def test_feed_rows_remember_their_size_and_are_lazy_only_while_the_width_moves()
             assert selector == ":is(#chat-messages, .chat-messages)[data-resizing] > *", (
                 f"{path.name} {selector}: a feed's rows are lazy only while its width moves")
 
-
-def test_the_reading_owner_marks_a_moving_width_and_reapplies_the_place_once_it_holds():
-    js = _read("web/modules/chat_reading_position.js")
-    note = js.split("const noteWidth = () => {", 1)[1].split("\n    };", 1)[0]
-    assert "const now = feed.offsetWidth;" in note, "the feed's own box: a scrollbar appearing is no move"
-    assert "now && rowsWidth" in note, "a feed shown again (no width before) is not a move"
-    assert "else if (!lazy) { lazy = true; feed.toggleAttribute?.('data-resizing', true); }" in note, (
-        "only a width that moves again soon (a drag, a live resize) marks the feed; one jump is laid out at once")
-    held = js.split("const countFrames = () =>", 1)[1].split("\n    });", 1)[0]
-    unmark = held.index("toggleAttribute?.('data-resizing', false)")
-    assert held.index("state.reflow()", unmark) > unmark, "the place is re-applied after every row is laid out again"
-    reflow = js.split("        reflow() {", 1)[1].split("\n        },", 1)[0]
-    assert reflow.lstrip().startswith("noteWidth();"), "every reflow (the feed's resize) notes the width first"

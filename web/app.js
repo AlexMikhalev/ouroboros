@@ -1011,11 +1011,14 @@ function setupResizablePanels(prefs) {
             if (frame) { cancelAnimationFrame(frame); apply(); }
             dragging = false; document.body.classList.remove('resizing-panels');  // CW10
             try { handle.releasePointerCapture(e.pointerId); } catch {}
-            // Keep the width that is shown: a Project panel dragged past the content area's edge stops at it.
+            // Keep the width that is shown: a Project panel dragged past the content area's edge stops at it. A box
+            // hidden mid-drag (Escape closed the Project) shows no width, and the stored one stays.
             const shown = Math.round(target.getBoundingClientRect().width) || 0;
-            root.style.setProperty(cssVar, `${shown}px`);
+            if (shown) {
+                root.style.setProperty(cssVar, `${shown}px`);
+                persist({ [prefKey]: shown });
+            }
             target.style.removeProperty('--drag-width');
-            persist({ [prefKey]: shown });
         };
         handle.addEventListener('pointerup', end);
         handle.addEventListener('pointercancel', end);
