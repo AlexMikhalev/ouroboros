@@ -953,7 +953,14 @@ function setupResizablePanels(prefs) {
         handle.className = `resize-handle resize-handle-${dir}`;
         handle.title = 'Drag to resize';
         target.appendChild(handle);
-        let startX = 0, startW = 0, dragging = false;
+        let startX = 0, startW = 0, dragging = false, frame = 0, wanted = 0;
+        // One write per displayed frame: a mouse reports more often than the screen draws, and each write relays out
+        // the room (and, with a Project open, re-measures the panel).
+        const apply = () => {
+            frame = 0;
+            root.style.setProperty(cssVar, `${wanted}px`);
+            syncProjectPanelFill();
+        };
         handle.addEventListener('pointerdown', (e) => {
             if (isStackLayout()) return;  // the stack layout has a drawer, not a resizable column
             dragging = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
@@ -964,12 +971,12 @@ function setupResizablePanels(prefs) {
         handle.addEventListener('pointermove', (e) => {
             if (!dragging) return;
             const delta = dir === 'right' ? (e.clientX - startX) : (startX - e.clientX);
-            const w = Math.max(min, Math.min(max, Math.round(startW + delta)));
-            root.style.setProperty(cssVar, `${w}px`);
-            syncProjectPanelFill();
+            wanted = Math.max(min, Math.min(max, Math.round(startW + delta)));
+            if (!frame) frame = requestAnimationFrame(apply);
         });
         const end = (e) => {
             if (!dragging) return;
+            if (frame) { cancelAnimationFrame(frame); apply(); }
             dragging = false; document.body.classList.remove('resizing-panels');  // CW10
             try { handle.releasePointerCapture(e.pointerId); } catch {}
             const cur = parseInt(getComputedStyle(root).getPropertyValue(cssVar), 10) || 0;

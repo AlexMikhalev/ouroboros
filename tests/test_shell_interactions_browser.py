@@ -422,3 +422,94 @@ def test_a_short_phone_drawer_has_one_scroller_the_whole_column(shell_ui, tmp_pa
         page.close()
     assert facts['coarse'] is True and facts['projects'] == len(PROJECTS) and facts['layers'] == ['drawer'], facts
     assert [row['node'] for row in facts['scrollers']] == ['primary-sidebar'], facts
+
+
+def saved_history(tmp_path):
+    """The real history endpoint over two saved rows, so the feed draws bubbles with Copy and Reply."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from ouroboros import dialogue_store
+    from ouroboros.gateway.history import make_chat_history_endpoint
+    root = tmp_path / 'history'
+    root.mkdir()
+    for minute, (direction, role, text) in enumerate([('in', 'user', 'Please check the build before the release.'),
+                                                       ('out', 'assistant', 'The build is green; nothing to fix.')]):
+        dialogue_store.append(root, 'chat', {'chat_id': 1, 'user_id': 1, 'direction': direction, 'role': role,
+                                             'text': text, 'ts': f'2026-10-18T10:0{minute}:00Z'})
+    client = TestClient(Starlette(routes=[Route('/api/chat/history', make_chat_history_endpoint(root))]))
+
+    def respond(route):
+        response = client.get('/' + route.request.url.split('/', 3)[3])
+        route.fulfill(status=response.status_code, content_type='application/json', body=response.content)
+    return client, respond
+
+
+ACTION_ROWS = """() => [...document.querySelectorAll('#chat-messages .chat-message-actions')]
+    .filter((row) => row.offsetParent && row.children.length >= 2)
+    .map((row) => [...row.children].filter((c) => c.offsetParent).map((c) => {
+        const r = c.getBoundingClientRect();
+        return {name: c.className, top: Math.round(r.top * 10) / 10, bottom: Math.round(r.bottom * 10) / 10};
+    }))"""
+
+
+@pytest.mark.parametrize('width', [1280, 390])
+def test_copy_and_reply_sit_side_by_side_on_one_line(shell_ui, tmp_path, width):
+    page = seed_page(shell_ui, width, 860)
+    client, respond = saved_history(tmp_path)
+    facts = {'engine': shell_ui['engine'], 'width': width}
+    try:
+        page.route('**/api/chat/history**', respond)
+        boot(page, shell_ui)
+        page.wait_for_selector('#chat-messages .chat-message-actions .chat-message-copy', timeout=20_000)
+        facts['rows'] = page.evaluate(ACTION_ROWS)
+    finally:
+        evidence(tmp_path, f'shell-copy-reply-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+        client.close()
+    assert facts['rows'], facts
+    for row in facts['rows']:
+        assert len(row) >= 2 and any('copy' in c['name'] for c in row) and any('reply' in c['name'] for c in row), facts
+        assert max(c['top'] for c in row) - min(c['top'] for c in row) <= 0.5, facts
+        assert max(c['bottom'] for c in row) - min(c['bottom'] for c in row) <= 0.5, facts
+
+
+TITLE_BAND = """band => {
+    // launcher_window_chrome.py's own press filter: a plain press off any control moves the window.
+    const CONTROLS = 'a[href], button, input, select, textarea, summary, label, iframe, video, audio, '
+        + '[contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], '
+        + '[role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], '
+        + '[role="radio"], [role="switch"], [role="slider"], [role="textbox"]';
+    const left = document.getElementById('primary-sidebar').getBoundingClientRect().right;
+    const caught = {};
+    for (let y = 4; y < band; y += 6) {
+        for (let x = left + 4; x < innerWidth - 8; x += 12) {
+            const t = document.elementFromPoint(x, y);
+            const control = t?.closest(CONTROLS);
+            if (control) caught[control.tagName.toLowerCase() + '.' + [...control.classList].slice(0, 2).join('.')] = y;
+        }
+    }
+    const tab = document.querySelector('.page.active .app-tab');
+    return {caught, firstTabTop: tab ? Math.round(tab.getBoundingClientRect().top) : null};
+}"""
+
+
+@pytest.mark.parametrize('page_name', ['dashboard', 'settings'])
+def test_the_desktop_title_band_over_a_page_moves_the_window(shell_ui, tmp_path, page_name):
+    """macOS desktop window: the transparent title bar's band over a page holds no control, its tabs start below."""
+    page = seed_page(shell_ui, 1280, 860)
+    facts = {'engine': shell_ui['engine'], 'page': page_name}
+    try:
+        boot(page, shell_ui)
+        # What launcher_window_chrome.py writes into the document once the integrated title bar is applied.
+        page.evaluate("""() => { const root = document.documentElement; root.dataset.windowChrome = 'integrated';
+            root.style.setProperty('--window-chrome-top', '52px'); root.style.setProperty('--window-chrome-start', '78px'); }""")
+        page.locator(f'[data-nav-page="{page_name}"]').click()
+        page.locator(f'#page-{page_name}').wait_for(state='visible')
+        settle(page)
+        facts['band'] = page.evaluate(TITLE_BAND, 52)
+    finally:
+        evidence(tmp_path, f'shell-title-band-{page_name}-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['band']['caught'] == {}, facts
+    assert facts['band']['firstTabTop'] is not None and facts['band']['firstTabTop'] >= 52, facts
