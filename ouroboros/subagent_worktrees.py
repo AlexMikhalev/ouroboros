@@ -300,13 +300,28 @@ def _remove_paths(repo_dir: Path, wt_path: Path, branch: str, *, allowed_root: O
     return True
 
 
+def _removal_identity(row: Dict[str, Any]) -> Optional[List[int]]:
+    try:
+        seen = Path(row.get("path") or "").lstat()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    return [seen.st_dev, seen.st_ino, seen.st_mtime_ns, seen.st_ctime_ns]
+
+
+def _removal_unchanged(row: Dict[str, Any]) -> bool:
+    return "removal_failed_identity" in row and row["removal_failed_identity"] == _removal_identity(row)
+
+
 def _mark_removal_failed(match: Dict[str, Any], data_dir: Optional[Any], op: str) -> None:
-    """Keep MATCH's row (and so its pin) with the instant its removal left the directory."""
+    """Keep the first failure time and the surviving directory identity, under the lock."""
     rows = _load_registry(data_dir, strict=True, op=op)
-    for row in rows:
-        if row.get("path") == match.get("path"):
-            row["removal_failed"] = utc_now_iso()
-    _save_registry(rows, data_dir)
+    failed = {**match, "removal_failed": match.get("removal_failed") or utc_now_iso(),
+              "removal_failed_identity": _removal_identity(match)}
+    if match in rows and failed != match:
+        rows[rows.index(match)] = failed
+        _save_registry(rows, data_dir)
 
 
 def _register_snapshot(handle: "ExecutionSnapshotHandle", excluded: List[Dict[str, Any]],
@@ -1357,14 +1372,12 @@ def remove_execution_snapshot(
     worktree_root: Optional[Any] = None,
     data_dir: Optional[Any] = None,
 ) -> bool:
-    """Tear down one delegated execution snapshot: worktree, baseline ref, registry row.
-
-    Call ONLY after the run's disposition (patch applied, rejected, or the
-    startup GC proved the run closed): the snapshot plus its captured patch are
-    the conflict-resolution material and must survive until then.
+    """Remove a released snapshot, its baseline pin and registry row.
+    Call only after explicit disposition or GC's ownership/custody proof.
+    A surviving tree keeps its row/pin; unchanged failed directories wait.
     """
     entry = find_execution_snapshot(snapshot_id, data_dir)
-    if entry is None:
+    if entry is None or _removal_unchanged(entry):
         return False
     root = _resolve_root(worktree_root)
     wt_path = Path(str(entry.get("path") or ""))
@@ -1481,6 +1494,8 @@ def remove_worktree(
 def _retire_worktree(match: Dict[str, Any], root: Path, data_dir: Any, branch: str,
                      lock_wait_sec: Optional[float] = None) -> bool:
     """Delete files without the shared lock, then reconcile only the unchanged row."""
+    if _removal_unchanged(match):
+        return False
     wt_path = Path(match.get("path") or "")
     if _deletable(wt_path, root) and wt_path.exists():
         _force_rmtree(wt_path)  # the checkout's files go first, OUTSIDE the lock (#1241)
@@ -1515,7 +1530,7 @@ def prune_orphans(
     or with an unknown answer, age alone deletes nothing. ``only`` restricts the pass to
     those task ids (the free action's previewed rows), leaving every other row untouched.
     The registry is written only when a row set or a row changed; a checkout that
-    survives its removal keeps its row and pin (``removal_failed``) and is retried.
+    survives removal keeps its first failure stamp and pin, waiting for its directory identity to change.
     """
     retention = retention_days if retention_days is not None else get_gc_retention_days()
     cutoff = age_cutoff(retention)
@@ -1532,7 +1547,8 @@ def prune_orphans(
             entry, data_dir=data_dir,
             expired=max(float(entry.get("created_at") or 0), float(entry.get("used_at") or 0)) < cutoff)
         for entry in _load_registry(data_dir, strict=True, op="prune_orphans")
-        if entry.get("kind") == _KIND_BODY_CANDIDATE and (chosen is None or str(entry.get("task_id") or "") in chosen)}
+        if entry.get("kind") == _KIND_BODY_CANDIDATE and not _removal_unchanged(entry)
+        and (chosen is None or str(entry.get("task_id") or "") in chosen)}
 
     for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
         with _ops_lock(root, op="prune"):

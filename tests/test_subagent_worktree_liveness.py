@@ -157,6 +157,7 @@ def test_a_checkout_surviving_its_removal_keeps_its_row_and_is_retried(world, mo
     assert _git(repo, "branch", "--list", "subagent/stubborn*").stdout.strip(), "the branch is kept with the row"
 
     monkeypatch.undo()
+    (stubborn / "released").touch()
     assert _prune(world, retention_days=0, live=lambda _task: False) == {"removed": 1, "kept": 0}
     assert not stubborn.exists() and sw.list_worktrees(data_dir=data) == []
 
@@ -170,6 +171,7 @@ def test_remove_worktree_keeps_the_row_when_the_directory_survives(world, monkey
     [row] = sw.list_worktrees(data_dir=data)
     assert row["removal_failed"] and path.is_dir()
     monkeypatch.undo()
+    (path / "released").touch()
     assert sw.remove_worktree(task_id="held", worktree_root=root, data_dir=data) is True
     assert sw.list_worktrees(data_dir=data) == [] and not path.exists()
 
@@ -187,6 +189,7 @@ def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects
     assert pathlib.Path(one.path).is_dir() and pathlib.Path(two.path).is_dir()
     assert _git(repo, "rev-parse", "--verify", one.baseline_ref).stdout.strip(), "the pin stays with the row"
     monkeypatch.undo()
+    (pathlib.Path(one.path) / "released").touch()
     monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"}) == {"removed": ["snapOne"], "kept": []}
     assert not pathlib.Path(one.path).exists() and pathlib.Path(two.path).is_dir()
@@ -303,3 +306,57 @@ def test_snapshot_gc_rechecks_custody_between_removals(world, monkeypatch):
         "removed": ["first"], "kept": ["second"]}
     assert not pathlib.Path(handles[0].path).exists() and pathlib.Path(handles[1].path).is_dir()
     assert _git(repo, "rev-parse", handles[1].baseline_ref).stdout.strip() == handles[1].baseline_sha
+
+
+@pytest.mark.parametrize("kind", ["plain", "body", "snapshot"])
+def test_failed_removal_waits_for_changed_directory_identity_without_rewriting_first_stamp(world, monkeypatch, kind):
+    repo, data, root = world
+    if kind == "snapshot":
+        handle = sw.provision_execution_snapshot(target_root=repo, task_id="done", snapshot_id="stubborn",
+                                                 worktree_root=root, data_dir=data)
+        path = pathlib.Path(handle.path)
+    else:
+        path = _copy(world, "done")
+        if kind == "body":
+            rows = sw._load_registry(data)
+            rows[0]["kind"] = "body_candidate"
+            sw._save_registry(rows, data)
+    write_task_result(data, "done", "completed")
+    _age(data)
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+    attempts, verdicts, commands = [], [], []
+    real_remove, real_verdict, real_git = sw._force_rmtree, body_candidate.retention_verdict, sw._git_quiet
+    monkeypatch.setattr(sw, "_force_rmtree", lambda checkout: attempts.append(checkout))
+
+    def verdict(*args, **kwargs):
+        verdicts.append(args[0]["path"])
+        return real_verdict(*args, **kwargs)
+
+    def git(*args):
+        commands.append(args)
+        return real_git(*args)
+
+    monkeypatch.setattr(body_candidate, "retention_verdict", verdict)
+    monkeypatch.setattr(sw, "_git_quiet", git)
+
+    def prune():
+        if kind == "snapshot":
+            return sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data)["removed"]
+        return _prune(world, retention_days=0, live=lambda _task: False)["removed"]
+
+    assert not prune() and path.is_dir()
+    [first] = sw.list_worktrees(data)
+    stamp = first["removal_failed"]
+    registry = data / "state" / "subagent_worktrees.json"
+    before, mtime, judged = registry.read_bytes(), _registry_mtime(data), len(verdicts)
+    for _ in range(2):
+        assert not prune()
+        assert registry.read_bytes() == before and _registry_mtime(data) == mtime
+        assert attempts == [path] and len(verdicts) == judged and commands == []
+
+    (path / "changed").touch()  # a changed root identity authorizes another attempt, not elapsed time
+    assert not prune() and attempts == [path, path]
+    assert sw.list_worktrees(data)[0]["removal_failed"] == stamp
+    monkeypatch.setattr(sw, "_force_rmtree", real_remove)
+    (path / "changed_again").touch()
+    assert prune() and not path.exists() and sw.list_worktrees(data) == []
