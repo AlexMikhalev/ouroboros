@@ -626,12 +626,21 @@ def _presence_attempt_lost(drive_root: pathlib.Path, result: Dict[str, Any],
     return attempt_ended(result, drive_root)
 
 
+def _inline_presence_turn(result: Dict[str, Any]) -> bool:
+    """A Presence turn's own row, run by its runner; a promoted or follow-up root that speaks
+    from the same ``metadata.presence`` carrier is ordinary managed work."""
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    owner = result.get("execution_owner") if isinstance(result.get("execution_owner"), dict) else {}
+    return isinstance(metadata.get("presence"), dict) and (
+        owner.get("kind") == "presence" or bool(result.get("_is_direct_chat")) or metadata.get("source") == "presence")
+
+
 def _normalize_workspace_artifact_status(result: Dict[str, Any]) -> Dict[str, Any]:
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     if not (str(result.get("workspace_root") or "").strip() or str(metadata.get("workspace_root") or "").strip()):
         return result
-    if isinstance(metadata.get("presence"), dict):
-        return result  # an inline Presence turn has no workspace artifact finalization: its terminal is final
+    if _inline_presence_turn(result):
+        return result  # its runner has no workspace artifact finalization: its terminal is final
     task_constraint = result.get("task_constraint") if isinstance(result.get("task_constraint"), dict) else {}
     if not task_constraint and isinstance(metadata.get("task_constraint"), dict):
         task_constraint = metadata.get("task_constraint") or {}

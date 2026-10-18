@@ -172,6 +172,13 @@ def test_a_completed_turn_with_a_workspace_stays_completed(tmp_path):
     assert effective["status"] == "completed" and "status_reconciled_from" not in effective
     assert reconcile_orphaned_running_tasks(tmp_path) == 0
     assert retained_work_view(stored, ref, tmp_path)[1]["text"] == "Done."
+    # A root promoted from the turn speaks from the same carrier but is managed work: its workspace
+    # artifacts still finalize before it reads terminal.
+    write_task_result(tmp_path, "promoted-root", "completed", metadata={"presence": stored["metadata"]["presence"]},
+                      workspace_root=str(tmp_path / "external"), artifact_status="finalizing", result="Worker done.")
+    promoted = effective_task_result(tmp_path, load_task_result(tmp_path, "promoted-root"), materialize_artifacts=False)
+    assert (promoted["status"], promoted["child_status"], promoted["artifact_status"]) == (
+        "running", "completed", "finalizing")
 
 
 def test_an_executor_that_raises_records_its_end_and_is_settled_once(tmp_path):
