@@ -1536,53 +1536,49 @@ def prune_orphans(
     cutoff = age_cutoff(retention)
     root = _resolve_root(worktree_root)
     chosen = None if only is None else {str(task_id) for task_id in only}
-    removed = 0
-    # A candidate's verdict reads its whole tree (and may capture it), so it is
-    # computed before the lock; under the lock the row is read again and a removing
-    # verdict is applied only while it still describes that row and that checkout
-    # (`body_candidate.verdict_holds`). A row first seen under the lock is kept.
+    entries = _load_registry(data_dir, strict=True, op="prune_orphans")
+    selected = [entry for entry in entries if entry.get("kind") != _KIND_DELEGATED_EXEC
+                and (chosen is None or str(entry.get("task_id") or "") in chosen)
+                and not _removal_unchanged(entry)]
+    if not selected:
+        return {"removed": 0, "kept": len(entries)}
+    # Capture candidate evidence outside the lock; one decision batch then rechecks
+    # the selected rows and marks retiring candidates before any files are deleted.
     from ouroboros import body_candidate
     verdicts = {
         str(entry.get("path") or ""): body_candidate.retention_verdict(
             entry, data_dir=data_dir,
             expired=max(float(entry.get("created_at") or 0), float(entry.get("used_at") or 0)) < cutoff)
-        for entry in _load_registry(data_dir, strict=True, op="prune_orphans")
-        if entry.get("kind") == _KIND_BODY_CANDIDATE and not _removal_unchanged(entry)
-        and (chosen is None or str(entry.get("task_id") or "") in chosen)}
-
-    for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
-        with _ops_lock(root, op="prune"):
-            rows = _load_registry(data_dir, strict=True, op="prune_orphans")
-            if entry not in rows:
-                continue
-            task_id = str(entry.get("task_id") or "")
-            if chosen is not None and task_id not in chosen:
+        for entry in selected if entry.get("kind") == _KIND_BODY_CANDIDATE}
+    retiring = []
+    with _ops_lock(root, op="prune"):
+        rows = _load_registry(data_dir, strict=True, op="prune_orphans")
+        by_path = {str(row.get("path") or ""): row for row in rows}
+        changed = False
+        for preview in selected:
+            entry = by_path.get(str(preview.get("path") or ""))
+            if entry != preview:
                 continue
             branch = str(entry.get("branch") or "")
             if entry.get("kind") == _KIND_BODY_CANDIDATE:
-                verdict = verdicts.get(str(entry.get("path") or "")) or {"remove": False}
+                verdict = verdicts[str(entry.get("path") or "")]
                 if not verdict["remove"] or not body_candidate.verdict_holds(entry, verdict, data_dir=data_dir):
                     continue
                 if not entry.get("retiring"):
-                    rows[rows.index(entry)] = entry = {**entry, "retiring": True}
-                    _save_registry(rows, data_dir)  # transfer must lose before deletion starts
+                    entry["retiring"], changed = True, True
                 if verdict.get("keep_branch"):
                     branch = ""
-            elif entry.get("kind") == _KIND_DELEGATED_EXEC:
-                # Delegated execution snapshots have their OWN lifecycle: they persist
-                # until the run's explicit patch disposition, and the custody GC
-                # (`prune_execution_snapshots`) cross-checks custody for open runs and
-                # pending invocations. Age/path heuristics here must not eat them —
-                # and their baseline ref needs deleting, which this loop cannot do.
-                continue
             else:
                 path_exists = bool(entry.get("path")) and Path(entry["path"]).exists()
                 if (path_exists and float(entry.get("created_at") or 0) >= cutoff) \
-                        or not _task_proven_over(task_id, data_dir, live):
+                        or not _task_proven_over(str(entry.get("task_id") or ""), data_dir, live):
                     continue
-        if _retire_worktree(entry, root, data_dir, branch):
-            removed += 1
-    return {"removed": removed, "kept": len(_load_registry(data_dir, strict=True, op="prune_orphans"))}
+            retiring.append((entry, branch))
+        if changed:
+            _save_registry(rows, data_dir)
+    removed = sum(_retire_worktree(entry, root, data_dir, branch) for entry, branch in retiring)
+    return {"removed": removed, "kept": len(_load_registry(data_dir, strict=True, op="prune_orphans"))
+            if retiring else len(rows)}
 
 
 def list_worktrees(data_dir: Optional[Any] = None) -> List[Dict[str, Any]]:

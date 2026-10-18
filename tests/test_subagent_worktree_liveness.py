@@ -140,6 +140,49 @@ def test_only_restricts_the_pass_and_an_unchanged_row_set_leaves_the_registry_un
     assert _registry_mtime(data) != before
 
 
+def _registry_cost(monkeypatch):
+    counts = {"locks": 0, "reads": 0}
+    for name, counter in (("_ops_lock", "locks"), ("_load_registry", "reads")):
+        real = getattr(sw, name)
+
+        def counted(*args, _real=real, _counter=counter, **kwargs):
+            counts[_counter] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(sw, name, counted)
+    return counts
+
+
+@pytest.mark.parametrize("count", [100, 800])
+@pytest.mark.parametrize("only", [None, ["absent"], ["task-0"]])
+def test_irrelevant_rows_do_not_add_registry_locks_or_reads(world, monkeypatch, count, only):
+    repo, data, root = world
+    for i in range(count):
+        (root / str(i)).mkdir(parents=True)
+    rows = [{"task_id": f"task-{i}", "kind": "delegated_exec" if i % 2 else "plain",
+             "path": str(root / str(i)), "created_at": 9e12} for i in range(count)]
+    sw._save_registry(rows, data)
+    before = _registry_mtime(data)
+    costs = _registry_cost(monkeypatch)
+    assert _prune(world, retention_days=7, only=only, live=lambda _: False) == {"removed": 0, "kept": count}
+    assert costs["locks"] <= 1 and costs["reads"] <= 2
+    assert _registry_mtime(data) == before
+
+
+def test_a_selected_old_copy_still_goes_among_many_unrelated_rows(world, monkeypatch):
+    repo, data, root = world
+    path = _copy(world, "selected")
+    write_task_result(data, "selected", "completed")
+    _age(data)
+    unrelated = [{"task_id": f"task-{i}", "kind": "delegated_exec", "path": str(root / str(i))}
+                 for i in range(400)]
+    sw._save_registry(sw.list_worktrees(data) + unrelated, data)
+    costs = _registry_cost(monkeypatch)
+    assert _prune(world, retention_days=0, only=["selected"], live=lambda _: False) == {"removed": 1, "kept": 400}
+    assert costs["locks"] <= 2 and costs["reads"] <= 4
+    assert not path.exists() and sw.list_worktrees(data) == unrelated
+
+
 def test_a_checkout_surviving_its_removal_keeps_its_row_and_is_retried(world, monkeypatch):
     """L5: a forced removal that leaves the directory marks the row instead of forgetting it."""
     repo, data, root = world
