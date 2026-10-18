@@ -165,6 +165,8 @@ def test_remove_worktree_keeps_the_row_when_the_directory_survives(world, monkey
 
 def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects_snapshots(world, monkeypatch):
     repo, data, root = world
+    write_task_result(data, "t1", "completed")
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     one = sw.provision_execution_snapshot(target_root=repo, task_id="t1", snapshot_id="snapOne", worktree_root=root, data_dir=data)
     two = sw.provision_execution_snapshot(target_root=repo, task_id="t2", snapshot_id="snapTwo", worktree_root=root, data_dir=data)
     monkeypatch.setattr(sw, "_force_rmtree", lambda _path: None)
@@ -174,6 +176,7 @@ def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects
     assert pathlib.Path(one.path).is_dir() and pathlib.Path(two.path).is_dir()
     assert _git(repo, "rev-parse", "--verify", one.baseline_ref).stdout.strip(), "the pin stays with the row"
     monkeypatch.undo()
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data, only={"snapOne"}) == {"removed": ["snapOne"], "kept": []}
     assert not pathlib.Path(one.path).exists() and pathlib.Path(two.path).is_dir()
     assert sw.find_execution_snapshot("snapTwo", data_dir=data) is not None
@@ -182,6 +185,7 @@ def test_a_snapshot_surviving_its_removal_keeps_its_row_and_pin_and_only_selects
 @pytest.mark.parametrize("kind", ["plain", "body", "snapshot"])
 def test_pruning_deletes_outside_the_ops_lock_and_preserves_concurrent_registration(world, monkeypatch, kind):
     repo, data, root = world
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
     if kind == "snapshot":
         handle = sw.provision_execution_snapshot(
             target_root=repo, task_id="done", snapshot_id="closed", worktree_root=root, data_dir=data)
@@ -223,3 +227,68 @@ def test_pruning_deletes_outside_the_ops_lock_and_preserves_concurrent_registrat
     assert saves and all(saves), "registry mutations still require the shared lock"
     [row] = sw.list_worktrees(data_dir=data)
     assert row["task_id"] == "arrived" and pathlib.Path(row["path"]).is_dir()
+
+
+def test_snapshot_gc_requires_terminal_task_negative_liveness_and_readable_custody(world, monkeypatch):
+    from ouroboros import delegate_custody as custody
+
+    repo, data, root = world
+    handle = sw.provision_execution_snapshot(target_root=repo, task_id="owner", snapshot_id="proof",
+                                             worktree_root=root, data_dir=data)
+    probe, processes = [False], []
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: probe[0])
+    monkeypatch.setattr(body_candidate, "live_lineage_processes", lambda *_args: processes)
+
+    def kept(open_ids=()):
+        before = _registry_mtime(data)
+        assert sw.prune_execution_snapshots(set(open_ids), worktree_root=root, data_dir=data) == {
+            "removed": [], "kept": ["proof"]}
+        assert _registry_mtime(data) == before
+        assert _git(repo, "rev-parse", handle.baseline_ref).stdout.strip() == handle.baseline_sha
+
+    kept()  # no task record yet: the provisioning window
+    write_task_result(data, "owner", "running")
+    kept()
+    write_task_result(data, "owner", "completed")
+    for probe[0] in (True, None):
+        kept()
+    probe[0] = False
+    processes.append(4242)
+    kept()
+    processes.clear()
+    with monkeypatch.context() as unreadable:
+        unreadable.setattr(custody, "custody_log_unreadable", lambda _root: True)
+        kept()
+    with monkeypatch.context() as broken:
+        def fail(_task):
+            raise OSError("unreadable liveness")
+        broken.setattr("supervisor.queue.task_settlement_liveness", fail)
+        kept()
+    shutil.rmtree(handle.path)
+    kept({"proof"})  # missing checkout does not release open custody or its pin
+    assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data) == {
+        "removed": ["proof"], "kept": []}
+    assert _git(repo, "for-each-ref", handle.baseline_ref).stdout == ""
+
+
+def test_snapshot_gc_rechecks_custody_between_removals(world, monkeypatch):
+    from ouroboros import delegate_custody as custody
+
+    repo, data, root = world
+    handles = [sw.provision_execution_snapshot(target_root=repo, task_id="done", snapshot_id=name,
+                                               worktree_root=root, data_dir=data) for name in ("first", "second")]
+    write_task_result(data, "done", "completed")
+    monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
+    real_remove = sw.remove_execution_snapshot
+
+    def remove(snapshot_id, **kwargs):
+        removed = real_remove(snapshot_id, **kwargs)
+        custody.record_started(data, custody.RunCustody(
+            run_id="late-start", task_id="done", snapshot_id="second", execution_root=handles[1].path))
+        return removed
+
+    monkeypatch.setattr(sw, "remove_execution_snapshot", remove)
+    assert sw.prune_execution_snapshots(set(), worktree_root=root, data_dir=data) == {
+        "removed": ["first"], "kept": ["second"]}
+    assert not pathlib.Path(handles[0].path).exists() and pathlib.Path(handles[1].path).is_dir()
+    assert _git(repo, "rev-parse", handles[1].baseline_ref).stdout.strip() == handles[1].baseline_sha

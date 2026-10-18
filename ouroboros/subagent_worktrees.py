@@ -1391,6 +1391,16 @@ def remove_execution_snapshot(
     return True
 
 
+def _task_proven_over(task_id: str, data_dir: Any, live: Any) -> bool:
+    """C10: terminal record, a negative supervisor probe, and no lineage process."""
+    from ouroboros import body_candidate
+    try:
+        return bool(task_id) and live is not None and body_candidate._recorded_terminal(task_id, data_dir) \
+            and live(task_id) is False and not body_candidate.live_lineage_processes(data_dir, task_id)
+    except Exception:
+        return False  # unreadable or unknown ownership never authorizes GC
+
+
 def prune_execution_snapshots(
     open_snapshot_ids: set,
     *,
@@ -1398,18 +1408,16 @@ def prune_execution_snapshots(
     data_dir: Optional[Any] = None,
     only: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """GC for delegated execution snapshots, cross-checked with custody (the custody pass;
-    the owner's free action with ``only``).
+    """Retire snapshots only after their task is proven over and custody releases them.
 
-    ``open_snapshot_ids`` is the set of snapshot ids that custody still holds
-    OPEN (an undisposed run or a pending invocation). Those are KEPT regardless
-    of age — the snapshot and its patch persist until explicit disposition. A
-    snapshot custody does not hold open is removed; a registry row whose
-    checkout directory is already gone is unregistered (with its baseline ref
-    deleted) either way. ``only`` restricts the pass to those snapshot ids, leaving
-    every other row untouched; a snapshot whose directory survives its removal keeps
-    its row and pin (``removal_failed``) and is retried.
+    The supplied keep-set is conservative; fresh custody is checked before each removal.
+    A provisional snapshot can precede START_REQUESTED, so absent custody is not proof
+    its owner is over. Unknown task/process/custody state keeps even a missing checkout's
+    row and pin. ``only`` restricts the pass; surviving trees keep ``removal_failed``.
     """
+    from ouroboros import delegate_custody as custody
+    from supervisor.queue import task_settlement_liveness
+
     open_ids = {str(s) for s in (open_snapshot_ids or set())}
     chosen = None if only is None else {str(s) for s in only}
     removed: List[str] = []
@@ -1420,8 +1428,14 @@ def prune_execution_snapshots(
         snap = str(entry.get("snapshot_id") or "")
         if chosen is not None and snap not in chosen:
             continue
-        path_exists = bool(entry.get("path")) and Path(str(entry.get("path"))).exists()
-        if snap in open_ids and path_exists:
+        try:
+            removable = snap not in open_ids and _task_proven_over(
+                str(entry.get("task_id") or ""), data_dir, task_settlement_liveness) \
+                and not custody.custody_log_unreadable(_data_dir(data_dir)) \
+                and snap not in custody.open_snapshot_ids(_data_dir(data_dir))
+        except Exception:
+            removable = False
+        if not removable:
             kept.append(snap)
             continue
         if remove_execution_snapshot(snap, worktree_root=worktree_root, data_dir=data_dir):
@@ -1523,11 +1537,6 @@ def prune_orphans(
         for entry in _load_registry(data_dir, strict=True, op="prune_orphans")
         if entry.get("kind") == _KIND_BODY_CANDIDATE and (chosen is None or str(entry.get("task_id") or "") in chosen)}
 
-    def proven_over(task_id: str) -> bool:
-        """The C10 proof a plain copy's removal needs; unknown is never proof."""
-        return bool(task_id) and live is not None and body_candidate._recorded_terminal(task_id, data_dir) \
-            and live(task_id) is False and not body_candidate.live_lineage_processes(data_dir, task_id)
-
     for entry in _load_registry(data_dir, strict=True, op="prune_orphans"):
         with _ops_lock(root, op="prune"):
             if entry not in _load_registry(data_dir, strict=True, op="prune_orphans"):
@@ -1551,7 +1560,8 @@ def prune_orphans(
                 continue
             else:
                 path_exists = bool(entry.get("path")) and Path(entry["path"]).exists()
-                if path_exists and not (float(entry.get("created_at") or 0) < cutoff and proven_over(task_id)):
+                if path_exists and not (float(entry.get("created_at") or 0) < cutoff
+                                        and _task_proven_over(task_id, data_dir, live)):
                     continue
         if _retire_worktree(entry, root, data_dir, branch):
             removed += 1
