@@ -31,7 +31,7 @@ import { initStorage } from './modules/storage.js';
 import { SHELL_ICONS } from './modules/page_icons.js';
 import { renderNavRows, renderProjectsHeader } from './modules/pages.js';
 import { renderPageHeader } from './modules/page_header.js';
-import { isStackLayout, onLayoutChange, projectPanelFillsContent } from './modules/layout.js';
+import { isStackLayout, onLayoutChange } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
 import { DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
@@ -101,6 +101,14 @@ const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
 const navProjectsActivity = document.getElementById('nav-projects-activity');
 const navProjectsList = document.getElementById('nav-projects-list');
+// Collapsed, the list keeps the live Projects and the open one; the rest wait behind this one quiet row.
+const navProjectsShowAll = document.createElement('button');
+navProjectsShowAll.type = 'button';
+navProjectsShowAll.id = 'nav-projects-show-all';
+navProjectsShowAll.className = 'nav-row nav-projects-show-all';
+navProjectsShowAll.hidden = true;
+navProjectsShowAll.setAttribute('aria-controls', 'nav-projects-list');
+navProjectsList?.after(navProjectsShowAll);
 const projectInstances = new Map();
 const projectPaintRequests = new Map();
 // The question reveal the current showing is still making (revealProjectQuestion):
@@ -213,13 +221,13 @@ function syncNavigationState() {
     });
     // One chosen row at a time: the open Project's row, never the Projects header (owner Q6).
     navProjectsToggle?.setAttribute('aria-expanded', navState.projectsExpanded ? 'true' : 'false');
-    navProjectsList.hidden = !navState.projectsExpanded;
     document.querySelectorAll('[data-project-id]').forEach((button) => {
         const isActive = button.dataset.projectId === activeProjectId;
         button.classList.toggle('active', isActive);
         if (isActive) button.setAttribute('aria-current', 'page');
         else button.removeAttribute('aria-current');
     });
+    syncProjectsCollapse();  // after the chosen row is marked: a collapsed list keeps the open Project
     if (projectPanel) {
         if (projectPanelHideTimer) {
             clearTimeout(projectPanelHideTimer);
@@ -228,7 +236,6 @@ function syncNavigationState() {
         if (activeProjectId) {
             projectPanel.hidden = false;
             if (projectPanelBackdrop) projectPanelBackdrop.hidden = false;
-            syncProjectPanelFill();
             requestAnimationFrame(() => {
                 projectPanel.classList.add('open');
                 projectPanelBackdrop?.classList.add('open');
@@ -251,25 +258,9 @@ function syncNavigationState() {
     } else layers.remove('project');
 }
 
-// Docked: the Project panel is the frosted overlay over the content area and takes the whole
-// area once Main would keep less than the minimum beside it (layout.js, P1). Measured with the
-// attribute off, so the natural width decides and the attribute never feeds itself.
-function syncProjectPanelFill() {
-    const root = document.documentElement;
-    root.removeAttribute('data-project-fill');
-    if (!projectPanel || projectPanel.hidden || isStackLayout()) return;
-    const fills = projectPanelFillsContent({
-        viewportWidth: window.innerWidth,
-        sidebarWidth: primarySidebar?.getBoundingClientRect().width || 0,
-        panelWidth: projectPanel.getBoundingClientRect().width,
-    });
-    root.toggleAttribute('data-project-fill', fills);
-}
-window.addEventListener('resize', syncProjectPanelFill);
 // Crossing the switch: a drawer has no place in the docked layout; the Project layer changes its modality.
 onLayoutChange((layout) => {
     if (layout === 'docked') navState.mobileDrawerOpen = false;
-    syncProjectPanelFill();
     syncNavigationState();
 });
 
@@ -624,6 +615,30 @@ navProjectsToggle?.addEventListener('click', () => {
     navState.projectsExpanded = !navState.projectsExpanded;
     syncNavigationState();
 });
+navProjectsShowAll.addEventListener('click', () => {
+    navState.projectsExpanded = true;
+    syncNavigationState();
+});
+
+// Collapsed Projects keep what is alive (a Project whose dots show work running or waiting) and the open one; the
+// rest wait behind "Show all N" (docs/DESIGN.md "Shell"). Expanded, every row shows.
+function syncProjectsCollapse() {
+    if (!navProjectsList) return;
+    const collapsed = !navState.projectsExpanded;
+    navProjects?.toggleAttribute('data-collapsed', collapsed);
+    let total = 0;
+    let shown = 0;
+    for (const item of navProjectsList.children) {
+        if (!item.classList.contains('nav-project-item')) continue;
+        total += 1;
+        const keep = !collapsed || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'));
+        item.hidden = !keep;
+        if (keep) shown += 1;
+    }
+    navProjectsList.hidden = collapsed && shown === 0;
+    navProjectsShowAll.hidden = !collapsed || shown === total;
+    navProjectsShowAll.textContent = fmt('Show all {n}', { n: total });
+}
 
 function renderProjectsNav(projects, projectChatIds, activityIndex = projectActivityIndex) {
     const all = projects || [];
@@ -700,6 +715,9 @@ function setActivityMarker(marker, summary) {
     marker.dataset.waiting = summary.waiting ? '1' : '0';
     marker.title = active ? label : '';
     marker.setAttribute('aria-hidden', 'true');
+    // A Project row whose dots show is live: a collapsed list keeps it.
+    const item = marker.closest?.('.nav-project-item');
+    if (item) item.toggleAttribute('data-live', active);
 }
 
 function setActivityOwnerName(owner, baseName, summary) {
@@ -728,6 +746,7 @@ function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
             : row._unread ? `${name} · Unread` : name;
         setActivityOwnerName(button, baseName, summary);
     }
+    syncProjectsCollapse();
 }
 
 // ACK exactly the revision painted. The server max-merges and clamps the cursor,
@@ -955,11 +974,10 @@ function setupResizablePanels(prefs) {
         target.appendChild(handle);
         let startX = 0, startW = 0, dragging = false, frame = 0, wanted = 0;
         // One write per displayed frame: a mouse reports more often than the screen draws, and each write relays out
-        // the room (and, with a Project open, re-measures the panel).
+        // the room.
         const apply = () => {
             frame = 0;
             root.style.setProperty(cssVar, `${wanted}px`);
-            syncProjectPanelFill();
         };
         handle.addEventListener('pointerdown', (e) => {
             if (isStackLayout()) return;  // the stack layout has a drawer, not a resizable column
@@ -987,7 +1005,6 @@ function setupResizablePanels(prefs) {
     };
     makeHandle(document.getElementById('primary-sidebar'), '--sidebar-width', 'right', 'sidebar_width', 180, 560);
     makeHandle(document.getElementById('project-panel'), '--project-panel-width', 'left', 'project_panel_width', 320, 1100);
-    syncProjectPanelFill();
 }
 
 apiFetch('/api/ui/preferences', { cache: 'no-store' })

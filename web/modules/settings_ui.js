@@ -255,7 +255,6 @@ export function renderSettingsPage() {
     return `
         ${renderPageHeader({
             page: 'settings',
-            description: 'Configure providers, secrets, models, behavior, source control, and runtime controls.',
             tabsHtml: `
                 <div class="settings-tabs-bar">
                     ${renderTabStrip({

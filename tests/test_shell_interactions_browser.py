@@ -513,3 +513,128 @@ def test_the_desktop_title_band_over_a_page_moves_the_window(shell_ui, tmp_path,
         page.close()
     assert facts['band']['caught'] == {}, facts
     assert facts['band']['firstTabTop'] is not None and facts['band']['firstTabTop'] >= 52, facts
+
+
+def live_state(project_ids):
+    """The /api/state snapshot with work running in these Projects (the census the sidebar's dots read)."""
+    return {'supervisor_ready': True, 'projects': PROJECTS, 'project_chat_ids': [p['chat_id'] for p in PROJECTS],
+            'active_chat_activities_complete': True,
+            'active_chat_activities': [{'activity_id': f'work-{pid}', 'root_task_id': f'work-{pid}', 'project_id': pid,
+                                        'phase': 'working'} for pid in project_ids]}
+
+
+SIDEBAR_FACTS = """() => {
+    const side = document.getElementById('primary-sidebar');
+    const rows = [...side.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden);
+    const zone = document.getElementById('nav-projects').getBoundingClientRect();
+    const files = side.querySelector('[data-nav-page="files"]').getBoundingClientRect();
+    const all = document.getElementById('nav-projects-show-all');
+    return {rows: rows.map((e) => e.querySelector('[data-project-id]').dataset.projectId),
+            gapToTools: Math.round(files.top - zone.bottom), filesTop: Math.round(files.top),
+            sidebarBottom: Math.round(side.getBoundingClientRect().bottom),
+            showAll: all && !all.hidden ? all.textContent.trim() : null,
+            expanded: document.getElementById('nav-projects-toggle').getAttribute('aria-expanded')};
+}"""
+
+
+@pytest.mark.parametrize('width,height', [(1108, 680), (390, 844)])
+def test_collapsed_projects_keep_the_live_ones_and_the_tools_follow(shell_ui, tmp_path, width, height):
+    page = seed_page(shell_ui, width, height)
+    live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    facts = {'engine': shell_ui['engine'], 'size': [width, height]}
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=live_state(live)))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
+                               timeout=20_000)
+        if width < 720:
+            open_drawer(page)
+        facts['open'] = page.evaluate(SIDEBAR_FACTS)
+        page.locator('#nav-projects-toggle').click()
+        settle(page)
+        facts['collapsed'] = page.evaluate(SIDEBAR_FACTS)
+        page.locator('#nav-projects-show-all').click()
+        settle(page)
+        facts['show_all'] = page.evaluate(SIDEBAR_FACTS)
+    finally:
+        evidence(tmp_path, f'shell-sidebar-collapse-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+    collapsed = facts['collapsed']
+    assert collapsed['expanded'] == 'false' and sorted(collapsed['rows']) == sorted(live), facts
+    assert collapsed['showAll'] == f'Show all {len(PROJECTS)}', facts
+    # The tools follow the Projects zone: no empty room between them (the free room is under the last row).
+    assert collapsed['gapToTools'] <= 24 and collapsed['filesTop'] < collapsed['sidebarBottom'] - 200, facts
+    assert facts['open']['expanded'] == 'true' and len(facts['open']['rows']) == len(PROJECTS), facts
+    assert facts['show_all']['expanded'] == 'true' and len(facts['show_all']['rows']) == len(PROJECTS), facts
+    assert facts['show_all']['showAll'] is None, facts
+
+
+DOT_FACTS = """() => {
+    const dot = document.querySelector('#nav-projects-list .nav-unread-dot');
+    const marker = document.querySelector('#nav-projects-list .nav-activity-marker[data-state="working"]');
+    const row = marker?.closest('.nav-project-row');
+    const ds = dot ? getComputedStyle(dot) : null;
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--red)';
+    document.body.append(probe);
+    const red = getComputedStyle(probe).color;
+    probe.remove();
+    return {dot: ds && {background: ds.backgroundColor, ring: ds.boxShadow}, red,
+            working: marker ? getComputedStyle(marker.querySelector('span')).backgroundColor : null,
+            rowInk: row ? getComputedStyle(row).color : null};
+}"""
+
+
+def test_sidebar_dots_are_a_red_unread_ring_and_working_dots_in_the_row_ink(shell_ui, tmp_path):
+    page = seed_page(shell_ui, 1108, 680)
+    unread = [dict(p, visible_revision=3) if i == 2 else p for i, p in enumerate(PROJECTS)]
+    state = dict(live_state([PROJECTS[5]['id']]), projects=unread)
+    facts = {'engine': shell_ui['engine']}
+    try:
+        page.route('**/api/state', lambda route: route.fulfill(json=state))
+        page.route('**/api/projects', lambda route: route.fulfill(json={'projects': unread}))
+        boot(page, shell_ui)
+        page.wait_for_function("() => document.querySelector('#nav-projects-list .nav-unread-dot') && "
+                               "document.querySelector('#nav-projects-list .nav-activity-marker[data-state=\"working\"]')",
+                               timeout=20_000)
+        facts.update(page.evaluate(DOT_FACTS))
+    finally:
+        evidence(tmp_path, f'shell-sidebar-dots-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['dot']['background'] == facts['red'], facts
+    assert facts['dot']['ring'] not in ('', 'none'), facts
+    assert facts['working'] == facts['rowInk'], facts
+
+
+PANEL_FACTS = """() => {
+    const panel = document.getElementById('project-panel').getBoundingClientRect();
+    const side = document.getElementById('primary-sidebar').getBoundingClientRect();
+    const handle = document.querySelector('#project-panel > .resize-handle');
+    return {panel: Math.round(panel.width), left: Math.round(panel.left), sidebarRight: Math.round(side.right),
+            handle: Boolean(handle && handle.getClientRects().length),
+            fill: document.documentElement.hasAttribute('data-project-fill')};
+}"""
+
+
+@pytest.mark.parametrize('width', [1108, 800])
+def test_the_project_panel_keeps_its_own_width_beside_main(shell_ui, tmp_path, width):
+    """The owner's widths (sidebar 282, panel 581): beside Main at its own width with its handle; a window too
+    narrow for it gets a panel as wide as the content area, never over the sidebar."""
+    page = seed_page(shell_ui, width, 680)
+    facts = {'engine': shell_ui['engine'], 'width': width}
+    try:
+        page.route('**/api/ui/preferences', lambda route: route.fulfill(
+            json={'sidebar_width': 282, 'project_panel_width': 581, 'project_seen_revision': {}}))
+        boot(page, shell_ui)
+        page.wait_for_function("() => getComputedStyle(document.documentElement).getPropertyValue('--project-panel-width').trim() === '581px'",
+                               timeout=20_000)
+        open_project(page)
+        settle(page)
+        facts.update(page.evaluate(PANEL_FACTS))
+    finally:
+        evidence(tmp_path, f'shell-project-panel-{width}-{shell_ui["engine"]}', facts)
+        page.close()
+    assert facts['fill'] is False and facts['handle'] is True, facts
+    content = width - facts['sidebarRight']
+    assert facts['panel'] == min(581, content), facts
+    assert facts['left'] >= facts['sidebarRight'], facts

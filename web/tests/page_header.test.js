@@ -13,11 +13,10 @@ test('page headers retain their toolbar contract with an optional chrome recipe'
     assert.doesNotMatch(renderPageHeader({ title: 'Chat', toolbarClass: 'ui-chrome-group' }), /app-page-toolbar/);
 });
 
-test('one header: no icon, the lede and the tabs are siblings after the row, a Project keeps its name', () => {
+test('one header: no icon, no caption line, the tabs are a sibling after the row, a Project keeps its name', () => {
     const page = renderPageHeader({ title: 'Widgets', icon: '<svg/>', description: 'Reviewed surfaces live here.' });
     assert.doesNotMatch(page, /app-page-icon|<svg\/>/, 'no page icon anywhere (owner 5A); the ☰ glyph is a control');
-    assert.match(page, /<\/div>\s*<p class="app-page-lede">Reviewed surfaces live here\.<\/p>/, 'the description follows the header');
-    assert.doesNotMatch(page, /app-page-description/);
+    assert.doesNotMatch(page, /Reviewed surfaces live here|app-page-lede|app-page-description/, 'a page has no caption line');
     assert.match(page, /<div class="page-header app-page-header" data-sidebar-names data-empty>/, 'named by the sidebar, nothing else to say');
     const tabbed = renderPageHeader({ title: 'Dashboard', tabsHtml: '<div role="tablist"></div>' });
     assert.match(tabbed, /<\/div>\s*<div class="app-page-tabs"><div role="tablist"><\/div><\/div>/, 'tabs are their own strip');
