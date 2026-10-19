@@ -6,7 +6,7 @@ from tests.test_main_state_projection import gateway  # noqa: F401 -- real gatew
 from tests.test_swarm_host_admission import host  # noqa: F401 -- the gateway fixture's companion
 
 
-def _helpers(gateway, root, count, chat_id=42):
+def _helpers(gateway, root, count, chat_id=42):  # noqa: F811
     for index in range(count):
         task_id = f"{root}-h{index}"
         gateway.running[task_id] = {"attempt": 1, "started_at": 100.0 + index, "task": {
@@ -15,7 +15,7 @@ def _helpers(gateway, root, count, chat_id=42):
         write_task_result(gateway.root, task_id, "running", parent_task_id=root, root_task_id=root, chat_id=chat_id)
 
 
-def test_a_held_continue_with_live_helpers_is_one_working_work_with_stop_earlier(gateway):
+def test_a_held_continue_with_live_helpers_is_one_working_work_with_stop_earlier(gateway):  # noqa: F811
     write_task_result(gateway.root, "p", "failed", suggested_name="Release 7.7", chat_id=42)
     _helpers(gateway, "p", 3)
     gateway.pending.append({
@@ -41,7 +41,7 @@ def test_a_held_continue_with_live_helpers_is_one_working_work_with_stop_earlier
     assert "c" in census_ids and not any(task_id.startswith("p-h") for task_id in census_ids)
 
 
-def test_without_its_hold_the_same_continue_is_plain_queued_work(gateway):
+def test_without_its_hold_the_same_continue_is_plain_queued_work(gateway):  # noqa: F811
     write_task_result(gateway.root, "p", "failed", chat_id=42)
     gateway.pending.append({"id": "c", "type": "task", "root_task_id": "c", "chat_id": 42, "delegation_role": "root",
                             "queued_at": 200.0,
@@ -52,7 +52,7 @@ def test_without_its_hold_the_same_continue_is_plain_queued_work(gateway):
     assert work["activity"] == "queued" and not any(entry["action"] == "stop_earlier" for entry in work["controls"])
 
 
-def test_an_empty_install_emits_every_work_field(gateway):
+def test_an_empty_install_emits_every_work_field(gateway):  # noqa: F811
     data = gateway.client.get("/api/state").json()
     assert data["works"] == [] and data["rooms"] == {} and data["works_complete"] is True and data["works_gaps"] == []
     assert data["work_summary"]["confirmed"] is True
