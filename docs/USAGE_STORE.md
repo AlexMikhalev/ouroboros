@@ -130,16 +130,9 @@ borrows one shared descriptor per inode that closes only when no counted
 connection has the file open, as SQLite's unix VFS defers its own closes. Under
 WAL every open connection also holds locks on the `-shm` index, so these readers
 refuse a WAL index before opening it (`store.is_wal_index`, `WalIndexRefused`;
-the Files panel answers 403), and search skips SQLite's journal and WAL files.
-A WAL store's last commits stay in its `-wal` until a checkpoint, so a byte copy
-of the database file misses them, and a file and log copied at two moments can
-pair with another generation of the log: the Files panel's download and copy
-take a database as its snapshot instead (`store.snapshot_file`, SQLite's backup
-in one read transaction through a counted connection, in either journal mode),
-a folder copy leaves each database's journal files out, and a file SQLite cannot
-read goes as its bytes. A download's snapshot sits in a temporary folder, the
-database's size, removed when the response ends; a copy's appears by rename,
-its partial file removed on failure. The connection, tier,
+the Files panel answers 403), a folder copy leaves it out (the copy rebuilds its
+own from the copied `-wal`, which carries no lock) and search skips SQLite's
+journal and WAL files. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 

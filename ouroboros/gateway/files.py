@@ -8,9 +8,8 @@ import mimetypes
 import os
 import pathlib
 import shutil
-import tempfile
 from contextlib import suppress
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import quote
 
 log = logging.getLogger(__name__)
@@ -271,30 +270,18 @@ def _guess_text_file(path: pathlib.Path) -> bool:
 
 
 def _file_response(target: pathlib.Path, *, filename: str | None = None, media_type: str | None = None) -> Response:
-    """A SQLite database is streamed as its consistent snapshot (``_snapshot_bytes``) and a WAL index
-    is refused before anything opens it; any other file keeps FileResponse (length, ranges, HEAD)."""
+    """A SQLite file is streamed through store.iter_file_bytes, whose descriptor never closes under
+    a store connection of this process, and a WAL index is refused before anything opens it; any
+    other file keeps FileResponse (length, ranges, HEAD)."""
     try:
         store.refuse_wal_index(target)
     except store.WalIndexRefused as exc:
         return json_error(str(exc), status=403)
-    if not store.is_sqlite_file(target):
+    if os.name == "nt" or not store.is_sqlite_file(target):  # Windows locks belong to their handle
         return FileResponse(str(target), filename=filename, media_type=media_type)
     headers = {"Content-Disposition": f"attachment; filename*=utf-8''{quote(filename)}"} if filename else None
-    return StreamingResponse(_snapshot_bytes(target), media_type=media_type or "application/octet-stream",
+    return StreamingResponse(store.iter_file_bytes(target), media_type=media_type or "application/octet-stream",
                              headers=headers)
-
-
-def _snapshot_bytes(target: pathlib.Path) -> Iterator[bytes]:
-    """A database's consistent snapshot (``store.snapshot_file``: a byte copy of the file misses the
-    commits still in its WAL log), taken off the event loop at the first read into a temporary folder
-    (the database's size) that goes when the response ends; a file SQLite cannot read streams as is."""
-    with tempfile.TemporaryDirectory(prefix="ouroboros-download-") as folder:
-        copy = pathlib.Path(folder) / target.name
-        if not store.snapshot_file(target, copy):
-            yield from store.iter_file_bytes(target)
-            return
-        with open(copy, "rb") as handle:
-            yield from iter(lambda: handle.read(1 << 20), b"")
 
 
 def _sanitize_upload_filename(filename: str) -> str:
@@ -325,18 +312,12 @@ def _copy_path(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
         return
     if source.is_dir():
-        # A database goes as its snapshot (``store.copy_file_bytes``): its own journal files stay behind.
+        # A store's WAL index stays behind: its first open rebuilds the copy's from the copied log.
         shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes,
                         ignore=lambda folder, names: [name for name in names
-                                                      if _database_journal(pathlib.Path(folder) / name)])
+                                                      if store.is_wal_index(pathlib.Path(folder) / name)])
         return
     store.copy_file_bytes(source, destination)
-
-
-def _database_journal(path: pathlib.Path) -> bool:
-    """A SQLite database's own ``-wal``, ``-shm`` or ``-journal`` beside it, told by name, never opened."""
-    return any(path.name.endswith(suffix) and store.is_sqlite_file(path.with_name(path.name[:-len(suffix)]))
-               for suffix in ("-wal", "-shm", "-journal"))
 
 
 def _relative_path(root_dir: pathlib.Path, path: pathlib.Path) -> str:
