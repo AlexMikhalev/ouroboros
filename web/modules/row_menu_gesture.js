@@ -43,6 +43,8 @@ export function bindRowMenuGesture({ root, rowOf, open, isOpen = () => false }) 
         if (!open(row, { point: { x: event.clientX, y: event.clientY } })) return;
         event.preventDefault();
         if (selectedIn(row)) doc.getSelection().removeAllRanges();
+        // Android may fire it for a hold before LONG_PRESS_MS: that opening is the long press, not a second one.
+        if (press && !press.fired) { clearTimeout(press.timer); press.fired = true; }
     }
 
     function onKeydown(event) {

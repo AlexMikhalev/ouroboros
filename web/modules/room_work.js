@@ -705,12 +705,13 @@ export function createRoomWork({
         // elsewhere stays Working. A pause by the owner or by Ouroboros is not the owner's move. The room at rest says
         // Online beside its green dot.
         const owner = statusBadge.dataset.owner === '1';
-        paintStatusMark(mark, tone === 'online' && !owner ? AT_REST : markView({ mark: statusBadge.dataset.mark, owner }));
+        const reshaped = paintStatusMark(mark, tone === 'online' && !owner ? AT_REST : markView({ mark: statusBadge.dataset.mark, owner }));
         // The owner's move said in words too, where the word does not already say it.
         const said = amberNote(statusBadge.dataset.amber || '');
         if (waitNote.textContent !== said) waitNote.textContent = said;
         waitNote.hidden = !said;
-        if (text !== fittedWord) { fittedWord = text; fitWord(); }
+        // A new word, or a mark of another width beside the same word (the owner's dot for the dots), is measured again.
+        if (text !== fittedWord || reshaped) { fittedWord = text; fitWord(); }
         if (!listed && open) close({ restoreFocus: false });
     }
 

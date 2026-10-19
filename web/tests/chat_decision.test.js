@@ -664,7 +664,7 @@ test('an actionable refusal renders the picker card; other statuses fall back to
         const card = bubble.querySelector('.chat-routing-card');
         assert.ok(card);
         assert.equal(card.dataset.state, 'open');
-        assert.deepEqual(markOf(card), ['dot', 'neutral', false]);
+        assert.deepEqual(markOf(card), ['dot', 'owner', false], 'a destination only the owner can choose is the owner\'s move');
         const buttons = card.querySelectorAll('.chat-quiz-option');
         assert.equal(buttons.length, 2);
         assert.equal(buttons[0].querySelector('.chat-quiz-option-label').textContent, 'Fix CI');

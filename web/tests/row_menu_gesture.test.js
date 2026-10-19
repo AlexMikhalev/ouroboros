@@ -54,6 +54,22 @@ test('a long touch press opens the row\'s menu where the finger is, once; the ta
     } finally { f.close(); }
 });
 
+test('a contextmenu fired for a hold before the long press is that press: one opening, its lifting tap swallowed', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    try {
+        f.touch(f.label, 'pointerdown', { clientX: 30, clientY: 60 });
+        t.mock.timers.tick(LONG_PRESS_MS - 50);  // Android's own hold delay can be shorter than ours
+        assert.equal(f.label.emit('contextmenu', { clientX: 30, clientY: 60 }).defaultPrevented, true);
+        assert.equal(f.opened.length, 1);
+        t.mock.timers.tick(100);
+        assert.equal(f.opened.length, 1, 'the timer does not open it a second time');
+        f.touch(f.elsewhere, 'pointerup');
+        const tap = f.elsewhere.emit('click');
+        assert.equal(tap.defaultPrevented && tap.stopped, true, 'the lifting finger presses nothing under it');
+    } finally { f.close(); }
+});
+
 test('movement past the tolerance, a scroll of the root or around it, a cancel, a mouse or a lift is no long press', (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const f = fixture();

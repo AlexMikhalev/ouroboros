@@ -674,8 +674,9 @@ channels, and nothing else draws a status dot, bar or ring.
   value — is never amber.
 
 In a Project row the mark owns one reserved trailing column, so it sits at one x
-across rows whatever the name length and while the ⋯ is hovered, focused or open;
-Main's row puts its mark at the same x. A deleting row draws only `Deleting…`, its
+across rows whatever the name length and, with a fine pointer, while the ⋯ is
+hovered, focused or open (on touch a focused ⋯ brings back its own column);
+Main's row puts its mark at the same x, its count just before it. A deleting row draws only `Deleting…`, its
 census fact kept in the accessible name. The Projects header carries one mark beside
 its label in both states: amber when a Project waits for the owner, else the
 strongest work among the Projects in ink. An activity repaint keeps the row and menu
@@ -2257,9 +2258,9 @@ left and leaves a strip of the room visible. In a room (Main, an open Project) �
 is the first control of the composer's row, beside Swarm and under the thumb, and
 steps aside with the others while an open capsule has the line alone; on a page
 without a composer it sits in the leading slot of the header. While the drawer is
-closed ☰ carries one 7 px dot for what it hides: amber while Main or a Project waits
-for the owner, else crimson while Main or a Project has unread messages; its
-accessible name says which. The
+closed ☰ carries one 7 px dot for Main and the Projects, the room on screen
+included: amber while one of them waits for the owner, else crimson while one has
+unread messages; its accessible name says which. The
 drawer's × sits in its head, where a page's ☰ is. The scrim,
 ×, Escape, Back and choosing a place close it. A drag only speeds this up: a
 sideways finger anywhere on the room, from the screen's very edge and over its

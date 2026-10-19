@@ -45,8 +45,9 @@ const ROUTING_STATUS_TEXT = {
     answered: 'Routed',
     superseded: 'Superseded by a newer attempt',
 };
-// Its head's dot, the question's family: ok once routed, the head's disabled ink once superseded, else neutral.
-const ROUTING_MARK_HUES = { answered: 'ok', superseded: 'ink' };
+// Its head's dot, the question's family: the owner's move while it waits for a destination, ok once routed, the head's
+// disabled ink once superseded, neutral while the chosen route is sent.
+const ROUTING_MARK_HUES = { open: 'owner', answered: 'ok', superseded: 'ink' };
 const ROUTING_TOP_OPTIONS = 8;
 
 export function createChatDecision({
