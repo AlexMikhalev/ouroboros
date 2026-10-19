@@ -265,8 +265,8 @@ def test_a_failing_source_never_reads_as_an_empty_room(monkeypatch, tmp_path):
 
 
 def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monkeypatch, tmp_path):
-    """Through the real custody store: started runs under an ended root are live members, a settled run
-    custody still holds is not, and the stored ISO start becomes epoch seconds."""
+    """Through the real custody store: started runs under an ended root are live members that its Stop reaches,
+    a settled run custody still holds is not, and the stored ISO start becomes epoch seconds."""
     from datetime import datetime, timezone
 
     from ouroboros import delegate_custody as custody
@@ -285,7 +285,8 @@ def test_started_delegated_runs_of_an_ended_root_are_its_live_work(stored, monke
     assert work["work_id"] == "p" and work["activity"] == "working" and work["members"]["delegated"] == 2
     assert work["because"][0]["code"] == "delegated_running"
     assert work["since"] == datetime(2026, 10, 17, 11, tzinfo=timezone.utc).timestamp()
-    assert work["controls"] == [], "the Stop door does not reach a settled tree's runs: no dead Stop"
+    # The cascade Stop cancels a settled tree's open runs (tests/test_settled_tree_run_stop.py drives the door).
+    assert work["controls"] == [{"action": "stop", "target": "p", "scope": "cascade"}]
 
 
 def test_working_helpers_say_the_reason_while_the_work_still_counts_its_runs(stored, monkeypatch, tmp_path):
