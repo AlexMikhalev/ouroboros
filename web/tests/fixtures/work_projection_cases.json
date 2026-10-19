@@ -1049,6 +1049,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "completed",
      "kind": "task",
      "project_id": "",
