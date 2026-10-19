@@ -779,8 +779,11 @@ def _smoke_retry_refusal(name: str, status: str) -> str:
 # the live route, not a verdict: the model may have read part of the skill, but its review never finished.
 # It is waited out on the provider's clock. A wave the model answered, parseable or not, keeps the one
 # settled retry, and a retry that records no wave of its own (a crash before any send, a local refusal)
-# ends the test red. Every wave is a paid review cycle, a refused one included (_REVIEW_WAVES).
+# ends the test red, as does any attempt whose review raised, wave or not: a crash in the review path is
+# never waited out. Every wave is a paid review cycle, a refused one included (_REVIEW_WAVES).
 _OUTAGE_BACKOFF_SEC = 90.0
+# marketplace.install._run_skill_review's error when review_skill itself raised (it answers "pending").
+_REVIEW_RAISED = "review_skill raised:"
 
 
 def _provider_refused(record: Any) -> bool:
@@ -812,7 +815,9 @@ def _review_with_one_settled_retry(slug: str, name: str):
     while ((status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed"))
            and waves < _REVIEW_WAVES):
         wave = _latest_wave(name)
-        if retried_on is not None and wave == retried_on:
+        if error.startswith(_REVIEW_RAISED):
+            stop = "the review itself raised"
+        elif retried_on is not None and wave == retried_on:
             stop = "the retry recorded no wave of its own"
         else:
             stop = _smoke_retry_refusal(name, status)

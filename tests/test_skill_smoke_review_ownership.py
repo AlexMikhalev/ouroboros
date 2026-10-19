@@ -213,3 +213,24 @@ def test_an_outage_is_waited_out_but_an_answered_failure_keeps_its_one_retry(mon
     # A first attempt that records no wave is never retried.
     status, *_rest, note = run(crash, (clean, _ANSWERED))
     assert status == "pending" and len(flows) == 1 and "not retried" in note
+    # A review that raised after recording a legitimate 429 wave is a crash, never an outage (astra, r6):
+    # the settled retry's wave was refused, then finalization raised; a third, clean answer must not hide it.
+    raised = (("pending", f"{smoke._REVIEW_RAISED} KeyError: 'paid'", "not_required", {}), _REFUSED)
+    status, *_rest, note = run(answered, raised, (clean, _ANSWERED))
+    assert status == "pending" and len(flows) == 2 and sleeps == [] and "the review itself raised" in note
+    status, *_rest, note = run(raised, (clean, _ANSWERED))
+    assert status == "pending" and len(flows) == 1 and "the review itself raised" in note
+
+
+def test_the_crash_marker_is_what_the_install_path_answers_when_the_review_raises(tmp_path, monkeypatch):
+    """The retry rule above reads the install path's own answer; were its wording to drift, a review that
+    raised after a refused wave would read as an outage again."""
+    from ouroboros import skill_review
+    from ouroboros.marketplace.install import _run_skill_review
+
+    def raises(*_a, **_k):
+        raise KeyError("paid")
+
+    monkeypatch.setattr(skill_review, "review_skill", raises)
+    status, findings, error = _run_skill_review(tmp_path, tmp_path, "skill")
+    assert (status, findings) == ("pending", []) and error.startswith(smoke._REVIEW_RAISED), error
