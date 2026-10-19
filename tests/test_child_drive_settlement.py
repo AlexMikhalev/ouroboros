@@ -672,22 +672,39 @@ def test_the_move_releases_the_store_handles_the_pass_itself_opened_inside_the_d
 
 
 
-def test_the_worker_that_ran_the_task_releases_its_own_handles_on_the_drive(tmp_path, caplog):
+def test_the_worker_that_ran_the_task_releases_its_own_handles_on_the_drive(tmp_path):
     """The settlement can close only the server's cached handles: the pool worker that ran the
     task read the drive's store in its own process and releases those once the task ends. A
-    lease still active there is logged and left to the settlement's next pass."""
+    late thread still leasing one keeps it, and that thread's end closes it; every idle
+    handle goes at once, so the drive never waits on a cache nothing will use again."""
     from ouroboros import store
     from supervisor.worker_process import _release_drive_stores
 
     data, drive, _record = _cancelled_with_capture(tmp_path)
     with store.open_store(drive, write=False) as txn:
-        held = txn.conn
-    with store.open_store(drive, write=False):
-        _release_drive_stores(drive)  # active here: refused, logged, nothing closed
-    assert "still in use" in caplog.text and held.execute("SELECT 1").fetchone()[0] == 1
-    _release_drive_stores(drive)
+        idle = txn.conn
+    leased, release, late = threading.Event(), threading.Event(), []
+
+    def late_thread():
+        with store.open_store(drive, write=False) as txn:
+            late.append(txn.conn)
+            leased.set()
+            release.wait()  # the finally below releases it; join bounds the test
+
+    worker = threading.Thread(target=late_thread)
+    worker.start()
+    try:
+        assert leased.wait(5)
+        _release_drive_stores(drive)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            idle.execute("SELECT 1")
+        assert late[0].execute("SELECT 1").fetchone()[0] == 1, "a late lease is never closed under it"
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive()
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        held.execute("SELECT 1")
+        late[0].execute("SELECT 1")  # the late thread's end disposed of its own handle
 
 def test_a_copy_back_between_preparation_and_publication_is_seen_by_the_revision(tmp_path, monkeypatch):
     """F3: a publisher that changed the row's custody fields after the plan was prepared

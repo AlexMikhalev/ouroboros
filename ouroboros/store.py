@@ -643,16 +643,19 @@ def connection(path: pathlib.Path, tier: str, *, wait_sec: float = 0.0,
                 _CONNECTION_GUARD.notify_all()
 
 
-def _close_cached(selected: Callable[[str], bool]) -> None:
+def _close_cached(selected: Callable[[str], bool], *, idle_only: bool = False) -> None:
     """Close every thread's idle cached handle whose file ``selected`` names: all or none.
 
     The lifecycle owner must quiesce users first. An active lease refuses the handoff
     with StoreBusy; it is never interrupted or silently rolled back by another thread.
+    ``idle_only`` closes the idle ones and leaves a leased handle to its thread instead.
     """
     with _CONNECTION_GUARD:
         entries = [(pool, name, entry) for pool in list(_CONNECTION_POOLS)
                    for name, entry in pool.entries.items() if selected(name)]
-        if any(entry.active for _, _, entry in entries):
+        if idle_only:
+            entries = [item for item in entries if not item[2].active]
+        elif any(entry.active for _, _, entry in entries):
             raise StoreBusy("store connection still in use at handoff", reason="contention")
         for pool, name, entry in entries:
             entry.conn.close()
@@ -665,13 +668,14 @@ def close_connections(path: Optional[pathlib.Path] = None) -> None:
     _close_cached(lambda name: key is None or name == key)
 
 
-def close_connections_under(root: pathlib.Path) -> None:
+def close_connections_under(root: pathlib.Path, *, idle_only: bool = False) -> None:
     """Close this process's cached handles on stores inside ROOT before ROOT moves or goes.
 
     Windows refuses to rename a folder while a file below it is open, and on any system a
     handle kept past the move holds the moved files' space. Another process (a pool worker
-    that ran the task) releases its own. Contract as ``_close_cached``; paths resolve outside
-    the pool guard, so a slow volume never stalls other stores' leases.
+    that ran the task) releases its own, ``idle_only``: a late thread's lease stays with
+    that thread, which closes it on exit. Contract as ``_close_cached``; paths resolve
+    outside the pool guard, so a slow volume never stalls other stores' leases.
     """
     def canonical(name: Any) -> str:
         return os.path.normcase(os.path.realpath(name))  # a short or linked spelling names the same file
@@ -680,7 +684,7 @@ def close_connections_under(root: pathlib.Path) -> None:
     with _CONNECTION_GUARD:
         names = {name for pool in list(_CONNECTION_POOLS) for name in pool.entries}
     inside = {name for name in names if canonical(name).startswith(prefix)}
-    _close_cached(inside.__contains__)
+    _close_cached(inside.__contains__, idle_only=idle_only)
 
 
 atexit.register(close_connections)  # before module globals (including the inode guard) are cleared

@@ -550,13 +550,12 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
 def _release_drive_stores(drive: Any) -> None:
     """A task's own drive is the server's to settle and move once the task ends. This process
     read its stores through the per-thread cache, and Windows moves no folder with an open
-    file below it, so the worker releases them; the server can only close its own."""
-    from ouroboros.store import StoreBusy, close_connections_under
+    file below it, so the worker releases its idle handles; the server can only close its
+    own, and a late thread still leasing one closes it when that thread ends."""
+    from ouroboros.store import close_connections_under
 
     try:
-        close_connections_under(pathlib.Path(drive))
-    except StoreBusy:
-        log.warning("A store under %s is still in use after its task; the settlement retries", drive)
+        close_connections_under(pathlib.Path(drive), idle_only=True)
     except Exception:
         log.warning("Could not release the store handles under %s", drive, exc_info=True)
 
