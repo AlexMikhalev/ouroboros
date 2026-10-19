@@ -67,6 +67,49 @@ def _python_standalone_extras(src: str, interpreter: str) -> tuple[set, list]:
 class TestBuildSh:
     """build.sh must bundle Chromium headless shell without bundled macOS WebKit."""
 
+    def test_macos_source_entry_is_built_before_headers_are_pruned(self):
+        src = _read("build.sh")
+        compile_pos = src.index("xcrun clang")
+        install_pos = src.index('cp build/macos/ouroboros-shell')
+        assert src.index("rm -rf build dist") < compile_pos < _find_pyinstaller_cmd_pos(src) < install_pos
+        assert '-mmacosx-version-min=12.0' in src
+        assert '-Wl,-rpath,@executable_path/../Frameworks/python-standalone/lib' in src
+        assert 'python-standalone/include/python${SHELL_PY_VERSION}' in src
+        assert '"python-standalone/lib/$SHELL_PY_LIB"' in src
+        stub = _read("packaging/macos/ouroboros_shell.c")
+        assert "Py_InitializeFromConfig" in stub and "Py_RunMain" in stub
+        assert "Py_SetPythonHome" not in stub and "execv" not in stub
+
+    @pytest.mark.parametrize("matching", [True, False])
+    def test_entry_install_requires_its_own_runtime_library_not_build_pythons(self, tmp_path, matching):
+        """Run the real install block against the static-python layout (no artifact is executed)."""
+        src = _read("build.sh")
+        start = src.index('cp build/macos/ouroboros-shell')
+        end = src.index('echo "--- Installing packaged CLI wrappers', start)
+        app = tmp_path / "New app.app"
+        frameworks = app / "Contents/Frameworks"
+        (app / "Contents/MacOS").mkdir(parents=True)
+        (frameworks / "python-standalone/lib").mkdir(parents=True)
+        library = frameworks / ("python-standalone/lib/libpython3.10.dylib" if matching else "libpython3.10.dylib")
+        library.write_bytes(b"library fixture, never executed")
+        compiled = tmp_path / "build/macos/ouroboros-shell"
+        compiled.parent.mkdir(parents=True)
+        compiled.write_bytes(b"entry fixture, never executed")
+        result = subprocess.run(["bash", "-ec", src[start:end]], cwd=tmp_path, capture_output=True, text=True,
+                                env={**os.environ, "APP_PATH": str(app), "SHELL_PY_LIB": "libpython3.10.dylib"})
+        assert (result.returncode == 0) is matching, result.stderr
+        assert (app / "Contents/MacOS/ouroboros-shell").read_bytes() == compiled.read_bytes()
+
+    def test_source_entry_identity_is_restored_after_deep_sign_then_outer_seal_verified(self):
+        src = _read("build.sh").replace("\\\n", " ")
+        commands = [line.strip() for line in src.splitlines() if line.strip().startswith("codesign -s")]
+        deep = next(i for i, line in enumerate(commands) if "--deep" in line)
+        assert '--identifier com.ouroboros.agent' in commands[deep + 1]
+        assert 'Contents/MacOS/ouroboros-shell' in commands[deep + 1]
+        assert '--deep' not in commands[deep + 2] and '"$APP_PATH"' in commands[deep + 2]
+        assert '"$SHELL_SIGN_ID" != "com.ouroboros.agent"' in src
+        assert src.index('"$SHELL_SIGN_ID" !=') < src.index('codesign --verify --strict --deep')
+
     def test_playwright_install_chromium_present(self):
         src = _read("build.sh")
         assert "playwright install --only-shell chromium" in src, (
@@ -220,8 +263,6 @@ class TestBuildSh:
 
     def test_source_handoff_interpreter_receives_the_desktop_extra(self):
         """The source launcher needs desktop modules outside PyInstaller's archive."""
-        launcher = _read("launcher.py")
-        assert 'os.execv(EMBEDDED_PYTHON, [EMBEDDED_PYTHON, str(REPO_DIR / "launcher.py")' in launcher
         src = _read("build.sh").replace("\\\n", " ")
         extras, installs = _python_standalone_extras(src, "python-standalone/bin/python3")
         assert "desktop" in extras, f"python-standalone receives only extras {sorted(extras)}"
@@ -1205,7 +1246,8 @@ def test_spec_retains_cross_platform_packaging_hooks():
 @pytest.mark.skipif(not _BUNDLE_FILES_PRESENT, reason=_PACKAGING_SKIP_REASON)
 def test_launcher_retains_cross_platform_runtime_hooks():
     launcher_source = _pkg_read("launcher.py")
-    assert "embedded_python_candidates" in launcher_source
+    assert "find_embedded_python" in launcher_source
+    assert "embedded_python_candidates" in _pkg_read("ouroboros/launcher_bootstrap.py")
     assert "_prepare_windows_webview_runtime" in launcher_source
     assert "git_install_hint()" in launcher_source
     assert "create_kill_on_close_job" in launcher_source

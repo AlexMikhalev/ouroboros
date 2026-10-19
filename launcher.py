@@ -1,4 +1,4 @@
-"""Immutable launcher: bootstrap repo, manage server.py, and optionally host UI."""
+"""Bootstrap the managed source, supervise server.py, and optionally host its UI."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from ouroboros.launcher_bootstrap import (
     check_git as _check_git, launcher_sources_changed, remember_loaded_checkout,
     install_deps as _install_deps_impl,
     embedded_python_env, update_external_host,
-    parse_launch_options, source_handoff_argv,
+    exec_source_launcher, find_embedded_python, macos_source_entry, parse_launch_options, shell_runtime_facts,
     automatic_launch_allowed,
     sync_existing_repo_from_bundle as _sync_existing_repo_from_bundle_impl,
 )
@@ -79,7 +79,6 @@ from ouroboros.platform_layer import (
     close_job,
     create_kill_on_close_job,
     current_process_group_id,
-    embedded_python_candidates,
     force_kill_pid,
     git_install_hint,
     install_shutdown_signal_handlers,
@@ -101,6 +100,9 @@ from ouroboros.utils import atomic_write_json, utc_now_iso
 
 MAX_CRASH_RESTARTS = 5
 CRASH_WINDOW_SEC = 120
+# Entry protocol 1: --seed-bundle selects plain Python for the body and its
+# installs; --runtime-venv is retained separately while the shell keeps app identity.
+MACOS_SOURCE_ENTRY_PROTOCOL = 1
 # One bounded visible retry when dependency installation fails.
 _DEPS_RETRY_DELAY_SEC = 5
 _CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x4) if IS_WINDOWS else 0
@@ -164,25 +166,21 @@ def _hidden_popen(command, **kwargs):
     """subprocess.Popen() with platform-appropriate hidden-window flags."""
     return subprocess.Popen(command, **merge_hidden_kwargs(kwargs))
 
-def _find_embedded_python() -> str:
-    """Locate the embedded python-build-standalone interpreter."""
-    if getattr(sys, "frozen", False):
-        base = pathlib.Path(sys._MEIPASS)
-    else:
-        base = pathlib.Path(__file__).parent
-    for path in embedded_python_candidates(base):
-        if path.exists():
-            return str(path)
-    return sys.executable
-
-
-EMBEDDED_PYTHON = _find_embedded_python()
-
 
 def _bundle_dir() -> pathlib.Path:
     if getattr(sys, "frozen", False):
         return pathlib.Path(sys._MEIPASS)
     return _external_seed_bundle or pathlib.Path(__file__).parent
+
+
+def _exec_source_launcher() -> None:
+    exec_source_launcher(_bootstrap_context(), _launch_argv, release_lock=release_pid_lock,
+                         desktop=not _external_ui, macos=IS_MACOS)
+
+
+def _shell_facts() -> dict:
+    seed = _bundle_dir() if getattr(sys, "frozen", False) or _external_seed_bundle else None
+    return shell_runtime_facts(REPO_DIR, seed, APP_VERSION, macos=IS_MACOS)
 
 
 def _bootstrap_context() -> BootstrapContext:
@@ -235,6 +233,7 @@ _external_ui = False
 _external_host_update: Optional[pathlib.Path] = None
 _external_host_result: dict = {}
 _external_seed_bundle: Optional[pathlib.Path] = None
+EMBEDDED_PYTHON = find_embedded_python(_bundle_dir(), macos=IS_MACOS)
 _launch_argv: list[str] = []
 _launch_intent = "owner"
 _runtime_venv = None  # runtime_venv.RuntimeVenv selected by --runtime-venv
@@ -427,7 +426,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     env["OUROBOROS_SERVER_PORT"] = str(port)
     env["OUROBOROS_DATA_DIR"] = str(DATA_DIR)
     env["OUROBOROS_REPO_DIR"] = str(REPO_DIR)
-    env["OUROBOROS_APP_VERSION"] = str(APP_VERSION)
+    env["OUROBOROS_APP_VERSION"] = _shell_facts()["bundle_version"] or str(APP_VERSION)
     env["OUROBOROS_MANAGED_BY_LAUNCHER"] = "1"
     env["OUROBOROS_MANAGED_REPO_DIR"] = str(REPO_DIR.resolve())
     env["OUROBOROS_LAUNCH_INTENT"] = _launch_intent  # this launcher's parsed intent, never an inherited one
@@ -703,7 +702,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
         _external_host_result = update_external_host(_external_host_update, EMBEDDED_PYTHON, log, _shutdown_event)
         if _shutdown_event.is_set():
             break  # Native preparation has reaped its owned processes before returning.
-        remember_loaded_checkout(REPO_DIR)  # the commit this launcher's own modules came from
+        remember_loaded_checkout(REPO_DIR)  # the checkout at first start, unless main() recorded macOS's generation
         proc = start_agent(port)
         if _shutdown_event.is_set():
             stop_agent()
@@ -799,12 +798,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
                         MAX_CRASH_RESTARTS, CRASH_WINDOW_SEC,
                     )
             if _external_seed_bundle is not None or launcher_sources_changed(REPO_DIR, bundle_dir=_bundle_dir()):
-                # The interpreter (a --runtime-venv included) carries over; consumed options do not.
-                argv = source_handoff_argv(_launch_argv)
-                if getattr(sys, "frozen", False):
-                    argv += ["--seed-bundle", str(_bundle_dir())]
-                release_pid_lock()
-                os.execv(EMBEDDED_PYTHON, [EMBEDDED_PYTHON, str(REPO_DIR / "launcher.py"), *argv])
+                _exec_source_launcher()
             continue
 
         now = time.time()
@@ -1125,6 +1119,9 @@ def main(argv=()):
     _external_ui = options.no_ui
     _external_host_update = options.host_update.resolve() if options.host_update is not None else None
     _external_seed_bundle = options.seed_bundle.resolve() if options.seed_bundle is not None else None
+    if IS_MACOS and _external_seed_bundle is not None \
+            and pathlib.Path(sys.executable) == macos_source_entry(_external_seed_bundle):
+        EMBEDDED_PYTHON = find_embedded_python(_external_seed_bundle, macos=IS_MACOS)
     if _external_ui:
         _headless = True
     if IS_WINDOWS and not _external_ui:
@@ -1192,6 +1189,9 @@ def main(argv=()):
 
     if not automatic_launch_allowed(options.launch_intent, DATA_DIR, log):
         return
+    if IS_MACOS:  # the code actually imported, before bootstrap can advance the checkout (elsewhere: first start)
+        remember_loaded_checkout(pathlib.Path(__file__).parent,
+                                 bundle_dir=_bundle_dir() if getattr(sys, "frozen", False) else None)
     # Listen before the long boot: a manual second launch meanwhile is kept and opens the window once it exists.
     background = None if _headless else Background(lambda: _on_closing(), _read_port_file, _shutdown_event).listen(PID_FILE)
 
@@ -1278,12 +1278,14 @@ def main(argv=()):
 
     if options.runtime_venv is not None:  # under the PID lock, before bootstrap and world generation
         try:
-            _runtime_venv = prepare_runtime_venv(options.runtime_venv, run=_hidden_run, log=log)
+            _runtime_venv = prepare_runtime_venv(options.runtime_venv, run=_hidden_run, log=log,
+                base_python=(EMBEDDED_PYTHON if getattr(sys, "frozen", False)
+                             else getattr(sys, "_base_executable", sys.executable)))
         except RuntimeVenvRefused as refusal:
             log.error("%s", refusal)
             print(f"Ouroboros did not start: {refusal}", file=sys.stderr, flush=True)
             sys.exit(1)
-        EMBEDDED_PYTHON = _runtime_venv.python  # the body, its installs and the source handoff
+        EMBEDDED_PYTHON = _runtime_venv.python  # the body and its installs; the macOS shell keeps app identity
         os.environ["PATH"] = os.pathsep.join([str(_runtime_venv.bin_dir), os.environ.get("PATH", "")])
     if not bootstrap_repo():
         # Disclosed, not fatal: an already-provisioned install with satisfied
@@ -1300,6 +1302,17 @@ def main(argv=()):
             log.error("%s", refusal)
             print(f"Ouroboros did not start: {refusal}", file=sys.stderr, flush=True)
             sys.exit(1)
+
+    if IS_MACOS and getattr(sys, "frozen", False):
+        # Cold launch loads updated helpers, including any it would import later from the seed, before a server
+        # or normal window; no source entry returns to this frozen bootstrap. Preserve an Open received during boot.
+        if macos_source_entry(_bundle_dir()) is None:
+            log.warning("This app lacks the macOS source entry; source restarts need a new app installation "
+                        "to preserve the app profile and notification identity.")
+        elif launcher_sources_changed(REPO_DIR, bundle_dir=_bundle_dir(), packaged=True):
+            if background is not None and background._open_pending:
+                _launch_argv += ["--launch-intent", "owner"]
+            _exec_source_launcher()
 
     # D-8: decide here, PRESENT after the gateway is healthy. Everything above
     # (single-instance lock, Git, managed-repo bootstrap/seed validation) is a
@@ -1419,6 +1432,7 @@ def main(argv=()):
 
     class MainApi(DesktopApi):  # alerts, shell facts and system notifications: launcher_background.DesktopApi
         _background = background
+        _shell_facts = _shell_facts()
         @staticmethod
         def _native_confirm(title: str, message: str) -> bool:
             return bool(_webview_window and _webview_window.create_confirmation_dialog(title, message))

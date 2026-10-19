@@ -49,6 +49,7 @@ INDICATOR_WAIT_SEC = 3.0
 # Every first-party ``webview.start`` passes ``private_mode=False`` (launcher.py, launcher_onboarding.py):
 # pywebview's private mode erases the WebView's website data each time a window opens (ARCHITECTURE §3).
 PERSISTENT_WEBVIEW_STORAGE = True
+_SHELL_VERSION = read_version()  # the loaded code; a later in-place Update is not a new shell
 STATUS_POLL_SEC = 15.0
 _active = None  # the started indicator, for the exit and Panic paths
 _notifier = None  # the system-notification adapter, for the same paths (Windows' icons outlive a process)
@@ -522,6 +523,7 @@ class DesktopApi:
     built before one of them simply lacks it (the page then falls back and says so, DESIGN §9)."""
 
     _background = None  # set by the inheriting MainApi; a leading underscore keeps it off the bridge
+    _shell_facts = {}  # installed seed and loaded source, supplied by launcher.MainApi
 
     def request_attention(self, sound: bool = True, title: str = "", body: str = "", cue_when_visible: bool = True) -> dict:
         return self._background.attention(bool(sound), str(title or ""), str(body or ""), bool(cue_when_visible))
@@ -533,8 +535,8 @@ class DesktopApi:
         return self._background.appearance.request(theme, page, sequence)
 
     def shell_info(self) -> dict:
-        """What this desktop app is: its own version (not the core's), its storage and its notifications."""
-        return {"shell_version": read_version(), "persistent_storage": PERSISTENT_WEBVIEW_STORAGE,
+        """Installed bundle and loaded shell are separate facts; capabilities are read from this process."""
+        return {"shell_version": _SHELL_VERSION, **self._shell_facts, "persistent_storage": PERSISTENT_WEBVIEW_STORAGE,
                 "native_notifications": self._notifier_answer("status")}
 
     def request_native_notifications(self) -> dict:

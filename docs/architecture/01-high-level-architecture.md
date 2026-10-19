@@ -299,7 +299,7 @@ ouroboros/ — agent core and shared runtime (§6)
   owner_relay.py — `tell_task` relays: held owner quotes, one atomic mailbox row, the room's `relay_entry`, return addresses (§6 Owner routing verbs)
   owner_mailbox.py — per-task user message mailbox: revocation-aware drain, proven-empty peek, the closed provenance set
   peer_roster.py — host-listed roots from queue_snapshot/direct_roots, hidden included, with their recorded waits; admits source-bound inline Presence mailboxes for `forward_to_worker` (§12; §6 Owner routing verbs)
-  launcher_bootstrap.py, runtime_venv.py — Bundle-to-repo bootstrap, launch options, managed sync, native-host artifact synchronization and `--runtime-venv` for launcher.py (§2)
+  launcher_bootstrap.py, runtime_venv.py — Bootstrap/sync, source-shell handoff and compatibility probe, native host and body interpreter (§2)
   launcher_onboarding.py — First-run onboarding as the desktop launcher shows it: the gateway /onboarding page (§2)
   launcher_server_reaper.py — POSIX same-install stray-server termination by the PID-lock-owning launcher (Runtime topology below)
   launcher_readiness.py — The launcher's `/api/health` probe (§2 Boot order)

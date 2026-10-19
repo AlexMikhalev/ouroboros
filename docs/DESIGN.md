@@ -2173,9 +2173,9 @@ exceptions.
 | Ordinary replies in Main | separate toggle | an ordinary finished reply in the Main thread |
 
 *Required* means the application asks for delivery from its own state rather
-than relying on the model to remember. It does not mean the notification
-bypasses OS permission, Do Not Disturb or platform limits — nothing here
-claims that.
+than relying on the model to remember, not that delivery overrides system
+permission or platform limits. The separate soft fallback tone's Focus limitation
+is stated below.
 
 *LLM-first* costs no extra model call and needs no new host field: the signal is
 that Ouroboros already chose to speak outside its answer
@@ -2223,20 +2223,26 @@ falls back and Settings says that system notifications need the current app.
 Android's host keeps its own channel for its own service; its page has no system
 notifications and says so.
 
-**One sound.** At most one sound per event. A system notification owns its
-sound: the operating system plays it under its own volume and Do Not Disturb,
-and nothing else plays one beside it. Without one, where the browser shows a
-banner, the banner owns the sound; where a desktop bridge is available, the
-launcher owns one system sound (or reports that it could not play one);
-otherwise the app plays one short tone. Never both, and the Sound choice remains
-authoritative: Sound off sends a system notification silently, a Windows balloon
-included (the shell's own balloon call with `NIIF_NOSOUND`). If that call is
-unavailable, a silent request falls back to the page without a balloon; the
-WinForms fallback is used only when sound was requested, and since it answers
-nothing, its balloon counts as unconfirmed. An app built before system
-notifications cannot silence the balloon it shows while its window is hidden,
-so with Sound off the page does not ask that app at all: the alert is a silent
-browser banner or in-app toast, without its balloon, Dock mark or window raise.
+**One sound.** A system or browser notification owns its sound and volume; the
+page adds none beside it. Before native dispatch the page refreshes system
+permission, then rechecks its own current choices. A submitted notification does
+not prove permission: macOS may accept a request it will suppress. Unknown
+delivery may still appear and gets no fallback.
+Only a definite failed hand-off, followed by a fresh positive system permission
+and sound-setting read, may use the soft app tone when no banner or other sound
+was shown. Explicit denial, unasked or unknown permission stays quiet; a cached
+grant cannot overturn a refusal. The app tone has its own volume and **may not
+follow Focus / Do Not Disturb**. Neither the old Glass sound nor the launcher's
+standalone beep is a fallback.
+
+Sound off requests silent delivery, including Windows' `NIIF_NOSOUND` balloon.
+Every page-controlled dispatch rechecks current notifications, category and Sound
+choices after any wait; a silent decision never becomes audible, and a pending
+tone cannot become louder. Already handed-off effects cannot be recalled.
+A legacy launcher with only `request_attention` keeps its silent window cue.
+One with `notify_owner` but no system-notification method is never asked: its
+hidden-window balloon may sound despite mute. It keeps the browser banner or
+toast, without the launcher's balloon, Dock mark or window raise.
 
 **Each open window is its own client.** Settings, permission and the
 duplicate-collapsing that keeps one event to one notification all belong to one
@@ -2258,24 +2264,25 @@ opens the window as it was left and does not navigate.
 **Content is private by default.** Only the kind of event is shown until the
 owner turns message text on, because a banner can appear on a shared screen.
 
-**Deliberately absent.** No numeric badge, no repeated reminder, no inline
-reply, no Telegram escalation, and no notification or attention after the
-application quits. When no system notification was shown and the packaged
-desktop launcher exposes its optional `request_attention` bridge, a live
-notification may raise a visible window and ask the operating system for one
-standard sound. A window the owner hid in background mode is never raised by an
-alert: Windows shows a banner from its notification-area icon, macOS marks and
-bounces the Dock icon with the system sound, and the window opens from that
-banner, the indicator or the Dock. That holds with browser notifications allowed
-too: the page asks the launcher before showing a browser banner, whose click
-could not bring a hidden window back; a visible window keeps the browser banner,
-which owns the sound. These are native attention cues, not proof
-that a system banner was delivered; unsupported or older launchers fall back to
-the browser banner or in-app toast and report that capability honestly.
+**Deliberately absent.** No numeric badge, repeated reminder, inline reply,
+Telegram escalation or attention after quitting. A current desktop launcher may
+raise a visible window as fallback, without its own sound. A deliberately hidden
+window is never raised by an alert: Windows may show a silent indicator banner,
+macOS marks and bounces the Dock icon; the indicator or Dock opens the window.
+With browser notifications allowed, the page asks this bridge first because a
+browser click cannot unhide the window. A visible window keeps the browser banner.
+Attention cues prove no system delivery; unsupported and legacy launchers fall
+back as described above.
 
 **Settings.** The controls live on **Settings → Appearance**, under the theme
 block, and are stored per client exactly like the appearance choice: the desktop
-window and each browser keep their own, nothing reaches the server. A test
+window and each browser keep their own, nothing reaches the server. Under Sound,
+**App tone volume** controls only the app tone, never system volume. Automatic
+fallback requires a client that can report positive system permission and sound
+settings (currently macOS); elsewhere the control affects Preview only. Moving
+it is silent; **Preview tone** explicitly plays the chosen tone, even without
+notification permission, but not with Sound or notifications off. Both use the
+existing controls and button styles, not another panel. A test
 button is the honest way to see what this system actually does with a
 notification, including a denied permission, and in the desktop app it is the
 gesture that lets the system ask. The status line names the surface this client

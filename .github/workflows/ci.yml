@@ -1990,9 +1990,15 @@ jobs:
           test -x "$MOUNT/Install CLI.command"
           APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$MOUNT/Ouroboros.app/Contents/Info.plist")"
           lipo -archs "$MOUNT/Ouroboros.app/Contents/MacOS/$APP_EXECUTABLE" | tr ' ' '\n' | grep -qx arm64
-          # Source handoff uses this interpreter, not the launcher's frozen imports.
+          # The source handoff's import probe and the body use this plain interpreter, not frozen imports.
           HOME="$HOME_DIR" "$MOUNT/Ouroboros.app/Contents/Frameworks/python-standalone/bin/python3" -I -B -c \
             'import webview, objc, AppKit, WebKit, PyObjCTools.AppHelper'
+          # The source launcher itself runs in the app entry: import its desktop modules there (no launcher,
+          # no window) and prove the entry hosts the bundled plain Python through its rpath libpython.
+          HOME="$HOME_DIR" "$MOUNT/Ouroboros.app/Contents/MacOS/ouroboros-shell" -I -B -c \
+            'import os, sys, webview, objc, AppKit, WebKit, PyObjCTools.AppHelper; assert os.path.samefile(sys.executable, sys.argv[1]), sys.executable; assert os.path.samefile(sys._base_executable, sys.argv[2]), sys._base_executable' \
+            "$MOUNT/Ouroboros.app/Contents/MacOS/ouroboros-shell" \
+            "$MOUNT/Ouroboros.app/Contents/Frameworks/python-standalone/bin/python3"
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
             "$MOUNT/Ouroboros.app/Contents/Resources/bin/ouroboros" --help >/dev/null
           HOME="$HOME_DIR" XDG_CACHE_HOME="$HOME_DIR/.cache" \
