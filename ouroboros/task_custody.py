@@ -1304,9 +1304,9 @@ def custody_trash_entries(canonical_root: Any) -> List[Tuple[str, List[int]]]:
 
 def remove_custody_trash(canonical_root: Any, *, stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Delete the drives settlements moved aside: each was fully custodied before its move, and
-    nothing serves or references it, so no age or liveness applies. The maintenance child runs
-    this, off the serving process. Returns the count removed and each entry that survived its
-    removal (``name -> identity``: it waits for that identity to change)."""
+    nothing serves or references it, so no age or liveness applies. The maintenance child runs this,
+    off the serving process. Returns the count removed and each entry that survived its removal
+    (``name -> identity``; the child retries it at its next run, a changed identity makes the job due)."""
     report: Dict[str, Any] = {"removed": 0, "stuck": {}}
     root = pathlib.Path(canonical_root) / _TRASH_DIR
     try:

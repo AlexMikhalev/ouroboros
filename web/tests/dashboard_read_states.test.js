@@ -1376,7 +1376,7 @@ test('Storage tray frees the checked groups under the plan after the shared conf
         deleting: 0, deleting_bytes: 0, stuck: 1, kept: [], free_before: 140e9, free_after: 148e9, stopped: false, error: null } })));
     await timers.fire();
     await settle();
-    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 could not be deleted yet; the app retries once it changes\./);
+    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 could not be deleted yet; the app retries at its next maintenance run\./);
     assert.equal(timers.polls(), 0, 'an entry the child reported stuck is not polled for');
     assert.equal(mount.querySelector('[data-storage-live]').textContent, 'Not counted yet. Removed 8.0 GB (5 folders).', 'the live region carries one phase sentence');
     routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
