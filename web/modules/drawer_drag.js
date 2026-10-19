@@ -71,6 +71,8 @@ export function bindDrawerDrag({
     sidebar, scrim, isOpen, setOpen, isStack, isCoarse,
     // The drag takes the scrim: whoever fades it out after a close (app.js) lets go of it.
     onGrab = () => {},
+    // The layout owner's change notification (layout.js onLayoutChange): returns its disposer.
+    onLayout = () => () => {},
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
     isField = (el) => Boolean(el?.closest?.(FIELD_SELECTOR)),
@@ -184,6 +186,7 @@ export function bindDrawerDrag({
             if (Math.abs(dx) < DRAG.slop || Math.abs(dx) <= DRAG.axisRatio * Math.abs(dy)) return;
             if ((dx > 0) === g.startOpen) { end(); return; }  // the wrong way: nothing to move
             if (event.cancelable === false) { end(); return; }  // the browser already scrolls: the finger is its
+            if (isBlocked()) { end(); return; }  // a menu opened under the still finger (a long press) keeps it
             event.preventDefault();
             g.mode = 'drag';
             g.lockX = touch.clientX;
@@ -281,6 +284,9 @@ export function bindDrawerDrag({
     }
     root.addEventListener('touchstart', onStart, { passive: true });
     syncGuard();
+    // theme.js switches the layout on its own media-query change, after a resize handler has run: the guard follows
+    // that switch; resize and the first touch are fallbacks.
+    const unwatchLayout = onLayout(syncGuard);
     doc.addEventListener('click', onClick, true);
     win.addEventListener('resize', onResize);
     return () => {
@@ -291,6 +297,7 @@ export function bindDrawerDrag({
         root.removeEventListener('touchstart', onStart);
         root.removeEventListener('touchmove', onPageMove);
         guarded = false;
+        unwatchLayout?.();
         doc.removeEventListener('click', onClick, true);
         win.removeEventListener('resize', onResize);
     };

@@ -54,11 +54,12 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
     const room = fakeEl('room'); room.parentElement = doc.body;
     const state = { open, set: [], grabs: 0 };
     const flags = { field: new Set(), sideways: new Set(), blocked: false, selection: false };
-    const env = { stack, coarse };
+    const env = { stack, coarse, layoutHandlers: new Set() };
     const dispose = bindDrawerDrag({
         sidebar, scrim, isOpen: () => state.open,
         setOpen: (v) => { state.set.push(v); state.open = v; scrim.hidden = !v; },
         isStack: () => env.stack, isCoarse: () => env.coarse, onGrab: () => { state.grabs += 1; }, win, doc, enabled,
+        onLayout: (fn) => { env.layoutHandlers.add(fn); return () => env.layoutHandlers.delete(fn); },
         isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
@@ -372,15 +373,44 @@ test('the rubber band: nothing changes up to fully open; past it the give grows 
 
 test('the blocking page listener exists only where a drag can start, and follows the layout before any touch', () => {
     const docked = world({ stack: false });
-    assert.equal(docked.root.listeners.map.get('touchmove')?.length || 0, 0, 'a docked window never waits for the page');
+    const moves = () => docked.root.listeners.map.get('touchmove')?.length || 0;
+    const switchTo = (stack) => { docked.env.stack = stack; docked.env.layoutHandlers.forEach((fn) => fn(stack ? 'stack' : 'docked')); };
+    assert.equal(moves(), 0, 'a docked window never waits for the page');
+    switchTo(true);
+    assert.equal(moves(), 1, 'the layout owner\'s switch to the phone layout mounts it, before any touch');
+    switchTo(false);
+    assert.equal(moves(), 0, 'and its switch back takes it off again');
     docked.env.stack = true;
     docked.win.listeners.fire('resize', {});
-    assert.equal(docked.root.listeners.map.get('touchmove')?.length, 1, 'the phone layout mounts it on the layout change');
+    assert.equal(moves(), 1, 'a resize is a fallback');
     docked.env.stack = false;
-    docked.win.listeners.fire('resize', {});
-    assert.equal(docked.root.listeners.map.get('touchmove')?.length || 0, 0, 'and a docked one takes it off again');
+    docked.touch('touchstart', { x: 100, y: 300 });
+    docked.touch('touchend', { x: 100, y: 300 });
+    assert.equal(moves(), 0, 'and so is the next touch, for a change nobody announced');
     docked.dispose();
+    assert.equal(docked.env.layoutHandlers.size, 0, 'dispose stops following the layout');
     const fine = world({ coarse: false });
     assert.equal(fine.root.listeners.map.get('touchmove')?.length || 0, 0, 'a fine pointer: none either');
     fine.dispose();
+});
+
+test('a menu that a long press opened under the still finger keeps it: a sideways move after it is not a drag', () => {
+    const w = world();
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.flags.blocked = true;  // 450 ms later the row's menu is open; the finger has not moved yet
+    const moved = w.touch('touchmove', { x: 114, y: 300 });
+    assert.equal(w.dragging(), false, 'no drawer under an open menu');
+    assert.equal(moved.prevented, false, 'and the move is not cancelled');
+    w.touch('touchend', { x: 114, y: 300 });
+    assert.deepEqual(w.state.set, []);
+    w.flags.blocked = false;
+    const o = world({ open: true });
+    o.scrim.hidden = false;
+    o.touch('touchstart', { x: 300, y: 300, target: o.sidebar });
+    o.flags.blocked = true;  // a row's menu inside the open drawer
+    o.touch('touchmove', { x: 286, y: 300 });
+    assert.equal(o.dragging(), false, 'nor a close drag under a menu inside the drawer');
+    o.touch('touchend', { x: 286, y: 300 });
+    assert.deepEqual(o.state.set, []);
+    w.dispose(); o.dispose();
 });

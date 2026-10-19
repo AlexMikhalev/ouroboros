@@ -313,7 +313,7 @@ const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
     sidebar: primarySidebar, scrim: navDrawerBackdrop,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
-    onGrab: releaseDrawerScrim,
+    onGrab: releaseDrawerScrim, onLayout: (sync) => onLayoutChange(() => sync()),
 }) : () => {};
 const navDrawerClose = document.getElementById('nav-drawer-close');
 if (navDrawerClose) {

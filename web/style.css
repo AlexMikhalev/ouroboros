@@ -3603,13 +3603,13 @@ html[data-layout="stack"] .nav-drawer-backdrop {
        it away; while it fades out it is not a target. */
     opacity: 0;
     pointer-events: none;
-    transition: opacity var(--drawer-settle, 240ms) ease;
+    transition: opacity var(--drawer-settle, 280ms) ease;
     touch-action: pan-y pinch-zoom;  /* a sideways finger on the scrim drags the drawer closed (drawer_drag.js) */
 }
 html[data-layout="stack"] body.nav-drawer-open .nav-drawer-backdrop {
     opacity: 1;
     pointer-events: auto;
-    transition-duration: var(--drawer-settle, 280ms);
+    transition-duration: var(--drawer-settle, 340ms);
 }
 @starting-style {
     html[data-layout="stack"] body.nav-drawer-open .nav-drawer-backdrop { opacity: 0; }
@@ -3653,22 +3653,13 @@ html[data-layout="stack"] .drawer-head {
     padding: calc(var(--chrome-inset) + var(--inset-top)) 0 var(--chrome-inset);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
+/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js). Its surface reaches 64px past its
+   left edge as a solid shadow, so the room never shows through the gap: a shadow paints outside the box, where the
+   drawer's own scroller would clip a child or a pseudo-element. */
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
-    box-shadow: var(--elev-float);
+    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
     transition-duration: var(--drawer-settle, 340ms);
-}
-/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js); its own surface reaches past its
-   left edge, so the room never shows through the gap. */
-html[data-layout="stack"] #primary-sidebar::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: 100%;
-    width: 64px;
-    background: var(--surface-side);
-    pointer-events: none;
 }
 /* Under a finger (drawer_drag.js) the layer moves by one number, --drawer-p (0 closed … 1 open), with no
    transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the drawer and its
@@ -3678,7 +3669,7 @@ html[data-layout="stack"] #primary-sidebar.dragging {
     transition: none;
     will-change: transform;
     transform: translate3d(calc((var(--drawer-p, 0) - 1) * 100%), 0, 0);
-    box-shadow: var(--elev-float);
+    box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
 }
 html[data-layout="stack"] body .nav-drawer-backdrop.dragging {
     opacity: var(--drawer-p, 0);

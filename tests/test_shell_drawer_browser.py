@@ -9,7 +9,10 @@ height. In a room (Main, an open Project) ☰ is the composer row's first contro
 """
 from __future__ import annotations
 
+import io
+
 import pytest
+from PIL import Image
 
 from tests import test_subscription_setup_browser as setup_browser
 from tests.test_design_system_gate_browser import open_nav, seed_page
@@ -330,3 +333,45 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
     assert facts['fling_state']['open'] is True, facts
     assert facts['drift_mid']['open'] is False and facts['drift']['open'] is True, ('the drifting thumb keeps the drawer', facts)
     assert facts['feed_top'][0] == facts['feed_top'][1], ('the feed under the dragged drawer did not scroll', facts)
+
+
+PULLED = """() => { const s = document.getElementById('primary-sidebar');
+    return {x: s.getBoundingClientRect().x, p: Number(s.style.getPropertyValue('--drawer-p')), dragging: s.classList.contains('dragging'),
+            surface: getComputedStyle(s).backgroundColor.match(/\\d+/g).slice(0, 3).map(Number)}; }"""
+
+
+def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromium_ui, tmp_path):
+    """Pulled past fully open the drawer gives like a rubber band, and its surface fills the gap at the screen's edge:
+    the room never shows through. (The drawer is its own scroller and would clip a child or a pseudo-element there.)"""
+    page = seed_page(chromium_ui, 390, 844)
+    page.add_init_script("try { localStorage.setItem('ouroboros.theme', 'light'); } catch (e) {}")
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        page.wait_for_function("() => document.getElementById('primary-sidebar').classList.contains('open')")
+        page.wait_for_timeout(500)
+        y = 420
+        cdp = page.context.new_cdp_session(page)
+        try:
+            # Left first (the close direction locks the axis), then right, past fully open.
+            for i, x in enumerate((100, 80, 160, 260, 380)):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+                page.wait_for_timeout(16)
+            facts['pulled'] = page.evaluate(PULLED)
+            png = page.screenshot(clip={'x': 4, 'y': y + 60, 'width': 1, 'height': 1})
+            facts['gap'] = list(Image.open(io.BytesIO(png)).convert('RGB').getpixel((0, 0)))
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(600)
+        facts['after'] = page.evaluate(DRAWER)
+    finally:
+        evidence(tmp_path, 'shell-drawer-rubber-band', facts)
+        page.close()
+    assert facts['pulled']['dragging'] and facts['pulled']['p'] > 1 and facts['pulled']['x'] > 8, (
+        'the drawer gives past fully open', facts)
+    assert max(abs(a - b) for a, b in zip(facts['gap'], facts['pulled']['surface'])) <= 4, (
+        'the gap at the edge shows the drawer\'s surface, not the dimmed room', facts)
+    assert facts['after']['open'] is True, ('released, it settles back to fully open', facts)
