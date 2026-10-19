@@ -558,8 +558,8 @@ def test_backlog_manager_summary_offline(install_skill, tmp_path):
 #
 # Cost (measured 2026-10-17/18, gemini-3.5-flash, one native reviewer at low
 # effort): about $11 per review (the median; single reviews reported from
-# $0.77 to $12.24), so about $33 per CI run for the three skills; the one
-# settled retry adds at most one more review per skill.
+# $0.77 to $12.24), so about $33 per CI run for the three skills; retries (the
+# settled one, an outage waited out) add at most two more waves per skill.
 # ---------------------------------------------------------------------------
 
 # Owner-picked subset: a2a (mandated) + duckduckgo (core keyless search;
@@ -577,12 +577,15 @@ _REVIEW_MODEL = "google/gemini-3.5-flash"
 # and a native episode bounds every round's send by what is left of it.
 # review_env removes any override, so this shipped default is what governs.
 _REVIEW_WINDOW_SEC = float(SETTINGS_DEFAULTS["OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC"])
+# Waves one skill's review may send: the first, then the one settled retry or
+# provider outages waited out (_review_with_one_settled_retry).
+_REVIEW_WAVES = 3
 # The test's own outer bound covers the longest legitimate product timeline:
-# one wave settling at its window, the one settled retry's wave, and the drain
-# of a late worker whose send runs to that bound (owned_review_workers), plus
-# the catalog install, pack building and the cold a2a dependency install that
-# only follows a passing review. The CI job budget sits above it.
-_REVIEW_TEST_TIMEOUT_SEC = int(3 * _REVIEW_WINDOW_SEC + 900)  # + provider outages waited out (_OUTAGE_RETRIES)
+# each wave settling at its window, and the drain of a late worker whose send
+# runs to that bound (owned_review_workers), plus the outage waits, the catalog
+# install, pack building and the cold a2a dependency install that only follows
+# a passing review. The CI job budget sits above it.
+_REVIEW_TEST_TIMEOUT_SEC = int((_REVIEW_WAVES + 1) * _REVIEW_WINDOW_SEC + 900)
 # Expected auto-granted settings keys per skill (grants are request-keyed,
 # not value-keyed; empty values grant fine and only bite at runtime).
 _REVIEW_EXPECTED_KEYS = {
@@ -621,7 +624,7 @@ def review_env(monkeypatch, tmp_path):
     monkeypatch.delenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC", raising=False)
     monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "true")
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", str(_REVIEW_DISPATCHES))
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", str(_REVIEW_WAVES))  # each wave is a paid cycle
     # get_auto_grant_enabled reads the settings FILE first; point the module
     # at a missing path so the env value above is authoritative (the pattern
     # tests/test_skill_review.py uses).
@@ -772,17 +775,12 @@ def _smoke_retry_refusal(name: str, status: str) -> str:
     return ""
 
 
-# A route the provider is rate-limiting or failing answers no reviewer at all: every seat ends in a provider
-# transport error before the model reads anything. That is an outage of the live route, not a verdict, so it is
-# waited out on the provider's clock a bounded number of times. A model that answered, parseable or not, is never
-# retried here; it keeps the one settled retry below.
-_OUTAGE_RETRIES = 3
+# A wave the provider refuses at the HTTP layer (a 429 or 5xx on every reviewer's record) is an outage of
+# the live route, not a verdict: the model may have read part of the skill, but its review never finished.
+# It is waited out on the provider's clock. A wave the model answered, parseable or not, keeps the one
+# settled retry, and a retry that records no wave of its own (a crash before any send, a local refusal)
+# ends the test red. Every wave is a paid review cycle, a refused one included (_REVIEW_WAVES).
 _OUTAGE_BACKOFF_SEC = 90.0
-
-
-# Each wave is a paid review cycle, a refused one included: the first, every outage wait's and the one
-# settled retry's. The shipped cap of two would refuse the later waves locally, before the provider.
-_REVIEW_DISPATCHES = 1 + _OUTAGE_RETRIES + 1
 
 
 def _provider_refused(record: Any) -> bool:
@@ -797,39 +795,54 @@ def _provider_refused(record: Any) -> bool:
             and (code == 429 or 500 <= code <= 599))
 
 
-def _provider_never_answered(name: str) -> bool:
-    """The provider refused every reviewer of the latest wave (a 429 or 5xx): no model answered."""
+def _refused_by_provider(wave: Any) -> bool:
+    """The provider refused every reviewer of this recorded wave (a 429 or 5xx): no model answered it."""
+    records = wave.get("raw_actor_records") if isinstance(wave, dict) else None
+    return isinstance(records, list) and bool(records) and all(_provider_refused(record) for record in records)
+
+
+def _latest_wave(name: str) -> Any:
     history = load_history(DATA_DIR, name, limit=1)
-    records = history[-1].get("raw_actor_records") if history else None
-    return bool(records) and all(_provider_refused(record) for record in records)
+    return history[-1] if history else None
 
 
 def _review_with_one_settled_retry(slug: str, name: str):
     status, error, deps_status, payload = _run_review_flow(slug, name)
-    outages = 0
-    while (status not in ("clean", "warnings") or error) and outages < _OUTAGE_RETRIES \
-            and _provider_never_answered(name) and not _smoke_retry_refusal(name, status):
-        outages += 1
-        print(f"{slug}: the provider answered no reviewer (outage {outages} of {_OUTAGE_RETRIES}); "
-              f"retrying in {_OUTAGE_BACKOFF_SEC:.0f}s\n" + _review_diag(name, status, error, payload))
-        time.sleep(_OUTAGE_BACKOFF_SEC)
+    waves, outages, settled, stop, retried_on = 1, 0, False, "", None
+    while ((status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed"))
+           and waves < _REVIEW_WAVES):
+        wave = _latest_wave(name)
+        if retried_on is not None and wave == retried_on:
+            stop = "the retry recorded no wave of its own"
+        else:
+            stop = _smoke_retry_refusal(name, status)
+            if not stop and not _refused_by_provider(wave) and settled:
+                stop = "its one settled retry is spent"
+        if stop:
+            break
+        if _refused_by_provider(wave):
+            outages += 1
+            print(f"{slug}: the provider refused every reviewer (outage {outages}); original state kept, "
+                  f"retrying in {_OUTAGE_BACKOFF_SEC:.0f}s\n" + _review_diag(name, status, error, payload))
+            time.sleep(_OUTAGE_BACKOFF_SEC)
+        else:
+            settled = True
+            print(f"{slug}: attempt not OK; original state kept, one settled retry\n"
+                  + _review_diag(name, status, error, payload))
+        retried_on = wave
         status, error, deps_status, payload = _run_review_flow(slug, name)
-    failed = status not in ("clean", "warnings") or error or (slug in DEPS_SKILLS and deps_status != "installed")
-    if not failed:
-        return status, error, deps_status, payload, f" after {outages} provider outage(s)" if outages else ""
-    refusal = _smoke_retry_refusal(name, status)
-    note = f" (not retried: {refusal})" if refusal else " after one settled retry"
-    print(f"{slug}: first attempt not OK; original state kept{note}\n"
-          + _review_diag(name, status, error, payload))
-    if refusal:
-        return status, error, deps_status, payload, note
-    return (*_run_review_flow(slug, name), note)
+        waves += 1
+    note = (f" after {outages} provider outage(s)" if outages else "") + (" after one settled retry" if settled else "")
+    if stop:
+        note += f" (not retried: {stop})"
+        print(f"{slug}: attempt not OK{note}\n" + _review_diag(name, status, error, payload))
+    return status, error, deps_status, payload, note
 
 
-# _REVIEW_TEST_TIMEOUT_SEC: the review under the product's own window, at most
-# one settled retry, the late worker's drain and cold a2a venv+pip. The
-# unchanged production path owns free verdict replay and the paid-cycle cap.
-# Pending work stays red; its state is never erased.
+# _REVIEW_TEST_TIMEOUT_SEC: up to three review waves under the product's own
+# window (the one settled retry, provider outages waited out), the late
+# worker's drain and cold a2a venv+pip. The unchanged production path owns
+# free verdict replay. Pending work stays red; its state is never erased.
 @pytest.mark.timeout(_REVIEW_TEST_TIMEOUT_SEC)
 # review_secret (session) is listed before install_skill (session): among
 # same-scope fixtures signature order wins, so a fork without the secret reds

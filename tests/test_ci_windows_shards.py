@@ -2,6 +2,7 @@
 from collections import Counter
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -291,6 +292,13 @@ def test_the_persist_legs_select_real_modules_and_keep_the_gate_split(tmp_path):
     steps = {step["id"]: step for step in job_steps if "id" in step}
     select, parallel, serial = steps["select"], steps["tests_parallel"], steps["tests_serial"]
     assert "end='')" in select["run"] and 'test "$count" -ge 8' in select["run"]
+    # A misspelt or renamed name, or a renamed shared helper, would drop modules and still clear the floor:
+    # every named module exists, and the module holding the journal helpers is the one the selector greps for.
+    named = re.findall(r"'(test_[\w]+\.py)'", re.search(r"core = \{([^}]*)\}", select["run"])[1])
+    assert len(named) == 11 and all((repo / "tests" / name).is_file() for name in named), named
+    helpers = [path.stem for path in (repo / "tests").glob("_*.py")
+               if re.search(r"^def (?:exclusive_hold|write_hold|use_journal)\b", path.read_text(encoding="utf-8"), re.M)]
+    assert all(f"re.compile(r'{stem}')" in select["run"] for stem in helpers), helpers
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("workflow shell unavailable on this host")
@@ -304,9 +312,10 @@ def test_the_persist_legs_select_real_modules_and_keep_the_gate_split(tmp_path):
     modules = listed.decode().split()
     assert len(modules) >= 8 and all((repo / module).is_file() for module in modules), modules
     assert serial["if"] == "${{ !cancelled() && steps.select.outcome == 'success' }}"
-    for flag in ("-n auto", "--dist", "--max-worker-restart", "--timeout"):
-        assert flag in parallel["run"] and flag not in serial["run"], flag
+    assert " ".join(PARALLEL_PASS_FLAGS) in parallel["run"]  # the gate's own split, as the matrix pins it
+    assert all(flag not in serial["run"].split() for flag in PARALLEL_PASS_FLAGS)
     for step, lane in ((parallel, "parallel"), (serial, "serial")):
+        assert f'-m "{EXPRESSIONS[lane]}"' in step["run"], lane
         assert f'--ci-evidence-dir="${{{{ runner.temp }}}}/ci-evidence/{lane}"' in step["run"], lane
     publish = next(step for step in job_steps if step.get("uses") == "./.github/actions/test-evidence")
     assert publish["with"]["passes"] == ("parallel=${{ steps.tests_parallel.outcome }} "

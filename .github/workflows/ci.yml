@@ -846,10 +846,11 @@ jobs:
           - {lane: review, os: ubuntu-latest, skill: perplexity}
     runs-on: ${{ matrix.os }}
     # A review leg's bound sits above the test's own timeout
-    # (tests/test_skill_smoke_official.py _REVIEW_TEST_TIMEOUT_SEC: three product
-    # review windows of 2700 s plus 600 s = 145 min) plus setup, so the test's
-    # named timeout fires first (pinned by tests/test_skill_smoke_ci_lane.py).
-    timeout-minutes: ${{ matrix.lane == 'review' && 160 || 45 }}
+    # (tests/test_skill_smoke_official.py _REVIEW_TEST_TIMEOUT_SEC: four product
+    # review windows of 2700 s, three waves and a late worker's drain, plus
+    # 900 s = 195 min) plus setup, so the test's named timeout fires first
+    # (pinned by tests/test_skill_smoke_ci_lane.py).
+    timeout-minutes: ${{ matrix.lane == 'review' && 205 || 45 }}
     env:
       # Windows runners default stdout/subprocess decoding to cp1252; live
       # DDG/wttr error text and pip/venv diagnostics can be non-ASCII, and a
@@ -866,10 +867,11 @@ jobs:
           interpreter: shipped  # the SQLite and journal mode fresh installs run
       # Tier 6 (review flow), one review skill per leg; the only step that
       # names the secret, in a leg that runs nothing else. The test's own
-      # timeout marker covers the review under the product's window, one
-      # settled retry, a late worker's drain and the post-review COLD a2a
-      # dependency install (this process has its own temp data dir, so the
-      # venv is never warm here; production review→deps order).
+      # timeout marker covers up to three review waves under the product's
+      # window (one settled retry, provider outages waited out), a late
+      # worker's drain and the post-review COLD a2a dependency install (this
+      # process has its own temp data dir, so the venv is never warm here;
+      # production review→deps order).
       - name: Run official-skill review flow smoke (LLM review, one skill)
         if: matrix.lane == 'review'
         env:
