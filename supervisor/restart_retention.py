@@ -813,6 +813,20 @@ def _recovery_source(root: pathlib.Path, task: Dict[str, Any], attempt: int, cau
                            prior_task={**task, "_attempt": attempt})
 
 
+def _record_refused_returns(drive_root: Any, refused: Dict[str, str], cause: str) -> None:
+    """A return the acknowledged transaction promised but restore could not honour, and why."""
+    if not refused:
+        return
+    from ouroboros.utils import append_jsonl
+
+    log.warning("Promised restart returns not recovered (%s): %s", cause, refused)
+    try:
+        append_jsonl(pathlib.Path(drive_root) / "logs" / "supervisor.jsonl",
+                     {"ts": utc_now_iso(), "type": "restart_return_refused", "cause": cause, "refused": refused})
+    except Exception:
+        log.debug("restart_return_refused not recorded", exc_info=True)
+
+
 def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
                           transaction: Dict[str, Any], cause: str) -> List[Dict[str, Any]]:
     """Interrupted RUNNING rows (and caught direct turns) whose work was saved.
@@ -828,6 +842,7 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
     returning = set((transaction or {}).get("return_ids") or [])
     rows = [row for row in rows or () if isinstance(row, dict)]
     candidates: List[tuple] = []
+    refused: Dict[str, str] = {}  # why a row takes the ordinary interrupted path
     for row in rows:
         task = dict(row.get("task") or {})
         task_id = str(task.get("id") or "")
@@ -835,12 +850,15 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
         root = pathlib.Path(task.get("budget_drive_root") or drive_root)
         try:
             stored = load_task_result(root, task_id, strict=True) or {}
-            if (not task_id or not stored or stored.get("status") in _TRULY_TERMINAL_STATUSES
-                    or _cancel_intent_active(root, task_id)):
+            refused[task_id] = ("no_result" if not task_id or not stored
+                                else "terminal" if stored.get("status") in _TRULY_TERMINAL_STATUSES
+                                else "stopped" if _cancel_intent_active(root, task_id) else "")
+            if refused[task_id]:
                 continue
             auto = task_id in returning
             source_cause = "restart" if auto and cause != "update_aborted" else cause
             if not _recovery_source(root, task, attempt, source_cause):
+                refused[task_id] = "no_usable_recovery_source"
                 continue
             from ouroboros.model_wait import fold_running_clock, stamp_execution_handoff
             from supervisor.events_budget import fold_consumed_resume
@@ -851,6 +869,7 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
                 continue_consumed_resume_selection(task, stored.get("budget_pause") or {})
         except Exception:
             log.warning("Saved work of %s unreadable at restore; ordinary interrupted path", task_id, exc_info=True)
+            refused[task_id] = "unreadable"
             continue
         candidates.append((task, attempt, root, auto))
     # Invariant 19: a child whose interrupted parent (or root) is NOT itself saved
@@ -863,7 +882,10 @@ def recover_saved_running(rows: Iterable[Dict[str, Any]], drive_root: Any, *,
                         - {"", str(item[0]["id"])}) & (interrupted - kept)]
         if not orphaned:
             break
+        refused.update((str(item[0]["id"]), "parent_interrupted") for item in orphaned)
         candidates = [item for item in candidates if item not in orphaned]
+    _record_refused_returns(drive_root, {tid: why for tid, why in refused.items()
+                                         if why and tid in returning}, cause)
     recovered: List[Dict[str, Any]] = []
     for task, attempt, root, auto in candidates:
         task_id = str(task["id"])

@@ -261,7 +261,10 @@ def live_park(root: Any, task_id: str, attempt: Optional[int] = None, *, verify_
     """A park naming a source at least as new as the working attempt, or ``""``.
 
     With ``attempt``, a park recorded by an OLDER attempt (already continued by
-    this one) does not dominate this attempt's working state.
+    this one) does not dominate this attempt's working state. A wait a stop
+    ``retained`` into an exact pause is that pause's own source: it parks only
+    while that pause is live. Its Resume continues the SAME attempt, so after the
+    consumption the attempt's newer working state is the source, not the old wait.
     """
     from ouroboros.budget_pause import LIVE_PAUSE_STATES
     from ouroboros.task_results import load_task_result
@@ -272,9 +275,11 @@ def live_park(root: Any, task_id: str, attempt: Optional[int] = None, *, verify_
     row = load_task_result(pathlib.Path(root), str(task_id), strict=True) or {}
     wait = row.get("owner_wait") if isinstance(row.get("owner_wait"), dict) else {}
     pause = row.get("budget_pause") if isinstance(row.get("budget_pause"), dict) else {}
-    kind = ("owner_wait" if wait.get("state") in {"waiting", "retained"} and wait.get("source_ref") and current(wait)
-            else "budget_pause" if pause.get("state") in LIVE_PAUSE_STATES and pause.get("source_ref")
-            and current(pause) else "")
+    live_pause = pause.get("state") in LIVE_PAUSE_STATES
+    retained = (wait.get("state") == "retained" and live_pause and bool(wait.get("wait_id"))
+                and pause.get("retained_owner_wait_id") == wait.get("wait_id"))
+    kind = ("owner_wait" if (wait.get("state") == "waiting" or retained) and wait.get("source_ref") and current(wait)
+            else "budget_pause" if live_pause and pause.get("source_ref") and current(pause) else "")
     if kind and verify_source:
         from ouroboros.artifacts import read_actor_source_bytes
 
