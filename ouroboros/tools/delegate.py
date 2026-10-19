@@ -558,8 +558,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             execution_root = (root if directory_options.get("isolation") == "live" else "") if directory_options else delegated_execution_workspace_root(gateway, authority, root)
             scope_root = (readonly_root or target_root) if execution_root or directory_options else root
             if snapshot is not None:
-                binding_fingerprint = execution_binding_fingerprint(
-                    execution_root or root, target_root)
+                binding_fingerprint = execution_binding_fingerprint(execution_root or root, target_root)
                 instructions = apply_execution_binding(
                     instructions, execution_root or root, target_root, binding_fingerprint)
             elif directory_options and directory_options.get("isolation") == "envelope":
