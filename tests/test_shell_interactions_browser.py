@@ -12,6 +12,7 @@ import pytest
 
 from tests import test_subscription_setup_browser as setup_browser
 from tests.test_design_system_gate_browser import PROJECTS, save_evidence, seed_page, settle, sidebar_metrics
+from tests._work_projection_shared import work_fields
 
 subscription_ui = setup_browser.subscription_ui
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -516,11 +517,13 @@ def test_the_desktop_title_band_over_a_page_moves_the_window(shell_ui, tmp_path,
 
 
 def live_state(project_ids):
-    """The /api/state snapshot with work running in these Projects (the census the sidebar's dots read)."""
+    """The /api/state snapshot with work running in these Projects: each census row in its Project's room and the
+    server's own work projection of the rows, which the sidebar's dots read."""
+    chats = {p['id']: p['chat_id'] for p in PROJECTS}
+    rows = [{'activity_id': f'work-{pid}', 'root_task_id': f'work-{pid}', 'project_id': pid, 'chat_id': chats[pid],
+             'phase': 'working'} for pid in project_ids]
     return {'supervisor_ready': True, 'projects': PROJECTS, 'project_chat_ids': [p['chat_id'] for p in PROJECTS],
-            'active_chat_activities_complete': True,
-            'active_chat_activities': [{'activity_id': f'work-{pid}', 'root_task_id': f'work-{pid}', 'project_id': pid,
-                                        'phase': 'working'} for pid in project_ids]}
+            'active_chat_activities_complete': True, 'active_chat_activities': rows, **work_fields(rows)}
 
 
 SIDEBAR_FACTS = """() => {
