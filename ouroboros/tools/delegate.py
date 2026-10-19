@@ -43,6 +43,7 @@ from ouroboros import delegate_progress as progress
 from ouroboros.delegate_custody import RunCustody as _RunCustody
 from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES, SESSION_ACCESS_LOWERING
 from ouroboros.tool_capabilities import tool_result_limit
+from ouroboros.skill_catalogue import session_skill_index
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
@@ -572,6 +573,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 gateway.ensure_full_access(scope_root)
             seconds = bound.seconds
             instructions += session_design_navigation(ctx, target_root=record_auth["target_root"], source_root=root)
+            instructions += session_skill_index(ctx)
             request_body = _start_request(ctx, route, authority, scope_root, continuation.prompt or text,
                                           seconds, instructions, execution_root, continuation=continuation.request, ephemeral=ephemeral,
                                           **({"directory_options": directory_options} if directory_options else {}))
