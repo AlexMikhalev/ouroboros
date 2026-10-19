@@ -7069,10 +7069,10 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 
 /* Touch: a long press opens the row's menu, so the ⋯ takes no room and no finger, and the row's words are not a
    selection or a callout under the held finger. The ⋯ stays in the tab order: focused (the keyboard, or assistive
-   technology moving focus), it is drawn again with its column. */
+   technology moving focus), it is drawn again with its column, and it stays drawn while the menu it opened is open. */
 @media (pointer: coarse) {
     #primary-sidebar { --nav-kebab-w: 0px; }
-    .nav-project-item .nav-project-kebab:not(:focus) {
+    .nav-project-item .nav-project-kebab:not(:focus, [aria-expanded="true"]) {
         width: 0;
         height: 0;
         padding: 0;
@@ -7081,7 +7081,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
         opacity: 0;
         pointer-events: none;
     }
-    .nav-project-item:has(> .nav-project-kebab:focus) {
+    .nav-project-item:has(> .nav-project-kebab:is(:focus, [aria-expanded="true"])) {
         grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
     }
     .nav-project-item {
