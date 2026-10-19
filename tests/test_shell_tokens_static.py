@@ -7,11 +7,12 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-Z_TOKENS = ("--z-page-header", "--z-sidebar", "--z-resize-handle", "--z-project-scrim", "--z-project-panel",
-            "--z-project-layer", "--z-drawer-scrim", "--z-drawer", "--z-header-menu", "--z-popover")
+Z_TOKENS = ("--z-page-header", "--z-sidebar", "--z-room", "--z-resize-handle", "--z-project-scrim", "--z-project-panel",
+            "--z-project-layer", "--z-drawer-scrim", "--z-header-menu", "--z-popover")
 SHELL_RULES = {
     "web/style.css": ("#primary-sidebar {", ".resize-handle {", ".chat-page-header {", ".chat-header-menu {",
                       'html[data-layout="stack"] .nav-drawer-backdrop {', 'html[data-layout="stack"] #primary-sidebar {',
+                      'html[data-layout="stack"] #content {',
                       ".project-panel {", ".project-panel-backdrop {", 'html[data-layout="stack"] .project-panel {'),
     "web/ui.css": (".ui-popup {",),
 }
@@ -39,8 +40,10 @@ def test_shell_rules_read_the_z_tokens_and_the_scale_stays_ordered():
     ui = _read("web/ui.css")
     values = {name: int(re.search(rf"{re.escape(name)}: (\d+);", ui).group(1)) for name in Z_TOKENS}
     assert list(values.values()) == sorted(values.values()), values
-    assert values["--z-drawer-scrim"] < values["--z-drawer"] and values["--z-project-scrim"] < values["--z-project-panel"]
-    assert values["--z-project-layer"] < values["--z-drawer-scrim"], "the drawer opens over the stack layout's Project"
+    assert values["--z-project-scrim"] < values["--z-project-panel"]
+    # On a phone the drawer lies under the room it pushes aside (a Project open over Main is that room), and the clear
+    # scrim that brings the room back lies over all of them.
+    assert values["--z-sidebar"] < values["--z-room"] < values["--z-project-layer"] < values["--z-drawer-scrim"], values
     for rel, selectors in SHELL_RULES.items():
         css = _read(rel)
         for selector in selectors:

@@ -7,6 +7,7 @@ import {
 } from './effort_levels.js';
 import { beginMorph, stopMorph } from './capsule_morph.js';
 import { haptic } from './haptics.js';
+import { createComposerFold } from './composer_fold.js';
 
 const N = OWNER_TIERS.length - 1;
 const HANDLES = ['min', 'rec', 'max'];
@@ -983,6 +984,9 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
     const onText = (records) => { if (records?.length && records.every(ownValue)) fitNames(); else relayout(); };
     const textObserver = row && typeof win?.MutationObserver === 'function' ? new win.MutationObserver(onText) : null;
     textObserver?.observe(row, { childList: true, characterData: true, subtree: true });
+    // On a phone the row folds away while the owner reads back through the room's history (composer_fold.js).
+    const fold = box ? createComposerFold({ feed: box.querySelector('#chat-messages, .chat-messages'),
+        wrap: row?.closest?.('.chat-input-wrap'), row, win, doc }) : null;
 
     return {
         context,
@@ -1003,6 +1007,7 @@ export function createComposerOwnerControls({ row, byId, apiFetch, saveEffortRan
             textObserver?.disconnect();
             context?.destroy();
             effort?.destroy();
+            fold?.destroy();
             if (row?.dataset) delete row.dataset.ownerCompact;
             row?.style?.setProperty?.('--capsule-value-cap', '');
         },

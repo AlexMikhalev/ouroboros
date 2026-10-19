@@ -13,7 +13,8 @@
  * If the system still takes the touch, the drawer settles from where the finger left it, never stranded halfway.
  *
  * Motion is transform-only and driven by one number (`--drawer-p`, 0 closed … 1 open) that the scrim's opacity
- * follows. On release the drawer settles at the finger's speed (`--drawer-settle`). The owner of the drawer's state
+ * follows, and with it whatever else moves with the drawer (`also`: on a phone the room, pushed aside as a card, and
+ * the veil over its words). On release the drawer settles at the finger's speed (`--drawer-settle`). The owner of the drawer's state
  * commits the result, so history, focus and inert stay the layer stack's, and a gesture that does not commit leaves
  * no trace. The drag is a shortcut: every gesture has a visible control (☰ and ×). One constant switches it off in
  * one line: DRAWER_DRAG. */
@@ -94,6 +95,9 @@ export function bindDrawerDrag({
     // A finger's release latched the drawer open or closed (haptics.js `snap`); a spring back to where it was is no
     // change, and the system taking the touch is not the finger's.
     onSnap = () => {},
+    // What else follows the finger (the room card and its veil): read when a drag takes hold, so a room opened since
+    // is in it; each gets the same --drawer-p, the dragging class and the settle.
+    also = () => [],
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
     isField = (el) => Boolean(el?.closest?.(FIELD_SELECTOR)),
@@ -123,13 +127,13 @@ export function bindDrawerDrag({
         return !target?.closest?.('input, textarea, select, [role="slider"]');
     }
 
+    let moving = [sidebar, scrim];  // the drawer, its scrim, and what moves with them (set when a drag takes hold)
     const setProgress = (p) => {
-        sidebar.style.setProperty('--drawer-p', String(p));
-        scrim.style.setProperty('--drawer-p', String(p));
+        for (const el of moving) el.style.setProperty('--drawer-p', String(p));
         g.p = p;
     };
     const paint = (on) => {
-        for (const el of [sidebar, scrim]) {
+        for (const el of moving) {
             el.classList.toggle('dragging', on);
             if (!on) el.style.removeProperty('--drawer-p');
         }
@@ -137,9 +141,10 @@ export function bindDrawerDrag({
     // The settle runs at the finger's speed; a tap on ☰ or × keeps style.css's own duration.
     function settle(ms) {
         cancel(settleTimer);
-        for (const el of [sidebar, scrim]) el.style.setProperty('--drawer-settle', `${ms}ms`);
+        const settling = moving;
+        for (const el of settling) el.style.setProperty('--drawer-settle', `${ms}ms`);
         settleTimer = later(ms + 60, () => {
-            for (const el of [sidebar, scrim]) el.style.removeProperty('--drawer-settle');
+            for (const el of settling) el.style.removeProperty('--drawer-settle');
         });
     }
     // A scrim that faded out with a closed drawer leaves the page (unless the drawer opened meanwhile).
@@ -201,7 +206,9 @@ export function bindDrawerDrag({
             g.width = sidebar.getBoundingClientRect?.().width || 320;
             cancel(settleTimer);
             cancel(scrimTimer);
-            for (const el of [sidebar, scrim]) el.style.removeProperty('--drawer-settle');
+            for (const el of moving) el.style.removeProperty('--drawer-settle');
+            moving = [sidebar, scrim, ...(also() || []).filter(Boolean)];
+            for (const el of moving) el.style.removeProperty('--drawer-settle');
             onGrab();
             if (!g.startOpen) scrim.hidden = false;
             paint(true);

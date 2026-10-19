@@ -387,6 +387,14 @@ frame wraps (`web/modules/capsule_morph.js`); reduced motion shows the strip at 
 Inside Telegram a level the finger reaches, and another level or mode pressed, ticks
 (§10, Haptics).
 
+**On a phone the row folds while the owner reads back.** Scrolling back through a
+room's history folds the row of capsules away: its line collapses, the capsules
+fade, and ☰, still the row's first control, waits beside the field. Scrolling
+toward the latest, reaching it, focusing the field or another layout brings the row
+back; while the owner writes or works a capsule it stays. A direction decides, as
+with Safari's bars, and it is read from the newest row, so older history loading
+above moves nothing (`web/modules/composer_fold.js`; owner 19.10).
+
 **Hover is an accelerator; the press always works.** With a hovering fine pointer a
 capsule opens ~160 ms after arrival (not while the other is open) and closes a
 second after it leaves a 32 px zone unless a press pinned it; the press unpins.
@@ -2201,12 +2209,18 @@ is set in capitals. A short window first compacts rows (fine pointer only), then
 whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
 place is chosen at a time, and pressing a place opens it, never closes it.
 
-**The drawer.** In the stack layout the same column slides over the room from the
-left and leaves a strip of the room visible. In a room (Main, an open Project) ☰
+**The drawer.** In the stack layout the room is a card the drawer pushes aside.
+The same column lies under the room; opening slides the room right by three
+quarters of the screen (never more than 360px), as a card with the screen's
+rounded corners, a soft shadow and its words faded, and brings the column up from
+under it with a little parallax. Nothing darkens. The quarter of the room left
+showing is the way back: a tap or a sideways finger on it closes the drawer. A
+Project open over Main is the room then, and moves the same way; on the desk the
+column stays docked and nothing changes (owner 19.10). In a room (Main, an open Project) ☰
 is the first control of the composer's row, beside Swarm and under the thumb, and
 steps aside with the others while an open capsule has the line alone; on a page
 without a composer it sits in the leading slot of the header. The
-drawer's × sits in its head, where a page's ☰ is. The scrim,
+drawer's × sits in its head, where a page's ☰ is. The room's quarter,
 ×, Escape, Back and choosing a place close it. A drag only speeds this up: a
 sideways finger anywhere on the room, from the screen's very edge and over its
 buttons, links, header and composer, pulls the drawer with the finger, and holds
@@ -2214,8 +2228,8 @@ it while the row under the finger is redrawn, a browser bar changes the window's
 height or the thumb drifts up or down (once the drag is sideways, the page cannot
 scroll under it); only a field, a slider, media, selected text and anything that
 scrolls sideways keep their own finger. Dragging it back closes it
-(`web/modules/drawer_drag.js`, switched off by one constant). Every gesture has
-a visible control.
+(`web/modules/drawer_drag.js`, switched off by one constant); the room card and its
+veil follow the same finger. Every gesture has a visible control.
 
 Where the system or the host owns the very edge (Android's back gesture, the
 leftmost ~30 pt in Telegram on iOS), its gesture wins; a start a little further in
