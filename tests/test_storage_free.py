@@ -483,7 +483,12 @@ def _windows_listing_of(monkeypatch, folder):
                         and Path(path) == folder else _REAL_SCANDIR(path))
 
 
-def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_path, monkeypatch):
+def _stuck_trash_entry(tmp_path, monkeypatch):
+    """A freed drive whose trash entry the maintenance child could not remove (a file in it is held
+    open): the job records the entry's identity as it saw it, and both the job's due check and the
+    run view compare the entry against that very record. The trash folder is listed the way Windows
+    lists it (no inode), so an identity read from the listing would never match. Returns the data
+    root, the storage owner and the real removal (the hold released)."""
     from ouroboros import maintenance
 
     root = tmp_path / "data"
@@ -498,16 +503,36 @@ def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_
     def held_open(entry):
         raise PermissionError(13, "a file in it is held open", str(entry))
 
-    # The maintenance child's custody_trash job could not remove the entry (a file in it is held
-    # open): it records the entry's identity as it saw it, and both the job's due check and the
-    # run view compare the entry against that very record. The trash folder is listed the way
-    # Windows lists it (no inode), so an identity read from the listing would never match.
+    released = task_custody._remove_entry
     _windows_listing_of(monkeypatch, root / "state" / "custody_trash")
     monkeypatch.setattr(task_custody, "_remove_entry", held_open)
     assert maintenance.run_job(root, "custody_trash") == {"state": "failed", "items": 0}
-    assert "custody_trash" not in maintenance.due(root), "a stuck entry waits for a change"
+    assert "custody_trash" not in maintenance.due(root), "a stuck entry is no reason to spawn the child"
     view = owner.projection(root)
     assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 0, 1)
+    return root, owner, released
+
+
+def test_a_stuck_trash_entry_is_retried_whenever_the_child_runs(tmp_path, monkeypatch):
+    """A released handle changes neither the entry's inode nor its time (Windows, an antivirus
+    scan), so the entry stays honestly stuck and is no reason to spawn the child; the child still
+    retries it whenever it runs for another job, and then it is removed."""
+    from ouroboros import maintenance
+
+    root, owner, released = _stuck_trash_entry(tmp_path, monkeypatch)
+    monkeypatch.setattr(task_custody, "_remove_entry", released)  # the hold is gone; nothing in the entry changed
+    assert "custody_trash" not in maintenance.due(root)
+    assert owner.projection(root)["run"]["stuck"] == 1
+    assert maintenance.run_job(root, "custody_trash") == {"state": "done", "items": 1}
+    view = owner.projection(root)
+    assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (1, 0, 0)
+    assert maintenance.run_job(root, "custody_trash") is None, "an empty trash rests"
+
+
+def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_path, monkeypatch):
+    from ouroboros import maintenance
+
+    root, owner, _released = _stuck_trash_entry(tmp_path, monkeypatch)
     # The entry changed (the owner released a file): the child will retry, so it is deleting again.
     [name] = [entry.name for entry in (root / "state" / "custody_trash").iterdir()]
     (root / "state" / "custody_trash" / name / "released.bin").write_bytes(b"x")
