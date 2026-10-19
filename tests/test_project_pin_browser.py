@@ -17,6 +17,7 @@ from ouroboros import projects_registry as registry
 from tests.test_subscription_setup_browser import subscription_ui  # noqa: F401
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 from tests._shared import producer_evidence_dir
+from tests._work_projection_shared import with_work_fields
 
 pytestmark = pytest.mark.ui_browser
 
@@ -62,9 +63,11 @@ def pins_ui(request, monkeypatch, tmp_path):
                 for project in rows:
                     if project['id'] in control['unread']:
                         project['visible_revision'] = 2
-                state = {"sha": "pin-fixture", "supervisor_ready": True, "active_chat_activities_complete": True,
-                         "active_chat_activities": control['activities'], "projects": rows,
-                         "project_chat_ids": [p["chat_id"] for p in rows]}
+                # The sidebar's live marks read the server's projection of the census rows (its rooms).
+                state = with_work_fields({"sha": "pin-fixture", "supervisor_ready": True,
+                                          "active_chat_activities_complete": True,
+                                          "active_chat_activities": control['activities'], "projects": rows,
+                                          "project_chat_ids": [p["chat_id"] for p in rows]})
                 if control["hold"]:
                     control["held"].append((route, json.dumps(state)))
                     return
