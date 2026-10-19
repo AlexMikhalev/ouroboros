@@ -70,6 +70,8 @@ def test_an_unknown_old_name_names_its_successor(old, new):
     assert lines[0] == f"{old!r} was renamed {new!r} (not called)."
     quiet = name_miss_guidance("no_such_tool", "builtin", [{"name": new, "description": "x"}], discovery=True)
     assert not any("renamed" in line for line in quiet)
+    elsewhere = name_miss_guidance(old, "mcp_srv", [], discovery=True)  # an MCP tool may own that name
+    assert not any("renamed" in line for line in elsewhere)
 
 
 def _bound_ceiling_ctx(grant_name):

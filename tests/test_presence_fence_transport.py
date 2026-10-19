@@ -24,8 +24,6 @@ import pytest
 
 from tests.test_acceptance_fence import _isolated_queue
 
-pytestmark = pytest.mark.serial
-
 REPO = Path(__file__).resolve().parents[1]
 TASK = "presence-0123456789abcdef01234567"
 MARKER = "[PRESENCE_FINISH_NOT_ACCEPTED]"
