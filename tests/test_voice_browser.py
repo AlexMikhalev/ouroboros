@@ -232,7 +232,8 @@ def test_read_aloud_reads_one_reply_shows_stop_and_offers_honest_voices(subscrip
     answer = page.locator(".chat-bubble.assistant").first
     read = answer.locator("[data-message-action='read-aloud']")
     read.wait_for()
-    controls = answer.locator(".chat-message-actions > *").evaluate_all("nodes => nodes.map(node => node.className)")
+    controls = answer.locator(".chat-message-actions > *").evaluate_all(
+        "nodes => nodes.map(node => node.className.split(' ')[0])")
     assert controls == ["chat-message-reply", "chat-message-action", "chat-message-copy"], "beside Copy, one control"
     assert page.locator(".chat-bubble.user [data-message-action]").count() == 0
     assert read.get_attribute("aria-label") == "Read aloud"

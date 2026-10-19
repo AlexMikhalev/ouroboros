@@ -124,8 +124,11 @@ def test_a_saved_reply_offers_the_skill_action_and_a_failing_page_module_costs_o
     # The host's Read aloud (the voice module registered a device engine) comes first, the skill's action after it.
     answer.locator("[data-message-action='read-aloud']").wait_for()
     controls = answer.locator(".chat-message-actions > *").evaluate_all(
-        "nodes => nodes.map(node => node.dataset.messageAction || node.className)")
+        "nodes => nodes.map(node => node.dataset.messageAction || node.className.split(' ')[0])")
     assert controls == ["chat-message-reply", "read-aloud", "contribution:lists:save", "chat-message-copy"], controls
+    targets = answer.locator(".chat-message-actions > *").evaluate_all(
+        "nodes => nodes.every(node => node.classList.contains('ui-hit-area'))")
+    assert targets, "under a finger every control of the row has the same hit area"
     owner = page.locator(".chat-bubble.user").first
     assert owner.locator(".chat-message-action").count() == 0, "a skill's action is for Ouroboros's replies"
     assert action.get_attribute("aria-label") == "Save to list"
@@ -228,6 +231,7 @@ ROW = """() => {
         folded: more && !more.hidden ? Number(more.textContent.slice(1)) : 0,
         moreRight: more && !more.hidden ? rect(more).right : null,
         slot: { right: rect(slot).right, hidden: slot.hidden },
+        roomless: slot.dataset.roomless === '1',
         overflow: document.documentElement.scrollWidth - window.innerWidth,
     };
 }"""
@@ -269,6 +273,18 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
                 assert after["lines"] == 1 and after["rowHeight"] <= before["rowHeight"] + 0.5, (where, before, after)
                 assert after["hosts"] == before["hosts"] and after["compact"] == before["compact"], (where, before, after)
                 assert all(chip["whole"] and chip["right"] <= after["slot"]["right"] + 0.5 for chip in after["shown"]), (where, after)
+                if after["roomless"]:
+                    # The row has no room even for "+N" (☰ leads a phone's row): "+" lists every chip under its skill.
+                    assert after["shown"] == [] and after["moreRight"] is None, (where, after)
+                    page.click("#page-chat [data-composer-plus]")
+                    listed = page.locator(".chat-plus-menu [data-plus-item^='chip:']")
+                    listed.first.wait_for()
+                    assert listed.count() == count, (where, listed.all_inner_texts())
+                    assert listed.first.inner_text().strip() == "Meter 1 7%", where
+                    listed.first.click()
+                    toast(page, "Meter 1 pressed").wait_for()
+                    setup_browser.capture(page, f"chips-{scheme}-{width}-{count}")
+                    continue
                 assert len(after["shown"]) + after["folded"] == count, (where, after)
                 assert after["overflow"] <= 0, (where, after)
                 for chip in after["shown"]:
@@ -289,7 +305,7 @@ def test_chips_take_the_room_the_capsules_leave_and_fold_into_one_more_chip(subs
                     page.click("#page-chat .chat-composer-chip[data-chip-key='chips1:chip']")
                     toast(page, "Meter 1 pressed").wait_for()
     afters = [value["after"] for value in evidence.values()]
-    assert any(after["folded"] for after in afters), "six chips on a phone fold"
+    assert any(after["folded"] or after["roomless"] for after in afters), "six chips on a phone fold (into +N or into +)"
     assert any(not after["folded"] and len(after["shown"]) == 1 for after in afters), "one chip shows whole"
 
 
