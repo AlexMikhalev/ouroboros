@@ -449,8 +449,7 @@ def test_removed_bytes_follow_the_trash_and_the_row_carries_the_same_numbers(tmp
 
 
 def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_path, monkeypatch):
-    from ouroboros import maintenance, maintenance_jobs
-    from ouroboros.task_custody import custody_trash_entries
+    from ouroboros import maintenance
 
     root = tmp_path / "data"
     probes = _drives(root, [("gone", "direct", "completed", OLD)])
@@ -460,13 +459,22 @@ def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_
     _preview(owner, root, tmp_path)
     view = _run(owner, root, tmp_path)
     assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 1, 0)
-    [(name, identity)] = custody_trash_entries(root)
-    # The maintenance child's custody_trash job recorded that this very entry survived its removal.
-    maintenance_jobs.record(root, "custody_trash", state="failed", stuck={name: identity}, removed=0)
+
+    def held_open(entry):
+        raise PermissionError(13, "a file in it is held open", str(entry))
+
+    # The maintenance child's custody_trash job could not remove the entry (a file in it is held
+    # open): it records the entry's identity as it saw it, and both the job's due check and the
+    # run view compare the entry against that very record.
+    monkeypatch.setattr(task_custody, "_remove_entry", held_open)
+    assert maintenance.run_job(root, "custody_trash") == {"state": "failed", "items": 0}
+    assert "custody_trash" not in maintenance.due(root), "a stuck entry waits for a change"
     view = owner.projection(root)
     assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 0, 1)
     # The entry changed (the owner released a file): the child will retry, so it is deleting again.
+    [name] = [entry.name for entry in (root / "state" / "custody_trash").iterdir()]
     (root / "state" / "custody_trash" / name / "released.bin").write_bytes(b"x")
+    assert "custody_trash" in maintenance.due(root)
     view = owner.projection(root)
     assert (view["run"]["removed"], view["run"]["deleting"], view["run"]["stuck"]) == (0, 1, 0)
     row = json.loads((root / "logs" / "supervisor.jsonl").read_text().splitlines()[-1])
