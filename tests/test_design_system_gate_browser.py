@@ -40,10 +40,9 @@ TG_STUB = """(() => {
         HapticFeedback:{impactOccurred(){}}, openLink(){}}};
 })()"""
 
-# Deliberate wide content owns a local scroller. Never exempt a page scroll body
-# merely because it happens to contain a table or pre somewhere below it.
-MEASURE = """root => {
-    const shown = e => {
+# What a person sees: a box with a size that nothing hides (an ancestor invisible or transparent, or a closed
+# <details> other than at its summary: an engine may keep layout boxes for a closed <details>' content).
+SHOWN = """e => {
         if (!e.getClientRects().length || !e.getBoundingClientRect().width ||
             !e.getBoundingClientRect().height || e.closest('[hidden], [inert]')) return false;
         for (let p=e; p; p=p.parentElement) {
@@ -52,7 +51,12 @@ MEASURE = """root => {
             if (p.matches('details:not([open])') && !p.querySelector(':scope > summary')?.contains(e)) return false;
         }
         return true;
-    };
+    }"""
+
+# Deliberate wide content owns a local scroller. Never exempt a page scroll body
+# merely because it happens to contain a table or pre somewhere below it.
+MEASURE = """root => {
+    const shown = """ + SHOWN + """;
     const name = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') +
         [...e.classList].slice(0,3).map(c=>'.'+c).join('');
     const local = e => e.matches('.app-tab-strip, pre, .md-table-wrap, .widget-table-wrap, ' +
@@ -254,23 +258,39 @@ def test_every_page_and_settings_tab_meets_shell_contract(gate_ui, tmp_path, wid
 def test_main_header_keeps_one_row_whatever_width_its_words_set(gate_ui, tmp_path):
     """DESIGN "Page header": one row that never wraps. At the first docked width Main's bar is narrow (Restart and
     the budget wait in ⋯) and this Mac's face left its commands about ten pixels; a wider face (Linux WebKit set
-    them two rows high) moves nothing onto a second row: the status yields, its word dropping whole."""
+    them two rows high) moves nothing onto a second row and nothing out of the bar: the commands keep their place
+    and the status yields, its word dropping whole while its mark stays."""
     page = seed_page(gate_ui, 720, 844)
     try:
         page.goto(gate_ui['url'] + '/')
         page.wait_for_selector('#chat-input', state='attached')
         page.wait_for_selector('#nav-projects-list [data-project-id]', state='attached')
-        # Every word in the bar set wider than any face the shell ships with would set it.
-        page.add_style_tag(content='#page-chat .chat-page-header { letter-spacing: 0.3em; }')
+        # Every word in the bar set wider than any face the shell ships with would set it; a control does not
+        # inherit letter-spacing, so each element takes it.
+        page.add_style_tag(content='#page-chat .chat-page-header, #page-chat .chat-page-header * '
+                                   '{ letter-spacing: 0.3em; }')
         settle(page)
-        facts = page.locator('#page-chat .chat-page-header').evaluate("""bar => ({
-            height: bar.getBoundingClientRect().height,
-            commands: [...bar.querySelectorAll('.app-page-actions :is(button, summary)')]
-                .filter((node) => node.getClientRects().length).map((node) => node.textContent.trim())})""")
+        facts = page.locator('#page-chat .chat-page-header').evaluate("""bar => {
+            const shown = """ + SHOWN + """;
+            const box = bar.getBoundingClientRect();
+            const within = (e) => { const r = e.getBoundingClientRect();
+                return r.left >= box.left - 1 && r.right <= box.right + 1 && r.top >= box.top - 1
+                    && r.bottom <= box.bottom + 1; };
+            const commands = [...bar.querySelectorAll('.app-page-actions :is(button, summary)')].filter(shown);
+            const status = bar.querySelector('.rw-trigger'), word = status?.querySelector('.status-badge');
+            return {height: box.height, commands: commands.map((node) => node.textContent.trim()),
+                outside: commands.filter((node) => !within(node)).map((node) => node.textContent.trim()),
+                mark: Boolean(status && shown(status) && within(status)), dropped: status?.dataset.word === 'off',
+                wordShown: Boolean(word && shown(word)),
+                wordClipped: Boolean(word && word.scrollWidth > word.clientWidth + 1)};
+        }""")
         save_evidence(tmp_path, f'gate-{gate_ui["engine"]}-main-header-wide-words', facts)
     finally:
         page.close()
-    assert facts['height'] <= 56.1 and facts['commands'], facts
+    assert facts['height'] <= 56.1, facts
+    assert facts['commands'] == ['Panic', 'More'] and not facts['outside'], facts
+    # The word shows whole or not at all, and its mark stays in the bar either way.
+    assert facts['mark'] and (facts['dropped'] != facts['wordShown']) and not facts['wordClipped'], facts
 
 
 @pytest.mark.parametrize('width,height', [(390, 844), (844, 320)])

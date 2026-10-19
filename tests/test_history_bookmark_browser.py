@@ -232,27 +232,38 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
             page = browser.new_page(viewport={'width':1280, 'height':850})
+            # The watched room's newest reads, each with when it was asked and when its answer reached the room;
+            # the one armed is held until released. Preference reads are counted: a reconnect reads them first.
             page.add_init_script('''(() => {
                 const fetch = window.fetch.bind(window);
+                window.__prefs = {asked: 0, answered: 0};
+                window.__roomLatest = [];
                 window.fetch = async (input, init) => {
                     const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-                    const arm = window.__holdLatest;
-                    const hold = arm && url.pathname === '/api/chat/history' && !url.searchParams.has('cursor')
-                        && Number(url.searchParams.get('chat_id')) === arm.chatId && arm.skip-- === 0;
-                    if (hold) window.__holdLatest = null;
-                    const response = await fetch(input, init);
-                    if (hold) {
-                        window.__heldLatestBody = await response.clone().json();
-                        await new Promise(resolve => { window.__releaseLatest = resolve; });
+                    if (url.pathname === '/api/ui/preferences') {
+                        window.__prefs.asked += 1;
+                        try { return await fetch(input, init); } finally { window.__prefs.answered += 1; }
                     }
-                    return response;
+                    const watched = url.pathname === '/api/chat/history' && !url.searchParams.has('cursor')
+                        && Number(url.searchParams.get('chat_id')) === window.__watchRoom;
+                    const read = watched ? {asked: performance.now(), answered: null} : null;
+                    if (read) window.__roomLatest.push(read);
+                    const hold = watched && window.__holdLatest;
+                    if (hold) window.__holdLatest = false;
+                    try {
+                        const response = await fetch(input, init);
+                        if (hold) {
+                            window.__heldLatestBody = await response.clone().json();
+                            await new Promise(resolve => { window.__releaseLatest = resolve; });
+                        }
+                        return response;
+                    } finally { if (read) read.answered = performance.now(); }
                 };
             })()''')
             _open(page, direct_server_with_data['url'])
             feed = _open_project(page, project)
             append(150, 151)
-            room = '([n, id]) => window.__historyReads.slice(0, n).filter(r => r.chatId === id && !r.cursor).length'
-            page.evaluate('chatId => { window.__holdLatest = {chatId, skip:0}; }', project['chat_id'])
+            page.evaluate('chatId => { window.__watchRoom = chatId; window.__holdLatest = true; }', project['chat_id'])
 
             def reconnect():
                 page.evaluate('''() => {
@@ -261,26 +272,34 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
                     socket.close();
                 }''')
 
-            armed = page.evaluate(room, [10 ** 6, project['chat_id']])
             reconnect()
             page.wait_for_function('() => Boolean(window.__heldLatestBody && window.__releaseLatest)')
             held = page.evaluate('() => window.__heldLatestBody')
             assert held['messages'][-1]['client_message_id'] == 'race-150'
             append(151, 451)
-            sockets = page.evaluate('() => window.__testSockets.length')
+            sockets, prefs = page.evaluate('() => [window.__testSockets.length, window.__prefs.asked]')
+            rooms = page.evaluate("() => document.querySelectorAll('#chat-messages, .chat-messages').length")
             reconnect()
-            page.wait_for_function('n => window.__testSockets.length > n && window.__testSockets.at(-1).readyState === 1',
-                                   arg=sockets)
-            released = page.evaluate('() => window.__historyReads.length')
+            # Each room reads its preferences on the open, then its newest page (chat.js, the socket's open): once
+            # every room's preference read is answered, a room that read anew at once has asked by now.
+            page.wait_for_function('''([n, p, rooms]) => window.__testSockets.length > n
+                && window.__testSockets.at(-1).readyState === 1 && window.__prefs.asked >= p + rooms
+                && window.__prefs.answered === window.__prefs.asked''', arg=[sockets, prefs, rooms])
+            page.evaluate(_FRAMES)
+            asked_while_held = page.evaluate('() => window.__roomLatest.length')
             page.evaluate('() => window.__releaseLatest()')
             newest = page.locator(f'{feed} [data-client-message-id="race-450"]')
             newest.wait_for(state='attached')
             _idle(page, feed)
+            latest_reads = page.evaluate('() => window.__roomLatest')
             reads = page.evaluate('id => window.__historyReads.filter(r => r.chatId === id)', project['chat_id'])
-            assert page.evaluate(room, [released, project['chat_id']]) == armed + 1, \
-                ('the newer reconnect read nothing while the late read was unanswered', reads)
+            assert asked_while_held == 1, ('the newer reconnect asked nothing while the late read was unanswered',
+                                           latest_reads)
+            late, *later = latest_reads
+            assert later and all(read['asked'] >= late['answered'] for read in later), \
+                ('the newer read was asked only after the late one was answered', latest_reads)
             latest = [read for read in reads if not read['cursor']][-1]
-            assert latest['body']['messages'][-1]['client_message_id'] == 'race-450', 'the newer read landed after it'
+            assert latest['body']['messages'][-1]['client_message_id'] == 'race-450', 'the newer read landed last'
             assert newest.count() == 1
             note = page.locator(feed).locator('..').locator('.chat-load-older-note')
             assert 'Shown messages may have gaps' not in note.inner_text() and 'Beginning' not in note.inner_text()
