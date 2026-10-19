@@ -58,9 +58,11 @@ import { createComposerOwnerControls } from './composer_owner_controls.js';
 import { attachChatInputSizing } from './chat_input_sizing.js';
 import { effortFact } from './effort_chip.js';
 import { mountEmptyChatWelcome } from './welcome_preference.js';
-import { createChatReplies } from './chat_reply.js';
+import { REPLY_ICON, createChatReplies } from './chat_reply.js';
 import { createHistoryReveal } from './chat_history_reveal.js';
 import { createChatRowMenu } from './chat_row_menu.js';
+import { createRowSwipe } from './chat_row_swipe.js';
+import { isStackLayout, onLayoutChange } from './layout.js';
 import { clearTransientRoutingAnnotations } from './routing_receipt.js';
 import {
     captureLiveCardPhaseState,
@@ -571,6 +573,12 @@ export function createChatInstance({
         expand: (record) => { setLiveCardExpanded(record, true); hydrateCardReviews(record.groupId); } });
     const rowMenu = createChatRowMenu({ feed: messagesDiv, replies, cardOf: (id) => liveCardRecords.get(id),
         actionsOf: (record) => cardMenuActions(workState, record, currentActivity(record)), afterAction: reread });
+    // A row swiped left replies as its Reply does (chat_row_swipe.js).
+    const disposeRowSwipe = createRowSwipe({ feed: messagesDiv, icon: REPLY_ICON, reply: (ref) => replies.start(ref),
+        replyRef: (row) => (row.matches('.chat-live-card')
+            ? replies.cardRef(liveCardRecords.get(row.dataset.taskId || '')) : replies.bubbleRef(row)),
+        isStack: () => isStackLayout(), isCoarse: () => Boolean(window.matchMedia?.('(pointer: coarse)').matches),
+        onLayout: (sync) => onLayoutChange(() => sync()) });
 
     let childHoldRead = false;
     async function refreshChildProjectHolds() {
@@ -3774,6 +3782,7 @@ export function createChatInstance({
             composer.destroy();
             replies.destroy();
             rowMenu.destroy();
+            disposeRowSwipe();
             ownerControls.destroy();
             unconfirmed.release();
             emptyWelcome?.dispose();

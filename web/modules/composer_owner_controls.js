@@ -5,6 +5,8 @@ import { fmt } from './i18n.js';
 import {
     EFFORT_OPTIONS, EFFORT_RANGE_DEFAULT, OWNER_TIERS, effortText, normalizeEffortRange, ownerLevelIndex,
 } from './effort_levels.js';
+import { beginMorph, stopMorph } from './capsule_morph.js';
+import { haptic } from './haptics.js';
 
 const N = OWNER_TIERS.length - 1;
 const HANDLES = ['min', 'rec', 'max'];
@@ -366,6 +368,9 @@ function createCapsule({
         if (state.open === open && !focus) return;
         if (open && !state.open) api.peer?.snapClosed();
         const flips = state.open !== open;
+        // Alone, the strip grows from its capsule and folds back into it (capsule_morph.js); beside the others its
+        // width moves (style.css), and a capsule the other one closes goes at once.
+        const morph = flips && el.dataset.snap !== 'true' ? beginMorph({ el, row, win }) : null;
         const collapses = !open && state.open && el.dataset.fit === 'inline' && el.dataset.snap !== 'true';
         state.open = open;
         clearTimeout(settleTimer);
@@ -394,9 +399,11 @@ function createCapsule({
         if (open && focus) focusTarget()?.focus({ preventScroll: true });
         onLayout();
         if (!open && !collapses) settled();
+        morph?.play(open);
     }
     // Closed at once, a running collapse included: the other capsule is opening and measures this one.
     function snapClosed() {
+        stopMorph(el);  // its own strip, still growing or folding, goes too
         el.dataset.snap = 'true';
         setOpen(false);
         void el.offsetWidth;
@@ -482,6 +489,7 @@ function createCapsule({
         setOpen, snapClosed, closeSoon, onStripScroll, reveal, measureName, isRtl, relayout,
         destroy() {
             state.destroyed = true;
+            stopMorph(el);
             clearTimeout(hoverTimer);
             clearTimeout(leaveTimer);
             clearTimeout(settleTimer);
@@ -713,8 +721,12 @@ export function createEffortRangeControl({
         let start;
         if (handleEl) { which = handleEl.dataset.handle; start = state.shown[which]; }
         else ({ which, start } = pick(event));
+        const from = state.shown[which];
         beginDrag(which);
         if (!handleEl) dragTo(which, start);
+        // Each level the finger reaches ticks once (haptics.js; a tap on another level is one).
+        let at = snapRange(state.view)[which];
+        if (at !== from) haptic('tick');
         const grab = valueAt(event, which) - state.view[which];
         handles[which].focus({ preventScroll: true, focusVisible: false });  // no keyboard ring after a mouse press
         try { strip.setPointerCapture(event.pointerId); } catch { /* a synthetic event */ }
@@ -722,6 +734,8 @@ export function createEffortRangeControl({
             if (ev.pointerId !== event.pointerId || !state.drag) return;
             state.drag.moved = true;  // a press that stays put is a tap: its marks still animate
             dragTo(which, valueAt(ev, which) - grab);
+            const now = snapRange(state.view)[which];
+            if (now !== at) { at = now; haptic('tick'); }
         };
         const release = (ev) => {
             if (ev.pointerId !== event.pointerId) return;
@@ -841,7 +855,9 @@ function createContextModeControl({ el, row, saveContextMode, showToast, refresh
     }
     const onChoose = (event) => {
         const seg = event.target?.closest?.('.chat-seg');
-        return seg ? choose(seg.dataset.mode) : undefined;
+        const started = seg ? choose(seg.dataset.mode) : undefined;
+        if (started) haptic('tick');  // another mode, chosen by a press (haptics.js)
+        return started;
     };
     // A strip that scrolls (long translated words on a phone) keeps the chosen or focused mode whole.
     const revealMode = (seg) => { if (seg) capsule.reveal(Number(seg.offsetLeft), Number(seg.offsetLeft) + Number(seg.offsetWidth)); };

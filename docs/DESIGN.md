@@ -378,6 +378,15 @@ pill's corners tightening; the name and divider yield first), last scrolling ins
 itself, faded where levels hide. A closed line too narrow drops the names, then
 ellipsizes the longest values, never rings. All is measured, so no breakpoint.
 
+**It opens in place.** Beside the others the strip grows by its width. Alone, its
+glass grows from the closed capsule to the whole line in 300 ms on the iOS sheet
+curve, the ring riding on the glass's leading end, while the controls that step
+aside fade where they stood (110 ms) and the levels appear one after another;
+closing runs back in 220 ms. Only opacity, a clip and the ring's offset move, so no
+frame wraps (`web/modules/capsule_morph.js`); reduced motion shows the strip at once.
+Inside Telegram a level the finger reaches, and another level or mode pressed, ticks
+(§10, Haptics).
+
 **Hover is an accelerator; the press always works.** With a hovering fine pointer a
 capsule opens ~160 ms after arrival (not while the other is open) and closes a
 second after it leaves a 32 px zone unless a press pinned it; the press unpins.
@@ -1463,7 +1472,15 @@ files by name), then Ouroboros's note; Telegram uses plain text. Main keeps its
 one receipt line. The row menu (right-click, Shift+F10, ContextMenu on the focused
 row, long press on touch) offers Reply, Copy, Open project and a work card's
 Resume, Pause and Stop… exactly when the card does. Esc/outside press closes it
-and returns focus; selected words keep the browser's menu.
+and returns focus; selected words keep the browser's menu. On touch the row sinks a
+little while the finger holds and lifts over the dimmed feed while its menu is open.
+
+On a phone a row that offers Reply can be swiped left to reply, as in Telegram: it
+follows the finger, a reply mark at the room's right side fills as it nears the reply
+point (56 px), and released past it the row replies exactly as its Reply does; it
+settles back either way, past the point with a rubber band
+(`web/modules/chat_row_swipe.js`). Rightwards stays the drawer's; a field, a slider,
+selected words, anything that scrolls sideways and an open menu keep their finger.
 
 ### Conversation activity block
 
@@ -2211,6 +2228,14 @@ the finger's speed (180–400 ms); ☰ opens it in 340 ms and × or the scrim cl
 in 280 ms, on the iOS sheet curve `cubic-bezier(0.32, 0.72, 0, 1)`. The scrim
 fades in and out with it and leaves the page only once it has faded. Reduced
 motion keeps the finger tracking and drops the rest.
+
+**Haptics.** Inside Telegram, and only there (its HapticFeedback; a browser and the
+desktop app have none), a few moments are felt, one meaning each: the drawer,
+released, latches open or closed (a light impact); a level steps (Effort, Context: a
+selection tick); a long press opens a row's menu (a medium impact); a swipe on a
+message reaches its reply point (a medium impact, again after pulling back under it).
+Sending, copying and ordinary toggles stay silent, as in Telegram, and nothing depends
+on a haptic (`web/modules/haptics.js`).
 
 **Layers and dismissal.** The drawer and the Project panel are layers in one
 stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own

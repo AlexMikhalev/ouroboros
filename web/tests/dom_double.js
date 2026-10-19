@@ -60,7 +60,8 @@ class Node extends Events {
             toggle: (n, on = !this.classes.has(n)) => (on ? this.classes.add(n) : this.classes.delete(n), on),
         };
         this.css = new Map();
-        this.style = { setProperty: (key, value) => this.css.set(key, value) };
+        this.style = { setProperty: (key, value) => this.css.set(key, value), removeProperty: (key) => this.css.delete(key),
+            getPropertyValue: (key) => this.css.get(key) ?? '' };
         this.rect = { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 };
     }
     get parentElement() { return this.parent; }
