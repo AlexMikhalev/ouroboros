@@ -511,12 +511,14 @@ def _journal_mode(path: pathlib.Path, tier: str) -> str:
 
 
 def _set_journal_mode(conn: sqlite3.Connection, mode: str, wait_sec: float) -> str:
-    """``PRAGMA journal_mode``, waiting out contention within ``wait_sec`` in all. Turning a rollback-journal
-    file into WAL takes the write lock from inside a read transaction, where SQLite skips the busy
-    handler (two converters would deadlock), so a connection writing then, such as another thread's
-    first open converting the same freshly published store, would fail it at once. A retry's busy handler
-    gets only the time left, and the open's own busy timeout (``wait_sec``) comes back afterwards."""
-    budget = max(0.0, wait_sec)
+    """``PRAGMA journal_mode``; a switch INTO WAL waits out contention within ``wait_sec`` in all. Turning a
+    rollback-journal file into WAL takes the write lock from inside a read transaction, where SQLite skips
+    the busy handler (two converters would deadlock), so a connection writing then, such as another
+    thread's first open converting the same freshly published store, would fail it at once. A retry's busy
+    handler gets only the time left, and the open's own busy timeout (``wait_sec``) comes back afterwards.
+    Leaving WAL is never retried: every other open WAL connection keeps its shared lock for its life, so
+    waiting would only delay the same refusal."""
+    budget = max(0.0, wait_sec) if mode.upper() == "WAL" else 0.0
     deadline, bounded = time.monotonic() + budget, False
     while True:
         try:

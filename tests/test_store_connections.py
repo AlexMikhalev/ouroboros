@@ -223,6 +223,26 @@ def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
         reader.close()
 
 
+def test_leaving_wal_with_another_wal_connection_open_still_refuses_at_once(tmp_path, monkeypatch):
+    """Only the switch INTO WAL waits. Leaving WAL needs every other WAL connection gone, and each keeps its
+    shared lock for its life, so an open asking for PERSIST on a WAL store (an older SQLite, an unknown
+    filesystem) with another connection idle in it refuses at once, instead of waiting out its whole budget
+    for the same refusal."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    idle = sqlite3.connect(path, isolation_level=None)
+    try:
+        assert idle.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"  # another body's WAL store
+        idle.execute("SELECT * FROM meta").fetchall()  # and its connection, idle and open for its life
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.connect(path, store.TIER_ENFORCED, wait_sec=2.0)
+        assert time.monotonic() - started < 0.5, "leaving WAL refuses at once"
+    finally:
+        idle.close()
+
+
 def test_handoff_closes_other_threads_idle_connections_before_rename(tmp_path):
     path = publish(tmp_path)
     ready, release = threading.Event(), threading.Event()
