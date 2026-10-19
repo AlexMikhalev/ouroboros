@@ -12,6 +12,7 @@ import { clientSurfaceField } from './client_surface.js';
 import { apiClient, apiFetch } from './api_client.js';
 import { bindEnterSubmit, bindMenu } from './ui_interactions.js';
 import { controlIcon, strokeIcon } from './page_icons.js';
+import { renderMobileNavToggle } from './page_header.js';
 import { createComposerOwnerControls } from './composer_owner_controls.js';
 import { attachChatInputSizing } from './chat_input_sizing.js';
 import { showToast } from './toast.js';
@@ -31,21 +32,22 @@ export function composerMarkup() {
     return `
                 <div id="chat-attachment-preview" class="chat-attachment-preview"></div>
                 <div class="chat-toolbar-row">
+                    ${renderMobileNavToggle({ inComposer: true })}
                     <div class="chat-composer-pills" id="chat-composer-pills">
-                        <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
+                        <button class="chat-swarm ui-hit-area" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
                     </div>
                     <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max"></div>
                     <span class="chat-composer-chips" data-composer-chips hidden></span>
                 </div>
                 <div class="chat-text-row">
-                    <button class="chat-plus-btn" id="chat-plus" type="button" data-composer-plus aria-label="More actions" aria-haspopup="menu" aria-expanded="false" title="More actions">
+                    <button class="chat-plus-btn ui-hit-area" id="chat-plus" type="button" data-composer-plus aria-label="More actions" aria-haspopup="menu" aria-expanded="false" title="More actions">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
                     </button>
                     <input type="file" id="chat-file-input" class="chat-file-input-hidden" accept="*/*" multiple>
                     <textarea id="chat-input" placeholder="Message Ouroboros..." rows="1" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
                     <span class="chat-voice-slot" data-composer-voice hidden></span>
                     <div class="chat-send-group">
-                        <button class="chat-send-inline" id="chat-send" title="Send message">Send</button>
+                        <button class="chat-send-inline ui-hit-area" id="chat-send" title="Send message">Send</button>
                     </div>
                 </div>`;
 }
@@ -211,15 +213,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
             let text = (msg.text || '').trim();
             if (text) serverTexts.push(text);
         }
-        const combined = [...serverTexts, ...inputHistory];
-        const deduped = [];
-        const seen = new Set();
-        for (let i = combined.length - 1; i >= 0; i--) {
-            if (!seen.has(combined[i])) {
-                deduped.unshift(combined[i]);
-                seen.add(combined[i]);
-            }
-        }
+        const deduped = [...new Set([...serverTexts, ...inputHistory].reverse())].reverse();
         inputHistory.length = 0;
         inputHistory.push(...deduped.slice(-50));
         saveChatInputHistory(sessionStorage, CHAT_INPUT_HISTORY_KEY, inputHistory);

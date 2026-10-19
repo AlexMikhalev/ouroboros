@@ -234,7 +234,7 @@ export function bindVoiceControls({ composer, speech = getSpeech(), notice = (te
         if (face === 'idle') {
             slot.hidden = !provider;
             if (!provider) return;
-            const mic = button(doc, { className: 'voice-btn voice-mic', label: tr('voice.dictate', 'Dictate'), icon: 'mic',
+            const mic = button(doc, { className: 'voice-btn voice-mic ui-hit-area', label: tr('voice.dictate', 'Dictate'), icon: 'mic',
                 onPress: record });
             mic.title = fmt('Dictate · {line}', { line: provider.destinationLabel });
             const more = button(doc, { className: 'voice-btn voice-chevron', label: tr('voice.menu.open', 'Dictation engine'),
