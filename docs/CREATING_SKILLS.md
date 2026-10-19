@@ -296,8 +296,8 @@ Host modules and their relative imports load from captured revision URLs such as
 unload or a new revision makes its old URLs return 404. Export `mount(ctx)` and
 return `{dispose}`; release resources when disposed. These are trusted page
 modules, distinct from sandboxed widget modules or model-written mini-apps.
-Ordinary external skills keep the existing review and owner grant policy;
-launcher-written native seeds can receive the hash-bound page grant automatically.
+Every skill gets `page_module` through the ordinary grant: the owner's, or the
+auto-grant setting once its release is accepted (a built-in's trusted source counts).
 
 ### What placed controls do
 

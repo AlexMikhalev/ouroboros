@@ -7,7 +7,7 @@ entry: plugin.py
 plugin_api: "2.0"
 runtime: python3
 os: any
-# net: the browser sends the owner's audio to its vendor; declaring it keeps this seed off until chosen.
+# net: the browser sends the owner's audio to its vendor. It is not on by default (skills/builtin.json).
 permissions: [page_module, net]
 when_to_use: The owner wants to dictate a draft using browser speech recognition.
 model_experience:
@@ -25,8 +25,9 @@ contributes:
 
 # Browser speech
 
-Choose this engine in the composer's “+” → “Add dictation” to enable it. It is off
-until chosen. Dictation writes an editable draft; only Send submits it.
+Find this engine in the composer's “+” → “Add dictation”: it is not installed by
+default, and no audio leaves the page until it is chosen there as the dictation
+engine. Dictation writes an editable draft; only Send submits it.
 
 Chrome recognition sends audio to Google, Edge to Microsoft. Safari uses Apple's
 speech service, on device when available. Other engines may use an online service;
