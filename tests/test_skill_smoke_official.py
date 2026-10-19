@@ -621,6 +621,7 @@ def review_env(monkeypatch, tmp_path):
     monkeypatch.delenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC", raising=False)
     monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "true")
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", str(_REVIEW_DISPATCHES))
     # get_auto_grant_enabled reads the settings FILE first; point the module
     # at a missing path so the env value above is authoritative (the pattern
     # tests/test_skill_review.py uses).
@@ -779,13 +780,28 @@ _OUTAGE_RETRIES = 3
 _OUTAGE_BACKOFF_SEC = 90.0
 
 
+# Each wave is a paid review cycle, a refused one included: the first, every outage wait's and the one
+# settled retry's. The shipped cap of two would refuse the later waves locally, before the provider.
+_REVIEW_DISPATCHES = 1 + _OUTAGE_RETRIES + 1
+
+
+def _provider_refused(record: Any) -> bool:
+    """The provider refused this reviewer at the HTTP layer, a 429 or a 5xx. The transport label alone
+    is no proof: a native episode the model answered with malformed calls is labelled the same way."""
+    code = record.get("http_status") if isinstance(record, dict) else None
+    try:
+        code = int(code) if not isinstance(code, bool) else 0
+    except (TypeError, ValueError):
+        return False
+    return (record.get("status") == "error" and record.get("transport_status") == "provider_transport_error"
+            and (code == 429 or 500 <= code <= 599))
+
+
 def _provider_never_answered(name: str) -> bool:
-    """Every reviewer of the latest wave failed in the provider's transport (a 429 or 5xx): no model answered."""
+    """The provider refused every reviewer of the latest wave (a 429 or 5xx): no model answered."""
     history = load_history(DATA_DIR, name, limit=1)
     records = history[-1].get("raw_actor_records") if history else None
-    return bool(records) and all(isinstance(record, dict) and record.get("status") == "error"
-                                 and record.get("transport_status") == "provider_transport_error"
-                                 for record in records)
+    return bool(records) and all(_provider_refused(record) for record in records)
 
 
 def _review_with_one_settled_retry(slug: str, name: str):

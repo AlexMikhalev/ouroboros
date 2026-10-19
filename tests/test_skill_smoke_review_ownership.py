@@ -141,13 +141,31 @@ def _wave(*records):
 
 
 def test_a_provider_outage_is_told_apart_from_a_review_that_answered(monkeypatch):
-    refused = {"status": "error", "transport_status": "provider_transport_error", "http_status": "429"}
+    transport = {"status": "error", "transport_status": "provider_transport_error"}
+    refused = {**transport, "http_status": 429, "failure_code": "429", "tokens_in": 0, "tokens_out": 0}
+    unavailable = {**transport, "http_status": "503"}
+    # The model answered with calls the native executor could not use: labelled a transport error, no HTTP status.
+    malformed = {**transport, "failure_code": "native_round_without_progress"}
+    rejected = {**transport, "http_status": 400}  # the request itself was refused: ours to fix, never waited out
     unparseable = {"status": "error", "transport_status": "ok", "raw_text": "not a verdict"}
     answered = {"status": "ok", "transport_status": "ok"}
-    for history, outage in ((_wave(refused), True), (_wave(refused, refused), True), (_wave(refused, answered), False),
+    for history, outage in ((_wave(refused), True), (_wave(refused, unavailable), True),
+                            (_wave(refused, answered), False), (_wave(malformed), False),
+                            (_wave(refused, malformed), False), (_wave(rejected), False),
+                            (_wave({**refused, "http_status": True}), False),
                             (_wave(unparseable), False), (_wave(), False), ([], False)):
         monkeypatch.setattr(smoke, "load_history", lambda *_a, history=history, **_k: history)
         assert smoke._provider_never_answered("skill") is outage, history
+
+
+def test_every_wave_the_retries_can_send_is_within_the_review_cycle_cap(review_env):  # noqa: F811 -- fixture
+    """A refused wave is a paid cycle too, so under the shipped cap of two the outage waits' waves were
+    refused locally before they reached the provider (proving run 39251921588)."""
+    from ouroboros.review_cycles import review_max_cycles
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    assert int(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MAX_CYCLES"]) < smoke._OUTAGE_RETRIES + 2
+    assert review_max_cycles() == smoke._REVIEW_DISPATCHES == smoke._OUTAGE_RETRIES + 2
 
 
 def test_an_outage_is_waited_out_but_an_answered_failure_keeps_its_one_retry(monkeypatch):
