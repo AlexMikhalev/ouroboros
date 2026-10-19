@@ -660,6 +660,27 @@ def close_connections(path: Optional[pathlib.Path] = None) -> None:
             del pool.entries[name]
 
 
+def close_connections_under(root: pathlib.Path) -> None:
+    """Close every thread's cached handles on stores inside ROOT before ROOT moves or goes.
+
+    Windows refuses to rename a folder while a file below it is open, and on any system a
+    handle kept past the move holds the moved files' space. Same contract as
+    ``close_connections``: an active lease refuses the handoff with StoreBusy.
+    """
+    def canonical(name: Any) -> str:
+        return os.path.normcase(os.path.realpath(name))  # a short or linked spelling names the same file
+
+    prefix = os.path.join(canonical(root), "")
+    with _CONNECTION_GUARD:
+        entries = [(pool, name, entry) for pool in list(_CONNECTION_POOLS)
+                   for name, entry in pool.entries.items() if canonical(name).startswith(prefix)]
+        if any(entry.active for _, _, entry in entries):
+            raise StoreBusy("store connection still in use at handoff", reason="contention")
+        for pool, name, entry in entries:
+            entry.conn.close()
+            del pool.entries[name]
+
+
 atexit.register(close_connections)  # before module globals (including the inode guard) are cleared
 
 

@@ -627,6 +627,49 @@ def test_the_move_happens_only_under_the_interlock_with_a_fresh_census_and_probe
     assert _settle(data, drive)["status"] == "removed"
 
 
+@pytest.mark.parametrize("kind", ["headless", "task_drives"])
+def test_the_move_releases_the_store_handles_the_pass_itself_opened_inside_the_drive(tmp_path, monkeypatch, kind):
+    """Windows moves no folder while a file below it is open, and the pass itself reads the
+    drive's store through the per-thread connection cache: the move releases those handles
+    first. A lease still active inside the drive keeps it, as a transient retention the
+    next pass attempts again."""
+    from ouroboros import store
+
+    data, drive, _record = _cancelled_with_capture(tmp_path, kind)
+    real_replace = os.replace
+
+    def windows_replace(source, target):  # the Windows rule, applied to the store cache
+        prefix = os.path.join(os.path.realpath(source), "")
+        held = [name for pool in list(store._CONNECTION_POOLS) for name in pool.entries
+                if os.path.realpath(name).startswith(prefix)]
+        if held:
+            raise PermissionError(5, "Access is denied", str(source))
+        return real_replace(source, target)
+
+    monkeypatch.setattr(task_custody.os, "replace", windows_replace)
+    leased, release = threading.Event(), threading.Event()
+
+    def hold():
+        with store.open_store(drive, write=False):
+            leased.set()
+            release.wait(10)
+
+    worker = threading.Thread(target=hold)
+    worker.start()
+    try:
+        assert leased.wait(5)
+        outcome = _settle(data, drive)
+        assert outcome["status"] == "retained" and outcome["reason"] == "store_busy" and drive.is_dir()
+        rested = {}
+        task_custody.record_rest(rested, kind, data, TASK, tmp_path, drive, outcome)
+        assert rested == {}, "a busy store is attempted again on the next pass"
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert _settle(data, drive)["status"] == "removed" and not drive.exists()
+
+
 def test_a_copy_back_between_preparation_and_publication_is_seen_by_the_revision(tmp_path, monkeypatch):
     """F3: a publisher that changed the row's custody fields after the plan was prepared
     (same status, same attempt) aborts the publication; the next pass converges."""
