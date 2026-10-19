@@ -1235,7 +1235,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
-            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            context = browser.new_context(viewport={"width": 1280, "height": 800}, timezone_id="UTC")
             page = context.new_page()
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
@@ -1372,8 +1372,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 assert page.locator(".final-answer-chip").count() == 0
                 assert "FINAL ANSWER: 41" in page.locator("#chat-messages").inner_text()
                 assert "FINAL ANSWER: 42" in page.locator("#chat-messages").inner_text()
-                # The card names its own last note's time in the chat's one clock (formatMsgTime short, #1959): the
-                # day it worked, never the reload's.
+                # Its last note's day in the chat's clock (formatMsgTime, #1959; a UTC page), not the reload's.
                 assert "updated Jul 18," in page.locator(
                     '.chat-live-card[data-task-id="chronology-progress-only"]'
                 ).inner_text()
