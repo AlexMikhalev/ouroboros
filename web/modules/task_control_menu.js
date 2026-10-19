@@ -13,6 +13,7 @@
 // retry and verbatim refusals are shared.
 
 import { cancelTask, hurryTask, pauseTask, resumeTask } from './api_client.js';
+import { haptic } from './haptics.js';
 import { showToast } from './toast.js';
 import { tr } from './i18n.js';
 
@@ -540,6 +541,7 @@ export function openTaskControlMenu(anchor, {
             // A portal can outlive the facts that offered it. Its owner rechecks before EVERY effect,
             // including Pause, which dispatches here rather than through onAction.
             if (!canAct(action)) { closeTaskControlMenu(); return; }
+            if (action === ACTION_STOP_NOW || action === ACTION_STOP_EARLIER) haptic('stop');  // a decisive press, felt
             closeTaskControlMenu();
             // Both surfaces' anchors name their task (Activity row `data-id`,
             // chat card root `data-task-id`), so Pause needs no per-surface hook.

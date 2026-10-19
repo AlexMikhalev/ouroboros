@@ -827,3 +827,87 @@ def test_long_values_open_and_close_without_a_wrapping_frame(direct_server_with_
         assert abs(run["settled"]["width"] - run["closed"]["width"]) <= 0.5 and run["values"][0] == run["values"][1], (key, run)
         if run["fit"] == "inline":  # it still animates: frames between the two widths, both ways
             assert _between(run["opening"], ends) >= 3 and _between(run["closing"], ends) >= 3, key
+
+
+# The phone's alone strip, frame by frame (owner 19.10, 2A; capsule_morph.js): every animation of the press, paused
+# and read at fixed times — the head's place, the line's height, the controls that step aside — then finished.
+MORPH_FRAMES = """async ({ sel, times }) => {
+    const row = document.querySelector('#page-chat .chat-toolbar-row');
+    const el = document.querySelector(sel);
+    const head = el.querySelector('.chat-capsule-head');
+    const rect = (node) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, width: r.width }; };
+    const shownKids = () => [...row.children].filter((kid) => kid !== el && getComputedStyle(kid).display !== 'none');
+    const before = { capsule: rect(el), head: rect(head), kids: shownKids().map(rect), height: row.getBoundingClientRect().height };
+    head.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    const animations = [el, ...row.children].flatMap((node) => node.getAnimations({ subtree: true }))
+        .filter((animation, i, all) => all.indexOf(animation) === i);
+    animations.forEach((animation) => animation.pause());
+    const frames = [];
+    for (const t of times) {
+        animations.forEach((animation) => { animation.currentTime = t; });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const leaving = [...row.querySelectorAll(':scope > [data-capsule-leaving]')];
+        frames.push({ t, height: row.getBoundingClientRect().height, head: rect(head).left, morph: el.dataset.morph || '',
+            surface: Boolean(el.querySelector(':scope > .chat-capsule-surface')),
+            leaving: leaving.map((kid) => ({ left: rect(kid).left, opacity: Number(getComputedStyle(kid).opacity) })),
+            back: shownKids().map((kid) => Number(getComputedStyle(kid).opacity)) });
+    }
+    animations.forEach((animation) => { try { animation.finish(); } catch (e) { animation.cancel(); } });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const after = { morph: el.dataset.morph || '', surfaces: el.querySelectorAll('.chat-capsule-surface').length,
+        leaving: row.querySelectorAll('[data-capsule-leaving]').length, ownerLeaving: row.hasAttribute('data-owner-leaving'),
+        fit: el.dataset.fit || '', open: el.dataset.open, solo: row.dataset.ownerSolo || '', head: rect(head).left,
+        kids: shownKids().length, height: row.getBoundingClientRect().height };
+    return { before, count: animations.length, frames, after };
+}"""
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_a_strip_that_opens_alone_grows_from_its_capsule_and_folds_back(direct_server_with_data, engine, tmp_path):  # noqa: F811
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    runs = {}
+    with sync_playwright() as pw:
+        browser, page = _launch(pw, engine, viewport={"width": 390, "height": 860}, is_mobile=True, has_touch=True)
+        try:
+            _open_chat(page, url, width=390, height=860, theme="light")
+            page.wait_for_timeout(300)
+            for name, selector in (("effort", EFFORT), ("context", CONTEXT)):
+                runs[f"{name}-open"] = page.evaluate(MORPH_FRAMES, {"sel": selector, "times": [0, 60, 150, 300]})
+                _shot(page, tmp_path, f"capsules-morph-{name}-open-{engine}")
+                runs[f"{name}-close"] = page.evaluate(MORPH_FRAMES, {"sel": selector, "times": [0, 80, 220]})
+            page.emulate_media(reduced_motion="reduce")
+            runs["reduced"] = page.evaluate(MORPH_FRAMES, {"sel": EFFORT, "times": [0]})
+            page.keyboard.press("Escape")
+        finally:
+            _record(tmp_path, f"capsules-morph-{engine}", runs)
+            browser.close()
+    for name in ("effort", "context"):
+        opening, closing = runs[f"{name}-open"], runs[f"{name}-close"]
+        assert opening["after"]["fit"] in ("solo", "overflow") and opening["after"]["solo"] == name, (name, opening["after"])
+        first, last = opening["frames"][0], opening["frames"][-1]
+        # The glass is its own layer while it moves; the head starts where the closed capsule's head stood.
+        assert first["morph"] == "open" and first["surface"], (name, first)
+        assert abs(first["head"] - opening["before"]["head"]["left"]) <= 1, (name, first, opening["before"])
+        assert abs(last["head"] - opening["after"]["head"]) <= 1, (name, last, opening["after"])
+        # The controls that step aside stand where they stood and fade; the line never takes a second line.
+        assert len(first["leaving"]) == len(opening["before"]["kids"]) >= 2, (name, first)
+        assert all(abs(kid["left"] - box["left"]) <= 1 for kid, box in zip(first["leaving"], opening["before"]["kids"])), (name, first)
+        assert all(kid["opacity"] > 0.9 for kid in first["leaving"]), (name, first)
+        assert all(kid["opacity"] < 0.05 for kid in opening["frames"][2]["leaving"]), (name, opening["frames"][2])
+        assert all(abs(frame["height"] - opening["before"]["height"]) <= 1 for frame in opening["frames"]), (name, opening["frames"])
+        # Nothing it added outlives it.
+        assert opening["after"]["surfaces"] == 0 and opening["after"]["leaving"] == 0 and not opening["after"]["ownerLeaving"], name
+        assert opening["after"]["morph"] == "" and opening["after"]["kids"] == 0, (name, opening["after"])
+        # Closing runs back: the head rides home, the controls fade in, and the line is whole again.
+        c0 = closing["frames"][0]
+        assert c0["morph"] == "close" and c0["surface"] and abs(c0["head"] - closing["before"]["head"]["left"]) <= 1, (name, c0)
+        assert c0["back"] and all(opacity < 0.1 for opacity in c0["back"]), (name, c0)
+        assert closing["after"]["open"] == "false" and closing["after"]["solo"] == "", (name, closing["after"])
+        assert closing["after"]["kids"] == len(opening["before"]["kids"]) and closing["after"]["surfaces"] == 0, (name, closing["after"])
+        assert abs(closing["after"]["head"] - opening["before"]["head"]["left"]) <= 1, (name, closing["after"], opening["before"])
+        assert all(abs(frame["height"] - opening["before"]["height"]) <= 1 for frame in closing["frames"]), (name, closing["frames"])
+    reduced = runs["reduced"]
+    assert reduced["frames"][0]["morph"] == "" and not reduced["frames"][0]["surface"], ("reduced motion: at once", reduced)

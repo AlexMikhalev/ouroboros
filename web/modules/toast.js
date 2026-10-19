@@ -1,3 +1,4 @@
+import { haptic } from './haptics.js';
 import { normalizeTone } from './ui_helpers.js';
 
 function getStack() {
@@ -13,10 +14,13 @@ function getStack() {
     return stack;
 }
 
-export function showToast(message, tone = 'info', { ttl = 6000 } = {}) {
+/** An error toast answers the owner's own action and plays Telegram's error haptic (haptics.js); a notice the owner did
+ * not cause (a host incident) passes `{ haptic: false }`. */
+export function showToast(message, tone = 'info', { ttl = 6000, haptic: felt = true } = {}) {
     const stack = getStack();
     const toast = document.createElement('div');
     const cleanTone = normalizeTone(tone || 'info', 'info');
+    if (felt && cleanTone === 'danger') haptic('error');
     toast.className = `toast toast-${cleanTone}`;
     toast.setAttribute('role', cleanTone === 'danger' ? 'alert' : 'status');
     toast.textContent = message || '';

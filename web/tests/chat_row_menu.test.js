@@ -274,3 +274,47 @@ test('destroy closes an open menu and leaves no listener on the feed or the docu
     assert.equal(f.doc.captures.get('pointerdown')?.size || 0, 0);
     f.restore();
 });
+
+test('on touch the row sinks while the finger holds, lifts with a haptic while its menu is open, and settles back', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    const played = [];
+    globalThis.window.Telegram = { WebApp: { initData: 'q', isVersionAtLeast: () => true,
+        HapticFeedback: { impactOccurred: (style) => played.push(style) } } };
+    try {
+        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 1, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(149);
+        assert.equal(f.bubble.dataset.rowPress, undefined, 'a tap or the start of a scroll never shows it');
+        t.mock.timers.tick(1);
+        assert.equal(f.bubble.dataset.rowPress, 'hold', 'a still finger: the row sinks');
+        t.mock.timers.tick(300);
+        assert.ok(f.openMenu());
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'the menu opens over the lifted row');
+        assert.deepEqual(played, ['medium'], 'one haptic as the press is recognised');
+        f.words.emit('pointerup', { pointerType: 'touch', pointerId: 1 });
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'it stays lifted while the menu is open');
+        f.feed.parent.emit('pointerdown', { target: f.doc.body });
+        assert.equal(f.openMenu(), null);
+        assert.equal(f.bubble.dataset.rowPress, 'release', 'on its way back');
+        t.mock.timers.tick(260);
+        assert.equal(f.bubble.dataset.rowPress, undefined, 'at rest');
+        // A finger that moves (a scroll) puts the sinking row back at once, and nothing opens.
+        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 2, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(200);
+        assert.equal(f.bubble.dataset.rowPress, 'hold');
+        f.words.emit('pointermove', { pointerId: 2, clientX: 30, clientY: 80 });
+        assert.equal(f.bubble.dataset.rowPress, undefined);
+        t.mock.timers.tick(500);
+        assert.equal(f.openMenu(), null);
+        // A row with nothing to offer never sinks; a right-click opens the menu with no lift and no haptic.
+        f.plain.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 3, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(200);
+        assert.equal(f.plain.dataset.rowPress, undefined);
+        f.plain.emit('pointerup', { pointerType: 'touch', pointerId: 3 });
+        t.mock.timers.tick(1000);
+        f.words.emit('contextmenu', { clientX: 30, clientY: 60 });
+        assert.ok(f.openMenu());
+        assert.equal(f.bubble.dataset.rowPress, undefined);
+        assert.deepEqual(played, ['medium']);
+    } finally { delete globalThis.window.Telegram; f.close(); }
+});
