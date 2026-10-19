@@ -19,9 +19,10 @@ import pytest
 
 import tests.test_skill_smoke_official as smoke
 from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
+from tests.conftest import _THREAD_LEAK_GRACE_SEC
 from tests.test_skill_smoke_official import owned_review_workers, review_env  # noqa: F401 -- fixtures
 
-_HELD_SEC = 3.0  # longer than the thread-leak check's 2 s grace (tests/conftest.py)
+_HELD_SEC = _THREAD_LEAK_GRACE_SEC + 1.0  # outlasts the thread-leak check's grace
 
 
 @pytest.fixture()
