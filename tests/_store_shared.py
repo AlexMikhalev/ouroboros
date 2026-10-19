@@ -6,7 +6,9 @@ Plain callables (many callers need them at module import time), never fixtures.
 """
 from __future__ import annotations
 
+import os
 import pathlib
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
@@ -108,3 +110,43 @@ def unavailable_store(monkeypatch) -> None:
 
     monkeypatch.setattr(store, "open_store", busy)
     monkeypatch.setattr(task_store, "open_store", busy)
+
+
+def release_store_handles(tree: Any, *, wait_sec: float = 30.0) -> None:
+    """Close this process's cached connections to every store database at or below ``tree``.
+
+    The store keeps each thread's idle connection open (#1982). Windows refuses to delete or
+    rename a file an open handle holds (WinError 32) and a folder with an open file below it
+    (WinError 5), so a test that removes, renames or replaces store files it used releases them
+    first, as the product's lifecycle owners do (``store.close_connections``); the next use opens
+    a fresh connection. A connection inside a transaction refuses with ``StoreBusy``: another
+    thread's transaction is waited out, up to ``wait_sec``, then the refusal is raised.
+    """
+    from ouroboros import store
+
+    tree = pathlib.Path(tree)
+    if tree.is_dir():
+        found = [pathlib.Path(folder) / name for folder, _dirs, names in os.walk(tree)
+                 for name in names if name.endswith(".sqlite")]
+    else:
+        found = [tree]
+    attempts = max(1, int(wait_sec / 0.05))  # counted, not clocked: a test may freeze time.monotonic
+    for path in found:
+        for spelling in dict.fromkeys((path.absolute(), path.resolve())):
+            for attempt in range(attempts):
+                try:
+                    store.close_connections(spelling)
+                    break
+                except store.StoreBusy:
+                    if attempt == attempts - 1:
+                        raise
+                    time.sleep(0.05)
+
+
+def remove_store_tree(tree: Any) -> None:
+    """``shutil.rmtree`` of a drive or data root this process used, its store handles released first
+    (``release_store_handles``) so the removal works on Windows too."""
+    import shutil
+
+    release_store_handles(tree)
+    shutil.rmtree(tree)
