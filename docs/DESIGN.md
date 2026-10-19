@@ -2152,8 +2152,9 @@ place is chosen at a time, and pressing a place opens it, never closes it.
 
 **The drawer.** In the stack layout the same column slides over the room from the
 left and leaves a strip of the room visible. In a room (Main, an open Project) ☰
-is the first control of the composer's row, beside Swarm and under the thumb; on
-a page without a composer it sits in the leading slot of the header. The
+is the first control of the composer's row, beside Swarm and under the thumb, and
+steps aside with the others while an open capsule has the line alone; on a page
+without a composer it sits in the leading slot of the header. The
 drawer's × sits in its head, where a page's ☰ is. The scrim,
 ×, Escape, Back and choosing a place close it. A drag only speeds this up: a
 sideways finger anywhere on the room, from the screen's very edge and over its

@@ -4147,6 +4147,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-capsule:is([data-fit="solo"], [data-fit="overflow"], [data-snap="true"]) :is(.chat-capsule-body, .chat-capsule-value) {
     transition: none;
 }
+/* A room's ☰ is one of the controls that step aside: the fit gives the open strip the whole line. */
+.chat-toolbar-row[data-owner-solo] > .composer-menu,
 .chat-toolbar-row[data-owner-solo] .chat-composer-pills,
 .chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
 .chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
