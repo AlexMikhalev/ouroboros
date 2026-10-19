@@ -2225,7 +2225,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--status-ok-bg);
 }
 
-.log-entry .log-phase:is(.warn, .alive, .empty):not([data-chip-tone]) {
+.log-entry .log-phase:is(.warn, .empty):not([data-chip-tone]) {
     color: var(--status-warn-fg);
     border-color: var(--status-warn-border);
     background: var(--status-warn-bg);
@@ -2396,8 +2396,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .chat-live-episode-outcome[data-tone="ok"] { color: var(--status-ok-fg); }
-.chat-live-episode-outcome[data-tone="warn"] { color: var(--status-warn-fg); }
-.chat-live-episode-outcome[data-tone="error"] { color: var(--status-error-fg); }
+.chat-live-episode-outcome[data-tone="failed"] { color: var(--status-error-fg); }
 .chat-live-episode-outcome[data-tone="neutral"] { color: var(--status-neutral-fg); }
 
 /* Earlier physical episodes disclose their existing content, never another work/control card. */

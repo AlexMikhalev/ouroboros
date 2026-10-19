@@ -156,10 +156,15 @@ test('the controller tells its card whether an admitted wait needs the owner, fr
     const controller = createModelWaitController({ getRecord: () => record });
     t.after(() => controller.destroy());
     const tone = () => [record.modelWaiting, record.modelOwnerAction, record.phaseEl.dataset.chipTone];
+    // The wait's own row says the same: a quiet tray with a neutral sentence, amber only for the owner's move.
+    const frame = () => { const node = root.querySelector('.model-wait-row');
+        return [node?.dataset.owner, node?.querySelector('[data-wait-reason]')?.dataset.tone]; };
     controller.observe('task', { model_waits: { 'wait-light': row() } });
     assert.deepEqual(tone(), [true, false, 'neutral']);
+    assert.deepEqual(frame(), ['0', 'neutral']);
     controller.observe('task', { model_waits: { 'wait-light': row({ revision: 2, auto_continue: false, requires_owner_action: true }) } });
     assert.deepEqual(tone(), [true, true, 'owner']);
+    assert.deepEqual(frame(), ['1', 'warn']);
     controller.observe('task', { model_waits: { 'wait-light': row({ revision: 3, state: 'resolved' }) } });
     assert.deepEqual(tone(), [false, false, 'live']);
 });

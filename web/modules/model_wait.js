@@ -152,6 +152,11 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         node.querySelector('[data-wait-role]').textContent = modelWaitRoleLabel(row.role);
         node.querySelector('[data-wait-reason]').textContent = !observesAccess ? 'Waiting for provider access' : mixed ? 'Waiting for access'
             : pool ? 'Waiting for an account' : row.reason === 'auth' ? 'Sign-in required' : 'Waiting for quota';
+        // Amber only while the wait needs the owner (the host's revision-bound fact); a wait that goes on by itself is a
+        // quiet tray with a neutral sentence (docs/DESIGN.md "Status marks").
+        const owner = row.requires_owner_action === true;
+        if (node.dataset.owner !== (owner ? '1' : '0')) node.dataset.owner = owner ? '1' : '0';
+        node.querySelector('[data-wait-reason]').dataset.tone = owner ? 'warn' : 'neutral';
         const model = parseModelSource(row.model).model || row.model;
         node.querySelector('[data-wait-model]').textContent = `${model || 'Model'} · ${!observesAccess ? 'Configured API access' : row.credential_profile_id ? `Account: ${row.credential_profile_id}` : 'Auto rotation'}`;
         const reset = row.reset_at ? new Date(row.reset_at) : null;
@@ -342,7 +347,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         const editorId = `model-wait-editor-${++serial}-${requestIdentity()}`;
         const view = { node, row, editorId, editor: null, sending: false, loading: false,
             error: '', persisted: null, lastRequest: null };
-        node.innerHTML = `<div class="model-wait-heading"><strong data-wait-role></strong><span class="ui-status" data-tone="warn" data-wait-reason></span></div>
+        node.innerHTML = `<div class="model-wait-heading"><strong data-wait-role></strong><span class="ui-status" data-tone="neutral" data-wait-reason></span></div>
             <div class="model-wait-meta" data-wait-model></div><div class="model-wait-meta" data-wait-reset></div>
             <label class="model-wait-auto"><input class="ui-checkbox" type="checkbox" data-wait-auto> <span data-wait-auto-label></span></label>
             <div class="model-wait-actions"><button class="btn btn-default" type="button" data-wait-change>Change model or account</button>
