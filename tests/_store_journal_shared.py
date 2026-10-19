@@ -43,15 +43,15 @@ def exclusive_hold(path: Any, *, wait_sec: float = 0.0) -> sqlite3.Connection:
     rollback-journal file; on a WAL file the same in exclusive locking mode, which takes the file's
     exclusive lock, once this process's idle handles in the folder closed (each WAL handle keeps a
     shared lock on the file while it is open). The file's journal mode is left as it is.
-    ``wait_sec`` waits out other holders."""
+    ``wait_sec`` waits out other holders; any thread may end the hold."""
     path = pathlib.Path(path)
     if not store.wal_file(path):
-        conn = store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec, journal_mode="")
+        conn = store.connect(path, store.TIER_ENFORCED, wait_sec=wait_sec, shared=True, journal_mode="")
         return _begin(conn, "BEGIN EXCLUSIVE")
     deadline = time.monotonic() + wait_sec
     while True:
         store.close_connections_under(path.parent, idle_only=True)  # a leased handle stays: retried below
-        conn = store.connect(path, store.TIER_ENFORCED, journal_mode="")
+        conn = store.connect(path, store.TIER_ENFORCED, shared=True, journal_mode="")
         conn.execute("PRAGMA locking_mode = EXCLUSIVE")  # before this connection's first read
         try:
             return _begin(conn, "BEGIN EXCLUSIVE")
