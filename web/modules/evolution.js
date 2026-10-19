@@ -5,12 +5,12 @@ import { applyChartTheme, chartChrome, onThemeChange } from './theme_palette.js'
 import { tr } from './i18n.js';
 import { showToast } from './toast.js';
 
-// The statuses that wait for the owner: a first conversation, or his chat.
+// The statuses that wait for the owner: a first conversation, or the owner's chat.
 const NEEDS_OWNER = ['waiting_for_first_conversation', 'waiting_for_owner_chat'];
 
 /**
  * A runtime pill's tone (docs/DESIGN.md "Status and chips"): green while it runs or rests ready; amber only while it
- * needs the owner (a first conversation, his chat, or a spending limit that stopped it); red for a failure; and the
+ * needs the owner (a first conversation, the owner's chat, or a spending limit that stopped it); red for a failure; and the
  * plain pill (`offline`) for everything that goes on by itself (a wait, a pause, a restart check, an unknown) or is off.
  */
 export function runtimePillTone(status) {

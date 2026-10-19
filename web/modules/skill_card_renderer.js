@@ -60,7 +60,7 @@ function modifiedFacts(skill) {
 function statusBadge(status, gate = null, profile = '') {
     // Owner-attested skills are executable but the LLM review was skipped; the
     // verdict word stays distinct from a reviewed one. It was the owner's own
-    // choice, so it is a neutral fact, not a move still waiting for him.
+    // choice, so it is a neutral fact, not a move still waiting for the owner.
     if (profile === 'owner_attested') return chipHtml('review skipped by you', 'neutral');
     // Running on its install basis with no review of these bytes: the sentence says why; «pending» would not.
     if ((status || 'pending') === 'pending' && INSTALL_ACCEPTANCE_REASONS.includes(String(gate?.blocking_reason || ''))) return '';

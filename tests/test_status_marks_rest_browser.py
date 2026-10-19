@@ -172,7 +172,7 @@ def test_skills_jobs_in_flight_are_neutral_and_the_owner_move_amber(subscription
 
 
 def test_evolution_pills_are_amber_only_for_the_owner(subscription_ui):
-    """Evolution and Consciousness pills: amber only while they need the owner (a first conversation, his chat, a
+    """Evolution and Consciousness pills: amber only while they need the owner (a first conversation, the owner's chat, a
     spending-limit stop); a wait or a pause keeps the plain pill; a failure is red, running green."""
     ui = subscription_ui
     page = ui["page"]
