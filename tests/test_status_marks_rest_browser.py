@@ -76,17 +76,21 @@ def test_question_head_mark_is_amber_only_while_the_task_waits(subscription_ui, 
                 color: getComputedStyle(mark.querySelector('i')).backgroundColor,
                 word: node.querySelector('.chat-quiz-status-text').textContent };
         };
+        window.__readQuizMark = read;
         const out = {};
         for (const row of rows) {
             const node = decision.buildQuizCard(row);
             column.append(node);
             out[row.quiz_id] = read(node);
         }
-        const waiting = column.querySelector('.chat-quiz-card[data-quiz-id="waiting"]');
-        waiting.dataset.submission = 'sending';
-        out.sending = read(waiting);
         return out;
     }""", rows)
+    setup_browser.capture(page, f"status-marks-question-head-{theme}")
+    marks["sending"] = page.evaluate("""() => {
+        const waiting = document.querySelector('.chat-quiz-card[data-quiz-id="waiting"]');
+        waiting.dataset.submission = 'sending';
+        return __readQuizMark(waiting);
+    }""")
     for quiz_id, _fields, hue, token in QUESTIONS:
         mark = marks[quiz_id]
         assert (mark["shape"], mark["hue"]) == ("dot", hue), (quiz_id, mark)
@@ -96,7 +100,6 @@ def test_question_head_mark_is_amber_only_while_the_task_waits(subscription_ui, 
     assert marks["finished"]["word"] == "Unanswered · task finished" and marks["closed"]["word"] == "Question closed"
     assert marks["waiting"]["color"] != marks["unanswered"]["color"], "the owner's dot must differ from neutral"
     assert marks["sending"]["color"] == page.evaluate("__probe('var(--text-meta)')"), marks["sending"]
-    setup_browser.capture(page, f"status-marks-question-head-{theme}")
 
 
 SKILL = {"name": "demo", "type": "extension", "version": "1.0.0", "description": "Demo skill", "enabled": False,
@@ -129,6 +132,7 @@ def test_skills_jobs_in_flight_are_neutral_and_the_owner_move_amber(subscription
     found = page.evaluate("""async rows => {
         const { renderInstalledSkillCard } = await import('/static/modules/skill_card_renderer.js');
         const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;inset:0;overflow:auto;z-index:9999;padding:16px;background:var(--bg-primary)';
         host.innerHTML = rows.map(row => renderInstalledSkillCard(row)).join('')
             + '<span class="app-tab-pill">2</span>';
         document.body.append(host);
