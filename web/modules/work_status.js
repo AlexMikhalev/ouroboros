@@ -296,6 +296,17 @@ export function cardControls(state, taskId) {
 }
 
 /**
+ * A card that finished while its own Stop request was out, once that request settles: the Stop… it keeps is its
+ * work's offer (a sync has already removed one the work no longer offers), so it is usable again, and a refusal is
+ * said as a running card says it. A running card keeps its own pending rules.
+ */
+export function settleKeptStop(record, btn, exc = null, toast = () => {}) {
+    if (!record?.finished || !btn?.isConnected) return;
+    btn.disabled = false;
+    if (exc && exc.status !== 404) toast(`Cancel failed: ${exc.message || exc}`, 'error');
+}
+
+/**
  * The cards whose work offer (`cardControls` menu or resume) differs between two bodies' states. Their Stop… and
  * Resume are re-synced: a finished card whose work has left the body drops the Stop… an earlier body gave it.
  */

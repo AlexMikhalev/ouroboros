@@ -15,7 +15,7 @@ import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, s
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView, settleKeptStop } from './work_status.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -979,10 +979,12 @@ export function createChatInstance({
             if (btn && !record.finished && record.cancelPendingPolicy === 'finalize') {
                 btn.disabled = false;
             }
+            settleKeptStop(record, btn);
         } catch (exc) {
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
                 revokeManagedTaskCancelAuthority(taskId);
+                settleKeptStop(record, btn, exc, showToast);
                 try {
                     reconcileCancelCardFromDetail(record, taskId, await fetchTaskDetail(taskId));
                 } catch {

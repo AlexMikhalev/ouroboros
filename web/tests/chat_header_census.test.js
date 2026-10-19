@@ -20,9 +20,12 @@ ElementStub.prototype.querySelector = function (selector) {
     return null;
 };
 
-function makeInstance({ details = {}, calls = [], state = { census: null }, chatId = 1, asPanel = false } = {}) {
+function makeInstance({ details = {}, calls = [], state = { census: null }, chatId = 1, asPanel = false, hook = null } = {}) {
     const env = installDom(async (url) => {
         calls.push(String(url));
+        // A test's own answer for one address (held, refused), else the fixture's.
+        const hooked = hook && await hook(String(url));
+        if (hooked) return hooked;
         const id = String(url).split('/').at(-1);
         if (String(url).startsWith('/api/tasks/')) {
             return details[id]
@@ -783,4 +786,70 @@ for (const [chatId, asPanel] of [[1, false], [7, true]]) {
             }
         });
     }
+}
+
+for (const [chatId, asPanel, refused] of [[1, false, true], [7, true, true], [1, false, false], [7, true, false]]) {
+    test(`a Stop out when its parent finished is usable again once ${refused ? 'refused' : 'accepted'} and stops the tree (${asPanel ? 'Project room' : 'Main'})`, async () => {
+        let release = null;
+        const cancels = [];
+        const accepted = { ok: true, status: 200, json: async () => ({ ok: true, task_id: 'p', cascade: true }) };
+        // The first Stop is held, then answered (refused as the host refuses an unrecorded intent, or accepted).
+        const hook = (url) => {
+            if (url !== '/api/tasks/p/cancel') return null;
+            cancels.push(url);
+            return cancels.length > 1 ? accepted : new Promise((resolve) => { release = () => resolve(refused
+                ? { ok: false, status: 503, json: async () => ({ reason_code: 'cancel_intent_write_failed',
+                    error: 'durable cancel intent could not be recorded; nothing was cancelled' }) } : accepted); });
+        };
+        const fx = makeInstance({ chatId, asPanel, hook,
+            details: { p: { task_id: 'p', status: 'running', phase: 'working', ts: '2026-10-19T09:00:00Z' } } });
+        const parent = { activity_id: 'p', chat_id: chatId, kind: 'managed_task', phase: 'working' };
+        const helper = { activity_id: 'h', chat_id: chatId, kind: 'managed_task', phase: 'working',
+            parent_task_id: 'p', root_task_id: 'p' };
+        const running = work(parent, { controls: [{ action: 'wrap_up', target: 'p' }, { action: 'stop', target: 'p', scope: 'cascade' }] });
+        const after = { ...structuredClone(SERVER_CASES.helper_after_parent.works[0]), room: chatId };
+        const body = (rows, works) => {
+            fx.state.census = { active_chat_activities: rows, active_chat_activities_complete: true, supervisor_ready: true,
+                ...projection(chatId, works, works.length ? room('working') : null, true) };
+            fx.instance.hydrateStateSnapshot(fx.state.census, Infinity);
+        };
+        const stop = () => fx.card('p').querySelector('[data-cancel-run]');
+        const priorObserver = globalThis.IntersectionObserver;
+        globalThis.IntersectionObserver = class { observe() {} disconnect() {} takeRecords() { return []; } };
+        const page = new ElementStub('body', globalThis.document);
+        page.isConnected = true;
+        globalThis.document.body = page;
+        const item = (action) => collect(page, (node) => node?.dataset?.taskControl === action).at(-1);
+        try {
+            fx.handlers.get('chat')({ chat_id: chatId, task_id: 'p', role: 'assistant', is_progress: true, cancelable: true,
+                content: 'Handing the survey to a helper', ts: '2026-10-19T09:00:00Z' });
+            body([parent, helper], [running]);
+            press(stop());
+            press(item('finalize'));
+            await fx.settle();
+            assert.equal(cancels.length, 1, 'the Wrap up is out');
+            assert.equal(stop().disabled, true, 'its Stop… waits for the answer');
+            // The parent finishes while the request is out; its helper still works.
+            fx.handlers.get('log')({ chat_id: chatId, data: { type: 'task_done', task_id: 'p', status: 'completed',
+                ts: '2026-10-19T09:00:05Z' } });
+            await fx.settle();
+            body([helper], [after]);
+            assert.equal(fx.card('p').dataset.finished, '1');
+            release();
+            for (let i = 0; i < 10 && stop()?.disabled !== false; i += 1) await fx.settle();
+            const toasts = collect(page, (node) => node?.classList?.contains('toast')).map((node) => node.textContent);
+            // A refusal is said as a running card says it; an accepted Stop says nothing.
+            assert.equal(toasts.some((text) => text.startsWith('Cancel failed: durable cancel intent could not be recorded')),
+                refused, toasts);
+            assert.equal(stop()?.disabled, false, 'the Stop… the work still offers is usable again');
+            press(stop());
+            press(item('stop_now'));
+            for (let i = 0; i < 10 && cancels.length < 2; i += 1) await fx.settle();
+            assert.equal(cancels.length, 2, 'pressed again, it reaches the tree\'s Stop door');
+        } finally {
+            fx.instance.destroy();
+            globalThis.IntersectionObserver = priorObserver;
+            restoreDom(fx.prior);
+        }
+    });
 }
