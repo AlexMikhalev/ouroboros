@@ -472,6 +472,14 @@ def test_s38_boot_recovers_a_crashed_evolution_candidate_commit_without_absorbin
     data_root, state_dir = root / "data", root / "data" / "state"
     seed_owner_state(data_root, evolution_enabled=True)
     monkeypatch.setenv("OUROBOROS_EVOLUTION_AUTO_RESTART", "false")
+    # Evolution forces the full post-commit test battery even under skip_tests (tools/git.py:
+    # evolution publication requires a full run). S38's subject is the crash window between that
+    # commit and its receipts, not qualification, so the product's own lane budget ends the battery
+    # red at once on every host: a red post-commit run withholds only the push and keeps the commit
+    # and its provenance. Unbounded, the whole suite ran inside the scenario past its 600 s gate
+    # on a host where it could run (on CI the same forced run in S22 ended red after about two
+    # minutes, on its Node lane).
+    monkeypatch.setenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", "5")
     settings_kwargs = dict(OUROBOROS_RUNTIME_MODE="advanced", OUROBOROS_REVIEW_ENFORCEMENT="blocking")
     gate = ModelGate(_after_the_commit, timeout=600)
     with candidate_checkout(REPO_ROOT, root / "source" / "repo", origin_proof=True) as source:
