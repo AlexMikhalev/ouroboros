@@ -131,6 +131,7 @@ PROBE_JS = """() => {
         return [chip.dataset.row, { text: chip.textContent, tone: chip.dataset.chipTone, shape: mark.dataset.shape,
             hue: mark.dataset.hue, hidden: mark.hidden, first: chip.firstElementChild === mark,
             color: getComputedStyle(chip).color, markColor: getComputedStyle(mark).color,
+            width: mark.getBoundingClientRect().width, opacity: getComputedStyle(mark).opacity,
             before: getComputedStyle(chip, '::before').content, animation: dots.find((name) => name !== 'none') || 'none' }];
     }));
     return { tokens, chips };
@@ -210,6 +211,10 @@ def test_cards_activity_logs_and_budget_speak_the_status_marks(tmp_path, engine)
                         assert chip["markColor"] == (chip["color"] if hue == "ink" else tokens[HUE_INK[hue]]), (name, chip)
                         moving = shape == "moving" and motion != "reduce"
                         assert (chip["animation"] != "none") == moving, (name, motion, chip)
+                    # A live chip keeps the moving dots' width when the owner's dot takes their place: Working stays put.
+                    assert abs(chips["parent"]["width"] - chips["working"]["width"]) <= 0.5, (chips["parent"], chips["working"])
+                    # The unconfirmed ring is faint.
+                    assert chips["unconfirmed"]["opacity"] == "0.55", chips["unconfirmed"]
 
                     # Activity: a census row says the chip's word; Stop… is the neutral trigger, never danger red.
                     sub = page.locator('[data-activity-section="queue"] .activity-sub').first
