@@ -3566,6 +3566,7 @@ html[data-layout="stack"] .mobile-nav-toggle {
 /* A room's ☰ is the first control of its composer's row, under the thumb (owner 19.10, 1A): as tall as the
    capsules beside it, with the touch minimum as its finger target (.ui-hit-area). */
 html[data-layout="stack"] .chat-toolbar-row > .composer-menu {
+    position: relative;  /* its hit area (.ui-hit-area::after) is centred on it, not on the composer */
     flex: 0 0 auto;
     width: var(--composer-control-height);
     height: var(--composer-control-height);
@@ -6823,6 +6824,13 @@ body.keyboard-open #page-chat.active {
     z-index: 20;
     overflow: hidden;
     overscroll-behavior: none;
+}
+
+/* A Project room over Main shrinks to the visible viewport too: its composer, with the room's ☰, stays above the
+   keyboard instead of behind it. */
+body.keyboard-open .project-panel {
+    height: var(--vvh);
+    max-height: var(--vvh);
 }
 
 body.keyboard-open #page-chat.active .chat-page-header,

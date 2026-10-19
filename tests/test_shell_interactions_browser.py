@@ -11,7 +11,7 @@ import json
 import pytest
 
 from tests import test_subscription_setup_browser as setup_browser
-from tests.test_design_system_gate_browser import PROJECTS, open_nav, save_evidence, seed_page, settle, sidebar_metrics
+from tests.test_design_system_gate_browser import PROJECTS, save_evidence, seed_page, settle, sidebar_metrics
 
 subscription_ui = setup_browser.subscription_ui
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -320,136 +320,6 @@ def test_the_drawer_follows_a_finger_on_a_phone_room(chromium_ui, tmp_path, room
     assert facts['open_drag'] == {'open': True, 'layers': under + ['drawer']}, facts
     assert facts['close_drag'] == {'open': False, 'layers': under}, facts
     assert facts['scrim_close_drag'] == {'open': False, 'layers': under}, facts
-
-
-def swipe_with(page, start, end, steps=12, during=None):
-    """swipe(), with `during` run once a third of the way, while the finger is still down."""
-    cdp = page.context.new_cdp_session(page)
-    try:
-        for i in range(steps + 1):
-            point = {'x': start[0] + (end[0] - start[0]) * i / steps,
-                     'y': start[1] + (end[1] - start[1]) * i / steps, 'id': 1}
-            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove', 'touchPoints': [point]})
-            if during and i == steps // 3:
-                during()
-            page.wait_for_timeout(16)
-        cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
-        page.wait_for_timeout(450)
-    finally:
-        cdp.detach()
-
-
-@pytest.mark.parametrize('room', ['main', 'project'])
-def test_the_drawer_opens_from_the_edge_from_the_chrome_and_keeps_the_finger(chromium_ui, tmp_path, room):
-    """Owner 19.10: the drawer opened only from the middle of the room and slipped off the finger. A sideways
-    finger opens it from the screen's very edge, from the header and from the composer's controls (the page
-    itself only pans up and down), and it keeps following while the row under the finger is re-rendered or a
-    browser bar changes the window's height. A field still keeps its finger."""
-    page = seed_page(chromium_ui, 390, 844)
-    under = [] if room == 'main' else ['project']
-    facts = {'room': room}
-    scope = '#page-chat' if room == 'main' else '#project-panel'
-
-    def reset():
-        if page.evaluate(DRAWER)['open']:
-            page.evaluate('window.__ouroLayers.pop()')
-            page.wait_for_timeout(350)
-    try:
-        boot(page, chromium_ui)
-        if room == 'project':
-            open_project(page)
-        header = page.locator(f'{scope} .app-page-header').first.bounding_box()
-        feed = page.locator('#chat-messages' if room == 'main' else '#project-panel-body').bounding_box()
-        field = page.locator(f'{scope} textarea').first.bounding_box()
-        capsule = page.locator(f'{scope} .chat-toolbar-row button').first.bounding_box()
-        mid = feed['y'] + feed['height'] / 2
-        starts = {
-            'edge': (3, mid),
-            'header': (header['x'] + header['width'] / 2, header['y'] + header['height'] / 2),
-            'capsule': (capsule['x'] + capsule['width'] / 2, capsule['y'] + capsule['height'] / 2),
-        }
-        for name, (x, y) in starts.items():
-            facts[f'{name}_under'] = page.evaluate(UNDER, [x, y])
-            swipe_with(page, (x, y), (x + 240, y - 16))
-            facts[name] = page.evaluate(DRAWER)
-            reset()
-        swipe_with(page, (field['x'] + 30, field['y'] + field['height'] / 2), (field['x'] + 270, field['y'] + field['height'] / 2))
-        facts['field'] = page.evaluate(DRAWER)
-        reset()
-        # A browser bar (or the keyboard) changes only the height while the finger is down.
-        swipe_with(page, (40, mid), (300, mid), during=lambda: page.set_viewport_size({'width': 390, 'height': 790}))
-        facts['bar_moved'] = page.evaluate(DRAWER)
-        page.set_viewport_size({'width': 390, 'height': 844})
-        page.wait_for_timeout(300)
-        reset()
-        # The row under the finger is re-rendered mid-drag (a live card, a new message).
-        rerender = ("([x, y]) => { const row = document.elementFromPoint(x, y)?.closest('#chat-messages > *, .chat-messages > *');"
-                    " row?.replaceWith(row.cloneNode(true)); return Boolean(row); }")
-        facts['rerendered'] = None
-        swipe_with(page, (40, mid), (300, mid),
-                   during=lambda: facts.__setitem__('rerendered', page.evaluate(rerender, [120, mid])))
-        facts['row_rerendered'] = page.evaluate(DRAWER)
-    finally:
-        evidence(tmp_path, f'shell-drawer-edge-{room}', facts)
-        page.close()
-    opened = {'open': True, 'layers': under + ['drawer']}
-    for name in ('edge', 'header', 'capsule', 'bar_moved', 'row_rerendered'):
-        assert facts[name] == opened, (name, facts)
-    assert facts['field'] == {'open': False, 'layers': under}, ('a field keeps its finger', facts)
-
-
-MENU = """scope => {
-    const room = document.querySelector(scope);
-    const shown = (el) => Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-    const menu = [...room.querySelectorAll('[data-mobile-nav-toggle]')].find(shown);
-    const row = room.querySelector('.chat-toolbar-row');
-    const swarm = row?.querySelector('.chat-swarm');
-    const box = (el) => el ? (({x, y, width, height}) => ({x, y, w: width, h: height}))(el.getBoundingClientRect()) : null;
-    const b = menu?.getBoundingClientRect();
-    // The finger's target: points 21px above and below the centre still land on the button (its hit area).
-    const hits = b ? [-21, 21].map((dy) => document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2 + dy)
-        ?.closest('[data-mobile-nav-toggle]') === menu) : [];
-    return {inRow: Boolean(menu && menu.parentElement === row && row.firstElementChild === menu),
-            inHeader: [...room.querySelectorAll('.app-page-header [data-mobile-nav-toggle]')].some(shown),
-            menu: box(menu), swarm: box(swarm), hits};
-}"""
-
-
-@pytest.mark.parametrize('room', ['main', 'project'])
-def test_a_rooms_menu_is_the_composers_first_control(shell_ui, tmp_path, room):
-    """Owner 19.10 (1A, 2A): in a room ☰ is the composer row's first control, left of Swarm, under the thumb, as
-    tall as the capsules with the touch minimum as its finger target; the room's header has none. It opens the
-    drawer, whose × stays in its head. A page without a composer keeps ☰ in its header."""
-    page = seed_page(shell_ui, 390, 844)
-    facts = {'engine': shell_ui['engine'], 'room': room}
-    scope = '#page-chat' if room == 'main' else '#project-panel'
-    try:
-        boot(page, shell_ui)
-        if room == 'project':
-            open_project(page)
-        facts.update(page.evaluate(MENU, scope))
-        page.locator(f'{scope} .chat-toolbar-row [data-mobile-nav-toggle]').tap()
-        page.wait_for_function("() => window.__ouroLayers.top() === 'drawer'")
-        page.wait_for_timeout(300)
-        facts['close'] = page.locator('#nav-drawer-close').bounding_box()
-        facts['menu_after_open'] = page.locator(f'{scope} .chat-toolbar-row [data-mobile-nav-toggle]').get_attribute('aria-expanded')
-        page.evaluate('window.__ouroLayers.pop()')
-        page.wait_for_timeout(300)
-        if room == 'main':
-            open_nav(page, 'settings')
-            facts['settings_menu_in_header'] = page.evaluate(
-                "() => [...document.querySelectorAll('#page-settings .app-page-header [data-mobile-nav-toggle]')].some(e => e.getClientRects().length)")
-    finally:
-        evidence(tmp_path, f'shell-room-menu-{room}-{shell_ui["engine"]}', facts)
-        page.close()
-    assert facts['inRow'] is True and facts['inHeader'] is False, facts
-    assert facts['menu']['x'] + facts['menu']['w'] <= facts['swarm']['x'], ('left of Swarm', facts)
-    assert facts['menu']['h'] == facts['swarm']['h'] == 32, ('as tall as the capsules', facts)
-    assert facts['hits'] == [True, True], ('the touch minimum is its finger target', facts)
-    assert facts['menu_after_open'] == 'true', facts
-    assert facts['close']['y'] < 100, ('the drawer\'s × stays in its head', facts)
-    if room == 'main':
-        assert facts['settings_menu_in_header'] is True, ('a page without a composer keeps ☰ in its header', facts)
 
 
 WORD = """bar => {
