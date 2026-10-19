@@ -1,24 +1,26 @@
-"""A SQLite WAL index (``-shm``) is never opened by the readers that apply the name rule.
+"""A SQLite WAL index (``-shm``) is never opened by the readers that apply the index rule.
 
 Under WAL every open connection holds locks on the index. POSIX record locks (its read marks and
 the dead-man switch) drop when ANY descriptor of the file closes (sqlite.org/howtocorrupt.html
 §2.2): after a raw open and close of the index, another process takes the TRUNCATE checkpoint those
 locks forbid and resets the log under a live read transaction, which then reads that process's
 later commit (reproduced on macOS with SQLite 3.53.1). Windows byte-range locks fail a read across
-them. So the rule is the name, on every OS: a file whose real name is a SQLite database's name plus
-``-shm`` is an index, whichever process holds the database and whenever this one connects (who holds
-it when a read starts says nothing about when the read's descriptor closes). The store's raw readers
-refuse it (the Files panel answers 403, the read tools and single-file copies refuse it); the folder
-copies, captures, delegated snapshots and artifact listings built on them leave it out as an
-excluded member, never read; a store's database is read through its borrowed descriptor, never a
-clone that opens it. The ``-wal`` log carries no lock and reads as any file does, as does a file
-merely named like a sidecar.
+them. So the rule is the file, on every OS: the regular file the volume resolves a SQLite database's
+name plus ``-shm`` to is an index, whichever process holds the database and whenever this one connects
+(who holds it when a read starts says nothing about when the read's descriptor closes). The store's
+raw readers refuse it (the Files panel answers 403, the read tools and single-file copies refuse it);
+the folder copies, captures, delegated snapshots and artifact listings built on them leave it out as
+an excluded member, tracked or not, never read; a store's database is read through its borrowed
+descriptor, never a clone that opens it. The ``-wal`` log carries no lock and reads as any file does,
+as does a file merely named like a sidecar, a directory, or a spelling the volume keeps apart.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import json
+import os
+import pathlib
 import sqlite3
 import subprocess
 import sys
@@ -171,15 +173,15 @@ def test_the_tests_tree_snapshot_passes_the_index_by_name(tmp_path, monkeypatch)
 def test_the_index_is_refused_by_any_name_that_reaches_it(tmp_path, monkeypatch):
     """A symbolic link to the index, and on a case-insensitive volume any spelling the volume folds
     onto it (``-SHM``, ``-ſhm``), open the same file: each is refused as the index is, and the read
-    transaction keeps its lock. By name alone every such spelling is an index on any volume."""
+    transaction keeps its lock. A spelling the volume keeps apart reaches no index and is none."""
     from ouroboros.gateway import files
 
     use_journal(monkeypatch, "WAL")
     database = _live_store(tmp_path)
     index = database.with_name(database.name + "-shm")
     spellings = [database.with_name(database.name + suffix) for suffix in ("-SHM", "-\u017fhm")]
-    assert all(store.is_wal_index(name) for name in spellings)
     names = [name for name in spellings if name.exists()]  # a case-insensitive volume: the same file
+    assert [store.is_wal_index(name) for name in spellings] == [name in names for name in spellings]
     link = tmp_path / "linked-index"
     with contextlib.suppress(OSError):  # Windows without the symbolic-link privilege
         link.symlink_to(index)
@@ -190,6 +192,58 @@ def test_the_index_is_refused_by_any_name_that_reaches_it(tmp_path, monkeypatch)
             with pytest.raises(store.WalIndexRefused):
                 files._read_prefix(name, 4096)
         assert _reset_refused(database)
+
+
+def test_a_spelling_the_volume_keeps_apart_from_the_index_is_the_user_s_file(tmp_path, monkeypatch):
+    """``x.db-SHM`` is an index only where the volume resolves it to ``x.db-shm``'s own file: on a
+    case-sensitive volume it is the user's file, read, copied and listed as one (folding its name made
+    it an index by name alone, so every reader refused it and every copy left it out). A host volume that
+    folds the spelling answers here as a case-sensitive one would: a name reaches a file only through a
+    directory entry spelled exactly so."""
+    from ouroboros import task_custody
+    from ouroboros.gateway import files
+
+    folder = tmp_path / "artifacts"
+    folder.mkdir()
+    with contextlib.closing(sqlite3.connect(folder / "x.db")) as conn:
+        conn.execute("CREATE TABLE t(v)")
+    notes = folder / "x.db-SHM"
+    notes.write_text("the user's notes\n", encoding="utf-8")
+    if (folder / "x.db-shm").exists():  # the host volume folds case: emulate one that does not
+        same = os.path.samefile
+        monkeypatch.setattr(os.path, "samefile", lambda a, b: same(a, b) and all(
+            pathlib.Path(p).name in os.listdir(pathlib.Path(p).parent) for p in (a, b)))
+    assert store.is_wal_index(notes) is False
+    assert store.read_file_bytes(notes) == b"the user's notes\n"
+    files._copy_path(folder, tmp_path / "copy")
+    assert (tmp_path / "copy" / "x.db-SHM").read_text(encoding="utf-8") == "the user's notes\n"
+    assert sorted(task_custody._listed(folder)) == ["x.db", "x.db-SHM"]
+
+
+@pytest.mark.parametrize("database, folder", [("x", "x-shm"), ("current-shm", "current-shm-shm")])
+def test_a_directory_named_like_an_index_is_copied_and_captured_whole(tmp_path, database, folder):
+    """SQLite's index is a regular file: a directory under the index's name beside a closed database
+    (``x-shm/`` beside ``x``, ``current-shm-shm/`` beside ``current-shm``) is the user's, and the Files
+    folder copy and a capture keep it whole (the copy skipped its subtree and still answered ok)."""
+    from ouroboros import workspace_patch_capture as capture
+    from ouroboros.gateway import files
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    with contextlib.closing(sqlite3.connect(repo / database)) as conn:
+        conn.execute("CREATE TABLE t(v)")
+    (repo / folder).mkdir()
+    (repo / folder / "report.txt").write_text("the user's report\n", encoding="utf-8")
+    files._copy_path(repo, tmp_path / "copy")
+    assert sorted(path.name for path in (tmp_path / "copy").iterdir()) == sorted([".git", database, folder])
+    assert (tmp_path / "copy" / folder / "report.txt").read_text(encoding="utf-8") == "the user's report\n"
+    _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    assert manifest["status"] == "ready_with_changes", manifest["errors"]
+    assert f"{folder}/report.txt" in manifest["untracked_included"]
+    assert store.is_wal_index(repo / folder) is False
 
 
 def test_a_file_named_only_by_the_suffix_is_no_index(tmp_path):
@@ -333,6 +387,30 @@ def test_another_process_s_index_is_left_out_of_a_workspace_capture_that_keeps_t
     assert manifest["status"] == "ready_with_changes", manifest["errors"]
     assert "fix.py" in manifest["untracked_included"]
     reasons = {row["path"]: row["reason"] for row in manifest["untracked_excluded"]}
+    assert "WAL index" in reasons.get("app.db-shm", "")
+
+
+def test_a_tracked_index_is_left_out_of_a_workspace_capture_that_keeps_the_changes(tmp_path):
+    """``git add -A`` while a dev server ran commits its index too, and the server's next start writes a
+    new one over it: the capture leaves it out of the patch and of the tracked paths an integration
+    stages, says why, and keeps the change beside it (the index's bytes went into the patch, for an
+    apply to write over the target's live index)."""
+    from ouroboros import workspace_patch_capture as capture
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "fix.py").write_text("def fixed():\n    return 0\n", encoding="utf-8")
+    with _held_elsewhere(repo / "app.db", _HOLDER):
+        for args in (["init"], ["add", "-A"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                                               "commit", "-m", "base with the dev database"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "fix.py").write_text("def fixed():\n    return 1\n", encoding="utf-8")
+    with _held_elsewhere(repo / "app.db", _HOLDER):  # its clean close removed the index; this start makes one
+        _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    assert manifest["status"] == "ready_with_changes", manifest["errors"]
+    assert "fix.py" in manifest["tracked_changed"] and "app.db-shm" not in manifest["tracked_changed"]
+    assert "app.db-shm" not in manifest["diffstat"] and "fix.py" in manifest["diffstat"]
+    reasons = {row["path"]: row["reason"] for row in manifest["tracked_excluded"]}
     assert "WAL index" in reasons.get("app.db-shm", "")
 
 

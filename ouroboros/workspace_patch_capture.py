@@ -117,6 +117,11 @@ def write_workspace_patch_artifacts(
         root,
         errors,
     )
+    # A tracked WAL index (committed beside its database, or staged in a copy) is shared memory as an
+    # untracked one is: never diffed, and never named for an integration to stage over the target's own.
+    wal_indexes = {rel: reason for rel in changed_tracked if (reason := _wal_index_reason(root, rel))}
+    tracked_excluded.extend({"path": rel, "reason": reason} for rel, reason in wal_indexes.items())
+    changed_tracked = [rel for rel in changed_tracked if rel not in wal_indexes]
     diffstat = ""
     untracked = _git_path_list(["git", "ls-files", "-z", "--others", "--exclude-standard"], root, errors)
     # Copied inputs were deliberately never Git additions. Their exact baseline
@@ -223,8 +228,9 @@ def write_workspace_patch_artifacts(
         if not errors:
             tracked_lock_excludes = sorted(set(changed_tracked) & incidental_lock_excludes)
             tracked_pathspec = ["--"]
-            if tracked_lock_excludes or large_tracked or file_baseline:
-                tracked_pathspec += ["."] + [f":(exclude,literal){rel}" for rel in [*tracked_lock_excludes, *large_tracked, *file_baseline]]
+            if tracked_lock_excludes or large_tracked or file_baseline or wal_indexes:
+                tracked_pathspec += ["."] + [f":(exclude,literal){rel}" for rel in
+                                             [*tracked_lock_excludes, *large_tracked, *file_baseline, *wal_indexes]]
             for rel in tracked_lock_excludes:
                 tracked_excluded.append({"path": rel, "reason": "incidental lockfile without sibling manifest change"})
             diffstat = _git_stdout(

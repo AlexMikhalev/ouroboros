@@ -353,24 +353,30 @@ class WalIndexRefused(PermissionError):
 
 
 def is_wal_index(path: Any) -> bool:
-    """Whether PATH is a SQLite WAL index. SQLite names the index after its database's real path, so
-    the index sits beside the real database file, never beside a link to it: PATH's real name (a
-    symbolic link stands for the file it names) ends in ``-shm``, folded as a case-insensitive volume
-    folds it, and the file it extends, a sibling in that real directory, is no symbolic link and is a
-    SQLite database by its header, read only when it is no index itself (the same rule, on a strictly
-    shorter name, so the question always ends). Every WAL connection holds locks on the index (POSIX
-    record locks, which closing any descriptor of the file drops; Windows byte-range locks, which fail
-    a read across them), and its bytes are shared memory a copy rebuilds from the log: the store's raw
-    readers (``open_for_read`` and what reads through it, ``copy_file_bytes``) refuse it and the
-    copies and captures that apply this rule leave it out, whichever process holds the database and
-    whenever this one connects. The ``-wal`` log carries no lock and reads as any file does."""
-    path = pathlib.Path(path)
-    if os.path.islink(path):
-        path = pathlib.Path(os.path.realpath(path))
+    """Whether PATH is a SQLite WAL index: a regular file (nothing else ever is, and nothing is read
+    before that is known) whose real name (a link stands for the file it names) is its database's name
+    plus ``-shm``, folded as a case-insensitive volume folds it, where the database, a sibling in that
+    real directory, is no link and is SQLite by its header (read only when it is no index itself: the
+    same rule on a strictly shorter name, so the question always ends), and the volume resolves
+    ``<database>-shm`` to PATH's own file, so on a case-sensitive volume ``x.db-SHM`` stays the user's.
+    Every WAL connection holds locks on the index (POSIX record locks, which closing any descriptor of
+    the file drops; Windows byte-range locks, which fail a read across them), and its bytes are shared
+    memory a copy rebuilds from the log: the store's raw readers (``open_for_read`` and what reads
+    through it, ``copy_file_bytes``) refuse it, and the copies and captures that apply this rule leave
+    it out, tracked or not. The rule assumes this process's own databases never end in ``-shm`` (they
+    are ``current.sqlite``, ``usage.sqlite``, ``dialog.sqlite``, ``index.sqlite3``, ``index.sqlite`` and
+    temporaries ending in hex): beside a database ``x``, a database ``x-shm`` reads as ``x``'s index and
+    its own index ``x-shm-shm`` as a file, whose raw read drops only this process's locks, and this
+    process holds none on ``x-shm``. The ``-wal`` log carries no lock and reads as any file does."""
+    path = pathlib.Path(os.path.realpath(path) if os.path.islink(path) else path)
     if len(path.name) <= 4 or path.name[-4:].casefold() != "-shm":
         return False
     database = path.with_name(path.name[:-4])
-    return not os.path.islink(database) and is_sqlite_file(database)
+    try:
+        return (stat.S_ISREG(os.stat(path).st_mode) and not os.path.islink(database) and is_sqlite_file(database)
+                and os.path.samefile(path, database.with_name(database.name + "-shm")))
+    except OSError:
+        return False
 
 
 def refuse_wal_index(path: Any) -> None:

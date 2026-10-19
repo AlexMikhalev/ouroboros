@@ -718,6 +718,12 @@ def _provision_git_copy(
                                "--name-only", "-z", target_head, "--", env=real_env).stdout
             if removed:
                 _git_env(target, "update-index", "--force-remove", "-z", "--stdin", env=env, input_bytes=removed)
+        from ouroboros.store import is_wal_index  # a WAL index is shared memory: never staged, read or copied
+        tracked_indexes = [p for p in indexed if is_wal_index(target / p)]  # dropped as a staged removal is
+        if tracked_indexes:
+            _git_env(target, "update-index", "--force-remove", "-z", "--stdin", env=env,
+                     input_bytes="\0".join(tracked_indexes).encode("utf-8", errors="surrogateescape") + b"\0")
+        indexed = [p for p in indexed if p not in tracked_indexes]
         source_index_clean = bool(target_head and _git_env(
             target, "diff-index", "--cached", "--quiet", target_head, "--", env=real_env, check=False).returncode == 0)
         untracked_raw = _git_env(
@@ -725,7 +731,7 @@ def _provision_git_copy(
             env=real_env,
         ).stdout.decode("utf-8", errors="surrogateescape")
         untracked = [p for p in untracked_raw.split("\0") if p]
-        excluded: List[Dict[str, Any]] = []
+        excluded: List[Dict[str, Any]] = [{"path": p, "reason": "sqlite_wal_index"} for p in tracked_indexes]
         eligible: List[str] = []
         untracked_baseline: Dict[str, Dict[str, Any]] = {}
         file_inputs: List[str] = []
@@ -734,7 +740,6 @@ def _provision_git_copy(
         # empty files need their attribute verdict — never one per file (#1241).
         binary_verdicts = untracked_binary_verdicts(
             target, binary_verdict_candidates(target, untracked), warnings=capture_warnings)
-        from ouroboros.store import is_wal_index
         from ouroboros.workspace_file_outputs import _side
         for rel in untracked:
             candidate = target / rel
