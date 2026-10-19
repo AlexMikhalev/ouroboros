@@ -368,9 +368,7 @@ function createCapsule({
         if (state.open === open && !focus) return;
         if (open && !state.open) api.peer?.snapClosed();
         const flips = state.open !== open;
-        // Alone, the strip grows from its capsule and folds back into it (capsule_morph.js); beside the others its
-        // width moves (style.css), and a capsule the other one closes goes at once.
-        const morph = flips && el.dataset.snap !== 'true' ? beginMorph({ el, row, win }) : null;
+        const morph = flips && el.dataset.snap !== 'true' ? beginMorph({ el, row, win }) : null;  // alone, it grows in place
         const collapses = !open && state.open && el.dataset.fit === 'inline' && el.dataset.snap !== 'true';
         state.open = open;
         clearTimeout(settleTimer);
@@ -721,12 +719,11 @@ export function createEffortRangeControl({
         let start;
         if (handleEl) { which = handleEl.dataset.handle; start = state.shown[which]; }
         else ({ which, start } = pick(event));
-        const from = state.shown[which];
+        let at = state.shown[which];  // each level the finger reaches ticks once (haptics.js), a press on another too
+        const reach = () => { const now = snapRange(state.view)[which]; if (now !== at) { at = now; haptic('tick'); } };
         beginDrag(which);
         if (!handleEl) dragTo(which, start);
-        // Each level the finger reaches ticks once (haptics.js; a tap on another level is one).
-        let at = snapRange(state.view)[which];
-        if (at !== from) haptic('tick');
+        reach();
         const grab = valueAt(event, which) - state.view[which];
         handles[which].focus({ preventScroll: true, focusVisible: false });  // no keyboard ring after a mouse press
         try { strip.setPointerCapture(event.pointerId); } catch { /* a synthetic event */ }
@@ -734,8 +731,7 @@ export function createEffortRangeControl({
             if (ev.pointerId !== event.pointerId || !state.drag) return;
             state.drag.moved = true;  // a press that stays put is a tap: its marks still animate
             dragTo(which, valueAt(ev, which) - grab);
-            const now = snapRange(state.view)[which];
-            if (now !== at) { at = now; haptic('tick'); }
+            reach();
         };
         const release = (ev) => {
             if (ev.pointerId !== event.pointerId) return;

@@ -7,9 +7,12 @@
 // menu and returns to the row. A right-click on a link, a field or selected words keeps the browser's own menu,
 // so selected text stays copyable. On touch the row answers the press (owner 19.10, 4A): it sinks a little while the
 // finger holds, and when the menu opens it lifts over the dimmed feed, with a haptic (haptics.js), until the menu
-// closes.
+// closes; and a row that offers Reply can be swiped left to reply (chat_row_swipe.js), with the same Reply.
+import { REPLY_ICON } from './chat_reply.js';
+import { createRowSwipe } from './chat_row_swipe.js';
 import { haptic } from './haptics.js';
 import { tr } from './i18n.js';
+import { isStackLayout, onLayoutChange } from './layout.js';
 import { bindMenu } from './ui_interactions.js';
 import { ACTION_PAUSE, pauseTaskAction } from './task_control_menu.js';
 import { copyTextWithToast } from './ui_helpers.js';
@@ -45,6 +48,10 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         const row = node?.closest?.(ROW);
         return row && feed.contains(row) ? row : null;
     };
+
+    // What the row's Reply quotes, a work card's included (the menu's first item, and the swipe's).
+    const replyRef = (row) => (row.matches('.chat-live-card') ? replies.cardRef(cardOf(row.dataset.taskId || '') || null)
+        : replies.bubbleRef(row));
 
     function bubbleItems(row) {
         const items = [];
@@ -215,6 +222,10 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         ['pointermove', onPointerMove], ['pointerup', onPointerEnd], ['pointercancel', onPointerEnd], ['scroll', cancelPress]];
     for (const [type, handler] of listeners) feed.addEventListener(type, handler);
     doc.addEventListener('click', onClickCapture, true);
+    const win = doc.defaultView || globalThis.window;
+    const disposeSwipe = createRowSwipe({ feed, icon: REPLY_ICON, replyRef, reply: (ref) => replies.start(ref), win, doc,
+        isStack: () => isStackLayout(), isCoarse: () => Boolean(win?.matchMedia?.('(pointer: coarse)')?.matches),
+        onLayout: (sync) => onLayoutChange(() => sync(), { w: win }) });
 
     return {
         open,
@@ -223,6 +234,7 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
             close();
             for (const [row, timer] of releases) { clearTimeout(timer); delete row.dataset.rowPress; }
             releases.clear();
+            disposeSwipe();
             for (const [type, handler] of listeners) feed.removeEventListener(type, handler);
             doc.removeEventListener('click', onClickCapture, true);
         },
