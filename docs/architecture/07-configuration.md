@@ -210,7 +210,6 @@ One row per key (`settings_defaults.py`). Env-only rows have no settings.json ca
 | OUROBOROS_PRESENCE_MAX_ACTIVE | 2 | Cross-process Presence turn cap (UI-bounded 1-20) |
 | LOCAL_MODEL_CHAT_FORMAT | "" | Local-model chat template override |
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |
-| TELEGRAM_PRESENCE_BOT_TOKEN | "" | Optional second Presence Bot API token; must differ from the owner-only `TELEGRAM_BOT_TOKEN` under the Settings write lock and at second-bot request time (§12). |
 | GITHUB_REPO | "" | Personal `origin` repository |
 | OUROBOROS_FILE_BROWSER_DEFAULT | "" | File Browser default root (explicit root required for Docker/non-localhost) |
 
