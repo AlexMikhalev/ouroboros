@@ -153,6 +153,47 @@ def test_the_menu_button_says_what_waits_behind_it_in_both_places(nav_ui, tmp_pa
     assert facts['unread']['fill'] == facts['crimson'] and facts['owner']['fill'] == facts['amber'], facts
 
 
+def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
+    """Main's count (its own question to the owner is still open) never covers Main's mark: at three digits, with a
+    mouse and on touch (where no ⋯ column separates them), and it keeps its place when the mark goes."""
+    ui = nav_ui
+    facts = {'engine': ui['engine']}
+    for width, touch in ((1280, False), (390, True)):
+        page, sync = open_app(ui, width, 844, snapshot(main='thinking'), touch=touch)
+        try:
+            drawer = "() => window.__ouroLayers.top() === 'drawer'"
+            if touch:
+                page.locator('#page-chat [data-mobile-nav-toggle]').click()
+                page.wait_for_function(drawer)
+            page.locator('#primary-sidebar [data-nav-page="files"]').click()
+            page.locator('#page-files.active').wait_for()
+            # Away from Main its new messages count: a hundred and twenty read 99+.
+            page.evaluate("for (let i = 0; i < 120; i += 1) window.__ouroWs.emit('chat', {role: 'assistant',"
+                          " content: `reply ${i}`, chat_id: 1, ts: new Date().toISOString()})")
+            settle(page)
+            if touch:
+                page.locator('#page-files [data-mobile-nav-toggle]').click()
+                page.wait_for_function(drawer)
+                page.wait_for_timeout(300)
+            read = """() => { const row = document.querySelector('.nav-row-main'), badge = row.querySelector('.unread-badge');
+                const box = (el) => (({left, right, top, bottom}) => ({left, right, top, bottom}))(el.getBoundingClientRect());
+                const mark = row.querySelector('.status-mark');
+                return {text: badge.textContent, badge: box(badge), mark: mark.hidden ? null : box(mark)}; }"""
+            facts[width] = page.evaluate(read)
+            sync(snapshot())
+            settle(page)
+            facts[width]['rest'] = page.evaluate(read)
+        finally:
+            save_evidence(tmp_path, f'nav-main-count-{ui["engine"]}', facts)
+            page.close()
+    for width in (1280, 390):
+        seen, rest = facts[width], facts[width]['rest']
+        assert seen['text'] == '99+' and seen['mark'], facts
+        assert seen['badge']['right'] <= seen['mark']['left'] - 2, facts
+        assert rest['mark'] is None, facts
+        assert all(abs(rest['badge'][side] - seen['badge'][side]) <= 0.5 for side in seen['badge']), facts
+
+
 def test_mains_row_carries_its_rooms_mark_in_the_project_rows_column(nav_ui, tmp_path):
     ui = nav_ui
     facts = {'engine': ui['engine']}
@@ -165,11 +206,10 @@ def test_mains_row_carries_its_rooms_mark_in_the_project_rows_column(nav_ui, tmp
                 page.wait_for_timeout(300)
             main = page.locator('.nav-row-main')
             project = f'[data-project-id="{PROJECTS[2]["id"]}"]'
-            # The chosen row's ink fades in (the 120 ms colour motion): read the mark once it has settled; a mark that
-            # never takes the row's ink times out here.
+            # The chosen row's ink fades in (the 120 ms colour motion), and its mark inherits every step of it: read
+            # both once the row's own transition has finished.
             page.wait_for_function("() => { const row = document.querySelector('.nav-row-main');"
-                                   " const dot = row?.querySelector('.status-mark > i');"
-                                   " return dot && getComputedStyle(dot).backgroundColor === getComputedStyle(row).color; }")
+                                   " return row && row.getAnimations().length === 0; }")
             facts[width] = {'main': mark_of(page, '.nav-row-main'), 'project': mark_of(page, project),
                             'mainInk': main.evaluate('el => getComputedStyle(el).color'),
                             'words': page.locator('.nav-row-main .nav-row-words').text_content()}
