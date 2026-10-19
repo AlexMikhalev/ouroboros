@@ -584,11 +584,12 @@ def counted_pending(rows: List[Dict[str, Any]], *, pending: bool = False) -> boo
 
 
 def panel_not_reached(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Seats without an answer, with their observed cause; no invented delivery."""
+    """Terminal absences with an observed cause; seats still awaiting are not failures."""
     return [{"seat_id": str(row.get("seat_id") or row.get("slot_id") or ""),
              "cause": str(row.get("failure_code") or row.get("error") or row.get("reported_cause") or (row.get("intention") or {}).get("error")
                           or row.get("operation_state") or row.get("status") or "unknown")}
-            for row in rows if row.get("status") not in {*ANSWERED_STATUSES, "answered", "unparseable"}]
+            for row in rows if row.get("status") not in {*ANSWERED_STATUSES, "answered", "unparseable", "pending", "in_flight", "pending_dispatch"}
+            and not row.get("late_result_pending") and row.get("operation_state") not in {"in_flight", "pending_dispatch"}]
 
 
 def _answer(seat: Dict[str, Any], part: str) -> Dict[str, Any]:
@@ -1064,6 +1065,7 @@ def settle_pending_payload(prior: Dict[str, Any], fresh: Dict[str, Any]) -> Dict
         rows.append({**row, **{key: kept[key] for key in ROW_PROVENANCE_FIELDS if key in kept},
                      "source_refs": prompt_refs + response_refs})
     settled["rows"] = rows
+    settled["panel"] = {**settled.get("panel", {}), "not_reached": panel_not_reached(rows)}
     return settled
 
 

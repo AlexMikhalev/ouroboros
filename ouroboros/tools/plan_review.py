@@ -7,7 +7,7 @@
 * ASK: ``ask="council"`` or ``ask=[participant ids]`` is the ONLY paid act; it sends
   the current revision (the one this call wrote, or the latest) to exactly the named
   participants (``plan_ask``). Answers settle into the record and wake the mailbox;
-  a body plan's first ask includes every owner-marked reviewer.
+  under Blocking, a body plan's first ask includes every owner-marked reviewer.
 * READ: no arguments → the free state: the current revision, every participant's open
   objections (``not_adjudicated`` flagged), who last saw which revision, the latest
   contributions and the pending asks; pending seats whose producer finished while

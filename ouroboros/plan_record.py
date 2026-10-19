@@ -343,9 +343,9 @@ def pending_asks(record: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
 
 def asks_dispatched(record: Mapping[str, Any]) -> int:
-    """How many asks reached at least one reviewer (the force_plan fact)."""
+    """Asks that reached a participant counted by that ask (the force_plan fact)."""
     return sum(1 for ask in record.get("asks") or []
-               if any(p.get("dispatched") for p in ask.get("participants") or []))
+               if any(p.get("dispatched") and p.get("owner_marked") for p in ask.get("participants") or []))
 
 
 def engaged(record: Mapping[str, Any]) -> bool:
@@ -379,7 +379,7 @@ def gate_projection(record: Mapping[str, Any], *, enforcement: str, cyber_pro: b
     ``held`` ⟺ Blocking, not Cyber Pro, no owner hurry, and some open objection was
     raised by an owner-marked reviewer of the ask it answered — for any task. Silence,
     pending asks, refusals and mind-added critics never hold. A Swarm ``force_plan``
-    stays unmet until one ask reached at least one reviewer: under Blocking that holds
+    stays unmet until one ask reached at least one counted reviewer: under Blocking that holds
     the final answer while the mind never asked; an ask that no route could take (a
     recorded attempt) counts as attempted — disclosed, not held, outages never hold.
     Advisory, the owner's hurry and Cyber Pro disclose an unmet obligation once a plan
@@ -831,6 +831,27 @@ def update_participant(root: Any, task_id: str, *, ask_id: str, seat_id: str, fa
         raise PlanRecordInvalid(f"PLAN_RECORD_INVALID: no participant {seat_id!r} in ask {ask_id!r}")
 
     return _update_plan_record(root, task_id, _merge)
+
+
+def claim_ask_completion(root: Any, task_id: str, ask_id: str, custody: Mapping[str, str]) -> Optional[Dict[str, Any]]:
+    """Claim this ask's one completion frame under the record lock, using ask-time standing.
+
+    An adviser-only consultation still announces its own completion. A council with
+    counted participants announces when those finish, retaining every adviser's row.
+    """
+    claimed = False
+    def claim(record: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal claimed
+        claimed = False
+        ask = next((a for a in record.get("asks", []) if a.get("ask_id") == ask_id), {})
+        participants = ask.get("participants") or []
+        counted = [p for p in participants if p.get("owner_marked")] or participants
+        if counted and not ask.get("completion_announced") and not any(
+                p.get("status") == "pending" and not custody.get(str(p.get("seat_id") or "")) for p in counted):
+            ask["completion_announced"] = claimed = True
+        return record
+    record = _update_plan_record(root, task_id, claim)
+    return record if claimed else None
 
 
 def collection_pending(value: Any) -> bool:

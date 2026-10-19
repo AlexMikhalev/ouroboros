@@ -342,7 +342,7 @@ def plan_user_stable_len(user_content: str) -> int:
 
 def settled_frame(ask_id: str, participants: Sequence[Mapping[str, Any]], objections: Sequence[Mapping[str, Any]],
                   custody: Optional[Mapping[str, str]] = None) -> str:
-    """The mailbox frame when custody has nothing more to deliver for an ask: who answered,
+    """The mailbox frame when the counted council finishes: who answered,
     who could not be read, who failed — and a seat whose outcome is UNKNOWN (custody lost, or
     the dispatch lost after the hand-off) is named as unresolved (neither a failure nor a
     reply), never counted as settled; a new ask to it may pay twice. ``custody`` is the wave
@@ -360,7 +360,8 @@ def settled_frame(ask_id: str, participants: Sequence[Mapping[str, Any]], object
     waiting = [str(p.get("seat_id") or "?") for p in participants
                if p.get("status") == "pending" and not p.get("unresolved") and str(p.get("seat_id") or "?") not in held]
     own = [o for o in objections if o.get("ask_id") == ask_id]
-    head = (f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting and not held
+    head = (f"Plan ask {ask_id}: counted participants settled" if waiting and all(not recorded[sid].get("owner_marked") for sid in waiting)
+            else f"Plan ask {ask_id}: every participant settled" if not unresolved and not waiting and not held
             else f"Plan ask {ask_id}: custody has nothing more to deliver")
     return (f"{head} — {answered} answered" + (f", {unread} unreadable" if unread else "") + (f", {failed} failed" if failed else "")
             + (f", {len(unresolved)} unresolved ({', '.join(unresolved)}: outcome unknown — neither a failure nor a reply; nothing waits on it, "

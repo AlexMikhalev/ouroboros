@@ -354,7 +354,8 @@ def review_cost_facts(cost: Any, *, route: str = "", model: str = "") -> Dict[st
 def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, surface: str,
                          strictness: Optional[str] = None, snapshot: Any = None,
                          pool: Optional[Sequence[Any]] = None, reviewer_effort: str = "",
-                         coupling_only: Sequence[str] = (), chosen_by: str = "ouroboros") -> ComposedPanel:
+                         coupling_only: Sequence[str] = (), chosen_by: str = "ouroboros",
+                         reason_field: str = "reason") -> ComposedPanel:
     """Compose one frozen wave. Only Blocking body/skill/first-body-plan asks widen.
 
     Advisory narrowing requires a reason; an adviser neither satisfies the counted
@@ -367,7 +368,7 @@ def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, sur
     from ouroboros.settings_scales import effort_rank
 
     if not isinstance(reason, str) or not isinstance(reviewers, (list, tuple)) or any(not isinstance(name, str) for name in reviewers):
-        raise PanelCompositionError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of row ids or handles and reason must be a string. No review was dispatched ($0).")
+        raise PanelCompositionError(f"REVIEW_PANEL_ARGUMENT: reviewers must be a list of row ids or handles and {reason_field} must be a string. No review was dispatched ($0).")
     strictness = strictness or review_strictness()
     configured = list(pool) if pool is not None else review_pool_slots(snapshot)
     main_alone = len(configured) == 1 and configured[0].slot_id == "main" and not configured[0].subagent_id
@@ -392,12 +393,13 @@ def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, sur
     requested = {slot.slot_id for slot in named}
     counted = requested & by_id.keys()
     widens = strictness == "blocking" and surface in {"own_body", "skill", "plan_first"}
-    narrowed = bool(named) and counted != by_id.keys()
-    if strictness == "advisory" and narrowed and surface not in {"preflight", "plan"}:
+    narrowed = surface != "preflight" and bool(named) and counted != by_id.keys()
+    counted_hint = "name main (the empty pool's counted seat)" if main_alone else "name at least one reviewer from the review pool"
+    if strictness == "advisory" and narrowed and surface in {"own_body", "skill", "plan_first"}:
         if not counted:
-            raise PanelCompositionError("REVIEW_PANEL_EMPTY: name at least one reviewer from the review pool; advisers are heard, not counted. No review was dispatched ($0).")
+            raise PanelCompositionError(f"REVIEW_PANEL_EMPTY: {counted_hint}; advisers are heard, not counted. No review was dispatched ($0).")
         if not str(reason).strip():
-            raise PanelCompositionError("REVIEW_PANEL_REASON_REQUIRED: an Advisory panel with fewer than all ticked reviewers requires a reason. Supply reason or omit reviewers to ask the whole pool. No review was dispatched ($0).")
+            raise PanelCompositionError(f"REVIEW_PANEL_REASON_REQUIRED: an Advisory panel with fewer than all ticked reviewers requires a reason. Supply {reason_field} or omit reviewers to ask the whole pool. No review was dispatched ($0).")
     selected = ordered if not named or widens else [slot for slot in named if slot.slot_id in by_id]
     seats = [PoolSeat(slot, tuple(seat_parts(slot))) for slot in selected]
     seats.extend(PoolSeat(slot, tuple(seat_parts(slot)), surface != "preflight")
@@ -410,7 +412,7 @@ def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, sur
         else:
             seats.append(PoolSeat(slot, tuple(seat_parts(slot, coupling_only=True)), True))
     if not any(not seat.additional for seat in seats) and surface not in {"plan", "plan_first"}:
-        raise PanelCompositionError("REVIEW_PANEL_EMPTY: name at least one reviewer from the review pool; an added critic never satisfies quorum. No review was dispatched ($0).")
+        raise PanelCompositionError(f"REVIEW_PANEL_EMPTY: {counted_hint}; an added critic never satisfies quorum. No review was dispatched ($0).")
     if len(seats) > MAX_CONFIGURED_SUBAGENTS:
         raise PanelCompositionError(f"REVIEW_PANEL_TOO_LARGE: a wave seats at most {MAX_CONFIGURED_SUBAGENTS} reviewers (this call asks {len(seats)}).")
     applied = [seat.slot.slot_id for seat in seats if reviewer_effort and seat.slot.declared_effort]
@@ -432,6 +434,9 @@ def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, sur
                             "weaker_than_configured": [seat.slot.slot_id for seat in seats if seat.slot.slot_id in applied
                                 and effort_rank(seat.slot.effort) < effort_rank(own[seat.slot.slot_id])]},
     }
+    if surface == "preflight":
+        for key in ("pool", "strictness", "pool_empty", "main_self_review", "reason_missing"):
+            facts.pop(key, None)
     return ComposedPanel(tuple(seats), True, facts)
 
 

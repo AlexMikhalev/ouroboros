@@ -1405,7 +1405,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
 
     critical_fails, advisory_warns, errored_models, _triad_raw = _collect_review_findings(
         ctx, model_results, prepared.get("row_plan"))
-    models_total = len(model_results)
+    models_total = sum(not row.get("additional") for row in _triad_raw)
     triad_raw = getattr(ctx, "_last_triad_raw_results", []) or []
     # Every delivery records which rules were actually inlined for that row.
     _governance_manifest = list(prepared.get("governance_manifest") or [])

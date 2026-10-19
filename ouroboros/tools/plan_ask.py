@@ -701,7 +701,7 @@ def _keep_late_reply_in_view(state_root: pathlib.Path, task_id: str, ask: Mappin
 def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: Any, settled_wave: Dict[str, str],
                           roster_size: int = 0, slot: Any = None, settled_actors: Optional[Mapping[str, Any]] = None) -> None:
     """The custody hook for a plan seat released at the dispatch barrier: settle it into
-    the record, and when the whole ask has settled wake the task mailbox. The hook that
+    the record, and when its counted participants finish wake the task mailbox once. The hook that
     composes the frame first absorbs, from custody's own copies (``settled_actors``), every
     seat whose record write has not landed — a sibling's hook still running, or a write lost
     to a store failure — at $0, never a send; what it still cannot record the frame names as
@@ -736,8 +736,6 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
             record_reviewer_slot_executions("plan_review", [actor], {seat_id: slot}, keep_on=usage_ctx)
         except Exception:
             log.debug("plan ask %s: last-execution row for %s not recorded", ask_id, seat_id, exc_info=True)
-    if not settled_wave:
-        return
     participants: List[Mapping[str, Any]] = []
     objections: List[Mapping[str, Any]] = []
     try:
@@ -755,16 +753,21 @@ def settle_released_reply(usage_ctx: Any, *, request: Any, task_id: str, actor: 
                     record = settled
             except Exception:
                 log.warning("plan ask %s: custody's copy of %s could not be recorded", ask_id, sid, exc_info=True)
-        ask, _ = _ask_and_participant(record, ask_id, "")
+        completed = plan_record.claim_ask_completion(state_root, task_id, ask_id, settled_wave)
+        if completed is None:
+            return
+        ask, _ = _ask_and_participant(completed, ask_id, "")
         participants = (ask or {}).get("participants") or []
-        objections = plan_record.open_objections(record)
+        objections = plan_record.open_objections(completed)
     except Exception:
         log.warning("plan ask %s: the record could not be read for the settled frame", ask_id, exc_info=True)
+        if not settled_wave or not all(settled_wave.values()):
+            return  # without the recorded standing, only physical completion is known
     from ouroboros.owner_mailbox import write_task_message
 
     try:
         write_task_message(pathlib.Path(str(usage_ctx.drive_root)), plan_packet.settled_frame(ask_id, participants, objections, custody=settled_wave),
-                           task_id, source_task_id=task_id, provenance="system")
+                           task_id, source_task_id=task_id, provenance="system", msg_id=f"plan-complete:{task_id}:{ask_id}")
     except Exception:
         log.warning("plan ask %s settled-wave frame failed for %s", ask_id, task_id, exc_info=True)
 
