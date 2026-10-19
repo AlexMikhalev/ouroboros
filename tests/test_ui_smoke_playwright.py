@@ -168,7 +168,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
                 assert add.is_visible()
                 assert add.get_attribute("aria-label") == "New project"
                 assert page.locator("#nav-projects-count").inner_text() == "1"
-                assert row.locator(".nav-unread-dot").count() == 1
+                assert row.get_attribute("data-unread") == ""
 
                 row.click()
                 page.wait_for_selector('#project-panel:not([hidden])', timeout=30_000)
