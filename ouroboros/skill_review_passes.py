@@ -742,7 +742,10 @@ def run_skill_review_passes(
             from ouroboros.skill_review_output import skill_result_panel
             text = run_review(ctx, content=content, prompt=prompt, models=seat_models,
                               stable_prefix_len=stable_prefix_len, **delivery)
-            result = json.loads(text)
+            try:
+                result = json.loads(text)
+            except (TypeError, ValueError):
+                return text  # the caller reports a non-JSON answer as such
             return json.dumps(skill_result_panel(result, delivery.get("row_plan") or {})) if isinstance(result, dict) else text
         if wave is None:
             return deliver()

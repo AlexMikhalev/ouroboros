@@ -515,14 +515,16 @@ def review_skill(ctx: Any, skill_name: str, *, persist: bool = True, review_rebu
                  _resolved_binding: ResolvedResourceBinding | None = None,
                  reviewers: Optional[List[str]] = None, reason: str = "") -> SkillReviewOutcome:
     """Admit one skill panel before preflight or review spend; preserve the job's snapshot."""
-    from ouroboros.reviewer_slot_config import compose_review_panel, composed_review_pool
+    from ouroboros.reviewer_slot_config import PanelCompositionError, compose_review_panel, composed_review_pool
 
     prior = getattr(ctx, "_skill_review_panel", None)
     try:
         panel = None if prior is not None else compose_review_panel(reviewers or (), reason, surface="skill")
-    except ValueError as exc:
+    except PanelCompositionError as exc:
         return SkillReviewOutcome(skill_name=skill_name, status=STATUS_PENDING, error=str(exc),
                                   dispatch_refusal_code="TOOL_ARG_ERROR")
+    except ValueError:
+        panel = None  # an invalid pool reaches the review's own typed configuration refusal
     import contextlib
     with composed_review_pool(panel.seats) if panel is not None else contextlib.nullcontext():
         if panel is not None:

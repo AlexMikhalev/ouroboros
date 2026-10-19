@@ -245,7 +245,7 @@ class TestRunSystemReview:
         assert record["surface"] == "system" and record["subject"]["kind"] == "system"
         [seat] = record["rows"]
         assert (seat["seat_id"], seat["parts"], seat["parts_answered"]) == ("api-scout", ["report"], ["report"])
-        assert record["panel"]["chosen_by"] == "author" and record["panel"]["reviewers_requested"] == ["api-scout"]
+        assert record["panel"]["chosen_by"] == "ouroboros" and record["panel"]["reviewers_requested"] == ["api-scout"]
         assert record["verdict"]["report"] == {"delivered": True, "chars": len("REPORT BODY")}
         assert record["verdict"]["aggregate"] != "PASS"
         assert (system_ctx.drive_root / "memory" / "deep_review.md").read_text(encoding="utf-8") == "REPORT BODY"
