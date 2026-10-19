@@ -288,8 +288,8 @@ def direct_server_with_data(tmp_path):
             # Single-task cases and deterministic replay need only one worker;
             # extra workers churn processes and make shared-host history flaky.
             OUROBOROS_MAX_WORKERS=1, OUROBOROS_RUNTIME_MODE="light",
-            # Only the bundled telegram: no hub clone at boot (#1995).
-            OUROBOROS_STARTER_SKILLS='["builtin/telegram"]',
+            # The bundled telegram only, installed off: no hub clone at boot (#1995).
+            OUROBOROS_STARTER_SKILLS='["builtin/telegram"]', OUROBOROS_STARTER_SKILLS_TURN_ON=False,
         )
         (data_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
         env = isolated_environment(tmp_path, checkout)
