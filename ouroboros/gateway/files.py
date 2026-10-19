@@ -312,7 +312,7 @@ def _copy_path(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
         return
     if source.is_dir():
-        # A held store's WAL index stays behind: its first open rebuilds the copy's from the copied log.
+        # A WAL index stays behind: the copy's first open rebuilds its own from the copied log.
         shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes,
                         ignore=lambda folder, names: [name for name in names
                                                       if store.is_wal_index(pathlib.Path(folder) / name)])
@@ -417,6 +417,7 @@ async def api_files_read(request: Request) -> JSONResponse:
             return JSONResponse({"error": f"Not a file: {rel_path}"}, status_code=400)
         if _is_owner_only_file(target):
             return json_error("Owner-only state is not readable from Files.", status=403)
+        store.refuse_wal_index(target)  # 403 below, before any reader opens it
 
         size = int(target.stat().st_size)
         rel = _relative_path(root_dir, target)
@@ -456,6 +457,8 @@ async def api_files_read(request: Request) -> JSONResponse:
         ))
     except ValueError as exc:
         return json_error(str(exc), status=400)
+    except store.WalIndexRefused as exc:
+        return json_error(str(exc), status=403)
     except Exception as exc:
         return json_error(str(exc), status=500)
 

@@ -137,7 +137,7 @@ def write_workspace_patch_artifacts(
         if sensitive_reason:
             sensitive.append({"path": rel, "reason": sensitive_reason})
             continue
-        reason = _patch_exclude_reason(rel)
+        reason = _patch_exclude_reason(rel) or _wal_index_reason(root, rel)
         if reason:
             excluded.append({"path": rel, "reason": reason})
             continue
@@ -680,6 +680,15 @@ def pem_capture_refusal(root: pathlib.Path, rel: str, *, warnings=None) -> str:
     return reason
 
 
+def _wal_index_reason(root: pathlib.Path, rel: str) -> str:
+    """A SQLite WAL index never enters a capture: no raw reader opens it (``store.is_wal_index``:
+    its bytes are shared memory under the holders' locks), and a copy of its database rebuilds its
+    own from the log at the first open. It is excluded before any read, the PEM head included."""
+    from ouroboros.store import is_wal_index
+
+    return "SQLite WAL index (shared memory a database copy rebuilds from its log)" if is_wal_index(root / rel) else ""
+
+
 def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None,
                                    warnings=None, binary_verdicts: Optional[Dict[str, bool]] = None) -> str:
     """Reason to drop an untracked file from the workspace patch when it is a
@@ -734,7 +743,8 @@ def binary_verdict_candidates(root: pathlib.Path, rels: Sequence[str]) -> List[s
     unrestricted = mode_has_unrestricted_agency(get_runtime_mode())
     out: List[str] = []
     for rel in rels:
-        if not rel or _sensitive_untracked_reason(rel) or _patch_exclude_reason(rel):
+        if (not rel or _sensitive_untracked_reason(rel) or _patch_exclude_reason(rel)
+                or _wal_index_reason(root, rel)):
             continue
         try:
             info = os.lstat(root / rel)
@@ -843,7 +853,7 @@ def untracked_capture_veto_reason(root: pathlib.Path, rel: str, *, file_outputs:
     reason = _sensitive_untracked_reason(rel)
     if reason:
         return reason
-    reason = _patch_exclude_reason(rel)
+    reason = _patch_exclude_reason(rel) or _wal_index_reason(root, rel)
     if reason:
         return reason
     return _untracked_blob_exclude_reason(root, rel, file_outputs=file_outputs, warnings=warnings,

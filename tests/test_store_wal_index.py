@@ -1,20 +1,23 @@
-"""The WAL index (``-shm``) of a store this process holds is never opened by a raw read in it.
+"""A SQLite WAL index (``-shm``) is never opened by a raw reader in this process.
 
-Under WAL every open connection holds POSIX record locks on the index (its read marks and the
-dead-man switch). Closing ANY descriptor of a file drops every lock the process holds on it
-(sqlite.org/howtocorrupt.html §2.2): after a raw open and close of the index, another process takes
-the TRUNCATE checkpoint those locks forbid and resets the log under a live read transaction, which
-then reads that process's later commit (reproduced on macOS with SQLite 3.53.1). The Files panel,
-the read tools, artifact capture and copies refuse such an index before opening it (and copy a
-store's database through its borrowed descriptor, never a clone that opens it). Only this process's
-locks are at stake: the index of a database no connection here holds (another process's, one left
-behind) reads as a file, as the ``-wal`` log and any file merely named like a sidecar do. Windows
-locks belong to their handle, so nothing is refused there.
+Under WAL every open connection holds locks on the index. POSIX record locks (its read marks and
+the dead-man switch) drop when ANY descriptor of the file closes (sqlite.org/howtocorrupt.html
+§2.2): after a raw open and close of the index, another process takes the TRUNCATE checkpoint those
+locks forbid and resets the log under a live read transaction, which then reads that process's
+later commit (reproduced on macOS with SQLite 3.53.1). Windows byte-range locks fail a read across
+them. So the rule is the name, on every OS: a file whose real name is a SQLite database's name plus
+``-shm`` is an index, whichever process holds the database and whenever this one connects (who holds
+it when a read starts says nothing about when the read's descriptor closes). The Files panel answers
+403, the read tools and single-file copies refuse it, folder copies and captures leave it out as an
+excluded member, and a store's database is read through its borrowed descriptor, never a clone that
+opens it. The ``-wal`` log carries no lock and reads as any file does, as does a file merely named
+like a sidecar.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
-import os
+import json
 import sqlite3
 import subprocess
 import sys
@@ -25,7 +28,6 @@ from ouroboros import store
 from tests._store_journal_shared import use_journal
 
 pytestmark = pytest.mark.serial  # another interpreter probes the store's locks
-posix_locks = pytest.mark.skipif(os.name == "nt", reason="Windows locks belong to their handle: nothing is refused")
 
 _RESET = ("import sqlite3, sys\n"
           "conn = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=0)\n"
@@ -76,7 +78,6 @@ def _read(kind, root, target):
     return stream_artifact_file(target)
 
 
-@posix_locks
 @pytest.mark.parametrize("kind", _KINDS)
 def test_a_reader_refuses_the_index_and_the_read_transaction_keeps_its_locks(tmp_path, monkeypatch, kind):
     use_journal(monkeypatch, "WAL")
@@ -92,6 +93,24 @@ def test_a_reader_refuses_the_index_and_the_read_transaction_keeps_its_locks(tmp
                 _read(kind, tmp_path, index)
         assert _reset_refused(database), "a descriptor of the index was opened and closed"
     assert not (tmp_path / "copied").exists()
+
+
+def test_the_files_panel_answers_403_for_the_index_and_keeps_the_locks(tmp_path, monkeypatch):
+    """The preview, the download and the content view each refuse the index before opening it."""
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from ouroboros.gateway import files
+
+    use_journal(monkeypatch, "WAL")
+    database = _live_store(tmp_path)
+    monkeypatch.setenv("OUROBOROS_FILE_BROWSER_DEFAULT", str(tmp_path))
+    index = database.relative_to(tmp_path).as_posix() + "-shm"
+    with store.open_store(tmp_path, write=False), TestClient(Starlette(routes=files.file_browser_routes())) as client:
+        for endpoint in ("read", "download", "content"):
+            response = client.get(f"/api/files/{endpoint}", params={"path": index})
+            assert response.status_code == 403 and "WAL index" in response.json()["error"], endpoint
+        assert _reset_refused(database)
 
 
 @pytest.mark.parametrize("kind", _KINDS)
@@ -123,7 +142,6 @@ def test_the_log_and_ordinary_files_still_read_and_keep_the_locks(tmp_path, monk
         assert result == "plain text\n"
 
 
-@posix_locks
 def test_the_header_probe_answers_without_opening_the_index(tmp_path, monkeypatch):
     """``is_sqlite_file`` reads a header to answer, so asked about the index it must not look."""
     use_journal(monkeypatch, "WAL")
@@ -149,27 +167,62 @@ def test_the_tests_tree_snapshot_passes_the_index_by_name(tmp_path, monkeypatch)
     assert "state/current.sqlite" in snapshot and "state/current.sqlite-shm" not in snapshot
 
 
-@posix_locks
-def test_the_held_index_is_refused_by_any_name_that_reaches_it(tmp_path, monkeypatch):
-    """A symbolic link to the index, and on a case-insensitive volume its upper-case name, open the
-    same file: each is refused as the index is, and the read transaction keeps its lock."""
+def test_the_index_is_refused_by_any_name_that_reaches_it(tmp_path, monkeypatch):
+    """A symbolic link to the index, and on a case-insensitive volume any spelling the volume folds
+    onto it (``-SHM``, ``-ſhm``), open the same file: each is refused as the index is, and the read
+    transaction keeps its lock. By name alone every such spelling is an index on any volume."""
     from ouroboros.gateway import files
 
     use_journal(monkeypatch, "WAL")
     database = _live_store(tmp_path)
     index = database.with_name(database.name + "-shm")
+    spellings = [database.with_name(database.name + suffix) for suffix in ("-SHM", "-\u017fhm")]
+    assert all(store.is_wal_index(name) for name in spellings)
+    names = [name for name in spellings if name.exists()]  # a case-insensitive volume: the same file
     link = tmp_path / "linked-index"
-    link.symlink_to(index)
-    names = [link] + ([index.with_name(database.name + "-SHM")]
-                      if index.with_name(database.name + "-SHM").exists() else [])  # a case-insensitive volume
+    with contextlib.suppress(OSError):  # Windows without the symbolic-link privilege
+        link.symlink_to(index)
+        names.append(link)
     with store.open_store(tmp_path, write=False):
         for name in names:
-            assert store.is_wal_index(name)
+            assert store.is_wal_index(name), name
             with pytest.raises(store.WalIndexRefused):
                 files._read_prefix(name, 4096)
         assert _reset_refused(database)
 
 
+def test_a_file_named_only_by_the_suffix_is_no_index(tmp_path):
+    """A file named just ``-shm`` names no database beside it: it is no index, and every reader and
+    copy takes it as the file it is (its empty base name raised ValueError out of these probes)."""
+    from ouroboros.gateway import files
+
+    folder = tmp_path / "odd"
+    folder.mkdir()
+    (folder / "-shm").write_bytes(b"\0" * 64)
+    assert store.is_wal_index(folder / "-shm") is False and store.is_sqlite_file(folder / "-shm") is False
+    assert store.read_file_bytes(folder / "-shm") == b"\0" * 64
+    files._copy_path(folder, tmp_path / "odd-copy")
+    assert (tmp_path / "odd-copy" / "-shm").read_bytes() == b"\0" * 64
+
+
+_UPDATER = ("import sqlite3, sys\n"
+            "conn = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+            "conn.execute('PRAGMA journal_mode=WAL')\n"
+            "conn.execute('PRAGMA wal_autocheckpoint=0')\n"
+            "conn.execute('CREATE TABLE IF NOT EXISTS t(v)')\n"
+            "conn.execute('BEGIN')\n"
+            "conn.executemany('INSERT INTO t VALUES (?)', [('x' * 3000,)] * 300)\n"
+            "conn.execute('COMMIT')\n"
+            "print('ready', flush=True)\n"
+            "for line in sys.stdin:\n"
+            "    conn.execute(\"UPDATE t SET v = 'y' || substr(v, 2) WHERE rowid % 2 = 0\")\n"
+            "    print('updated', flush=True)\n")
+_KEEPER = ("import sqlite3, sys\n"
+           "conn = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+           "conn.execute('PRAGMA user_version').fetchone()\n"
+           "print('ready', flush=True)\n"
+           "for line in sys.stdin:\n"
+           "    print('updated', flush=True)\n")
 _HOLDER = ("import sqlite3, sys\n"
            "conn = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
            "conn.execute('PRAGMA journal_mode=WAL')\n"
@@ -179,10 +232,90 @@ _HOLDER = ("import sqlite3, sys\n"
            "sys.stdin.read()\n")  # holds the database open until the test closes its input
 
 
-def test_another_process_s_index_reads_as_a_file_and_a_workspace_capture_keeps_the_changes(tmp_path):
+@contextlib.contextmanager
+def _held_elsewhere(database, script):
+    """Another process holding DATABASE open (SCRIPT), until the block ends; the block's ``update()``
+    asks it for one commit, where its script makes one."""
+    holder = subprocess.Popen([sys.executable, "-I", "-c", script, str(database)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+    def update():
+        holder.stdin.write("update\n")
+        holder.stdin.flush()
+        assert holder.stdout.readline().strip() == "updated"
+
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        yield update
+    finally:
+        holder.stdin.close()
+        try:
+            holder.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            holder.wait()
+
+
+def test_an_index_read_opened_before_this_process_connects_leaves_the_connection_its_locks(tmp_path):
+    """Who holds the database when a read of its index starts says nothing about when the read's
+    descriptor closes: a connection this process makes meanwhile holds the index's locks by then, and
+    the close would drop them (astra's and Opus's probe). By name, the read never opens."""
+    database = tmp_path / "current.sqlite"
+    with _held_elsewhere(database, _UPDATER) as update:
+        try:
+            reader = store.open_for_read(database.with_name(database.name + "-shm"))  # before any connection here
+        except store.WalIndexRefused:
+            reader = None
+        conn = store.connect(database, store.TIER_ENFORCED, journal_mode="WAL")
+        try:
+            conn.execute("PRAGMA cache_size = 2")  # the second count reads the pages again
+            conn.execute("BEGIN")
+            seen = conn.execute("SELECT count(*) FROM t WHERE substr(v, 1, 1) = 'x'").fetchone()[0]
+            if reader is not None:
+                reader.read(4096)
+                reader.close()
+            refused = _reset_refused(database)
+            update()
+            again = conn.execute("SELECT count(*) FROM t WHERE substr(v, 1, 1) = 'x'").fetchone()[0]
+            conn.execute("ROLLBACK")
+        finally:
+            conn.close()
+    assert refused, "closing the index read dropped the connection's locks"
+    assert again == seen == 300 and reader is None
+
+
+def test_a_download_built_before_this_process_connects_leaves_the_connection_its_locks(tmp_path, monkeypatch):
+    """A download is decided when its response is built, but a file response opens and closes its file
+    while it sends the body, after this process may have connected (a history page reading a child's
+    store meanwhile): by name the index is refused at once, and the read transaction keeps its locks."""
+    from ouroboros.gateway import files
+
+    async def send(response):
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def sink(_message):
+            return None
+
+        await response({"type": "http", "method": "GET", "headers": []}, receive, sink)
+
+    use_journal(monkeypatch, "WAL")
+    database = _live_store(tmp_path)
+    index = database.with_name(database.name + "-shm")
+    with _held_elsewhere(database, _KEEPER):  # a child's own process keeps its store open
+        store.close_connections()  # this process holds it no more (an evicted lease)
+        response = files._file_response(index, filename=index.name)
+        with store.open_store(tmp_path, write=False):
+            assert _reset_refused(database)
+            asyncio.run(send(response))
+            assert _reset_refused(database), "sending the download dropped the read transaction's locks"
+    assert response.status_code == 403
+
+
+def test_another_process_s_index_is_left_out_of_a_workspace_capture_that_keeps_the_changes(tmp_path):
     """A delegated child's worktree may hold another process's live WAL database (a dev server, a
-    killed test run): no connection of this process holds it, so its index is an ordinary untracked
-    file there, and the workspace capture keeps the child's source change."""
+    killed test run): its index is left out as an excluded member before anything reads it, and the
+    capture keeps the child's source change (failing the capture lost it)."""
     from ouroboros import workspace_patch_capture as capture
 
     repo = tmp_path / "repo"
@@ -191,24 +324,28 @@ def test_another_process_s_index_reads_as_a_file_and_a_workspace_capture_keeps_t
                             "commit", "--allow-empty", "-m", "base"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     (repo / "fix.py").write_text("def fixed():\n    return 1\n", encoding="utf-8")
-    holder = subprocess.Popen([sys.executable, "-I", "-c", _HOLDER, str(repo / "app.db")],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    try:
-        assert holder.stdout.readline().strip() == "ready" and (repo / "app.db-shm").exists()
+    with _held_elsewhere(repo / "app.db", _HOLDER):
+        assert (repo / "app.db-shm").exists() and store.is_wal_index(repo / "app.db-shm")
         _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
-        unheld = not store.is_wal_index(repo / "app.db-shm") and store.is_sqlite_file(repo / "app.db")
-    finally:
-        holder.stdin.close()
-        try:
-            holder.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            holder.kill()
-            holder.wait()
     assert manifest["status"] == "ready_with_changes", manifest["errors"]
-    assert "fix.py" in manifest["untracked_included"] and unheld
+    assert "fix.py" in manifest["untracked_included"]
+    reasons = {row["path"]: row["reason"] for row in manifest["untracked_excluded"]}
+    assert "WAL index" in reasons.get("app.db-shm", "")
 
 
-@posix_locks
+def test_a_directory_artifact_leaves_the_index_out_as_an_excluded_member(tmp_path, monkeypatch):
+    from ouroboros.artifacts import copy_directory_to_task_artifacts
+
+    use_journal(monkeypatch, "WAL")
+    database = _live_store(tmp_path)
+    with store.open_store(tmp_path, write=False):
+        records = copy_directory_to_task_artifacts(None, database.parent, artifact_dir=tmp_path / "artifacts")
+        assert _reset_refused(database)
+    ledger = json.loads(open(records[0]["path"], encoding="utf-8").read())
+    assert {"current.sqlite", "current.sqlite-wal"} <= {row["path"] for row in ledger["files"]}
+    assert ledger["excluded"] == [{"path": "current.sqlite-shm", "reason": "SQLite WAL index"}]
+
+
 def test_a_folder_copy_leaves_the_index_behind_and_the_copy_opens_whole(tmp_path, monkeypatch):
     from ouroboros.gateway import files
 
