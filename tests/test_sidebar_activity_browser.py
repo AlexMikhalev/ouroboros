@@ -414,8 +414,10 @@ RAIL = """() => {
 # Where each drawn shape's dots start in the 18px column: three 4px dots and two 3px gaps fill it, two 2px bars
 # and one 7px dot or ring sit in its middle.
 OFFSETS = {'moving': [0, 7, 14], 'still': [0, 7, 14], 'pause': [5.5, 10.5], 'ring': [5.5], 'dot': [5.5]}
-# The quieter steps of the ink: still work 40 %, a pause 70 %; with new messages the crimson needs more.
-OPACITY = {('still', 'ink'): '0.4', ('still', 'unread'): '0.6', ('pause', 'ink'): '0.7'}
+# The quieter steps of the ink: still work 40 %, an unconfirmed ring 55 %, a pause 70 %; with new messages the
+# crimson needs more.
+OPACITY = {('still', 'ink'): '0.4', ('still', 'unread'): '0.6', ('ring', 'ink'): '0.55', ('ring', 'unread'): '0.6',
+           ('pause', 'ink'): '0.7'}
 
 
 def rail_rows(page):
