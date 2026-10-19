@@ -198,7 +198,7 @@ def test_a_folder_about_to_move_releases_every_threads_handles_inside_it_and_kee
     """Windows moves no folder while a file below it is open: every thread's idle handles on
     stores inside the folder close, an active lease inside it refuses, and a store outside it
     keeps its handle. A linked spelling of the folder names the same files."""
-    drive, other = tmp_path / "drive", tmp_path / "other"
+    drive, other = tmp_path / "drive", tmp_path / "drive2"  # a sibling sharing the name's prefix
     publish(drive)
     publish(other)
     leased = drive

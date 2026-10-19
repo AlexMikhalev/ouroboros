@@ -499,7 +499,6 @@ def test_probe_reads_a_hub_a_plain_repo_and_a_folder(drive, hub, tmp_path):
     assert not list((drive / "state" / "skill_sources" / ".scratch").iterdir())
 
 
-
 def test_a_probe_leaves_no_clone_where_read_only_files_refuse_deletion(drive, hub, monkeypatch):
     """Windows refuses to delete a read-only file, and a clone's git objects are read-only: the
     probe's scratch clone still goes instead of staying in the scratch folder forever."""
@@ -514,6 +513,7 @@ def test_a_probe_leaves_no_clone_where_read_only_files_refuse_deletion(drive, hu
     monkeypatch.setattr(os, "remove", windows_unlink)
     assert catalog.probe_source(drive, url=str(hub.bare))["kind"] == "hub"
     assert not list((drive / "state" / "skill_sources" / ".scratch").iterdir())
+
 
 def test_a_failed_landing_restores_the_installed_release(drive, hub, monkeypatch):
     rows = hub.rows()

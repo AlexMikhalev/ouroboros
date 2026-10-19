@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 from hashlib import sha256
 from pathlib import Path
@@ -652,7 +653,7 @@ def test_the_move_releases_the_store_handles_the_pass_itself_opened_inside_the_d
     def hold():
         with store.open_store(drive, write=False):
             leased.set()
-            release.wait(10)
+            release.wait()  # the finally below releases it; join bounds the test
 
     worker = threading.Thread(target=hold)
     worker.start()
@@ -669,6 +670,24 @@ def test_the_move_releases_the_store_handles_the_pass_itself_opened_inside_the_d
     assert not worker.is_alive()
     assert _settle(data, drive)["status"] == "removed" and not drive.exists()
 
+
+
+def test_the_worker_that_ran_the_task_releases_its_own_handles_on_the_drive(tmp_path, caplog):
+    """The settlement can close only the server's cached handles: the pool worker that ran the
+    task read the drive's store in its own process and releases those once the task ends. A
+    lease still active there is logged and left to the settlement's next pass."""
+    from ouroboros import store
+    from supervisor.worker_process import _release_drive_stores
+
+    data, drive, _record = _cancelled_with_capture(tmp_path)
+    with store.open_store(drive, write=False) as txn:
+        held = txn.conn
+    with store.open_store(drive, write=False):
+        _release_drive_stores(drive)  # active here: refused, logged, nothing closed
+    assert "still in use" in caplog.text and held.execute("SELECT 1").fetchone()[0] == 1
+    _release_drive_stores(drive)
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        held.execute("SELECT 1")
 
 def test_a_copy_back_between_preparation_and_publication_is_seen_by_the_revision(tmp_path, monkeypatch):
     """F3: a publisher that changed the row's custody fields after the plan was prepared

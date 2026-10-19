@@ -540,9 +540,25 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                         log.exception("Terminal file preparation failed for %s", task.get("id"))
                     e2["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
                 task_queue.put(stamp_finalization_enqueue(e2))
+            if task_drive_root != str(drive_root):
+                _release_drive_stores(task_drive_root)
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
             return
+
+
+def _release_drive_stores(drive: Any) -> None:
+    """A task's own drive is the server's to settle and move once the task ends. This process
+    read its stores through the per-thread cache, and Windows moves no folder with an open
+    file below it, so the worker releases them; the server can only close its own."""
+    from ouroboros.store import StoreBusy, close_connections_under
+
+    try:
+        close_connections_under(pathlib.Path(drive))
+    except StoreBusy:
+        log.warning("A store under %s is still in use after its task; the settlement retries", drive)
+    except Exception:
+        log.warning("Could not release the store handles under %s", drive, exc_info=True)
 
 
 def _record_task_exception(runner: Any, task: dict, exc: Exception, pool_drive_root: Any) -> None:
