@@ -389,7 +389,8 @@ test('review-only reconnect anchors stay inert until task truth arrives', async 
             assert.equal(ownerCard.querySelector('[data-live-review-summary]')?.textContent, 'Reviews 1');
             assert.equal(ownerCard.querySelector('[data-live-phase]')?.hidden, true, owner);
             assert.equal(ownerCard.querySelector('[data-live-title]')?.textContent, 'Reviews');
-            assert.equal(ownerCard.querySelector('[data-live-typing]')?.style.display, 'none');
+            // The chip's mark is the card's one activity indicator, and the inert chip is hidden.
+            assert.equal(ownerCard.querySelector('[data-live-typing]'), null);
         }
         assert.equal(card('review-running')?.querySelector('[data-live-phase]')?.hidden, false);
         assert.equal(card('review-running')?.querySelector('[data-live-phase]')?.textContent, 'Working');
@@ -1115,7 +1116,8 @@ test('a direct turn renders tool work as an activity block and needs host author
         assert.ok(card, 'real tool work reveals the activity block');
         assert.ok(convertButton(card), 'a working direct turn is offered conversion in Main');
         assert.equal(card.querySelector('[data-live-phase]').textContent, 'Thinking', 'the chip preserves the census phase when the card mounts later');
-        assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '1');
+        const mark = card.querySelector('[data-live-phase]').firstElementChild;
+        assert.deepEqual([mark.dataset.shape, mark.dataset.hue, mark.hidden], ['moving', 'ink', false]);
         assert.equal(card.querySelector('[data-live-title]').textContent, '', 'no title repeats the chip (#1369)');
         assert.equal(card.querySelector('[data-cancel-run]'), null, 'no host cancelable marker: no Cancel');
         handlers.get('chat')({

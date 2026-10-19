@@ -6,6 +6,7 @@ import { initLogs } from '../modules/logs.js';
 import { initCosts } from '../modules/costs.js';
 import { initDashboard } from '../modules/dashboard.js';
 import { initStorage } from '../modules/storage.js';
+import { TextStub } from './chat_dom_fixture.js';
 
 // DOM bookkeeping only: the production initializers, HTTP client, status helper,
 // stream subscription and log deduplication all run unchanged. Layout/AT behavior
@@ -49,7 +50,9 @@ class NodeStub {
     getAttribute(key) { return this.attrs[key] ?? null; }
     hasAttribute(key) { return key in this.attrs; }
     removeAttribute(key) { delete this.attrs[key]; }
-    get firstElementChild() { return this.children[0]; }
+    get firstElementChild() { return this.children.find((child) => child.nodeType !== 3); }
+    get firstChild() { return this.children[0] || null; }
+    get lastChild() { return this.children.at(-1) || null; }
     get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1]; }
     get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); }
     set textContent(text) { this._text = String(text); this.children = []; }
@@ -73,6 +76,12 @@ class NodeStub {
         }
     }
     appendChild(node) { node.remove(); node.parentElement = this; this.children.push(node); return node; }
+    insertBefore(node, before) {
+        node.remove();
+        node.parentElement = this;
+        this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, node);
+        return node;
+    }
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
     remove() {
         if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
@@ -112,6 +121,7 @@ function setup(t) {
         activeElement: null,
         defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) },
         createElement: (tag) => new NodeStub(tag),
+        createTextNode: (data) => new TextStub(data),
         getElementById: (id) => mount.querySelector(`#${id}`) || body.querySelector(`#${id}`),
         addEventListener: (type, fn) => documentEvents.addEventListener(type, fn),
         removeEventListener: (type, fn) => documentEvents.removeEventListener(type, fn),
@@ -919,6 +929,15 @@ test('Activity shows a row\'s own known outcome first and its unfinished finaliz
         label: 'Task status: Done, Paused', secondary: 'Paused' });
     assert.equal(chip(rowOf(mount, 'thinking-direct')), null);
     assert.match(rowOf(mount, 'thinking-direct').textContent, /thinking · 5s/);
+    // Known outcomes keep the shared chip in the cards' tones: Done with warnings green, Stopped neutral, Failed red.
+    const look = (id) => {
+        const status = rowOf(mount, id).querySelector('[data-activity-phase]');
+        const mark = status.firstElementChild;
+        return [status.dataset.chipTone, `${mark.dataset.shape}/${mark.dataset.hue}`];
+    };
+    assert.deepEqual(look('failed-root'), ['failed', 'dot/failed']);
+    assert.deepEqual(look('warn-root'), ['ok', 'dot/ok']);
+    assert.deepEqual(look('cancelled-root'), ['neutral', 'dot/neutral']);
     // Controls follow occupancy and the existing pause facts, never the outcome.
     const controls = Object.fromEntries(queue.querySelectorAll('[data-act="task-control"]').map((button) =>
         [button.dataset.id, [button.dataset.root, button.dataset.budgetPaused]]));

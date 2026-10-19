@@ -115,12 +115,17 @@ test('the index reads Project rooms only; the collapsed header shows the stronge
 
 test('model waits use the existing current-attempt rule (Activity reads it)', () => {
     const row = { phase: 'working', task_attempt: 2,
-        model_waits: { previous: { wait_id: 'previous', revision: 1, task_attempt: 1, state: 'waiting', reason: 'quota' } } };
-    assert.equal(waitingModel(row), false);
+        model_waits: { previous: { wait_id: 'previous', revision: 1, task_attempt: 1, state: 'waiting', reason: 'quota',
+            requires_owner_action: true } } };
+    assert.deepEqual(waitingModel(row), { waiting: false, ownerAction: false });
     row.model_waits.current = { wait_id: 'current', revision: 1, task_attempt: 2, state: 'waiting', reason: 'auth' };
-    assert.equal(waitingModel(row), true);
+    assert.deepEqual(waitingModel(row), { waiting: true, ownerAction: false });
+    // Whether it needs the owner is the host's own fact on the admitted wait, never its reason's words.
+    row.model_waits.current.requires_owner_action = true;
+    assert.deepEqual(waitingModel(row), { waiting: true, ownerAction: true });
     row.model_waits.current.state = 'resolved';
-    assert.equal(waitingModel(row), false);
+    assert.deepEqual(waitingModel(row), { waiting: false, ownerAction: false });
     // A malformed wait row (no id, revision or reason) is dropped exactly as the chat card drops it.
-    assert.equal(waitingModel({ task_attempt: 1, model_waits: { w: { state: 'waiting', task_attempt: 1 } } }), false);
+    assert.deepEqual(waitingModel({ task_attempt: 1, model_waits: { w: { state: 'waiting', task_attempt: 1,
+        requires_owner_action: true } } }), { waiting: false, ownerAction: false });
 });

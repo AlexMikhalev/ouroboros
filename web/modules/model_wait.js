@@ -108,10 +108,13 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
     let settingsPromise = null;
     const readAbort = new AbortController();
 
-    function syncPhase(taskId, waiting) {
+    // `waiting`: an admitted wait of the task's current attempt is open; `ownerAction`: one of them needs the owner
+    // (the host's own revision-bound `requires_owner_action`, never read from its words).
+    function syncPhase(taskId, { waiting, ownerAction = false }) {
         const record = getRecord(taskId, false);
         if (record && !record.finished) {
             record.modelWaiting = waiting;
+            record.modelOwnerAction = waiting && ownerAction;
             record.root.dataset.modelWaiting = waiting ? '1' : '0';
             // A block without work carries no title placeholder while it waits: the chrome
             // follows the work it stands on, never the lane (and no lane is always shown).
@@ -205,7 +208,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
             .filter(row => includeWait(taskId, row));
         const activeIds = new Set(active.map((row) => row.wait_id));
         for (const [id, view] of task.views) if (!activeIds.has(id)) tellUnsaved(view, task.waits[id]);
-        if (!active.length) { clearViews(task); syncPhase(taskId, false); return true; }
+        if (!active.length) { clearViews(task); syncPhase(taskId, { waiting: false }); return true; }
         const card = record || getRecord(taskId);
         if (!card?.root) { clearViews(task); return false; }
         if (task.host?.parentElement !== card.root) {
@@ -238,7 +241,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         task.host.querySelector('[data-wait-slot]').textContent = active.some((row) => row.worker_slot_held === true)
             ? 'This task keeps its worker slot. Queued tasks may wait. Completed steps are kept.'
             : 'Completed steps are kept. Continuation is available while Ouroboros remains running.';
-        syncPhase(taskId, true);
+        syncPhase(taskId, { waiting: true, ownerAction: active.some((row) => row.requires_owner_action === true) });
         return true;
     }
 

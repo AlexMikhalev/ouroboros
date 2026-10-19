@@ -71,7 +71,6 @@ import {
     replayTerminalPhase,
     restoreLiveCardPhaseState,
     setLiveCardPhase,
-    setLiveCardTypingVisible,
     setHistoricalUnavailable,
     setHistoricalUnconfirmed,
     syncParkedPhase,
@@ -1229,9 +1228,6 @@ export function createChatInstance({
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
                         <span class="chat-live-phase-secondary" data-live-phase-secondary hidden></span>
                         <span class="chat-live-hurry" data-live-hurry role="img" hidden></span>
-                        <div class="chat-live-typing" data-live-typing aria-hidden="true">
-                            <span></span><span></span><span></span>
-                        </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <button type="button" class="chat-live-summary-side ui-hit-area" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
@@ -1264,7 +1260,6 @@ export function createChatInstance({
             root,
             summaryButtonEl: root.querySelector('[data-live-summary-button]'),
             phaseEl: root.querySelector('[data-live-phase]'),
-            inlineTypingEl: root.querySelector('[data-live-typing]'),
             titleEl: root.querySelector('[data-live-title]'),
             episodesEl: root.querySelector('[data-live-episodes]'),
             episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
@@ -1490,7 +1485,6 @@ export function createChatInstance({
         record.metaEl.innerHTML = '';
         record.timelineEl.innerHTML = '';
         record.root.dataset.finished = '0';
-        setLiveCardTypingVisible(record, true);
         const expanded = explicitCardExpansion.has(record.groupId)
             ? explicitCardExpansion.get(record.groupId)
             : Boolean(record.isSubagent && nestedSubagentsExpanded);
@@ -1751,11 +1745,7 @@ export function createChatInstance({
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
         // Log task_done bypasses finishLiveCard; settle Cancel and its marker.
-        if (record.finished) {
-            settleLiveCard(record, wasFinished);
-        } else {
-            setLiveCardTypingVisible(record, true);
-        }
+        if (record.finished) settleLiveCard(record, wasFinished);
         syncChatStatus();
         return Boolean(timelineChanged
             || typingBefore !== typingEl.style.display

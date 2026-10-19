@@ -2199,8 +2199,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     outline-offset: 2px;
 }
 
-.chat-live-phase,
-.chat-live-line-phase {
+.chat-live-phase {
     display: inline-flex;
     align-items: center;
     padding: 2px 8px;
@@ -2213,9 +2212,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     text-transform: none;
 }
 
-/* The task status chip (DESIGN "Status and chips"): a semi-transparent pill, dot + the chip's words,
-   in its explicit pair. The dot carries the state at a glance; while the work is computing it
-   breathes (the one motion; the card draws no second typing indicator). */
+/* The task status chip (DESIGN "Status marks"): a flat tint with the shared status mark first and the chip's words,
+   in its explicit pair. Its body tone is the view's (task_phase_chip.js writes data-chip-tone): the live word crimson,
+   the owner's move amber, a known outcome in its tone (Done with warnings succeeds, Stopped is neutral), anything else
+   the neutral chip above. The mark takes the chip's ink; only its moving dots loop. */
 .chat-live-phase {
     gap: calc(var(--space-1) * 1.5);
     padding: calc(var(--space-1) / 2) var(--space-3) calc(var(--space-1) / 2) var(--space-2);
@@ -2224,47 +2224,32 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     white-space: nowrap;
 }
 
-.chat-live-phase::before {
-    content: "";
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-}
-
-.chat-live-phase:is(.start, .calling, .context, .progress, .working, .thought, .thinking, .boot),
-.chat-live-line-phase:is(.start, .calling, .context, .progress, .working, .thought, .thinking, .boot) {
+.chat-live-phase[data-chip-tone="live"] {
     color: var(--accent-light);
     border-color: var(--accent-25);
     background: var(--accent-10);
 }
 
-/* Motion: the chip's dot breathes while the work computes (the chip itself stays still and readable);
-   a moving fact beside an outcome chip (a running finalization) keeps today's gentle pulse. */
-.chat-live-phase[data-motion="1"]::before {
-    animation: live-dot-breathe 1.4s ease-in-out infinite;
+.chat-live-phase[data-chip-tone="owner"] {
+    color: var(--status-warn-fg);
+    border-color: var(--status-warn-border);
+    background: var(--status-warn-bg);
 }
 
-.chat-live-phase-secondary[data-motion="1"] {
-    animation: thinking-pulse 1.5s ease-in-out infinite;
+.chat-live-phase[data-chip-tone="ok"] {
+    color: var(--status-ok-fg);
+    border-color: var(--status-ok-border);
+    background: var(--status-ok-bg);
 }
 
-@keyframes live-dot-breathe {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.35; transform: scale(0.7); }
+.chat-live-phase[data-chip-tone="failed"] {
+    color: var(--status-error-fg);
+    border-color: var(--status-error-border);
+    background: var(--status-error-bg);
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .chat-live-phase[data-motion="1"]::before, .chat-live-phase-secondary[data-motion="1"] { animation: none; }
-}
-
-/* Phase pills are status chips with class-named tones; the triple is the
-   canonical one. The saturated --green/--amber/--red they used to carry are
-   dot-and-indicator hues, not small-text hues (docs/DESIGN.md "Status and
-   chips"). */
-.chat-live-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
-.chat-live-line-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
+/* Logs phase pills and Evolution pills name the status triples by class (DESIGN "The tone primitive"); the
+   saturated --green/--amber/--red are dot-and-indicator hues, not small-text hues. */
 .log-entry .log-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
 .evo-runtime-pill.online {
     color: var(--status-ok-fg);
@@ -2272,8 +2257,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--status-ok-bg);
 }
 
-.chat-live-phase:is(.warn, .alive, .empty, .cancelled),
-.chat-live-line-phase:is(.warn, .alive, .empty, .cancelled),
 .log-entry .log-phase:is(.warn, .alive, .empty, .cancelled),
 .evo-runtime-pill.starting {
     color: var(--status-warn-fg);
@@ -2281,8 +2264,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--status-warn-bg);
 }
 
-.chat-live-phase:is(.error, .timeout, .lifecycle_error),
-.chat-live-line-phase:is(.error, .timeout, .lifecycle_error),
 .log-entry .log-phase:is(.error, .timeout, .lifecycle_error),
 .evo-runtime-pill.error {
     color: var(--status-error-fg);
@@ -2308,15 +2289,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 .chat-live-typing span:nth-child(2) { animation-delay: 0.2s; }
 .chat-live-typing span:nth-child(3) { animation-delay: 0.4s; }
-
-.chat-live-card[data-finished="1"] > .chat-live-summary-button .chat-live-typing {
-    display: none;
-}
-
-/* A card's chip dot is its activity indicator; the three dots stay for the sidebar and typing rows. */
-.chat-live-card .chat-live-typing {
-    display: none;
-}
 
 .chat-live-title {
     font-size: var(--type-body);
@@ -2511,7 +2483,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* The secondary status fact beside the outcome chip (a running finalization).
    Neutral by rule: the outcome owns the status colour, this only says the task
-   has not let go yet, so it stays a quiet sentence rather than a second chip. */
+   has not let go yet, so it stays a quiet sentence rather than a second chip, and never moves. */
 .chat-live-phase-secondary {
     min-width: 0;
     color: var(--text-meta);
@@ -9278,7 +9250,7 @@ body.keyboard-open .project-panel {
 /* The work card's foot (meta line, its one action row) and its Project footer share the card's insets. */
 :root[data-theme] :is(.chat-live-foot, .chat-live-bound-pointer) { padding-inline: 20px; }
 :root[data-theme] .chat-live-foot-end > .chat-live-actions { padding: 0; }
-:root[data-theme] :is(.chat-live-phase, .chat-live-line-phase) { border-color: transparent; }
+:root[data-theme] .chat-live-phase { border-color: transparent; }
 
 /* Objects and trays. A card on the room is an object: the object surface on the rest shadow with the object radius.
    Inside an object a group or row is a tray: the soft neutral fill with the inner radius and no shadow; a tray inside

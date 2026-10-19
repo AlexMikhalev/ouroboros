@@ -9,15 +9,15 @@
 import { activeModelWaits, mergeModelWaits } from './model_wait.js';
 import { activityWord, amberNote, reasonBesideWord, roomAmber } from './work_status.js';
 
-/** Whether a census row's own model waits are current (Activity reads the same rule). */
+/** Whether a census row's own model waits are current, and whether one needs the owner (Activity reads the same rule). */
 export function waitingModel(row) {
     const waits = row?.model_waits;
-    if (!waits || typeof waits !== 'object') return false;
+    if (!waits || typeof waits !== 'object') return { waiting: false, ownerAction: false };
     // The same admission rule the chat card applies: a malformed wait row is
     // dropped here exactly as there, so the sidebar cannot go static on a row
     // the card would never show.
-    const admitted = mergeModelWaits({}, waits);
-    return activeModelWaits(admitted, false, Number(row?.task_attempt) || 0).length > 0;
+    const active = activeModelWaits(mergeModelWaits({}, waits), false, Number(row?.task_attempt) || 0);
+    return { waiting: active.length > 0, ownerAction: active.some((wait) => wait.requires_owner_action === true) };
 }
 
 /** A room with nothing to show. */

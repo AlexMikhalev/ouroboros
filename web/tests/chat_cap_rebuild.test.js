@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createChatInstance } from '../modules/chat.js';
+import { TextStub } from './chat_dom_fixture.js';
 
 // DOM stub: the in-file harness of chat_instance_dom.test.js (house pattern:
 // each instance-driving suite carries its own copy), plus a WebSocket constant
@@ -55,7 +56,7 @@ class ElementStub {
         this._innerHTML = this._textContent
             .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     }
-    get textContent() { return this._textContent; }
+    get textContent() { return this._textContent + this.children.filter((child) => child.nodeType === 3).map((child) => child.data).join(''); }
     set innerHTML(value) {
         this._innerHTML = String(value || '');
         if (!this.ownerDocument) return;
@@ -111,6 +112,9 @@ class ElementStub {
         node.parentElement = null;
     }
     remove() { this.parentNode?.removeChild?.(this); this.isConnected = false; }
+    get firstElementChild() { return this.children.find((child) => child.nodeType !== 3) || null; }
+    get firstChild() { return this.children[0] || null; }
+    get lastChild() { return this.children.at(-1) || null; }
     replaceChildren(...nodes) { this.children = []; nodes.forEach((node) => this.appendChild(node)); }
     contains(node) {
         if (node === this) return true;
@@ -171,6 +175,7 @@ function installDom(fetchImpl = async () => ({ ok: true, json: async () => ({ ac
     const document = {
         byId: new Map(), hidden: false, activeElement: null,
         createElement(tag) { return new ElementStub(tag, document); },
+        createTextNode(data) { return new TextStub(data); },
         createDocumentFragment() {
             const fragment = new ElementStub('#document-fragment', document);
             fragment.isDocumentFragment = true;

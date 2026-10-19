@@ -118,7 +118,8 @@ test('R3 a terminal census before first history preserves source narration and i
     assert.ok(card);
     assert.equal(card.querySelector('[data-live-title]').textContent, text);
     assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
-    assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '0');
+    const mark = card.querySelector('[data-live-phase]').firstElementChild;
+    assert.deepEqual([mark.dataset.shape, mark.dataset.hue], ['dot', 'neutral'], 'Stopped is a neutral dot, nothing moves');
     assert.equal(card.dataset.finished, '1');
     assert.equal(card.dataset.ts, String(Date.parse(progress.ts)));
     assert.ok(markup.some(value => value.includes(text) && value.includes('chat-live-line')), 'the retained source row is rendered');

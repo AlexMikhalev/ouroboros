@@ -29,7 +29,8 @@ test('open upkeep keeps the answered card open; the Pause cutting it settles the
 test('the outcome owns the chip and the late work is its quieter second fact', () => {
     const card = { finalizingHold: true, observedOutcome: 'done' };
     assert.deepEqual(desiredLiveCardPhase(card), {
-        phase: 'done', text: 'Done', className: 'chat-live-phase done', secondary: 'Finalizing…' });
+        phase: 'done', text: 'Done', className: 'chat-live-phase done', secondary: 'Finalizing…',
+        mark: 'none', tone: 'ok', owner: false, outcome: 'done' });
     // While the Pause ends the upkeep.
     assert.equal(desiredLiveCardPhase({ ...card, parkedPhase: 'budget_pausing' }).secondary, 'Pausing…');
     // A late review the Pause deferred waits for Resume beside the delivered answer.
