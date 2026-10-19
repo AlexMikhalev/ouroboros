@@ -353,11 +353,9 @@ class WalIndexRefused(PermissionError):
 
 
 def is_wal_index(path: Any) -> bool:
-    """Whether PATH is a SQLite WAL index: the ``-shm`` beside the database it indexes. Every WAL
-    connection of this process holds POSIX locks on it for as long as it is open, which closing
-    any descriptor of the file would drop (another process then resets the log under a live read
-    transaction), and its bytes are shared memory, of no use to a reader: no raw read opens it.
-    The ``-wal`` log carries no lock and reads as any file does."""
+    """Whether PATH is a SQLite WAL index: the ``-shm`` beside its database. Each WAL connection of this
+    process holds POSIX locks on it while open, which closing any descriptor of it drops (another process
+    then resets the log under a live read), and its bytes are shared memory: no raw read opens it."""
     path = pathlib.Path(path)
     return path.name.endswith("-shm") and is_sqlite_file(path.with_name(path.name[:-len("-shm")]))
 
@@ -393,21 +391,47 @@ def read_file_bytes(path: Any, *, limit: Optional[int] = None) -> bytes:
     return b"".join(iter_file_bytes(path, limit=limit))
 
 
+def snapshot_file(source: Any, destination: Any, *, wait_sec: float = STORE_WAIT_SEC) -> bool:
+    """A consistent copy of the SQLite database SOURCE at DESTINATION, in either journal: SQLite's
+    backup in one read transaction holds every commit, those still in a WAL log too (a byte copy of the
+    file misses them); SOURCE and its journal stay as they are, the copy appears whole by rename.
+    False, nothing written, when SQLite cannot read SOURCE in ``wait_sec`` (damaged, foreign, busy)."""
+    source, destination, deadline = pathlib.Path(source), pathlib.Path(destination), time.monotonic() + wait_sec
+    partial = destination.with_name(f".{destination.name}.{os.getpid()}-{threading.get_ident()}.partial")
+    def busy(status: int, _remaining: int, _total: int) -> None:  # the backup retries BUSY and LOCKED forever
+        if status in (5, 6) and time.monotonic() > deadline:
+            raise sqlite3.OperationalError("database is locked")
+    try:  # a counted connection (``connect``): no raw close in this process drops its read lock
+        with contextlib.closing(connect(source, TIER_ENFORCED, wait_sec=wait_sec, journal_mode="")) as conn, \
+                contextlib.closing(sqlite3.connect(partial, isolation_level=None)) as copy:
+            conn.backup(copy, progress=busy)
+        os.replace(partial, destination)
+        return True
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            partial.unlink()  # already gone once published
+
+
 def copy_file_bytes(source: Any, destination: Any) -> Any:
-    """``shutil.copy2`` that reads a SQLite file through ``open_for_read`` (a ``copytree``
-    ``copy_function``) and refuses a WAL index; the copy is a byte copy, not a consistent snapshot
-    of a live store."""
+    """``shutil.copy2`` for a file a store of this process may hold (a ``copytree``
+    ``copy_function``): a WAL index is refused, a SQLite database is copied as a consistent snapshot
+    (``snapshot_file``), or as its bytes through ``open_for_read`` when SQLite cannot read it."""
     refuse_wal_index(source)
-    if os.name == "nt" or not is_sqlite_file(source):
+    if not is_sqlite_file(source):
         return shutil.copy2(source, destination)
     target = pathlib.Path(destination)
     if target.is_dir():
         target = target / pathlib.Path(source).name
     if target.exists() and os.path.samefile(source, target):
         raise shutil.SameFileError(f"{source!r} and {str(target)!r} are the same file")
-    with open(target, "wb") as handle:
-        for data in iter_file_bytes(source):
-            handle.write(data)
+    if not snapshot_file(source, target):
+        if os.name == "nt":  # Windows locks belong to their handle
+            return shutil.copy2(source, target)
+        with open(target, "wb") as handle:
+            for data in iter_file_bytes(source):
+                handle.write(data)
     shutil.copystat(source, target)
     return str(target)
 
@@ -730,16 +754,13 @@ _WAL_MAGIC = (0x377F0682, 0x377F0683)
 
 def log_identity(path: Any) -> Optional[list]:
     """The commits the WAL log holds (``[checkpoint sequence and salts, last commit frame]``), else
-    ``None``. A commit lives there until a checkpoint moves it into the database file; an empty or
-    absent log (opened empty by a reader, deleted at the last close) holds none, so its coming and
-    going is no change: a resting duty keyed on the database file plus this wakes on commits only.
-
-    Read from the log itself (sqlite.org/fileformat2.html §4), which carries no lock, never from its
-    size or time: a checkpointed log is reused in place at the same inode and size, and Windows may
-    keep a file's write time while a cached connection holds it open. Every reset renews the
-    header's checkpoint sequence and salts; the generation's frames are the log's prefix carrying
-    those salts, and every commit ends with a commit frame (a database size) after the last one,
-    where a rolled-back transaction leaves only frames without one."""
+    ``None``: a commit lives there until a checkpoint moves it into the database file, and an empty or
+    absent log (opened empty by a reader, deleted at the last close) holds none, so a resting duty
+    keyed on the database file plus this wakes on commits only. Read from the log (which carries no
+    lock; sqlite.org/fileformat2.html §4), never its size or time: a checkpointed log is reused in place
+    at the same inode and size, and Windows may keep a cached file's write time. A reset renews the
+    header's sequence and salts; the generation is the prefix of frames with those salts, and a commit
+    ends with a commit frame (a database size), which a rolled-back transaction's frames lack."""
     try:
         with open(f"{os.fspath(path)}-wal", "rb", buffering=0) as log:
             header = log.read(32)

@@ -16,6 +16,7 @@ import pytest
 from ouroboros import platform_layer, store, task_store, usage_store
 from ouroboros.store import StoreBusy, StoreLost, StoreMigrating, StoreRetired
 from ouroboros.utils import machine_json
+from tests._store_journal_shared import committed_content
 from tests._store_shared import release_store_handles
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -588,9 +589,10 @@ def _read_store_file_in_this_process(kind, root, path):
     elif kind == "agent_read":
         with contextlib.suppress(UnicodeDecodeError):  # a database is not text; the read itself happened
             core_file_tools._read_source_text(path, None)
-    elif kind == "copy":
+    elif kind == "copy":  # a snapshot through a counted connection, the commit still in a WAL log in it
         files._copy_path(path, root / "copied.sqlite")
-        assert (root / "copied.sqlite").stat().st_size == path.stat().st_size
+        with contextlib.closing(sqlite3.connect(root / "copied.sqlite")) as conn:
+            assert conn.execute("SELECT task_id FROM tasks").fetchall() == [("t1",)]
     elif kind == "stream":
         assert len(b"".join(store.iter_file_bytes(path))) == path.stat().st_size
     elif kind == "artifact":
@@ -643,19 +645,20 @@ def test_reading_a_store_file_keeps_the_write_lock_another_thread_holds(tmp_path
 
 
 def test_copying_a_held_store_file_onto_itself_raises_and_keeps_its_bytes(tmp_path):
-    """The borrowed-descriptor copy keeps ``shutil.copy2``'s same-file refusal: opening the target
-    for writing first would truncate the very file it reads."""
+    """The database's copy keeps ``shutil.copy2``'s same-file refusal: its snapshot published onto
+    the very file it reads would replace the live store under its connections."""
     from ouroboros import store_import
 
     store_import.ensure_current_store(tmp_path)
     path = store.store_path(tmp_path)
-    assert store.is_sqlite_file(path)  # the borrowed branch (Windows copies with copy2)
+    assert store.is_sqlite_file(path)  # the database branch: a snapshot, else its bytes
     size = path.stat().st_size
     for destination in (path, path.parent):
         with pytest.raises(shutil.SameFileError):
             store.copy_file_bytes(path, destination)
         assert path.stat().st_size == size
-    assert pathlib.Path(store.copy_file_bytes(path, tmp_path / "copy.sqlite")).stat().st_size == size
+    copied = pathlib.Path(store.copy_file_bytes(path, tmp_path / "copy.sqlite"))
+    assert committed_content(copied) == committed_content(path)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows reads store files through ordinary handles")

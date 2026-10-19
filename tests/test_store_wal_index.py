@@ -5,9 +5,10 @@ dead-man switch). Closing ANY descriptor of a file drops every lock the process 
 (sqlite.org/howtocorrupt.html §2.2): after a raw open and close of the index, another process takes
 the TRUNCATE checkpoint those locks forbid and resets the log under a live read transaction, which
 then reads that process's later commit (reproduced on macOS with SQLite 3.53.1). The Files panel,
-the read tools, artifact capture and copies refuse the index before opening it (and copy a store's
-database through its borrowed descriptor, never a clone that opens it); the ``-wal`` log
-carries no lock and reads as any file does, as does any file merely named like a sidecar.
+the read tools, artifact capture and copies refuse the index before opening it (a copy takes a
+store's database as its snapshot through a counted connection, artifact capture through its borrowed
+descriptor, never a clone that opens it); the ``-wal`` log carries no lock and reads as any file
+does, as does any file merely named like a sidecar.
 """
 from __future__ import annotations
 
@@ -110,6 +111,9 @@ def test_the_log_and_ordinary_files_still_read_and_keep_the_locks(tmp_path, monk
         assert isinstance(result, (FileResponse, StreamingResponse)) and result.status_code == 200
     elif kind == "preview":
         assert len(result) == min(size, 4096)
+    elif kind == "copy" and name == "current.sqlite":  # the database goes as its snapshot, the log's commit in it
+        with contextlib.closing(sqlite3.connect(tmp_path / "copied")) as conn:
+            assert conn.execute("SELECT task_id, status FROM tasks").fetchall() == [("t1", "running")]
     elif kind in {"copy", "stream"}:
         assert len(result) == size
     elif kind in {"artifact", "artifact_copy"}:
@@ -143,7 +147,9 @@ def test_the_tests_tree_snapshot_passes_the_index_by_name(tmp_path, monkeypatch)
     assert "state/current.sqlite" in snapshot and "state/current.sqlite-shm" not in snapshot
 
 
-def test_a_folder_copy_leaves_the_index_behind_and_the_copy_opens_whole(tmp_path, monkeypatch):
+def test_a_folder_copy_takes_the_database_whole_and_leaves_its_journal_files(tmp_path, monkeypatch):
+    """Each database goes as its snapshot (``tests/test_store_snapshot.py``), so neither its index nor
+    its log is copied: a log copied after the file can come from a later generation of it."""
     from ouroboros.gateway import files
 
     use_journal(monkeypatch, "WAL")
@@ -153,8 +159,8 @@ def test_a_folder_copy_leaves_the_index_behind_and_the_copy_opens_whole(tmp_path
         files._copy_path(database.parent, copy)
         assert _reset_refused(database)
     copied = {path.name for path in copy.iterdir()}
-    assert {"current.sqlite", "current.sqlite-wal"} <= copied and "current.sqlite-shm" not in copied
-    with contextlib.closing(sqlite3.connect(copy / "current.sqlite")) as conn:  # its index rebuilt from the copied log
+    assert "current.sqlite" in copied and not {"current.sqlite-wal", "current.sqlite-shm"} & copied
+    with contextlib.closing(sqlite3.connect(copy / "current.sqlite")) as conn:  # the log's commit is in the file
         assert conn.execute("SELECT status FROM tasks WHERE task_id='t1'").fetchone() == ("running",)
 
 
