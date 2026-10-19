@@ -33,8 +33,10 @@ export const DRAG = Object.freeze({
     settleSpeed: 1.2,    // px/ms
     settleMin: 180,      // ms
     settleMax: 400,      // ms
-    // Past fully open the drawer gives like a rubber band (Apple's curve, as in use-gesture): d·D·c / (D + c·d).
+    // Past fully open the drawer gives like a rubber band (Apple's curve, as in use-gesture): d·D·c / (D + c·d),
+    // never more than `rubberMax` px: style.css paints the drawer's surface 64 px past its edge to fill the gap.
     rubber: 0.15,
+    rubberMax: 48,
 });
 
 // What a drag may not start on: a field (the finger moves its caret or picks), a slider, media (the finger scrubs).
@@ -54,7 +56,8 @@ export function stretch(raw, width) {
     const p = Math.max(0, Number(raw) || 0);
     if (p <= 1 || !(width > 0)) return Math.min(1, p) || 0;
     const d = (p - 1) * width;
-    return 1 + (d * DRAG.rubber) / (width + DRAG.rubber * d);  // the give in px over the width
+    const give = Math.min(DRAG.rubberMax, (d * width * DRAG.rubber) / (width + DRAG.rubber * d));  // px
+    return 1 + give / width;
 }
 const touchIn = (list, id) => {
     for (let i = 0; i < (list?.length || 0); i += 1) if (list[i]?.identifier === id) return list[i];

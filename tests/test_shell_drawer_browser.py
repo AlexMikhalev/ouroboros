@@ -340,10 +340,13 @@ PULLED = """() => { const s = document.getElementById('primary-sidebar');
             surface: getComputedStyle(s).backgroundColor.match(/\\d+/g).slice(0, 3).map(Number)}; }"""
 
 
-def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromium_ui, tmp_path):
+@pytest.mark.parametrize(('width', 'height'), [(390, 844), (719, 844), (667, 375)])
+def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromium_ui, tmp_path, width, height):
     """Pulled past fully open the drawer gives like a rubber band, and its surface fills the gap at the screen's edge:
-    the room never shows through. (The drawer is its own scroller and would clip a child or a pseudo-element there.)"""
-    page = seed_page(chromium_ui, 390, 844)
+    the room never shows through, on a phone and on the widest stack layout (719 px, a landscape phone), where the
+    drawer is 360 px and a pull reaches farthest. (The drawer is its own scroller and would clip a child or a
+    pseudo-element there.)"""
+    page = seed_page(chromium_ui, width, height)
     page.add_init_script("try { localStorage.setItem('ouroboros.theme', 'light'); } catch (e) {}")
     facts = {}
     try:
@@ -351,16 +354,16 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
         page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
         page.wait_for_function("() => document.getElementById('primary-sidebar').classList.contains('open')")
         page.wait_for_timeout(500)
-        y = 420
+        y = height // 2
         cdp = page.context.new_cdp_session(page)
         try:
-            # Left first (the close direction locks the axis), then right, past fully open.
-            for i, x in enumerate((100, 80, 160, 260, 380)):
+            # Left first (the close direction locks the axis), then right to the screen's far edge, past fully open.
+            for i, x in enumerate((100, 80, 160, 260, 380, width - 10)):
                 cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
                                                       'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
                 page.wait_for_timeout(16)
             facts['pulled'] = page.evaluate(PULLED)
-            png = page.screenshot(clip={'x': 4, 'y': y + 60, 'width': 1, 'height': 1})
+            png = page.screenshot(clip={'x': 4, 'y': y + 20, 'width': 1, 'height': 1})
             facts['gap'] = list(Image.open(io.BytesIO(png)).convert('RGB').getpixel((0, 0)))
             cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
         finally:
@@ -368,7 +371,7 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
         page.wait_for_timeout(600)
         facts['after'] = page.evaluate(DRAWER)
     finally:
-        evidence(tmp_path, 'shell-drawer-rubber-band', facts)
+        evidence(tmp_path, f'shell-drawer-rubber-band-{width}x{height}', facts)
         page.close()
     assert facts['pulled']['dragging'] and facts['pulled']['p'] > 1 and facts['pulled']['x'] > 8, (
         'the drawer gives past fully open', facts)

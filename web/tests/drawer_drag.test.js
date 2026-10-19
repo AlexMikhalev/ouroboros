@@ -369,6 +369,10 @@ test('the rubber band: nothing changes up to fully open; past it the give grows 
     assert.ok(a > 0 && b > a && c > b, [a, b, c]);
     assert.ok((c - b) / 1.5 < (b - a) / 0.4, 'each further pixel of pull gives less');
     assert.ok(c < (3 - 1) / 8, 'a damped give: at most an eighth of the pull past open');
+    for (const width of [320, 360]) {
+        assert.ok((stretch(10, width) - 1) * width <= DRAG.rubberMax + 1e-9, 'never past the painted cover, however far the pull');
+    }
+    assert.ok(DRAG.rubberMax < 64, 'style.css paints the drawer\'s surface 64 px past its edge');
 });
 
 test('the blocking page listener exists only where a drag can start, and follows the layout before any touch', () => {

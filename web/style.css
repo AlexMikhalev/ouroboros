@@ -3653,9 +3653,9 @@ html[data-layout="stack"] .drawer-head {
     padding: calc(var(--chrome-inset) + var(--inset-top)) 0 var(--chrome-inset);
 }
 /* The shadow belongs to the open drawer: on the closed one it leaked a grey band onto the phone's left edge. */
-/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js). Its surface reaches 64px past its
-   left edge as a solid shadow, so the room never shows through the gap: a shadow paints outside the box, where the
-   drawer's own scroller would clip a child or a pseudo-element. */
+/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js, at most DRAG.rubberMax = 48px). Its
+   surface reaches 64px past its left edge as a solid shadow, so the room never shows through the gap: a shadow paints
+   outside the box, where the drawer's own scroller would clip a child or a pseudo-element. */
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
     box-shadow: -64px 0 0 var(--surface-side), var(--elev-float);
