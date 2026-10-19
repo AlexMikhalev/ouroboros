@@ -135,6 +135,12 @@ def test_idle_reader_sees_a_later_independent_commit(tmp_path):
 
 
 def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, monkeypatch):
+    """An older body (SQLite's default DELETE journal) and this one (PERSIST) write the same store in
+    turn. They never run at once (one body owns a root), so each turn of the older writer comes after
+    this process let its handles go, as its exit does. That matters on Windows: a PERSIST connection
+    keeps its journal open for as long as it lives there (the VFS reports UNDELETABLE_WHEN_OPEN and
+    opens files without FILE_SHARE_DELETE), and the DELETE-mode commit, which deletes the journal,
+    fails with a disk I/O error (SQLITE_IOERR_DELETE) while any such handle is open."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as old:
@@ -147,6 +153,7 @@ def test_delete_and_persist_writers_interleave_with_full_durability(tmp_path, mo
                 assert txn.conn.execute("PRAGMA synchronous").fetchone()[0] == 2
                 assert txn.conn.execute("PRAGMA journal_size_limit").fetchone()[0] == store.JOURNAL_SIZE_LIMIT
                 txn.set_meta("reply", number)
+            store.close_connections(path)  # this body's turn ends as its exit ends it: its handles let go
             assert old.execute("SELECT value FROM meta WHERE key='reply'").fetchone()[0] == str(number)
         assert old.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
 
