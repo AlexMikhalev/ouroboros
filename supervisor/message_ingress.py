@@ -284,8 +284,6 @@ def _chat_record(
                 revision = meta.get("card_row_revision")
                 if type(revision) is int and revision >= 0:
                     record["card_row_revision"] = revision
-        if record_type == "acceptance_late_settlement" and isinstance(meta.get("late_evidence"), dict):
-            record["late_evidence"] = dict(meta["late_evidence"])
         if filename:
             record["filename"] = filename
         if mime:

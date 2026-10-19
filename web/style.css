@@ -3570,9 +3570,22 @@ html[data-layout="stack"] .mobile-nav-toggle {
     flex: 0 0 44px;
     display: inline-flex;
 }
+/* A room's ☰ is the first control of its composer's row, under the thumb (owner 19.10, 1A): as tall as the
+   capsules beside it, with the touch minimum as its finger target (.ui-hit-area). */
+html[data-layout="stack"] .chat-toolbar-row > .composer-menu {
+    position: relative;  /* its hit area (.ui-hit-area::after) is centred on it, not on the composer */
+    flex: 0 0 auto;
+    width: var(--composer-control-height);
+    height: var(--composer-control-height);
+}
+html[data-layout="stack"] .chat-toolbar-row > .composer-menu svg {
+    width: 18px;
+    height: 18px;
+}
 /* The drawer (a layer, layers.js): the same sidebar slides in from the left over a scrim; it leaves 48px of the
-   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where the header's ☰
-   was (the header's inset and leading slot), so the control the finger reached for stays under it. */
+   room showing for the scrim, never more than 360px. Its head row holds the one × exactly where a page header's ☰
+   is (the header's inset and leading slot), so the control the finger reached for stays under it; a room's ☰ is
+   its composer's first control, and the × stays here (owner 19.10, 2A). */
 html[data-layout="stack"] .nav-drawer-backdrop {
     position: fixed;
     inset: 0;
@@ -3600,6 +3613,11 @@ html[data-layout="stack"] #primary-sidebar {
 html[data-layout="stack"] :is(#chat-messages, .chat-messages, .files-list, .files-sidebar, .files-preview-content,
     .skills-scroll, .widgets-scroll, .settings-scroll, .costs-scroll, .activity-scroll, .evolution-container,
     #log-entries, .updates-scroll) {
+    touch-action: pan-y pinch-zoom;
+}
+/* Outside the scrollers too (a header, the composer's row of capsules, the attach button): the page itself only pans
+   up and down and zooms, so a sideways finger anywhere on the room is the drawer's, from the screen's edge on. */
+html[data-layout="stack"] body {
     touch-action: pan-y pinch-zoom;
 }
 html[data-layout="stack"] .sidebar-head {
@@ -4136,6 +4154,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-capsule:is([data-fit="solo"], [data-fit="overflow"], [data-snap="true"]) :is(.chat-capsule-body, .chat-capsule-value) {
     transition: none;
 }
+/* A room's ☰ is one of the controls that step aside: the fit gives the open strip the whole line. */
+.chat-toolbar-row[data-owner-solo] > .composer-menu,
 .chat-toolbar-row[data-owner-solo] .chat-composer-pills,
 .chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
 .chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
@@ -7359,6 +7379,13 @@ html[data-layout="stack"] .project-panel {
 
 html[data-layout="stack"] .project-panel.open {
     transform: translateY(0);
+}
+
+/* With the keyboard up a Project room shrinks to the visible viewport, as Main does (body.keyboard-open #page-chat):
+   its composer, with the room's ☰, stays above the keyboard instead of behind it. */
+body.keyboard-open .project-panel {
+    height: var(--vvh);
+    max-height: var(--vvh);
 }
 
 @media (prefers-reduced-motion: reduce) {

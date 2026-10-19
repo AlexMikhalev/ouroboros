@@ -52,7 +52,8 @@ def _imported_reason_codes() -> set:
         named
         | set(outcomes.BEST_EFFORT_REASON_CODES)
         | set(outcomes.ACCEPTANCE_BYPASS_REASON_BY_RAIL)
-        | set(outcomes.ACCEPTANCE_BYPASS_REASONS)
+        # Old task records still carry these bypass reasons; nothing writes them now.
+        | set(outcomes.ACCEPTANCE_BYPASS_REASON_BY_RAIL.values())
         | set(TIMEOUT_TERMINAL_REASONS)
     ) - SILENT_BY_DESIGN
 

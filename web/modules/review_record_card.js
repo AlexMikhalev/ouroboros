@@ -105,10 +105,13 @@ export function panelPoolLines(panel) {
         : reason || (facts.reason_missing === true ? 'no reason given' : '');
     if (why) lines.push(`Why these reviewers: ${why}`);
     const actors = (Array.isArray(panel?.actors) ? panel.actors : []).filter((actor) => actor && typeof actor === 'object');
-    const owed = actors.filter(actorOwed).map((actor) => `${text(actor.slot_id) || '?'}${actor.additional ? ' (adviser)' : ''}`);
+    // A settled record's lost seat is terminal (its outcome unknown, never re-sent): not reached, never awaited.
+    const settled = text(panel?.record_state) === 'settled';
+    const owedHere = (actor) => actorOwed(actor) && !(settled && text(actor?.operation_state) === 'custody_lost');
+    const owed = actors.filter(owedHere).map((actor) => `${text(actor.slot_id) || '?'}${actor.additional ? ' (adviser)' : ''}`);
     if (owed.length) lines.push(`Awaiting an answer: ${owed.join(', ')}`);
     // The record's list is read against each seat's own status, which a late answer moves on.
-    const reached = new Set(actors.filter((actor) => actorOwed(actor) || actorAnswered(actor)).map((actor) => text(actor.slot_id)));
+    const reached = new Set(actors.filter((actor) => owedHere(actor) || actorAnswered(actor)).map((actor) => text(actor.slot_id)));
     for (const seat of Array.isArray(facts.not_reached) ? facts.not_reached : []) {
         const seatId = text(seat?.seat_id);
         if (seatId && !reached.has(seatId)) lines.push(`Not reached: ${seatId} (${text(seat.cause) || 'cause not recorded'})`);

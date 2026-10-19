@@ -230,6 +230,16 @@ test('the seats never reached are listed with their cause; a missing cause is sa
     assert.ok(!panelPoolLines({ panel_facts: ADVISORY }).some((line) => line.startsWith('Not reached')));
 });
 
+test('a settled record never awaits its lost seat: it is not reached; an open record still awaits it', () => {
+    const lost = { slot_id: 'grok', operation_state: 'custody_lost', transport_status: 'error' };
+    const lines = (state) => panelPoolLines({ record_state: state, actors: [lost], panel_facts: {
+        ...ADVISORY, not_reached: [{ seat_id: 'grok', cause: 'custody_lost' }] } });
+    assert.ok(lines('settled').includes('Not reached: grok (custody_lost)'));
+    assert.ok(!lines('settled').some((line) => line.startsWith('Awaiting an answer')));
+    assert.ok(lines('pending').includes('Awaiting an answer: grok'));
+    assert.ok(!lines('pending').some((line) => line.startsWith('Not reached')));
+});
+
 test('the wave total counts the priced seats and names the seats it cannot include', () => {
     const total = (usd, seats) => waveTotalText({ usd, seats });
     assert.equal(total(0.42, { usd: 2, subscription: 0, unknown: 0 }), 'Wave total: $0.42');

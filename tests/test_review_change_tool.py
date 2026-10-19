@@ -302,12 +302,13 @@ def test_the_schema_is_the_planned_call() -> None:
     params = entry.schema["parameters"]
     assert entry.name == "review_change" and params["required"] == ["subject"]
     assert list(params["properties"]) == [
-        "root", "workspace_root", "subject", "base", "head", "surface", "goal", "scope", "author_questions",
+        "root", "workspace_root", "subject", "base", "head", "surface", "answer", "goal", "scope", "author_questions",
         "reviewers", "reason", "coupling_only", "reviewer_effort", "review_rebuttal", "treat_as_body"]
     props = params["properties"]
     assert props["root"]["enum"] == ["active_workspace", "system_repo"] and props["root"]["default"] == "active_workspace"
-    assert props["subject"]["enum"] == ["index", "worktree", "base..head", "system"]
-    assert props["surface"]["enum"] == ["change", "preflight", "system"] and props["surface"]["default"] == "change"
+    assert props["subject"]["enum"] == ["index", "worktree", "base..head", "system", "result"]
+    assert props["surface"]["enum"] == ["change", "preflight", "system", "result"] and props["surface"]["default"] == "change"
+    assert "subject=result only" in props["answer"]["description"]
     assert props["reviewer_effort"]["enum"] == list(EFFORT_SCALE)
     assert (props["treat_as_body"]["type"], props["treat_as_body"]["default"]) == ("boolean", False)
     # The schema states the predicate's rule (review_body_fact.body_fact): the flag raises
@@ -804,3 +805,29 @@ def test_the_dispatcher_binds_the_root_and_answers_with_the_record(h: Harness, m
     assert {project["record_id"], system["record_id"]} == set(h.written)
     refused = registry.execute("review_change", {"subject": "base..head", "base": "HEAD"})
     assert "TOOL_ARG_ERROR" in refused and len(h.wave.calls) == 2
+
+
+def test_a_seat_whose_custody_is_lost_never_keeps_a_wave_open():
+    """Two-sided: a seat still in flight keeps the wave pending; a seat whose custody is lost ("outcome
+    unknown, never re-sent") cannot change, so it never makes a record wait for a re-issue."""
+    from ouroboros.tools.review_change import _open_seats, _seats_open
+
+    lost = {"slot_id": "t2", "operation_state": "custody_lost", "late_result_pending": True}
+    running = {"slot_id": "t3", "operation_state": "in_flight", "late_result_pending": True}
+    done = {"slot_id": "t1", "operation_state": "settled", "late_result_pending": False}
+    assert _open_seats({"triad_raw": [done, lost], "custody_lost": True}) == []
+    assert not _seats_open({"triad_raw": [done, lost], "custody_lost": True})
+    assert _open_seats({"triad_raw": [done, lost, running]}) == ["t3"]
+    assert _seats_open({"triad_raw": [done, running]})
+
+
+def test_a_review_change_records_lost_seat_is_not_reached_while_a_gate_record_awaits_it():
+    """Both directions of the record's own facts: a review_change wave (lost_seat_terminal) settles over a lost seat
+    and names it not reached with its cause; the commit gate's reading keeps the same seat open and unlisted."""
+    from ouroboros import review_ledger as ledger
+
+    lost = {"slot_id": "t2", "seat_id": "t2", "status": "error", "operation_state": "custody_lost",
+            "late_result_pending": True}
+    assert ledger.counted_pending([lost], lost_is_terminal=True) is False
+    assert ledger.panel_not_reached([lost], lost_is_terminal=True) == [{"seat_id": "t2", "cause": "custody_lost"}]
+    assert ledger.counted_pending([lost]) is True and ledger.panel_not_reached([lost]) == []
