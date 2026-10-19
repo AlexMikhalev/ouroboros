@@ -42,8 +42,9 @@ explicit work-order review obligations.
   index, syntax of staged `.py` files), the tests preflight under its own policy
   (`skip_tests` is the one exemption, a documentation-only diff included; a
   managed resolution always runs it; a matching unsigned receipt of a complete run
-  counts), then the named row's look, then ONE review wave in which every pool seat,
-  shown the same test execution fact, answers both parts of the brief. The commit
+  counts), then the named row's look, then ONE review wave in which every seat on the panel (every pool
+  seat under Blocking; the pool seats Ouroboros named with a reason under
+  Advisory), shown the same test execution fact, answers both parts of the brief. The commit
   records its preflight fact: `performed` with the record id, `skipped` for an
   explicit `skip_advisory_review=True`, `not_performed` when no row was named.
   `preflight_reviewer` and `skip_advisory_review=True` are opposite choices
@@ -700,7 +701,7 @@ review wave, both parts, still runs.
 Self-authored skills carry payload-local `.self_authored.json` and
 owner-state `data/state/skills/<skill>/self_authored.json` provenance,
 but outside Cyber Pro they do not bypass review on the agent's own initiative. `skill_review` routes them
-through the same tri-model skill review as marketplace and user-managed
+through the same review-pool skill review as marketplace and user-managed
 skills; no deterministic PASS or enablement is written automatically.
 EXCEPTION (owner attestation, "Skip review" / "Turn on anyway"): the OWNER may skip the
 LLM review for the exact bytes of a skill from any origin via the owner-only
@@ -933,7 +934,7 @@ without the audit record).
 
 ### Skill review vs. repo review
 
-These are **separate surfaces** with separate models, prompts, and state:
+These are **separate surfaces** with separate prompts and state, drawn from the same review pool:
 
 - Repo review (the review pool's one wave, both parts, plus any preflight)
   protects the self-modifying `~/Ouroboros/repo/`. Its attempt state lives in

@@ -15,6 +15,7 @@ import hashlib
 import json
 import copy
 import logging
+import math
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List, TYPE_CHECKING
@@ -359,19 +360,78 @@ def _ledger_seat_actor(seat: Dict[str, Any], record: Dict[str, Any]) -> Dict[str
     return actor
 
 
+# The review pool's facts on a record's ``panel`` block (who was ticked when the wave was
+# composed, how strict review was, a widened request, the seats never reached); a record
+# written before them carries neither ``pool`` nor ``strictness`` and projects as before.
+_POOL_FACT_KEYS = ("pool", "strictness", "widened_from", "not_reached")
+
+
+def _seat_name(item: Any) -> str:
+    return item if isinstance(item, str) else str(item.get("seat_id") or "") if isinstance(item, dict) else ""
+
+
+def _pool_facts(recorded: Dict[str, Any]) -> Dict[str, Any]:
+    """The pool keys read defensively: a malformed value is dropped, never guessed, and a
+    not-reached cause is redacted like every other reason the card prints."""
+    out: Dict[str, Any] = {}
+    if isinstance(recorded.get("pool"), list):
+        out["pool"] = list(recorded["pool"])
+    if isinstance(recorded.get("strictness"), str) and recorded["strictness"].strip():
+        out["strictness"] = recorded["strictness"].strip()
+    if isinstance(recorded.get("widened_from"), list):
+        out["widened_from"] = [name for name in map(_seat_name, recorded["widened_from"]) if name]
+    if isinstance(recorded.get("not_reached"), list):
+        out["not_reached"] = [
+            {"seat_id": _seat_name(item),
+             "cause": _public_review_reason(item.get("cause") if isinstance(item, dict) else "")}
+            for item in recorded["not_reached"] if _seat_name(item)]
+    return out
+
+
+def _seat_cost(seat: Dict[str, Any]) -> Dict[str, Any]:
+    """One seat's cost on the card: a measured ``usd`` amount, a ``subscription`` seat or ``unknown``.
+    The seat's ``cost_kind`` (``measured`` | ``subscription`` | ``unknown``) and ``cost_usd`` decide;
+    a seat recorded without them shows the money it reported (``usd``)."""
+    kind = str(seat.get("cost_kind") or "")
+    if kind == "subscription":
+        return {"kind": "subscription", "usd": None}
+    value = seat.get("cost_usd") if kind or "cost_usd" in seat else seat.get("usd")
+    if kind != "unknown" and isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and math.isfinite(value) and value >= 0:
+        return {"kind": "usd", "usd": float(value)}
+    return {"kind": "unknown", "usd": None}
+
+
+def _wave_cost(costs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The wave total over its priced seats, and how many seats each kind of cost has."""
+    priced = [cost["usd"] for cost in costs if cost["kind"] == "usd"]
+    return {"usd": round(sum(priced), 6) if priced else None,
+            "seats": {kind: sum(1 for cost in costs if cost["kind"] == kind) for kind in ("usd", "subscription", "unknown")}}
+
+
 def ledger_record_panel(record: Dict[str, Any]) -> Dict[str, Any]:
     """One review-ledger record (``review_ledger.build_wave_record``) as a card panel:
     the record's ``panel`` facts (who sat and why) and every seat's answer per brief
-    part. The aggregate is the record's own; the record file stays the full source."""
+    part. The aggregate is the record's own; the record file stays the full source.
+    A record carrying the pool's facts also gives each actor ``additional`` (an
+    adviser, never counted) and ``cost``, and the panel its wave ``cost``."""
     from ouroboros.review_ledger import LEDGER_SUBDIR
 
     verdict = record.get("verdict") if isinstance(record.get("verdict"), dict) else {}
     quorum = verdict.get("quorum") if isinstance(verdict.get("quorum"), dict) else {}
-    actors = [_ledger_seat_actor(seat, record) for seat in record.get("rows") or [] if isinstance(seat, dict)]
+    seats = [seat for seat in record.get("rows") or [] if isinstance(seat, dict)]
+    actors = [_ledger_seat_actor(seat, record) for seat in seats]
     parsed = {actor["parse_status"] for actor in actors}
     facts = dict(record.get("panel") or {}) if isinstance(record.get("panel"), dict) else {}
     if facts.get("reason"):
         facts["reason"] = _public_review_reason(facts["reason"])
+    recorded = {key: facts.pop(key) for key in _POOL_FACT_KEYS if key in facts}
+    facts.update(_pool_facts(recorded))
+    # A preflight seats one named row, ticked or not, and owes no reason: never a pool panel.
+    pooled = str(record.get("surface") or "") != "preflight" and ("pool" in facts or "strictness" in facts)
+    costs = [_seat_cost(seat) for seat in seats] if pooled else []
+    for actor, seat, cost in zip(actors, seats, costs):
+        actor.update(additional=bool(seat.get("additional")), cost=cost)
     aggregate, record_id = str(verdict.get("aggregate") or "UNKNOWN").upper(), str(record.get("record_id") or "")
     return {
         "panel_id": record_id, "record_id": record_id, "ts": str(record.get("ts") or ""),
@@ -386,6 +446,7 @@ def ledger_record_panel(record: Dict[str, Any]) -> Dict[str, Any]:
         "enforcement_impact": str(record.get("enforcement") or "unknown"),
         "panel_facts": facts, "actors": actors, "superseded": False,
         "source_ref": {"kind": "review_ledger_record", "path": f"state/{LEDGER_SUBDIR}/{record_id}.json"},
+        **({"cost": _wave_cost(costs)} if pooled else {}),
     }
 
 

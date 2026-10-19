@@ -362,7 +362,7 @@ def _assert_consumers(result, code):
     from ouroboros.loop_tool_execution import _typed_execution_failure, _typed_result_metadata
     from ouroboros.reflection import _trace_call_errored
 
-    assert result.code == code
+    assert result.code == code, result.text
     failed = _typed_execution_failure(True, result)
     facts = _typed_result_metadata("census", result.text, failed, result)
     row = {"tool": "census", "result": result.text, **facts, "is_error": failed}
@@ -593,7 +593,7 @@ def test_review_gate_return_boundaries_reach_consumers(invoke, monkeypatch, case
         monkeypatch.setattr(git, "_run_parallel_review", lambda *a, **k: (None, None, "", []))
         monkeypatch.setattr(git, "_reconcile_and_clear_review_roster", lambda *a: None)
         monkeypatch.setattr(git, "_aggregate_review_verdict", lambda *a: (False, "", "", [], []))
-        monkeypatch.setattr(git, "_review_custody_pending", lambda *a: False)
+        monkeypatch.setattr(git, "_review_custody_pending", lambda *a, counted_only=False: False)
         monkeypatch.setattr(git, "_subject_binding_mismatch_outcome", lambda *a: None)
         monkeypatch.setattr("ouroboros.review_custody.review_retry_cancelled", lambda *a: case == "stopped")
         monkeypatch.setattr("ouroboros.deadline_utils.owner_deadline_exhausted_for_context", lambda *a: False)
