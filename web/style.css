@@ -29,6 +29,13 @@ body {
     syntax: '*';
     inherits: false;
 }
+/* The phone drawer's finger (drawer_drag.js) moves by one number on the drawer and its scrim: not inherited, so a
+   frame restyles those two boxes, not every row inside the drawer. */
+@property --drawer-p {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+}
 
 #app {
     display: grid;
@@ -3615,11 +3622,11 @@ html[data-layout="stack"] #primary-sidebar {
     inset: 0 auto 0 0;
     z-index: var(--z-drawer);
     width: min(100vw - 48px, 360px);
-    /* Closed it sits exactly off screen, where a drag picks it up (p = 0); it closes in 240ms and opens in 280ms on
+    /* Closed it sits exactly off screen, where a drag picks it up (p = 0); it closes in 280ms and opens in 340ms on
        the iOS sheet curve, or at the finger's speed after a drag (--drawer-settle, drawer_drag.js). */
     transform: translateX(-100%);
-    transition: transform var(--drawer-settle, 240ms) cubic-bezier(0.32, 0.72, 0, 1),
-        box-shadow var(--drawer-settle, 240ms) ease;
+    transition: transform var(--drawer-settle, 280ms) cubic-bezier(0.32, 0.72, 0, 1),
+        box-shadow var(--drawer-settle, 280ms) ease;
     padding-bottom: calc(var(--space-3) + var(--inset-bottom));
     touch-action: pan-y;  /* a sideways finger is the drawer's (drawer_drag.js); up and down scroll the list */
 }
@@ -3649,7 +3656,19 @@ html[data-layout="stack"] .drawer-head {
 html[data-layout="stack"] #primary-sidebar.open {
     transform: translateX(0);
     box-shadow: var(--elev-float);
-    transition-duration: var(--drawer-settle, 280ms);
+    transition-duration: var(--drawer-settle, 340ms);
+}
+/* Pulled past fully open the drawer gives a little (a rubber band, drawer_drag.js); its own surface reaches past its
+   left edge, so the room never shows through the gap. */
+html[data-layout="stack"] #primary-sidebar::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 100%;
+    width: 64px;
+    background: var(--surface-side);
+    pointer-events: none;
 }
 /* Under a finger (drawer_drag.js) the layer moves by one number, --drawer-p (0 closed … 1 open), with no
    transition; the scrim is exactly as dark as the drawer is open. Releasing drops the class, and the drawer and its

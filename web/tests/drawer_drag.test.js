@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, FIELD_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag, settleMs } from '../modules/drawer_drag.js';
+import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, FIELD_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag, settleMs, stretch } from '../modules/drawer_drag.js';
 
 // The drawer's finger (owner Q1=A, 19.10): eligibility, the axis lock, the cancelled page scroll, tracking by one
 // number on the element the touch started on, the commit rules, the settle at the finger's speed, the restores
@@ -36,11 +36,13 @@ function withStyle(el) { el.style = { setProperty: (k, v) => el.styleProps.set(k
 function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRAG, blockers = null } = {}) {
     const winL = listenerMap();
     const docL = listenerMap();
+    const rootL = listenerMap();
     const styles = new Map();
     const clock = { t: 1000 };
     const timers = new Map();
     let timerId = 0;
     const doc = { body: fakeEl('body'), addEventListener: docL.add, removeEventListener: docL.remove, listeners: docL,
+        documentElement: { addEventListener: rootL.add, removeEventListener: rootL.remove, listeners: rootL },
         querySelectorAll: () => blockers || [] };
     const win = { addEventListener: winL.add, removeEventListener: winL.remove, listeners: winL, innerWidth: 390,
         getComputedStyle: (el) => styles.get(el) || { touchAction: 'auto', overflowX: 'visible' },
@@ -59,12 +61,12 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
         isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
-    // A touch event is dispatched at the element the touch started on; it reaches the document only while that
-    // element is still in the page.
+    // A touch event is dispatched at the element the touch started on; it bubbles to the root element and the
+    // document only while that element is still in the page.
     const down = new Map();
     const dispatch = (type, target, event) => {
         target.own.fire(type, event);
-        if (target.attached) docL.fire(type, event);
+        if (target.attached) { rootL.fire(type, event); docL.fire(type, event); }
     };
     const touchEvent = (type, { x, y, id = 1, target, dt = 16, cancelable = true }) => {
         clock.t += dt;
@@ -87,7 +89,7 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
         clock.t += ms;
         for (const [id, timer] of [...timers]) if (timer.at <= clock.t) { timers.delete(id); timer.fn(); }
     };
-    return { doc, win, sidebar, scrim, room, state, flags, styles, dispose, touch, click, progress, dragging, clock, runTimers, timers };
+    return { doc, root: doc.documentElement, win, sidebar, scrim, room, state, flags, styles, dispose, touch, click, progress, dragging, clock, runTimers, timers };
 }
 
 // A drag from `from`: the first move locks the axis one slop in (12px), then `steps` moves reach `to`.
@@ -105,7 +107,7 @@ const open = (w, { from = 100, to = 300, steps = 4, dt = 16, up = true, target }
 test('the switch: DRAWER_DRAG off binds nothing', () => {
     assert.equal(typeof DRAWER_DRAG, 'boolean');
     const w = world({ enabled: false });
-    assert.equal(w.doc.listeners.count(), 0);
+    assert.equal(w.doc.listeners.count() + w.root.listeners.count(), 0);
     w.dispose();
 });
 
@@ -173,7 +175,7 @@ test('the axis locks after the slop; from then on no move may scroll the page, s
     assert.equal(w.progress(), 0.5, 'progress is travel over the drawer width from the lock point');
     assert.equal(w.scrim.styleProps.get('--drawer-p'), '0.5');
     w.touch('touchmove', { x: 112 + 900, y: 304 });
-    assert.equal(w.progress(), 1, 'clamped');
+    assert.ok(w.progress() > 1 && w.progress() < 1.25, 'past fully open it gives, damped (a rubber band, not a wall)');
     w.touch('touchend', { x: 112 + 900, y: 304 });
     assert.deepEqual(w.state.set, [true]);
     assert.equal(w.dragging(), false);
@@ -200,19 +202,20 @@ test('the axis locks after the slop; from then on no move may scroll the page, s
 
 test('the page listener cancels a move only while a drawer is dragged, and it is in place before any touch', () => {
     const w = world();
-    const page = w.doc.listeners.map.get('touchmove') || [];
+    const page = w.root.listeners.map.get('touchmove') || [];
     assert.equal(page.length, 1);
     assert.equal(page[0].options?.passive, false, 'a non-passive page listener, registered up front (iOS decides at the touch\'s start)');
-    const start = w.doc.listeners.map.get('touchstart') || [];
+    assert.equal(w.doc.listeners.map.get('touchmove')?.length || 0, 0, 'on the root element, not the document (iOS makes those passive)');
+    const start = w.root.listeners.map.get('touchstart') || [];
     assert.equal(start[0].options?.passive, true, 'a start never blocks scrolling');
     const move = () => ({ cancelable: true, prevented: false, preventDefault() { this.prevented = true; } });
     const idle = move();
-    w.doc.listeners.fire('touchmove', idle);
+    w.root.listeners.fire('touchmove', idle);
     assert.equal(idle.prevented, false, 'no drag, no cancel: scrolling is untouched');
     w.touch('touchstart', { x: 100, y: 300 });
     w.touch('touchmove', { x: 112, y: 300 });
     const during = move();
-    w.doc.listeners.fire('touchmove', during);
+    w.root.listeners.fire('touchmove', during);
     assert.equal(during.prevented, true, 'while the drawer is dragged the page listener itself cancels a move');
     w.dispose();
 });
@@ -296,15 +299,12 @@ test('the release settles at the finger\'s speed: a fling is quick, a slow relea
     w.dispose();
 });
 
-test('a second finger, touchcancel or a new width restore the start with no commit; a height change keeps the drag', () => {
+test('a second finger or a new width restore the start with no commit; a height change keeps the drag', () => {
     const w = world();
     const start = () => { w.touch('touchstart', { x: 100, y: 300 }); w.touch('touchmove', { x: 112, y: 300 }); w.touch('touchmove', { x: 260, y: 300 }); assert.equal(w.dragging(), true); };
     start(); w.touch('touchstart', { x: 200, y: 400, id: 2, target: w.room });
     assert.equal(w.dragging(), false, 'a second finger');
     w.touch('touchend', { x: 200, y: 400, id: 2 }); w.touch('touchend', { x: 260, y: 300 });
-    w.runTimers(); assert.equal(w.scrim.hidden, true);
-    start(); w.touch('touchcancel', { x: 260, y: 300 });
-    assert.equal(w.dragging(), false, 'the system took the touch');
     w.runTimers(); assert.equal(w.scrim.hidden, true);
     const resize = () => w.win.listeners.fire('resize', {});
     start(); resize();
@@ -329,7 +329,40 @@ test('the click that ends a drag is swallowed once; a tap is not; dispose releas
     w.clock.t += DRAG.clickGuard + 1;
     w.touch('touchstart', { x: 100, y: 300 });  // a gesture in flight when the app goes
     w.dispose();
-    assert.equal(w.doc.listeners.count(), 0, 'dispose releases every page listener');
+    assert.equal(w.doc.listeners.count() + w.root.listeners.count(), 0, 'dispose releases every page listener');
     assert.equal(w.win.listeners.count(), 0);
     assert.equal(w.room.own.count(), 0, 'and the gesture\'s own');
+});
+
+test('when the system takes the touch the drawer settles from where the finger left it, never stranded halfway', () => {
+    const w = world();
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 112, y: 300 });
+    w.touch('touchmove', { x: 112 + 200, y: 300, dt: 200 });  // p = 0.625, slow
+    w.touch('touchcancel', { x: 112 + 200, y: 300 });
+    assert.equal(w.dragging(), false);
+    assert.deepEqual(w.state.set, [true], 'past half: it opens');
+    w.state.open = false; w.scrim.hidden = true; w.state.set.length = 0; w.runTimers();
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 112, y: 300 });
+    w.touch('touchmove', { x: 112 + 90, y: 300, dt: 200 });  // p = 0.28, slow
+    w.touch('touchcancel', { x: 112 + 90, y: 300 });
+    assert.deepEqual(w.state.set, [], 'under half: it goes back');
+    assert.equal(w.scrim.hidden, false, 'the scrim fades with it…');
+    w.runTimers();
+    assert.equal(w.scrim.hidden, true, '…and goes');
+    assert.equal(w.room.own.count(), 0);
+    w.dispose();
+});
+
+test('the rubber band: nothing changes up to fully open; past it the give grows ever slower', () => {
+    assert.equal(stretch(0.5, 320), 0.5);
+    assert.equal(stretch(-0.3, 320), 0);
+    assert.equal(stretch(1, 320), 1);
+    const a = stretch(1.1, 320) - 1;
+    const b = stretch(1.5, 320) - 1;
+    const c = stretch(3, 320) - 1;
+    assert.ok(a > 0 && b > a && c > b, [a, b, c]);
+    assert.ok((c - b) / 1.5 < (b - a) / 0.4, 'each further pixel of pull gives less');
+    assert.ok(c < (3 - 1) / 8, 'a damped give: at most an eighth of the pull past open');
 });

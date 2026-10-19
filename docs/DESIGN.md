@@ -2200,12 +2200,17 @@ scrolls sideways keep their own finger. Dragging it back closes it
 (`web/modules/drawer_drag.js`, switched off by one constant). Every gesture has
 a visible control.
 
+Where the system or the host owns the very edge (Android's back gesture, the
+leftmost ~30 pt in Telegram on iOS), its gesture wins; a start a little further in
+is the drawer's.
+
 **The drawer's motion.** Under the finger the drawer moves 1:1 and the scrim is
-as dark as the drawer is open. Released, it settles the rest of the way at the
-finger's speed (160–340 ms); ☰ opens it in 280 ms and × or the scrim close it in
-240 ms, on the iOS sheet curve `cubic-bezier(0.32, 0.72, 0, 1)`. The scrim fades
-in and out with it and leaves the page only once it has faded. Reduced motion
-keeps the finger tracking and drops the rest.
+as dark as the drawer is open; pulled past fully open it gives like a rubber band.
+Released, or when the system takes the touch, it settles the rest of the way at
+the finger's speed (180–400 ms); ☰ opens it in 340 ms and × or the scrim close it
+in 280 ms, on the iOS sheet curve `cubic-bezier(0.32, 0.72, 0, 1)`. The scrim
+fades in and out with it and leaves the page only once it has faded. Reduced
+motion keeps the finger tracking and drops the rest.
 
 **Layers and dismissal.** The drawer and the Project panel are layers in one
 stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own
