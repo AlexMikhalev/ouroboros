@@ -40,6 +40,9 @@ export function createChatReadingPosition({ visible, alive, ready, feed, anchors
         lazy = false;
         feed.toggleAttribute?.('data-resizing', false);
         if (alive()) state.reflow();
+        // Whatever measures rows on a resize waits for this (project_answer.js): a row the browser skipped while the
+        // width moved would otherwise be laid out again just to be measured, on every frame of the move.
+        feed.dispatchEvent?.(new Event('ouro:feed-width-settled', { bubbles: true }));
     });
     const noteWidth = () => {
         const now = feed.offsetWidth;

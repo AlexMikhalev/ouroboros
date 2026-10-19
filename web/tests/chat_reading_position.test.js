@@ -403,10 +403,11 @@ test('rows are lazy only while the width keeps moving; once it holds, every row 
     globalThis.requestAnimationFrame = callback => frames.push(callback);
     t.after(() => { globalThis.requestAnimationFrame = previous; });
     const frame = () => frames.splice(0).forEach(callback => callback());
-    const marks = new Set();
+    const marks = new Set(), settled = [];
     const feed = { scrollTop: 100, scrollHeight: 1000, clientHeight: 400, clientWidth: 385, offsetWidth: 400,
         ownerDocument: {}, addEventListener() {}, removeEventListener() {}, contains: node => node === feed,
-        toggleAttribute: (name, on) => { if (on) marks.add(name); else marks.delete(name); return on; } };
+        toggleAttribute: (name, on) => { if (on) marks.add(name); else marks.delete(name); return on; },
+        dispatchEvent: event => { settled.push([event.type, event.bubbles, feed.scrollTop]); return true; } };
     const width = value => Object.assign(feed, { offsetWidth: value, clientWidth: value ? value - 15 : 0 });
     // Laying the rows out again at the held width moves the passage; restoring the place puts it back.
     let restores = 0;
@@ -421,6 +422,7 @@ test('rows are lazy only while the width keeps moving; once it holds, every row 
     assert.equal(lazy(), false, 'one move (a window jump, a layout switch) is laid out at once');
     for (let i = 0; i < 3; i++) frame();
     assert.equal(frames.length, 0, 'and nothing keeps counting after it');
+    assert.deepEqual(settled, [], 'nothing was skipped, so nothing waits to be measured');
     width(360); reading.reflow(); frame();
     width(340); reading.reflow();
     assert.equal(lazy(), true, 'the width keeps moving: rows off the screen keep their size');
@@ -433,6 +435,8 @@ test('rows are lazy only while the width keeps moving; once it holds, every row 
     frame();
     assert.equal(lazy(), false, 'the width held: every row is laid out again');
     assert.deepEqual([restores - before, feed.scrollTop], [1, 100], 'and the place is re-applied in that same frame');
+    assert.deepEqual(settled, [['ouro:feed-width-settled', true, 100]],
+        'then the rows are announced as laid out, once, for whatever measures them (the answer folds)');
     for (let i = 0; i < 20; i++) frame();
     assert.equal(frames.length, 0, 'nothing keeps counting at rest');
     // A feed hidden and shown again at another width (another room was open) is not a move.

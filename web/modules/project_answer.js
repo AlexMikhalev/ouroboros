@@ -58,12 +58,17 @@ let queued = false;
 function afterLayout(work) {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(work);
 }
+// A feed whose width is still moving lays out only the rows near the screen (chat_reading_position.js marks it
+// [data-resizing]); measuring a row it skips would lay that row out again, on every frame of the move. Its rows are
+// measured once the width holds.
 function refreshFoldsSoon() {
     if (queued) return;
     queued = true;
     afterLayout(() => {
         queued = false;
-        document.querySelectorAll('.chat-bubble.project-answer').forEach(refreshProjectAnswerFold);
+        document.querySelectorAll('.chat-bubble.project-answer').forEach((bubble) => {
+            if (!bubble.closest('[data-resizing]')) refreshProjectAnswerFold(bubble);
+        });
     });
 }
 function watchFolds() {
@@ -71,6 +76,7 @@ function watchFolds() {
     watching = true;
     window.addEventListener('ouro:page-shown', refreshFoldsSoon);
     window.addEventListener('resize', refreshFoldsSoon);
+    window.addEventListener('ouro:feed-width-settled', refreshFoldsSoon);
 }
 
 export function decorateProjectRow(bubble, { role = 'system', projectId = '', projectName = '', terminalTime, addedAt,
