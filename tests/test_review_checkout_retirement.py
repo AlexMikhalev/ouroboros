@@ -34,6 +34,20 @@ def _git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def _registered(repo) -> set:
+    """The worktree paths Git registers for REPO, as paths: Git prints them with forward slashes on Windows."""
+    lines = _git(repo, "worktree", "list", "--porcelain").splitlines()
+    return {pathlib.Path(line[len("worktree "):]) for line in lines if line.startswith("worktree ")}
+
+
+def _rewrite(path: pathlib.Path, data: bytes) -> None:
+    """Rewrite a file in place. Git for Windows hides a ``.git`` it creates, and Windows refuses a
+    create-always open (``write_text``/``write_bytes``) of a hidden file with EACCES."""
+    with path.open("r+b") as handle:
+        handle.write(data)
+        handle.truncate()
+
+
 def _repo(path):
     path.mkdir(parents=True)
     _git(path, "init", "-q")
@@ -215,14 +229,14 @@ def test_checkout_retirement_targets_only_its_registration_and_keeps_an_offline_
     offline = subject.repo.parent / "owners-offline-checkout"
     _git(subject.repo, "worktree", "add", "--detach", str(offline), "HEAD")
     offline.rename(offline.with_name("temporarily-unmounted"))
-    before = _git(subject.repo, "worktree", "list", "--porcelain")
-    assert str(offline) in before and str(entry / "repo") in before
+    before = _registered(subject.repo)
+    assert offline in before and entry / "repo" in before
 
     report = _prune(subject)
-    after = _git(subject.repo, "worktree", "list", "--porcelain")
+    after = _registered(subject.repo)
     assert report["checkouts_removed"] == 1 and not entry.exists(), report
-    assert str(entry / "repo") not in after
-    assert str(offline) in after, "another owner's unavailable checkout must retain its registration"
+    assert entry / "repo" not in after
+    assert offline in after, "another owner's unavailable checkout must retain its registration"
 
 
 def test_checkout_retirement_keeps_a_git_locked_checkout_until_its_registration_can_be_removed(subject, monkeypatch):
@@ -274,7 +288,7 @@ def test_existing_broken_git_metadata_keeps_the_checkout_and_reports_the_git_err
     registration = pathlib.Path(gitfile.read_text().removeprefix("gitdir: ").strip())
     metadata = registration / "commondir" if damage == "common_dir" else gitfile
     original = metadata.read_bytes()
-    metadata.write_text("unavailable-metadata\n")
+    _rewrite(metadata, b"unavailable-metadata\n")
     with pytest.raises(subprocess.CalledProcessError) as refusal:
         _git(entry / "repo", "rev-parse", "--git-common-dir")
 
@@ -282,7 +296,7 @@ def test_existing_broken_git_metadata_keeps_the_checkout_and_reports_the_git_err
     assert report["errors"] == [f"{entry.name}: Git common directory unavailable: {refusal.value.stderr.strip()}"]
     assert report["checkouts_removed"] == 0 and (entry / "repo" / "a.txt").read_text() == "two\n"
     assert registration.is_dir(), "a Git refusal alone does not prove the registration is gone"
-    metadata.write_bytes(original)
+    _rewrite(metadata, original)
     report = _prune(subject)
     assert not report["errors"] and report["checkouts_removed"] == 1 and not entry.exists(), report
 
