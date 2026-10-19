@@ -421,6 +421,7 @@ def ledger_record_panel(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "panel_id": record_id, "record_id": record_id, "ts": str(record.get("ts") or ""),
         "surface": str(record.get("surface") or "review"), "authority": "review_ledger",
+        "record_state": str(record.get("state") or ""),
         "aggregate_signal": aggregate,
         "transport_status": _panel_transport([actor["transport_status"] for actor in actors]),
         "parse_status": "valid" if parsed == {"valid"} else ("none" if parsed <= {"none"} else "partial"),

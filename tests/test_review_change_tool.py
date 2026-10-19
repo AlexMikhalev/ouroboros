@@ -819,3 +819,15 @@ def test_a_seat_whose_custody_is_lost_never_keeps_a_wave_open():
     assert not _seats_open({"triad_raw": [done, lost], "custody_lost": True})
     assert _open_seats({"triad_raw": [done, lost, running]}) == ["t3"]
     assert _seats_open({"triad_raw": [done, running]})
+
+
+def test_a_review_change_records_lost_seat_is_not_reached_while_a_gate_record_awaits_it():
+    """Both directions of the record's own facts: a review_change wave (lost_seat_terminal) settles over a lost seat
+    and names it not reached with its cause; the commit gate's reading keeps the same seat open and unlisted."""
+    from ouroboros import review_ledger as ledger
+
+    lost = {"slot_id": "t2", "seat_id": "t2", "status": "error", "operation_state": "custody_lost",
+            "late_result_pending": True}
+    assert ledger.counted_pending([lost], lost_is_terminal=True) is False
+    assert ledger.panel_not_reached([lost], lost_is_terminal=True) == [{"seat_id": "t2", "cause": "custody_lost"}]
+    assert ledger.counted_pending([lost]) is True and ledger.panel_not_reached([lost]) == []

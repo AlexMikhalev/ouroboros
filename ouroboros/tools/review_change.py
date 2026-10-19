@@ -628,7 +628,7 @@ def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_k
         panel = panel_facts(record.rows, composition=str(wave.panel.facts.get("composition") or "full_pool"),
                             reason=str(wave.panel.facts.get("reason") or ""),
                             chosen_by=str(wave.panel.facts.get("chosen_by") or "owner"))
-    record.panel = {**panel, **wave.panel.facts, "not_reached": panel_not_reached(record.rows)}
+    record.panel = {**panel, **wave.panel.facts, "not_reached": panel_not_reached(record.rows, lost_is_terminal=True)}
     if wave.request.surface == "preflight":
         for key in ("pool", "strictness", "pool_empty", "main_self_review", "reason_missing"):
             record.panel.pop(key, None)

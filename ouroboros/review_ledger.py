@@ -595,13 +595,19 @@ def counted_pending(rows: List[Dict[str, Any]], *, pending: bool = False, lost_i
                for row in opened) if opened else pending
 
 
-def panel_not_reached(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Terminal absences with an observed cause; seats still awaiting are not failures."""
+def panel_not_reached(rows: List[Dict[str, Any]], *, lost_is_terminal: bool = False) -> List[Dict[str, str]]:
+    """Terminal absences with an observed cause; seats still awaiting are not failures (``lost_is_terminal``, as in
+    ``counted_pending``: a ``review_change`` wave's lost seat is such an absence, never awaiting)."""
+    def awaiting(row: Dict[str, Any]) -> bool:
+        if lost_is_terminal and row.get("operation_state") == "custody_lost":
+            return False
+        return bool(row.get("late_result_pending")) or row.get("operation_state") in {"in_flight", "custody_lost", "pending_dispatch"}
+
     return [{"seat_id": str(row.get("seat_id") or row.get("slot_id") or ""),
              "cause": str(row.get("failure_code") or row.get("error") or row.get("reported_cause") or (row.get("intention") or {}).get("error")
                           or row.get("operation_state") or row.get("status") or "unknown")}
             for row in rows if row.get("status") not in {*ANSWERED_STATUSES, "answered", "unparseable", "pending", "in_flight", "pending_dispatch"}
-            and not row.get("late_result_pending") and row.get("operation_state") not in {"in_flight", "custody_lost", "pending_dispatch"}]
+            and not awaiting(row)]
 
 
 def _answer(seat: Dict[str, Any], part: str) -> Dict[str, Any]:
@@ -1071,7 +1077,8 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
         enforcement_blocks=bool(facts.get("enforcement_blocks")),
         panel={**panel_facts(rows, composition=str(facts.get("composition") or "full_pool"),
                           reason=str(facts.get("composition_reason") or ""), chosen_by=str(facts.get("chosen_by") or "owner")),
-               **dict(facts.get("panel") or {}), "not_reached": panel_not_reached(rows)},
+               **dict(facts.get("panel") or {}),
+               "not_reached": panel_not_reached(rows, lost_is_terminal=bool(facts.get("lost_seat_terminal")))},
         rows=rows, verdict=verdict,
         tests=dict(facts.get("tests") or {"policy": "NOT_RUN", "result": UNKNOWN}),
         preflight=dict(facts.get("preflight") or {"status": "not_performed", "record_id": ""}),
