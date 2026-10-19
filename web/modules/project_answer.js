@@ -51,7 +51,7 @@ function syncFold(bubble, message, collapsed) {
     }
 }
 
-// One pair of window listeners for the app's lifetime, however many rows exist: a row holds
+// One set of window listeners for the app's lifetime, however many rows exist: a row holds
 // only listeners on its own nodes, so a released row needs no disposer here.
 let watching = false;
 let queued = false;
