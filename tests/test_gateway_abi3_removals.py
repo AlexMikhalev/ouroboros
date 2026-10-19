@@ -204,6 +204,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd", "_reported_cost"): ("delegate terminal evidence rows", 4),
         ("ouroboros/tools/review_admission.py", "cost_usd", "triad_not_dispatched_records"): ("review admission receipt", 1),
         ("ouroboros/tools/review_change.py", "cost_usd", "run_system_review"): ("system review seat receipt, the ledger's triad_raw input; the record stores usd", 1),
+        ("ouroboros/reviewer_slot_config.py", "cost_usd", "review_cost_facts"): ("reviewer seat cost receipt (the triad record's cost_usd + cost_kind pair) on ledger, plan, skill-review and slot-execution seats; rides /api/review-pool last_executions untyped, as raw_actor_records ride skill review", 1),
         # evolution checkpoint plane (durable state files, never a gateway payload;
         # the campaign HISTORY row producer left this list in fix-round-3)
         ("ouroboros/evolution_checkpoints.py", "cost_usd", "build_solve_capability_digest"): ("evolution capability digest", 1),
