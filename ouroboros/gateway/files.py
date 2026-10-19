@@ -271,7 +271,12 @@ def _guess_text_file(path: pathlib.Path) -> bool:
 
 def _file_response(target: pathlib.Path, *, filename: str | None = None, media_type: str | None = None) -> Response:
     """A SQLite file is streamed through store.iter_file_bytes, whose descriptor never closes under
-    a store connection of this process; any other file keeps FileResponse (length, ranges, HEAD)."""
+    a store connection of this process, and a WAL index is refused before anything opens it; any
+    other file keeps FileResponse (length, ranges, HEAD)."""
+    try:
+        store.refuse_wal_index(target)
+    except store.WalIndexRefused as exc:
+        return json_error(str(exc), status=403)
     if os.name == "nt" or not store.is_sqlite_file(target):  # Windows locks belong to their handle
         return FileResponse(str(target), filename=filename, media_type=media_type)
     headers = {"Content-Disposition": f"attachment; filename*=utf-8''{quote(filename)}"} if filename else None
@@ -307,7 +312,10 @@ def _copy_path(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
         return
     if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes)
+        # A store's WAL index stays behind: its first open rebuilds the copy's from the copied log.
+        shutil.copytree(source, destination, symlinks=True, copy_function=store.copy_file_bytes,
+                        ignore=lambda folder, names: [name for name in names
+                                                      if store.is_wal_index(pathlib.Path(folder) / name)])
         return
     store.copy_file_bytes(source, destination)
 
@@ -791,6 +799,8 @@ async def api_files_transfer(request: Request) -> JSONResponse:
         })
     except ValueError as exc:
         return json_error(str(exc), status=400)
+    except store.WalIndexRefused as exc:
+        return json_error(str(exc), status=403)
     except Exception as exc:
         return json_error(str(exc), status=500)
 

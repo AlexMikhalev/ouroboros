@@ -285,10 +285,10 @@ def held_descriptor(path: Any) -> Optional[int]:
 
 def is_sqlite_file(path: Any) -> bool:
     """Whether PATH holds a SQLite database (its header magic), read without closing a descriptor
-    a store connection may depend on."""
+    a store connection may depend on; a WAL index is none, and is never opened to look."""
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            return False  # never open a FIFO or a device to look
+        if not stat.S_ISREG(os.stat(path).st_mode) or is_wal_index(path):
+            return False  # never open a FIFO or a device to look, nor a WAL index (``is_wal_index``)
         return _read_header(pathlib.Path(path)).startswith(b"SQLite format 3\x00")
     except OSError:
         return False
@@ -348,10 +348,32 @@ class _BorrowedReader:
         return b"".join(parts)
 
 
+class WalIndexRefused(PermissionError):
+    """A raw read of a SQLite WAL index (``is_wal_index``), refused before any descriptor opens."""
+
+
+def is_wal_index(path: Any) -> bool:
+    """Whether PATH is a SQLite WAL index: the ``-shm`` beside the database it indexes. Every WAL
+    connection of this process holds POSIX locks on it for as long as it is open, which closing
+    any descriptor of the file would drop (another process then resets the log under a live read
+    transaction), and its bytes are shared memory, of no use to a reader: no raw read opens it.
+    The ``-wal`` log carries no lock and reads as any file does."""
+    path = pathlib.Path(path)
+    return path.name.endswith("-shm") and is_sqlite_file(path.with_name(path.name[:-len("-shm")]))
+
+
+def refuse_wal_index(path: Any) -> None:
+    """Raise ``WalIndexRefused`` for a WAL index, before anything opens it."""
+    if is_wal_index(path):
+        raise WalIndexRefused(errno.EACCES, "a SQLite WAL index is not read as a file (its bytes are the "
+                              "store's shared memory; the store's content is in its database)", str(path))
+
+
 def open_for_read(path: Any) -> Any:
     """``open(path, "rb")`` for any reader in a process that may hold a store: on POSIX the read
     borrows the inode's shared descriptor, whose close waits until no store connection of this
-    process has the file open; Windows opens and closes as usual."""
+    process has the file open; Windows opens and closes as usual. A WAL index is refused."""
+    refuse_wal_index(path)
     return pathlib.Path(path).open("rb") if os.name == "nt" else _BorrowedReader(path)
 
 
@@ -373,7 +395,9 @@ def read_file_bytes(path: Any, *, limit: Optional[int] = None) -> bytes:
 
 def copy_file_bytes(source: Any, destination: Any) -> Any:
     """``shutil.copy2`` that reads a SQLite file through ``open_for_read`` (a ``copytree``
-    ``copy_function``); the copy is a byte copy, not a consistent snapshot of a live store."""
+    ``copy_function``) and refuses a WAL index; the copy is a byte copy, not a consistent snapshot
+    of a live store."""
+    refuse_wal_index(source)
     if os.name == "nt" or not is_sqlite_file(source):
         return shutil.copy2(source, destination)
     target = pathlib.Path(destination)

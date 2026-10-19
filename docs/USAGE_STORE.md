@@ -127,7 +127,12 @@ connections per inode, and every raw read in a process that may hold a store
 (the header probe, the Files panel, the read tools, artifact capture:
 `store.open_for_read`, `iter_file_bytes`, `read_file_bytes`, `copy_file_bytes`)
 borrows one shared descriptor per inode that closes only when no counted
-connection has the file open, as SQLite's unix VFS defers its own closes. The connection, tier,
+connection has the file open, as SQLite's unix VFS defers its own closes. Under
+WAL every open connection also holds locks on the `-shm` index, so these readers
+refuse a WAL index before opening it (`store.is_wal_index`, `WalIndexRefused`;
+the Files panel answers 403), a folder copy leaves it out (the copy rebuilds its
+own from the copied `-wal`, which carries no lock) and search skips SQLite's
+journal and WAL files. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 

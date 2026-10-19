@@ -1108,8 +1108,11 @@ def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any 
     fence_publication()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = temporary_sibling(destination)  # the atomic signature the temp sweep reaps after a hard kill
+    from ouroboros.store import is_sqlite_file, is_wal_index  # a store file streams: a clone opens and closes it
+
     try:
-        if source_path is not None and clone_file(source_path, temporary):
+        if (source_path is not None and not is_sqlite_file(source_path) and not is_wal_index(source_path)
+                and clone_file(source_path, temporary)):
             try:
                 measured = stream_artifact_file(temporary, expected=expected)
             except ArtifactIdentityError:
