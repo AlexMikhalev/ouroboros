@@ -174,6 +174,7 @@ export function createRoomWork({
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
+    let pressing = false;       // a pointer press until its click: focus moves meanwhile change no row
     let latestLabel = null;
     let detailSequence = 0;
     let menuIntent = 0;
@@ -417,14 +418,19 @@ export function createRoomWork({
             episode: undefined };
         // The name stays selectable text: a drag that selected it does not navigate.
         bindContentButton(main, () => activateRow(view.row), () => rowIsTarget(view.row));
-        // Keyboard focus shows the whole name (CSS unclamps it). Not :focus-within: a press on Resume or ⋯
-        // must not grow the row under the pointer before mouse-up.
+        // Keyboard focus shows the whole name (CSS unclamps it), and only the row keyboard reads shows it. Not
+        // :focus-within, and a press changes no row: nothing in the list moves under a pointer. A row folding on
+        // the focus a press gives it, or on the blur a press elsewhere causes, would move the pressed row (or
+        // the ⋯ a menu opens from) before mouse-up; a grown row folds when keyboard focus reads another row or
+        // the list closes.
         main.addEventListener('focus', () => {
+            if (pressing) return;
             let keyboard = false;
             try { keyboard = main.matches?.(':focus-visible') === true; } catch { /* an engine without the selector */ }
+            if (keyboard) for (const other of views.values()) if (other !== view) other.el.dataset.reading = '0';
             el.dataset.reading = keyboard ? '1' : '0';
         });
-        main.addEventListener('blur', () => { el.dataset.reading = '0'; });
+        main.addEventListener('blur', () => { if (!pressing) el.dataset.reading = '0'; });
         views.set(row.key, view);
         return view;
     }
@@ -755,6 +761,7 @@ export function createRoomWork({
         frozen = null;
         order = [];
         expanded.clear();
+        for (const view of views.values()) view.el.dataset.reading = '0';  // it reopens at rest
         // A list dismissed while a row still looks drops that look: the reader left before it answered.
         if ([...lookups.values()].some((found) => found.state === 'loading')) { navigationIntent += 1; live.textContent = ''; }
         lookups.clear();
@@ -905,6 +912,9 @@ export function createRoomWork({
     });
     listen(back, 'click', goBack);
     listen(doc, 'pointerdown', (event) => {
+        // A press lasts until the click its release makes (a touch's mouse events follow its pointerup), so a
+        // focus move inside it, its own or a closing menu handing focus back, folds nothing under the pointer.
+        pressing = true;
         const target = event.target;
         // The shared task-controls menu is a portal outside the list but part of its interaction.
         if (target?.closest?.('.task-control-menu')) return;
@@ -924,6 +934,12 @@ export function createRoomWork({
             }, 600);
         }
     }, true);
+    // A press that makes no click (a cancelled touch, a release outside the window) ends at the next key or
+    // press, so keyboard reading never waits on it.
+    const endPress = () => { pressing = false; };
+    listen(doc, 'click', endPress, true);
+    listen(doc, 'pointercancel', endPress, true);
+    listen(doc, 'keydown', endPress, true);
     listen(doc, 'focusin', (event) => {
         if (!event.target?.closest?.('.task-control-menu')) lastInside = surface.contains(event.target) || trigger.contains(event.target);
     }, true);

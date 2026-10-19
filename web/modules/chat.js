@@ -15,7 +15,7 @@ import { createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { attachmentCaption, attachmentViews, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -562,8 +562,10 @@ export function createChatInstance({
 
     function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
         if (data) void refreshChildProjectHolds();
+        const before = workState;
         workState = reconcileWorkState(workState, data, chatId, ws.isConnected?.() !== false);
         applyCardWorkViews(liveCardRecords, workState);
+        changedOffers(liveCardRecords, before, workState).forEach(syncCancelRunButton);
         syncHeaderControlState(data ?? { accounting: { available: false } });
         portals.sync(data);
         mainWaiting?.snapshot(data, snapshotRequestedAt);
@@ -835,6 +837,7 @@ export function createChatInstance({
         }
         if (existing) {
             record.cancelRunBtn = existing;
+            if (record.finished) existing.disabled = false;
             return changed;
         }
         const actions = ensureLiveActionsEl(record);
@@ -922,6 +925,8 @@ export function createChatInstance({
                 btn.disabled = false;
             }
         } catch (exc) {
+            // Said once, by the request; 404 is the task already gone.
+            if (exc?.status !== 404) showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
                 revokeManagedTaskCancelAuthority(taskId);
@@ -932,7 +937,6 @@ export function createChatInstance({
                 }
                 return;
             }
-            showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             // Reconcile durable truth before restoring any optimistic UI.
             let stored = null;
             try {

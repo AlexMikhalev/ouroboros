@@ -280,6 +280,16 @@ def test_a_reply_sends_only_the_quoted_rows_address(project_chat, tmp_path):
 
 
 SUCCESSOR = "creation-cnext"
+WORK = "Review runner › integration"  # the work's first name: the ended episode's own
+# DESIGN "Work portal": each episode has its own name, time and past outcome on one meta line (task_episodes.js
+# renderEpisodes, #1979). Whether that line names the work is the owner's open call (#1999): this is the one place.
+EPISODES_NAME_THEIR_WORK = True
+
+
+def _episode(number, span, outcome="", name=""):
+    """An episode's meta line as the rule above writes it; an episode the fixture never named has no name part."""
+    return " · ".join(part for part in (f"Episode {number}", name if EPISODES_NAME_THEIR_WORK else "", span, outcome)
+                      if part)
 
 
 def _interrupted(**extra):
@@ -353,8 +363,8 @@ def test_main_portal_follows_a_continue_made_in_the_project_room(project_chat, j
     assert card.evaluate("c => c.lastElementChild.classList.contains('chat-live-bound-pointer')"), "the footer closes the card"
     episodes = card.locator('.chat-live-episode')
     expect(episodes).to_have_count(2)
-    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
-    expect(episodes.nth(1)).to_have_text("Episode 2 · since 14:00")
+    expect(episodes.nth(0)).to_contain_text(_episode(1, "13:57–14:09", "Failed", name=WORK))
+    expect(episodes.nth(1)).to_have_text(_episode(2, "since 14:00"))
     expect(episodes.nth(1)).to_have_attribute("data-current", "1")
     assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
     assert page.locator('.project-handoff, [data-system-type="project_started"], [data-system-type="project_handoff"]').count() == 0
@@ -423,8 +433,8 @@ def test_room_card_follows_a_continue_pressed_in_the_room(project_chat, chat_id,
         expect(card.locator('.chat-live-actions > button')).to_have_text(["Stop…"])
         episodes = card.locator('.chat-live-episode')
         expect(episodes).to_have_count(2)
-        expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
-        expect(episodes.nth(1)).to_have_text("Episode 2 · since 14:12")
+        expect(episodes.nth(0)).to_contain_text(_episode(1, "13:57–14:09", "Failed", name=WORK))
+        expect(episodes.nth(1)).to_have_text(_episode(2, "since 14:12"))
         expect(episodes.nth(1)).to_have_attribute("data-current", "1")
         assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
         card.screenshot(path=_evidence(tmp_path, project_chat, f"room-continue-{label}"), animations="disabled")
@@ -556,8 +566,8 @@ def test_main_portal_follows_a_successor_that_already_finished(project_chat, jou
     expect(footer).to_have_attribute("aria-label", "Open project Project Alpha")
     episodes = card.locator('.chat-live-episode')
     expect(episodes).to_have_count(2)
-    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
-    expect(episodes.nth(1)).to_have_text("Episode 2 · 14:10–14:12")
+    expect(episodes.nth(0)).to_contain_text(_episode(1, "13:57–14:09", "Failed", name=WORK))
+    expect(episodes.nth(1)).to_have_text(_episode(2, "14:10–14:12"))
     expect(episodes.nth(1)).to_have_attribute("data-current", "1")
     assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continued stands as its action"
     card.screenshot(path=_evidence(tmp_path, project_chat, f"finished-successor-{journey}"), animations="disabled")
@@ -606,7 +616,7 @@ def test_an_already_failed_portal_follows_a_later_fast_continue(project_chat, jo
     expect(card.locator(':scope > .chat-live-bound-pointer')).to_have_attribute("aria-label", "Open project Project Alpha")
     episodes = card.locator('.chat-live-episode')
     expect(episodes).to_have_count(2)
-    expect(episodes.nth(0)).to_contain_text("Episode 1 · 13:57–14:09 · Failed")
-    expect(episodes.nth(1)).to_have_text("Episode 2 · 14:10–14:12")
+    expect(episodes.nth(0)).to_contain_text(_episode(1, "13:57–14:09", "Failed", name=WORK))
+    expect(episodes.nth(1)).to_have_text(_episode(2, "14:10–14:12"))
     assert page.locator('#chat-messages [data-continue-task]:visible').count() == 0, "no Continue stands as its action"
     card.screenshot(path=_evidence(tmp_path, project_chat, f"later-continue-{journey}"), animations="disabled")

@@ -1000,6 +1000,82 @@
    },
    "works_complete": true,
    "works_gaps": []
+  },
+  "helper_after_parent": {
+   "works": [
+    {
+     "work_id": "p",
+     "room": 42,
+     "name": "",
+     "episode": {
+      "task_id": "p",
+      "live": false
+     },
+     "activity": "working",
+     "transition": "none",
+     "call": "working",
+     "because": [
+      {
+       "code": "helpers_running",
+       "text": "1 helper still working",
+       "count": 1,
+       "ids": [
+        "h"
+       ]
+      }
+     ],
+     "turn": [],
+     "release": "self",
+     "paused_by": null,
+     "members": {
+      "working": 1,
+      "waiting": 0,
+      "delegated": 0,
+      "ids": [
+       "h"
+      ]
+     },
+     "confirmed": true,
+     "outcome": "completed",
+     "kind": "task",
+     "project_id": "",
+     "since": 100.0,
+     "controls": [
+      {
+       "action": "stop",
+       "target": "p",
+       "scope": "cascade"
+      }
+     ]
+    }
+   ],
+   "rooms": {
+    "42": {
+     "activity": "working",
+     "transition": "none",
+     "call": "working",
+     "turn": [],
+     "amber": false,
+     "mark": "moving",
+     "confirmed": true,
+     "works": [
+      "p"
+     ]
+    }
+   },
+   "work_summary": {
+    "counts": {
+     "working": 1,
+     "queued": 0,
+     "waiting": 0,
+     "paused": 0,
+     "unknown": 0
+    },
+    "turn": 0,
+    "confirmed": true
+   },
+   "works_complete": true,
+   "works_gaps": []
   }
  },
  "reasons": {

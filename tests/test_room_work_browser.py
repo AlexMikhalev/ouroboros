@@ -75,6 +75,23 @@ ROOM_FACTS = """(scope) => {
 
 _SETTLE_FRAMES = "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
 
+# A row's ⋯: its rectangle at the next click, and a reader of its rectangle now.
+_ANCHOR_AT_CLICK = """(id) => {
+    const more = document.querySelector(`#page-chat .rw-row[data-id="${id}"] .rw-more`);
+    const rect = () => { const r = more.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; };
+    window.__rwAnchor = { now: rect };
+    document.addEventListener('click', () => { window.__rwAnchor.click = rect(); }, { capture: true, once: true });
+}"""
+
+# Rows' rectangles at a press and at the click its release makes.
+_PRESS_RECORDER = """(ids) => {
+    const rects = () => ids.map((id) => { const r = document.querySelector(`#page-chat .rw-row[data-id="${id}"] .rw-main`)
+        .getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; });
+    window.__rwPress = {};
+    for (const type of ['pointerdown', 'click'])
+        document.addEventListener(type, () => { window.__rwPress[type] = rects(); }, { capture: true, once: true });
+}"""
+
 # Every frame for a while: one row's word, the reason beside it and settledness, its ⋯ and any open shared menu.
 _FRAME_RECORDER = """([selector, ms]) => {
     window.__rwFrames = [];
@@ -468,8 +485,15 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
 
     # A card-less row asks the room's history on an explicit press, never a hover, and says what it found:
     # here the saved history holds no message of it, so it opens its details (finished work included later).
+    # The press comes while the long row above holds keyboard focus and its whole name, and blurs it. Nothing may
+    # move under the pointer: a fold at mouse-down moved the pressed row up from under it (36 px with wider fonts)
+    # and the click landed on the list. A press folds nothing.
+    page.evaluate(_PRESS_RECORDER, ["rw-live", "rw-unknown"])
     row_main(page, "rw-unknown").click()
     detail = wait_facts(page, "main", lambda f: "No message" in row(f, "rw-unknown")["detail"], "an unloaded row's lookup")
+    press = page.evaluate("() => window.__rwPress")
+    assert press["pointerdown"] == press["click"], press
+    assert row(detail, "rw-live")["reading"] == row(focused, "rw-live")["reading"], "a press leaves the long row as it was"
     assert transport.around_reads == ["task:rw-unknown"]
     assert row(detail, "rw-unknown")["expanded"] == "true" and row(detail, "rw-unknown")["open"]
     assert row(detail, "rw-unknown")["detail"].startswith("WhereNo message yet.")
@@ -478,6 +502,35 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
     assert row(detail, "rw-unknown")["detail"].endswith("WhatA task"), "label and words (textContent joins them)"
     assert not detail["surfaceHidden"]
     assert transport.decision_posts() == [] and transport.posts == []
+    if room_ui["engine"] == "chromium":  # keyboard reading needs :focus-visible, engine-specific after a focus()
+        # Keyboard focus reading another row folds the long one; the list never holds two grown names.
+        page.keyboard.press("ArrowUp")
+        moved = wait_facts(page, "main", lambda f: f["active"]["row"] not in ("rw-unknown", "rw-live"),
+                           "keyboard focus on the row above")
+        assert row(moved, "rw-live")["reading"] == "0", moved
+        # A ⋯ pressed while a name is grown opens its menu on a button that stays where it was pressed.
+        row_main(page, "rw-ask").focus()
+        page.keyboard.press("ArrowDown")
+        wait_facts(page, "main", lambda f: row(f, "rw-live")["reading"] == "1", "the long row grown again")
+        page.evaluate(_ANCHOR_AT_CLICK, "rw-unknown")
+        page.locator("#page-chat .rw-row[data-id='rw-unknown'] .rw-more").click()
+        menu = page.locator("body > .task-control-menu")
+        menu.wait_for(state="visible")
+        page.evaluate(_SETTLE_FRAMES)
+        anchor = page.evaluate("() => ({ click: window.__rwAnchor.click, now: window.__rwAnchor.now() })")
+        assert anchor["click"] == anchor["now"] and menu.is_visible(), anchor
+        # Pressing the grown row itself near its bottom edge, with that menu still open: the menu closes and hands
+        # focus back to its ⋯ a moment later, inside a press a person holds; the row stays whole until the click
+        # goes to its card.
+        page.evaluate(_PRESS_RECORDER, ["rw-live"])
+        box = row_main(page, "rw-live").bounding_box()
+        page.mouse.move(box["x"] + 12, box["y"] + box["height"] - 4)
+        page.mouse.down()
+        page.wait_for_timeout(150)
+        page.mouse.up()
+        wait_facts(page, "main", lambda f: f["surfaceHidden"], "the grown row's press went to its card")
+        press = page.evaluate("() => window.__rwPress")
+        assert press["pointerdown"] == press["click"], press
     evidence("main-states-console", transport.console)
 
 
