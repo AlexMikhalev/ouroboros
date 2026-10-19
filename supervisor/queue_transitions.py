@@ -27,7 +27,6 @@ from __future__ import annotations
 import contextlib
 import copy
 import logging
-import os
 import pathlib
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -249,31 +248,10 @@ def clear_acceptance_fence_for_root(root_task_id: str) -> bool:
         return q.ACCEPTANCE_FENCES.pop(root_task_id, None) is not None
 
 
-def fence_authority_in_process(drive_root: Any) -> bool:
-    """Whether THIS process holds the queue owning ``drive_root``'s admission fences.
-
-    A process fact, never an actor's flag: in the server after ``init`` every actor (a direct
-    turn, a Presence turn on a Host thread, any later one) fences in-process and cannot apply
-    late. A worker never does: its imported maps are empty or a forked copy, so it asks over
-    the bus, where only the current RUNNING attempt may open a fence (#1183).
-    """
-    from ouroboros.utils import in_worker_process
-
-    if in_worker_process():
-        return False  # checked first: a worker never imports the queue for this answer
-    q = _queue_module()
-    if not getattr(q, "INITIALIZED", False) or getattr(q, "OWNER_PID", None) != os.getpid():
-        return False  # never initialized here, or a child forked with a copy of the maps
-    try:
-        return pathlib.Path(q.DRIVE_ROOT).resolve() == pathlib.Path(drive_root).resolve()
-    except (OSError, TypeError, ValueError):
-        return False
-
-
 def release_turn_acceptance_fence(drive_root: Any, root_task_id: str) -> bool:
     """An in-process turn that sends no ``task_done`` (Presence) releases its own root's row at its end."""
     try:
-        if not fence_authority_in_process(drive_root) or not clear_acceptance_fence_for_root(root_task_id):
+        if not _queue_module().owns_live_queue(drive_root) or not clear_acceptance_fence_for_root(root_task_id):
             return False
         _queue_module().persist_queue_snapshot(reason="acceptance_fence_turn_ended")
         return True

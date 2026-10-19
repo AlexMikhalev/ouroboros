@@ -84,6 +84,20 @@ OWNER_PID: Optional[int] = None
 QUEUE_PUBLICATION = None  # Structural documents and their successfully published generation.
 
 
+def owns_live_queue(drive_root: Any) -> bool:
+    """Whether THIS process holds the live queue of ``drive_root``: a process fact, never an
+    actor's flag. A worker never does (its maps are empty or a forked copy), so it asks over the
+    bus, where only the current RUNNING attempt may open a fence (#1183)."""
+    from ouroboros.utils import in_worker_process
+
+    if in_worker_process() or not INITIALIZED or OWNER_PID != os.getpid():
+        return False  # a worker, never initialized here, or a child forked with a copy of the maps
+    try:
+        return pathlib.Path(DRIVE_ROOT).resolve() == pathlib.Path(drive_root).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def init(drive_root: pathlib.Path) -> None:
     global DRIVE_ROOT, FINALIZATION_GRACE_SEC, INITIALIZED, OWNER_PID, QUEUE_SNAPSHOT_PATH, QUEUE_PUBLICATION
     QUEUE_PUBLICATION = None

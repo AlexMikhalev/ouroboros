@@ -110,10 +110,11 @@ def _presence_built_agent(root: Path, monkeypatch, event_queue):
     return agent
 
 
-def _seal_args(root: Path, agent):
+def _seal_args(root: Path, agent, *, kind: str = "pooled"):
     """The ToolContext fields the final seal reads, with the agent's fence seam bound."""
     ctx = SimpleNamespace(
-        task_id=TASK, drive_root=root, task_metadata={"root_task_id": TASK, "budget_drive_root": str(root)},
+        task_id=TASK, drive_root=root, task_metadata={"root_task_id": TASK, "budget_drive_root": str(root),
+                                                      "_execution_owner": {"kind": kind}},
         _task_acceptance_fence_token=None, _task_acceptance_sealed_fence_token=None,
         _task_acceptance_fence_generation=None, _task_acceptance_queue_descendants=[],
         _task_acceptance_reviewed=True, _task_acceptance_fence_generation_mismatch=False, _owner_directives=[],
@@ -175,11 +176,9 @@ def test_the_current_running_attempt_opens_over_the_bus(supervisor, monkeypatch)
 
 def test_a_child_forked_with_the_queue_maps_travels_the_bus(supervisor, monkeypatch):
     """INITIALIZED survives a fork; the owner's pid does not, so a copy never fences itself."""
-    from supervisor.queue_transitions import fence_authority_in_process
-
-    assert fence_authority_in_process(supervisor.root) is True
+    assert supervisor.queue.owns_live_queue(supervisor.root) is True
     monkeypatch.setattr(supervisor.queue, "OWNER_PID", os.getpid() + 1)  # what a forked child sees
-    assert fence_authority_in_process(supervisor.root) is False
+    assert supervisor.queue.owns_live_queue(supervisor.root) is False
     agent = _presence_built_agent(supervisor.root, monkeypatch, supervisor.bus.queue)
     with pytest.raises(RuntimeError, match=r"^stale_attempt$"):
         agent._begin_acceptance_fence(root_task_id=TASK, task_id=TASK)
@@ -201,7 +200,7 @@ def test_another_data_root_in_the_server_process_travels_the_bus(supervisor, mon
 # --- whole Presence turns -----------------------------------------------------------------------------
 
 
-def _run_presence_turn(root: Path, monkeypatch, *, event_queue=None, supervisor=None, number=77):
+def _run_presence_turn(root: Path, monkeypatch, *, event_queue=None, supervisor=None, number=77, in_worker=False):
     """One whole turn through run_presence_turn with the production agent constructor, the real loop,
     Required/blocking acceptance review (the reviewer transport answers PASS at once), presence_finish
     and the final delivery seal. Model script: nominate the answer, then select it on every later round."""
@@ -212,6 +211,8 @@ def _run_presence_turn(root: Path, monkeypatch, *, event_queue=None, supervisor=
 
     h = install_bootstrap_harness(monkeypatch, root)
     h.release.set()
+    if in_worker:  # a proactive turn started from background work runs on that worker's thread
+        monkeypatch.setenv("OUROBOROS_IN_WORKER", "1")
     turn_event = event(number)
     task_id = presence_turn_task_id(admission().binding_id, turn_event.source_event_id)
 
@@ -384,6 +385,19 @@ def test_a_superseded_pooled_attempt_never_publishes(tmp_path, monkeypatch):
     monkeypatch.setattr(loop, "_arm_delivery_control", lambda *_a, **_kw: None)
     assert _seal_admission_before_delivery(tools, limit_ctx, trace) is False
     assert _ack_unavailable(tmp_path) == [("begin", "refused", "stale_attempt")]
+
+
+def test_a_worker_hosted_presence_turn_delivers_with_admission_unconfirmed(supervisor, monkeypatch):
+    """A proactive Presence turn started from background work runs inside that worker: it proves no
+    RUNNING attempt, so the queue refuses ``stale_attempt``. It was never a pooled attempt, so nothing
+    superseded it: the whole turn delivers once with admission unconfirmed instead of looping."""
+    diagnosis = _run_presence_turn(supervisor.root, monkeypatch, event_queue=supervisor.bus.queue,
+                                   supervisor=supervisor, number=78, in_worker=True)
+    assert diagnosis["error"] is None and diagnosis["delivered"], diagnosis
+    assert diagnosis["model_calls"] <= 3, diagnosis  # the Host turn's shape; the loop was 11+ calls
+    assert ("begin", "refused", "stale_attempt") in diagnosis["supervisor_ack_unavailable"], diagnosis
+    assert diagnosis["bus_fence_events"] and all(pooled for _a, pooled in diagnosis["bus_fence_events"]), diagnosis
+    assert supervisor.queue.ACCEPTANCE_FENCES == {}
 
 
 def test_owner_mail_still_revises_after_a_refusal(tmp_path, monkeypatch):

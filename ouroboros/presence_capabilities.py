@@ -608,7 +608,9 @@ def _target_from_payload(value: Any, *, field_name: str) -> PresenceTarget:
     target_type = raw.get("type")
     if target_type == "tool":
         _require_exact_fields(raw, _TOOL_TARGET_FIELDS, field_name=field_name)
-        name = canonical_tool_name(raw["name"]) if raw["kind"] == "builtin" else raw["name"]  # a renamed builtin's saved spelling
+        name = raw["name"]
+        if raw["kind"] == "builtin" and isinstance(name, str):
+            name = canonical_tool_name(name)  # a renamed builtin's saved spelling; a non-string fails typed below
         return PresenceToolTarget(raw["kind"], name, raw["provider"])
     if target_type == "script":
         _require_exact_fields(raw, _SCRIPT_TARGET_FIELDS, field_name=field_name)

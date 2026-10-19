@@ -405,9 +405,9 @@ class OuroborosAgent:
 
     def _fence_in_process(self) -> bool:
         """Whether this process holds the queue that owns this agent's data root (a process fact)."""
-        from supervisor.queue_transitions import fence_authority_in_process
+        from supervisor.queue import owns_live_queue
 
-        return fence_authority_in_process(self.env.budget_drive_root or self.env.drive_root)
+        return owns_live_queue(self.env.budget_drive_root or self.env.drive_root)
 
     def _send_fence_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Send one pooled fence event and poll ITS OWN ``<token>.<req>.json`` ack; ``{}`` = unanswered."""

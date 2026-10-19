@@ -70,3 +70,42 @@ def test_an_unknown_old_name_names_its_successor(old, new):
     assert lines[0] == f"{old!r} was renamed {new!r} (not called)."
     quiet = name_miss_guidance("no_such_tool", "builtin", [{"name": new, "description": "x"}], discovery=True)
     assert not any("renamed" in line for line in quiet)
+
+
+def _bound_ceiling_ctx(grant_name):
+    from types import SimpleNamespace
+
+    from ouroboros.presence_authority import PresenceCapabilityCeiling, PresenceToolGrant, presence_ceiling_payload
+    from ouroboros.presence_capabilities import PresenceArgumentBinding
+
+    binding = PresenceArgumentBinding(("project_id",), "static", static_value="host-bound")
+    ceiling = PresenceCapabilityCeiling(
+        skill_name="behavior", skill_content_hash="a" * 64, profile_fingerprint="b" * 64,
+        state_fingerprint="c" * 64, selection_fingerprint="d" * 64, model_slot="main", inline_max_rounds=3,
+        tool_grants=(PresenceToolGrant(grant_name, (binding,)),), resource_grants=(), digest="0" * 64)
+    return SimpleNamespace(task_contract={"capability_ceiling": presence_ceiling_payload(ceiling)}, task_metadata={})
+
+
+@pytest.mark.parametrize("old,new", PAIRS)
+def test_a_frozen_old_spelling_grant_binds_the_successors_arguments(old, new):
+    """The host binding follows the grant to the successor; the model's value never wins."""
+    from ouroboros.presence_authority import apply_presence_argument_bindings
+    from ouroboros.tools.registry_core import _presence_bound_args, _presence_tool_allowed
+
+    ctx = _bound_ceiling_ctx(old)
+    assert _presence_tool_allowed(ctx, new) and not _presence_tool_allowed(ctx, old)
+    assert apply_presence_argument_bindings(ctx, new, {"project_id": "model-chosen"})["project_id"] == "host-bound"
+    bound, refusal = _presence_bound_args(ctx, new, {"project_id": "model-chosen"})
+    assert refusal == "" and bound["project_id"] == "host-bound"
+    unrelated = apply_presence_argument_bindings(ctx, "write_file", {"project_id": "model-chosen"})
+    assert unrelated["project_id"] == "model-chosen"  # quiet: the binding belongs to that grant only
+
+
+def test_a_saved_builtin_name_resolves_and_a_corrupt_one_fails_typed():
+    from ouroboros.presence_capabilities import PresenceStateError, _target_from_payload
+
+    old, new = PAIRS[0]
+    target = _target_from_payload({"type": "tool", "kind": "builtin", "name": old, "provider": ""}, field_name="t")
+    assert target.name == new
+    with pytest.raises(PresenceStateError):
+        _target_from_payload({"type": "tool", "kind": "builtin", "name": [old], "provider": ""}, field_name="t")
