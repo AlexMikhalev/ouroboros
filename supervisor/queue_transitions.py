@@ -906,7 +906,7 @@ def settled_status_of(row: Any) -> str:
     return status if status in SETTLED_STATUSES else ""
 
 
-def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
+def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False, count_runs: bool = True) -> bool:
     """Cheap liveness check the HTTP Stop asks only for a settled or row-less cascade target.
 
     True when the task itself is queued/running, when it still has live
@@ -923,6 +923,10 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
     that postcondition passes, so the postcondition must judge queue/durable
     liveness only — counting the coordination intent itself would make the
     check circular and the cascade unable to ever report success.
+
+    ``count_runs=False`` asks whether anything besides the tree's open delegated
+    runs is live: a cascade whose only remaining work is runs whose cancel is in
+    flight is pending, not a cascade that cancelled nothing.
     """
     q = _queue_module()
     task_id = str(task_id or "").strip()
@@ -964,7 +968,7 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
 
     # A run open in custody is physical work until custody records it settled, so an unconfirmed
     # cancel keeps the cascade's postcondition unmet; unreadable custody raises like the review read.
-    if tree_open_runs(q.DRIVE_ROOT, task_id):
+    if count_runs and tree_open_runs(q.DRIVE_ROOT, task_id):
         return True
     if ignore_intents:
         return False

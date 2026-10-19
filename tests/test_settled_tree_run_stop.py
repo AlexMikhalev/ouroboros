@@ -9,6 +9,7 @@ run. A tree with nothing open still answers 404 and its work offers no Stop.
 """
 from __future__ import annotations
 
+import json
 import queue as std_queue
 import time
 from types import SimpleNamespace
@@ -99,6 +100,13 @@ def _stop(drive, task_id=ROOT):
         return client.post(f"/api/tasks/{task_id}/cancel", json={"cascade": True})
 
 
+def _noop_incidents(drive, task_id):
+    """The owner-visible "the cascade cancelled nothing" incidents recorded for this Stop."""
+    path = drive / "logs" / "supervisor.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return [row for row in rows if row.get("type") == "task_cancel_cascade_noop" and row.get("task_id") == task_id]
+
+
 def _controls(drive):
     return [[(entry["action"], entry["target"]) for entry in work["controls"]]
             for work in wp.works_snapshot(drive, [], {})["works"]]
@@ -124,6 +132,7 @@ def test_an_unconfirmed_cancel_keeps_the_stop_pending_until_the_run_settles(qenv
     assert response.status_code == 202 and response.json()["cancel_state"] == "pending", response.json()
     assert [run.run_id for run in reconcile.open_runs(qenv.drive)] == ["run-1"], "a requested cancel proves nothing"
     assert ci.active_intent(qenv.drive, ROOT)["scope"] == ci.SCOPE_CASCADE
+    assert _noop_incidents(qenv.drive, ROOT) == [], "a cancel in flight is pending, not a cascade that did nothing"
     engine.state = "cancelled"  # the run obeys late; the watchdog drives the recorded cascade again
     qenv.tl.sweep_cancel_intents(now=time.time() + 3600)
     assert reconcile.open_runs(qenv.drive) == [] and ci.active_intent(qenv.drive, ROOT) is None

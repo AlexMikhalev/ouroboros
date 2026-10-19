@@ -17,7 +17,7 @@ from ouroboros.platform_layer import process_start_time
 from ouroboros.review_operation import OPERATION_DISPATCHED, OPERATIONS_FIELD
 from ouroboros.task_results import write_task_result
 from tests._cancel_intents_shared import qenv as _qenv
-from tests.test_settled_tree_run_stop import _controls, _engine, _started, _stop
+from tests.test_settled_tree_run_stop import _controls, _engine, _noop_incidents, _started, _stop
 
 # Requested by name as a test parameter: re-bound through a module attribute (F811 otherwise).
 qenv = _qenv
@@ -46,5 +46,6 @@ def test_a_review_after_the_answer_keeps_its_works_stop_and_the_door_takes_it(qe
     assert response.status_code == status, response.json()
     assert engine.cancels == [("review-run", "owner_task_gone")], "the owner's verdict speaks for the panel"
     assert open_runs(qenv.drive) == []
-    # A live operation keeps the Stop open until it closes; a closed one leaves nothing for the Stop to wait on.
+    # A live operation keeps the Stop open until it closes, and says so; a closed one leaves nothing to wait on.
     assert (ci.active_intent(qenv.drive, ROOT) is None) is (status == 200)
+    assert bool(_noop_incidents(qenv.drive, ROOT)) is (status == 202)
