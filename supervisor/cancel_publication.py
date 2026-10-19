@@ -648,6 +648,28 @@ def _reconcile_delegated_runs_on_kill(q: Any, task_id: str) -> List[str]:
     return list(_audit_delegated_runs_on_kill(q, task_id).get("unreconciled") or [])
 
 
+def _stop_open_tree_runs(q: Any, task_id: str) -> None:
+    """The cascade's verdict over its tree's open delegated runs, before its postcondition.
+
+    A member killed by the sweep cancels its own runs behind the owner's verdict, but a member that
+    had already settled spared every run its own end was no verdict for (a provider death, a crash),
+    so a settled tree whose only live writer is such a run stays live. The owner's Stop of the tree
+    is that verdict: ``stop_tree_runs`` cancels them attach-only, and the settled owners' stored
+    custody disclosures are refreshed, as the kill path's fast lane does. A failure is logged and
+    judged by the postcondition, which counts every run still open as live.
+    """
+    root = pathlib.Path(q.DRIVE_ROOT)
+    try:
+        from ouroboros.delegate_custody_reconcile import stop_tree_runs
+        from ouroboros.delegate_terminal import refresh_terminal_reconciliation
+
+        outcomes = stop_tree_runs(root, task_id)
+        for owner in sorted({str(row.get("task_id") or "") for row in outcomes} - {""}):
+            refresh_terminal_reconciliation(root, owner, trigger="kill_path_clear")
+    except Exception:
+        log.warning("Cascade could not stop the open delegated runs of %s", task_id, exc_info=True)
+
+
 def _cascade_delivery_row_locked(q: Any, task_id: str) -> Dict[str, Any]:
     """A routing row for a cascade whose ROOT has already left the live maps.
 
