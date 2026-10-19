@@ -68,7 +68,7 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-python-env
         with:
-          interpreter: shipped  # the SQLite and journal mode installs run
+          interpreter: shipped  # the SQLite and journal mode fresh installs run
           install-project: 'false'
         id: setup_python
       # tests/test_separate_ui_browser.py runs the interface behind a real Caddy. The official
@@ -210,7 +210,7 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-python-env
         with:
-          interpreter: shipped  # the SQLite and journal mode installs run
+          interpreter: shipped  # the SQLite and journal mode fresh installs run
           install-project: 'false'
       - name: Collect the complete host UI lane as the shard manifest
         id: ui_manifest

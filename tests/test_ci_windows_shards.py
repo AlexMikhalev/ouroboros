@@ -238,17 +238,21 @@ def test_windows_matrix_keeps_the_same_passes_and_once_per_os_checks(tmp_path):
 def test_full_test_result_requires_the_matrix_and_both_reconciliations(tmp_path, outcome):
     jobs = _jobs()
     job = jobs["full-test"]
-    assert job["needs"] == "full-test-runs"
+    assert job["needs"] == ["full-test-runs", "journal-persist"]
     assert job["if"] == "${{ !cancelled() && needs.full-test-runs.result != 'skipped' }}"
     assert "continue-on-error" not in job
     gate, *steps = job["steps"]
-    assert gate["env"] == {"MATRIX_RESULT": "${{ needs.full-test-runs.result }}"}
+    assert gate["env"] == {"MATRIX_RESULT": "${{ needs.full-test-runs.result }}",
+                           "PERSIST_RESULT": "${{ needs.journal-persist.result }}"}
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("workflow shell unavailable on this host")
-    result = subprocess.run([bash, "-c", gate["run"]], env={**os.environ, "MATRIX_RESULT": outcome},
-                            capture_output=True, text=True, timeout=10)
-    assert (result.returncode == 0) == (outcome == "success")
+    # The matrix (WAL) and the PERSIST journal legs each have to succeed on their own.
+    for matrix, persist in ((outcome, "success"), ("success", outcome)):
+        result = subprocess.run([bash, "-c", gate["run"]],
+                                env={**os.environ, "MATRIX_RESULT": matrix, "PERSIST_RESULT": persist},
+                                capture_output=True, text=True, timeout=10)
+        assert (result.returncode == 0) == (outcome == "success"), (matrix, persist)
     for step in steps:
         assert step["if"] == "${{ !cancelled() }}" and "continue-on-error" not in step
     commands = [step["run"] for step in steps if "run" in step]
@@ -258,3 +262,20 @@ def test_full_test_result_requires_the_matrix_and_both_reconciliations(tmp_path,
         assert '--count 8 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"' in command
     assert jobs["release-preflight"]["needs"] == ["full-test", "integration-test", "system-e2e-mock"]
     assert jobs["build"]["needs"] == ["full-test", "release-preflight"]
+
+
+def test_each_journal_mode_is_proven_by_its_own_lane():
+    """Fresh installs run the shipped interpreter's WAL, installs updated in place keep an older SQLite's
+    PERSIST: the matrix probes WAL, while quick-test and journal-persist (all three OSes) probe PERSIST."""
+    jobs = _jobs()
+    persist = jobs["journal-persist"]
+    assert persist["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
+    for name in ("journal-persist", "quick-test"):
+        setup = next(step for step in jobs[name]["steps"] if step.get("uses") == "./.github/actions/setup-python-env")
+        assert "interpreter" not in (setup.get("with") or {}), name  # setup-python's SQLite
+
+    def probe(name):
+        return next(step["run"] for step in jobs[name]["steps"] if "store._journal_mode" in step.get("run", ""))
+
+    assert probe("journal-persist").endswith(" PERSIST") and probe("quick-test").endswith(" PERSIST")
+    assert probe("full-test-runs").endswith(" WAL")
