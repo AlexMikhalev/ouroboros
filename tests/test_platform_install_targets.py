@@ -43,6 +43,11 @@ def _run_install_command(args, *, env, timeout, capture_output=False, text=False
                 finally:
                     if proc is not None:
                         proc.wait(timeout=10)
+                        if isinstance(failure, subprocess.TimeoutExpired):
+                            # Windows communicates through reader threads and its
+                            # initial timeout carries no output. Drain only after
+                            # the tree is reaped, retaining the original timeout.
+                            failure.stdout, failure.stderr = proc.communicate(timeout=10)
             finally:
                 try:
                     container.close()
@@ -178,7 +183,8 @@ time.sleep(60)
     # subprocess.run is the old, deliberately leaking negative control. The
     # outer container owns that whole runner, including its orphaned children.
     runner = f'''
-import json, os, subprocess
+import json, os, subprocess, sys
+sys.path.insert(0, {str(repo)!r})
 from tests.test_platform_install_targets import _run_install_command
 try:
     if {outcome == "no-cleanup"!r}:
@@ -189,8 +195,10 @@ try:
                                       capture_output=True, text=True)
 except subprocess.TimeoutExpired as exc:
     assert exc.timeout == 5
-    assert exc.output.splitlines() == [b"probe stdout"]
-    assert exc.stderr.splitlines() == [b"probe stderr"]
+    for captured, expected in ((exc.output, "probe stdout"), (exc.stderr, "probe stderr")):
+        if isinstance(captured, bytes):
+            captured = captured.decode()
+        assert captured.splitlines() == [expected]
     print(json.dumps({{"kind": type(exc).__name__}}))
 except subprocess.CalledProcessError as exc:
     assert exc.returncode == 7, (exc.returncode, exc.stdout, exc.stderr)
@@ -268,3 +276,33 @@ def test_install_command_cleanup_failure_stays_red(monkeypatch, timeout):
         assert raised.value.__cause__ is None
     assert containers[0].closed and containers[0].proc.returncode is not None
     assert containers[0].proc.stdout.closed and containers[0].proc.stderr.closed
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("text", [False, True], ids=["bytes", "text"])
+def test_install_timeout_drains_initially_missing_output(monkeypatch, text):
+    """Real pipes, with the Windows initial-timeout shape also exercised on POSIX."""
+    class MissingInitialOutput(ProcessContainer):
+        def spawn(self, *args, **kwargs):
+            proc = super().spawn(*args, **kwargs)
+            communicate = proc.communicate
+
+            def windows_timeout_shape(*args, **kwargs):
+                try:
+                    return communicate(*args, **kwargs)
+                except subprocess.TimeoutExpired as exc:
+                    exc.stdout = exc.stderr = None
+                    raise
+
+            proc.communicate = windows_timeout_shape
+            return proc
+
+    monkeypatch.setattr(sys.modules[__name__], "ProcessContainer", MissingInitialOutput)
+    code = ("import sys,time; print('stdout', flush=True); "
+            "print('stderr', file=sys.stderr, flush=True); time.sleep(60)")
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        _run_install_command([sys.executable, "-c", code], env=os.environ,
+                             timeout=3, capture_output=True, text=text)
+    assert raised.value.timeout == 3
+    assert raised.value.stdout == ("stdout\n" if text else b"stdout\n")
+    assert raised.value.stderr == ("stderr\n" if text else b"stderr\n")

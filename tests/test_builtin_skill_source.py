@@ -342,6 +342,7 @@ def test_bundled_telegram_reseed_delivers_the_current_version(tmp_path, monkeypa
 @pytest.mark.parametrize("name,source,old_version", [
     ("telegram", "7f71fe8d29c975e25b35a235e1c821e1b547674f", "1.3.1"),
     ("telegram", "6014e8896dabe371f5c06cf8adc5dc9902f53c2d", "1.3.2"),
+    ("telegram", "08ed0f824df498a1c43c8ff9e04dd42e5c64ee76", "1.3.3"),
     ("unix_computer_use", "ec3fc6e5b5ae5ee99a746b5e1a0f6343a41926d4", "0.4.2"),
     ("unix_computer_use", "1e237c1bc89f0600a7362f69eddafdff4ddd1f2d", "0.4.3"),
 ])
