@@ -227,7 +227,7 @@ class LLMClient(
                 local_kwargs = {"timeout": timeout}
                 if reasoning_effort is not None:
                     local_kwargs["reasoning_effort"] = reasoning_effort
-                if processing_preference:
+                if processing_preference is not None:
                     local_kwargs["processing_preference"] = processing_preference
                 message, usage = self._chat_local(
                     messages, tools, max_tokens, tool_choice, **local_kwargs,
@@ -303,7 +303,7 @@ class LLMClient(
                 local_kwargs = {"timeout": timeout}
                 if reasoning_effort is not None:
                     local_kwargs["reasoning_effort"] = reasoning_effort
-                if processing_preference:
+                if processing_preference is not None:
                     local_kwargs["processing_preference"] = processing_preference
                 result = self._chat_local(messages, tools, max_tokens, tool_choice, **local_kwargs)
                 return result, last_physical_attempt_capture()

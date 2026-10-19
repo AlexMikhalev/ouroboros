@@ -4,7 +4,7 @@
 re-trusts or removes a source). ``skill_search`` finds catalog ids in the connected sources (ClawHub
 joins a text search). ``skill_install`` installs one by catalog id, never by URL: from a trusted source
 the skill gets the keys it asks for (under the owner's auto-grant setting) and turns on when ready; from
-a review source Ouroboros chooses the configured review or records a self-check of the exact release.
+a review source the configured review checks it (in Cyber Pro Ouroboros may record its own check instead).
 ``skill_update`` applies one update choice. Skipping without a check stays the owner's act.
 """
 
@@ -14,6 +14,7 @@ import json
 import pathlib
 from typing import Any, Dict, List
 
+from ouroboros.reviewer_slot_config import PanelCompositionError
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
@@ -150,7 +151,8 @@ def _handle_skill_search(ctx: ToolContext, query: str = "", source: str = "", ca
 
 
 def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", replace: bool = False,
-                          owner_source: Any = None, check: str = "review", check_notes: str = "", **_kw: Any) -> str:
+                          owner_source: Any = None, check: str = "review", check_notes: str = "", reviewers: List[str] | None = None,
+                          review_reason: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, install_item, run_in_lane, start_review
 
     item_id = str(id or "").strip()
@@ -168,6 +170,13 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     drive = _drive(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
+        panel = _skill_panel(reviewers, review_reason, reason_field="review_reason") if check == "review" else None
+    except PanelCompositionError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=f"invalid review pool configuration blocks skill review: {exc}"))
+    try:
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
             turn_on_when_ready=True, check=check, check_notes=check_notes),
@@ -180,7 +189,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
             text="⚠️ SKILL_INSTALL_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
-        start_review(drive, result["name"])
+        start_review(drive, result["name"], panel=panel, chosen_by="ouroboros")
         result["next"] = ("The review runs now in the skill lifecycle lane; the skill turns on when it leaves no "
                           "blockers. list_skills(name=...) shows its state.")
     acceptance = result.get("acceptance") or {}
@@ -192,7 +201,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
 
 
 def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", digest: str = "", local_digest: str = "",
-                         check: str = "review", check_notes: str = "", **_kw: Any) -> str:
+                         check: str = "review", check_notes: str = "", reviewers: List[str] | None = None, reason: str = "", **_kw: Any) -> str:
     from ouroboros.skill_source_install import SkillInstallError, run_in_lane, start_review, update_installed
 
     skill = str(name or "").strip()
@@ -200,6 +209,13 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
             text="⚠️ SKILL_UPDATE_ERROR: name and mode (replace, keep or merge) are required."))
     drive = _drive(ctx)
+    try:
+        panel = _skill_panel(reviewers, reason) if check == "review" and mode != "keep" else None
+    except PanelCompositionError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
+            text=f"invalid review pool configuration blocks skill review: {exc}"))
     try:
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
             drive, skill, mode=mode, digest=str(digest or ""), local_digest=str(local_digest or ""), actor="ouroboros",
@@ -213,15 +229,24 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR",
             text="⚠️ SKILL_UPDATE_REFUSED: " + _dump(exc.payload())))
     if result.get("needs_review"):
-        start_review(drive, skill)
+        start_review(drive, skill, panel=panel, chosen_by="ouroboros")
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump(result)))
 
 
+def _skill_panel(reviewers: Any, reason: str, *, reason_field: str = "reason") -> Any:
+    from ouroboros.reviewer_slot_config import compose_review_panel
+    if reviewers is not None and (not isinstance(reviewers, list) or any(not isinstance(row, str) for row in reviewers)):
+        raise PanelCompositionError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of enabled row ids or handles.")
+    return compose_review_panel(reviewers or (), reason, surface="skill", reason_field=reason_field)
+
+
 _CHECK_PROPERTIES = {
+    "reviewers": {"type": "array", "items": {"type": "string"}, "description": "Enabled row ids/handles; omitted means the whole pool. Blocking widens to all ticked reviewers; Advisory requires at least one ticked reviewer and a reason when narrowed. Unticked advisers are heard, not counted. Cyber Pro composes freely."},
     "check": {"type": "string", "enum": ["review", "self"], "description":
-              "Choose depth by what the skill can touch: review (default, configured panel), or self after reading "
-              "the exact release and explaining why it may run. A release whose panel review found blockers "
-              "needs the owner's Skip; a self-check does not overrule a panel. A trusted source ignores this choice."},
+              "review (default): the configured reviewers check the exact release, and it runs when they leave no "
+              "blockers; outside Cyber Pro this is the only check, and only the owner skips a review. self: Cyber Pro "
+              "only, after you read the exact release and record why it may run; review findings stay evidence. "
+              "A trusted source ignores this choice."},
     "check_notes": {"type": "string", "description": "self requires 1..2000 characters recording what you read and why."},
 }
 
@@ -259,12 +284,13 @@ _SCHEMAS = {
         "description": (
             "Install one skill by catalog id from skill_search (never a URL). From a trusted source it gets the keys "
             "it asks for under the owner's auto-grant setting and turns on when ready; from a review source it "
-            "installs now, then uses the configured review or your recorded self-check. Choose by what it can touch. "
+            "installs now and the configured review decides (in Cyber Pro you may record your own check instead). "
             "After installing, tell the owner what you installed, why, and which keys it received."
         ),
         "properties": {
             "id": {"type": "string", "description": "Catalog id <source>/<name>."},
             "reason": {"type": "string", "description": "Why this work needs the skill."},
+            "review_reason": {"type": "string", "description": "Why these reviewers when you name fewer than the whole pool; Advisory requires it then."},
             "replace": {"type": "boolean", "description": "Replace another skill of the same name (owner's instruction)."},
             "owner_source": _OWNER_SOURCE,
             **_CHECK_PROPERTIES,
@@ -275,11 +301,12 @@ _SCHEMAS = {
         "description": (
             "Apply an update: replace replaces local edits (the previous copy is kept as .previous), keep skips "
             "this release, merge merges it into local changes. digest names the release you saw; local_digest "
-            "detects edits since you looked. Choose the configured review or a recorded self-check by what it can touch."
+            "detects edits since you looked. From a review source the configured review decides (Cyber Pro: your own check)."
         ),
         "properties": {
             "name": {"type": "string"},
             "mode": {"type": "string", "enum": ["replace", "keep", "merge"]},
+            "reason": {"type": "string", "description": "Why these reviewers; required for a narrowed Advisory panel."},
             "digest": {"type": "string", "description": "The candidate release digest from skill_search."},
             "local_digest": {"type": "string", "description": "The installed copy's local_digest from skill_search."},
             **_CHECK_PROPERTIES,

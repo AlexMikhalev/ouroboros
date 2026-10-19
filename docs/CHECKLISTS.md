@@ -42,8 +42,9 @@ explicit work-order review obligations.
   index, syntax of staged `.py` files), the tests preflight under its own policy
   (`skip_tests` is the one exemption, a documentation-only diff included; a
   managed resolution always runs it; a matching unsigned receipt of a complete run
-  counts), then the named row's look, then ONE review wave in which every pool seat,
-  shown the same test execution fact, answers both parts of the brief. The commit
+  counts), then the named row's look, then ONE review wave in which every seat on the panel (every pool
+  seat under Blocking; the pool seats Ouroboros named with a reason under
+  Advisory), shown the same test execution fact, answers both parts of the brief. The commit
   records its preflight fact: `performed` with the record id, `skipped` for an
   explicit `skip_advisory_review=True`, `not_performed` when no row was named.
   `preflight_reviewer` and `skip_advisory_review=True` are opposite choices
@@ -230,7 +231,7 @@ Ouroboros binds Ouroboros as the author, never the subject repository.
 | 6 | cross_platform | Does the diff use platform-specific APIs (`os.kill`, `os.setsid`, `os.killpg`, `os.getpgid`, `fcntl`, `msvcrt`, `signal.SIGKILL`, `signal.SIGTERM`, `subprocess` with `start_new_session`/`creationflags`, hardcoded `/` or `\\` in filesystem paths) outside the subject's platform abstraction layer, when it has one? Does it import Unix-only or Windows-only modules (`fcntl`, `msvcrt`, `winreg`, `resource`) at any level without a platform guard (a `sys.platform` check or the subject's equivalent)? | critical |
 | 7 | capability_regression | Does the diff REMOVE or NARROW a previously-supported user-facing behavior or capability — a tool/flag/mode/path that worked before now errors or is gated tighter (e.g. a new `is_dir`/existence guard that blocks a legitimate create, a tightened allowlist that drops a real path, a removed fallback)? If so, is it INTENTIONAL and disclosed as a breaking/capability change in the commit message + changelog? Accidental capability removal is the failure class this item names. Ask whether a golden "from zero" test would have caught it. **Guard-change trigger (executable requirements, not an essay):** ADDING or TIGHTENING a guard, filter, allowlist, or deny rule IS a capability change and fires this item. For such a diff the reviewer must verify two things: (a) the diff names and runs a positive test, existing or newly staged, that walks a legitimate flow THROUGH the new guard and proves it still succeeds — a negative "it blocks X" test alone is insufficient (a gate can pass its own probe while breaking every real run); (b) the diff or its disclosure NAMES THE SURVIVING POSITIVE PATH — the concrete actor and flow that still work after the change. A guard change without passing surviving-path evidence is a capability-regression finding, not a safety improvement; a missing *new* test is not. A guard keyed on model or provider identity (id, prefix, family, provider name) always fires this item; its positive test uses an identity that the diff's own literals do not contain, and a test that proves only refusal is insufficient. **Owner acceptance:** a narrowing counts as OWNER-ACCEPTED only when the subject's owner actually decided it (the owner's words or answer for this work, or a standing disclosure the subject keeps for this purpose) or it lies within authority the owner had already delegated for this work; the plan council's answers are the reviewers' view, not the owner's consent. Owner acceptance makes the finding advisory (disclosed, non-blocking). Intent wording, a commit-message disclosure, or a changelog row alone is disclosure, NOT acceptance. This names who accepts a narrowing; it adds no approval step. Severity follows the `Critical surface whitelist` below — silently removing a documented user-facing capability or a release contract is critical; removing or loosening an internal guard, proof or re-check is advisory and needs one line naming the residual; an owner-accepted narrowing or an internal-only refactor is advisory. | advisory |
 | 8 | changelog_accuracy | Do the exact wording, test counts, and minor description details in the subject's changelog or release-notes entry match what the diff actually does? Wording drift, off-by-one test counts, minor inaccuracies in descriptive prose — these belong here, NOT in a release-metadata or consistency item. This item exists so reviewers have a dedicated advisory bucket for prose-level changelog imprecision that does not affect release metadata, runtime behavior, or safety contracts. (PASS with "Not applicable" when the subject keeps no changelog.) | advisory |
-| 9 | perf_lifecycle | If the diff changes data readers or an endpoint, poller, subscription, timer, startup, shutdown or other batch operation: evaluate the total read cost as history, object count and project size grow, including nested repeats, cold caches and contention for shared resources. Where that growth can materially hurt responsiveness, is there proportionate evidence at representative scale, and was redundant work or within-operation reuse considered before adding infrastructure? This remains advisory, with no universal time limit, mandatory heavy benchmark or new approval gate. Does any interaction-path read scan an unbounded store per request/message/tick (a full-table read filtered in code is such a scan)? Is a subscription/observer/interval/listener added without a paired disposer? Does O(history) work run on a poll/stream path? Does a GET handler perform new steady-state durable writes? Where the subject documents these invariants, check against its definitions rather than re-deriving them here. (PASS with "Not applicable" if the diff touches none of these surfaces.) | advisory |
+| 9 | perf_lifecycle | If the diff changes data readers or an endpoint, poller, subscription, timer, startup, shutdown or other batch operation: evaluate the total read cost as history, object count and project size grow, including nested repeats, cold caches and contention for shared resources. Where that growth can materially hurt responsiveness, is there proportionate evidence at representative scale, and was redundant work or within-operation reuse considered before adding infrastructure? This remains advisory, with no universal time limit, mandatory heavy benchmark or new approval gate. Does any interaction-path read scan an unbounded store per request/message/tick (a full-table read filtered in code is such a scan)? Is a subscription/observer/interval/listener added without a paired disposer? Does each observed or non-terminal state name which live producer can still change it and which fact ends the observation (an unknown past is a fact on a terminal, not an open state)? Does O(history) work run on a poll/stream path? Does a GET handler perform new steady-state durable writes? Where the subject documents these invariants, check against its definitions rather than re-deriving them here. (PASS with "Not applicable" if the diff touches none of these surfaces.) | advisory |
 
 ### Severity rules
 
@@ -700,7 +701,7 @@ review wave, both parts, still runs.
 Self-authored skills carry payload-local `.self_authored.json` and
 owner-state `data/state/skills/<skill>/self_authored.json` provenance,
 but outside Cyber Pro they do not bypass review on the agent's own initiative. `skill_review` routes them
-through the same tri-model skill review as marketplace and user-managed
+through the same review-pool skill review as marketplace and user-managed
 skills; no deterministic PASS or enablement is written automatically.
 EXCEPTION (owner attestation, "Skip review" / "Turn on anyway"): the OWNER may skip the
 LLM review for the exact bytes of a skill from any origin via the owner-only
@@ -716,8 +717,8 @@ checks the actual caller, resolved member source, selected revision and source
 eligibility before invoking this same attestation. The model interprets the
 owner's words; a formatted reference alone grants nothing. Without a review
 panel, exact bytes are accepted only by: a trusted source (`trusted`); Ouroboros's
-own recorded check of that release (`self_check`, its notes in `install.json`; it
-never overrules a panel's blockers); the owner's Skip review or "Update without
+own recorded check of that release, only in Cyber Pro (`self_check`, its notes in
+`install.json`; outside Cyber Pro it admits nothing); the owner's Skip review or "Update without
 review" of that release (owner attestation, `owner_skip`); and an owner edit: the
 admitted selected-skill task the owner's own door started records `owner_edit.json`
 for each revision it writes. Each binds to exact bytes; any later edit leaves it.
@@ -933,7 +934,7 @@ without the audit record).
 
 ### Skill review vs. repo review
 
-These are **separate surfaces** with separate models, prompts, and state:
+These are **separate surfaces** with separate prompts and state, drawn from the same review pool:
 
 - Repo review (the review pool's one wave, both parts, plus any preflight)
   protects the self-modifying `~/Ouroboros/repo/`. Its attempt state lives in

@@ -19,8 +19,8 @@ A **skill** is a small package that adds capabilities to Ouroboros:
 new tools the agent can call, HTTP routes the desktop app can fetch,
 WebSocket message handlers, and host-rendered widget UIs. Skills need exact-byte
 review or acceptance before they run. Disk copies use the configured review;
-source installs also support trusted-source acceptance or Ouroboros's recorded
-self-check (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
+source installs also support trusted-source acceptance and, in Cyber Pro only,
+Ouroboros's recorded self-check (see "Sources and publishing"). Skills authored by the current Ouroboros agent session carry
 both payload-local `.self_authored.json` and owner-state
 `data/state/skills/<name>/self_authored.json` markers for provenance,
 but they still go through the same tri-model skill review before they
@@ -800,11 +800,17 @@ stack or cancellation return `disposition: retained`, `turn_ref` for the origina
 optional `work_ref` for a real admitted child, and `delivery_reporting_version`.
 Persist the full receipt and source event, release the input FIFO, and observe
 both references independently through `/presence/work`; never resubmit the event
-as new work. An unresolved work view has `status: unresolved`, the retained code
-and references, no authored outcome/text, and any already released continuation
-outputs. Keep observing for canonical late evidence without erasing the retained
-receipt when a child finishes. Deduplicate output by its original source identity.
-Cancelled attempts remain observed without new generation. A live turn's model
+as new work. A work view is `pending` (202) while its attempt can still change.
+Then it is terminal: a recorded `completed` or `failed` answer keeps its recorded
+projection (a selected reply, or `silent`); a cancellation, unknown outcome, resource
+refusal or settled loss is `failed` (`cancelled` when recorded) with `outcome: "silent"`, empty `text`/`output_ref`, the typed `code` and facts
+(`recorded_status` is the status when observed, `uncertainty`,
+`status_reconciled_from`), `work_ref` naming the polled reference, a real child in
+`child_work_ref` and already released continuation outputs. There `silent` means
+nothing further to deliver, never chosen silence or absence of effects. Stop
+observing a reference at its terminal, keep the receipt, observe a child until its
+own terminal, and deduplicate output by its original source identity. An ended
+attempt is never re-run. A live turn's model
 recovery keeps its conversation under existing controls until it finishes or
 returns a retained refusal; input custody is not released merely by a stream loss.
 `retry` preserves temporary failures and quota refusals with a source-bound
@@ -829,24 +835,21 @@ within the request. A retry of the same event returns the identical stored envel
 
 Poll `GET /presence/work/{continuation_ref}?binding_id=...` like other late work. Ordinary pending
 and terminal continuation views carry `work_ref` and `continuation_ref` naming the author, plus
-`child_work_ref` for its promoted independent work (empty if none). An unresolved retained view
-names the author with `turn_ref` and any retained `continuation_ref`; its optional `work_ref`
-names the actual child, and any `child_work_ref` is retained too. Discover and retain the child
+`child_work_ref` for its promoted independent work (empty if none). Discover and retain the child
 before handling author status; poll it independently. A child promoted after the first yield
 appears at the next park even if the immutable initial envelope has an empty `work_ref`.
 While the author lives it answers HTTP 202 `pending` with `outputs`: the ordered
 `{output_ref, outcome, text}` the author released so far. Its terminal answers 200 with
 `outcome`/`text`/`output_ref` holding only a new terminal output (a re-finalized released selection
 yields `silent` and empty text), the child reference, and the same `outputs`.
-A retained lost author answers HTTP 200 `status: "unresolved"`, `disposition: "retained"` and a
-typed `code`, with no authored `outcome` or `text`. The view preserves released `outputs` and
-the actual child references. Loss is established under the conversation gate or by the retained
-controller's absence; missing or unobservable identity alone proves no crash. Polling starts no
-new generation and never regenerates the original event. An explicit new event may request
-continuation after checking prior effects; it creates a new turn and retains the original reference.
-Old consumers accepting only `interrupted` for a lost author can reject the unresolved view and
-miss a child first discovered there until upgraded; `interrupted` remains the legacy wire shape
-on hosts without retained-work support. Send each `output_ref` at most once:
+An author whose attempt ended without a canonical answer (its recorded terminal, the runner's
+own end marker or a dead controller; a missing or unobservable identity alone proves nothing)
+answers HTTP 200 `failed` (`cancelled` when recorded) with `outcome: "silent"`, empty `text`, a
+typed `code`, its released `outputs` and the child reference. Polling starts no new generation and
+never regenerates the original event. An explicit new event may request continuation after
+checking prior effects; it creates a new turn and retains the original reference. Older hosts may
+answer `unresolved` (observe on) or `interrupted` (ended); current hosts send neither. Send each
+`output_ref` at most once:
 deduplicate by `output_ref`, never by text, since an identical correction is new speech. Without
 `continuation_version` the legacy shape is unchanged and the request waits for the author's terminal.
 
@@ -1698,16 +1701,19 @@ even under Advisory, until the owner skips the review. The basis a skill was
 installed under is recorded in `data/state/skills/<name>/install.json` and does
 not change when the source's trust changes later.
 
-For `skill_install` and `skill_update`, Ouroboros chooses `check: "review"`
-(the configured panel, the default) or `check: "self"` after reading the exact
-release, with `check_notes` of 1–2000 characters explaining why it may run.
-Choose the depth by what the skill can touch: its code, keys, permissions and
-effects. A self-check records `basis: "self_check"`; an edit invalidates it.
-A release whose panel review found blockers needs the owner's Skip;
-Ouroboros's own check does not overrule a panel.
-A trusted source ignores this choice and says so in the result. Both acceptance
-paths retain preflight, the owner's auto-grant setting, dependencies and readiness.
-There is no one-reviewer depth in these tools.
+For `skill_install` and `skill_update` from a source that reviews each skill,
+the configured review decides (`check: "review"`, the default): the skill runs
+when the reviewers leave no blockers, and outside Cyber Pro only the owner skips
+a review. In Cyber Pro, where Ouroboros acts on its own judgment, it may instead
+record its own check (`check: "self"` after reading the exact release, with
+`check_notes` of 1–2000 characters explaining why it may run). The record holds
+`basis: "self_check"`; an edit invalidates it, and outside Cyber Pro that basis
+admits nothing. A trusted source ignores this choice and says so in the result.
+Every acceptance path keeps preflight, the owner's auto-grant setting,
+dependencies and readiness. Who reviews follows the review pool: under Blocking
+every marked reviewer; under Advisory Ouroboros may name `reviewers` (one or more
+pool rows) and must state why when it narrows the panel; a review the owner starts
+uses the whole pool. Unmarked rows it adds are advisers: heard, never counted.
 
 A git repository is a source in one of two shapes:
 

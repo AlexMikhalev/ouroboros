@@ -51,6 +51,8 @@ class ReviewActorRecord:
     # a positive receipt, never inferred from the status. The wave it ran in.
     error_event_logged: bool = False
     review_wave_id: str = ""
+    additional: bool = False
+    cost_kind: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         # The durable id is the one the review substrate actually ran this row
@@ -68,6 +70,8 @@ class ReviewActorRecord:
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "cost_usd": self.cost_usd,
+            "cost_kind": self.cost_kind,
+            "additional": self.additional,
             "slot": self.slot,
             # LEGACY-READ-ONLY fallback: every live producer stamps slot_id (the one
             # dispatch entry is review._handle_multi_model_review — skill_review binds
@@ -108,7 +112,7 @@ class ParsedTriadReview:
         # actor_records holds ALL dispatched reviewers (responsive + errored), so
         # this honors the configured count: configured=1 & responded=1 -> met;
         # configured=3 & responded=1 -> NOT met (loud degraded surfaces).
-        return len(self.responsive_models) >= adaptive_quorum(len(self.actor_records))
+        return len(self.responsive_models) >= adaptive_quorum(sum(not r.additional for r in self.actor_records))
 
     @property
     def degraded_reasons(self) -> List[str]:
@@ -136,6 +140,8 @@ def _actor_record(
         tokens_in=int(actor.get("tokens_in", 0) or 0),
         tokens_out=int(actor.get("tokens_out", 0) or 0),
         cost_usd=(float(actor["cost_estimate"]) if actor.get("cost_estimate") is not None else None),
+        additional=bool(actor.get("additional")),
+        cost_kind=str(actor.get("cost_kind") or ("measured" if actor.get("cost_estimate") is not None else "unknown")),
         slot=idx + 1,
         slot_id=str(actor.get("slot_id") or ""),
         prompt_ref=dict(actor.get("prompt_ref") or {}),
@@ -702,6 +708,7 @@ def parse_model_review_results(
     result_json: Dict[str, Any],
     *,
     required_items: Optional[Sequence[str]] = None,
+    additional: Sequence[str] = (),
 ) -> ParsedTriadReview:
     """Parse model result envelopes into normalized findings and actor records.
 
@@ -716,6 +723,7 @@ def parse_model_review_results(
     for idx, actor in enumerate(result_json.get("results") or []):
         if not isinstance(actor, dict):
             continue
+        actor = {**actor, "additional": bool(actor.get("additional") or actor.get("slot_id") in additional)}
         model = str(actor.get("model") or actor.get("request_model") or "").strip()
         raw_text = str(actor.get("text") or "")
         model_label = model or "reviewer"
@@ -758,6 +766,7 @@ def parse_model_review_results(
                 "reason": str(entry.get("reason") or "").strip(),
                 "model": model_label,
                 "slot_id": actor_slot_id,
+                **({"additional": True} if actor.get("additional") else {}),
                 **({"obligation_id": str(entry.get("obligation_id") or "")} if entry.get("obligation_id") else {}),
             })
         if required and not required.issubset(covered_items):
@@ -766,7 +775,7 @@ def parse_model_review_results(
         findings.extend(actor_findings)
         responsive_id = f"{model_label} [{actor_slot_id}]" if actor_slot_id else f"{model_label}#{idx + 1}"
         response_identity = f"slot:{actor_slot_id}" if actor_slot_id else f"actor:{idx}"
-        if response_identity not in responsive_ids:
+        if response_identity not in responsive_ids and not actor.get("additional"):
             responsive.append(responsive_id)
             responsive_ids.add(response_identity)
         records.append(_actor_record(actor, idx=idx, model_label=model_label, status="responded", raw_text=raw_text, parsed_items=actor_findings))

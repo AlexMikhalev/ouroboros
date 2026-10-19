@@ -89,6 +89,7 @@ def aggregate_skill_review_status(
     # as STATUS_PENDING (non-executable under every enforcement mode) and MUST
     # reload that way — never as advisory-overridable BLOCKERS or WARNINGS —
     # so honor them before the severity-driven aggregation below.
+    findings = [finding for finding in findings if not finding.get("additional")]
     if preflight_failed(findings):
         return STATUS_PENDING
     is_official_hub = review_profile == "official_hub"
@@ -185,7 +186,7 @@ def preflight_failed(findings: Any) -> bool:
     Re-review that would deterministically fail again (#335).
     """
     for finding in findings or []:
-        if not isinstance(finding, dict):
+        if not isinstance(finding, dict) or finding.get("additional"):
             continue
         if finding.get("verdict") == "FAIL" and (
             finding.get("item") in ("skill_preflight", "plugin_api_admission")
@@ -215,6 +216,26 @@ def _acceptance_reason(acceptance: Any, current_hash: str) -> str:
     return ""
 
 
+def cyber_authority() -> bool:
+    """Whether Ouroboros acts on its own judgment now (Cyber Pro): reviews inform, never hold."""
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    return not review_enforcement_blocks("blocking")
+
+
+def acceptance_in_force(acceptance: Any, current_hash: str, *, cyber: Optional[bool] = None) -> str:
+    """The acceptance basis that admits the current bytes now, or "".
+
+    Ouroboros's own recorded check (``self_check``) counts only while it holds Cyber Pro
+    authority: outside Cyber Pro a source that reviews each skill needs its review, and only
+    the owner skips one. The other bases do not depend on the mode.
+    """
+    reason = _acceptance_reason(acceptance, current_hash)
+    if reason == "self_check" and not (cyber_authority() if cyber is None else cyber):
+        return "owner_edit" if acceptance.get("owner_edit_digest") == current_hash else ""
+    return reason
+
+
 _ACCEPTANCE_SUMMARIES = {
     "trusted_source": "Installed unchanged from a source the owner trusts; no review is required for these exact bytes.",
     "self_check": "Ouroboros read this exact release and recorded why it may run.",
@@ -236,8 +257,10 @@ def skill_review_gate(
     callers without one retain the frozen gate key set.
 
     ``acceptance`` adds the local bases that need no critic PASS for the current
-    bytes (trusted source, owner Skip, owner edit); a deterministic
-    preflight failure recorded for the current bytes still refuses them. A skill
+    bytes (trusted source, owner Skip, owner edit, and Ouroboros's own check only
+    under Cyber Pro, ``acceptance_in_force``); a deterministic preflight failure
+    recorded for the current bytes still refuses them. Under Cyber Pro the gate names
+    a basis in force instead of its own authority, so grants and dependencies follow it. A skill
     installed from a source that reviews each skill (``acceptance["strict_review"]``)
     keeps blocker findings non-executable even under Advisory, until the owner skips
     the review for these bytes; an Advisory author acceptance is not one of its bases.
@@ -280,13 +303,16 @@ def skill_review_gate(
         except Exception:
             enforcement = "blocking"
     enforcement = str(enforcement or "blocking").lower()
-    from ouroboros.tools.review_helpers import review_enforcement_blocks
-
-    cyber = not review_enforcement_blocks("blocking")
-    accepted = _acceptance_reason(acceptance, current_hash)
+    cyber = cyber_authority()
+    accepted = acceptance_in_force(acceptance, current_hash, cyber=cyber)
     fresh_preflight_failure = bool(findings is not None and not stale and preflight_failed(findings))
     strict_review = bool(isinstance(acceptance, dict) and acceptance.get("strict_review"))
-    if cyber:
+    if cyber and accepted and not fresh_preflight_failure:
+        # The basis still says why these bytes run (keys, dependencies and the card read it).
+        executable = True
+        reason = accepted
+        summary = _ACCEPTANCE_SUMMARIES[accepted]
+    elif cyber:
         executable = True
         reason = "cyber_authority"
         summary = ("Cyber Pro permits acting on this payload by Ouroboros's judgment; "

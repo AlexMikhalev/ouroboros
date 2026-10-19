@@ -49,7 +49,8 @@ def load_acceptance_facts(drive_root: pathlib.Path, name: str) -> Dict[str, Any]
             "basis": basis,
             "release_digest": str(release.get("digest") or ""),
             "source_id": str((record.get("source") or {}).get("id") or "") if isinstance(record.get("source"), dict) else "",
-            "strict_review": basis == "review" and not record.get("converted_from"),
+            # A review-each install stays strict when Ouroboros's own check no longer admits it.
+            "strict_review": basis in {"review", "self_check"} and not record.get("converted_from"),
         })
     owner_edit = read_json_dict(skill_state_dir_path(pathlib.Path(drive_root), name) / OWNER_EDIT_FILENAME)
     if owner_edit and str(owner_edit.get("digest") or ""):

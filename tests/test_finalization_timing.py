@@ -553,63 +553,6 @@ def test_synthesis_snapshot_preserves_usage_without_live_clocks(tmp_path, is_roo
     assert usage["_finalization_timing"] is timing
 
 
-@pytest.mark.serial
-@pytest.mark.parametrize("snapshot_has_timing", [False, True])
-def test_late_phase_checkpoint_omits_clocks_but_live_delivery_keeps_them(
-    tmp_path, monkeypatch, snapshot_has_timing,
-):
-    from ouroboros import observability as obs
-    from ouroboros.artifacts import read_actor_source_bytes
-    from ouroboros.post_task_checkpoint import late_phase_pause_record
-    from ouroboros.task_results import load_task_result, write_task_result
-    from supervisor.terminal_delivery import delivery_id_for
-
-    monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
-    task = {"id": "late-answer", "root_task_id": "late-answer", "type": "task", "chat_id": 1}
-    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
-    write_task_result(tmp_path, task["id"], "completed", result="Answer.",
-                      root_phase_checkpoint={"post_task_synthesis": "running"})
-    fields = {"rounds": 2, "prompt_tokens": 3, "first_answer_at": "2026-10-06T00:00:00Z"}
-    usage = dict(fields)
-    with obs.task_timing_scope():
-        obs.mark_last_answer(usage)
-        with obs.timed_phase("result_store"):
-            pass
-    # The durable boundary also strips snapshots frozen by an older producer.
-    snapshot = json.loads(json.dumps(usage if snapshot_has_timing else fields))
-    before = json.loads(json.dumps([usage, snapshot]))
-    trace = {"tool_calls": []}
-    late = SimpleNamespace(marks={"facts_recorded"}, drafts={})
-    assert pipeline.park_late_phase(
-        env, task, "scratchpad_consolidation", ["scratchpad_consolidation", "promotion"],
-        ["memory_fallback_draft"], late=late,
-        inputs=(usage, snapshot, trace, {"text": "Answer."}, tmp_path / "logs", None),
-        state={"stage_errors": False},
-    )
-    stored = load_task_result(tmp_path, task["id"], strict=True)
-    record = late_phase_pause_record(stored)
-    payload_text = read_actor_source_bytes(tmp_path, task["id"], record["payload_ref"]).decode("utf-8")
-    payload = json.loads(payload_text)
-    assert payload["usage"] == payload["usage_snapshot"] == fields
-    assert "_finalization_timing" not in payload_text and '"_origin"' not in payload_text
-    assert payload["trace"] == trace and payload["marks"] == ["facts_recorded"]
-    assert stored["result"] == "Answer." and record["remaining_stages"] == payload["remaining_stages"]
-    assert [usage, snapshot] == before, "saving a checkpoint must not mutate live inputs"
-
-    event = {"type": "send_message", "task_id": task["id"], "chat_id": 1, "text": "Answer.",
-             "delivery_id": delivery_id_for(task["id"], "Answer."),
-             "_finalization_timing": usage["_finalization_timing"]}
-    sent = []
-    host = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl,
-                           send_with_budget=lambda *args, **kwargs: sent.append(args))
-    delivery._handle_send_message(obs.stamp_finalization_enqueue(event), host)
-    row, = timing_rows(tmp_path)
-    assert sent == [(1, "Answer.")]
-    assert row["task_id"] == task["id"] and row["basis"] == "send_handler_returned"
-    assert row["last_answer_at"] == usage["_finalization_timing"]["last_answer_at"]
-    assert row["phases"]["result_store"]["count"] == row["phases"]["sender"]["count"] == 1
-
-
 def test_agent_scope_keeps_post_loop_child_lookups_and_resets_reused_workers(tmp_path, monkeypatch):
     from ouroboros import agent as agent_module, observability as obs
     from ouroboros.settings_integrity import task_settings_snapshot

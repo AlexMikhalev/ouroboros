@@ -7,13 +7,10 @@ starts on its own and never runs tests. The rules follow the subject: a subject 
 against the body layer, anything else against the universal core. Enforcement is recorded for every root
 and binds only a body subject's record; a verdict on another root locks nothing.
 
-Panel (owner, 07.10): seats come from the review pool. For a body subject outside Cyber Pro the pool is
-the owner's, so ``reviewers`` only ADD seats and a named subset is recorded as ignored. For a body subject
-in Cyber Pro and for ANY subject outside the body, ``reviewers`` IS the panel (omitted = the whole pool); a
-narrowed panel without a ``reason`` is recorded loudly (``reason_missing``), never refused. The counted
-seats of that composition are marked pool rows (the owner's menu, decision 1A); an enabled row outside
-the pool is seated as an added critic. ``coupling_only`` seats answer only the coupling question; like
-every added seat they stay outside the quorum and their findings are ``additional_findings``.
+Panel: the shared strictness policy seats the whole pool for Blocking body changes.
+Advisory may narrow with a reason; Cyber Pro composes freely. Enabled unticked rows
+are advisers: heard and shown, never counted. Coupling-only advisers answer that
+question without acquiring quorum or veto authority.
 
 Surfaces (decision 3A): ``change`` is the panel review above. ``preflight`` is the same wave with ONE
 enabled catalog row the author names, pool member or not — the optional pre-commit look at a worktree.
@@ -42,10 +39,10 @@ from ouroboros.preflight_receipts import bind_execution_exhibit
 from ouroboros.review_body_fact import body_fact, layer_for
 from ouroboros.review_ledger import (
     PART_CHANGE, PARTS, QUESTION_NOT_PERFORMED, build_wave_record, ledger_root, load_record, new_record_id,
-    panel_facts, reduce_verdict, revise_record, row_verdict, write_record,
+    panel_facts, panel_not_reached, reduce_verdict, revise_record, row_verdict, write_record,
 )
-from ouroboros.runtime_mode_policy import runtime_mode_at_least
-from ouroboros.settings_scales import EFFORT_SCALE, effort_rank
+from ouroboros.settings_scales import EFFORT_SCALE
+from ouroboros.reviewer_slot_config import ComposedPanel, PanelCompositionError as ReviewChangeArgumentError
 from ouroboros.tools.arg_feedback import argument_refusal
 from ouroboros.tools.parallel_review import run_parallel_review
 from ouroboros.tools.registry import ToolContext, ToolEntry
@@ -75,10 +72,6 @@ MAIN_SEAT = "main"
 # any other block keeps a verdict recomputed over the assigned seats from PASS.
 _ROW_STATED_BLOCKS = frozenset({"", "critical_findings", "review_quorum", "coupling_not_performed", "change_unanswered"})
 _GIT_PROBE_TIMEOUT_SEC = 30
-
-
-class ReviewChangeArgumentError(ValueError):
-    """A deterministic call error, refused before any reviewer is paid."""
 
 
 # --- Arguments ------------------------------------------------------------------
@@ -272,113 +265,19 @@ def _verify_revisions(root: pathlib.Path, request: ReviewChangeRequest) -> None:
 
 # --- Panel ------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class ComposedPanel:
-    """The wave's seats as ``reviewer_slot_config.PoolSeat`` tuples
-    ``(ReviewSlot, parts, additional)``; a seat's id is its catalog row's ``subagent_id``."""
+def compose_panel(request: ReviewChangeRequest, *, body: bool = False, strictness: Optional[str] = None) -> ComposedPanel:
+    """The shared strictness policy, applied to this change's own-body fact."""
+    from ouroboros.reviewer_slot_config import compose_review_panel, review_strictness
 
-    seats: Tuple[Any, ...]
-    override: bool
-    facts: Dict[str, Any]
-
-    @property
-    def additional(self) -> Tuple[str, ...]:
-        return tuple(slot.slot_id for slot, _parts, extra in self.seats if extra)
-
-    @property
-    def assigned(self) -> Tuple[Tuple[str, str, str], ...]:
-        """The composition identity: every seat, each part it answers, and whether it counts."""
-        return tuple(sorted((slot.slot_id, part, "additional" if extra else "assigned")
-                            for slot, parts, extra in self.seats for part in parts))
-
-
-def _effort_facts(order: str, seats: Sequence[Any], own: Dict[str, str]) -> Dict[str, Any]:
-    """``reviewer_effort`` as this wave's ORDER (``plan_task``'s rule, ``row_effort``): it
-    decides every Auto seat, clamped into the owner's effort range; a pinned seat keeps its
-    pin outside Cyber Pro and a model-named seat always keeps its level (``declared_effort``
-    names where the order applied; ``weaker_than_configured`` compares the EFFECTIVE level)."""
-    by_id = {slot.slot_id: slot for slot, _parts, _extra in seats}
-    applied = [slot.slot_id for slot, _parts, _extra in seats if order and slot.declared_effort]
-    return {"order": order, "applied": applied,
-            "not_applied": [slot.slot_id for slot, _parts, _extra in seats if order and not slot.declared_effort],
-            "weaker_than_configured": [seat for seat in applied
-                                       if effort_rank(by_id[seat].effort) < effort_rank(own.get(seat, ""))]}
-
-
-def compose_panel(request: ReviewChangeRequest, *, adds_only: bool) -> ComposedPanel:
-    """The wave's seats over the review pool. A preflight seats the one named row,
-    pool member or not (decision 3A). ``adds_only`` (a body subject outside Cyber
-    Pro): the pool plus any named row outside it as an added seat. Otherwise the
-    named seats ARE the panel, the whole pool when none is named — and that
-    composition draws its counted seats from the marked pool only (the owner's menu,
-    decision 1A); an enabled catalog row outside the pool, named by its id or handle,
-    is heard as an added critic, never counted. A malformed catalog yields no seats
-    and its error; the wave then reports the typed block."""
-    from ouroboros import review_ledger as ledger
-    from ouroboros import reviewer_slot_config as slots
-    from ouroboros.configured_subagents import MAX_CONFIGURED_SUBAGENTS
-
-    order = request.reviewer_effort
     try:
-        configured = list(slots.review_pool_slots())
-        pool = list(slots.review_pool_slots(default_effort=order)) if order else configured
+        return compose_review_panel(request.reviewers, request.reason,
+            surface="preflight" if request.surface == "preflight" else "own_body" if body else "change",
+            strictness=strictness or review_strictness(get_review_enforcement(), get_runtime_mode()),
+            reviewer_effort=request.reviewer_effort, coupling_only=request.coupling_only)
+    except ReviewChangeArgumentError:
+        raise
     except ValueError as exc:
-        return ComposedPanel((), False, {"composition": "full_pool", "composition_error": str(exc)})
-    in_pool = {slot.slot_id: slot for slot in pool}
-    own = {slot.slot_id: slot.effort for slot in configured}
-
-    def seat(name: str) -> Any:
-        if name in in_pool:
-            return in_pool[name]
-        try:
-            row = slots.catalog_review_row(None, name)
-        except ValueError as exc:
-            raise ReviewChangeArgumentError(f"reviewer {name!r} is not an enabled catalog row ({exc})") from exc
-        if row.subagent_id in in_pool:
-            return in_pool[row.subagent_id]
-        own.setdefault(row.subagent_id, slots._delivery_slot(row, role_hint="").effort)
-        return slots._delivery_slot(row, role_hint="", default_effort=order)
-
-    def placed(slot: Any, *, additional: bool = False, coupling_only: bool = False) -> Any:
-        return slots.PoolSeat(slot, tuple(ledger.seat_parts(slot, coupling_only=coupling_only)), additional)
-
-    named = list({slot.slot_id: slot for slot in map(seat, request.reviewers)}.values())
-    if request.surface == "preflight":
-        seats = [placed(slot) for slot in named]
-        facts: Dict[str, Any] = {"composition": "composed", "chosen_by": "author"}
-    elif named and not adds_only:
-        seats = ([placed(slot) for slot in named if slot.slot_id in in_pool]
-                 + [placed(slot, additional=True) for slot in named if slot.slot_id not in in_pool])
-        facts = {"composition": "composed", "chosen_by": "author"}
-    elif adds_only:
-        seats = [placed(slot) for slot in pool] + [placed(slot, additional=True) for slot in named if slot.slot_id not in in_pool]
-        chosen = {slot.slot_id for slot in named if slot.slot_id in in_pool}
-        facts = {"composition": "full_pool", "chosen_by": "owner",
-                 "reviewers_subset_ignored": bool(chosen) and chosen != set(in_pool)}
-    else:
-        seats, facts = [placed(slot) for slot in pool], {"composition": "full_pool", "chosen_by": "owner"}
-    narrowed = (request.surface == SURFACE and facts["composition"] == "composed"
-                and not set(in_pool) <= {slot.slot_id for slot, _parts, _extra in seats})
-    ignored: List[str] = []
-    for name in request.coupling_only:
-        slot = seat(name)
-        if any(seated.slot_id == slot.slot_id for seated, _parts, _extra in seats):
-            ignored.append(name)
-            continue
-        seats.append(placed(slot, additional=True, coupling_only=True))
-    if not any(PART_CHANGE in parts for _slot, parts, extra in seats if not extra):
-        raise ReviewChangeArgumentError(
-            "the panel has no seat for the change question; name at least one reviewer from the review pool "
-            "(an enabled row outside the pool is an added critic, never the quorum)")
-    if len(seats) > MAX_CONFIGURED_SUBAGENTS:
-        raise ReviewChangeArgumentError(
-            f"a wave seats at most {MAX_CONFIGURED_SUBAGENTS} reviewers (this call asks {len(seats)})")
-    facts.update(reason=request.reason, reason_missing=narrowed and not request.reason.strip(),
-                 reviewers_requested=list(request.reviewers), coupling_only=list(request.coupling_only),
-                 coupling_only_ignored=ignored, additional=[slot.slot_id for slot, _parts, extra in seats if extra],
-                 reviewer_effort=_effort_facts(order, seats, own))
-    facts.setdefault("reviewers_subset_ignored", False)
-    return ComposedPanel(tuple(seats), tuple(seats) != tuple(placed(slot) for slot in configured), facts)
+        return ComposedPanel((), True, {"composition": "full_pool", "composition_error": str(exc)})
 
 
 @contextlib.contextmanager
@@ -711,7 +610,10 @@ def _finish_record(record: Any, wave: _Wave, outcome: Dict[str, Any], *, reuse_k
         panel = panel_facts(record.rows, composition=str(wave.panel.facts.get("composition") or "full_pool"),
                             reason=str(wave.panel.facts.get("reason") or ""),
                             chosen_by=str(wave.panel.facts.get("chosen_by") or "owner"))
-    record.panel = {**panel, **wave.panel.facts}
+    record.panel = {**panel, **wave.panel.facts, "not_reached": panel_not_reached(record.rows)}
+    if wave.request.surface == "preflight":
+        for key in ("pool", "strictness", "pool_empty", "main_self_review", "reason_missing"):
+            record.panel.pop(key, None)
 
 
 def _write(drive: Any, record: Any, *, rejoin: bool = False) -> Tuple[Dict[str, Any], bool]:
@@ -922,12 +824,12 @@ def run_system_review(ctx: ToolContext, *, reviewer: str = "", effort: str = "",
             "capability_delta": list(usage.get("capability_delta") or [])}],
         "dispatch_refusal": {"kind": "reviewer_unavailable", "message": report} if refused else None,
         "degraded_reasons": degraded,
-        "composition": "composed", "composition_reason": ask.reason, "chosen_by": "author" if reviewer else "owner",
+        "composition": "composed", "composition_reason": ask.reason, "chosen_by": "ouroboros" if reviewer else "owner",
     }, surface="system", record_id=record_id)
     _as_report(record, drive, "" if failed else report)
     # One row by the author's choice (decision 3A) is not a narrowed pool: the reason is
     # recorded as given and its absence is no ``reason_missing`` fact.
-    record.panel = {**dict(record.panel or {}), "composition": "composed", "chosen_by": "author" if reviewer else "owner",
+    record.panel = {**dict(record.panel or {}), "composition": "composed", "chosen_by": "ouroboros" if reviewer else "owner",
                     "reason": ask.reason, "reason_missing": False, "reviewers_requested": [reviewer] if reviewer else [],
                     "additional": [], "reviewer_effort": {"order": effort}}
     payload, durable = _write(drive, record)
@@ -985,8 +887,7 @@ def run_review_change(ctx: ToolContext, **args: Any) -> Dict[str, Any]:
             from ouroboros.tools.review_change_custody import recorded_change_panel
             panel = recorded_change_panel(ctx, rejoin)
         else:
-            panel = compose_panel(request, adds_only=request.surface == SURFACE and layer == "body"
-                                  and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
+            panel = compose_panel(request, body=layer == "body")
         with _panel_in_force(panel):
             wave = dataclasses.replace(_prepare_wave(ctx, request, frozen, panel, root=root, fact=fact, layer=layer,
                                                      rejoin=rejoin),
@@ -1090,9 +991,9 @@ _DESCRIPTION = (
     "own staged index live). An addressed message while the wave runs returns its pending outcome: the reviewers "
     "continue, a [Review settled] notice follows, and the same unchanged call collects it at $0. "
     "Rules follow the subject: the body is read against the body "
-    "layer, anything else against the universal core checklist. Panel: for a body subject outside Cyber Pro the "
-    "review pool stands and reviewers only add seats; otherwise reviewers IS the panel (omitted = the whole pool) "
-    "and reason records why — its counted seats are pool rows, an enabled row outside the pool is an added "
+    "layer, anything else against the universal core checklist. Panel: Blocking own-body reviews widen to the whole "
+    "pool; Advisory may narrow with a reason (missing reason is a typed $0 refusal); Cyber Pro composes freely. "
+    "Other repositories allow composed panels. Omitted means the whole pool; an enabled unticked row is an added "
     "critic. surface=preflight seats exactly the ONE enabled catalog row you name (pool member or "
     "not): an optional early look, never the commit panel. subject=system with surface=system is /review: one row "
     "(default: the Main model) reads the whole system against BIBLE.md and returns a report. The same subject, "
@@ -1127,7 +1028,7 @@ def get_tools() -> List[ToolEntry]:
         "author_questions": _names("Your own questions to the reviewers, passed verbatim."),
         "reviewers": _names("Pool seats (counted) or enabled catalog rows outside the pool (added critics), by id "
                             "or handle (see the panel rule)."),
-        "reason": _string("Why this panel; recorded with it."),
+        "reason": _string("Why this panel; required for Advisory narrowing, recorded with it."),
         "coupling_only": _names("Extra critics for the coupling question only; outside the quorum."),
         "reviewer_effort": {"type": "string", "enum": list(EFFORT_SCALE), "description": (
             "Panel strength for THIS wave; outranks each seat's effort (a compound route keeps its own). "
