@@ -276,9 +276,10 @@ def test_main_and_the_projects_header_share_the_rows_columns(nav_ui, tmp_path):
         seen = facts[case]
         assert (seen['main_count']['text'], seen['count']['text']) == ('2', '6'), facts  # 2 in Main, 3 + 3 in Projects
         assert seen['count']['right'] == pytest.approx(seen['main_count']['right'], abs=0.5), (case, facts)
+        # One mark column: a one-dot shape (the header's amber) sits mid-column, as a row's does, under three dots.
+        middle = (seen['main_mark']['left'] + seen['main_mark']['right']) / 2
         for mark in ('header_mark', 'row_mark'):
-            assert (seen[mark]['left'], seen[mark]['right']) == pytest.approx(
-                (seen['main_mark']['left'], seen['main_mark']['right']), abs=0.5), (case, mark, facts)
+            assert (seen[mark]['left'] + seen[mark]['right']) / 2 == pytest.approx(middle, abs=0.5), (case, mark, facts)
     mouse, touch = facts['mouse'], facts['touch']
     assert (mouse['add']['left'], mouse['add']['right']) == pytest.approx(
         (mouse['kebab']['left'], mouse['kebab']['right']), abs=0.5), facts

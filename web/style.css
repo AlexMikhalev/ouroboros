@@ -333,6 +333,7 @@ html[data-layout="stack"] .resize-handle { display: none; }
     flex: 0 0 18px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;  /* a one-dot shape sits where a Project row's does, mid-column */
 }
 .nav-row-words {
     position: absolute;
@@ -7178,6 +7179,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     flex: 0 0 18px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
 }
 
 .nav-projects-add { order: 2; }
