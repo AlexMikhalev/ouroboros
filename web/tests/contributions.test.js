@@ -103,8 +103,8 @@ test('a fault belongs to the revision that failed: the skill\'s next revision is
     assert.equal(store.faults()[0].current, false, 'the record stays for Settings and Skills');
 });
 
-test('attach reads at boot, on every socket open, on extension_lifecycle and on the page\'s skill lifecycle', async () => {
-    const reads = client([{}, {}, {}, {}, {}]);
+test('attach reads at boot, on every socket open, on extension_lifecycle, on a finished lifecycle job and on the page\'s skill lifecycle', async () => {
+    const reads = client([{}, {}, {}, {}, {}, {}]);
     const store = createContributionsStore({ client: reads });
     const handlers = new Map();
     const ws = { on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); } };
@@ -119,10 +119,20 @@ test('attach reads at boot, on every socket open, on extension_lifecycle and on 
     target.dispatchEvent(new Event('ouro:skill-lifecycle'));
     await tick();
     assert.equal(reads.calls.length, 4, 'one read per trigger');
+    // An install from Browse fires no page event: the end of its lifecycle job (a progress row) is the trigger.
+    const row = (phase, extra = {}) => ({ type: 'chat', role: 'system', is_progress: true, system_type: 'skill_lifecycle',
+        lifecycle: { kind: 'install', target: 'browser_speech', phase }, ...extra });
+    handlers.get('chat')(row('running'));
+    handlers.get('chat')({ type: 'chat', role: 'assistant', content: 'completed' });
+    await tick();
+    assert.equal(reads.calls.length, 4, 'a running job and an ordinary message read nothing');
+    handlers.get('chat')(row('completed'));
+    await tick();
+    assert.equal(reads.calls.length, 5, 'a finished job reads the projection again');
     detach();
     assert.equal(handlers.size, 0, 'the socket subscriptions are released');
     target.dispatchEvent(new Event('ouro:skill-lifecycle'));
-    assert.equal(reads.calls.length, 4, 'and the page event no longer reads');
+    assert.equal(reads.calls.length, 5, 'and the page event no longer reads');
 });
 
 function room(initial = '') {

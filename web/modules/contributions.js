@@ -1,6 +1,8 @@
 // Skills' contributions in the page (docs/CLIENT_CONTRACT.md §11 "Contributions"): one store of the live projection
-// `GET /api/ui/contributions`, read at boot, on every socket (re)open, on `extension_lifecycle` and on the page's own
-// `ouro:skill-lifecycle`; overlapping triggers share one read and a failed read keeps the last good snapshot. Its
+// `GET /api/ui/contributions`, read at boot, on every socket (re)open, on `extension_lifecycle`, on the end of any skill
+// lifecycle job (its `skill_lifecycle` progress row: an install from Browse, an update, a turn-on once ready, whoever
+// started it) and on the page's own `ouro:skill-lifecycle`; overlapping triggers share one read and a failed read
+// keeps the last good snapshot. Its
 // selectors answer per placement and per provider kind; placements follow the owner's arrangement
 // (`preferences.contributions.hidden` and `order`, contributed items only: the host's own controls are not in this
 // store) and leave out a contribution that is off for this page. The fault book is that "off": a contribution whose
@@ -10,6 +12,9 @@ import { apiClient, jsonPost } from './api_client.js';
 import { fmt, tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { boundedText } from './utils.js';
+
+// The phases a skill lifecycle job's last progress row carries (ouroboros/skill_lifecycle_queue.py `_notify_chat`).
+const LIFECYCLE_ENDS = new Set(['completed', 'failed', 'cancelled']);
 
 const EMPTY = Object.freeze({ contributions: [], offers: {}, preferences: {}, voice: {}, icons: [], problems: {} });
 
@@ -131,7 +136,11 @@ export function createContributionsStore({ client = apiClient } = {}) {
         /** Read at boot and on every trigger that may change what is live. Returns the disposer. */
         attach({ ws = null, target = globalThis.window } = {}) {
             const read = () => { void store.refresh(); };
-            const offs = [ws?.on?.('open', read), ws?.on?.('extension_lifecycle', read)];
+            const ended = (msg) => {
+                const phase = (msg?.lifecycle || msg?.progress_meta?.lifecycle)?.phase;
+                if (msg?.system_type === 'skill_lifecycle' && LIFECYCLE_ENDS.has(phase)) read();
+            };
+            const offs = [ws?.on?.('open', read), ws?.on?.('extension_lifecycle', read), ws?.on?.('chat', ended)];
             target?.addEventListener?.('ouro:skill-lifecycle', read);
             offs.push(() => target?.removeEventListener?.('ouro:skill-lifecycle', read));
             const detach = () => {
