@@ -199,7 +199,9 @@ def test_a_first_wal_open_waits_out_another_writer_within_its_budget(tmp_path, m
 def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
     """The waits of a first WAL open add up to its budget, not more: retries that a writer refuses at
     once, then an attempt that a remaining reader holds in SQLite's busy handler, which may wait only
-    for what is left (the connection's own busy timeout would allow the whole budget again)."""
+    for what is left (the connection's own busy timeout would allow the whole budget again). The writer
+    lets go halfway, so the bounded open fails near 4 s and the unbounded one near 6 s; the 5 s line
+    leaves a second each way for a slow runner and a coarse timer."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     store.close_connections()
@@ -208,16 +210,20 @@ def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
     reader.execute("BEGIN")
     reader.execute("SELECT * FROM meta").fetchall()  # a reader that stays through the budget
     writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-    writer.execute("BEGIN IMMEDIATE")  # a writer that lets go part-way through it
-    released = threading.Timer(1.2, lambda: writer.execute("ROLLBACK"))
+    writer.execute("BEGIN IMMEDIATE")  # a writer that lets go halfway through it
+    released_at = []
+    released = threading.Timer(2.0, lambda: (writer.execute("ROLLBACK"), released_at.append(time.monotonic())))
     released.start()
-    budget, started = 2.0, time.monotonic()
+    budget, started = 4.0, time.monotonic()
     try:
         with pytest.raises(sqlite3.OperationalError, match="locked"):
             store.connect(path, store.TIER_ENFORCED, wait_sec=budget)
-        assert time.monotonic() - started < budget + 0.4, "the open waited past its budget"
+        finished = time.monotonic()
+        # Only a writer that let go before the open ended put the reader's wait to the test.
+        assert released_at and released_at[0] < finished, "the writer was still holding when the open ended"
+        assert finished - started < budget + 1.0, "the open waited past its budget"
     finally:
-        released.join(5)
+        released.join(10)
         writer.close()
         reader.execute("ROLLBACK")
         reader.close()
@@ -227,7 +233,7 @@ def test_leaving_wal_with_another_wal_connection_open_still_refuses_at_once(tmp_
     """Only the switch INTO WAL waits. Leaving WAL needs every other WAL connection gone, and each keeps its
     shared lock for its life, so an open asking for PERSIST on a WAL store (an older SQLite, an unknown
     filesystem) with another connection idle in it refuses at once, instead of waiting out its whole budget
-    for the same refusal."""
+    for the same refusal. The 1 s line sits far below the 4 s budget and far above a refusal at once."""
     monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
     path = publish(tmp_path)
     store.close_connections()
@@ -237,8 +243,8 @@ def test_leaving_wal_with_another_wal_connection_open_still_refuses_at_once(tmp_
         idle.execute("SELECT * FROM meta").fetchall()  # and its connection, idle and open for its life
         started = time.monotonic()
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            store.connect(path, store.TIER_ENFORCED, wait_sec=2.0)
-        assert time.monotonic() - started < 0.5, "leaving WAL refuses at once"
+            store.connect(path, store.TIER_ENFORCED, wait_sec=4.0)
+        assert time.monotonic() - started < 1.0, "leaving WAL refuses at once"
     finally:
         idle.close()
 
