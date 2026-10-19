@@ -572,17 +572,16 @@ jobs:
           name: full-test-${{ matrix.os }}${{ runner.os == 'Windows' && format('-shard-{0}', matrix.shard) || '' }}
           passes: parallel=${{ steps.tests_parallel.outcome }} serial=${{ steps.tests_serial.outcome }} size=${{ steps.tests_size.outcome }}
 
-  # Preserve the release contract: full-test is green only after every OS/shard
-  # succeeded AND the two Windows passes reconcile against independent collections.
   # The matrix above runs the shipped interpreter, whose SQLite puts the stores in WAL, as on a fresh install.
-  # An install updated in place keeps its bundled interpreter, and with it an older SQLite and PERSIST. Every
-  # module whose behaviour depends on the journal mode (the store modules and each test that holds a store
-  # through tests/_store_journal_shared.py) runs again here in PERSIST, on all three systems.
+  # An install updated in place keeps its bundled interpreter, and with it an older SQLite and PERSIST. The store
+  # modules, the ones a WAL-only battery singled out, and every test that holds a store through
+  # tests/_store_journal_shared.py run again here in PERSIST, on all three systems.
   journal-persist:
     if: |
       github.ref == 'refs/heads/ouroboros-stable'
       || github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v')
+      || (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros' && github.repository == 'razzant/ouroboros')
     permissions:
       contents: read
     strategy:
@@ -591,36 +590,61 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
+    env:
+      OUROBOROS_PREFLIGHT_TEST_WORKERS: ${{ matrix.os == 'windows-latest' && '4' || '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Put Windows test temp on the work disk
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup-python-env
+        id: setup_python
       - name: The stores run PERSIST here
         shell: bash
         run: python -c "import pathlib, sys, tempfile; from ouroboros import store; probe = pathlib.Path(tempfile.mkdtemp()) / 'probe.sqlite'; probe.touch(); mode = store._journal_mode(probe, store.TIER_ENFORCED); print('stores run', mode); sys.exit(mode != sys.argv[1])" PERSIST
+      # No trailing newline: Git Bash keeps a Windows CR inside $(...), which would end the last path.
       - name: Select the journal-sensitive modules
+        id: select
         shell: bash
         run: >-
           python -c "import pathlib, re; core = {'test_store.py', 'test_store_import.py', 'test_store_switch.py',
           'test_store_cutover.py', 'test_store_activation.py', 'test_store_journal.py', 'test_store_connections.py',
-          'test_custody_store_rows.py'}; held = re.compile(r'_store_journal_shared'); print(' '.join(sorted(
+          'test_custody_store_rows.py', 'test_chat_attachments.py', 'test_invocation_ownership.py',
+          'test_owner_pause_storage_wait.py'}; held = re.compile(r'_store_journal_shared'); print(' '.join(sorted(
           path.as_posix() for path in pathlib.Path('tests').glob('test_*.py') if path.name in core
-          or held.search(path.read_text(encoding='utf-8')))))" > "$RUNNER_TEMP/journal_modules.txt"
-          && wc -w "$RUNNER_TEMP/journal_modules.txt"
+          or held.search(path.read_text(encoding='utf-8')))), end='')" > "$RUNNER_TEMP/journal_modules.txt"
+          && count=$(wc -w < "$RUNNER_TEMP/journal_modules.txt") && echo "$count modules" && test "$count" -ge 8
       - name: Run them (parallel)
+        id: tests_parallel
         shell: bash
         timeout-minutes: 30
         run: >-
           python scripts/run_tests.py $(cat "$RUNNER_TEMP/journal_modules.txt")
           -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet"
           -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short
+          --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
       - name: Run them (serial)
-        if: ${{ !cancelled() }}
+        id: tests_serial
+        if: ${{ !cancelled() && steps.select.outcome == 'success' }}
         shell: bash
         timeout-minutes: 30
         run: >-
           python scripts/run_tests.py $(cat "$RUNNER_TEMP/journal_modules.txt")
-          -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" --timeout=300 --timeout-method=thread -q --tb=short
+          -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short
+          --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
+      - name: Publish test evidence
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/test-evidence
+        with:
+          name: journal-persist-${{ matrix.os }}
+          passes: parallel=${{ steps.tests_parallel.outcome }} serial=${{ steps.tests_serial.outcome }}
 
+  # Preserve the release contract: full-test is green only after every OS/shard
+  # succeeded AND the two Windows passes reconcile against independent collections.
   full-test:
     needs: [full-test-runs, journal-persist]
     if: ${{ !cancelled() && needs.full-test-runs.result != 'skipped' }}

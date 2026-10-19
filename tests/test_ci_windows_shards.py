@@ -279,3 +279,36 @@ def test_each_journal_mode_is_proven_by_its_own_lane():
 
     assert probe("journal-persist").endswith(" PERSIST") and probe("quick-test").endswith(" PERSIST")
     assert probe("full-test-runs").endswith(" WAL")
+    assert persist["if"] == jobs["full-test-runs"]["if"], "full-test needs it wherever the matrix runs"
+
+
+def test_the_persist_legs_select_real_modules_and_keep_the_gate_split(tmp_path):
+    """The selection is read back through $(...): no trailing newline, since Git Bash keeps a Windows CR there
+    and the last path would not be found. An empty selection fails before any pass runs the whole tree, and the
+    passes keep the gate's split: parallel flags in the parallel pass only, evidence from both."""
+    repo = Path(__file__).resolve().parents[1]
+    job_steps = _jobs()["journal-persist"]["steps"]
+    steps = {step["id"]: step for step in job_steps if "id" in step}
+    select, parallel, serial = steps["select"], steps["tests_parallel"], steps["tests_serial"]
+    assert "end='')" in select["run"] and 'test "$count" -ge 8' in select["run"]
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("workflow shell unavailable on this host")
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "python").symlink_to(sys.executable)
+    result = subprocess.run([bash, "-c", select["run"]], cwd=repo, capture_output=True, text=True, timeout=60,
+                            env={**os.environ, "RUNNER_TEMP": str(tmp_path), "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stderr
+    listed = (tmp_path / "journal_modules.txt").read_bytes()
+    assert listed and not listed.endswith((b"\n", b"\r")), listed[-20:]
+    modules = listed.decode().split()
+    assert len(modules) >= 8 and all((repo / module).is_file() for module in modules), modules
+    assert serial["if"] == "${{ !cancelled() && steps.select.outcome == 'success' }}"
+    for flag in ("-n auto", "--dist", "--max-worker-restart", "--timeout"):
+        assert flag in parallel["run"] and flag not in serial["run"], flag
+    for step, lane in ((parallel, "parallel"), (serial, "serial")):
+        assert f'--ci-evidence-dir="${{{{ runner.temp }}}}/ci-evidence/{lane}"' in step["run"], lane
+    publish = next(step for step in job_steps if step.get("uses") == "./.github/actions/test-evidence")
+    assert publish["with"]["passes"] == ("parallel=${{ steps.tests_parallel.outcome }} "
+                                         "serial=${{ steps.tests_serial.outcome }}")
