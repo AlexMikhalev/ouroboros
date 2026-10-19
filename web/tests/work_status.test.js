@@ -240,6 +240,17 @@ test('a card menu reads its work, else its own task controls without Resume', ()
     assert.equal(cardControls(state, 'loose').resume, false);
 });
 
+test('a parent that finished while its helper works keeps the Stop its work offers; an ended work offering nothing gives none', () => {
+    const helper = stateOf('helper_after_parent');
+    assert.equal(work('helper_after_parent').episode.live, false, 'the server says the parent\'s episode ended');
+    const card = cardControls(helper, 'p');
+    assert.deepEqual([card.menu, card.resume, card.work?.work_id], [true, false, 'p']);
+    assert.deepEqual(cardMenuActions(helper, { groupId: 'p' }), [ACTION_STOP_NOW]);
+    // External runs that no Stop door reaches: the ended work offers nothing, so the card keeps its own controls.
+    const runs = cardControls(stateOf('ended_with_runs'), 'r');
+    assert.deepEqual([runs.menu, runs.resume, runs.work], [false, false, null]);
+});
+
 test('the grouped Stop reaches every target in order and says one combined result', async () => {
     const asked = [], toasts = [];
     const ok = await requestStopAll(['c', 'p', 'c', ''], ACTION_STOP_NOW, {

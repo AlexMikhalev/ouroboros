@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
-import { projection, room, work } from './work_fixture.js';
+import { projection, room, SERVER_CASES, work } from './work_fixture.js';
 
 // The flat fixture's querySelector does not descend; lazily inserted controls
 // (the status badge, card internals) need a real descendant lookup.
@@ -20,7 +20,7 @@ ElementStub.prototype.querySelector = function (selector) {
     return null;
 };
 
-function makeInstance({ details = {}, calls = [], state = { census: null }, chatId = 1 } = {}) {
+function makeInstance({ details = {}, calls = [], state = { census: null }, chatId = 1, asPanel = false } = {}) {
     const env = installDom(async (url) => {
         calls.push(String(url));
         const id = String(url).split('/').at(-1);
@@ -60,7 +60,7 @@ function makeInstance({ details = {}, calls = [], state = { census: null }, chat
             // The page-wide sequencer fans a fetched census into the instance.
             apply: (request, data) => { inst?.hydrateStateSnapshot(data, request.requestedAt); },
         },
-        chatId, idPrefix: 'chat', mountEl: env.mount,
+        chatId, idPrefix: 'chat', mountEl: env.mount, asPanel,
     });
     inst = instance;
     const status = () => env.mount.querySelector('.status-badge')?.textContent;
@@ -717,3 +717,64 @@ test('a finished card keeps the Stop… of a work the body still lists and drops
         assert.equal(Boolean(stop()), false, 'the first body without the work takes its Stop… off the finished card');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
+
+// A browser click on the fixture's stub (each control stops its own event); the nodes under a stub that match.
+const press = (node) => { for (const fn of node.listeners.get('click') || []) fn({ target: node, stopPropagation() {}, preventDefault() {} }); };
+const collect = (node, predicate, out = []) => {
+    if (predicate(node)) out.push(node);
+    for (const child of node?.children || []) collect(child, predicate, out);
+    return out;
+};
+
+for (const [chatId, asPanel] of [[1, false], [7, true]]) {
+    for (const complete of [true, false]) {
+        test(`a finished parent keeps its work's Stop… while its helper works and the Stop reaches the tree (${asPanel ? 'Project room' : 'Main'}, ${complete ? 'complete' : 'partial'} body)`, async () => {
+            const fx = makeInstance({ chatId, asPanel, details: {
+                p: { task_id: 'p', status: 'completed', phase: 'done', ts: '2026-10-19T09:00:05Z' },
+                cancel: { ok: true, task_id: 'p', cancel_state: 'requested', cascade: true },
+            } });
+            const parent = { activity_id: 'p', chat_id: chatId, kind: 'managed_task', phase: 'working' };
+            const helper = { activity_id: 'h', chat_id: chatId, kind: 'managed_task', phase: 'working',
+                parent_task_id: 'p', root_task_id: 'p' };
+            const running = work(parent, { controls: [{ action: 'pause', target: 'p' }, { action: 'stop', target: 'p', scope: 'cascade' }] });
+            // The server's own work once the parent has finished and its helper still works (episode not live).
+            const after = { ...structuredClone(SERVER_CASES.helper_after_parent.works[0]), room: chatId };
+            const body = (rows, works, whole = true) => {
+                fx.state.census = { active_chat_activities: rows, active_chat_activities_complete: whole, supervisor_ready: true,
+                    ...projection(chatId, works, works.length ? room('working') : null, whole) };
+                fx.instance.hydrateStateSnapshot(fx.state.census, Infinity);
+            };
+            const stop = () => fx.card('p').querySelector('[data-cancel-run]');
+            const priorObserver = globalThis.IntersectionObserver;
+            globalThis.IntersectionObserver = class { observe() {} disconnect() {} takeRecords() { return []; } };
+            const page = new ElementStub('body', globalThis.document);
+            page.isConnected = true;
+            globalThis.document.body = page;
+            try {
+                fx.handlers.get('chat')({ chat_id: chatId, task_id: 'p', role: 'assistant', is_progress: true,
+                    content: 'Handing the survey to a helper', ts: '2026-10-19T09:00:00Z' });
+                body([parent, helper], [running]);
+                assert.ok(stop(), 'the running work offers its Stop… on the parent card');
+                fx.handlers.get('log')({ chat_id: chatId, data: { type: 'task_done', task_id: 'p', status: 'completed',
+                    ts: '2026-10-19T09:00:05Z' } });
+                await fx.settle();
+                body([helper], [after], complete);
+                await fx.settle();
+                assert.equal(fx.card('p').dataset.finished, '1');
+                assert.ok(stop(), 'the finished parent keeps the Stop… its work offers while the helper works');
+                press(stop());
+                const [stopNow] = collect(page, (node) => node?.dataset?.taskControl === 'stop_now');
+                assert.ok(stopNow, 'the Stop… opens the work\'s Stop');
+                press(stopNow);
+                for (let i = 0; i < 10 && !fx.calls.includes('/api/tasks/p/cancel'); i += 1) await fx.settle();
+                assert.ok(fx.calls.includes('/api/tasks/p/cancel'), 'the finished card\'s Stop reaches its tree\'s door');
+                body([], []);
+                assert.equal(Boolean(stop()), false, 'once a complete body no longer lists the work, its Stop… goes');
+            } finally {
+                fx.instance.destroy();
+                globalThis.IntersectionObserver = priorObserver;
+                restoreDom(fx.prior);
+            }
+        });
+    }
+}
