@@ -75,6 +75,15 @@ ROOM_FACTS = """(scope) => {
 
 _SETTLE_FRAMES = "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
 
+# Rows' rectangles at a press and at the click its release makes.
+_PRESS_RECORDER = """(ids) => {
+    const rects = () => ids.map((id) => { const r = document.querySelector(`#page-chat .rw-row[data-id="${id}"] .rw-main`)
+        .getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; });
+    window.__rwPress = {};
+    for (const type of ['pointerdown', 'click'])
+        document.addEventListener(type, () => { window.__rwPress[type] = rects(); }, { capture: true, once: true });
+}"""
+
 # Every frame for a while: one row's word, the reason beside it and settledness, its ⋯ and any open shared menu.
 _FRAME_RECORDER = """([selector, ms]) => {
     window.__rwFrames = [];
@@ -468,12 +477,15 @@ def test_main_rows_say_each_census_state_with_its_own_tone_and_controls(room_ui)
 
     # A card-less row asks the room's history on an explicit press, never a hover, and says what it found:
     # here the saved history holds no message of it, so it opens its details (finished work included later).
-    # The focus leaves the long row first: its whole name folds back on blur, and a press that blurred it would
-    # find its row moved up under the pointer by mouse-up (36 px with wider fonts), so the click lands on the list.
-    row_main(page, "rw-unknown").focus()
-    wait_facts(page, "main", lambda f: row(f, "rw-live")["reading"] == "0", "the long row at rest")
+    # The press comes while the long row above holds keyboard focus and its whole name, and blurs it. Nothing may
+    # move under the pointer before the click: a fold at mouse-down moved the pressed row up from under it (36 px
+    # with wider fonts) and the click landed on the list. The long row folds once the press is over.
+    page.evaluate(_PRESS_RECORDER, ["rw-live", "rw-unknown"])
     row_main(page, "rw-unknown").click()
     detail = wait_facts(page, "main", lambda f: "No message" in row(f, "rw-unknown")["detail"], "an unloaded row's lookup")
+    press = page.evaluate("() => window.__rwPress")
+    assert press["pointerdown"] == press["click"], press
+    assert row(detail, "rw-live")["reading"] == "0", "the long row folds after the press"
     assert transport.around_reads == ["task:rw-unknown"]
     assert row(detail, "rw-unknown")["expanded"] == "true" and row(detail, "rw-unknown")["open"]
     assert row(detail, "rw-unknown")["detail"].startswith("WhereNo message yet.")

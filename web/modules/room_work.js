@@ -174,6 +174,7 @@ export function createRoomWork({
     let outsideClick = null;
     let scheduled = 0;
     let lastInside = false;
+    let pressFolds = null;      // keyboard-grown rows a press in the list blurred: they fold once it ends
     let latestLabel = null;
     let detailSequence = 0;
     let menuIntent = 0;
@@ -424,7 +425,11 @@ export function createRoomWork({
             try { keyboard = main.matches?.(':focus-visible') === true; } catch { /* an engine without the selector */ }
             el.dataset.reading = keyboard ? '1' : '0';
         });
-        main.addEventListener('blur', () => { el.dataset.reading = '0'; });
+        // A press on another row blurs this one on mouse-down; folding it then would move the pressed row up
+        // under the pointer before mouse-up, and the click would land on the list. It folds after the press.
+        main.addEventListener('blur', () => {
+            if (pressFolds) pressFolds.add(view); else el.dataset.reading = '0';
+        });
         views.set(row.key, view);
         return view;
     }
@@ -909,6 +914,7 @@ export function createRoomWork({
         // The shared task-controls menu is a portal outside the list but part of its interaction.
         if (target?.closest?.('.task-control-menu')) return;
         lastInside = surface.contains(target) || trigger.contains(target);
+        pressFolds = open && lastInside ? new Set() : null;
         if (!open || lastInside) return;
         close({ restoreFocus: false });
         // The first outside press only dismisses the list: a press on the dimmed Main must not also close the room.
@@ -924,6 +930,16 @@ export function createRoomWork({
             }, 600);
         }
     }, true);
+    // The press is over: the rows it blurred fold after the click its release makes (a task later).
+    const endPress = () => {
+        const folds = pressFolds;
+        pressFolds = null;
+        if (folds?.size) setTimeout(() => folds.forEach((view) => {
+            if (doc.activeElement !== view.main) view.el.dataset.reading = '0';
+        }), 0);
+    };
+    listen(doc, 'pointerup', endPress, true);
+    listen(doc, 'pointercancel', endPress, true);
     listen(doc, 'focusin', (event) => {
         if (!event.target?.closest?.('.task-control-menu')) lastInside = surface.contains(event.target) || trigger.contains(event.target);
     }, true);
