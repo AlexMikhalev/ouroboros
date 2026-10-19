@@ -3,10 +3,12 @@ set -euo pipefail
 
 # Downloads python-build-standalone for macOS (arm64 + x86_64) and Linux (x86_64)
 # Run from repo root: bash scripts/download_python_standalone.sh
+# CI test jobs take the same pinned interpreter without the packaged dependencies:
+# PYTHON_STANDALONE_DEST=<dir> PYTHON_STANDALONE_INTERPRETER_ONLY=1 bash scripts/download_python_standalone.sh
 
 RELEASE="20261009"
 PY_VERSION="3.10.22"
-DEST="python-standalone"
+DEST="${PYTHON_STANDALONE_DEST:-python-standalone}"
 
 OS=$(uname -s)
 ARCH=$(uname -m)
@@ -66,6 +68,11 @@ rm -f _python_tmp/"$FILENAME"
 # Archive extracts to python/ — rename to python-standalone/
 mv _python_tmp/python "$DEST"
 rm -rf _python_tmp
+
+if [ "${PYTHON_STANDALONE_INTERPRETER_ONLY:-0}" = "1" ]; then
+    echo "Python: ${DEST}/bin/python3 (interpreter only)"
+    exit 0
+fi
 
 echo ""
 echo "=== Installing agent dependencies ==="

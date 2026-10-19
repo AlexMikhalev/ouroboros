@@ -84,6 +84,8 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-python-env
         id: setup_python
+        with:
+          interpreter: shipped  # the SQLite and journal mode installs run
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         if: ${{ !cancelled() }}
         id: setup_pnpm
@@ -130,12 +132,12 @@ jobs:
       # (lifeline guardian, overload stop), so a killed step leaves no tree behind.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
-        timeout-minutes: 90
+        timeout-minutes: 120
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
         run: python scripts/run_tests.py tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel"
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
-        timeout-minutes: 60
+        timeout-minutes: 120
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && github.event_name != 'pull_request' }}
         run: python scripts/run_tests.py tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial"
       - name: Run PR tests (contract floor + affected modules and complete Node lane)
@@ -215,6 +217,8 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-python-env
         id: setup_python
+        with:
+          interpreter: shipped  # the SQLite and journal mode installs run
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ !cancelled() }}
         id: setup_node
@@ -327,12 +331,16 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'push' && github.ref == 'refs/heads/ouroboros') && '["macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
-        shard: [0]  # Unsharded macOS/Ubuntu; Windows alone is split by whole file.
+        shard: [0]  # Unsharded macOS/Ubuntu; Windows alone is split by whole file, eight ways.
         include:
           - {os: windows-latest, shard: 1}
           - {os: windows-latest, shard: 2}
           - {os: windows-latest, shard: 3}
           - {os: windows-latest, shard: 4}
+          - {os: windows-latest, shard: 5}
+          - {os: windows-latest, shard: 6}
+          - {os: windows-latest, shard: 7}
+          - {os: windows-latest, shard: 8}
     runs-on: ${{ matrix.os }}
     env:
       # Same contract as quick-test: this job provisions the parallel-pass
@@ -341,12 +349,25 @@ jobs:
       OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS: "1"
       # ...and node 22 below, so the gate's real-spawn node-lane tests must run.
       OUROBOROS_PREFLIGHT_REQUIRE_NODE: "1"
+      # Windows runners report two physical cores for four vCPUs, and the workload waits
+      # on storage, not the CPU: four workers, as the Linux runners already get.
+      OUROBOROS_PREFLIGHT_TEST_WORKERS: ${{ matrix.os == 'windows-latest' && '4' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Test temp on the runner's work disk (D:, beside the checkout), not the OS disk
+      # under the user profile, where every store write went through the slower volume.
+      - name: Put Windows test temp on the work disk
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup-python-env
         id: setup_python
+        with:
+          interpreter: shipped  # the SQLite and journal mode installs run
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ !cancelled() }}
         id: setup_node
@@ -402,14 +423,14 @@ jobs:
       # `scripts/run_tests.py` passes the arguments through and owns the process tree.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)
         id: tests_parallel
-        timeout-minutes: 90
+        timeout-minutes: 120
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python scripts/run_tests.py tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
+        run: python scripts/run_tests.py tests/ -m "not serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/parallel" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/8', matrix.shard) || '' }}
       - name: Run tests (serial — real subprocess/port/global-state suites that flake under -n)
         id: tests_serial
-        timeout-minutes: 60
+        timeout-minutes: 120
         if: ${{ !cancelled() && steps.setup_python.outcome == 'success' && (runner.os != 'Windows' || (steps.posix_tools.outcome == 'success' && steps.select_posix_tools.outcome == 'success')) }}
-        run: python scripts/run_tests.py tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}
+        run: python scripts/run_tests.py tests/ -m "serial and not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" -q --tb=short --ci-evidence-dir="${{ runner.temp }}/ci-evidence/serial" ${{ runner.os == 'Windows' && format('--default-suite-shard={0}/8', matrix.shard) || '' }}
       # Whom the reference-book rule binds (scripts/book_growth_mode.py): the size
       # lane below blocks, warns or passes a grown book by this mode.
       - name: Decide the reference-book growth mode
@@ -582,7 +603,7 @@ jobs:
           python3 -I -S tests/ci_evidence.py reconcile-shards --lane default_parallel
           --manifest "${{ runner.temp }}/default-proof/manifest"
           --shards "${{ runner.temp }}/default-proof/shards"
-          --count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
+          --count 8 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
           --summary "$GITHUB_STEP_SUMMARY"
       - name: Reconcile the Windows serial pass
         if: ${{ !cancelled() }}
@@ -590,7 +611,7 @@ jobs:
           python3 -I -S tests/ci_evidence.py reconcile-shards --lane default_serial
           --manifest "${{ runner.temp }}/default-proof/manifest"
           --shards "${{ runner.temp }}/default-proof/shards"
-          --count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
+          --count 8 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"
           --summary "$GITHUB_STEP_SUMMARY"
 
   # Manual proof for the one native secret-scanner dependency. This job
@@ -746,6 +767,8 @@ jobs:
           # and never pushes; do not leave GITHUB_TOKEN in .git/config.
           persist-credentials: false
       - uses: ./.github/actions/setup-python-env
+        with:
+          interpreter: shipped  # the SQLite and journal mode installs run
       # Tier 6 (review flow) FIRST — see the job comment: the secret-bearing
       # step must precede any step that executes downloaded plugin code.
       # Ubuntu-only: the LLM verdict is OS-independent. --timeout=2100
@@ -914,6 +937,7 @@ jobs:
       - uses: ./.github/actions/setup-python-env
         id: setup_python
         with:
+          interpreter: shipped  # the SQLite and journal mode installs run
           install-project: 'false'  # candidate servers must import their own checkout (#1644)
       # -o addopts="" replaces the pyproject default markexpr wholesale: the
       # lane's own `integration` marker is exactly what that default excludes.
@@ -1057,6 +1081,8 @@ jobs:
           echo "skipped: secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured"
       - uses: ./.github/actions/setup-python-env
         if: env.HAS_E2E_LIVE_KEY == 'true'
+        with:
+          interpreter: shipped  # the SQLite and journal mode installs run
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: env.HAS_E2E_LIVE_KEY == 'true'
         with:

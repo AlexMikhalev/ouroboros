@@ -185,10 +185,10 @@ def test_windows_matrix_keeps_the_same_passes_and_once_per_os_checks(tmp_path):
     job = _jobs()["full-test-runs"]
     matrix = job["strategy"]["matrix"]
     assert matrix["shard"] == [0]
-    assert matrix["include"] == [{"os": "windows-latest", "shard": i} for i in range(1, 5)]
+    assert matrix["include"] == [{"os": "windows-latest", "shard": i} for i in range(1, 9)]
     assert job["strategy"]["fail-fast"] is False and "continue-on-error" not in job
     steps = {step["id"]: step for step in job["steps"] if "id" in step}
-    shard_option = "${{ runner.os == 'Windows' && format('--default-suite-shard={0}/4', matrix.shard) || '' }}"
+    shard_option = "${{ runner.os == 'Windows' && format('--default-suite-shard={0}/8', matrix.shard) || '' }}"
     for label in EXPRESSIONS:
         run, collect = steps[f"tests_{label}"], steps[f"manifest_{label}"]
         assert f'-m "{EXPRESSIONS[label]}"' in run["run"] and f'-m "{EXPRESSIONS[label]}"' in collect["run"]
@@ -200,8 +200,8 @@ def test_windows_matrix_keeps_the_same_passes_and_once_per_os_checks(tmp_path):
         assert "continue-on-error" not in run and "continue-on-error" not in collect
     assert " ".join(PARALLEL_PASS_FLAGS) in steps["tests_parallel"]["run"]
     assert all(flag not in steps["tests_serial"]["run"].split() for flag in PARALLEL_PASS_FLAGS)
-    assert steps["tests_parallel"]["timeout-minutes"] == 90
-    assert steps["tests_serial"]["timeout-minutes"] == 60
+    assert steps["tests_parallel"]["timeout-minutes"] == 120
+    assert steps["tests_serial"]["timeout-minutes"] == 120
     for name in ("setup_node", "posix_tools", "select_posix_tools"):
         assert "matrix.shard" not in steps[name]["if"]  # Every runner needs the utilities and node.
     for name in ("book_mode", "tests_size", "attachment_browser_install", "attachment_browser", "composer_browser"):
@@ -255,6 +255,6 @@ def test_full_test_result_requires_the_matrix_and_both_reconciliations(tmp_path,
     assert len(commands) == 2
     for label, command in zip(EXPRESSIONS, commands):
         assert command.startswith(f"python3 -I -S tests/ci_evidence.py reconcile-shards --lane default_{label}")
-        assert '--count 4 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"' in command
+        assert '--count 8 --sha "${{ github.sha }}" --run-id "${{ github.run_id }}"' in command
     assert jobs["release-preflight"]["needs"] == ["full-test", "integration-test", "system-e2e-mock"]
     assert jobs["build"]["needs"] == ["full-test", "release-preflight"]
