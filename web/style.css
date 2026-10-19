@@ -6939,7 +6939,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     display: none;
 }
 
-/* The Projects header: the toggle, the unread count, the activity dots, then "+" (New project). */
+/* The Projects header: the toggle, the unread count, its status mark, then "+" (New project). */
 .nav-projects-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--nav-control-h);

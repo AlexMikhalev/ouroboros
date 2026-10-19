@@ -117,6 +117,7 @@ let projectActivityIndex = buildProjectActivityIndex();
 let activitySocketDisconnected = false;
 const navToggleNames = new WeakMap();  // each ☰'s last written name (paintNavToggles)
 let projectPanelHideTimer = null;
+let shownProjectId = null;  // the Project the last navigation sync showed, so a close is told from no change
 let releaseMobileKeyboardForDrawer = () => {};
 
 function setMobileDrawerOpen(open, { sync = true } = {}) {
@@ -277,8 +278,15 @@ function syncNavigationState() {
         layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
             onClose: () => closeProjectPanel(), focus: focusProjectRoom });
     } else layers.remove('project');
-    // Last: the open Project's row is marked, and a closed Project's focus is back on its row, which then stays.
+    // Last: the open Project's row is marked. A closed Project hands the focus back to its row (layers.js); where the
+    // collapsed list hides that row, the focus would be lost, so the Projects toggle takes it.
     syncProjectsCollapse();
+    const at = document.activeElement;
+    if (shownProjectId && !activeProjectId && !navProjectsToggle?.closest('[inert]')
+        && (!at || at === document.body || projectPanel?.contains(at) || at.closest?.('[hidden]'))) {
+        navProjectsToggle?.focus({ preventScroll: true });
+    }
+    shownProjectId = activeProjectId;
     paintNavToggles();  // a room's composer mounted since the last paint carries its ☰ too
 }
 

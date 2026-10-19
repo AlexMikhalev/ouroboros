@@ -153,6 +153,35 @@ def test_the_menu_button_says_what_waits_behind_it_in_both_places(nav_ui, tmp_pa
     assert facts['unread']['fill'] == facts['crimson'] and facts['owner']['fill'] == facts['amber'], facts
 
 
+def test_a_closed_project_whose_row_the_collapse_hides_gives_the_focus_to_the_toggle(nav_ui, tmp_path):
+    """Opened by keyboard, then the list collapsed: closing the Project cannot return the focus to its hidden row, so
+    the Projects toggle takes it, never the page body; with the list open the row takes it back as before."""
+    ui = nav_ui
+    facts = {'engine': ui['engine']}
+    page, sync = open_app(ui, 1280, 844, snapshot())
+    row = f'.nav-project-row[data-project-id="{PROJECTS[2]["id"]}"]'
+    focused = "() => { const a = document.activeElement; return a?.id || a?.className || a?.tagName || ''; }"
+    try:
+        for collapse in (False, True):
+            page.locator(row).focus()
+            page.keyboard.press('Enter')
+            page.locator('#project-panel:not([hidden])').wait_for()
+            if collapse:
+                page.locator('#nav-projects-toggle').focus()
+                page.keyboard.press('Enter')
+                page.wait_for_function("() => document.getElementById('nav-projects')?.hasAttribute('data-collapsed')")
+            page.locator('#project-panel .chat-messages').first.focus()
+            page.keyboard.press('Escape')
+            page.wait_for_function("() => !document.body.classList.contains('project-panel-open')")
+            settle(page)
+            facts[f'collapsed={collapse}'] = page.evaluate(focused)
+    finally:
+        save_evidence(tmp_path, f'nav-close-focus-{ui["engine"]}', facts)
+        page.close()
+    assert 'nav-project-row' in facts['collapsed=False'], facts
+    assert facts['collapsed=True'] == 'nav-projects-toggle', facts
+
+
 def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
     """Main's count (its own question to the owner is still open) never covers Main's mark: at three digits, with a
     mouse and on touch (where no ⋯ column separates them), and it keeps its place when the mark goes."""

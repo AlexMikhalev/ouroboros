@@ -853,6 +853,8 @@ textarea.ui-control { resize: vertical; }
 .status-mark[data-shape="still"][data-hue="unread"] { opacity: 0.6; }
 .status-mark[data-shape="pause"] { opacity: 0.7; }
 .status-mark[data-shape="pause"][data-hue="unread"] { opacity: 1; }
+.status-mark[data-shape="ring"] { opacity: 0.55; }
+.status-mark[data-shape="ring"][data-hue="unread"] { opacity: 0.6; }
 .status-mark[data-shape="pause"] > i { width: 2px; height: 8px; border-radius: 1px; }
 .status-mark:is([data-shape="pause"], [data-shape="ring"], [data-shape="dot"]) > i:nth-child(3),
 .status-mark:is([data-shape="ring"], [data-shape="dot"]) > i:nth-child(2) { display: none; }

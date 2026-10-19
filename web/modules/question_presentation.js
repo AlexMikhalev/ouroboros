@@ -74,6 +74,8 @@ const MARK_HUES = { waiting: 'owner', answered: 'ok', superseded: 'ink', closed:
 
 /** The question head's mark as a status-mark view ({ shape, hue }, web/modules/status_mark.js). */
 export function questionMark(row = {}) {
+    // An answer whose late delivery became unknown waits for the owner to stop counting it (Remove from pending).
+    if (unknownDeliveryRemovable(row)) return { shape: 'dot', hue: 'owner' };
     return { shape: 'dot', hue: MARK_HUES[lifecycleKey(row)] || 'neutral' };
 }
 

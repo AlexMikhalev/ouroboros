@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { questionMark, questionPresentation, waitFacts } from '../modules/question_presentation.js';
+import { questionMark, questionPresentation, unknownDeliveryRemovable, waitFacts } from '../modules/question_presentation.js';
 
 // Each fixture row is the pointer row the Python producer emits for that case
 // (tests/test_project_question_pointer.py pins the emission); the browser must read the
@@ -16,7 +16,7 @@ test('the head mark beside each word: amber only while the task waits for the an
     // Every row the Python producer emits reads one dot, in the grammar's hues.
     for (const { case: name, row, status } of cases) {
         assert.equal(questionMark(row).shape, 'dot', name);
-        assert.equal(hue(row) === 'owner', status === 'Waiting for your answer', name);
+        assert.equal(hue(row) === 'owner', status === 'Waiting for your answer' || unknownDeliveryRemovable(row), name);
         assert.ok(['owner', 'ok', 'neutral', 'ink'].includes(hue(row)), name);
     }
     assert.equal(hue({ state: 'open', wait_for_answer: true }), 'owner');
@@ -30,6 +30,9 @@ test('the head mark beside each word: amber only while the task waits for the an
     // An owed delivery keeps its lifecycle's dot beside its own word.
     assert.equal(hue({ quiz_state: 'answered', question_delivery: { state: 'owed' } }), 'ok');
     assert.equal(hue({ quiz_state: 'closed', question_delivery: { state: 'owed' } }), 'ink');
+    // A late answer whose delivery became unknown waits for the owner to stop counting it (Remove from pending).
+    assert.equal(hue({ quiz_state: 'answered', question_delivery: { state: 'owed', reason_code: 'late_answer_delivery_unknown' } }),
+        'owner');
 });
 
 test('waiting needs positive evidence and a closed bound ends it', () => {

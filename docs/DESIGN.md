@@ -637,7 +637,8 @@ channels, and nothing else draws a status dot, bar or ring.
   - *ring* — a faint 7 px ring: not confirmed (an incomplete read, a closed socket), never a guess;
   - *dot* — a 7 px dot: one fact (the owner's move, new messages where nothing works, an outcome);
   - *none* — rest draws nothing.
-  New messages lift the still dots to 60 % and the bars to full strength, so the crimson reads.
+  The ring stands at 55 %; new messages lift the still dots and the ring to 60 % and the bars to
+  full strength, so the crimson reads.
 - **The hue says whether there is something for the owner.** *Ink* is the
   surface's own ink (`currentColor`), a chosen row's selection ink included, so a
   mark follows the name it marks and never out-shouts it. *Amber* (`--amber`) is
@@ -658,9 +659,9 @@ channels, and nothing else draws a status dot, bar or ring.
 - **Motion.** Only *moving* loops; reduced motion stops the bounce, and the moving
   dots then stand at full strength, apart from the still ones. A mark that changes
   shape on a live chip keeps the moving dots' width, so the word beside it never
-  moves. A status sentence's own dot (`.ui-status`, Settings sentences, a room at
-  rest saying `Online`) is drawn by its CSS at the same 7 px in the same hues and
-  speaks only at rest.
+  moves. A status sentence's own dot (`.ui-status`, Settings sentences) is drawn by
+  its CSS at the same 7 px in the same hues; a room at rest says `Online` beside the
+  shared mark's green dot. Both speak only at rest.
 - **Amber is the owner's attention and nothing else:** (1) the owner's move — a
   question, or what only the owner can do: sign in, a spending limit, Resume after a
   restart, crash or Panic, grant access, a skill review that must run first, local
@@ -686,7 +687,7 @@ Enforcement: `web/tests/status_marks.test.js` pins the mapping and that only
 `status_mark.js` builds the anatomy and writes its shape and hue;
 `tests/test_status_marks_static.py` lists every stylesheet rule that paints amber
 under one of the four categories above and fails on a new one;
-`tests/test_status_marks_*_browser.py` measure the marks on the real surfaces.
+`tests/test_status_marks_*_browser.py` measure the marks in Chromium and WebKit.
 
 ### Unread
 
