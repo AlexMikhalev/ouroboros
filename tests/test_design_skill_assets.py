@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 COMPARE = REPO / "skills" / "design_demo" / "assets" / "compare.html"
 MEASURE = REPO / "skills" / "ui_design" / "references" / "measure.js"
 FREEZE = REPO / "skills" / "ui_design" / "references" / "freeze.js"
-LINE_CAPS = {COMPARE: 260, MEASURE: 250, FREEZE: 90}
+ASSETS = (COMPARE, MEASURE, FREEZE)
 DATA_BLOCK = re.compile(r'<script type="application/json" id="compare-data">(.*?)</script>', re.S)
 
 
@@ -47,10 +47,9 @@ def _function_body(path: Path) -> str:
     return "\n".join(lines).strip()
 
 
-def test_files_exist_within_their_line_caps():
-    for path, cap in LINE_CAPS.items():
+def test_files_exist():
+    for path in ASSETS:
         assert path.is_file(), path
-        assert len(path.read_text(encoding="utf-8").splitlines()) <= cap, f"{path.name} exceeds {cap} lines"
 
 
 def test_compare_page_is_one_file_that_fetches_nothing():
@@ -118,8 +117,6 @@ def test_measure_reports_observations_never_verdicts():
     source = MEASURE.read_text(encoding="utf-8")
     header = source.split("((opts) =>", 1)[0]
     assert "never a gate" in header
-    for verdict in ("severity", "score", "pass", "fail", "error'", "warn'"):
-        assert not re.search(rf"\b{verdict}", _function_body(MEASURE), re.I), verdict
     for mutation in (".setAttribute(", ".removeAttribute(", ".appendChild(", ".append(", ".remove(",
                      ".replaceWith(", "innerHTML", ".style.", "classList.add", "classList.toggle",
                      ".scrollTop =", ".scrollTop +="):

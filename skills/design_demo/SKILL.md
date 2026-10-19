@@ -35,7 +35,7 @@ A change to an approved look is decided on renders of both versions, never on a 
 
 ## Before sending
 
-Open the file alone at the viewer's size and engine. Switch every variant, look at the first screen, then measure (ui_design §3). Fix what that shows, look once more, send. A critic gets the same file and the viewer sentence, never contact sheets.
+Open the file alone at the viewer's size and engine. Switch every variant, look at the first screen, then measure (ui_design §3). Fix what that shows, look again, and send when the page is right. A critic gets the same file and the viewer sentence, never contact sheets.
 
 ## The message
 

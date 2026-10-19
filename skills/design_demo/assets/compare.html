@@ -12,7 +12,9 @@
      [{id, label, note, recommended}], scenes [{id, label, note}], frames, optional subject (CSS selector of
      the smallest element that holds the change) and scrollers (selectors whose scroll is kept), questions [{text, context,
      options [{key, text, recommended}]}] (the page adds "none of these" itself), source (one line on how
-     the frames were made), strings (the page's own words in the viewer's language). -->
+     the frames were made), strings (the page's own words in the viewer's language).
+     Inside the JSON block write every "</" as "<\/" (json.dumps(...).replace("</", "<\\/")): a frame that contains
+     "</script>" would otherwise end this block early and the page would open blank. -->
 <style>
 :root { --room:#f5f6f8; --surface:#fff; --ink:#1c2230; --meta:#566070; --line:rgb(28 34 48/.14);
   --mark:#b4232f; --mark-tint:rgb(180 35 47/.08); color-scheme:light; }
@@ -75,7 +77,7 @@ body.tight .stage { border:0; border-radius:0; }
 </header>
 <div class="stage-wrap"><div class="stage" id="stage"></div></div>
 <main class="more" id="more"></main>
-<script type="application/json" id="compare-data">{"title": "Which header reads more calmly?", "lang": "en", "viewport": {"width": 956, "height": 801},
+<script type="application/json" id="compare-data">{"title": "Which header reads more calmly?", "lang": "en", "viewport": {"width": 1280, "height": 800},
  "variants": [{"id": "now", "label": "Now", "note": "Today's screen, unchanged."}, {"id": "a", "label": "A", "recommended": true, "note": "Replace with one plain line: what changes and what it costs."}],
  "scenes": [{"id": "main", "label": "Main", "note": ""}],
  "frames": {"now/main": "<!doctype html><title>Now</title><p style='font:16px system-ui;padding:24px'>Put the frozen page of today's screen here.</p>", "a/main": "<!doctype html><title>A</title><p style='font:16px system-ui;padding:24px'>Put the frozen page of variant A here.</p>"},

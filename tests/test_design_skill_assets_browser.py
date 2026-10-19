@@ -185,7 +185,7 @@ def test_measure_reports_planted_defects_and_stays_quiet_on_the_clean_page(engin
         assert any("#bar" in item["where"] and "#tail" in item["where"] for item in found if item["kind"] == "pinned-over-content")
         assert any("#label" in item["where"] and "#badge" in item["where"] for item in found if item["kind"] == "text-covered")
         for kind, where in (("text-clipped", "#self-cut"), ("text-truncated", "#ellipsis"), ("controls-touching", "button.first"),
-                            ("target-small", "#icon"), ("text-tiny", "#tiny"), ("contrast-low", "#faint"),
+                            ("target-small", "#icon"), ("text-tiny", "#tiny"), ("contrast-low", "#faint"), ("contrast-low", "#pale"),
                             ("contrast-unknown", "#washed"), ("image-broken", "#broken"), ("edges-near-miss", "#nudge"),
                             ("controls-overlap", "button.over"), ("page-overflow", "#wide")):
             assert any(item["kind"] == kind and where in item["where"] for item in found), (kind, found)

@@ -26,6 +26,7 @@
   .icon { width: 16px; height: 16px; min-height: 0; padding: 0; }
   .tiny { font-size: 9px; }
   .faint { padding: 4px 8px; background: #a0a0a0; color: #8a8a8a; }
+  .pale { padding: 4px 8px; color: oklch(0.86 0 0); }
   .washed { padding: 4px 8px; background: linear-gradient(90deg, #ffffff, #c9d2e3); }
   .ghost { font-family: "Ghost Face", sans-serif; }
   .nudge { margin-left: 2px !important; }
@@ -52,6 +53,7 @@
     <button class="icon" id="icon" aria-label="Close"></button>
     <p class="tiny" id="tiny">Fine print that is too small to read</p>
     <p class="faint" id="faint">Grey on grey</p>
+    <p class="pale" id="pale">Pale oklch text on white</p>
     <p class="washed" id="washed">Text over a gradient</p>
     <p class="ghost" id="ghost">A face that never loaded</p>
     <img id="broken" src="missing-picture.png" width="20" height="20" alt="">

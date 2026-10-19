@@ -1,8 +1,8 @@
 // freeze.js — turn the page as it is rendered now into one self-contained HTML document: the real
 // product code and data, frozen, so it can become a frame of a one-file comparison page.
 // One async function expression, no dependencies; it reads the page and never changes it.
-//   Playwright: const {html, missing} = await page.evaluate(src)
-//   Ouroboros:  browser_action(action="evaluate", value=<this file>) on the page you rendered.
+//   Playwright: const {html, missing} = await page.evaluate(`(${src})()`), then write html to a file.
+//   Not through Ouroboros's browser_action: it cuts results at 20,000 characters (see browser.md).
 // It inlines same-origin stylesheets (url() assets become data: URIs), images, canvases and live form
 // values; scroll offsets become data-freeze-scroll="top,left" attributes (the comparison template
 // restores them); scripts, inline event handlers, preloads and <base> are removed. Anything it could not

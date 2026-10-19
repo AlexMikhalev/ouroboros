@@ -23,6 +23,7 @@
   .icon { width: 32px; height: 32px; padding: 0; }
   .small { font-size: 13px; }
   .plain { padding: 4px 8px; background: #eef1f6; color: #1c2230; }
+  .dark { padding: 4px 8px; background: oklch(0.25 0.03 300); color: oklch(0.98 0 0); }
 </style>
 </head>
 <body>
@@ -42,6 +43,7 @@
     <button class="icon" id="icon" aria-label="Close"></button>
     <p class="small" id="small">Fine print at a readable size</p>
     <p class="plain" id="plain">Dark text on a pale panel</p>
+    <p class="dark" id="dark">Light text on a dark oklch panel</p>
   </div>
   <div class="bar" id="bar"><button>Send</button></div>
 </body>

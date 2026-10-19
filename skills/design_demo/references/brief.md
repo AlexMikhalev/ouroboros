@@ -25,7 +25,7 @@ Real data is allowed and preferred; the only limit is side effects on the live A
 
 DELIVERABLE
 One self-contained HTML file built from <absolute path>/skills/design_demo/assets/compare.html,
-frames inline, opened alone at <W×H> in <engine>. Now plus <n> variants, one scene per decision,
+frames inline ("</" written as "<\/" inside its JSON), opened alone at <W×H> in <engine>. Now plus <n> variants, one scene per decision,
 A recommended with its cost in one line, at most three questions on the page, "none of these" included.
 Not a README, a server, URL parameters, a manifest, a test count or contact sheets as the thing that is opened.
 

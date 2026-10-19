@@ -2,7 +2,8 @@
 // judgement, never a gate: it reports observations and their sizes, no severities, no scores.
 // One function expression, read-only, no dependencies. Run it after the page has painted (take a
 // screenshot first: WebKit can report a different layout before its first paint).
-//   Playwright: page.evaluate(src, {subject: '.card'})     Ouroboros: browser_action(action="evaluate", ...)
+//   Playwright: page.evaluate(`(${src})(${JSON.stringify({subject: '.card'})})`) -- call it; Node never calls a
+//   function given as a string. Ouroboros: browser_action(action="evaluate", value=src) runs it with defaults.
 // Options: subject (CSS selector of the element under comparison), minFont (11 px), target (24 px),
 // touch (3 px gap), nearMiss (3 px), limit (examples kept per kind; facts.counts has every total).
 // Returns {viewport, facts, findings: [{kind, message, where, value}]}. Kinds: page-overflow,
@@ -32,8 +33,12 @@
     return (prefix || '') + parts.join(' > ');
   };
   const ownText = el => [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' ').replace(/\s+/g, ' ').trim();
-  const color = s => { const m = /rgba?\(([^)]+)\)/.exec(String(s)); if (!m) return null;
-    const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };
+  const swatch = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const color = s => { const m = /^rgba?\(([^)]+)\)$/.exec(String(s));   // other syntaxes (oklch, color()) go through a canvas
+    if (m) { const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; }
+    if (!swatch || !s) return null;
+    swatch.fillStyle = '#000'; swatch.fillStyle = String(s); swatch.clearRect(0, 0, 1, 1); swatch.fillRect(0, 0, 1, 1);
+    const d = swatch.getImageData(0, 0, 1, 1).data; return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 }; };
   const lum = c => { const f = v => (v /= 255) <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
     return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
   const clipsX = cs => cs.overflowX !== 'visible', clipsY = cs => cs.overflowY !== 'visible';

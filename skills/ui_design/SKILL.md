@@ -36,7 +36,7 @@ A surface looks designed when every choice on it is explained by what the viewer
 
 - Open the delivered thing as its viewer will: the entry file or page, alone, at their size, theme and engine. Look at the first screen at 1:1, then at 2× crops of what changed; never a stitched sheet or a scaled grid.
 - Then measure what eyes miss: container overflow, clipped or covered text, bars over content, stuck controls, small targets, contrast (`references/browser.md`, `references/measure.js`). Measure after a paint; WebKit can report one width before the first paint and another after.
-- Findings are evidence, never a verdict. A green test, a saved screenshot or a check count is not a look. If you could not render or see the result, say so and give what you measured. Fix what one look shows, look once more, stop.
+- Findings are evidence, never a verdict. A green test, a saved screenshot or a check count is not a look. If you could not render or see the result, say so and give what you measured. Fix what the look shows, look again, and stop when the frame is right.
 
 ## 4. Delegating the drawing
 
@@ -44,7 +44,7 @@ A delegated session may not see this skill: give it the absolute paths of this f
 
 ## 5. The owner's taste
 
-- Craft is general; taste is personal and changes. Before designing for a known owner, `knowledge_list(scope="global")`, then `knowledge_read` the topic holding their design reactions, if any.
+- Craft is general; taste is personal and changes. Before designing for a known owner, `knowledge_list(scope="global")`, then `knowledge_read(topic, scope="global")` for the topic holding their design reactions, if any.
 - After a reaction, `knowledge_write(scope="global")`: the date, what was shown, their words verbatim, where it applies and where not, told, observed or inferred. Revise in place; a correction is evidence about that moment, not a standing rule until they make it one.
 - Delegates return observations; only the mind writes memory. A taste note never becomes product law or part of this skill.
 
