@@ -9366,9 +9366,9 @@ body.keyboard-open .project-panel {
     position: relative;
     transform: translateX(calc(-1 * var(--row-swipe, 0px)));
 }
-/* Under the finger the row tracks 1:1, even while a closed menu's lift is still on its way back. */
+/* The swipe's own motion wins over a closed menu's lift still on its way back: 1:1 under the finger, its curve home. */
 :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="drag"] { transition: none; }
-:is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
 /* The reply mark at the room's right side: it fills as the row nears the reply point and takes the accent there. */
 .chat-row-reply-mark {
     position: fixed;
@@ -9388,8 +9388,8 @@ body.keyboard-open .project-panel {
 .chat-row-reply-mark[data-armed="true"] { color: var(--accent); }
 .chat-row-reply-mark[data-leaving="true"] { opacity: 0; transition: opacity 0.16s ease-out; }
 @media (prefers-reduced-motion: reduce) {
-    :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press] { transform: none; transition: box-shadow 0.24s ease-out; }
-    :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: none; }
+    :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press]:not([data-row-swipe]) { transform: none; transition: box-shadow 0.24s ease-out; }
+    :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: none; }
 }
 :root[data-theme] .chat-live-summary-button { padding: 16px 20px 12px; }
 :root[data-theme] .chat-live-actions { padding: 0 20px 16px; gap: var(--space-2); }

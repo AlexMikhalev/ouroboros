@@ -30,9 +30,15 @@ ROW = """sel => { const row = document.querySelector(sel); const r = row.getBoun
         mark: mark ? { armed: mark.dataset.armed || '', k: Number(mark.style.getPropertyValue('--reply-k')), shown: mark.isConnected } : null,
         staged: document.getElementById('chat-input-reply')?.textContent || '', scrollTop: document.getElementById('chat-messages').scrollTop,
         menu: [...document.querySelectorAll('.chat-row-menu [data-row-action]')].map((item) => item.dataset.rowAction) }; }"""
+# Playwright leaves the order of init scripts undefined: the recorder patches the stub's Telegram whether the stub is
+# already there or assigns it later.
 RECORD_HAPTICS = """(() => { const played = window.__haptics = [];
-    window.Telegram.WebApp.HapticFeedback = { impactOccurred: (style) => played.push(style),
-        selectionChanged: () => played.push('tick'), notificationOccurred: (type) => played.push(type) }; })()"""
+    const patch = (tg) => { if (tg && tg.WebApp) tg.WebApp.HapticFeedback = { impactOccurred: (style) => played.push(style),
+        selectionChanged: () => played.push('tick'), notificationOccurred: (type) => played.push(type) }; return tg; };
+    if (window.Telegram) { patch(window.Telegram); return; }
+    let telegram;
+    Object.defineProperty(window, 'Telegram', { configurable: true, get: () => telegram, set: (value) => { telegram = patch(value); } });
+})()"""
 ASSISTANT = '#chat-messages .chat-bubble.assistant.has-reply'
 USER = '#chat-messages .chat-bubble.user.has-reply'
 
@@ -65,7 +71,7 @@ def luminance(png, x, y):
 def booted(chromium_ui, tmp_path, theme='light', telegram=False):
     page = seed_page(chromium_ui, 390, 844, telegram=telegram)
     page.add_init_script(f"try {{ localStorage.setItem('ouroboros.theme', '{theme}'); }} catch (e) {{}}")
-    if telegram:  # after the Telegram stub: its HapticFeedback records what the page asks Telegram to play
+    if telegram:  # the Telegram stub's HapticFeedback records what the page asks Telegram to play
         page.add_init_script(RECORD_HAPTICS)
     client, respond = saved_history(tmp_path)
     page.route('**/api/chat/history**', respond)
