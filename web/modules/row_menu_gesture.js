@@ -6,7 +6,8 @@
 // copyable. A long press is no press once the finger moves past MOVE_TOLERANCE_PX or the root, or a scroller around
 // it, scrolls. The finger's end and its moves are heard on the document, so a menu that mounts under the finger, or a
 // layer that takes the finger's capture (the drawer), cannot leave a press armed; the tap that ends a long press is not
-// also a press of what lies under it, and the contextmenu Android fires for the same hold is not a second opening.
+// also a press of what lies under it (nor, where a host sends them, its mouse events, whose mousedown would take the
+// focus out of the menu just opened), and the contextmenu Android fires for the same hold is not a second opening.
 
 export const LONG_PRESS_MS = 450;
 export const MOVE_TOLERANCE_PX = 10;
@@ -85,16 +86,16 @@ export function bindRowMenuGesture({ root, rowOf, open, isOpen = () => false }) 
         if (press && !press.fired && (event.target === doc || event.target?.contains?.(root))) cancelPress();
     }
 
-    function onClickCapture(event) {
+    function onLiftCapture(event) {
         if (Date.now() >= swallowClickUntil) return;
-        swallowClickUntil = 0;
+        if (event.type === 'click') swallowClickUntil = 0;
         event.preventDefault();
         event.stopPropagation();
     }
 
     const onRoot = [['contextmenu', onContextMenu], ['keydown', onKeydown], ['pointerdown', onPointerDown]];
     const onDocument = [['pointermove', onPointerMove], ['pointerup', onPointerEnd], ['pointercancel', onPointerEnd],
-        ['scroll', onScroll], ['click', onClickCapture]];
+        ['scroll', onScroll], ['mousedown', onLiftCapture], ['click', onLiftCapture]];
     for (const [type, handler] of onRoot) root.addEventListener(type, handler);
     for (const [type, handler] of onDocument) doc.addEventListener(type, handler, true);
     return () => {

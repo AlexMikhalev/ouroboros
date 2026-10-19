@@ -45,6 +45,8 @@ test('a long touch press opens the row\'s menu where the finger is, once; the ta
         assert.equal(f.opened.length, 1);
         // The menu mounted under the finger: the finger's end lands there, never in the root, and is still heard.
         f.touch(f.elsewhere, 'pointerup');
+        const down = f.elsewhere.emit('mousedown');
+        assert.equal(down.defaultPrevented && down.stopped, true, 'a host\'s mouse events for the lift move no focus');
         const tap = f.elsewhere.emit('click');
         assert.equal(tap.defaultPrevented && tap.stopped, true, 'the lifting finger presses nothing under it');
         t.mock.timers.tick(1000);
