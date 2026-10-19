@@ -253,16 +253,19 @@ def test_main_and_the_projects_header_share_the_rows_columns(nav_ui, tmp_path):
     ui = nav_ui
     facts = {'engine': ui['engine']}
     work, asking, unread = PROJECTS[2]['id'], PROJECTS[6]['id'], [PROJECTS[1]['id'], PROJECTS[4]['id']]
-    for case, width, touch in (('mouse', 1280, False), ('touch', 390, True)):
+    cases = (('mouse', 1280, False, '', 2), ('narrow', 1280, False, '180px', 120), ('touch', 390, True, '', 2))
+    for case, width, touch, sidebar, main_revision in cases:
         page, sync = open_app(ui, width, 844, snapshot(work=[work], asking=[asking], main='thinking'), touch=touch)
         try:
+            if sidebar:
+                page.evaluate("w => document.documentElement.style.setProperty('--sidebar-width', w)", sidebar)
             drawer = "() => window.__ouroLayers.top() === 'drawer'"
             if touch:
                 page.locator('#page-chat [data-mobile-nav-toggle]').click()
                 page.wait_for_function(drawer)
             page.locator('#primary-sidebar [data-nav-page="files"]').click()
             page.locator('#page-files.active').wait_for()
-            sync(snapshot(work=[work], asking=[asking], unread=unread, main='thinking', main_revision=2))
+            sync(snapshot(work=[work], asking=[asking], unread=unread, main='thinking', main_revision=main_revision))
             if touch:
                 page.locator('#page-files [data-mobile-nav-toggle]').click()
                 page.wait_for_function(drawer)
@@ -272,17 +275,19 @@ def test_main_and_the_projects_header_share_the_rows_columns(nav_ui, tmp_path):
         finally:
             save_evidence(tmp_path, f'nav-columns-{ui["engine"]}', facts)
             page.close()
-    for case in ('mouse', 'touch'):
+    for case, main_count in (('mouse', '2'), ('narrow', '99+'), ('touch', '2')):
         seen = facts[case]
-        assert (seen['main_count']['text'], seen['count']['text']) == ('2', '6'), facts  # 2 in Main, 3 + 3 in Projects
+        assert (seen['main_count']['text'], seen['count']['text']) == (main_count, '6'), facts  # 3 + 3 in Projects
         assert seen['count']['right'] == pytest.approx(seen['main_count']['right'], abs=0.5), (case, facts)
         # One mark column: a one-dot shape (the header's amber) sits mid-column, as a row's does, under three dots.
         middle = (seen['main_mark']['left'] + seen['main_mark']['right']) / 2
         for mark in ('header_mark', 'row_mark'):
             assert (seen[mark]['left'] + seen[mark]['right']) / 2 == pytest.approx(middle, abs=0.5), (case, mark, facts)
-    mouse, touch = facts['mouse'], facts['touch']
-    assert (mouse['add']['left'], mouse['add']['right']) == pytest.approx(
-        (mouse['kebab']['left'], mouse['kebab']['right']), abs=0.5), facts
+    touch = facts['touch']
+    for case in ('mouse', 'narrow'):  # + keeps the ⋯ column whole, the narrowest sidebar included
+        seen = facts[case]
+        assert (seen['add']['left'], seen['add']['right']) == pytest.approx(
+            (seen['kebab']['left'], seen['kebab']['right']), abs=0.5), (case, facts)
     assert touch['chevron']['right'] <= touch['add']['left'] <= touch['chevron']['right'] + 12, facts
     assert touch['add']['right'] < touch['count']['left'], facts
 

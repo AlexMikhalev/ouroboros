@@ -19,7 +19,7 @@ def _say(root, text, *, feed=True, chat_id=1):
     log_chat("out", chat_id, 1, text, drive_root=root, require_write=True, feed=feed)
 
 
-def test_state_carries_mains_room_revision_moved_only_by_standalone_messages(gateway):
+def test_state_carries_mains_room_revision_moved_only_by_standalone_messages(gateway):  # noqa: F811
     assert _state(gateway)["main_visible_revision"] == 0
     _say(gateway.root, "An answer")
     _say(gateway.root, "A question")
@@ -30,7 +30,7 @@ def test_state_carries_mains_room_revision_moved_only_by_standalone_messages(gat
     assert _state(gateway)["main_visible_revision"] == 2
 
 
-def test_state_says_unknown_when_the_store_cannot_be_read(gateway, monkeypatch):
+def test_state_says_unknown_when_the_store_cannot_be_read(gateway, monkeypatch):  # noqa: F811
     from ouroboros import dialogue_store
 
     def unreadable(*_args, **_kwargs):

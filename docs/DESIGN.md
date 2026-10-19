@@ -644,7 +644,8 @@ Every surface that says what a work or a room is doing draws one small family of
 marks (`web/modules/status_mark.js`, the `.status-mark` recipe in `web/ui.css`): a
 Project row, Main's row, the Projects header, ☰, a room's status, a Shade row, a
 task card's chip, a question's head, a skill's job. A mark carries two facts in two
-channels, and nothing else draws a status dot, bar or ring.
+channels, and nothing else draws a work's or a room's status dot, bar or ring (a
+status sentence's or a composer chip's dot is its tone, §4).
 
 - **The shape says what the work does.** For projected work the server names it
   (`mark`, `ouroboros/gateway/work_status.py` `mark_of`); the client adds only the

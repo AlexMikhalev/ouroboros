@@ -214,7 +214,9 @@ function updateUnreadBadge() {
 // set to what Main holds now, as the per-window count this replaced started at zero; a newer one offers the read.
 function observeMainRevision(revision) {
     if (Number.isSafeInteger(revision)) state.mainVisibleRevision = revision;
-    if (!Number.isSafeInteger(state.mainVisibleRevision) || !state.mainSeenLoaded) return;
+    if (!Number.isSafeInteger(state.mainVisibleRevision)) return;
+    // A cursor no read has answered yet is unknown, not unset: read it again, set nothing.
+    if (!state.mainSeenLoaded) { refreshSharedProjectSeen(); return; }
     if (state.mainSeenRevision === null) void markMainViewed(state.mainVisibleRevision);
     else if (mainUnreadCount() > 0) {
         refreshSharedProjectSeen();
@@ -223,9 +225,12 @@ function observeMainRevision(revision) {
     updateUnreadBadge();
 }
 
-// The shared cursor only moves forward here (a stale answer never revives a read number).
-function mergeMainSeenRevision(value) {
+// The shared cursor only moves forward here (a stale answer never revives a read number). Only an answer that
+// carries the key knows it: a failed read leaves it unknown, and an unknown cursor is never initialized.
+function mergeMainSeenRevision(prefs) {
+    if (!prefs || typeof prefs !== 'object' || !('main_seen_revision' in prefs)) return false;
     state.mainSeenLoaded = true;
+    const value = prefs.main_seen_revision;
     const advanced = Number.isSafeInteger(value) && value > (state.mainSeenRevision ?? -1);
     if (advanced) state.mainSeenRevision = value;
     updateUnreadBadge();
@@ -238,7 +243,7 @@ async function markMainViewed(revision) {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ main_seen_revision: Math.max(0, Number(revision) || 0) }),
         });
-        return mergeMainSeenRevision(prefs?.main_seen_revision);
+        return mergeMainSeenRevision(prefs);
     } catch {
         return false;  // still unread here: the next snapshot or arrival offers the same revision again
     }
@@ -952,7 +957,7 @@ function mergeProjectSeenRevisions(cursors) {
 let sharedSeenRead = null;
 function refreshSharedProjectSeen() {
     sharedSeenRead ||= fetchJson('/api/ui/preferences', { cache: 'no-store' })
-        .then((prefs) => { mergeMainSeenRevision(prefs?.main_seen_revision); return mergeProjectSeenRevisions(prefs?.project_seen_revision); },
+        .then((prefs) => { mergeMainSeenRevision(prefs); return mergeProjectSeenRevisions(prefs?.project_seen_revision); },
             () => false)
         .finally(() => { sharedSeenRead = null; });
 }
@@ -1252,7 +1257,7 @@ apiFetch('/api/ui/preferences', { cache: 'no-store' })
     .then((r) => (r.ok ? r.json() : null))
     .then((prefs) => {
         mergeProjectSeenRevisions(prefs?.project_seen_revision);
-        mergeMainSeenRevision(prefs?.main_seen_revision);
+        mergeMainSeenRevision(prefs);
         observeMainRevision(null);
         setupResizablePanels(prefs || {});
         // Re-evaluate unread now that revision cursors are known.

@@ -22,7 +22,7 @@ from typing import Iterator
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web"
 SHEETS = ("web/ui.css", "web/style.css", "web/settings.css", "web/model_roles.css", "web/model_wait.css",
-          "web/room_work.css", "web/onboarding.css")
+          "web/room_work.css", "web/onboarding.css", "web/cards.css")
 CATEGORIES = ("owner", "warning", "system", "data", "palette")
 
 # category | sheet | [at-rule context » ]selector | properties
@@ -57,6 +57,7 @@ warning | web/ui.css | .settings-test-result[data-tone="warn"] | color
 warning | web/ui.css | .ui-chip[data-tone="warn"] | background, border-color, color
 warning | web/ui.css | .ui-status[data-tone="warn"] | color
 warning | web/ui.css | :is(.ui-status, .settings-inline-status, .wizard-runtime-status)[data-tone="warn"]:not(:empty)::before | background
+warning | web/style.css | .chat-composer-chip[data-tone="warn"] .chat-chip-dot | background
 warning | web/style.css | .chat-delegated-final | color
 warning | web/style.css | .chat-delegated-problem | color
 warning | web/style.css | .chat-live-line.warn .chat-live-line-title | color

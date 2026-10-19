@@ -55,12 +55,25 @@ test('a cursor the server never held is set once to what Main holds, never per a
     assert.equal(h.posts.filter(([url]) => url === '/api/ui/preferences').length, 1, 'no second initial write');
 });
 
-test('before the shared cursors are read nothing is written and nothing counts', async () => {
+test('before the shared cursors are read nothing is written and nothing counts; they are read again', async () => {
     const h = harness({ seen: null, loaded: false });
     h.api.observeMainRevision(7);
     await flush();
-    assert.deepEqual(h.posts, []);
+    assert.deepEqual(h.posts, [['shared']], 'a read, never a write');
     assert.equal(h.api.mainUnreadCount(), 0);
+});
+
+test('a failed cursor read initializes nothing and is read again; an answer with the key then counts', () => {
+    const h = harness({ seen: null, loaded: false });
+    for (const failed of [null, undefined, {}, { error: 'busy' }]) {
+        assert.equal(h.api.mergeMainSeenRevision(failed), false);
+        assert.equal(h.context.state.mainSeenLoaded, false, 'an answer without the key proves nothing');
+    }
+    h.api.observeMainRevision(5);
+    assert.deepEqual(h.posts, [['shared']], 'the cursor is read again; no write sets it to what Main holds');
+    assert.equal(h.api.mainUnreadCount(), 0);
+    assert.equal(h.api.mergeMainSeenRevision({ main_seen_revision: 2 }), true);
+    assert.equal(h.api.mainUnreadCount(), 3, 'the stored cursor, not the current revision');
 });
 
 test('an unreadable revision keeps the known one', () => {
@@ -82,7 +95,7 @@ test('a newer revision re-reads the shared cursors, and offers the read decision
 
 test('the shared cursor only moves forward, and a write keeps what the server answers', async () => {
     const h = harness({ revision: 10, seen: 6, answer: () => ({ main_seen_revision: 8 }) });
-    assert.equal(h.api.mergeMainSeenRevision(4), false, 'a stale answer never revives a read number');
+    assert.equal(h.api.mergeMainSeenRevision({ main_seen_revision: 4 }), false, 'a stale answer never revives a read number');
     assert.equal(h.context.state.mainSeenRevision, 6);
     assert.equal(await h.api.markMainViewed(10), true);
     assert.equal(h.context.state.mainSeenRevision, 8, 'the clamped cursor the server confirmed');

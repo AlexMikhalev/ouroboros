@@ -7182,7 +7182,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     justify-content: center;
 }
 
-.nav-projects-add { order: 2; }
+.nav-projects-add { order: 2; flex-shrink: 0; }  /* the ⋯ column keeps its width in a narrow sidebar */
 
 @media (pointer: coarse) {
     .nav-projects-add { order: 0; }

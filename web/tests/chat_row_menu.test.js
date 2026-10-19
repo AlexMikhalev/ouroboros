@@ -194,6 +194,7 @@ test("Android's contextmenu before the long press's time opens the menu once, an
         assert.equal(f.words.emit('contextmenu', { clientX: 30, clientY: 60 }).defaultPrevented, true);
         const menu = f.openMenu();
         assert.ok(menu, 'the early contextmenu opens it');
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'the row lifts as a long press would');
         t.mock.timers.tick(500);
         assert.equal(f.openMenu(), menu, 'the long press time opens no second menu');
         f.words.emit('pointerup', { pointerType: 'touch', pointerId: 1 });
