@@ -519,13 +519,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
+    function setStatus({ kind, text, tone, mark, owner, amber, title = '' }) {
         // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
         statusBadge.title = title; // a failed boot step's cause; empty otherwise
-        Object.assign(statusBadge.dataset, { tone, dots, amber, mark });
+        Object.assign(statusBadge.dataset, { tone, mark, owner: owner ? '1' : '', amber });
         roomWork?.update();
     }
 
@@ -3326,7 +3326,7 @@ export function createChatInstance({
     function syncChatStatus() {
         const derived = deriveChatStatus();
         setStatus(derived);
-        return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
+        return setTypingIndicatorVisible(derived.mark === 'moving' && foregroundCards().length === 0);
     }
 
     function setTypingIndicatorVisible(visible) {

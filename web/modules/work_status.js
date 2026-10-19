@@ -1,11 +1,14 @@
 /**
  * One work, one status in the browser (DESIGN "Room work status"): readers over the `/api/state` work projection
  * (ouroboros/gateway/work_status.py; shapes in work_types.js). The server groups every live member into works, rolls
- * works into rooms and decides each work's controls with their exact targets; this module says those facts in the
- * product's short words, keeps what an incomplete body did not list again, and lays a work's controls on the shared
+ * works into rooms, decides each work's controls with their exact targets and names each work's and room's mark
+ * (`mark`: moving | still | pause | ring | none); this module says those facts in the product's short words, keeps
+ * what an incomplete body did not list again (unconfirmed: a ring), and lays a work's controls on the shared
  * task-control doors. It derives no word, mark or control of its own. Four facts only this client knows stay
- * overlays: the socket closed (Reconnecting…), the owner's own unconfirmed send (Sending), the supervisor not ready
- * yet (Starting…) and the owner's own Stop press on a card (Cancelling… / Finalizing…).
+ * overlays, each with its mark: the socket closed (Reconnecting…, a ring), the owner's own unconfirmed send (Sending,
+ * moving), the supervisor not ready yet (Starting…, no mark) and the owner's own Stop press on a card (Cancelling… /
+ * Finalizing…, moving). Whether something waits for the owner (`owner`: the server's `turn`) is a separate fact;
+ * status_mark.js draws the two together.
  */
 import { fmt, tr } from './i18n.js';
 import { taskPresentation, taskTerminalPhase } from './log_events.js';
@@ -17,8 +20,10 @@ import {
     taskControlBusy,
 } from './task_control_menu.js';
 
-// A known outcome keeps its status colour; an unfinished lifecycle (Finalizing…) is said beside it.
-export const OUTCOME_TONES = { done: 'done', warn: 'caution', cancelled: 'caution', error: 'failed', timeout: 'failed',
+// A known outcome keeps its word's tone, its dot beside it (status_mark.js): Done and Done with warnings succeed (the
+// word says the warnings), Stopped was someone's decision, the rest failed. An unfinished lifecycle (Finalizing…) is
+// said beside it.
+export const OUTCOME_TONES = { done: 'done', warn: 'done', cancelled: 'stopped', error: 'failed', timeout: 'failed',
     lifecycle_error: 'failed' };
 const IDLE_ROOM = Object.freeze({ activity: 'idle', transition: 'none', call: '', turn: [], amber: false, mark: 'none',
     confirmed: true, works: [] });
@@ -31,9 +36,10 @@ export function emptyWorkState() {
     return { room: IDLE_ROOM, works: [], episodes: new Map(), members: new Set(), attempts: new Map(), complete: false };
 }
 
-// What an incomplete body did not list again: still shown, never as confirmed work and never with controls.
+// What an incomplete body did not list again: still shown, never as confirmed work and never with controls; its mark
+// is the ring of unconfirmed state.
 const unconfirmedWork = (work) => ({ ...work, activity: 'unknown', transition: 'none', call: '', because: [],
-    turn: [], controls: [], confirmed: false });
+    turn: [], controls: [], confirmed: false, mark: 'ring' });
 
 /**
  * One body applied to an instance's work state. `room` and `works` are this chat's (`works[].room`, keyed as the
@@ -129,31 +135,32 @@ export const amberNote = (kind) => (kind === 'question' ? tr('work.amber.questio
 
 /**
  * The room's status in its bar: the server's room in short words, with the client's own facts on top. Tone is the
- * word's ink (live, queued, wait for the owner's own question, held, unknown, starting, offline, online); `dots` the
- * one mark after it (moving, still or one dot); `amber` says what waits for the owner (question | action), which turns
- * the mark amber; `showDots` is the transcript's typing row. `stopping` is the owner's own Stop press on every
- * working work of the room ('finalize' | 'immediate'); until the host is `ready`, an idle room says its start in the
- * words of the host's `boot` phases (host_starting_status.js).
+ * word's ink (live, queued, wait for the owner's own question, held, unknown, starting, offline, online); `mark` the
+ * work's shape after it (the server's room mark under this module's four overlays; the transcript's typing bubble
+ * shows while it is `moving`, whatever waits for the owner); `owner` whether something waits for the owner (the room's
+ * turn: its amber dot takes the mark's place, the word keeps its ink); `amber` what waits (question | action), said in
+ * words where the word does not already say it. `stopping` is the owner's own Stop press on every working work of the
+ * room ('finalize' | 'immediate'); until the host is `ready`, an idle room says its start in the words of the host's
+ * `boot` phases (host_starting_status.js).
  */
 export function roomStatusView(state, { connected = true, ready = true, boot = null, sending = false, stopping = '' } = {}) {
-    const view = (kind, text, tone, dots = 'one', extra = {}) => ({ kind, text, tone, dots, showDots: dots !== 'one',
-        amber: '', mark: '', ...extra });
-    if (!connected) return view('offline', 'Reconnecting…', 'offline');
+    const view = (kind, text, tone, mark, extra = {}) => ({ kind, text, tone, mark, owner: false, amber: '', ...extra });
+    if (!connected) return view('offline', 'Reconnecting…', 'offline', 'ring');
     const room = state?.room || IDLE_ROOM;
     const mark = String(room.mark || 'none');
-    const amber = roomAmber(room);
-    if (room.activity !== 'working' && sending) return view('thinking', chipWord('sending'), 'live', 'moving', { amber });
+    const turn = { owner: list(room.turn).length > 0, amber: roomAmber(room) };
+    if (room.activity !== 'working' && sending) return view('thinking', chipWord('sending'), 'live', 'moving', turn);
     switch (room.activity) {
     case 'working':  // a Pause still settling keeps the neutral ink; its mark moves while work stops
         return view('thinking', stopping ? chipWord(stopping === 'finalize' ? 'finalizing' : 'cancelling') : activityWord(room),
-            room.transition === 'pausing' && !stopping ? 'held' : 'live', mark === 'moving' ? 'moving' : 'one', { amber, mark });
-    case 'queued': return view('thinking', activityWord(room), 'queued', 'still', { amber, mark });
-    // The word itself says the owner's question: its ink is the amber, not a second mark.
-    case 'waiting': return asked(room) ? view('online', activityWord(room), 'wait', 'one', { mark })
-        : view('online', activityWord(room), 'held', 'one', { amber, mark });
-    case 'paused': return view('online', activityWord(room), 'held', 'one', { amber, mark });
-    case 'unknown': return view('online', activityWord(room), 'unknown', 'one', { mark: 'ring' });
-    default: return ready ? view('online', 'Online', 'online') : { ...view('starting', 'Starting…', 'starting'), ...startingStatus(boot) };
+            room.transition === 'pausing' && !stopping ? 'held' : 'live', stopping ? 'moving' : mark, turn);
+    case 'queued': return view('thinking', activityWord(room), 'queued', mark, turn);
+    // The owner's own question says itself: the word takes the amber ink, beside the owner's dot.
+    case 'waiting': return view('online', activityWord(room), asked(room) ? 'wait' : 'held', mark, turn);
+    case 'paused': return view('online', activityWord(room), 'held', mark, turn);
+    case 'unknown': return view('online', activityWord(room), 'unknown', mark);  // unconfirmed: nothing for the owner
+    default: return ready ? view('online', 'Online', 'online', mark)
+        : { ...view('starting', 'Starting…', 'starting', 'none'), ...startingStatus(boot) };
     }
 }
 
@@ -165,15 +172,18 @@ export function ownStopPress(state, records) {
 }
 
 /**
- * One work's row in the room's Shade: its word (an outcome beside Finalizing…), the reason beside it, the row's tone,
- * its dots (moving while it works, a Pause still settling included; still while queued; else one dot) and whether its
- * mark turns amber (something waits for the owner). Paused by the owner or by Ouroboros is not amber. `stopping` is
- * the owner's own Stop press on the work's card ('finalize' | 'immediate'), said at once as the card says it.
+ * One work's row in the room's Shade: its word (an outcome beside Finalizing…), the reason beside it, the row's tone
+ * (the word's ink), its `mark` (the work's shape as the server names it; the owner's own Stop press moves it), `owner`
+ * whether something in the work waits for the owner (its turn: the amber dot takes the mark's place; a Pause by the
+ * owner or by Ouroboros is not the owner's move) and `outcome`, the known outcome said beside Finalizing… (its dot in
+ * the outcome's tone). `stopping` is the owner's own Stop press on the work's card ('finalize' | 'immediate'), said
+ * at once as the card says it.
  */
 export function workRowView(work = {}, { stopping = '' } = {}) {
+    const owner = list(work.turn).length > 0;
     if (stopping && work.activity === 'working' && work.confirmed !== false) {
         return { word: chipWord(stopping === 'finalize' ? 'finalizing' : 'cancelling'), secondary: '', tone: 'live',
-            dots: 'moving', amber: list(work.turn).length > 0, focus: '' };
+            mark: 'moving', owner, outcome: '', focus: '' };
     }
     const outcome = work.transition === 'finalizing' && work.outcome
         ? taskPresentation(taskTerminalPhase({ status: work.outcome })) : null;
@@ -185,10 +195,9 @@ export function workRowView(work = {}, { stopping = '' } = {}) {
         : !work.confirmed || work.activity === 'unknown' ? 'unknown'
             : work.activity === 'waiting' && asked(work) ? 'wait'
                 : work.activity === 'working' && !pausing ? 'live' : work.activity === 'queued' ? 'queued' : 'held';
-    const dots = outcome || tone === 'unknown' ? '' : work.activity === 'working' ? 'moving' : work.activity === 'queued' ? 'still' : '';
     // The work's own focus line: what its author says it is doing, under the state (update_focus).
     const focus = String(work.focus?.text || '').trim();
-    return { word, secondary, tone, dots, amber: tone !== 'wait' && list(work.turn).length > 0, focus };
+    return { word, secondary, tone, mark: String(work.mark || 'none'), owner, outcome: outcome?.phase || '', focus };
 }
 
 /** The question a row's View question goes to: the first question in the work's turn, by its exact quiz id. */

@@ -24,20 +24,20 @@ test('a known non-Project wait keeps its scope label, on its row: the header say
 
 test('a held task is stationary in Chat and the sidebar, its label beside the word', () => {
     assert.deepEqual(roomStatusView(inRoom('waiting')),
-        { kind: 'online', text: 'Waiting', tone: 'held', showDots: false, dots: 'one', amber: '', mark: 'dot' });
+        { kind: 'online', text: 'Waiting', tone: 'held', mark: 'still', owner: false, amber: '' });
     const sidebar = summarizeRoom({ ...room('waiting'), works: ['same-id'] }, [heldWork(held)]);
     assert.deepEqual(sidebar, { state: 'dot', motion: false, amber: false, word: 'Waiting', label: `Waiting · ${hold.label}` });
 });
 
-for (const [activity, extra, text, kind, showDots, tone] of [
-    ['working', { transition: 'pausing' }, 'Pausing…', 'thinking', true, 'held'],
-    ['paused', {}, 'Paused', 'online', false, 'held'],
-    ['unknown', {}, 'Activity unconfirmed', 'online', false, 'unknown'],
-    ['waiting', {}, 'Waiting', 'online', false, 'held'],
+for (const [activity, extra, text, kind, mark, tone] of [
+    ['working', { transition: 'pausing' }, 'Pausing…', 'thinking', 'moving', 'held'],
+    ['paused', {}, 'Paused', 'online', 'pause', 'held'],
+    ['unknown', {}, 'Activity unconfirmed', 'online', 'ring', 'unknown'],
+    ['waiting', {}, 'Waiting', 'online', 'still', 'held'],
 ]) {
     test(`a held task's room says ${text}; a card's hold never sets the header`, () => {
         const view = roomStatusView(inRoom(activity, extra));
-        assert.deepEqual([view.kind, view.text, view.tone, view.showDots], [kind, text, tone, showDots]);
+        assert.deepEqual([view.kind, view.text, view.tone, view.mark], [kind, text, tone, mark]);
         // Same-id recovery: the server's room works again.
         assert.equal(roomStatusView(inRoom('working')).text, 'Working');
     });
