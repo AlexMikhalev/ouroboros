@@ -138,7 +138,7 @@ test('the index reads Project rooms only; the header\'s one mark is the stronges
 test('a mark\'s words: its place\'s label and new messages, in one phrase', () => {
     assert.equal(markWords(summary('paused_by_owner')), 'Paused · by you');
     assert.equal(markWords(summary('paused_by_owner'), true), 'Paused · by you · new messages');
-    assert.equal(markWords(IDLE_SUMMARY, true), 'new messages', 'a read-less room at rest is only its new messages');
+    assert.equal(markWords(IDLE_SUMMARY, true), 'new messages', 'a room at rest with new messages says only that');
     assert.equal(markWords(IDLE_SUMMARY), '');
     assert.equal(markWords(), '');
 });
