@@ -303,13 +303,11 @@ html[data-layout="stack"] .resize-handle { display: none; }
 
 /* Unread counts and badges are the crimson accent (a live fact for you), never red and never a glow (owner Q6=A);
    a Project row's own new messages are the crimson hue of its status mark. */
-/* Main's count sits just left of its row's mark column, centred on the row: beside the mark, never over it, and it does
-   not move when the mark comes and goes. */
+/* Main's count stands in its row just before the mark's slot: the label gives way to it (and ellipsizes), it never
+   covers the mark or the label, and it keeps its place when the mark comes and goes (the slot stays). */
 .unread-badge {
-    position: absolute;
-    top: 50%;
-    right: calc(var(--nav-kebab-w) + var(--space-1) + 18px + var(--space-2));
-    transform: translateY(-50%);
+    order: 1;
+    flex: 0 0 auto;
     min-width: 18px;
     height: 18px;
     padding: 0 5px;
@@ -331,8 +329,11 @@ html[data-layout="stack"] .resize-handle { display: none; }
 .nav-row-main {
     padding-right: calc(var(--nav-kebab-w) + var(--space-1));
 }
-.nav-row-main > .nav-mark {
+.nav-row-main > .nav-mark-slot {
+    order: 2;
     flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
 }
 .nav-row-words {
     position: absolute;

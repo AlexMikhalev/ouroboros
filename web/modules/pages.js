@@ -40,7 +40,7 @@ export function pagesInZone(zone) {
 export function renderNavRow(page) {
     const main = page.zone === 'head';
     const icon = PAGE_ICONS[page.icon] || '';
-    const status = main ? `<span class="nav-row-words" data-i18n-skip></span>${statusMarkHtml('nav-mark')}` : '';
+    const status = main ? `<span class="nav-row-words" data-i18n-skip></span><span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span>` : '';
     return `<button class="nav-row${main ? ' nav-row-main' : ''}" type="button" data-nav-page="${escapeHtml(page.id)}" title="${escapeHtml(page.hint || page.label)}">`
         + `${icon}<span class="nav-row-label">${escapeHtml(page.label)}</span>${status}</button>`;
 }

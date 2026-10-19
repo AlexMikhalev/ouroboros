@@ -33,7 +33,7 @@ test('rows render from the registry, in order, with the label verbatim and the i
     assert.match(main, /^<button class="nav-row nav-row-main" type="button" data-nav-page="chat" title="Main Ouroboros chat">/);
     // Main's row carries its room's one status mark after the label (app.js paints it, at rest it is hidden) and the
     // mark's words for readers, which the interface language's overlay leaves to their own translation.
-    assert.ok(main.endsWith(`<span class="nav-row-label">Main Chat</span><span class="nav-row-words" data-i18n-skip></span>${statusMarkHtml('nav-mark')}</button>`));
+    assert.ok(main.endsWith(`<span class="nav-row-label">Main Chat</span><span class="nav-row-words" data-i18n-skip></span><span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span></button>`));
     assert.match(statusMarkHtml('nav-mark'), /aria-hidden="true" data-shape="none" data-hue="ink" hidden>/);
     assert.equal((main.match(/<svg/g) || []).length, 1);
     assert.ok(main.includes(PAGE_ICONS.chat));

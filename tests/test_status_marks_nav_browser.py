@@ -183,13 +183,17 @@ def test_a_closed_project_whose_row_the_collapse_hides_gives_the_focus_to_the_to
 
 
 def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
-    """Main's count (its own question to the owner is still open) never covers Main's mark: at three digits, with a
-    mouse and on touch (where no ⋯ column separates them), and it keeps its place when the mark goes."""
+    """Main's count (its own question to the owner is still open) never covers Main's mark or its label: at three
+    digits, with a mouse, in the narrowest sidebar and on touch (where no ⋯ column separates them), and it keeps its
+    place when the mark goes."""
     ui = nav_ui
     facts = {'engine': ui['engine']}
-    for width, touch in ((1280, False), (390, True)):
+    for case, width, touch, sidebar in (('mouse', 1280, False, ''), ('narrow', 1280, False, '180px'),
+                                        ('touch', 390, True, '')):
         page, sync = open_app(ui, width, 844, snapshot(main='thinking'), touch=touch)
         try:
+            if sidebar:
+                page.evaluate("w => document.documentElement.style.setProperty('--sidebar-width', w)", sidebar)
             drawer = "() => window.__ouroLayers.top() === 'drawer'"
             if touch:
                 page.locator('#page-chat [data-mobile-nav-toggle]').click()
@@ -207,20 +211,22 @@ def test_mains_unread_count_sits_beside_its_mark_never_on_it(nav_ui, tmp_path):
             read = """() => { const row = document.querySelector('.nav-row-main'), badge = row.querySelector('.unread-badge');
                 const box = (el) => (({left, right, top, bottom}) => ({left, right, top, bottom}))(el.getBoundingClientRect());
                 const mark = row.querySelector('.status-mark');
-                return {text: badge.textContent, badge: box(badge), mark: mark.hidden ? null : box(mark)}; }"""
-            facts[width] = page.evaluate(read)
+                return {text: badge.textContent, badge: box(badge), label: box(row.querySelector('.nav-row-label')),
+                        mark: mark.hidden ? null : box(mark)}; }"""
+            facts[case] = page.evaluate(read)
             sync(snapshot())
             settle(page)
-            facts[width]['rest'] = page.evaluate(read)
+            facts[case]['rest'] = page.evaluate(read)
         finally:
             save_evidence(tmp_path, f'nav-main-count-{ui["engine"]}', facts)
             page.close()
-    for width in (1280, 390):
-        seen, rest = facts[width], facts[width]['rest']
+    for case in ('mouse', 'narrow', 'touch'):
+        seen, rest = facts[case], facts[case]['rest']
         assert seen['text'] == '99+' and seen['mark'], facts
-        assert seen['badge']['right'] <= seen['mark']['left'] - 2, facts
+        assert seen['label']['right'] <= seen['badge']['left'] + 0.5, (case, facts)  # the label gives way
+        assert seen['badge']['right'] <= seen['mark']['left'] - 2, (case, facts)
         assert rest['mark'] is None, facts
-        assert all(abs(rest['badge'][side] - seen['badge'][side]) <= 0.5 for side in seen['badge']), facts
+        assert all(abs(rest['badge'][side] - seen['badge'][side]) <= 0.5 for side in seen['badge']), (case, facts)
 
 
 def test_mains_row_carries_its_rooms_mark_in_the_project_rows_column(nav_ui, tmp_path):
