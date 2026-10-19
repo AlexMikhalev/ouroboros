@@ -54,6 +54,7 @@ from devtools.benchmarks.common.server_runner import (  # noqa: E402
     IsolatedServer,
     _PROVIDER_ENV_KEYS,
     _is_secret_env_key,
+    alarm_deferred,
     supervisor_state_is_ready,  # noqa: F401 (re-export: THE readiness contract)
 )
 from ouroboros.provider_models import (  # noqa: E402
@@ -1123,25 +1124,28 @@ class KeylessIsolatedServer(IsolatedServer):
         container, self._candidate_container = self._candidate_container, None
         if container is None:
             return
-        try:
+        # A scenario's timeout alarm landing in here is held until the container is reaped: the
+        # reap consumes its handles once, so an alarm inside it would leave members running.
+        with alarm_deferred():
             try:
-                super().stop()
-            finally:
                 try:
-                    error = container.reap()
+                    super().stop()
                 finally:
-                    container.close()
-                if error:
-                    raise CandidateError(f"CANDIDATE_RETAINED: process cleanup failed: {error}")
-                if self.proc is not None:
-                    self.proc.wait(timeout=5)
-        except BaseException as exc:
-            from ouroboros.test_environment import retain_tree
+                    try:
+                        error = container.reap()
+                    finally:
+                        container.close()
+                    if error:
+                        raise CandidateError(f"CANDIDATE_RETAINED: process cleanup failed: {error}")
+                    if self.proc is not None:
+                        self.proc.wait(timeout=5)
+            except BaseException as exc:
+                from ouroboros.test_environment import retain_tree
 
-            self._candidate_cleanup_error = f"CANDIDATE_RETAINED: {exc}"
-            retain_tree(self.data_root, self._candidate_cleanup_error)
-            raise
-        self.candidate.release()
+                self._candidate_cleanup_error = f"CANDIDATE_RETAINED: {exc}"
+                retain_tree(self.data_root, self._candidate_cleanup_error)
+                raise
+            self.candidate.release()
 
 
 # The pool rows of ``keyless_review_catalog``: seat ``t<i>`` is catalog row
