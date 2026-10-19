@@ -212,3 +212,92 @@ def test_a_rooms_menu_stays_above_the_keyboard(shell_ui, tmp_path, room):
         page.close()
     assert facts['open'] is True and facts['vvh'] == '500px', facts
     assert facts['menuBottom'] <= 500 and facts['fieldBottom'] <= 500, ('above the keyboard', facts)
+
+
+# Every frame for `ms`, the scrim's opacity and hidden state and the drawer's x, from just before an action.
+FRAMES = """ms => new Promise((resolve) => {
+    const scrim = document.getElementById('nav-drawer-backdrop');
+    const side = document.getElementById('primary-sidebar');
+    const out = [];
+    const start = performance.now();
+    const step = () => {
+        out.push({t: performance.now() - start, opacity: Number(getComputedStyle(scrim).opacity), hidden: scrim.hidden,
+                  x: side.getBoundingClientRect().x, settle: side.style.getPropertyValue('--drawer-settle')});
+        if (performance.now() - start < ms) requestAnimationFrame(step); else resolve(out);
+    };
+    requestAnimationFrame(step);
+})"""
+FEED_TOP = "sel => document.querySelector(sel).scrollTop"
+
+
+def record(page, ms):
+    """Start sampling frames now; `collected` waits for them."""
+    page.evaluate(f"ms => {{ window.__frames = ({FRAMES})(ms); }}", ms)
+
+
+def collected(page):
+    return page.evaluate("() => window.__frames")
+
+
+def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(chromium_ui, tmp_path):
+    """☰ slides the drawer in on its curve while the scrim fades in; × slides it out while the scrim fades out, and
+    the scrim leaves the page only after; a fling settles at the finger's speed; a thumb that drifts down halfway
+    through a drag keeps the drawer, and the feed under it does not scroll (owner 19.10: it came off halfway, and
+    nothing moved smoothly)."""
+    page = seed_page(chromium_ui, 390, 844)
+    facts = {}
+    try:
+        boot(page, chromium_ui)
+        page.evaluate("() => { const f = document.querySelector('#chat-messages'); for (let i = 0; i < 40; i += 1) {"
+                      " const r = document.createElement('div'); r.style.minHeight = '90px'; r.textContent = 'row ' + i;"
+                      " f.append(r); } f.scrollTop = 600; }")
+        record(page, 600)
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        opening = collected(page)
+        facts['open'] = opening
+        page.wait_for_timeout(200)
+        record(page, 700)
+        page.locator('#nav-drawer-close').click()
+        closing = collected(page)
+        facts['close'] = closing
+        page.wait_for_timeout(300)
+        # A fling: the settle is set from the finger's speed and the drawer is still on its way a frame later.
+        feed = page.locator('#chat-messages').bounding_box()
+        y = feed['y'] + feed['height'] / 2
+        record(page, 500)
+        swipe_with(page, (40, y), (240, y), steps=5)
+        facts['fling'] = collected(page)
+        facts['fling_state'] = page.evaluate(DRAWER)
+        page.evaluate('window.__ouroLayers.pop()')
+        page.wait_for_timeout(500)
+        # A thumb that drifts down 120px over the second half of the drag.
+        top = page.evaluate(FEED_TOP, '#chat-messages')
+        cdp = page.context.new_cdp_session(page)
+        try:
+            path = [(40 + 12 * i, y + (0 if i < 8 else 15 * (i - 8))) for i in range(17)]
+            for i, (px, py) in enumerate(path):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': px, 'y': py, 'id': 1}]})
+                page.wait_for_timeout(16)
+            facts['drift_mid'] = page.evaluate(DRAWER)
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(500)
+        facts['drift'] = page.evaluate(DRAWER)
+        facts['feed_top'] = [top, page.evaluate(FEED_TOP, '#chat-messages')]
+    finally:
+        evidence(tmp_path, 'shell-drawer-motion', facts)
+        page.close()
+    between = [f for f in opening if 0.05 < f['opacity'] < 0.95]
+    assert between, ('the scrim fades in, not at once', opening)
+    assert any(-300 < f['x'] < -5 for f in opening), ('the drawer slides in', opening)
+    assert opening[-1]['opacity'] == 1 and opening[-1]['x'] == 0, opening[-1]
+    fading = [f for f in closing if not f['hidden'] and f['opacity'] < 0.95]
+    assert fading, ('the scrim fades out while it is still on the page', closing)
+    assert closing[-1]['hidden'] is True, ('and it leaves once it has faded', closing[-1])
+    settles = {f['settle'] for f in facts['fling'] if f['settle']}
+    assert settles and all(s.endswith('ms') for s in settles), ('a fling settles at the finger\'s speed', facts['fling'])
+    assert facts['fling_state']['open'] is True, facts
+    assert facts['drift_mid']['open'] is False and facts['drift']['open'] is True, ('the drifting thumb keeps the drawer', facts)
+    assert facts['feed_top'][0] == facts['feed_top'][1], ('the feed under the dragged drawer did not scroll', facts)

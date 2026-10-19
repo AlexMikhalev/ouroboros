@@ -1,36 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, FIELD_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag } from '../modules/drawer_drag.js';
+import { BLOCKING_SELECTOR, DRAG, DRAWER_DRAG, FIELD_SELECTOR, SIDEWAYS_SELECTOR, bindDrawerDrag, settleMs } from '../modules/drawer_drag.js';
 
-// The drawer's finger (owner Q1=A): eligibility, the axis lock, tracking by one number, the commit rules,
-// the restores that leave no trace, the swallowed ending click, and the one-line switch.
+// The drawer's finger (owner Q1=A, 19.10): eligibility, the axis lock, the cancelled page scroll, tracking by one
+// number on the element the touch started on, the commit rules, the settle at the finger's speed, the restores
+// that leave no trace, the scrim that fades before it goes, the swallowed ending click, and the one-line switch.
+
+function listenerMap() {
+    const map = new Map();
+    return {
+        map,
+        add: (type, fn, options) => { map.set(type, [...(map.get(type) || []), { fn, options }]); },
+        remove: (type, fn) => { map.set(type, (map.get(type) || []).filter((x) => x.fn !== fn)); },
+        fire: (type, event) => (map.get(type) || []).slice().forEach(({ fn }) => fn(event)),
+        count: () => [...map.values()].reduce((n, fns) => n + fns.length, 0),
+    };
+}
 
 function fakeEl(name) {
     const classes = new Set();
     const props = new Map();
+    const own = listenerMap();
     return {
-        name, hidden: true, parentElement: null, scrollWidth: 0, clientWidth: 0, style: null, captured: null,
+        name, hidden: true, parentElement: null, scrollWidth: 0, clientWidth: 0, style: null, attached: true, own,
         classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), contains: (c) => classes.has(c), add: (c) => classes.add(c) },
         styleProps: props,
+        addEventListener: own.add, removeEventListener: own.remove,
         contains(other) { for (let x = other; x; x = x.parentElement) if (x === this) return true; return false; },
         closest() { return null; },
         getBoundingClientRect: () => ({ width: 320 }),
-        setPointerCapture(id) { this.captured = id; }, releasePointerCapture() { this.captured = null; },
     };
 }
 function withStyle(el) { el.style = { setProperty: (k, v) => el.styleProps.set(k, v), removeProperty: (k) => el.styleProps.delete(k) }; return el; }
 
 function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRAG, blockers = null } = {}) {
-    const listeners = new Map();
-    const add = (map) => (type, fn) => { map.set(type, [...(map.get(type) || []), fn]); };
-    const remove = (map) => (type, fn) => { map.set(type, (map.get(type) || []).filter((x) => x !== fn)); };
-    const docListeners = new Map();
+    const winL = listenerMap();
+    const docL = listenerMap();
     const styles = new Map();
-    const doc = { body: fakeEl('body'), addEventListener: add(docListeners), removeEventListener: remove(docListeners), listeners: docListeners,
-        querySelectorAll: () => blockers || [] };
-    const win = { addEventListener: add(listeners), removeEventListener: remove(listeners), listeners,
-        getComputedStyle: (el) => styles.get(el) || { touchAction: 'auto', overflowX: 'visible' }, performance: { now: () => clock.t } };
     const clock = { t: 1000 };
+    const timers = new Map();
+    let timerId = 0;
+    const doc = { body: fakeEl('body'), addEventListener: docL.add, removeEventListener: docL.remove, listeners: docL,
+        querySelectorAll: () => blockers || [] };
+    const win = { addEventListener: winL.add, removeEventListener: winL.remove, listeners: winL, innerWidth: 390,
+        getComputedStyle: (el) => styles.get(el) || { touchAction: 'auto', overflowX: 'visible' },
+        performance: { now: () => clock.t },
+        setTimeout: (fn, ms) => { timerId += 1; timers.set(timerId, { fn, at: clock.t + ms }); return timerId; },
+        clearTimeout: (id) => { timers.delete(id); } };
     const sidebar = withStyle(fakeEl('sidebar'));
     const scrim = withStyle(fakeEl('scrim'));
     const room = fakeEl('room'); room.parentElement = doc.body;
@@ -43,39 +59,59 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
         isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
-    const fire = (type, event) => (docListeners.get(type) || []).forEach((fn) => fn(event));
-    const pointer = (type, { x, y, id = 1, pointerType = 'touch', target = room, isPrimary = true, dt = 16 }) => {
+    // A touch event is dispatched at the element the touch started on; it reaches the document only while that
+    // element is still in the page.
+    const down = new Map();
+    const dispatch = (type, target, event) => {
+        target.own.fire(type, event);
+        if (target.attached) docL.fire(type, event);
+    };
+    const touchEvent = (type, { x, y, id = 1, target, dt = 16, cancelable = true }) => {
         clock.t += dt;
-        const event = { type, pointerId: id, pointerType, isPrimary, clientX: x, clientY: y, target, timeStamp: clock.t };
-        fire(type, event);
+        const point = { identifier: id, clientX: x, clientY: y };
+        if (type === 'touchstart') down.set(id, { point, target });
+        else if (down.has(id)) down.get(id).point = point;
+        const touches = [...down.values()].map((d) => d.point);
+        if (type === 'touchend' || type === 'touchcancel') down.delete(id);
+        const event = { type, target, touches: type === 'touchend' || type === 'touchcancel' ? [...down.values()].map((d) => d.point) : touches,
+            changedTouches: [point], timeStamp: clock.t, cancelable, prevented: false,
+            preventDefault() { this.prevented = true; } };
+        dispatch(type, target, event);
         return event;
     };
-    const click = () => { const e = { stopped: false, prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } }; fire('click', e); return e; };
+    const touch = (type, opts) => touchEvent(type, { ...opts, target: opts.target || down.get(opts.id || 1)?.target || room });
+    const click = () => { const e = { stopped: false, prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } }; docL.fire('click', e); return e; };
     const progress = () => Number(sidebar.styleProps.get('--drawer-p'));
     const dragging = () => sidebar.classList.contains('dragging') && scrim.classList.contains('dragging');
-    return { doc, win, sidebar, scrim, room, state, flags, styles, dispose, pointer, click, fire, progress, dragging, clock };
+    const runTimers = (ms = 10_000) => {
+        clock.t += ms;
+        for (const [id, timer] of [...timers]) if (timer.at <= clock.t) { timers.delete(id); timer.fn(); }
+    };
+    return { doc, win, sidebar, scrim, room, state, flags, styles, dispose, touch, click, progress, dragging, clock, runTimers, timers };
 }
 
 // A drag from `from`: the first move locks the axis one slop in (12px), then `steps` moves reach `to`.
 // Progress is measured from the lock point, so p = (to - from - 12) / 320.
-const open = (w, { from = 100, to = 300, steps = 4, dt = 16, up = true } = {}) => {
-    w.pointer('pointerdown', { x: from, y: 300 });
+const open = (w, { from = 100, to = 300, steps = 4, dt = 16, up = true, target } = {}) => {
+    const moves = [];
+    w.touch('touchstart', { x: from, y: 300, target });
     const lock = from + 12;
-    w.pointer('pointermove', { x: lock, y: 300, dt });
-    for (let i = 1; i <= steps; i += 1) w.pointer('pointermove', { x: lock + ((to - lock) * i) / steps, y: 300, dt });
-    if (up) w.pointer('pointerup', { x: to, y: 300, dt });
+    moves.push(w.touch('touchmove', { x: lock, y: 300, dt }));
+    for (let i = 1; i <= steps; i += 1) moves.push(w.touch('touchmove', { x: lock + ((to - lock) * i) / steps, y: 300, dt }));
+    if (up) w.touch('touchend', { x: to, y: 300, dt });
+    return moves;
 };
 
 test('the switch: DRAWER_DRAG off binds nothing', () => {
     assert.equal(typeof DRAWER_DRAG, 'boolean');
     const w = world({ enabled: false });
-    assert.equal(w.doc.listeners.size, 0);
+    assert.equal(w.doc.listeners.count(), 0);
     w.dispose();
 });
 
 test('a start is eligible anywhere on the room, the edge included, but a field, with nothing over it, from a touch', () => {
     const w = world();
-    const tryOpen = (opts = {}) => { open(w, opts); const set = w.state.set.slice(); w.state.set.length = 0; return set; };
+    const tryOpen = (opts = {}) => { open(w, opts); w.runTimers(); const set = w.state.set.slice(); w.state.set.length = 0; return set; };
     assert.deepEqual(tryOpen(), [true], 'the plain case opens');
     w.state.open = false; w.scrim.hidden = true;
     assert.deepEqual(tryOpen({ from: 2, to: 300 }), [true], 'from the screen\'s very edge too (owner 19.10)');
@@ -94,9 +130,6 @@ test('a start is eligible anywhere on the room, the edge included, but a field, 
     w.styles.set(w.room, { touchAction: 'auto', overflowX: 'auto' }); w.room.scrollWidth = 900; w.room.clientWidth = 300;
     assert.deepEqual(tryOpen(), [], 'a horizontal scroller keeps its touch');
     w.styles.delete(w.room); w.room.scrollWidth = 0;
-    w.pointer('pointerdown', { x: 100, y: 300, pointerType: 'mouse' });
-    w.pointer('pointermove', { x: 300, y: 300, pointerType: 'mouse' }); w.pointer('pointerup', { x: 300, y: 300, pointerType: 'mouse' });
-    assert.deepEqual(w.state.set, [], 'a mouse never drags the drawer');
     w.dispose();
     const docked = world({ stack: false });
     open(docked); assert.deepEqual(docked.state.set, [], 'docked: no drawer to drag'); docked.dispose();
@@ -115,40 +148,88 @@ test('a start is eligible anywhere on the room, the edge included, but a field, 
     }
 });
 
-test('the axis locks after the slop: vertical movement is the page, sideways is the drawer, tracked by one number', () => {
+test('the axis locks after the slop; from then on no move may scroll the page, so the finger stays the drawer\'s', () => {
     const w = world();
-    w.pointer('pointerdown', { x: 100, y: 300 });
-    w.pointer('pointermove', { x: 104, y: 306 });
+    w.touch('touchstart', { x: 100, y: 300 });
+    const inSlop = w.touch('touchmove', { x: 104, y: 306 });
     assert.equal(w.dragging(), false, 'inside the slop nothing is decided');
-    w.pointer('pointermove', { x: 110, y: 330 });
-    w.pointer('pointermove', { x: 300, y: 330 });
+    assert.equal(inSlop.prevented, false, 'and the page may still scroll');
+    const vertical = w.touch('touchmove', { x: 110, y: 330 });
+    w.touch('touchmove', { x: 300, y: 330 });
     assert.equal(w.dragging(), false, 'a vertical start is a scroll, never a drag');
-    w.pointer('pointerup', { x: 300, y: 330 });
+    assert.equal(vertical.prevented, false, 'a scroll is never cancelled');
+    w.touch('touchend', { x: 300, y: 330 });
     assert.deepEqual(w.state.set, []);
-    // Sideways past the slop, with |dx| > |dy|: the drawer is revealed at 0 and follows.
-    w.pointer('pointerdown', { x: 100, y: 300 });
-    w.pointer('pointermove', { x: 112, y: 304 });
+    assert.equal(w.room.own.count(), 0, 'a gesture that ended leaves no listener on its element');
+    // Sideways past the slop, with |dx| > |dy|: the drawer is revealed at 0 and follows; every move is cancelled.
+    w.touch('touchstart', { x: 100, y: 300 });
+    const lock = w.touch('touchmove', { x: 112, y: 304 });
     assert.equal(w.dragging(), true);
+    assert.equal(lock.prevented, true, 'the move that locks the axis is cancelled');
     assert.equal(w.scrim.hidden, false, 'the scrim is painted during the drag');
     assert.equal(w.progress(), 0);
-    assert.equal(w.sidebar.captured, 1, 'the drawer holds the finger, whatever is re-rendered under it');
-    w.pointer('pointermove', { x: 112 + 160, y: 304 });
+    const drift = w.touch('touchmove', { x: 112 + 160, y: 304 + 80 });
+    assert.equal(drift.prevented, true, 'a thumb drifting down mid-drag cannot start a scroll (iOS would cancel the finger)');
     assert.equal(w.progress(), 0.5, 'progress is travel over the drawer width from the lock point');
     assert.equal(w.scrim.styleProps.get('--drawer-p'), '0.5');
-    w.pointer('pointermove', { x: 112 + 900, y: 304 });
+    w.touch('touchmove', { x: 112 + 900, y: 304 });
     assert.equal(w.progress(), 1, 'clamped');
-    w.pointer('pointerup', { x: 112 + 900, y: 304 });
+    w.touch('touchend', { x: 112 + 900, y: 304 });
     assert.deepEqual(w.state.set, [true]);
     assert.equal(w.dragging(), false);
     assert.equal(w.sidebar.styleProps.has('--drawer-p'), false, 'the number is the finger\'s; the state owns the rest');
-    w.state.open = false; w.scrim.hidden = true; w.state.set.length = 0;
+    w.state.open = false; w.scrim.hidden = true; w.state.set.length = 0; w.runTimers();
     // A thumb's arc: 12px sideways and 10 up at the slop is a drag, not a scroll.
-    w.pointer('pointerdown', { x: 100, y: 300 });
-    w.pointer('pointermove', { x: 112, y: 290 });
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 112, y: 290 });
     assert.equal(w.dragging(), true, 'a diagonal thumb is the drawer\'s');
-    w.pointer('pointermove', { x: 300, y: 230 });
-    w.pointer('pointerup', { x: 300, y: 230 });
+    w.touch('touchmove', { x: 300, y: 230 });
+    w.touch('touchend', { x: 300, y: 230 });
     assert.deepEqual(w.state.set, [true]);
+    w.state.open = false; w.scrim.hidden = true; w.state.set.length = 0; w.runTimers();
+    // The browser already scrolls (its move is not cancelable): the finger is the scroll's, never half a drag.
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 114, y: 302, cancelable: false });
+    assert.equal(w.dragging(), false);
+    w.touch('touchmove', { x: 300, y: 302 });
+    assert.equal(w.dragging(), false);
+    w.touch('touchend', { x: 300, y: 302 });
+    assert.deepEqual(w.state.set, []);
+    w.dispose();
+});
+
+test('the page listener cancels a move only while a drawer is dragged, and it is in place before any touch', () => {
+    const w = world();
+    const page = w.doc.listeners.map.get('touchmove') || [];
+    assert.equal(page.length, 1);
+    assert.equal(page[0].options?.passive, false, 'a non-passive page listener, registered up front (iOS decides at the touch\'s start)');
+    const start = w.doc.listeners.map.get('touchstart') || [];
+    assert.equal(start[0].options?.passive, true, 'a start never blocks scrolling');
+    const move = () => ({ cancelable: true, prevented: false, preventDefault() { this.prevented = true; } });
+    const idle = move();
+    w.doc.listeners.fire('touchmove', idle);
+    assert.equal(idle.prevented, false, 'no drag, no cancel: scrolling is untouched');
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 112, y: 300 });
+    const during = move();
+    w.doc.listeners.fire('touchmove', during);
+    assert.equal(during.prevented, true, 'while the drawer is dragged the page listener itself cancels a move');
+    w.dispose();
+});
+
+test('the element the touch started on carries it through a re-render that removes it from the page', () => {
+    const w = world();
+    const row = fakeEl('row'); row.parentElement = w.doc.body;
+    w.touch('touchstart', { x: 100, y: 300, target: row });
+    w.touch('touchmove', { x: 112, y: 300 });
+    assert.equal(w.dragging(), true);
+    row.attached = false;  // a live card re-rendered: its moves reach only the old element, never the document
+    const moved = w.touch('touchmove', { x: 112 + 160, y: 300 });
+    assert.equal(w.progress(), 0.5, 'the drawer still follows');
+    assert.equal(moved.prevented, true);
+    w.touch('touchend', { x: 112 + 200, y: 300 });
+    assert.deepEqual(w.state.set, [true], 'and the release commits');
+    assert.equal(row.own.count(), 0, 'its listeners go with the gesture');
     w.dispose();
 });
 
@@ -156,7 +237,9 @@ test('a slow release commits past half (open) or 30% (close); a fast one commits
     let w = world();
     open(w, { from: 100, to: 100 + 12 + 150, steps: 5, dt: 200 });  // slow: 30px per 200ms, p = 0.47
     assert.deepEqual(w.state.set, [], 'under half, slow: springs back');
-    assert.equal(w.scrim.hidden, true, 'and the scrim is put away');
+    assert.equal(w.scrim.hidden, false, 'the scrim fades back out with the drawer…');
+    w.runTimers();
+    assert.equal(w.scrim.hidden, true, '…and is put away once it has');
     open(w, { from: 100, to: 100 + 12 + 170, steps: 5, dt: 200 });  // slow, p = 0.53
     assert.deepEqual(w.state.set, [true]);
     w.dispose();
@@ -165,72 +248,88 @@ test('a slow release commits past half (open) or 30% (close); a fast one commits
     assert.deepEqual(w.state.set, [true], 'a fling after 24px opens');
     w.dispose();
     w = world();
-    w.pointer('pointerdown', { x: 100, y: 300 });
-    w.pointer('pointermove', { x: 115, y: 300, dt: 1 });
-    w.pointer('pointermove', { x: 122, y: 300, dt: 1 });
-    w.pointer('pointerup', { x: 122, y: 300, dt: 1 });
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 115, y: 300, dt: 1 });
+    w.touch('touchmove', { x: 122, y: 300, dt: 1 });
+    w.touch('touchend', { x: 122, y: 300, dt: 1 });
     assert.deepEqual(w.state.set, [], 'a fast flick under 24px of travel is not a commit');
     w.dispose();
     // Closing: a drag on the open drawer, leftwards.
     w = world({ open: true });
     w.scrim.hidden = false;
     const close = (to, dt) => {
-        w.pointer('pointerdown', { x: 300, y: 300, target: w.sidebar });
-        w.pointer('pointermove', { x: 288, y: 300, dt });
-        w.pointer('pointermove', { x: to, y: 300, dt });
-        w.pointer('pointerup', { x: to, y: 300, dt });
+        w.touch('touchstart', { x: 300, y: 300, target: w.sidebar });
+        w.touch('touchmove', { x: 288, y: 300, dt });
+        w.touch('touchmove', { x: to, y: 300, dt });
+        w.touch('touchend', { x: to, y: 300, dt });
     };
     close(288 - 60, 200);
     assert.deepEqual(w.state.set, [], 'less than 30% gone, slow: stays open');
     close(288 - 110, 200);
     assert.deepEqual(w.state.set, [false], 'more than 30% gone: closes');
     w.state.open = true; w.state.set.length = 0;
-    w.pointer('pointerdown', { x: 300, y: 300, target: w.scrim });
-    w.pointer('pointermove', { x: 320, y: 300 });
+    w.touch('touchstart', { x: 300, y: 300, target: w.scrim });
+    w.touch('touchmove', { x: 320, y: 300 });
     assert.equal(w.dragging(), false, 'the open drawer dragged rightwards has nowhere to go');
-    w.pointer('pointerup', { x: 320, y: 300 });
-    w.pointer('pointerdown', { x: 300, y: 300, target: w.room });
-    w.pointer('pointermove', { x: 200, y: 300 });
+    w.touch('touchend', { x: 320, y: 300 });
+    w.touch('touchstart', { x: 300, y: 300, target: w.room });
+    w.touch('touchmove', { x: 200, y: 300 });
     assert.equal(w.dragging(), false, 'a start outside the open drawer and its scrim is not a close');
-    w.pointer('pointerup', { x: 200, y: 300 });
+    w.touch('touchend', { x: 200, y: 300 });
     assert.deepEqual(w.state.set, []);
     w.dispose();
 });
 
-test('a second finger, pointercancel, the drawer losing the finger or a new width restore the start with no commit', () => {
+test('the release settles at the finger\'s speed: a fling is quick, a slow release far from the end takes longer', () => {
+    assert.equal(settleMs(0, 0), DRAG.settleMin, 'nothing left to travel: the shortest settle');
+    assert.equal(settleMs(300, 0), DRAG.settleMax, 'a slow release far from the end: the longest');
+    assert.ok(settleMs(160, 3) < settleMs(160, 0.2), 'a faster finger settles sooner');
+    assert.equal(settleMs(160, -3), settleMs(160, 3), 'either direction');
     const w = world();
-    const start = () => { w.pointer('pointerdown', { x: 100, y: 300 }); w.pointer('pointermove', { x: 112, y: 300 }); w.pointer('pointermove', { x: 260, y: 300 }); assert.equal(w.dragging(), true); };
-    start(); w.pointer('pointerdown', { x: 200, y: 400, id: 2, isPrimary: false });  // a real second touch is not primary
-    assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);
-    start(); w.fire('pointercancel', { pointerId: 1 });
-    assert.equal(w.dragging(), false); assert.equal(w.scrim.hidden, true);
-    start(); w.fire('lostpointercapture', { pointerId: 1, target: w.room });
-    assert.equal(w.dragging(), true, 'the row first under the finger giving up its capture (a re-render) keeps the drag');
-    w.fire('lostpointercapture', { pointerId: 1, target: w.sidebar });
-    assert.equal(w.dragging(), false, 'the drawer losing the finger ends it');
-    const resize = () => (w.win.listeners.get('resize') || []).forEach((fn) => fn());
-    w.win.innerWidth = 390;
+    open(w, { from: 100, to: 100 + 12 + 40, steps: 2, dt: 16 });  // a fling: 20px per 16ms
+    const fling = w.sidebar.styleProps.get('--drawer-settle');
+    assert.match(fling, /^\d+ms$/);
+    assert.equal(w.scrim.styleProps.get('--drawer-settle'), fling, 'the scrim settles with the drawer');
+    assert.equal(Number.parseInt(fling, 10), settleMs((1 - 40 / 320) * 320, 1.25));
+    w.runTimers();
+    assert.equal(w.sidebar.styleProps.has('--drawer-settle'), false, 'afterwards ☰ and × keep style.css\'s own timing');
+    w.dispose();
+});
+
+test('a second finger, touchcancel or a new width restore the start with no commit; a height change keeps the drag', () => {
+    const w = world();
+    const start = () => { w.touch('touchstart', { x: 100, y: 300 }); w.touch('touchmove', { x: 112, y: 300 }); w.touch('touchmove', { x: 260, y: 300 }); assert.equal(w.dragging(), true); };
+    start(); w.touch('touchstart', { x: 200, y: 400, id: 2, target: w.room });
+    assert.equal(w.dragging(), false, 'a second finger');
+    w.touch('touchend', { x: 200, y: 400, id: 2 }); w.touch('touchend', { x: 260, y: 300 });
+    w.runTimers(); assert.equal(w.scrim.hidden, true);
+    start(); w.touch('touchcancel', { x: 260, y: 300 });
+    assert.equal(w.dragging(), false, 'the system took the touch');
+    w.runTimers(); assert.equal(w.scrim.hidden, true);
+    const resize = () => w.win.listeners.fire('resize', {});
     start(); resize();
     assert.equal(w.dragging(), true, 'a height-only change (a browser bar, the keyboard) keeps the drag');
     w.win.innerWidth = 844; resize();
     assert.equal(w.dragging(), false, 'a new width (the phone turned) ends it');
     assert.deepEqual(w.state.set, [], 'no state change, so no history entry');
-    w.pointer('pointerup', { x: 260, y: 300 });
+    w.touch('touchend', { x: 260, y: 300 });
     assert.deepEqual(w.state.set, []);
     w.dispose();
 });
 
-test('the click that ends a drag is swallowed once; a tap is not', () => {
+test('the click that ends a drag is swallowed once; a tap is not; dispose releases every listener', () => {
     const w = world();
-    w.pointer('pointerdown', { x: 100, y: 300 });
-    w.pointer('pointerup', { x: 100, y: 300 });
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchend', { x: 100, y: 300 });
     assert.equal(w.click().stopped, false, 'a tap keeps its click');
     open(w, { from: 100, to: 400 });
     const ending = w.click();
     assert.equal(ending.stopped && ending.prevented, true);
     assert.equal(w.click().stopped, false, 'only the one ending click');
     w.clock.t += DRAG.clickGuard + 1;
+    w.touch('touchstart', { x: 100, y: 300 });  // a gesture in flight when the app goes
     w.dispose();
-    assert.equal([...w.doc.listeners.values()].every((fns) => fns.length === 0), true, 'dispose releases every listener');
-    assert.equal([...w.win.listeners.values()].every((fns) => fns.length === 0), true);
+    assert.equal(w.doc.listeners.count(), 0, 'dispose releases every page listener');
+    assert.equal(w.win.listeners.count(), 0);
+    assert.equal(w.room.own.count(), 0, 'and the gesture\'s own');
 });
