@@ -438,15 +438,22 @@ def test_one_named_seat_is_the_whole_panel_of_a_foreign_root(h: Harness) -> None
     assert result["aggregate"] == rl.VERDICT_PASS and result["quorum"]["required"] == 1
 
 
-def test_advisory_narrowing_without_reason_refuses_before_dispatch(h: Harness) -> None:
+@pytest.mark.parametrize("body", [False, True])
+def test_advisory_reason_refusal_applies_only_to_own_code(h: Harness, body: bool) -> None:
     pool = _pool()
-    _stage(h.project, "a.py", "a = 1\n")
-    with pytest.raises(rc.ReviewChangeArgumentError, match="REVIEW_PANEL_REASON_REQUIRED"):
-        h.run(subject="index", reviewers=[pool[0]])
-    assert not h.wave.calls
+    root = "system_repo" if body else "active_workspace"
+    repo = h.system if body else h.project
+    _stage(repo, "a.py", "a = 1\n")
+    if body:
+        with pytest.raises(rc.ReviewChangeArgumentError, match="REVIEW_PANEL_REASON_REQUIRED"):
+            h.run(root=root, subject="index", reviewers=[pool[0]])
+        assert not h.wave.calls
+    else:
+        narrowed = h.run(root=root, subject="index", reviewers=[pool[0]])
+        assert narrowed["panel"]["assigned"] == [pool[0]] and narrowed["panel"]["reason_missing"]
 
-    _stage(h.project, "b.py", "b = 2\n")
-    everyone = h.run(subject="index", reviewers=pool)
+    _stage(repo, "b.py", "b = 2\n")
+    everyone = h.run(root=root, subject="index", reviewers=pool)
     assert everyone["panel"]["composition"] == "composed" and everyone["panel"]["reason_missing"] is False
 
 

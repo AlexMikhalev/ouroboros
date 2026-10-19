@@ -169,7 +169,7 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
     drive = _drive(ctx)
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
-        panel = _skill_panel(reviewers, review_reason) if check == "review" else None
+        panel = _skill_panel(reviewers, review_reason, reason_field="review_reason") if check == "review" else None
         result = run_in_lane(drive, "install", item_id, lambda: install_item(
             drive, item_id, replace=bool(replace), actor="ouroboros", reason=str(reason), task_id=task_id,
             turn_on_when_ready=True, check=check, check_notes=check_notes),
@@ -208,7 +208,7 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
         panel = _skill_panel(reviewers, reason) if check == "review" and mode != "keep" else None
         result = run_in_lane(drive, "update", skill, lambda: update_installed(
             drive, skill, mode=mode, digest=str(digest or ""), local_digest=str(local_digest or ""), actor="ouroboros",
-            check=check, check_notes=check_notes, reason=reason,
+            check=check, check_notes=check_notes,
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
     except ValueError as exc:
@@ -224,11 +224,11 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
     return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=_dump(result)))
 
 
-def _skill_panel(reviewers: Any, reason: str) -> Any:
+def _skill_panel(reviewers: Any, reason: str, *, reason_field: str = "reason") -> Any:
     from ouroboros.reviewer_slot_config import compose_review_panel
     if reviewers is not None and (not isinstance(reviewers, list) or any(not isinstance(row, str) for row in reviewers)):
         raise ValueError("REVIEW_PANEL_ARGUMENT: reviewers must be a list of enabled row ids or handles.")
-    return compose_review_panel(reviewers or (), reason, surface="skill")
+    return compose_review_panel(reviewers or (), reason, surface="skill", reason_field=reason_field)
 
 
 _CHECK_PROPERTIES = {

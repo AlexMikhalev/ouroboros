@@ -184,14 +184,19 @@ def test_skill_tools_carry_the_admitted_panel_before_mutation(tmp_path, monkeypa
             else {"name": "notes", "mode": "replace"})
     why = "review_reason" if tool == "skill_install" else "reason"  # the install reason never explains reviewers
     context = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
+    invalid = _typed_call(tool, context, **args, reviewers=["a"], **{why: 42})
+    assert invalid.code == "TOOL_ARG_ERROR" and f"{why} must be a string" in invalid.text
+    assert called == panels == []
     if enforcement == "advisory":
         refused = _typed_call(tool, context, **args, reviewers=["a"])
         assert refused.code == "TOOL_ARG_ERROR" and "REVIEW_PANEL_REASON_REQUIRED" in refused.text
+        assert f"Supply {why} or omit reviewers" in refused.text
         assert called == panels == []
     result = _typed_call(tool, context, **args, reviewers=["a"], **{why: "one area changed"})
     assert result.code == "OK" and len(called) == len(panels) == 1
     assert panels[0].facts["assigned"] == expected and panels[0].facts["reason"] == "one area changed"
     assert panels[0].facts["chosen_by"] == "ouroboros"
+    assert called[0].get("reason", "") == ("notes for the trip" if tool == "skill_install" else "")
 
 
 def test_install_from_a_trusted_row_is_accepted_at_once(ctx):

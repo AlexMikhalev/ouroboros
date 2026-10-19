@@ -35,7 +35,7 @@ def test_adviser_neither_vetoes_nor_keeps_wave_pending(additional, signal):
     assert record["state"] == ("pending" if not additional and signal == "pending" else "settled")
     assert record["rows"][-1]["additional"] is additional
     assert record["verdict"]["per_row"]["critic"] == signal
-    assert record["panel"]["not_reached"] == ([{"seat_id": "critic", "cause": "in_flight"}] if signal == "pending" else [])
+    assert record["panel"]["not_reached"] == [], "an answer still in flight is awaiting, not unreachable"
     if signal == "pending":
         from ouroboros.tools.git_review_cycle import _review_custody_pending
         ctx = SimpleNamespace(_last_triad_raw_results=rows, _last_review_structured={"rows": plans})

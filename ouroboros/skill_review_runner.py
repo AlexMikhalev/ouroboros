@@ -1400,9 +1400,9 @@ def run_skill_review_lifecycle_blocking(
     def _run_review() -> SkillReviewOutcome:
         with _review_job_heartbeat(drive_root, skill_name):
             progress.set("Running skill review…")
-            with composed_review_pool(panel.seats):
+            with composed_review_pool(panel.seats) if panel is not None else contextlib.nullcontext():
                 outcome = _call_review_with_lifecycle_guard(review_impl, ctx, skill_name, drive_root, binding, panel)
-            if not outcome.panel:
+            if not outcome.panel and panel is not None:
                 outcome.panel = dict(panel.facts)
             deps_status = "not_required"
             deps_error = ""

@@ -195,7 +195,7 @@ _REVIEW_SURFACES = {
     "commit_gate": {"blocking": "every ticked reviewer; a subset is widened and recorded",
                     "advisory": "choose ticked reviewers; narrowing requires a reason; omitted means the whole pool; outcome returns before Git for an author disposition",
                     "cyber_pro": "compose or skip, recording the departure; never holds"},
-    "review_change": "own code follows commit composition; other repositories allow composed panels and never bind",
+    "review_change": "own code follows commit composition; other repositories compose freely in every mode, record a missing reason and never bind",
     "skill_review": {"blocking": "whole pool", "advisory": "choose ticked reviewers, with a reason when narrowed; omitted and owner-started mean whole pool; review-each blockers keep the skill off until clean review or owner Skip",
                      "cyber_pro": "panel, self-check or no review; the skill may run"},
     "plan_review": "opening is optional; first own-code ask: Blocking adds missing ticked reviewers, Advisory requires a ticked reviewer and a reason when narrowed, Cyber Pro is free; later asks name rows; only a counted participant's objection holds, only under Blocking",
@@ -347,7 +347,7 @@ def review_facts_block(snapshot: Optional[TaskSettingsSnapshot] = None) -> str:
                     "delivery": "session" if session else ("native" if slot.native_retrieval else "packet"),
                     "cost_hint": SESSION_SEAT_COST_HINT if session else _api_review_cost_hint(slot),
                     **rs.review_cost_facts(last.get("cost_usd"), route=str(slot.route.value), model=slot.model),
-                    "last_review": {key: last[key] for key in ("ts", "status", "requested", "effective", "failure_code", "review_record_id") if key in last}
+                    "last_review": {key: last[key] for key in ("ts", "status", "failure_code", "cost_kind", "cost_usd") if key in last}
                                    if last else "unknown",
                 })
                 # A session seat logs in itself; an api seat answers only with its provider's key.

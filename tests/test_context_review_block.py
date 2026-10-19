@@ -232,8 +232,7 @@ def test_recent_execution_is_a_fact_without_replacing_the_configured_seat(monkey
     row = block["pool"][0]
     assert row["model"] == "openai/gpt-5.6-terra"
     assert row["cost_usd"] == 0.023 and row["cost_kind"] == "measured"
-    assert row["last_review"] == {"status": "ok", "ts": "2026-10-19",
-                                  "requested": {"model": "old-model"}, "effective": {"model": "old-model"}}
+    assert row["last_review"] == {"status": "ok", "ts": "2026-10-19", "cost_usd": 0.023}
 
 
 def test_the_block_reads_the_task_snapshot_not_settings_saved_after_the_task_started(tmp_path, monkeypatch):
@@ -315,6 +314,7 @@ def test_one_rule_sentence_per_effective_authority(monkeypatch, enforcement, mod
 
 
 def test_a_fourteen_seat_pool_keeps_every_seats_delivery_cost_and_reliability(tmp_path, monkeypatch):
+    from ouroboros import reviewer_slot_config
     keys = [f"{'k' * 60}{index:04d}" for index in range(14)]
     monkeypatch.setenv(SUBAGENTS_SETTING, _roster(*[
         _row(key, f"openai/{'m' * 53}{index:04d}") for index, key in enumerate(keys)]))
@@ -322,6 +322,10 @@ def test_a_fourteen_seat_pool_keeps_every_seats_delivery_cost_and_reliability(tm
         {"record_id": f"rv-{'r' * 40}-{index:02d}", "surface": "commit_gate",
          "ts": f"2026-10-07T12:{index:02d}:00.000000+00:00", "verdict": {"aggregate": "QUORUM_FAILED"}}
         for index in range(7)][:int(limit)])
+    last = {"ts": "2026-10-19", "status": "error", "failure_code": "provider_error", "cost_kind": "measured", "cost_usd": 0.02}
+    monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {
+        key: {**last, "requested": {"model": "old-model", "profile": "p" * 500},
+              "effective": {"model": "old-model", "profile": "p" * 500}} for key in keys})
     block, text = _block()
     rows = block["pool"]
 
@@ -330,6 +334,8 @@ def test_a_fourteen_seat_pool_keeps_every_seats_delivery_cost_and_reliability(tm
     assert records["omitted"]["records"] == "1+" and len(records["recent_records"]) == 5
     assert len(rows) == 14 and all({"seat_id", "model", "delivery", "cost_usd", "cost_kind", "last_review"} <= row.keys() and len(row["seat_id"]) == 64 for row in rows)
     assert block["full_source"]["pool"] == "GET /api/review-pool"
+    assert all(row["last_review"] == last for row in rows)
+    assert len(text.encode("utf-8")) < 12_000, "full large roster must not copy execution projections"
 
 
 _LANES_KEY = "OUROBOROS_REVIEWER_SLOTS"
