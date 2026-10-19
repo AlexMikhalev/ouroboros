@@ -183,7 +183,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
                 kebab.press("Enter")
                 menu = page.locator('.project-row-menu[role="menu"]')
                 menu.wait_for(state="visible", timeout=5_000)
-                assert page.locator(':focus').get_attribute("data-prm") == "rename"
+                assert page.locator(':focus').get_attribute("data-prm") == "pin"  # the menu's first action
                 box = menu.bounding_box()
                 assert box is not None
                 assert box["x"] >= 0 and box["y"] >= 0

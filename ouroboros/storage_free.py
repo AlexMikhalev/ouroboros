@@ -63,7 +63,7 @@ _KEPT_REASONS = {
                         "canonical_changed", "drive_occupant_changed", "canonical_not_settled", "post_work_open",
                         "artifacts_not_terminal", "child_drive_mismatch"),
     "in_use": ("task_live", "liveness_unknown", "owner_processes_live", "task_not_terminal", "parent_not_terminal"),
-    "busy": ("custody_busy", "mailbox_busy"),
+    "busy": ("custody_busy", "mailbox_busy", "store_busy"),
     "unreadable_record": ("task_result_unreadable", "unread_mailbox_unreadable"),
     "restart": ("generation_closed",),
 }

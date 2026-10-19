@@ -702,7 +702,7 @@ def _attempt_key(request: Any, slot: Any) -> str:
     }
     if getattr(slot, "default_temperature", None) is not None:
         slot_data["default_temperature"] = slot.default_temperature
-    if getattr(slot, "processing_preference", ""):
+    if getattr(slot, "processing_preference", None) is not None:
         slot_data["processing_preference"] = slot.processing_preference
     if str(getattr(slot, "session_access", "") or "readonly") != "readonly":
         slot_data["session_access"] = slot.session_access  # writable rights are identity

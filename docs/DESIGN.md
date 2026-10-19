@@ -2139,6 +2139,15 @@ the Project panel lies beside Main at its own width over the dimmed room; its
 handle resizes it apart from the sidebar's, and it is never wider than the
 content area.
 
+**Resizing.** A handle drag writes only the dragged box's width, once per
+displayed frame; the sidebar's column, the dimmed room and the panel's edge
+follow that box by layout, and the width is stored once, when the drag ends.
+While a feed's width keeps moving (a drag, a live window resize), the rows far
+from the screen keep the size they were last laid out at and only the rows near
+it are laid out again; once the width holds, every row is laid out at the new
+width and the passage being read stays where it was. A single change of width (a
+window jump, a layout switch) is laid out at once.
+
 **Navigation.** Places come from one registry (`web/modules/pages.js`): it renders
 the navigation rows, names the titles and feeds the shell gate, so a new page is
 a registry row and its module, checked at phone widths with no further work. The column
@@ -2146,10 +2155,16 @@ has a pinned head (Main Chat), one collection (Projects, the column's only
 scroller) and the tools right after it (Files, Skills, Widgets, Dashboard,
 Settings, then the version and the update), which reach the bottom edge only
 when the Projects do not fit: free room stays under the last row, never between
-them. Collapsed, the Projects keep the ones whose dots show (work running, queued
-or waiting), the open one and the one under the keyboard; the rest wait behind
-"Show all N". The order follows §5; no label is set
-in capitals. A short window first compacts rows (fine pointer only), then lets the
+them. A Project's ⋯ offers Pin or Unpin first; pinning neither opens nor reads
+it. Pinned Projects lead the one list, and one `--space-2` of air before the next
+shown row is their only boundary: no caption, glyph, tint, rule or column, so
+nothing reads as one more Project; the row's tooltip and accessible name say
+Pinned. Within each group unread leads, then recency; the column's places follow §5.
+After Unpin, a room outside the recent sidebar slice disappears from that slice,
+not from the registry. Collapsed, the Projects keep the
+pinned ones, those whose dots show (work running, queued or waiting), the open
+one and the one under the keyboard; the rest wait behind "Show all N". No label
+is set in capitals. A short window first compacts rows (fine pointer only), then lets the
 whole column scroll with Main pinned; a tool never becomes an unlabelled icon. One
 place is chosen at a time, and pressing a place opens it, never closes it.
 

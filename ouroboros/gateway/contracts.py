@@ -633,6 +633,7 @@ class ProjectEntry(TypedDict, total=False):
     name: str
     chat_id: int
     working_dir: str
+    pinned: bool  # absent on legacy rows means unpinned; no routing/activity effect
     cognition: ProjectCognition
     provenance: str
     clone_url: str

@@ -737,6 +737,7 @@
  * @typedef {Object} ProjectEntry
  * @property {string} id
  * @property {string=} name
+ * @property {boolean=} pinned  // absent on legacy rows means unpinned
  * @property {number=} chat_id
  * @property {string=} working_dir
  * @property {string=} provenance   // attached | cloned | genesis | none (historical fact)
