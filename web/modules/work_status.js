@@ -296,14 +296,14 @@ export function cardControls(state, taskId) {
 }
 
 /**
- * A card that finished while its own Stop request was out, once that request settles: the Stop… it keeps is its
- * work's offer (a sync has already removed one the work no longer offers), so it is usable again, and a refusal is
- * said as a running card says it. A running card keeps its own pending rules.
+ * A card that finished while its own Stop request was out, once that request is refused: the refusal is said once,
+ * as a running card says it, while the card as it is now (its record by task id, the Stop… on its root, whatever
+ * button the request began with) still offers its work's Stop…. A finished card's Stop… is never its own pending
+ * Stop, so every sync keeps it usable (chat.js syncCancelRunButtonMutation); a running card keeps its own rules.
  */
-export function settleKeptStop(record, btn, exc = null, toast = () => {}) {
-    if (!record?.finished || !btn?.isConnected) return;
-    btn.disabled = false;
-    if (exc && exc.status !== 404) toast(`Cancel failed: ${exc.message || exc}`, 'error');
+export function settleKeptStop(record, exc = null, toast = () => {}) {
+    if (!record?.finished || !exc || exc.status === 404 || !record.root?.querySelector?.('[data-cancel-run]')) return;
+    toast(`Cancel failed: ${exc.message || exc}`, 'error');
 }
 
 /**

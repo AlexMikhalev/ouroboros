@@ -893,6 +893,7 @@ export function createChatInstance({
         }
         if (existing) {
             record.cancelRunBtn = existing;
+            if (record.finished) existing.disabled = false;
             return changed;
         }
         const actions = ensureLiveActionsEl(record);
@@ -979,12 +980,11 @@ export function createChatInstance({
             if (btn && !record.finished && record.cancelPendingPolicy === 'finalize') {
                 btn.disabled = false;
             }
-            settleKeptStop(record, btn);
         } catch (exc) {
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
                 revokeManagedTaskCancelAuthority(taskId);
-                settleKeptStop(record, btn, exc, showToast);
+                settleKeptStop(liveCardRecords.get(taskId), exc, showToast);
                 try {
                     reconcileCancelCardFromDetail(record, taskId, await fetchTaskDetail(taskId));
                 } catch {
