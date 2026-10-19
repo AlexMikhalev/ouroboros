@@ -370,7 +370,10 @@ test('the rubber band: nothing changes up to fully open; past it the give grows 
     assert.ok((c - b) / 1.5 < (b - a) / 0.4, 'each further pixel of pull gives less');
     assert.ok(c < (3 - 1) / 8, 'a damped give: at most an eighth of the pull past open');
     for (const width of [320, 360]) {
-        assert.ok((stretch(10, width) - 1) * width <= DRAG.rubberMax + 1e-9, 'never past the painted cover, however far the pull');
+        assert.ok((stretch(10, width) - 1) * width < DRAG.rubberMax, 'never past the painted cover, however far the pull');
+        // Every pixel of pull still moves the drawer: out to a far pull and back, never a flat stretch (a wall).
+        const gives = [100, 250, 400, 550, 700].map((d) => (stretch(1 + d / width, width) - 1) * width);
+        assert.ok(gives.every((g, i) => i === 0 || g > gives[i - 1] + 0.5), gives);
     }
     assert.ok(DRAG.rubberMax < 64, 'style.css paints the drawer\'s surface 64 px past its edge');
 });

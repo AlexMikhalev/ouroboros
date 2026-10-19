@@ -365,6 +365,10 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
             facts['pulled'] = page.evaluate(PULLED)
             png = page.screenshot(clip={'x': 4, 'y': y + 20, 'width': 1, 'height': 1})
             facts['gap'] = list(Image.open(io.BytesIO(png)).convert('RGB').getpixel((0, 0)))
+            # And back 100 px, still past fully open: the drawer follows the finger back (a rubber band, not a wall).
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': width - 110, 'y': y, 'id': 1}]})
+            page.wait_for_timeout(32)
+            facts['back'] = page.evaluate(PULLED)
             cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
         finally:
             cdp.detach()
@@ -377,4 +381,6 @@ def test_a_pull_past_fully_open_shows_the_drawer_at_the_edge_not_the_room(chromi
         'the drawer gives past fully open', facts)
     assert max(abs(a - b) for a, b in zip(facts['gap'], facts['pulled']['surface'])) <= 4, (
         'the gap at the edge shows the drawer\'s surface, not the dimmed room', facts)
+    assert facts['back']['p'] > 1 and facts['back']['x'] < facts['pulled']['x'] - 0.5, (
+        'pulled back, the drawer gives back: every pixel of the finger still moves it', facts)
     assert facts['after']['open'] is True, ('released, it settles back to fully open', facts)
