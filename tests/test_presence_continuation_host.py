@@ -260,9 +260,11 @@ def test_a_crashed_continuing_author_is_shown_interrupted_and_never_rerun(host):
     assert h.calls == 0
 
 
-def test_a_parked_author_whose_process_was_replaced_is_shown_interrupted_and_never_rerun(host, monkeypatch):
-    """A lost process: the park retains its controller's witness. Once a new process session proves that
-    controller gone (an exec restart keeps the pid and birth), the poll shows unfinished work, never pending."""
+def test_a_parked_author_still_live_in_this_process_stays_pending_and_is_never_rerun(host, monkeypatch):
+    """A positive live observation wins (``presence_recovery.attempt_ended``): even when the park's controller
+    witness reads as another process session, an author still live in this process is pending, never shown
+    ended; a replay returns the write-once envelope and nothing reruns it. A really lost process is the
+    child-Host suite's (``test_presence_continuation_process``), the dead-witness rule ``test_presence_attempt_end``'s."""
     from ouroboros.review_operation import controller_identity
 
     h = host
@@ -276,13 +278,11 @@ def test_a_parked_author_whose_process_was_replaced_is_shown_interrupted_and_nev
         replaced.setattr("ouroboros.process_custody.current_custody_session_id", lambda: "a-new-process-session")
         from ouroboros.presence_continuation import continuation_status
 
-        assert continuation_status(load_task_result(h.data, ref)) == "interrupted"
-        view = poll(h, ref)  # the Host shows the lost author's work as retained and unfinished, never as speech
-        assert view.status_code == 200 and view.json()["status"] == "unresolved" and "text" not in view.json()
-        assert view.json()["disposition"] == "retained" and view.json()["continuation_ref"] == ref
+        assert continuation_status(load_task_result(h.data, ref), h.data) == "running"
+        assert poll(h, ref).status_code == 202
         assert turn(h, 42).json() == first  # replay returns the write-once envelope; nothing reruns the author
     assert h.calls == 2
-    # The projection wrote nothing: under its own session again, this (live) author finishes as usual.
+    # The projection wrote nothing: the (live) author finishes as usual.
     h.release.set()
     wait_for(lambda: poll(h, ref).status_code == 200, timeout=60, what="the author")
     assert (poll(h, ref).json()["status"], poll(h, ref).json()["text"]) == ("completed", ANSWER) and h.calls == 3

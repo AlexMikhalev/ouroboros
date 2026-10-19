@@ -1,10 +1,10 @@
 """The task store's ``review_collection_pending`` column through schema upgrades, old
 writers, first child writes and export/import.
 
-Task acceptance was the column's only collector. With it retired (owner 17.10, Q2-A) the
-current writer derives 0 for every body (``obligations.review_collection_pending``: an old
-acceptance pointer, panel or late receipt is no open work), and the collection selector and
-the orphaned-operation collector are deleted; the column stays for old stores and old writers.
+The column is 1 exactly while a task holds an open review operation pointer of any surface
+(``obligations.review_collection_pending``): the evidence packer keeps such a task's loose files
+and the maintenance pass retires a dead controller's pointer. The retired task acceptance's
+closed pointers, panels and late receipts select nothing; its open pointers are open until retired.
 """
 from __future__ import annotations
 
@@ -23,6 +23,22 @@ _SCHEMA_SHAPES = {"v1": (), "owner-v2": ("has_owner_questions",),
 
 def _operation(state="dispatched", **fields):
     return {"surface": "task_acceptance", "state": state, "retry_key": "wave", **fields}
+
+
+@pytest.mark.parametrize("surface", ["task_acceptance", "multi_model_review", "plan_review"])
+@pytest.mark.parametrize("state,pending", [
+    ("preparing", True), ("retained", True), ("dispatched", True), ("unpublished", False), ("closed", False),
+    ("collected", False), ("preparation_unknown", False), ("preparation_refused", False), ("unrecognized", False),
+])
+def test_selection_is_an_open_pointer_of_any_surface(surface, state, pending):
+    row = document("task", review_operations={"owner": {**_operation(state), "surface": surface}})
+    assert obligations.review_collection_pending(row) is pending
+    row["review_operations"]["owner"]["control_only"] = True
+    assert obligations.review_collection_pending(row) is False
+    row["review_operations"]["owner"] = "unreadable"
+    assert obligations.review_collection_pending(row) is True
+    panel = {"surface": "task_acceptance", "authority": "host_root", "actors": [{"operation_state": "in_flight"}]}
+    assert obligations.review_collection_pending(document("task", review_projection={"panels": [panel]})) is False
 
 
 def _legacy_store(root, *rows, owned_root, tier=store.TIER_ENFORCED, shape="v1"):
@@ -99,13 +115,15 @@ def test_upgrade_then_old_writer_resets_unknown_without_history_loss(tmp_path, t
     _legacy_store(tmp_path, closed, owned_root=tmp_path, tier=tier, shape=shape)
     store_import.upgrade_current_schema(tmp_path)
     assert _flag(tmp_path, "closed") == (None, 1)
-    newer = {**closed, "review_operations": {"op": _operation("unpublished")}}
+    assert list(task_store.review_collection_candidates(tmp_path)) == []
+    assert _flag(tmp_path, "closed") == (0, 1)
+    newer = {**closed, "review_operations": {"op": _operation("dispatched")}}  # an open pointer, old writer
     with store.open_store(tmp_path, write=True) as txn:
         _old_replace(txn.conn, newer, known=_SCHEMA_SHAPES[shape])
     assert _flag(tmp_path, "closed") == (None, 2)
     store_import.upgrade_current_schema(tmp_path)
-    # The collector that classified unknown rows left with task acceptance; nothing reads the column.
-    assert _flag(tmp_path, "closed") == (None, 2)
+    assert list(task_store.review_collection_candidates(tmp_path)) == ["closed"]
+    assert _flag(tmp_path, "closed") == (1, 2)
     assert task_store.read_document(tmp_path, "closed") == newer
 
 
@@ -126,8 +144,8 @@ def test_passive_read_leaves_old_schema_and_first_child_write_upgrades_before_mu
             assert txn.row("child", "has_owner_questions", "write_seq") == (1, 1)
         return {**row, "review_operations": {"op": _operation()}}
     task_store.patch_document(child, "child", mutate)
-    # The current writer derives the column: an old acceptance pointer owes no collection now.
-    assert calls == [original["result"]] and _flag(child, "child") == (0, 2)
+    # The current writer derives the column: an open pointer (an old acceptance one) is open until retired.
+    assert calls == [original["result"]] and _flag(child, "child") == (1, 2)
     assert task_store.read_document(child, "child")["owner_quiz"] == original["owner_quiz"]
     assert set(obligations.members(child, "owner_questions")) == {"child"}
 

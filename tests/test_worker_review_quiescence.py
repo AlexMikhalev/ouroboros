@@ -169,15 +169,13 @@ def _maintenance_pass(root, monkeypatch):
 
     import supervisor.workspace_preparation as preparation
     from ouroboros import server_maintenance as maintenance
-    from ouroboros.maintenance import child as maintenance_child
 
     monkeypatch.setattr(maintenance, "DATA_DIR", root)
-    for name in ("_STARTUP_PRUNES_OWED", "_STARTUP_TREES_OWED", "_STARTUP_SOURCE_PRUNES_OWED"):
-        monkeypatch.setattr(maintenance, name, [False])
     monkeypatch.setattr(maintenance, "_periodic_zombie_reconcile", lambda **_kw: None)
+    monkeypatch.setattr(maintenance, "_run_reconcile_prunes", lambda *_a: None)
     monkeypatch.setattr(maintenance, "_run_drive_custody_pass", lambda *_a: None)
+    monkeypatch.setattr(maintenance, "_tick_maintenance_child", lambda: None)
     monkeypatch.setattr(preparation, "recover_interrupted_preparations", lambda *_a, **_kw: None)
-    monkeypatch.setattr(maintenance_child, "tick", lambda *_a, **_kw: None)
     maintenance._run_periodic_reconcile_sweep([0], latch=SimpleNamespace(release=lambda: None))
 
 

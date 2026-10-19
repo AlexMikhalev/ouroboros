@@ -347,8 +347,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
 RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # v6.87.7: the depth cap conflated how DEEP delegation nests with how STRONG a descendant is.
     "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT",
-    # The acceptance improvement-pass and plan-swarm knobs are retired (OUROBOROS_REVIEW_MAX_CYCLES bounds
-    # paid result, commit and skill waves; plan asks stand outside it).
+    # The acceptance improvement-pass and plan-swarm knobs are retired (the cap bounds result/commit/skill waves).
     "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES",
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
@@ -403,11 +402,8 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_EFFORT_SCOPE_REVIEW",
     "OUROBOROS_EFFORT_DEEP_SELF_REVIEW",
     "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
-    # The task-acceptance machine folded into review_change(subject="result") (owner 17.10, Q2-A):
-    # its launch floor was a duration prediction, and its reserve percentage was the default
-    # reserve that floor's window was measured above (a budget profile's own
-    # reserve_finalization_pct still applies). A review is bounded by the deadline less the
-    # finalization grace.
+    # Task acceptance folded into review_change(subject="result"): its launch floor and default reserve are gone (a
+    # budget profile's reserve_finalization_pct still applies; a review is bounded by the deadline less the grace).
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC",
     "OUROBOROS_ACCEPTANCE_RESERVE_PCT",
 )
