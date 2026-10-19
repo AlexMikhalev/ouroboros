@@ -31,7 +31,7 @@ web/ — Web UI, a SPA of ES modules; chapter 3 owns the pages and the modules n
     onboarding_agents_step.js, onboarding_starter_skills.js, onboarding_overlay.js, project_create.js, utils.js — first-run accounts step and starter skills; the wizard frame's sandbox policy, kept in one place as a security boundary; New Project dialog; shared utilities (§2; §3 Project rooms)
     review_command.js — `/review` chooser and send (§3 Chat and Projects)
     review_presentation.js, plan_record_presentation.js, review_record_card.js, review_dom_patch.js, harness_presentation.js — read-side Review Checkpoint grouping, a review record's panel and reviewer lines, keyed DOM patching, the sole owner of harness identity markup (§3 Child cards and executor presentation)
-    acceptance_incident_presentation.js — read-only rendering of a task-acceptance incident stored before the result review; no reviewer authority (§6 Result review)
+    acceptance_incident_presentation.js — a stored task-acceptance incident, read-only; no reviewer authority (§6 Result review)
     widgets.js, widget_module.js, widget_frame.js, widget_card.js, widget_reorder.js, widget_list.js, widget_size.js, widget_chart.js, widget_job.js, masonry.js — Widgets page leaves: host and card registry, framed mounts, card chrome, list-request policy, helpers and masonry (§3)
 supervisor/ — background thread inside server.py (§5)
   active_activity.py — process-local direct actors/call observations for `/api/state`; private reply expectation/handoff facts, no spurious queue rows (§3 Direct turns and the activity block)
@@ -112,9 +112,9 @@ ouroboros/ — agent core and shared runtime (§6)
   evolution_checkpoints.py, evolution_fingerprint.py — append-only campaign checkpoint ledger; canonical objective fingerprint for repeat gating
   improvement_backlog.py — the authored backlog note's complete current text for the evolution chooser and context; no host writer (§6 Post-task work)
   loop.py — the LLM tool loop, finalization nudges and the FINAL ANSWER candidate (§6 Task lifecycle)
-  late_review_marks.py — a review settled after its author can receive it (a plan reply, a left change, commit or result wave) kept in view in its room until the mind releases it (§6 Review stack)
+  late_review_marks.py — a review settled after its author could receive it (a plan reply, a left wave), kept in its room's view until the mind releases it (§6 Review stack)
   owner_source.py — resolves owner chat/quiz/mailbox membership; action meaning belongs to Main (§6 Owner routing verbs)
-  delivery_seal.py — the root admission seal a root takes at an author stop, re-exported from `loop`; the stored names of the former task-acceptance fence stay (§6 Result review)
+  delivery_seal.py — the root admission seal at an author stop, re-exported from `loop`; stored names keep the former fence's (§6 Result review)
   review_price.py — the measured price of one review by one reviewer row, from the usage ledger (§6 Result review; §7 Review pool)
   loop_llm_call.py — single-round LLM call, current-call event producer and usage accounting
   transcript_prefix.py — append-only transcript between the sends of one loop execution; a break is a recorded `prompt_prefix_break` fact, never a blocked send (§6 Task lifecycle)
@@ -150,7 +150,7 @@ ouroboros/ — agent core and shared runtime (§6)
   local_custody_repair.py — an addressed action retires a positively ended local owner's claim; passive reads write nothing (§6 Owner Continue)
   owner_continue.py — owner Continue data half: identity, eligibility, exact owner sources (§6 Owner Continue)
   routing_wait.py — receipt waits and the one act projection that the picker, routing tools and observer share
-  outcomes.py — typed task-outcome and objective authority (a bound result review, an informed finish or an author stop; stored task-acceptance decisions read tolerantly) with separate lifecycle, execution, objective, review, artifact and verification axes; a policy denial is never a tool failure (§6 Task lifecycle; §10.1)
+  outcomes.py — typed task-outcome and objective authority (stored task-acceptance decisions read tolerantly) with separate lifecycle, execution, objective, review, artifact and verification axes; a policy denial is never a tool failure (§6 Task lifecycle; §10.1)
   outcome_receipt_store.py — verification-receipt append/read authority; a zero-run receipt writes `incomplete`/`unknown` only: a zero-run "complete" is unverifiable self-report
   depth_evidence.py — pure `requested_depth`/permitted/attempted/achieved projection; a missing admitted permission stays unknown, never reconstructed from live config
   _outcome_receipts.py, _outcome_tool_errors.py — receipt parsing and the one canonical receipt identity (§10 invariant 16); tool-trace status vocabularies, re-exported by `outcomes.py`
@@ -277,7 +277,7 @@ ouroboros/ — agent core and shared runtime (§6)
   review_pool_migration.py, review_pool_receipts.py — the review-lane → review-pool migration at the settings read seam and its durable receipts (`state/review_migrations/`, the rollback source) (§11.4)
   review_run_isolation.py — contributor review isolation before `config`: private data root, pinned host settings and panel, cumulative cap, attach-only engine (§6 Delegated subagents; Monetary authority and projections)
   review_state.py — Durable commit-review state (`state/advisory_review.json`; old advisory rows are read-only history); re-exports review_state_model.py, review_state_records.py, review_state_custody.py
-  review_records.py, review_verdict.py, review_projection.py, review_evidence_sections.py — panel records, verdict reducers, redacted projections with the tolerant readers of stored task-acceptance records, the shared evidence section helpers the result review's ask reuses (§6 Result review; Review ledger record)
+  review_records.py, review_verdict.py, review_projection.py, review_evidence_sections.py — panel records, verdict reducers, redacted projections (stored task-acceptance records read tolerantly), evidence section helpers (§6 Result review; Review ledger record)
   review_ledger.py — Durable per-wave review records (`state/review_ledger/<record_id>.json`; §6 Review ledger record)
   review_body_fact.py — Own-body identity and the checklist layer it selects (§6 Change review on any root)
   review_cycles.py — Shared paid-cycle cap SSOT (`OUROBOROS_REVIEW_MAX_CYCLES`); the three per-gate meanings: §6 Review stack (§10 invariant 17)
