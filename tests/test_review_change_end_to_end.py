@@ -247,7 +247,7 @@ def _golden_with_critic(briefs: list, critic: str):
     return run_review_request
 
 
-def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, **args):
+def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, expected_status="passed", **args):
     """The gate's review-only cycle with an unmarked enabled row ``scout`` beside the golden pool."""
     from tests.review_pool_rosters import pool_seat
 
@@ -257,8 +257,9 @@ def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, **args):
     monkeypatch.setattr(substrate, "run_review_request", _golden_with_critic(briefs, "scout"))
     ctx = ToolContext(repo_dir=Path(staged_body["repo"]), drive_root=tmp_path / "gate-drive")
     outcome = _run_non_committing_review_cycle(ctx, COMMIT_MESSAGE, skip_advisory_review=True, goal=GOAL, scope=SCOPE, **args)
-    assert outcome["status"] == "passed", outcome
-    record = review_ledger.load_record(ctx.drive_root, outcome["review_record_id"])
+    assert outcome["status"] == expected_status, outcome
+    reference = outcome["review_reference"] if expected_status == "reviewed" else outcome
+    record = review_ledger.load_record(ctx.drive_root, reference["review_record_id"])
     return record, sorted(brief["slot_id"] for brief in briefs)
 
 
