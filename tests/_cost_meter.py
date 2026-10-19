@@ -469,8 +469,8 @@ def _replace(meter: CostMeter, owner: Any, attr: str, value: Any) -> Any:
     original = vars(owner)[attr]
     if getattr(original, "__func__", original) in _WRAPPERS:
         raise RuntimeError(f"{getattr(owner, '__name__', owner)}.{attr} is still the meter's wrapper")
-    meter._patched.append((owner, attr, original))
     setattr(owner, attr, value)
+    meter._patched.append((owner, attr, original))  # only a replacement that took place is put back
     return original
 
 
@@ -496,8 +496,8 @@ def _install(meter: CostMeter) -> None:
         for attr, value in items:
             wrapper = originals.get(id(value))
             if wrapper is not None and not isinstance(value, (int, str)):
+                setattr(module, attr, wrapper)  # a module may refuse: then there is nothing to put back
                 meter._rebound.append((module, attr, value))
-                setattr(module, attr, wrapper)
 
 
 def uninstall(meter: CostMeter) -> None:
@@ -509,12 +509,17 @@ def uninstall(meter: CostMeter) -> None:
 
 
 def _undo(meter: CostMeter) -> None:
-    for module, attr, value in reversed(meter._rebound):
-        setattr(module, attr, value)
+    """Put every replaced door back, past any that refuses, then name every refusal at once."""
+    refused = []
+    for owner, attr, original in [*reversed(meter._rebound), *reversed(meter._patched)]:
+        try:
+            setattr(owner, attr, original)
+        except Exception as exc:  # the other doors still go back; this one is named below
+            refused.append(f"{getattr(owner, '__name__', owner)}.{attr} ({exc})")
     meter._rebound.clear()
-    for owner, attr, original in reversed(meter._patched):
-        setattr(owner, attr, original)
     meter._patched.clear()
+    if refused:
+        raise RuntimeError(f"the cost meter could not put back {', '.join(refused)}")
 
 
 def tagged(tag: str, call: Callable[[], Any]) -> Any:

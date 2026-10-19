@@ -366,3 +366,39 @@ def test_the_meter_installs_where_a_door_is_missing_and_never_records_a_wrapper_
     with CostMeter(tmp_path) as meter:
         tagged("read", lambda: os.stat(tmp_path))
     assert meter.snapshot("read")["counts"]["stat"] == 1 and os.stat is real_stat
+
+
+@pytest.mark.parametrize("takes", [0, 1], ids=["rebinding_refused", "restoring_refused"])
+def test_the_meter_puts_every_door_back_past_a_module_that_refuses(tmp_path, monkeypatch, takes):
+    """A module holding a door's alias may refuse the wrapper (the install fails) or refuse to give it
+    back (the uninstall fails). Either way every other door goes back, the refusal is named once,
+    and the next install starts from the real doors."""
+    import types
+
+    class OneWay(types.ModuleType):
+        """Takes ``takes`` assignments of its ``stat`` alias, then refuses."""
+
+        def __setattr__(self, attr, value):
+            if attr == "stat":
+                if not self.__dict__["takes"]:
+                    raise TypeError("stat is read-only here")
+                self.__dict__["takes"] -= 1
+            super().__setattr__(attr, value)
+
+    alias = OneWay("tests._cost_meter_one_way")
+    alias.__dict__.update(stat=os.stat, takes=takes)
+    monkeypatch.setitem(sys.modules, alias.__name__, alias)
+    real_stat, real_open = os.stat, open
+    if takes:
+        meter = CostMeter(tmp_path).__enter__()
+        assert alias.stat is not real_stat, "the alias took the wrapper"
+        with pytest.raises(RuntimeError, match=r"could not put back tests\._cost_meter_one_way\.stat"):
+            meter.__exit__(None, None, None)
+    else:
+        with pytest.raises(TypeError, match="read-only"):
+            CostMeter(tmp_path).__enter__()
+    assert os.stat is real_stat and open is real_open, "every other door went back"
+    monkeypatch.delitem(sys.modules, alias.__name__)
+    with CostMeter(tmp_path) as meter:
+        tagged("read", lambda: os.stat(tmp_path))
+    assert meter.snapshot("read")["counts"]["stat"] == 1
