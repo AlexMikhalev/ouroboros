@@ -209,8 +209,13 @@ function syncDrawerScrim(open) {
     }
     drawerScrimTimer = setTimeout(() => {
         drawerScrimTimer = 0;
-        if (!navState.mobileDrawerOpen) navDrawerBackdrop.hidden = true;
+        if (!navState.mobileDrawerOpen && !navDrawerBackdrop.classList.contains('dragging')) navDrawerBackdrop.hidden = true;
     }, DRAWER_SCRIM_FADE_MS);
+}
+// A finger that takes the drawer during the fade takes its scrim too (drawer_drag.js then puts it away itself).
+function releaseDrawerScrim() {
+    clearTimeout(drawerScrimTimer);
+    drawerScrimTimer = 0;
 }
 
 function syncNavigationState() {
@@ -308,6 +313,7 @@ const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
     sidebar: primarySidebar, scrim: navDrawerBackdrop,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
+    onGrab: releaseDrawerScrim,
 }) : () => {};
 const navDrawerClose = document.getElementById('nav-drawer-close');
 if (navDrawerClose) {

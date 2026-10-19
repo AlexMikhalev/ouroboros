@@ -52,12 +52,13 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
     const sidebar = withStyle(fakeEl('sidebar'));
     const scrim = withStyle(fakeEl('scrim'));
     const room = fakeEl('room'); room.parentElement = doc.body;
-    const state = { open, set: [] };
+    const state = { open, set: [], grabs: 0 };
     const flags = { field: new Set(), sideways: new Set(), blocked: false, selection: false };
+    const env = { stack, coarse };
     const dispose = bindDrawerDrag({
         sidebar, scrim, isOpen: () => state.open,
         setOpen: (v) => { state.set.push(v); state.open = v; scrim.hidden = !v; },
-        isStack: () => stack, isCoarse: () => coarse, win, doc, enabled,
+        isStack: () => env.stack, isCoarse: () => env.coarse, onGrab: () => { state.grabs += 1; }, win, doc, enabled,
         isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
     });
@@ -89,7 +90,7 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
         clock.t += ms;
         for (const [id, timer] of [...timers]) if (timer.at <= clock.t) { timers.delete(id); timer.fn(); }
     };
-    return { doc, root: doc.documentElement, win, sidebar, scrim, room, state, flags, styles, dispose, touch, click, progress, dragging, clock, runTimers, timers };
+    return { doc, root: doc.documentElement, win, env, sidebar, scrim, room, state, flags, styles, dispose, touch, click, progress, dragging, clock, runTimers, timers };
 }
 
 // A drag from `from`: the first move locks the axis one slop in (12px), then `steps` moves reach `to`.
@@ -224,8 +225,10 @@ test('the element the touch started on carries it through a re-render that remov
     const w = world();
     const row = fakeEl('row'); row.parentElement = w.doc.body;
     w.touch('touchstart', { x: 100, y: 300, target: row });
+    assert.equal(row.own.map.get('touchmove')?.[0]?.options?.passive, false, 'its own move listener can cancel too');
     w.touch('touchmove', { x: 112, y: 300 });
     assert.equal(w.dragging(), true);
+    assert.equal(w.state.grabs, 1, 'the drag tells the scrim\'s owner it took the scrim');
     row.attached = false;  // a live card re-rendered: its moves reach only the old element, never the document
     const moved = w.touch('touchmove', { x: 112 + 160, y: 300 });
     assert.equal(w.progress(), 0.5, 'the drawer still follows');
@@ -365,4 +368,19 @@ test('the rubber band: nothing changes up to fully open; past it the give grows 
     assert.ok(a > 0 && b > a && c > b, [a, b, c]);
     assert.ok((c - b) / 1.5 < (b - a) / 0.4, 'each further pixel of pull gives less');
     assert.ok(c < (3 - 1) / 8, 'a damped give: at most an eighth of the pull past open');
+});
+
+test('the blocking page listener exists only where a drag can start, and follows the layout before any touch', () => {
+    const docked = world({ stack: false });
+    assert.equal(docked.root.listeners.map.get('touchmove')?.length || 0, 0, 'a docked window never waits for the page');
+    docked.env.stack = true;
+    docked.win.listeners.fire('resize', {});
+    assert.equal(docked.root.listeners.map.get('touchmove')?.length, 1, 'the phone layout mounts it on the layout change');
+    docked.env.stack = false;
+    docked.win.listeners.fire('resize', {});
+    assert.equal(docked.root.listeners.map.get('touchmove')?.length || 0, 0, 'and a docked one takes it off again');
+    docked.dispose();
+    const fine = world({ coarse: false });
+    assert.equal(fine.root.listeners.map.get('touchmove')?.length || 0, 0, 'a fine pointer: none either');
+    fine.dispose();
 });

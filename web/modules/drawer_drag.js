@@ -69,6 +69,8 @@ export function settleMs(remaining, velocity) {
 
 export function bindDrawerDrag({
     sidebar, scrim, isOpen, setOpen, isStack, isCoarse,
+    // The drag takes the scrim: whoever fades it out after a close (app.js) lets go of it.
+    onGrab = () => {},
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
     isField = (el) => Boolean(el?.closest?.(FIELD_SELECTOR)),
@@ -155,6 +157,7 @@ export function bindDrawerDrag({
     }
 
     function onStart(event) {
+        syncGuard();
         const count = event.touches?.length || 0;
         // A second finger, or a new touch after a gesture whose end never came: back to the start.
         if (g) { restore(); if (count > 1) return; }
@@ -188,6 +191,7 @@ export function bindDrawerDrag({
             cancel(settleTimer);
             cancel(scrimTimer);
             for (const el of [sidebar, scrim]) el.style.removeProperty('--drawer-settle');
+            onGrab();
             if (!g.startOpen) scrim.hidden = false;
             paint(true);
             setProgress(g.startOpen ? 1 : 0);
@@ -251,6 +255,7 @@ export function bindDrawerDrag({
     }
     // A height-only change is a browser bar or the keyboard moving (Safari, Telegram); a new width is a new layout.
     function onResize() {
+        syncGuard();
         if (g && (win?.innerWidth || 0) !== g.viewWidth) restore();
     }
 
@@ -263,9 +268,19 @@ export function bindDrawerDrag({
     }
 
     // On the root element, not window, document or body: iOS treats those as passive by default (WebKit 182521).
+    // The blocking move listener is there only where a drag can start (a phone layout under a finger), mounted
+    // when the layout changes, before any touch in it: elsewhere a touch's first move never waits for the page.
     const root = doc.documentElement || doc;
+    let guarded = false;
+    function syncGuard() {
+        const want = Boolean(isStack() && isCoarse());
+        if (want === guarded) return;
+        guarded = want;
+        if (want) root.addEventListener('touchmove', onPageMove, { passive: false });
+        else root.removeEventListener('touchmove', onPageMove);
+    }
     root.addEventListener('touchstart', onStart, { passive: true });
-    root.addEventListener('touchmove', onPageMove, { passive: false });
+    syncGuard();
     doc.addEventListener('click', onClick, true);
     win.addEventListener('resize', onResize);
     return () => {
@@ -275,6 +290,7 @@ export function bindDrawerDrag({
         cancel(scrimTimer);
         root.removeEventListener('touchstart', onStart);
         root.removeEventListener('touchmove', onPageMove);
+        guarded = false;
         doc.removeEventListener('click', onClick, true);
         win.removeEventListener('resize', onResize);
     };

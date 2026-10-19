@@ -228,6 +228,8 @@ FRAMES = """ms => new Promise((resolve) => {
     requestAnimationFrame(step);
 })"""
 FEED_TOP = "sel => document.querySelector(sel).scrollTop"
+SCRIM_HELD = """() => { const s = document.getElementById('nav-drawer-backdrop');
+    return {hidden: s.hidden, dragging: s.classList.contains('dragging'), opacity: Number(getComputedStyle(s).opacity)}; }"""
 
 
 def record(page, ms):
@@ -256,14 +258,37 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
         opening = collected(page)
         facts['open'] = opening
         page.wait_for_timeout(200)
-        record(page, 700)
+        record(page, 900)
         page.locator('#nav-drawer-close').click()
         closing = collected(page)
         facts['close'] = closing
         page.wait_for_timeout(300)
-        # A fling: the settle is set from the finger's speed and the drawer is still on its way a frame later.
+        # Closed with ×, then taken again by a finger at once and held past the close's own fade: the scrim stays.
+        page.locator('#page-chat .chat-toolbar-row [data-mobile-nav-toggle]').click()
+        page.wait_for_timeout(500)
+        page.locator('#nav-drawer-close').click()
+        page.wait_for_timeout(50)
         feed = page.locator('#chat-messages').bounding_box()
         y = feed['y'] + feed['height'] / 2
+        cdp = page.context.new_cdp_session(page)
+        try:
+            for i, x in enumerate((40, 60, 120, 200, 260)):
+                cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove',
+                                                      'touchPoints': [{'x': x, 'y': y, 'id': 1}]})
+                page.wait_for_timeout(16)
+            held = []
+            for _ in range(12):  # 600 ms with the finger down, past the 420 ms the close's fade took
+                page.wait_for_timeout(50)
+                held.append(page.evaluate(SCRIM_HELD))
+            facts['regrab_held'] = held
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        finally:
+            cdp.detach()
+        page.wait_for_timeout(500)
+        facts['regrab'] = page.evaluate(DRAWER)
+        page.evaluate('window.__ouroLayers.pop()')
+        page.wait_for_timeout(500)
+        # A fling: the settle is set from the finger's speed and the drawer is still on its way a frame later.
         record(page, 500)
         swipe_with(page, (40, y), (240, y), steps=5)
         facts['fling'] = collected(page)
@@ -293,9 +318,13 @@ def test_the_drawer_and_its_scrim_settle_smoothly_and_a_drifting_thumb_keeps_it(
     assert between, ('the scrim fades in, not at once', opening)
     assert any(-300 < f['x'] < -5 for f in opening), ('the drawer slides in', opening)
     assert opening[-1]['opacity'] == 1 and opening[-1]['x'] == 0, opening[-1]
-    fading = [f for f in closing if not f['hidden'] and f['opacity'] < 0.95]
+    fading = [f for f in closing if not f['hidden'] and 0.05 < f['opacity'] < 0.95]
     assert fading, ('the scrim fades out while it is still on the page', closing)
+    assert any(-330 < f['x'] < -5 for f in closing), ('the drawer slides out', closing)
     assert closing[-1]['hidden'] is True, ('and it leaves once it has faded', closing[-1])
+    assert all(not f['hidden'] and f['dragging'] for f in facts['regrab_held']), (
+        'a finger that takes the drawer during the close keeps its scrim, past the close\'s fade', facts['regrab_held'])
+    assert facts['regrab']['open'] is True, facts
     settles = {f['settle'] for f in facts['fling'] if f['settle']}
     assert settles and all(s.endswith('ms') for s in settles), ('a fling settles at the finger\'s speed', facts['fling'])
     assert facts['fling_state']['open'] is True, facts
