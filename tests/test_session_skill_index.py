@@ -96,6 +96,26 @@ def test_genesis_request_gets_index_only_for_shared_inputs(tmp_path, monkeypatch
     assert custody.invocation_record(ctx.drive_root, row["invocation_id"])["request"] == request
 
 
+@pytest.mark.parametrize("carrier", ["context", "task_metadata"])
+def test_forked_task_drive_still_gets_the_installed_index(tmp_path, monkeypatch, carrier):
+    from ouroboros.headless import prepare_task_drive
+    from tests.test_session_design_navigation import _start
+
+    def prepare(ctx):
+        canonical = ctx.drive_root
+        _install_skill(canonical, "external_guide")
+        ctx.drive_root = prepare_task_drive(canonical, "review-child", "forked")
+        assert not (ctx.drive_root / "skills").exists()
+        if carrier == "context":
+            ctx.budget_drive_root = str(canonical)
+        else:
+            ctx.task_metadata["budget_drive_root"] = str(canonical)
+
+    request, *_rest = _start(tmp_path, monkeypatch, compiled=False, kind="foreign_copy",
+                             input_sources="shared", prepare=prepare)
+    assert "external_guide" in request["instructions"]
+
+
 def test_unknown_start_retry_replays_the_index_byte_for_byte(tmp_path, monkeypatch):
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from tests.test_delegate_continuation import _start

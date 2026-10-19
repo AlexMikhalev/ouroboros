@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 from hashlib import sha256
-from pathlib import Path
 from typing import Any
 
 from ouroboros.tool_capabilities import tool_result_limit
@@ -21,11 +20,13 @@ from ouroboros.tool_capabilities import tool_result_limit
 def session_skill_index(ctx: Any) -> str:
     """Instruction discovery for session leaves; frozen in the start request, not the work order.
 
-    Paths name installed files, not immutable copies. Declared-input composition remains explicit.
+    Skills are read from the canonical data root, never a forked task drive. Paths name installed files,
+    not immutable copies. Declared-input composition remains explicit.
     Field bounds and omission markers match the installed-skills context projection.
     """
     from ouroboros.contracts.task_contract import task_input_sources
     from ouroboros.skill_loader import discover_skills
+    from ouroboros.tool_access_paths import canonical_data_root
 
     task = {"task_contract": getattr(ctx, "task_contract", {}),
             "metadata": getattr(ctx, "task_metadata", {})}
@@ -38,7 +39,7 @@ def session_skill_index(ctx: Any) -> str:
 
     try:
         rows = []
-        for skill in discover_skills(Path(ctx.drive_root)):
+        for skill in discover_skills(canonical_data_root(ctx)):  # a forked task drive holds no skills
             if (not skill.manifest.is_instruction() or not skill.enabled or not skill.manifest_file
                     or not skill.review.gate_for(skill.content_hash)["executable_review"]):
                 continue
