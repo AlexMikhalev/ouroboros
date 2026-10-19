@@ -251,6 +251,28 @@ def test_every_page_and_settings_tab_meets_shell_contract(gate_ui, tmp_path, wid
     assert not failures, f'{ui["engine"]} {width}x{height}, evidence {path}:\n{json.dumps(summary, indent=2)}'
 
 
+def test_main_header_keeps_one_row_whatever_width_its_words_set(gate_ui, tmp_path):
+    """DESIGN "Page header": one row that never wraps. At the first docked width Main's bar is narrow (Restart and
+    the budget wait in ⋯) and this Mac's face left its commands about ten pixels; a wider face (Linux WebKit set
+    them two rows high) moves nothing onto a second row: the status yields, its word dropping whole."""
+    page = seed_page(gate_ui, 720, 844)
+    try:
+        page.goto(gate_ui['url'] + '/')
+        page.wait_for_selector('#chat-input', state='attached')
+        page.wait_for_selector('#nav-projects-list [data-project-id]', state='attached')
+        # Every word in the bar set wider than any face the shell ships with would set it.
+        page.add_style_tag(content='#page-chat .chat-page-header { letter-spacing: 0.3em; }')
+        settle(page)
+        facts = page.locator('#page-chat .chat-page-header').evaluate("""bar => ({
+            height: bar.getBoundingClientRect().height,
+            commands: [...bar.querySelectorAll('.app-page-actions :is(button, summary)')]
+                .filter((node) => node.getClientRects().length).map((node) => node.textContent.trim())})""")
+        save_evidence(tmp_path, f'gate-{gate_ui["engine"]}-main-header-wide-words', facts)
+    finally:
+        page.close()
+    assert facts['height'] <= 56.1 and facts['commands'], facts
+
+
 @pytest.mark.parametrize('width,height', [(390, 844), (844, 320)])
 def test_projects_scroll_by_touch_without_a_second_sidebar_scroller(subscription_ui, tmp_path, width, height):
     # CDP is Chromium-specific. The geometry matrix above covers both engines.
