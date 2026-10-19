@@ -719,29 +719,6 @@ def _finish_captured_chat_turn(
     return CANCEL_ALREADY_SETTLED if outcome == DIRECT_TURN_STOP_GONE else CANCEL_CANCELLED
 
 
-def stop_paused_late_review_custody(q: Any, task_id: str, *, intent: Optional[Dict[str, Any]] = None) -> bool:
-    """The owner's Stop of an answered root's late review its Pause deferred.
-
-    An unsent review records ``preparation_refused/owner_stopped``; the delivered
-    answer/status stay. Live work keeps its own owner.
-    """
-    from ouroboros.review_operation import stop_paused_acceptance_preparations
-    from supervisor.owner_pause_control import late_phase_settled
-    from supervisor.task_lifecycle import _settle_intent
-
-    try:
-        if not stop_paused_acceptance_preparations(q.DRIVE_ROOT, task_id):
-            return False
-    except Exception:
-        log.warning("Stop of the deferred late review of %s was not recorded", task_id, exc_info=True)
-        return False
-    _settle_intent(q, task_id, outcome="cancelled", detail="late_phase_owner_stopped", intent=intent)
-    late_phase_settled(q.DRIVE_ROOT, task_id)
-    q.append_jsonl(q.DRIVE_ROOT / "logs" / "events.jsonl",
-                   {"ts": utc_now_iso(), "type": "late_phase_stopped", "task_id": task_id, "owner_visible": True})
-    return True
-
-
 def live_presence_row(row: Any) -> bool:
     """An unsettled row a live Presence turn owns: its runner settles it, not cancel custody."""
     from supervisor.queue_transitions import settled_status_of

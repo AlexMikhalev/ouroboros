@@ -99,8 +99,6 @@ from ouroboros.runtime_limits import (
     WAKE_DEFAULT_SEC,  # noqa: F401
     _bounded_positive_int_setting,  # noqa: F401
     _clamped_number_setting,  # noqa: F401
-    get_acceptance_reserve_pct,  # noqa: F401
-    get_acceptance_review_est_sec,  # noqa: F401
     get_bg_wakeup_max_sec, get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401

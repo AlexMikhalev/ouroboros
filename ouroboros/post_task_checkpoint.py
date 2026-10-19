@@ -254,16 +254,14 @@ def project_replica_task_result_fields(
     A terminal canonical post-task checkpoint owns its synthesis fields and
     accounting snapshot. Canonical custody also retains non-regressing delegation
     receipts and canonical-if-present reconciliation disclosures under the narrow
-    rules below. The replica continues to own acceptance, result, and trace fields;
+    rules below. The replica continues to own result and trace fields;
     review snapshots retain the newest host publication of each panel.
     ``updated_at`` is monotonic metadata only; it never selects field authority.
     """
     from ouroboros.terminal_time import preserve_terminal_attempt, replica_terminal_time
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES
-    from ouroboros.acceptance_history import preserve_acceptance_history
 
     overlay = preserve_terminal_attempt(canonical_fields, replica_fields)
-    overlay = preserve_acceptance_history(canonical_fields, overlay)
     if (canonical_fields.get("status") in _TRULY_TERMINAL_STATUSES
             or replica_fields.get("status") in _TRULY_TERMINAL_STATUSES):
         overlay["terminal_time"] = replica_terminal_time(canonical_fields, replica_fields)
@@ -407,7 +405,7 @@ def project_root_post_task_checkpoint_fields(
     """Merge a root post-task patch against the CURRENT canonical checkpoint.
 
     The root writer owns only post-task synthesis and its accounting snapshot;
-    acceptance remains whatever the current record says. Once post-task state
+    every other checkpoint field remains whatever the current record says. Once post-task state
     is terminal, an open or different-terminal stale patch cannot replace that
     state or its accounting. A same-terminal patch remains valid so an explicit
     ``refresh`` can update the final cost snapshot.
@@ -419,11 +417,7 @@ def project_root_post_task_checkpoint_fields(
         overlay["status"] = canonical_fields["status"]
     canonical_checkpoint = canonical_fields.get("root_phase_checkpoint")
     patch_checkpoint = overlay.get("root_phase_checkpoint")
-    current = (
-        dict(canonical_checkpoint)
-        if isinstance(canonical_checkpoint, dict)
-        else {"phase": "task_acceptance", "status": "not_required", "pass_index": 0}
-    )
+    current = dict(canonical_checkpoint) if isinstance(canonical_checkpoint, dict) else {}
     patch = dict(patch_checkpoint) if isinstance(patch_checkpoint, dict) else {}
     canonical_post_task = str(current.get("post_task_synthesis") or "")
     patch_post_task = str(patch.get("post_task_synthesis") or "")

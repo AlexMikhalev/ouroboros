@@ -334,12 +334,12 @@ def test_a_gap_without_exactly_one_own_recorded_path_stays_a_gap(case):
         "waves": [{"spec_source_ref": _compact(ref)}]}
 
 
-def test_a_successor_review_binds_every_addressed_source_past_an_unrestorable_gap(tmp_path):
-    """A gap no own recorded path restores rides into a started successor's task contract;
-    reader binding skips it (it names no address) and still binds every addressed source."""
+def test_a_successor_starts_past_an_unrestorable_gap_and_keeps_every_addressed_source(tmp_path):
+    """A gap no own recorded path restores rides into a started successor's task contract as a
+    named plan-review source gap; it names no address, and every addressed source beside it keeps
+    its own."""
     from ouroboros.agent_startup_checks import validate_task_authority_sources
     from ouroboros.contracts.task_contract import build_task_contract
-    from ouroboros.review_source_closure import _reader_bindings
     from tests.test_doc_context import _make_env_and_memory
 
     env, _memory = _make_env_and_memory(tmp_path)
@@ -356,11 +356,11 @@ def test_a_successor_review_binds_every_addressed_source_past_an_unrestorable_ga
                                              "arguments": {"task_id": pred, "include_authority": True}}}
     assert validate_task_authority_sources(env, task) == {}
     assert task["predecessor_authority"]["plan_review_source_gap"]["code"] == "PLAN_REVIEW_SOURCE_UNAVAILABLE"
-    own = artifacts.store_actor_source_bytes(root, "succ", category="tool_results", source_id="own",
-                                             data=b"own bytes", extension="txt")
-    request = {"evidence": {"task_contract": build_task_contract(task), "source_refs": [own]}}
 
-    bindings = _reader_bindings(request, root, "succ")
+    carried = build_task_contract(task)["predecessor_authority"]
 
-    assert [(row["owner_task_id"], row["source_path"]) for row in bindings] == [
-        (pred, intact["path"]), ("succ", own["path"])]
+    assert carried["plan_review_source_gap"]["code"] == "PLAN_REVIEW_SOURCE_UNAVAILABLE"
+    carried_wave = carried["plan_review_state"]["waves"][-1]
+    assert carried_wave["wave_artifact"]["path"] == intact["path"]
+    assert carried_wave["spec_source_ref"]["availability"] == "unavailable"
+    assert "path" not in carried_wave["spec_source_ref"]

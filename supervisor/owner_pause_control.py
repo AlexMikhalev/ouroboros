@@ -90,18 +90,16 @@ def _late_work(q: Any, task_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
 def _late_work_settled(root_drive: Any, root_task_id: str) -> bool:
     """An answered root with no open late phase, synthesis in flight or live review; unknown is False."""
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight, post_task_synthesis_is_open
-    from ouroboros.review_operation import task_has_live_review_operation, paused_acceptance_preparations
+    from ouroboros.review_operation import task_has_live_review_operation
     from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
 
     try:
         row = load_task_result(root_drive, root_task_id, strict=True) or {}
         checkpoint = row.get("root_phase_checkpoint") if isinstance(row.get("root_phase_checkpoint"), dict) else {}
-        fence = row.get('owner_pause') or {}
         return bool(row.get("status") in _TRULY_TERMINAL_STATUSES
                     and not post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
                     and not post_task_synthesis_in_flight(root_drive, root_task_id)
-                    and not task_has_live_review_operation(root_drive, root_task_id)
-                    and not paused_acceptance_preparations(root_drive, root_task_id, fence.get('fence_id', '')))
+                    and not task_has_live_review_operation(root_drive, root_task_id))
     except Exception:
         return False
 
@@ -208,9 +206,6 @@ def request_owner_pause(task_id: str, *, request_id: str) -> Dict[str, Any]:
     try:
         fence, created = install_fence(root_drive, root_id, request_id=request_id,
                                       late_work=late_review, actor_id=task_id)
-        if fence_closed(fence):
-            from ouroboros.review_operation import retain_preparing_owner_pause
-            retain_preparing_owner_pause(root_drive, root_id, fence)
     except OwnerPauseRefused as exc:
         return {"ok": False, "error": str(exc) or "pause_refused"}
     except Exception as exc:

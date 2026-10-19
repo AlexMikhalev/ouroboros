@@ -824,8 +824,8 @@ Never project a retained refusal as `completed/silent` or as a successful handof
 
 `GET /identity` advertises `presence_continuation_version: 1` on supporting hosts. Request
 `continuation_version: 1` beside `binding_id` and `event` on `/presence/turn` (negotiation is not
-event identity). An author whose result waits for acceptance review then yields the conversation
-and answers early: `status: "continuing"` with `continuation_ref` (equal to `turn_ref`) and an
+event identity). An author parked on a review it left for an addressed message (a commit, change or result
+review) yields the conversation and answers early: `status: "continuing"` with `continuation_ref` (equal to `turn_ref`) and an
 initial `outcome`/`text`/`output_ref`. `deferred` with empty text means a result may follow; an
 author-selected early output (Advisory `pending_review=finish`) is speech to send once under its
 `output_ref`; `silent`/`tool_delivered` send nothing. A promoted child keeps its own `work_ref`; poll

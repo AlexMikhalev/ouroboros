@@ -1331,7 +1331,7 @@ test('every card carries the Reviewer box and its Review cost; a marked API row 
         /data-subagent-review-exception>Switched off, so not in the review pool\.</);
 });
 
-test('a price is the route tariff or plainly unknown, and a seat is spoken as time, never as $0', () => {
+test('a price is what one review measured or plainly unknown, and a seat is spoken as time, never as $0', () => {
     const api = apiRow();
     assert.equal(reviewCostText(sessionRow()), 'uses a session seat and time');
     assert.equal(reviewCostText(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'claudexor::codex-models=gpt' } })),
@@ -1339,13 +1339,15 @@ test('a price is the route tariff or plainly unknown, and a seat is spoken as ti
     assert.equal(reviewCostText(api), 'price appears after saving');
     assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'unknown' }), 'cost unknown');
     assert.equal(reviewCostText(api, { usd_per_review: 0.5, basis: 'unknown' }), 'cost unknown');
-    assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'route_tariff' }), 'cost unknown');
-    assert.equal(reviewCostText(api, { usd_per_review: 0, basis: 'route_tariff' }), 'no API cost per review');
-    // One full call of the row, never a cap on a whole review: a reading reviewer makes several.
-    assert.equal(reviewCostText(api, { usd_per_review: 1.234, basis: 'route_tariff' }),
-        '≈$1.23 per full call (route tariff); a reading reviewer makes several');
-    assert.equal(reviewCostText(apiRow({ delivery: 'packet' }), { usd_per_review: 0.0042, basis: 'route_tariff' }),
-        '≈$0.0042 per full call (route tariff)');
+    assert.equal(reviewCostText(api, { usd_per_review: 0.5, basis: 'route_tariff' }), 'cost unknown', 'a one-call tariff is no price');
+    assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'observed_reviews' }), 'cost unknown');
+    assert.equal(reviewCostText(api, { usd_per_review: 0, basis: 'observed_reviews', reviews: 4, low: 0, high: 0 }),
+        'no API cost per review');
+    // A whole review: every turn of the seat in one wave, the median of its measured reviews.
+    assert.equal(reviewCostText(api, { usd_per_review: 1.234, basis: 'observed_reviews', reviews: 7, low: 0.5, high: 3.1 }),
+        '≈$1.23 per review (median of 7 measured, $0.50–$3.10)');
+    assert.equal(reviewCostText(apiRow({ delivery: 'packet' }), { usd_per_review: 0.0042, basis: 'observed_reviews', reviews: 1,
+        low: 0.0042, high: 0.0042 }), '≈$0.0042 per review (1 measured)');
 });
 
 test('a minted row names its origin, and a copy keeps the mark but never the origin', () => {
@@ -1407,14 +1409,13 @@ test('review-pool facts price saved rows by their loaded route; an edited route 
     editor.load(setting([apiRow({ review_eligible: true }), sessionRow()]));
     editor.setReviewPool({
         row_costs: {
-            api_scout: { usd_per_review: 0.42, basis: 'route_tariff' },
+            api_scout: { usd_per_review: 0.42, basis: 'observed_reviews', reviews: 3, low: 0.3, high: 0.9 },
             codex_builder: { usd_per_review: null, basis: 'subscription_seat' },
         },
         pool: [{ subagent_id: 'api_scout', last_execution: { observed_model: 'openai/gpt-5.6-luna', record_id: 'rev_7' } }],
         last_executions: { codex_builder: { effective: { route: 'agent_session:codex', model: 'gpt-5.6-sol-high' } } },
     });
-    assert.equal(dom.row(0).facts.textContent,
-        '≈$0.42 per full call (route tariff); a reading reviewer makes several');
+    assert.equal(dom.row(0).facts.textContent, '≈$0.42 per review (median of 3 measured, $0.30–$0.90)');
     assert.deepEqual([dom.row(0).lastReview.hidden, dom.row(0).lastReview.dd.textContent], [false, 'openai/gpt-5.6-luna · record rev_7']);
     assert.equal(dom.row(1).facts.textContent, 'uses a session seat and time');
     assert.equal(dom.row(1).lastReview.dd.textContent, 'codex session · gpt-5.6-sol-high');

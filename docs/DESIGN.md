@@ -489,8 +489,9 @@ keeps the host's typed disclosure that the review was still open (the
 `terminal_host_notice` field, read by the CLI and by parents), the card states
 the same fact as its cause sentence, and no second chat bubble carries it; a
 card amber or red for another reason keeps that reason, with the open review
-stated beside it when the result records it. For task acceptance the host's
-decision sentence already says no reviewer verdict was established. A real
+stated beside it when the result records it. For a result review the card's
+cause sentence already says whether the reviewers signed the answer off or
+Ouroboros delivered it on its own judgement. A real
 outcome keeps its word: no reviewer quorum, a failed, refused or unresolved
 slot, a collected blocking finding, a reviewer verdict nobody closed, a rail or
 a blocking exit still read `Done with warnings` or `Failed`.
@@ -1148,7 +1149,8 @@ not child-task cards and never prove execution by themselves.
   that row): no aggregate pass/fail alert, no synthesized verdict, no review
   dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group
-  (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group
+  (`Skill review`, `Plan review`, `Review records`, or a read-only `Task
+  acceptance` group for a panel stored before the result review). Expanding a group
   reveals its ordered attempt rows. Group state and verdict remain
   domain-specific; one blocker never recolours the whole task card.
 - Start progress labels the frozen model/route/profile as requested; settlement
@@ -1179,18 +1181,18 @@ not child-task cards and never prove execution by themselves.
   wave whose reviewers were too few for a verdict reads
   `no verdict · k of n answered · m unavailable` in the neutral tone: the
   verdict word `DEGRADED` is the host's placeholder and never paints.
-- A task-acceptance panel whose reviewers may still answer never reads as a bare
-  verdict token. While its own task runs it is work in progress: the working
+- A task-acceptance panel stored before the result review whose reviewers may
+  still answer never reads as a bare verdict token. While its own task runs it is work in progress: the working
   tone and `in progress · k of n answered`, or `PASS so far · k of n answered`
   once the quorum is met; once the task has ended it reads
   `no verdict · k of n answered` in the neutral tone, or
   `PASS · k of n answered`, until a late settlement replaces it. A reviewer FAIL
   keeps the error tone and reads `FAIL · k of n answered` in both.
-- On a plan wave and an acceptance panel alike, a slot neither answered nor
+- On a plan wave and a stored acceptance panel alike, a slot neither answered nor
   awaited (a settled failure, an expired window, lost custody, a refusal) adds
   `· m unavailable` and keeps the warning tone beside the awaited slots; a
   settled plan wave with no awaited slot reads its `no verdict` line in the
-  neutral tone (an acceptance panel with none reads the same line but keeps the
+  neutral tone (a stored acceptance panel with none reads the same line but keeps the
   warning tone, its stored `DEGRADED` staying in the attempt detail), and each
   unavailable plan reviewer row names the model and quotes the engine's reported
   sentence when one exists, the failure code staying in the task detail and
@@ -1349,9 +1351,9 @@ Expanded ordinary cards disclose earlier Files, timeline, Reviews and children
 in collapsible sections using their original content, never duplicate cards.
 A Project portal still reaches that content through its room.
 
-**Project completion mirror.** Eligible managed/transferred Project finals reach Main as Markdown in Ouroboros's voice, host-stamped only for a model-authored final, so the browser never infers authorship; ordinary Project-native replies stay local. A long answer folds to about seven lines of complete selectable text, faded only where text is hidden; folded text has no keyboard stops. The Project reference below opens the complete answer and its delivered documents; Main has no in-place expansion or Files inventory. A nonclean final carries one compact factual limitation from recorded outcome/acceptance beside the answer, wrapping legibly at narrow widths; a clean final has no status caption. Copy and Reply quote the answer alone. Ordinary document readers, quiz materials and task-card Files stay on their existing surfaces; retained availability is not delivery or owner receipt. Full reviews, logs and progress stay in their sources. Durable rows/wire frames keep System metadata and text; Reply uses the persisted visible answer without changing its address. Telegram status replies reference the work instead. Endings without an authored answer keep System voice and the Project reference. One logical identity joins retries/history and keeps one-ending-one-notification; external transport stays at-least-once.
+**Project completion mirror.** Eligible managed/transferred Project finals reach Main as Markdown in Ouroboros's voice, host-stamped only for a model-authored final, so the browser never infers authorship; ordinary Project-native replies stay local. A long answer folds to about seven lines of complete selectable text, faded only where text is hidden; folded text has no keyboard stops. The Project reference below opens the complete answer and its delivered documents; Main has no in-place expansion or Files inventory. A nonclean final carries one compact factual limitation from the recorded outcome and review beside the answer, wrapping legibly at narrow widths; a clean final has no status caption. Copy and Reply quote the answer alone. Ordinary document readers, quiz materials and task-card Files stay on their existing surfaces; retained availability is not delivery or owner receipt. Full reviews, logs and progress stay in their sources. Durable rows/wire frames keep System metadata and text; Reply uses the persisted visible answer without changing its address. Telegram status replies reference the work instead. Endings without an authored answer keep System voice and the Project reference. One logical identity joins retries/history and keeps one-ending-one-notification; external transport stays at-least-once.
 
-History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
+History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved result-review PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 
 History placement is separate from the task's outcome: ordinary
 `Saving task history` and `Task history saved` appear only in task details and

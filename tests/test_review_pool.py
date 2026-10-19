@@ -1,7 +1,7 @@
 """The review pool (PR-3, contract §1.1–1.3, §2 F4/F5/F8): the catalog's marked rows ARE the panel.
 
 `OUROBOROS_REVIEWER_SLOTS` lanes are gone as a review surface: every surface — the
-commit gate, plan review, skill review, task acceptance, the author's own wave —
+commit gate, plan review, skill review, the result review, the author's own wave —
 reads ONE builder (``review_pool_slots``) over the enabled catalog rows the owner
 marked ``review_eligible``. A row rides its own identity (``slot_id`` is its
 stored ``subagent_id``), its own delivery (an api row's ``delivery`` field, a
@@ -467,28 +467,6 @@ def test_compound_effort_stabilizes_replay_identity_against_global_drift(clean_e
 
 
 # --- the surfaces -------------------------------------------------------------------------
-
-
-def test_root_acceptance_runs_every_pool_row_in_order_and_a_child_takes_one(clean_env):
-    """A session row beside api rows: acceptance carries them ALL, in the owner's
-    order, each with its own delivery — no row is filtered out and no API
-    default is substituted. A child task names at most one, by id or handle."""
-    clean_env.setenv(SUBAGENTS_SETTING, _MIXED)
-    slots = rsc.triad_delivery_slots(role_hint="task acceptance")
-    assert [(s.slot_id, s.route.value, s.retrieves) for s in slots] == [
-        ("api-critic", "api_chat", True), ("packet-critic", "api_chat", False), ("session-critic", "agent_session", True),
-    ]
-    assert rsc.child_acceptance_slots(slots)[1]["reason"] == "reviewer_selection_required"
-    handles = _handles()
-    for slot in slots:
-        for selector in (slot.slot_id, handles[slot.slot_id]):
-            chosen, refusal = rsc.child_acceptance_slots(slots, selector)
-            assert not refusal and [s.slot_id for s in chosen] == [slot.slot_id]
-    _, refusal = rsc.child_acceptance_slots(slots, "ghost")
-    assert refusal["reason"] == "reviewer_slot_unknown"
-    assert [row["delivery"] for row in refusal["reviewer_rows"]] == ["native", "packet", "agent_session"]
-    only, none = rsc.child_acceptance_slots(slots[:1])
-    assert [s.slot_id for s in only] == ["api-critic"] and none == {}
 
 
 def test_plan_review_rows_are_the_pool_rows_and_duplicate_models_stay_distinct(tmp_path, clean_env):

@@ -953,8 +953,7 @@ def emit_task_results(
     # outbox row registered above is the crash insurance for this window.
     with timed_phase("result_store", timing=usage.get("_finalization_timing") or {}):
         _store_task_result(env, task, text, usage, llm_trace, review_evidence=review_evidence,
-                           loop_outcome=loop_outcome, cost_fields=task_cost_fields,
-                           final_delivery=None if quiet else send_event)
+                           loop_outcome=loop_outcome, cost_fields=task_cost_fields)
     if _live_delivered:
         # The live copy's timing snapshot was frozen at its enqueue; the store span
         # completed after it and is journaled as its own correlated row.
@@ -1138,8 +1137,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                        usage: Dict[str, Any], llm_trace: Dict[str, Any],
                        review_evidence: Dict[str, Any] | None = None,
                        loop_outcome: Dict[str, Any] | None = None,
-                       cost_fields: Dict[str, Any] | None = None,
-                       final_delivery: Dict[str, Any] | None = None) -> None:
+                       cost_fields: Dict[str, Any] | None = None) -> None:
     """Store task result for parent task retrieval.
 
     ``loop_outcome``, when supplied by ``emit_task_results``, is the SINGLE already-
@@ -1148,10 +1146,6 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
     do not derive/flag a second time. It is only re-derived here when called without one.
     """
     try:
-        from ouroboros.review_projection import publish_acceptance_checkpoint
-
-        publish_acceptance_checkpoint(env, llm_trace, task_id=str(task.get("id") or ""),
-                                      drive_root=env.drive_root, chat_id=task.get("chat_id"))
         trace_summary = build_trace_summary(llm_trace)
         from ouroboros.cost_projection import with_cost_aliases
 
@@ -1202,11 +1196,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         artifact_record = verification_refs.get("artifact")
         if artifact_record and artifact_record not in artifacts:
             artifacts.append(artifact_record)
-        # An eligible forced/launch-skip answer must not re-hash artifact bodies
-        # on its urgent terminal path. Existing registrations and copyback own them.
-        collected_artifacts = collect_task_artifact_records(
-            env.drive_root, str(task.get("id") or ""), measure="acceptance_history_seed" not in llm_trace,
-        )
+        collected_artifacts = collect_task_artifact_records(env.drive_root, str(task.get("id") or ""))
         artifacts = merge_artifact_records(artifacts, collected_artifacts)
         provisional = {
             **existing,
@@ -1260,20 +1250,11 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                 root_phase_checkpoint = dict(incoming_checkpoint)
             elif isinstance(existing_checkpoint, dict):
                 root_phase_checkpoint = dict(existing_checkpoint)
-            else:
-                root_phase_checkpoint = {
-                    "phase": "task_acceptance",
-                    "status": "not_required",
-                    "pass_index": 0,
-                }
+            # A pre-fold row may also carry the task-acceptance phase fields (``phase``,
+            # ``status``, ``pass_index``); nothing reads them and new rows carry none.
             root_phase_checkpoint.setdefault("post_task_synthesis", "pending_once")
         review_projection = _compact_review_projection(llm_trace, task, env.drive_root)
         model_execution = model_execution_projection(usage)
-        from ouroboros.acceptance_history import retain_acceptance_history
-        history_fields = retain_acceptance_history(
-            env.drive_root, task, text, llm_trace, review_evidence or {},
-            observations, artifacts, final_delivery, usage=usage,
-        )
         write_task_result(
             env.drive_root,
             str(task.get("id") or ""),
@@ -1342,7 +1323,6 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             verification_ledger=verification_refs.get("inline"),
             artifact_bundle=artifact_bundle,
             artifacts=artifacts,
-            **history_fields,
             **({"root_phase_checkpoint": root_phase_checkpoint} if root_phase_checkpoint else {}),
             **({"swarm_efficiency": swarm_efficiency} if swarm_efficiency else {}),
             ts=utc_now_iso(),

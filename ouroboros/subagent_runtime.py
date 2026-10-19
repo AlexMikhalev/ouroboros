@@ -13,7 +13,6 @@ import contextvars
 import json
 import os
 from dataclasses import dataclass, replace as dataclass_replace
-from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping, Optional
 
 from ouroboros.configured_subagents import (
@@ -200,7 +199,7 @@ _REVIEW_SURFACES = {
                      "cyber_pro": "panel, self-check or no review; the skill may run"},
     "plan_review": "opening is optional; first own-code ask: Blocking adds missing ticked reviewers, Advisory requires a ticked reviewer and a reason when narrowed, Cyber Pro is free; later asks name rows; only a counted participant's objection holds, only under Blocking",
     "advisers": "enabled unticked rows may be named in every mode: heard, not counted, never holding",
-    "task_acceptance": {"root": "every pool row", "child": "≤1 from the pool; with several, name one as reviewer"},
+    "result": "review_change(subject=result): named ticked rows in every mode, a narrowed panel records a missing reason; omitted means the whole pool",
     "preflight": "one enabled catalog row you name: commit_reviewed(preflight_reviewer=…); none → recorded as not performed",
     "system_review": "/review: one enabled catalog row, default Main",
 }
@@ -210,30 +209,24 @@ SESSION_SEAT_COST_HINT = "uses a session seat and time"
 COST_UNKNOWN_HINT = "cost unknown"
 
 
-def review_call_cost_text(usd: Optional[float], *, reading: bool) -> str:
-    """An api row's price in words: one full call (``review_helpers.review_row_call_usd``).
-    Settings → Agents prints the same words (``subagents_settings.js`` ``reviewCostText``),
-    the dollars rounded as JavaScript's ``toFixed`` does."""
-    if usd is None:
-        return COST_UNKNOWN_HINT
-    if not usd:
-        return "no API cost per review"
-    places = Decimal("0.0001") if usd < 0.01 else Decimal("0.01")
-    text = f"≈${Decimal(usd).quantize(places, rounding=ROUND_HALF_UP)} per full call (route tariff)"
-    return text + ("; a reading reviewer makes several" if reading else "")
+LOCAL_ROUTE_COST_HINT = "no API cost per review"
 
 
 def _api_review_cost_hint(slot: Any) -> str:
-    """One api seat's price (:func:`review_call_cost_text`), from the tariff and the window
-    already held in this process — context assembly never waits on a provider catalog. A
-    model call through a subscription uses a seat, as Settings → Agents says."""
-    from ouroboros.provider_models import provider_for_model
-    from ouroboros.tools.review_helpers import review_row_call_usd
+    """One api seat's price: what one review by its row actually cost (``review_price``, read from
+    this process's table, so context assembly never waits on the ledger). A model call through a
+    subscription uses a seat and a local route costs no API money, as Settings → Agents says."""
+    from ouroboros.config import resolve_data_dir
+    from ouroboros.provider_models import provider_for_model, review_model_uses_local
+    from ouroboros.review_price import review_price, review_price_text
 
-    if provider_for_model(str(getattr(slot, "model", "") or "")) == "claudexor":
+    model = str(getattr(slot, "model", "") or "")
+    if provider_for_model(model) == "claudexor":
         return SESSION_SEAT_COST_HINT
-    return review_call_cost_text(review_row_call_usd(slot, allow_live_fetch=False),
-                                 reading=bool(getattr(slot, "native_retrieval", False)))
+    if review_model_uses_local(model):
+        return LOCAL_ROUTE_COST_HINT
+    row_id = str(getattr(slot, "subagent_id", "") or getattr(slot, "slot_id", "") or "")
+    return review_price_text(review_price(resolve_data_dir(), row_id, model))
 
 
 # The wizard's summary prints the same sentence (``subagents_settings.js`` ``PACKET_ONLY_POOL_WARNING``).
