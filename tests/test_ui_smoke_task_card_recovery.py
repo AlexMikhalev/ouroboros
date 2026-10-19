@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 
 
@@ -41,8 +42,6 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
         data_dir, task_id, STATUS_RUNNING, chat_id=1, project_id="",
         suggested_name="Analyze greeting context", _is_direct_chat=True,
     )
-    progress = data_dir / "logs" / "progress.jsonl"
-    progress.parent.mkdir(parents=True, exist_ok=True)
     rows = [{
         "task_id": task_id, "chat_id": 1, "direction": "out", "is_progress": True,
         "content": text, "ts": f"2026-09-15T11:05:0{index}+00:00", "cancelable": True,
@@ -58,7 +57,9 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
         "cost_accounting_status": "available", "cost_final": False,
         "accounted_upper_bound_usd_with_children": 2.75,
     }
-    progress.write_text("".join(json.dumps(row) + "\n" for row in [*rows, reference]), encoding="utf-8")
+    # The running server reads its own dialogue store (#1982), never a log file written after it started.
+    for row in [*rows, reference]:
+        dialogue_store.append(data_dir, "progress", row)
 
     # No live global queue or registry is consulted by the fixture fragment.
     monkeypatch.setattr(queue_mod, "PENDING", [])
@@ -137,8 +138,7 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
             # hydration is deduplicated. A reference does not add an activity note.
             updated = {**reference, "chat_id": chat_id, "ts": "2026-09-15T11:05:04+00:00",
                        "accounted_upper_bound_usd_with_children": 3.50}
-            with progress.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(updated) + "\n")
+            dialogue_store.append(data_dir, "progress", updated)
             page.evaluate(
                 "row => window.__ouroWs.emit('log', {chat_id: row.chat_id, data: row})", updated,
             )

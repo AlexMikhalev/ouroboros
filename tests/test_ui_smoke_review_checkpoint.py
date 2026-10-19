@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from ouroboros import dialogue_store
 from ouroboros.test_evidence import diagnostic_directory
 
 from tests._store_shared import seed_result
@@ -113,17 +114,16 @@ def test_ui_smoke_review_truth_is_visible_in_chat_and_logs(direct_server_with_da
         "text": "Normal final answer after the terminal progress anchor.",
         "format": "markdown",
     }
-    (logs_dir / "chat.jsonl").write_text(
-        json.dumps(summary) + "\n" + json.dumps(ordinary_final) + "\n",
-        encoding="utf-8",
-    )
+    # The running server reads its own dialogue store (#1982), never a log file written after it started.
+    dialogue_store.append(data_dir, "chat", summary)
+    dialogue_store.append(data_dir, "chat", ordinary_final)
     (logs_dir / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
-    (logs_dir / "progress.jsonl").write_text(json.dumps({
+    dialogue_store.append(data_dir, "progress", {
         "ts": "2026-07-15T09:59:59+00:00",
         "chat_id": 1,
         "task_id": "review-no-summary",
         "content": "Terminal review must survive without a task summary.",
-    }) + "\n", encoding="utf-8")
+    })
     plan_state = {
         "schema_version": 2,
         "current_attempt": {"fingerprint": "f" * 64, "status": "open"},
@@ -274,12 +274,11 @@ def test_ui_smoke_action_only_author_finish_keeps_the_reviewer_fail(direct_serve
     assert decision["reason"] == "author_finish" and decision["author_disposition"]["disposition"] == ""
     projection = compact_review_projection(run.trace["review_runs"])
     data_dir = direct_server_with_data["data_dir"]
-    (data_dir / "logs").mkdir(parents=True, exist_ok=True)
     task_id = "c4-action-only"
-    (data_dir / "logs" / "chat.jsonl").write_text(json.dumps({
+    dialogue_store.append(data_dir, "chat", {
         "ts": "2026-09-26T10:00:00+00:00", "direction": "system", "type": "task_summary", "task_id": task_id,
         "chat_id": 1, "status": "completed", "text": "", "tool_calls": 0, "rounds": 1,
-        "outcome_axes": axes, "review_projection": projection}) + "\n", encoding="utf-8")
+        "outcome_axes": axes, "review_projection": projection})
     seed_result(data_dir, task_id, {
         "_schema_version": 1, "task_id": task_id, "status": "completed", "reason_code": "final_message",
         "result": run.result, "outcome_axes": axes, "review_projection": projection})
