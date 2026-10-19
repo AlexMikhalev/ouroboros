@@ -189,8 +189,9 @@ def test_unowned_claim_wait_expiry_retires_without_post(start_case, tmp_path, mo
         if event["type"] != custody.START_REQUESTED:
             return original(root, event, **kwargs)
         events.append(event)
-        # End the real read before cleanup; only the failed COMMIT is contended.
-        with database_reader(tmp_path):
+        # Held through the claim's write only (its rollback COMMIT or its WAL acquisition is the
+        # contended step) and released before cleanup.
+        with database_reader(tmp_path, write=True):
             return original(root, event, **kwargs)
 
     monkeypatch.setattr(delegate_custody_current, "publish", held)
