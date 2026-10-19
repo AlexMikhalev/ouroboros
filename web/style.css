@@ -155,6 +155,13 @@ html[data-layout="stack"] .shell-icon-control {
     padding: var(--space-2) var(--space-2) 0 var(--space-3);
 }
 
+/* An older desktop page can also survive a source update with the pre-three-zone .sidebar-scroll wrapping the
+   column's rows. As a box it left the list as tall as its rows: a scroller with nothing to scroll whose containment
+   kept the wheel from the column in Chromium, while WebKit scrolled the whole column. Without its box the
+   rows are the column's again: the Projects list scrolls between Main and the tools, and a short window keeps the
+   whole-column fallback above. */
+#primary-sidebar > .sidebar-scroll { display: contents; }
+
 /* macOS desktop window (launcher_window_chrome.py): while its transparent title bar covers the page,
    the shell writes the band's height and the traffic lights' far edge here, measured, in CSS px.
    The sidebar starts below the band; content reaching the left edge (drawer layout, a project panel
@@ -4341,6 +4348,50 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-toolbar-row[data-owner-solo="effort"] .chat-context-mode,
 .chat-toolbar-row[data-owner-solo="context"] .chat-effort-range {
     display: none;
+}
+/* Alone, a strip grows from its capsule and folds back into it (capsule_morph.js). While it moves, the capsule's
+   glass is its own clipped layer, and the controls that step aside fade where they stood, out of the line's flow:
+   only opacity and the clip move, so the line never wraps. */
+.chat-capsule[data-morph] {
+    z-index: 1;
+    isolation: isolate;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    transition: none;
+}
+.chat-capsule-surface {
+    position: absolute;
+    z-index: -1;
+    top: -1px;
+    bottom: -1px;
+    left: var(--morph-left, -1px);
+    width: var(--morph-width, calc(100% + 2px));
+    box-sizing: border-box;
+    border: 1px solid var(--accent-35);
+    border-radius: 999px;
+    background: rgba(var(--composer-rgb), 0.38);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    box-shadow: var(--composer-control-shadow);
+    pointer-events: none;
+}
+.chat-toolbar-row[data-owner-leaving] {
+    position: relative;
+}
+.chat-toolbar-row[data-owner-solo][data-owner-leaving] > [data-capsule-leaving] {
+    display: var(--leave-display, flex);
+    position: absolute;
+    z-index: 2;
+    left: var(--leave-x);
+    top: var(--leave-y);
+    width: var(--leave-w);
+    height: var(--leave-h);
+    box-sizing: border-box;
+    margin: 0;
+    pointer-events: none;
 }
 /* A line too narrow for every name (a 360 px phone, a longer translation) keeps the closed
    capsules' rings and values; composer_owner_controls.js measures it on the settled row, and
@@ -9468,6 +9519,51 @@ body.keyboard-open .project-panel {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
 }
+/* A long press on touch (chat_row_menu.js; owner 19.10, 4A): the row sinks a little while the finger holds, lifts over
+   the dimmed feed while its menu is open, and settles back. The dimming is the row's own shadow spread over the feed,
+   so only the feed dims while the row and its menu stay bright; it fades in and out and never grows. A row swiped to
+   reply (chat_row_swipe.js) follows the finger and settles back on the same curve. */
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press] {
+    position: relative;
+    z-index: 3;
+    box-shadow: var(--elev-rest), 0 0 0 100vmax transparent;
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.24s ease-out;
+}
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press="hold"] { transform: scale(0.985); }
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press="lift"] {
+    transform: scale(1.012);
+    box-shadow: var(--elev-float), 0 0 0 100vmax var(--row-lift-dim);
+    transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.24s ease-out;
+}
+:is(.chat-bubble, .chat-live-card)[data-row-swipe] {
+    position: relative;
+    transform: translateX(calc(-1 * var(--row-swipe, 0px)));
+}
+/* The swipe's own motion wins over a closed menu's lift still on its way back: 1:1 under the finger, its curve home. */
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="drag"] { transition: none; }
+:root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
+/* The reply mark at the room's right side: it fills as the row nears the reply point and takes the accent there. */
+.chat-row-reply-mark {
+    position: fixed;
+    z-index: var(--z-row-reply-mark);
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--surface-capsule);
+    color: var(--text-secondary);
+    box-shadow: var(--elev-rest);
+    opacity: var(--reply-k, 0);
+    transform: scale(calc(0.6 + 0.4 * var(--reply-k, 0)));
+    pointer-events: none;
+}
+.chat-row-reply-mark[data-armed="true"] { color: var(--accent); }
+.chat-row-reply-mark[data-leaving="true"] { opacity: 0; transition: opacity 0.16s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+    :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-press]:not([data-row-swipe]) { transform: none; transition: box-shadow 0.24s ease-out; }
+    :root[data-theme] :is(.chat-bubble, .chat-live-card)[data-row-swipe="settle"] { transition: none; }
+}
 :root[data-theme] .chat-live-summary-button { padding: 16px 20px 12px; }
 :root[data-theme] .chat-live-actions { padding: 0 20px 16px; gap: var(--space-2); }
 /* The work card's foot (meta line, its one action row) and its Project footer share the card's insets. */
@@ -9561,6 +9657,14 @@ body.keyboard-open .project-panel {
     border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); box-shadow: var(--elev-rest);
 }
 :root[data-theme] .chat-capsule[data-open="true"] { border-color: transparent; }
+:root[data-theme] .chat-capsule[data-morph] {
+    border-color: transparent; background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
+    transition: none;
+}
+:root[data-theme] .chat-capsule-surface {
+    border-color: transparent; background: var(--surface-capsule); box-shadow: var(--elev-rest);
+    -webkit-backdrop-filter: var(--glass); backdrop-filter: var(--glass);
+}
 :root[data-theme] .chat-capsule .chat-capsule-name { font-weight: 500; }
 @media (hover: hover) {
     :root[data-theme] .chat-capsule-head:hover { background: var(--surface-capsule-hover); }

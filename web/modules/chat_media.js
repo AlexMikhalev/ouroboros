@@ -100,7 +100,7 @@ export function showTaskIncidentToast(msg) {
     // No tone on the frame (older producers, cancellation_fault) keeps the
     // alarm tone; the text is never parsed for it.
     const text = String(msg?.content || msg?.text || incident);
-    return showToast(hostRowDisplayText({ ...msg, text }), normalizeTone(msg?.toast_tone || 'error', 'error'));
+    return showToast(hostRowDisplayText({ ...msg, text }), normalizeTone(msg?.toast_tone || 'error', 'error'), { haptic: false });
 }
 
 // Best-effort teardown of temporary uploads after a failed send; lives with

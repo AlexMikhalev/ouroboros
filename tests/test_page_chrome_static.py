@@ -193,7 +193,12 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     fallback = css.split("@media (max-height: 540px), (pointer: coarse) and (max-height: 600px) {", 1)[1].split("}\n}", 1)[0]
     assert "#primary-sidebar .nav-projects-list { flex: 0 0 auto; overflow-y: visible;" in fallback
     assert "--nav-projects-list-max-height" not in css and "--nav-projects-list-max-height" not in _read("web/ui.css")
-    assert ".sidebar-scroll" not in css and "sidebar-scroll" not in html
+    # A fresh document has no outer wrapper. An older desktop page can keep its pre-three-zone .sidebar-scroll; the
+    # one rule naming it takes its box away, so that page's list scrolls again (test_ui_shell_legacy_browser.py).
+    assert "sidebar-scroll" not in html
+    rules = re.sub(r"/\*.*?\*/", "", css, flags=re.S).splitlines()
+    legacy = [line.strip() for line in rules if "sidebar-scroll" in line]
+    assert legacy == ["#primary-sidebar > .sidebar-scroll { display: contents; }"], legacy
     head = css.split(".sidebar-head {", 1)[1].split("}", 1)[0]
     assert "position: sticky" in head and "top: 0" in head
     assert html.index('class="sidebar-head"') < html.index('id="nav-projects"') < html.index('class="sidebar-foot"')

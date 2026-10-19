@@ -6,9 +6,10 @@
  *
  * Touch Events, so the finger stays on the drawer (owner 19.10: it came off halfway). Once the axis is decided,
  * every touchmove is cancelled, so the browser cannot start a scroll mid-drag: iOS WebKit would, and then cancel
- * the finger (WebKit 203335). That listener sits on the root element from the start, because iOS decides whether a
- * touch waits for the page when it begins (WebKit 184251). The gesture itself is tracked on the element it started
- * on, which keeps receiving its touch even after a re-render removes it from the page (a live card, a new message).
+ * the finger (WebKit 203335). That listener sits on the root element from the start, because a listener added only
+ * when the touch begins may be unable to cancel it on iOS (WebKit 184251). The gesture itself is tracked on the
+ * element it started on, which keeps receiving its touch even after a re-render removes it from the page (a live
+ * card, a new message).
  * If the system still takes the touch, the drawer settles from where the finger left it, never stranded halfway.
  *
  * Motion is transform-only and driven by one number (`--drawer-p`, 0 closed … 1 open) that the scrim's opacity
@@ -52,6 +53,19 @@ export const SIDEWAYS_SELECTOR = 'pre, code, table, .md-table-wrap, .app-tab-str
 export const BLOCKING_SELECTOR = 'dialog[open], .marketplace-modal-backdrop, .ui-popup, .task-control-menu, '
     + '.chat-photo-menu, .rw-shade:not([hidden]), details.chat-header-more[open]';
 
+/** The chain under the finger keeps its own sideways gesture: a `touch-action: none` element (the effort strip) or a
+ * scroller that can move sideways. */
+export function chainKeepsGesture(target, { win = globalThis.window, doc = globalThis.document } = {}) {
+    for (let el = target; el && el !== doc?.body; el = el.parentElement) {
+        const cs = win?.getComputedStyle?.(el);
+        if (!cs) continue;
+        const touch = String(cs.touchAction || '');
+        if (touch === 'none' || touch.includes('pan-x')) return true;
+        if (/(auto|scroll)/.test(String(cs.overflowX || '')) && el.scrollWidth > el.clientWidth + 1) return true;
+    }
+    return false;
+}
+
 /** Progress for a finger that pulled the drawer `raw` of its width: 0…1 as is, a damped give past fully open. */
 export function stretch(raw, width) {
     const p = Math.max(0, Number(raw) || 0);
@@ -77,6 +91,9 @@ export function bindDrawerDrag({
     onGrab = () => {},
     // The layout owner's change notification (layout.js onLayoutChange): returns its disposer.
     onLayout = () => () => {},
+    // A finger's release latched the drawer open or closed (haptics.js `snap`); a spring back to where it was is no
+    // change, and the system taking the touch is not the finger's.
+    onSnap = () => {},
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
     isField = (el) => Boolean(el?.closest?.(FIELD_SELECTOR)),
@@ -93,24 +110,11 @@ export function bindDrawerDrag({
     const later = (ms, fn) => (typeof win?.setTimeout === 'function' ? win.setTimeout(fn, ms) : 0);
     const cancel = (timer) => { if (timer && typeof win?.clearTimeout === 'function') win.clearTimeout(timer); };
 
-    // The chain under the finger: a `touch-action: none` element (the effort strip) or a scroller that can move
-    // sideways keeps its gesture.
-    function chainKeepsGesture(target) {
-        for (let el = target; el && el !== doc.body; el = el.parentElement) {
-            const cs = win.getComputedStyle?.(el);
-            if (!cs) continue;
-            const touch = String(cs.touchAction || '');
-            if (touch === 'none' || touch.includes('pan-x')) return true;
-            if (/(auto|scroll)/.test(String(cs.overflowX || '')) && el.scrollWidth > el.clientWidth + 1) return true;
-        }
-        return false;
-    }
-
     function eligibleOpenStart(target) {
         if (sidebar.contains?.(target) || scrim.contains?.(target)) return false;
         if (isField(target) || isSideways(target) || hasSelection()) return false;
         if (isBlocked()) return false;
-        if (chainKeepsGesture(target)) return false;
+        if (chainKeepsGesture(target, { win, doc })) return false;
         return true;
     }
 
@@ -215,12 +219,12 @@ export function bindDrawerDrag({
     function onEnd(event) {
         if (!g) return;
         const touch = touchIn(event.changedTouches, g.id);
-        if (touch) release(touch.clientX);
+        if (touch) release(touch.clientX, true);
     }
 
     /** The finger left at `x` (an end, or the system taking the touch): settle at the nearest state the finger's
      * speed points to, never stranded halfway. */
-    function release(x) {
+    function release(x, byFinger = false) {
         const gg = end();
         if (!gg || gg.mode !== 'drag') return;  // a tap, not a drag
         const first = gg.samples[0];
@@ -233,8 +237,10 @@ export function bindDrawerDrag({
         const ms = settleMs((open ? 1 - gg.p : gg.p) * gg.width, velocity);
         settle(ms);
         paint(false);
-        if (open !== gg.startOpen) setOpen(open);
-        else if (!open) hideScrimAfter(ms);  // sprang back closed: the scrim fades with it
+        if (open !== gg.startOpen) {
+            setOpen(open);
+            if (byFinger) onSnap(open);
+        } else if (!open) hideScrimAfter(ms);  // sprang back closed: the scrim fades with it
         suppressUntil = now() + DRAG.clickGuard;
     }
 

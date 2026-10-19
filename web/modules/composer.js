@@ -13,6 +13,7 @@ import { apiClient, apiFetch } from './api_client.js';
 import { bindEnterSubmit, bindMenu } from './ui_interactions.js';
 import { controlIcon, strokeIcon } from './page_icons.js';
 import { renderMobileNavToggle } from './page_header.js';
+import { haptic } from './haptics.js';
 import { createComposerOwnerControls } from './composer_owner_controls.js';
 import { attachChatInputSizing } from './chat_input_sizing.js';
 import { showToast } from './toast.js';
@@ -327,7 +328,7 @@ export function createComposer({ page, byId, ws, replies, chatSessionId, isMain,
         }
     }
 
-    swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
+    swarmBtn?.addEventListener('click', () => { setSwarm(!swarmArmed()); haptic('tick'); });
 
     // Each composer owns its room's Context and Effort settings.
     const ownerControls = createComposerOwnerControls({ row: page.querySelector('.chat-toolbar-row'), box: page, byId, apiFetch, showToast,
