@@ -474,6 +474,25 @@ def recorded_binding_conflicts(binding: Any, expected: dict) -> bool:
         {key: value for key, value in binding.items() if key != "pending_invocation_id"} != expected)
 
 
+def recorded_review_slot(request: Any, slot: Any, operation_id: str, binding: Any) -> Any:
+    """Interpret a historical blank only when its full saved binding proves it.
+
+    Old writers omitted blank processing from identity; new captured blanks are
+    distinct from unspecified processing. Never change new requests or saved bytes.
+    Both prompt reconstruction and pending collection use this interpretation.
+    """
+    from dataclasses import replace
+
+    if slot.processing_preference == "" and isinstance(binding, dict):
+        saved = {key: value for key, value in binding.items() if key != "pending_invocation_id"}
+        if (all(saved.get(key) for key in ("subject_hash", "review_contract", "roster_hash", "root_task_id"))
+                and saved != review_operation_binding(request, slot, operation_id)):
+            legacy = replace(slot, processing_preference=None)
+            if saved == review_operation_binding(request, legacy, operation_id):
+                return legacy
+    return slot
+
+
 def recorded_invocation_tokens(row: dict) -> set:
     """Every pending invocation token a frozen seat row recorded (row, usage, binding)."""
     return {str(value) for value in (
@@ -500,7 +519,7 @@ def review_reconciliation_identity(request: Any, slots: list, *, root_task_id: s
         # rights (#1609); writable rights are identity, as in ``_attempt_key``.
         roster.append({k: v for k, v in values.items()
                        if k not in {"timeout_sec", "transport_timeout_sec"}
-                       and (k != "processing_preference" or v)
+                       and (k != "processing_preference" or v is not None)
                        and (k != "session_access" or str(v or "readonly") != "readonly")})
     retry_key = getattr(request, "retry_key", None)
     return {

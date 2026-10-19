@@ -227,25 +227,32 @@ def catalog_review_row(snapshot: Any, selector: str) -> ConfiguredReviewerSlot:
     return _catalog_row_slot(row, settings)
 
 
-def main_review_row() -> ConfiguredReviewerSlot:
-    """The direct Main row — ``OUROBOROS_MODEL``, its local flag and Main's pinned
-    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``): ``/review``'s executor when the
-    call names none (decision 3A), the deep self-review default, and the one seat of
-    an empty pool (``review_pool_slots``).
+def main_review_row(snapshot: Any = None) -> ConfiguredReviewerSlot:
+    """The direct Main row — Main's whole binding under ``snapshot`` (as in
+    :func:`review_pool_slots`): ``OUROBOROS_MODEL``, its local flag, Main's pinned
+    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``) and Main's processing. It is
+    ``/review``'s executor when the call names none (decision 3A), the deep
+    self-review default, and the one seat of an empty pool.
 
     The pin rides as the row's credential profile because the executor sends under
     ``model_role=reviewer:main`` with ``model_account_override=<row profile>``, and an
     EMPTY override is Auto, never a lookup of Main's own role: without it a pinned
-    Main would review on whatever account the engine picked. An unpinned Main stays
-    Auto; an invalid pin document raises here as it does for Main's own calls.
+    Main would review on whatever account the engine picked. Processing is captured
+    here for the same reason. An unpinned Main stays Auto; an invalid pin document
+    raises here as it does for Main's own calls.
     """
     from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+    from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
     from ouroboros.subagents import _lane_model, _use_local_for_lane
 
-    model = _lane_model("main")
-    return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
-                                  use_local=True if _use_local_for_lane("main", model) else None,
-                                  profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""))
+    # Main's own readers, bound to an explicit plane for this read only (the task's otherwise).
+    plane = None if snapshot is None else dict(snapshot)
+    with _contextlib.nullcontext() if plane is None else task_settings_scope(task_settings_snapshot(plane, plane)):
+        model = _lane_model("main")
+        return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
+                                      use_local=_use_local_for_lane("main", model),
+                                      profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""),
+                                      processing_preference=resolve_processing_preference("main"))
 
 
 def _stored_id_for_selector(selector: str) -> str:
@@ -559,7 +566,7 @@ def review_pool_slots(
     # once, together, so the decision, the roster fingerprint and the ordered-weaker
     # baseline of one build agree (the parent task keeps the range it started with).
     rng = live_effort_range()
-    rows = _pool_rows(_catalog_settings(snapshot)) or [main_review_row()]
+    rows = _pool_rows(_catalog_settings(snapshot)) or [main_review_row(snapshot)]
     return [
         _delivery_slot(row, role_hint=role_hint, default_effort=default_effort, rng=rng, **slot_fields)
         for row in rows
@@ -646,6 +653,7 @@ def commit_triad_delivery() -> Dict[str, Any]:
         # consumer may infer it from the catalog id every pool row carries.
         "retrieves": [bool(slot.retrieves) for slot in slots],
         "use_local": [slot.use_local for slot in slots],
+        "processing_preferences": [slot.processing_preference for slot in slots],
         # What each seat is ASKED: a composed seat's own parts (a ``coupling_only``
         # seat answers Part 2 alone), else derived from its delivery (``seat_parts``).
         "parts": [tuple(composed[i].parts) if i < len(composed) else tuple(seat_parts(slot))

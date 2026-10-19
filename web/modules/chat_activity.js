@@ -925,12 +925,12 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
  * into ONE follow-up read that starts when the in-flight read settles — the
  * first forced caller receives that request, the others resolve to null once
  * the follow-up has applied or failed. Gated requests settle via `apply`/`fail` even if a callback throws.
- * Only `fail` (a read failed, in any window) fans out `onUnavailable`; socket open/close `retire()` older bodies.
+ * Only `fail` fans out `onUnavailable`; socket changes and confirmed mutations `retire()` older bodies.
  */
 export function createStateSnapshotSequencer(onApply, now = () => Date.now(), onUnavailable = () => {}) {
     let requestedGeneration = 0;
     let appliedGeneration = 0;
-    // Newest applied body until an unavailable read retires it (late-mount seed).
+    // Newest applied body until a failed read or retire() clears it (late-mount seed).
     let latest = null;
     let inflight = null;
     let settled = null;
