@@ -143,3 +143,21 @@ def test_completion_frame_reserves_still_owed_for_counted_participants(counted):
         assert "advisers still working: working" in text
         assert "not counted" in text and "replies land in the plan record" in text
         assert "plan_task() reads them" in text and "no further notice" in text
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+def test_an_installer_value_error_is_not_reported_as_a_caller_argument_error(tmp_path, monkeypatch, tool):
+    """Panel arguments are refused before the installer runs; an installer's own failure stays a tool failure."""
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(_build_skill(tmp_path)))
+    set_review_pool(monkeypatch, pool_roster(pool_seat("counted", "openai/reviewer")))
+    ctx = _make_ctx(tmp_path)
+
+    def broken_installer(*args, **kwargs):
+        raise ValueError("installer state is unreadable")
+
+    monkeypatch.setattr("ouroboros.skill_source_install.install_item", broken_installer)
+    monkeypatch.setattr("ouroboros.skill_source_install.update_installed", broken_installer)
+    arguments = ({"id": "community/weather", "reason": "weather needed"} if tool == "skill_install"
+                 else {"name": "weather", "mode": "replace"})
+    with pytest.raises(ValueError, match="installer state is unreadable"):
+        _typed_call(tool, ctx, **arguments)

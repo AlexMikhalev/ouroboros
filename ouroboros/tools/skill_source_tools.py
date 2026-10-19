@@ -182,8 +182,6 @@ def _handle_skill_install(ctx: ToolContext, id: str = "", reason: str = "", repl
             turn_on_when_ready=True, check=check, check_notes=check_notes),
             message=f"Ouroboros installs {item_id}: {str(reason)[:160]}",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
-    except ValueError as exc:
-        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
     except SkillInstallError as exc:
         if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
@@ -224,8 +222,6 @@ def _handle_skill_update(ctx: ToolContext, name: str = "", mode: str = "", diges
             check=check, check_notes=check_notes,
             task_id=str(getattr(ctx, "task_id", "") or "")), message=f"Ouroboros updates {skill} ({mode})",
             chat_id=int(getattr(ctx, "current_chat_id", 0) or 0))
-    except ValueError as exc:
-        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=str(exc)))
     except SkillInstallError as exc:
         if exc.code in {"bad_mode", "bad_check"}:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
