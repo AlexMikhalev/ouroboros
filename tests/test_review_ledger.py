@@ -1181,3 +1181,6 @@ def test_a_seat_still_running_keeps_the_record_pending_and_a_lost_one_does_not(t
     seat = {row["seat_id"]: row for row in settled["rows"]}["s3"]
     assert seat["operation_state"] == "custody_lost" and seat["failure_code"] == "review_custody_lost"
     assert not rl.seat_open(seat) and rl.seat_open({"operation_state": "in_flight"})
+    # The settled record names its lost seat as never reached; the pending one awaited it, unlisted.
+    assert partial["panel"].get("not_reached", []) == []
+    assert settled["panel"]["not_reached"] == [{"seat_id": "s3", "cause": "review_custody_lost"}]

@@ -1211,8 +1211,12 @@ def settle_from_collected(drive_root: Any, record_id: str, raws: Iterable[Dict[s
                "cost": {"usd": round(sum(known), 6), "unknown": len(known) < len(rows)}}
 
     def _mutate(current: Dict[str, Any]) -> Dict[str, Any]:
-        # Another settlement (the author's own re-issue) may have landed meanwhile: it wins.
-        return current if current.get("state") != STATE_PENDING else {**current, **settled}
+        # Another settlement (the author's own re-issue) may have landed meanwhile: it wins. A settled record
+        # can await nothing, so its lost seats join the seats never reached, with their cause.
+        if current.get("state") != STATE_PENDING:
+            return current
+        return {**current, **settled, "panel": {**dict(current.get("panel") or {}),
+                                                "not_reached": panel_not_reached(rows, lost_is_terminal=not still_open)}}
 
     return revise_record(drive_root, record_id, _mutate)
 
