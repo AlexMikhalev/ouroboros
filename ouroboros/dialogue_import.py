@@ -634,7 +634,9 @@ def _export_stream(root: pathlib.Path, stream: str) -> Dict[str, Any]:
                                              "from": int(marks["files_seq"])})
                 remainder = data
             if remainder:
-                handle = os.open(str(live), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                # Byte-exact: a Windows descriptor is text mode without O_BINARY and would write each
+                # LF as CRLF, so the exported lines would no longer be the stored rows at their coordinates.
+                handle = os.open(str(live), os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o644)
                 try:
                     view = memoryview(remainder)
                     while view:
