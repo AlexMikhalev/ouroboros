@@ -30,7 +30,16 @@ New-Item -ItemType Directory -Path "_python_tmp" | Out-Null
 
 $ArchivePath = "_python_tmp\python.tar.gz"
 Write-Host "Downloading..."
-Invoke-WebRequest -Uri $Url -OutFile $ArchivePath -UseBasicParsing
+for ($Attempt = 1; ; $Attempt++) {
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $ArchivePath -UseBasicParsing
+        break
+    } catch {
+        if ($Attempt -ge 5) { throw }
+        Write-Warning "Download attempt ${Attempt} failed: $($_.Exception.Message); retrying in 5 s"
+        Start-Sleep -Seconds 5
+    }
+}
 
 Write-Host "Verifying SHA256..."
 $Actual = (Get-FileHash -Algorithm SHA256 $ArchivePath).Hash.ToLower()

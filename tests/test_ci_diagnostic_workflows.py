@@ -806,7 +806,7 @@ def test_pull_requests_run_the_selected_scope_on_windows_and_macos():
     assert "pull_request" in job["if"] and job["strategy"]["matrix"]["os"] == ["windows-latest", "macos-latest"]
     producer = _steps("ci.yml", "pr-selected-os")["tests_selected"]
     assert "scripts/run_tests.py --selected --base ${{ github.event.pull_request.base.sha }} --sequential" in producer["run"]
-    # Unsharded Windows cannot finish a full escalation in its ceiling; its four landed shards run it.
+    # Unsharded Windows cannot finish a full escalation in its ceiling; its eight landed shards run it.
     assert producer["run"].endswith("${{ runner.os == 'Windows' && '--defer-full' || '' }}")
     evidence = next(step for step in job["steps"] if step.get("uses") == EVIDENCE_ACTION)
     # A step killed before run_tests.py writes its outputs still reports through its own outcome.

@@ -52,7 +52,7 @@ mkdir -p _python_tmp
 # Pinned SHA256 (from the release's SHA256SUMS): a swapped/truncated archive
 # fails here instead of becoming the packaged runtime. Update the pins when
 # bumping RELEASE/PY_VERSION.
-curl -L --fail --progress-bar "$URL" -o _python_tmp/"$FILENAME"
+curl -L --fail --retry 5 --retry-all-errors --retry-delay 5 --progress-bar "$URL" -o _python_tmp/"$FILENAME"
 if command -v shasum >/dev/null 2>&1; then
     ACTUAL="$(shasum -a 256 "_python_tmp/${FILENAME}" | awk '{print $1}')"
 else
