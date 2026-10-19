@@ -24,8 +24,13 @@ def test_ctrl_c_exports_real_pytest_terminal_results(tmp_path, entry, workers, r
     from ouroboros import platform_layer as pl
     from ouroboros.process_containment import ProcessContainer
     from ouroboros.test_evidence import EVIDENCE_ENV
-    from ouroboros.test_parallelism import NESTED_WORKERS_ENV
+    from ouroboros.test_parallelism import NESTED_WORKERS_ENV, worker_budget
 
+    if workers:
+        # run_tests admits nested workers by free memory (worker_budget, 1 GiB each): a loaded 7 GB
+        # macOS runner grants one where two are asked, and loadfile then ran both busy files on gw0,
+        # one after the other. Stage one busy file per worker the runner admits.
+        workers = worker_budget(workers, env={NESTED_WORKERS_ENV: str(workers)})
     evidence = diagnostic_directory(tmp_path / 'evidence', 'ctrl-c')
     ready = [evidence / f'ready-{i}' for i in range(max(workers, 1))]
     survivors = [evidence / f'survivor-{i}' for i in range(max(workers, 1))]
@@ -69,10 +74,11 @@ def test_ctrl_c_exports_real_pytest_terminal_results(tmp_path, entry, workers, r
                 time.sleep(.02)
             assert all(p.exists() for p in ready), (evidence / 'launcher.log').read_text()
             if workers:
-                assert {p.read_text() for p in ready} == {'gw0', 'gw1'}
+                assert {p.read_text() for p in ready} == {f'gw{i}' for i in range(workers)}, (
+                    evidence / 'launcher.log').read_text()
             assert pl.signal_pid(proc.pid, signal.SIGINT)
             if repeat:
-                # Both workers are busy. A second launcher INT must not cut teardown.
+                # Every worker is busy. A second launcher INT must not cut teardown.
                 time.sleep(.05)
                 assert pl.signal_pid(proc.pid, signal.SIGINT)
             code = proc.wait(timeout=60)

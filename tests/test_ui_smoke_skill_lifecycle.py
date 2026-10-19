@@ -32,7 +32,8 @@ def test_installed_repair_reloads_tool_route_widget_and_companion(direct_server_
     from ouroboros.skill_loader import compute_content_hash, load_review_state
     from ouroboros.skill_repair_admission import record_repair_admission
     from ouroboros.project_dialogue import build_owner_message_ref
-    from ouroboros.utils import append_jsonl, utc_now_iso
+    from ouroboros import dialogue_store
+    from ouroboros.utils import utc_now_iso
     from ouroboros.tools.registry import ToolRegistry
     from tests._extension_loader_shared import _write_ext_skill
     from tests._skill_review_shared import _make_actor, _pass_array_for_script_skill, _patch_review
@@ -80,7 +81,8 @@ def test_installed_repair_reloads_tool_route_widget_and_companion(direct_server_
     registry._ctx.task_constraint = TaskConstraint(skill_name=name, payload_root=f"skills/external/{name}", allow_enable=False)
     owner_text = "Repair and run the installed application, leaving it working."
     origin = build_owner_message_ref(chat_id=42, client_message_id="repair-fixture", ts=utc_now_iso(), text=owner_text)
-    append_jsonl(drive / "logs" / "chat.jsonl", {**origin, "direction": "in", "text": owner_text, "source": "web"})
+    # Owner messages live in the dialogue store since #1982; a chat.jsonl line is no owner message.
+    dialogue_store.append(drive, "chat", {**origin, "direction": "in", "text": owner_text, "source": "web"})
     registry._ctx.task_metadata = {"origin_message_ref": origin}
     record_repair_admission(drive, name, task_id="live-repair", base_content_hash=compute_content_hash(payload))
     canned = json.dumps({"results": [_make_actor(f"reviewer-{n}", _pass_array_for_script_skill()) for n in range(3)]})

@@ -335,6 +335,8 @@ def isolated_settings(*, stub: StubModelServer | None, paid: bool = False, **ove
         "OUROBOROS_MAX_WORKERS": 4,
         "TOTAL_BUDGET": 10.0,
         "OUROBOROS_PER_TASK_COST_USD": 10.0,
+        # A fresh root with a ready provider would clone the skill hub from GitHub at boot (#1995).
+        "OUROBOROS_STARTER_SKILLS": "[]",
     }
     if paid:
         model, key_env, value = paid_model_and_key()

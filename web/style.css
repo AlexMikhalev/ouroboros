@@ -1160,10 +1160,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 
 /* === design-system:migrated-begin (chat: page header, budget pill, load-older) === */
 
-/* Main's header is one bar like a Project's: the title with the room's status right after it, then the agent's
-   commands. The title block's flex basis, never a word, decides whether the commands share its row: below that
-   width they wrap onto their own row, still at the trailing edge, so no status word can wrap, stretch or move
-   anything (the title and the word ellipsize inside the block instead). */
+/* Main's header is one bar like a Project's, one row in every layout (DESIGN "Page header"): the title with the
+   room's status right after it, then the agent's commands. The commands keep their width and the title block
+   yields to them, its status word dropping whole while the mark stays (room_work.js); a narrow bar has Restart and
+   the budget inside ⋯ (page_header.js). A wider face (Linux sets these words wider) moves nothing to a second row. */
 .chat-page-header {
     position: absolute;
     top: 0;
@@ -1171,10 +1171,9 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     right: 0;
     z-index: var(--z-page-header);
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     column-gap: var(--space-3);
-    row-gap: calc(var(--space-2) + var(--chrome-inset));
     pointer-events: none;
     background: transparent;
     backdrop-filter: none;
@@ -1184,11 +1183,11 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     overflow: visible;
 }
 .chat-page-header > .app-page-leading { flex: 0 0 auto; }
-.chat-page-header > .app-page-title-block { flex: 999 1 min(15rem, calc(100% - 44px - var(--space-3))); min-width: 0; }
-.chat-page-header > .app-page-actions { flex: 1 1 auto; gap: 6px; justify-content: flex-end; }
+.chat-page-header > .app-page-title-block { flex: 1 1 0; min-width: 0; }
+.chat-page-header > .app-page-actions { flex: 0 0 auto; gap: 6px; justify-content: flex-end; }
 
-/* The header's reading backing (DESIGN §5): page ink under everything readable (title, every wrapped line
-   of controls, the history note) that fades only in the band below it, so moving messages never show
+/* The header's reading backing (DESIGN §5): page ink under everything readable (title, controls, the
+   history note) that fades only in the band below it, so moving messages never show
    through header text, closed or open. The mask stays on this layer, never on the actions. */
 .chat-page-header::before,
 .chat-page-note::before {
@@ -1227,7 +1226,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 6px;
     min-width: 0;
     max-width: min(100%, 640px);

@@ -116,6 +116,14 @@ class _Room:
         return self.messages.evaluate(_SHOWN, REPLY)
 
 
+def _texts(response):
+    """The texts of the rows a history read answered with (none for a read that failed)."""
+    try:
+        return [row.get("text") for row in response.json().get("messages", [])]
+    except Exception:  # noqa: BLE001 - a failed or non-JSON answer brought no rows
+        return []
+
+
 def _evidence(data, name, **facts):
     evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", data.parent))
     evidence.mkdir(parents=True, exist_ok=True)
@@ -397,7 +405,8 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
     """The read-band quiet room past the pages kept: only the owner's own notes, more than the recent
     read's bounded search covers, the start eight older pages down. While its opening walks there, a reply
     arrives and 160 child words bury it below the next recent read. The clean start proven, the opening returns to the newest page once, reads on to the reply that
-    fresh read names, lands there and reads it. Its receipt names the revision the client's state then
+    fresh read names, lands there and reads it; a state refresh that reads the arrivals first brings the reply
+    itself, and the opening lands on it with no return. Its receipt names the revision the client's state then
     holds: the opened one, or the reply's if a state refresh came first; the next refresh reads the reply's
     where the reader already is. Every receipt is posted with the reply shown, and the cursor ends at its revision."""
     from playwright.sync_api import sync_playwright
@@ -417,6 +426,11 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
         try:
             url = direct_server_with_data["url"]
             room = _Room(browser, url, "late-room", hold=3, init=(_read_receipts(REPLY),))
+            # How far the walk had asked when a refresh's read of what arrived brought the reply (#1954).
+            brought = []
+            room.page.on("response", lambda response: brought.append(len(room.older))
+                         if _cursor_kind(response.url) == "after" and _OLDER in response.url
+                         and REPLY in _texts(response) else None)
             room.open()
             assert _wait_for(room.page, lambda: len(room.held) == 1, attempts=200), room.older
             _chat_id, newer = _buried_room(data, monkeypatch, "late-room", 160, chat_id=chat_id)
@@ -434,7 +448,12 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
                                  receipts=receipts, cursor=cursor, revisions=[revision, newer])
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert read and _on_screen(landed), ("the opening reaches the reply the return named", landed, room.acks)
-            assert len(room.older) == 9, ("eight pages to the start, then the page holding the reply", room.older)
+            # The walk reaches the start, eight pages down, then reads the page holding the reply; unless a state
+            # refresh's read of what arrived brings the reply first: the opening lands on it with no return and asks
+            # for no page past the one it had asked for.
+            assert len(room.older) == 9 or (brought and len(room.older) <= brought[0] + 1), \
+                ("eight pages to the start, then the page holding the reply, or a refresh brought it first",
+                 room.older, brought)
             assert receipts and all(_in_band(box) for _seen, box in receipts), ("read only while shown", receipts)
             assert newest and room.seen() == sorted(room.seen()) and set(room.seen()) <= {revision, newer}, \
                 ("the newer revision is read where the reader already is", room.acks)

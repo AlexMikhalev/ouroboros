@@ -37,7 +37,7 @@
 /* The status follows the room's title in its bar. The place's name wins (DESIGN "Shell"): when the row is short
    the status word yields first (its dot and caret stay, and the control's name keeps the whole status), and only
    then does the title ellipsize; the control never goes under the touch minimum. Neither moves the bar's other
-   controls: the bar decides its row by the title block's basis, never by these words. */
+   controls: each bar is one row whose commands keep their width while its title block yields to them. */
 :is(.chat-page-header, .project-panel-bar) .app-page-title-row > .rw-trigger {
     flex: 0 1000 auto; min-width: var(--touch-target-min); max-width: 100%; justify-content: center;
     margin-left: var(--space-1); padding-inline: 10px;

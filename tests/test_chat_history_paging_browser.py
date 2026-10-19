@@ -469,9 +469,11 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     toggle = line.locator('[data-live-line-toggle]')
                     title = line.locator('.chat-live-line-title')
                     title.scroll_into_view_if_needed()
-                    box = title.bounding_box()
                     line_height = title.evaluate("node => parseFloat(getComputedStyle(node).lineHeight)")
-                    page.mouse.move(box["x"] + 7, box["y"] + line_height / 2)
+                    # The press starts on the title's first line once the title stands still and takes the pointer
+                    # right there (hover's actionability: stable, receives events), never on a box still moving.
+                    title.hover(position={"x": 7, "y": line_height / 2})
+                    box = title.bounding_box()
                     page.mouse.down()
                     page.mouse.move(box["x"] + min(box["width"] - 4, 100), box["y"] + line_height / 2, steps=10)
                     page.mouse.up()
