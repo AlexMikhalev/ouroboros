@@ -6837,7 +6837,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     min-height: 0;
 }
 
-/* Collapsed Projects keep their live rows; the rest wait behind one quiet row in the names' column. */
+/* Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here. */
 .nav-projects-show-all {
     min-height: var(--nav-item-h);
     padding-left: var(--nav-label-x);
@@ -6872,6 +6872,12 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     align-items: center;
     width: 100%;
     border-radius: var(--radius-sm);
+}
+
+/* Pinned Projects lead the same list: the first row shown after them keeps one step of air, the way the sidebar's
+   zones part. No caption, glyph, tint, rule or column, so nothing reads as one more Project (DESIGN "Shell"). */
+.nav-project-item[data-after-pins] {
+    margin-top: var(--space-2);
 }
 
 /* A Project row reads in the secondary ink at the body size; unread takes the primary ink as well as its dot. */
