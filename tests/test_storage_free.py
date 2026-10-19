@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -448,6 +449,40 @@ def test_removed_bytes_follow_the_trash_and_the_row_carries_the_same_numbers(tmp
     assert row["free_after"] == 100, "the event records completion; the UI reads current free space"
 
 
+_REAL_SCANDIR = os.scandir
+
+
+class _WindowsListing:
+    """``os.scandir`` of one folder as Windows hands it out: ``DirEntry.stat`` there carries no inode,
+    device or link count, so an identity read from the listing never equals an ``lstat`` of the entry."""
+
+    def __init__(self, path):
+        self._listing = _REAL_SCANDIR(path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self._listing.close()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        entry = next(self._listing)
+        info = entry.stat(follow_symlinks=False)
+        listed = SimpleNamespace(st_mode=info.st_mode, st_size=info.st_size, st_mtime_ns=info.st_mtime_ns,
+                                 st_ino=0, st_dev=0, st_nlink=0)
+        return SimpleNamespace(name=entry.name, path=entry.path, is_dir=entry.is_dir, is_symlink=entry.is_symlink,
+                               stat=lambda follow_symlinks=True: listed)
+
+
+def _windows_listing_of(monkeypatch, folder):
+    """Every ``os.scandir`` of FOLDER returns a Windows-shaped listing; any other folder its real one."""
+    monkeypatch.setattr(os, "scandir", lambda path=".": _WindowsListing(path) if isinstance(path, (str, os.PathLike))
+                        and Path(path) == folder else _REAL_SCANDIR(path))
+
+
 def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_path, monkeypatch):
     from ouroboros import maintenance
 
@@ -465,7 +500,9 @@ def test_a_trash_entry_the_child_could_not_delete_is_stuck_until_it_changes(tmp_
 
     # The maintenance child's custody_trash job could not remove the entry (a file in it is held
     # open): it records the entry's identity as it saw it, and both the job's due check and the
-    # run view compare the entry against that very record.
+    # run view compare the entry against that very record. The trash folder is listed the way
+    # Windows lists it (no inode), so an identity read from the listing would never match.
+    _windows_listing_of(monkeypatch, root / "state" / "custody_trash")
     monkeypatch.setattr(task_custody, "_remove_entry", held_open)
     assert maintenance.run_job(root, "custody_trash") == {"state": "failed", "items": 0}
     assert "custody_trash" not in maintenance.due(root), "a stuck entry waits for a change"
