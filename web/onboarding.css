@@ -448,8 +448,8 @@ textarea::placeholder {
   background: var(--accent-08);
 }
 
-/* Choice-card chip. Only advisory/blocking declared a pair, so the three
-   runtime-mode chips rendered as bare white text; neutral is now the default. */
+/* Choice-card chip: neutral by default, so no chip renders as bare white text. A setting's value is never
+   amber, so Advisory keeps the neutral chip; only Blocking declares a pair. */
 .wizard-choice .tone {
   display: inline-flex;
   margin-bottom: 10px;
@@ -461,11 +461,6 @@ textarea::placeholder {
   line-height: var(--line-meta);
   font-weight: 700;
   letter-spacing: 0.02em;
-}
-
-.wizard-choice.advisory .tone {
-  background: var(--status-warn-bg);
-  color: var(--status-warn-fg);
 }
 
 .wizard-choice.blocking .tone {
