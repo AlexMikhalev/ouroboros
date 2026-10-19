@@ -2189,6 +2189,9 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     white-space: nowrap;
 }
 
+/* A live chip keeps the moving dots' width when the owner's dot takes their place, so its word never moves. */
+.chat-live-phase[data-chip-tone="live"] > .status-mark { min-width: calc(3 * var(--mark-dot) + 2 * var(--mark-gap)); }
+
 .chat-live-phase[data-chip-tone="live"] {
     color: var(--accent-light);
     border-color: var(--accent-25);

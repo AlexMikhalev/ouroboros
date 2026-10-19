@@ -637,6 +637,7 @@ channels, and nothing else draws a status dot, bar or ring.
   - *ring* — a faint 7 px ring: not confirmed (an incomplete read, a closed socket), never a guess;
   - *dot* — a 7 px dot: one fact (the owner's move, new messages where nothing works, an outcome);
   - *none* — rest draws nothing.
+  New messages lift the still dots to 60 % and the bars to full strength, so the crimson reads.
 - **The hue says whether there is something for the owner.** *Ink* is the
   surface's own ink (`currentColor`), a chosen row's selection ink included, so a
   mark follows the name it marks and never out-shouts it. *Amber* (`--amber`) is
@@ -654,8 +655,10 @@ channels, and nothing else draws a status dot, bar or ring.
 - **Words carry the meaning.** A mark is decorative (`aria-hidden`); the word
   beside it or the place's accessible name says the same fact ("Working · new
   messages", "Something here waits for you"), so colour is never the only channel.
-- **Motion.** Only *moving* loops; reduced motion stops the bounce and keeps the
-  step. A status sentence's own dot (`.ui-status`, Settings sentences, a room at
+- **Motion.** Only *moving* loops; reduced motion stops the bounce, and the moving
+  dots then stand at full strength, apart from the still ones. A mark that changes
+  shape on a live chip keeps the moving dots' width, so the word beside it never
+  moves. A status sentence's own dot (`.ui-status`, Settings sentences, a room at
   rest saying `Online`) is drawn by its CSS at the same 7 px in the same hues and
   speaks only at rest.
 - **Amber is the owner's attention and nothing else:** (1) the owner's move — a

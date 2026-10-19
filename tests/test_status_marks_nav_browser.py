@@ -165,6 +165,11 @@ def test_mains_row_carries_its_rooms_mark_in_the_project_rows_column(nav_ui, tmp
                 page.wait_for_timeout(300)
             main = page.locator('.nav-row-main')
             project = f'[data-project-id="{PROJECTS[2]["id"]}"]'
+            # The chosen row's ink fades in (the 120 ms colour motion): read the mark once it has settled; a mark that
+            # never takes the row's ink times out here.
+            page.wait_for_function("() => { const row = document.querySelector('.nav-row-main');"
+                                   " const dot = row?.querySelector('.status-mark > i');"
+                                   " return dot && getComputedStyle(dot).backgroundColor === getComputedStyle(row).color; }")
             facts[width] = {'main': mark_of(page, '.nav-row-main'), 'project': mark_of(page, project),
                             'mainInk': main.evaluate('el => getComputedStyle(el).color'),
                             'words': page.locator('.nav-row-main .nav-row-words').text_content()}
