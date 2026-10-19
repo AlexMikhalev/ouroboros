@@ -448,7 +448,7 @@ def count_paid_review_cycles(ctx: ToolContext, *, root_task_id: str) -> int:
     from ouroboros.review_state import load_state, make_repo_key
 
     tool = _current_review_tool_name(ctx)
-    if tool == "review_change":
+    if tool in ("review_change", "review_result"):  # review_change waves: canonical custody
         from ouroboros.tools.review_change_custody import paid_repo_key, review_state_root
 
         state = load_state(review_state_root(ctx))
@@ -459,6 +459,9 @@ def count_paid_review_cycles(ctx: ToolContext, *, root_task_id: str) -> int:
         paid = 0
         for item in state.filter_attempts(tool_name=tool):
             if not item.paid or item.root_task_id != root:
+                continue
+            if tool == "review_result":  # a result's allowance is its root task's, wherever its material lives
+                paid += 1
                 continue
             key = item.review_budget_repo_key or owners.get(item.repo_key)
             if key is None:
@@ -498,16 +501,22 @@ def check_review_cycles_ceiling(
         return None
     if paid < cap:
         return None
-    message = (
+    head = (
         f"⚠️ REVIEW_CYCLES_EXHAUSTED: this task tree (root {root}) already spent "
         f"{paid} of {cap} paid review wave(s) "
         "(OUROBOROS_REVIEW_MAX_CYCLES). Refusing to buy another review.\n"
+    )
+    message = head + ((
         "Honest exits: finalize honestly with what is already reviewed and committed; "
         "escalate to the owner (the ceiling is the owner's Max Review Cycles setting — "
         "3/5/unlimited are one settings change away); or leave the remaining work to a "
         "follow-up task with its own budget. A rebuttal cannot buy past the ceiling — "
         "rebuttal cycles count toward it."
-    )
+    ) if review_enforcement_blocks() else (
+        "The paid review allowance is spent. Decide whether what was reviewed is enough: finish, "
+        "or land with a plain statement of what was not reviewed. If the reviewers do not work at "
+        "all and recovery fails, explain that to your human."
+    ))
     return {"message": message, "cycles_paid": paid, "cap": cap}
 
 

@@ -488,14 +488,17 @@ def skill_review_cycles_refusal(
         "preflight; Cyber Pro retains its existing exceptions."
         if author_finish_open else ""
     )
+    owner_exit = ("ask the owner to raise Max Review Cycles (3/5/unlimited are one settings "
+                  "change away), " if not author_finish_open else "")
     message = (
         f"⚠️ REVIEW_CYCLES_EXHAUSTED: {lane} already spent {paid} of {cap} paid "
         "skill-review panel cycle(s) (OUROBOROS_REVIEW_MAX_CYCLES). Refusing to buy "
         "another panel; the skill stays honestly pending. Decide the honest exit "
-        "yourself: finalize and disclose the unreviewed skill, ask the owner to raise "
-        f"Max Review Cycles (3/5/unlimited are one settings change away), or {fresh_exit}. "
+        f"yourself: finalize and disclose the unreviewed skill, {owner_exit}or {fresh_exit}. "
         "A rebuttal cannot buy past the ceiling — rebuttal cycles count toward it."
         f"{author_exit}"
+        + (" If the reviewers do not work at all and recovery fails, explain that to your human."
+           if author_finish_open else "")
     )
     emit_review_cycles_exhausted(
         getattr(ctx, "event_queue", None),

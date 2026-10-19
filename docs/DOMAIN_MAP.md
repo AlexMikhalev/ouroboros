@@ -8,11 +8,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 55 | 0 |
+| D01 | Agent core & main loop | 49 | 0 |
 | D02 | LLM client, routing & providers | 43 | 0 |
 | D03 | Context assembly, fit & compaction | 22 | 0 |
 | D04 | Tool execution: registry, access & typed results | 22 | 0 |
-| D05 | Tool surfaces: files, code, shell, media, external | 40 | 0 |
+| D05 | Tool surfaces: files, code, shell, media, external | 39 | 0 |
 | D06 | Review stack | 91 | 0 |
 | D07 | Delegation, subagents & Claudexor | 71 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 67 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 29 | 0 |
 | D19 | Frozen contracts (ABI) | 12 | 0 |
 | D20 | Presence | 13 | 0 |
-| **total** | | **807** | **0** |
+| **total** | | **800** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -197,11 +197,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 - `ouroboros/_outcome_receipts.py`
 - `ouroboros/_outcome_tool_errors.py`
-- `ouroboros/acceptance_history.py`
-- `ouroboros/acceptance_late.py`
-- `ouroboros/acceptance_preparation.py`
-- `ouroboros/acceptance_retrieving.py`
-- `ouroboros/acceptance_settlement.py`
 - `ouroboros/agent.py`
 - `ouroboros/agent_dispatch.py`
 - `ouroboros/agent_startup_checks.py`
@@ -209,12 +204,11 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/budget_pause.py`
 - `ouroboros/control_actor.py`
 - `ouroboros/deadline_utils.py`
+- `ouroboros/delivery_seal.py`
 - `ouroboros/external_runs.py`
 - `ouroboros/focus.py`
 - `ouroboros/live_works.py`
 - `ouroboros/loop.py`
-- `ouroboros/loop_acceptance.py`
-- `ouroboros/loop_acceptance_review.py`
 - `ouroboros/loop_budget.py`
 - `ouroboros/loop_delivery.py`
 - `ouroboros/loop_forced_finalization.py`
@@ -364,7 +358,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/mcp_import.py`
 - `ouroboros/process_interpreters.py`
 - `ouroboros/query_data_sql.py`
-- `ouroboros/repo_diff_capture.py`
 - `ouroboros/tools/browser.py`
 - `ouroboros/tools/control_relay.py`
 - `ouroboros/tools/core.py`
@@ -392,7 +385,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 ### D06 — Review stack
 
-- `ouroboros/acceptance_material.py`
 - `ouroboros/commit_admission.py`
 - `ouroboros/deep_self_review.py`
 - `ouroboros/dialogue_evidence.py`
@@ -413,7 +405,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/review_cycles.py`
 - `ouroboros/review_dispatch.py`
 - `ouroboros/review_evidence.py`
-- `ouroboros/review_evidence_refs.py`
 - `ouroboros/review_evidence_sections.py`
 - `ouroboros/review_execution.py`
 - `ouroboros/review_execution_projection.py`
@@ -426,6 +417,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/review_pause.py`
 - `ouroboros/review_pool_migration.py`
 - `ouroboros/review_pool_receipts.py`
+- `ouroboros/review_price.py`
 - `ouroboros/review_projection.py`
 - `ouroboros/review_records.py`
 - `ouroboros/review_session_custody.py`
@@ -477,6 +469,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/tools/review_multi_model.py`
 - `ouroboros/tools/review_prompt_text.py`
 - `ouroboros/tools/review_response.py`
+- `ouroboros/tools/review_result.py`
 - `ouroboros/tools/review_subject.py`
 - `ouroboros/tools/review_synthesis.py`
 - `ouroboros/tools/scope_required_sources.py`

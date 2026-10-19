@@ -718,8 +718,11 @@ def test_skill_review_cycles_refusal_names_the_author_finish_where_it_is_legal(
     )
     assert outcome.status == "pending" and outcome.paid is False
     assert "REVIEW_CYCLES_EXHAUSTED" in outcome.error
-    assert "finalize and disclose" in outcome.error
-    assert "ask the owner" in outcome.error and "fresh task" in outcome.error
+    assert "finalize and disclose" in outcome.error and "fresh task" in outcome.error
+    # Where the author may finish, the mind decides whether what was reviewed is enough and the
+    # owner's ceiling is no longer offered as the way on; only Blocking keeps it (owner 17.10, Q1-A).
+    assert ("ask the owner" in outcome.error) is not author_finish
+    assert ("explain that to your human" in outcome.error) == author_finish
     assert ("author_disposition" in outcome.error) == author_finish
     assert ("author_rationale" in outcome.error) == author_finish
     if author_finish:

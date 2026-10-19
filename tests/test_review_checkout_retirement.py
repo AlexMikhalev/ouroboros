@@ -5,8 +5,8 @@ or that a crash left, is retired on the 600 s custody pass once no review can st
 one (``checkout.json``) when its task is terminal and not live, no active review custody names its
 round, no live review operation runs for the task and no retained seat checks from it; an unmarked
 older one under the same conditions only past the GC retention wait and only when a recorded round
-names its task. C9: a dead controller's pointer of a non-acceptance surface is removed by the orphan
-collector, never settled through acceptance; a live controller keeps it.
+names its task. C9: a dead controller's open review pointer is removed by the maintenance pass, never
+settled; a live controller keeps it.
 """
 from __future__ import annotations
 
@@ -154,22 +154,60 @@ def test_an_unreadable_review_state_removes_no_checkout(subject):
     assert entry.is_dir() and report["checkouts_removed"] == 0 and report["errors"], report
 
 
-def test_a_dead_controllers_pointer_of_another_surface_is_removed_never_settled(tmp_path, monkeypatch):
+def test_a_dead_controllers_pointer_is_removed_never_settled(tmp_path):
+    """Both directions: an open pointer whose controller is proven dead is removed (the retired task
+    acceptance's open pointer too: nothing settles it any more), a live controller's stays, and a closed
+    pointer is history the pass never touches."""
     prepare_startup_state(tmp_path)
-    monkeypatch.setattr("ouroboros.acceptance_settlement.settle_acceptance_operation",
-                        lambda *a, **k: pytest.fail("a liveness pointer went through acceptance settlement"))
     dead = {"pid": _dead_pid(), "birth": "gone", "session": "gone"}
-    pointers = {owner: {"state": "dispatched", "surface": surface, "retry_key": f"{surface}:{owner}",
-                        "controller": controller}
-                for owner, surface, controller in (("op-dead", "multi_model_review", dead),
-                                                   ("op-live", "plan_review", _alive_controller()))}
+    pointers = {owner: {"state": state, "surface": surface, "retry_key": f"{surface}:{owner}", "controller": controller}
+                for owner, surface, state, controller in (
+                    ("op-dead", "multi_model_review", "dispatched", dead),
+                    ("op-live", "plan_review", "dispatched", _alive_controller()),
+                    ("op-acceptance", "task_acceptance", "retained", dead),
+                    ("op-closed", "task_acceptance", "closed", dead))}
     write_task_result(tmp_path, TASK, "completed", result="done", review_operations=pointers)
     assert obligations.review_collection_pending(load_task_result(tmp_path, TASK)), "an open liveness pointer is found"
 
-    report = review_operation.recover_orphaned_acceptance_operations(tmp_path)
-    assert report["retired"] == [{"task_id": TASK, "owner_id": "op-dead"}], report
-    assert set(load_task_result(tmp_path, TASK)["review_operations"]) == {"op-live"}, "a live controller keeps its pointer"
-    assert review_operation.recover_orphaned_acceptance_operations(tmp_path)["retired"] == []
+    report = review_operation.retire_dead_review_pointers(tmp_path)
+    assert report["retired"] == [{"task_id": TASK, "owner_id": "op-dead"},
+                                 {"task_id": TASK, "owner_id": "op-acceptance"}], report
+    left = load_task_result(tmp_path, TASK)["review_operations"]
+    assert set(left) == {"op-live", "op-closed"}, "a live controller keeps its pointer, a closed one stays history"
+    assert left["op-closed"] == pointers["op-closed"]
+    assert review_operation.retire_dead_review_pointers(tmp_path)["retired"] == []
+    assert obligations.review_collection_pending(load_task_result(tmp_path, TASK)), "the live pointer still holds"
+
+
+def test_a_row_an_older_body_flagged_with_nothing_open_is_written_back_and_packs(tmp_path):
+    """Both directions: a terminal row whose stored review_collection_pending is 1 only because an older body
+    flagged it for its acceptance collection (here a closed acceptance pointer) is written back to 0 by one
+    pass and becomes packable, its body untouched; a row with an open live pointer keeps its 1."""
+    from ouroboros import store
+    from ouroboros.evidence_packs import task_packable
+
+    prepare_startup_state(tmp_path)
+    closed = {"op-closed": {"state": "closed", "surface": "task_acceptance", "retry_key": "task_acceptance:closed",
+                            "controller": {"pid": _dead_pid(), "birth": "gone", "session": "gone"}}}
+    live = {"op-live": {"state": "dispatched", "surface": "plan_review", "retry_key": "plan_review:live",
+                        "controller": _alive_controller()}}
+    write_task_result(tmp_path, "old-flag", "completed", result="done", review_operations=closed)
+    write_task_result(tmp_path, "open-review", "completed", result="done", review_operations=live)
+    with store.open_store(tmp_path, write=True) as txn:  # the column as the older body derived it
+        txn.conn.execute("UPDATE tasks SET review_collection_pending=1 WHERE task_id='old-flag'")
+
+    def column(task):
+        with store.open_store(tmp_path, write=False) as txn:
+            return txn.row(task, "review_collection_pending")
+
+    assert (column("old-flag"), column("open-review")) == (1, 1)
+    report = review_operation.retire_dead_review_pointers(tmp_path)
+    assert report["reclassified"] == ["old-flag"] and report["retired"] == [], report
+    assert (column("old-flag"), column("open-review")) == (0, 1)
+    with store.open_store(tmp_path, write=False) as txn:
+        assert task_packable(txn, "old-flag") and not task_packable(txn, "open-review")
+    assert review_operation.retire_dead_review_pointers(tmp_path)["reclassified"] == []
+    assert load_task_result(tmp_path, "old-flag")["review_operations"] == closed
 
 
 def test_checkout_retirement_targets_only_its_registration_and_keeps_an_offline_owner_worktree(subject):

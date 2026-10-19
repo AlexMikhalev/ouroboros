@@ -1,4 +1,4 @@
-"""Retained 88a70130 writer -> current generic/public collection, without sends.
+"""Retained 88a70130 writer -> current generic collection, without sends.
 
 The old slot and identity functions are exact retained source, not keys rebuilt
 by the collector under test. The prompt and completed-result writer methods
@@ -20,7 +20,7 @@ from ouroboros.observability import read_call_payload
 from ouroboros.review_records import ReviewActorRecord, ReviewRequest, ReviewRouteKind, ReviewSlot
 from tests.fixtures import legacy_review_processing as legacy
 from tests.test_review_operation_collection import (
-    TASK, _ctx, _observe, _started, forbid_effects,  # noqa: F401 - pytest fixture
+    SURFACE, TASK, _ctx, _observe, _started, forbid_effects,  # noqa: F401 - pytest fixture
 )
 
 TEXT = json.dumps({"verdict": "FAIL", "summary": "Retained paid criticism", "findings": [
@@ -34,7 +34,7 @@ class WorkerLost(BaseException):
 
 
 def _record(root, monkeypatch, *, writer, delivery):
-    request = ReviewRequest(surface="task_acceptance", task_id=TASK, goal="Review the answer",
+    request = ReviewRequest(surface=SURFACE, task_id=TASK, goal="Review the answer",
                             subject="Original answer", retry_key="processing-wave", task_attempt=1)
     slot_type = legacy.ReviewSlot if writer == "legacy" else ReviewSlot
     slot = slot_type(slot_id="s", model="codex" if delivery == "session" else "fake/model",
@@ -85,11 +85,7 @@ def _record(root, monkeypatch, *, writer, delivery):
             "slot_roster": [dataclasses.asdict(slot)], "actors": [row], "aggregate_signal": "DEGRADED"}, sends
 
 
-def _collect(root, run, consumer):
-    if consumer == "public":
-        assert review_dispatch.reconcile_pending_acceptance_runs(
-            {"review_runs": [run]}, drive_root=root, usage_ctx=_ctx(root)) == 1
-        return run["actors"][0]
+def _collect(root, run):
     request = run["request"]
     return review_operation.collect_recorded_review_actor(
         root, task_id=TASK, surface=request["surface"], row=run["actors"][0],
@@ -97,95 +93,39 @@ def _collect(root, run, consumer):
         review_contract=request["reconciliation_identity"]["review_contract"])
 
 
-@pytest.mark.parametrize("consumer", ["generic", "public"])
 @pytest.mark.parametrize("delivery", ["api", "session"])
 @pytest.mark.parametrize("writer", ["legacy", "current"])
 def test_retained_writer_collects_its_paid_criticism_without_resending(
-        tmp_path, monkeypatch, forbid_effects, consumer, delivery, writer):  # noqa: F811
+        tmp_path, monkeypatch, forbid_effects, delivery, writer):  # noqa: F811
     run, sends = _record(tmp_path, monkeypatch, writer=writer, delivery=delivery)
     original = copy.deepcopy(run)
     before = read_call_payload(tmp_path, task_id=TASK, call_id=f"{OPERATION}_prompt")[:2]
     reads = _observe(monkeypatch, {"summary": {"state": "succeeded"},
                                    "primaryOutput": {"text": TEXT, "truncated": False}})
-    actor = _collect(tmp_path, run, consumer)
+    actor = _collect(tmp_path, run)
     assert actor["operation_state"] == "late_settled", actor
     assert "EOF-PAID-CRITICISM" in actor["raw_text"] and len(actor["raw_text"]) >= len(TEXT) - 100
     assert actor["recovery_binding"] == original["actors"][0]["recovery_binding"]
     assert actor["response_ref"]["manifest_ref"]
-    if consumer == "public":
-        assert run["aggregate_signal"] == "FAIL" and not run["degraded"]
-        assert any("EOF-PAID-CRITICISM" in finding["reason"] for finding in run["parsed_findings"])
-        assert run["collection"]["facts"] == {"s": "collected"}
-        assert run["request"] == original["request"] and run["slot_roster"] == original["slot_roster"]
-        assert run["panel_id"] == original["panel_id"]
-        assert review_dispatch.reconcile_pending_acceptance_runs(
-            {"review_runs": [run]}, drive_root=tmp_path, usage_ctx=_ctx(tmp_path)) == 0
     assert read_call_payload(tmp_path, task_id=TASK, call_id=f"{OPERATION}_prompt")[:2] == before
     assert sends == [delivery]
     assert reads == ([("handshake",), ("get_run", "existing-run"), ("close",)] if delivery == "session" else [])
 
 
-@pytest.mark.parametrize("consumer", ["generic", "public"])
 @pytest.mark.parametrize("delivery", ["api", "session"])
 @pytest.mark.parametrize("axis", ["roster_hash", "root_task_id", "request_key", "pending_invocation_id"])
 def test_legacy_interpretation_rejects_foreign_full_bindings(
-        tmp_path, monkeypatch, forbid_effects, consumer, delivery, axis):  # noqa: F811
+        tmp_path, monkeypatch, forbid_effects, delivery, axis):  # noqa: F811
     run, sends = _record(tmp_path, monkeypatch, writer="legacy", delivery=delivery)
     row = run["actors"][0]
     row["recovery_binding"][axis] = "foreign-value"
     reads = _observe(monkeypatch, {"summary": {"state": "succeeded"},
                                    "primaryOutput": {"text": TEXT, "truncated": False}})
-    actor = _collect(tmp_path, run, consumer)
+    actor = _collect(tmp_path, run)
     assert actor["operation_state"] == "custody_lost" and actor["late_result_pending"]
     assert not actor["raw_text"] and not actor.get("semantic_verdict")
     assert actor["recovery_binding"] == row["recovery_binding"] and actor["prompt_ref"] == row["prompt_ref"]
-    if consumer == "public":
-        assert run["aggregate_signal"] == "DEGRADED" and not run["parsed_findings"]
     assert sends == [delivery] and reads == []
-
-
-@pytest.mark.parametrize("writer", ["legacy", "current"])
-@pytest.mark.parametrize("delivery", ["api", "session"])
-def test_checkpoint_without_a_published_binding_keeps_the_paid_criticism(
-        tmp_path, monkeypatch, forbid_effects, writer, delivery):  # noqa: F811
-    run, sends = _record(tmp_path, monkeypatch, writer=writer, delivery=delivery)
-    row = run["actors"][0]
-    original_binding = copy.deepcopy(row["recovery_binding"])
-    original_prompt = read_call_payload(tmp_path, task_id=TASK, call_id=f"{OPERATION}_prompt")[:2]
-    # run_from_checkpoint reconstructs identity from operations/roster, not a
-    # previously published actor. The original immutable prompt remains readable.
-    run["actors"] = [{key: row[key] for key in ("slot_id", "model", "operation_id")} | {
-        "status": "error", "operation_state": "pending_dispatch", "late_result_pending": True,
-        "usage": {}}]
-    reads = _observe(monkeypatch, {"summary": {"state": "succeeded"},
-                                   "primaryOutput": {"text": TEXT, "truncated": False}})
-    actor = _collect(tmp_path, run, "public")
-    assert actor["operation_state"] == "late_settled", actor
-    assert actor["recovery_binding"] == original_binding
-    assert actor["recovery_binding"]["request_key"] == original_prompt[0]["review_operation_binding"]["request_key"]
-    assert read_call_payload(tmp_path, task_id=TASK, call_id=f"{OPERATION}_prompt")[:2] == original_prompt
-    assert run["aggregate_signal"] == "FAIL" and not run["degraded"]
-    assert any("EOF-PAID-CRITICISM" in item["reason"] for item in run["parsed_findings"])
-    assert sends == [delivery]
-    assert reads == ([("handshake",), ("get_run", "existing-run"), ("close",)] if delivery == "session" else [])
-
-
-@pytest.mark.parametrize("writer", ["legacy", "current"])
-@pytest.mark.parametrize("foreign", ["request", "session_target", "subagent_id"])
-def test_checkpoint_session_rejects_an_assignment_foreign_to_its_prompt(
-        tmp_path, monkeypatch, forbid_effects, writer, foreign):  # noqa: F811
-    run, sends = _record(tmp_path, monkeypatch, writer=writer, delivery="session")
-    run["actors"][0].pop("recovery_binding")
-    if foreign == "request":
-        run["request"]["retry_key"] = "foreign-wave"
-    else:
-        run["slot_roster"][0][foreign] = "foreign-actor"
-    reads = _observe(monkeypatch, {"summary": {"state": "succeeded"},
-                                   "primaryOutput": {"text": TEXT, "truncated": False}})
-    actor = _collect(tmp_path, run, "public")
-    assert actor["operation_state"] == "custody_lost" and actor["late_result_pending"]
-    assert not actor["raw_text"] and not run["parsed_findings"]
-    assert sends == ["session"] and reads == []
 
 
 @pytest.mark.parametrize("writer", ["legacy", "current"])
@@ -210,25 +150,3 @@ def test_checkpoint_session_preserves_in_flight_deferral(
     assert not actor.raw_text and not actor.recovery_binding
     assert sends == ["session"]
     assert reads == ([("handshake",), ("get_run", "existing-run"), ("close",)] if owner == "delegated" else [])
-
-
-@pytest.mark.parametrize("writer", ["legacy", "current"])
-def test_dead_controller_checkpoint_recovery_across_processing_formats(tmp_path, monkeypatch, writer):
-    from tests import test_review_operation_collection as consumer
-
-    recover = review_operation.recover_orphaned_acceptance_operations
-    with monkeypatch.context() as producer_patch:
-        if writer == "legacy":
-            producer_patch.setattr(consumer, "ReviewSlot", legacy.ReviewSlot)
-            producer_patch.setattr(review_custody, "_attempt_key", legacy._attempt_key)
-            producer_patch.setattr(review_dispatch, "review_reconciliation_identity", legacy.review_reconciliation_identity)
-
-        def after_upgrade(*args, **kwargs):
-            producer_patch.undo()  # Producer threads have settled; only the reader changes.
-            return recover(*args, **kwargs)
-
-        monkeypatch.setattr(review_operation, "recover_orphaned_acceptance_operations", after_upgrade)
-        # The real checkpoint/paid-claim/maintenance/publication chain asserts the
-        # complete verdict and once-only delivery, including the no-claim control.
-        consumer.test_maintenance_collects_a_dead_controllers_operation_once(
-            tmp_path, monkeypatch, retry_root=False, checkpoint_format="current")

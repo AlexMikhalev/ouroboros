@@ -272,16 +272,20 @@ export function reviewPoolErrors(setting, { judged = false, allowEmpty = false }
         : 'No row is marked Reviewer. Mark at least one row, or tick “Save without reviewers”.'];
 }
 
-/** The price of one full call of this row (the words `## Review` prints), or its non-money equivalent;
- * a reading reviewer makes several calls; unknown is never zero. */
+/** What one review by this row actually cost — the median of its measured reviews with their count
+ * and range (the words `## Review` prints) — or its non-money equivalent; unknown is never zero. */
 export function reviewCostText(row, cost = null) {
     if (routeSupportsAccount(row?.route || {})) return 'uses a session seat and time';
     if (!cost) return 'price appears after saving';
+    if (cost.basis === 'local_route') return 'no API cost per review';
     const usd = cost.usd_per_review;
-    if (cost.basis !== 'route_tariff' || typeof usd !== 'number' || !Number.isFinite(usd)) return 'cost unknown';
-    if (usd === 0) return 'no API cost per review';
-    const text = `≈$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)} per full call (route tariff)`;
-    return row?.delivery === 'packet' ? text : `${text}; a reading reviewer makes several`;
+    if (cost.basis !== 'observed_reviews' || typeof usd !== 'number' || !Number.isFinite(usd)) return 'cost unknown';
+    const high = Number(cost.high);
+    if (usd === 0 && !(high > 0)) return 'no API cost per review';
+    const money = (value) => `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+    const reviews = Number(cost.reviews) || 0;
+    return reviews < 2 ? `≈${money(usd)} per review (1 measured)`
+        : `≈${money(usd)} per review (median of ${reviews} measured, ${money(Number(cost.low))}–${money(high)})`;
 }
 
 /** What actually ran the last time this row reviewed, with its review record (the card's "Last review"). */

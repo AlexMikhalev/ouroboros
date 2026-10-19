@@ -304,13 +304,13 @@ def _global_money_refusal(q: Any, budget_remaining: Any) -> Optional[Dict[str, A
 
 def _root_money_refusal(result_root: Any, task: Dict[str, Any], root_task_id: str) -> Optional[Dict[str, Any]]:
     from ouroboros.usage_accounting import refresh_root_accounting
-    from ouroboros.usage_admission import effective_billing_fields, task_accounting_key, task_billing_fields
+    from ouroboros.usage_admission import task_accounting_key, task_billing_fields
     from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
     # The original group's authority is reread strictly first: unreadable or refused is
     # named as such, never as accounting room or as an exhausted cap.
     try:
-        effective_billing_fields(result_root, root_task_id, task_billing_fields(task, root_task_id, None, result_root))
+        task_billing_fields(task, root_task_id, None, result_root)
     except BillingAuthorityUnavailable as exc:
         return {"ok": False, "error": "billing_authority_unavailable", "billing_authority": exc.kind, "cause": exc.cause,
                 "action": "fix_billing_authority_then_resume" if exc.kind == "unreadable" else "cancel_or_new_run"}
@@ -865,7 +865,7 @@ def resume_late_phase(task_id: str) -> Optional[Dict[str, Any]]:
 
     The Pause already ended that root's post-answer upkeep, so nothing of it is
     resumed. Nothing left at all: the tree census already releases the fence.
-    Only deferred, unsent late work left (a late review still preparing): this
+    Only deferred, unsent late work left (a review operation not yet sent): this
     explicit Resume reopens the fence once nothing sent remains in flight. The
     exact Resume's refusals apply unchanged (Restart/Panic hold, a live Stop,
     unsettled tree custody, the calendar deadline, global money and the root
@@ -903,10 +903,8 @@ def resume_late_phase(task_id: str) -> Optional[Dict[str, Any]]:
             return {"ok": False, "error": "owner_pause_effects_unsettled", "action": "wait_for_effect_settlement"}
         try:
             with launch_lock(root, task_id):
-                from ouroboros.acceptance_late import resume_paused_acceptance_preparations
                 if read_fence(root, task_id) != fence:
                     return {"ok": False, "error": "selection_authority_changed"}
-                resume_paused_acceptance_preparations(root, task_id, fence)
                 set_fence_state(root, task_id, fence_id=str(fence.get("fence_id") or ""), state=FENCE_RELEASED,
                                 expected_state=str(fence.get("state") or ""), release_reason="owner_resume_late")
         except Exception as exc:

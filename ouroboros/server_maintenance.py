@@ -1074,9 +1074,10 @@ def _run_periodic_reconcile_sweep(marker: list, stop_event: Any = None, latch: A
         if _stop_requested(stop_event):
             return
         from ouroboros.late_review_marks import replay_owed_late_reviews
-        from ouroboros.review_operation import collect_orphaned_operations_softly
+        from ouroboros.review_operation import retire_dead_review_pointers_softly
 
-        collect_orphaned_operations_softly(DATA_DIR, stop=lambda: _stop_requested(stop_event))
+        # This process's closed operations retry a failed final pointer; a dead controller's open one goes.
+        retire_dead_review_pointers_softly(DATA_DIR, stop=lambda: _stop_requested(stop_event))
         replay_owed_late_reviews(DATA_DIR, stop=lambda: _stop_requested(stop_event))  # owed rows only
         if _stop_requested(stop_event):
             return
