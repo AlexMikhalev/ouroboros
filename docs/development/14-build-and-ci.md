@@ -4,7 +4,7 @@ Rules for dependency locks, pytest lanes, CI and commit-gate tests, and Actions 
 
 ### Python dependency locks
 
-`pyproject.toml` + `uv.lock` are the one dependency authority; `requirements-runtime.lock` and `requirements.txt` are generated projections (ARCHITECTURE §8 "Build scripts"). A dependency change updates the metadata, runs `uv lock`, regenerates the runtime export with the exact README command and leaves the CI clean-diff check green; the pinned `tool.uv.required-version` and the digest-pinned `setup-uv` action make a resolver change deliberate. Documentation may pair the checkout-free `uv tool install` form with a full commit SHA, but must not claim it locks dependencies or call it a release-artifact install or a development environment.
+`pyproject.toml` + `uv.lock` are the one dependency authority; `requirements-runtime.lock` and `requirements.txt` are generated projections (ARCHITECTURE §8 "Build scripts"). A dependency change updates the metadata, runs `uv lock`, regenerates the runtime export with the exact README command and leaves the CI clean-diff check green; the pinned `tool.uv.required-version` and the digest-pinned `setup-uv` action make a resolver change deliberate. Docs may pair the checkout-free `uv tool install` form with a full commit SHA, never calling it a dependency lock, a release-artifact install or a development environment.
 
 ### Pytest marker lanes
 
@@ -28,7 +28,7 @@ CHECKLISTS Body item 11(d) owns the review.
 
 ### Parallel CI and the `serial` marker
 
-CI runs the default suite in two passes, each owned by `scripts/run_tests.py` (`.github/workflows/ci.yml`: `quick-test` on setup-python's SQLite, so stores run PERSIST as an install updated in place; `full-test-runs` on the shipped interpreter, WAL as a fresh install): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Windows adds `--default-suite-shard=K/8` (`tests/default_lane.py` packs whole files by count; shard 1 adds unsharded manifest witnesses). Two rules preserve the split:
+CI runs the default suite in two passes, each owned by `scripts/run_tests.py` (`.github/workflows/ci.yml`; `quick-test` on setup-python's SQLite, PERSIST as in-place updates run; `full-test-runs` on the shipped Python, WAL): a parallel pass, `-m "not serial and <the seven lane exclusions>"` with `PARALLEL_PASS_FLAGS` (`-n auto --dist loadscope --max-worker-restart=0 --timeout=300 --timeout-method=thread`), then a flag-free serial pass, `-m "serial and <the same exclusions>"`. Windows adds `--default-suite-shard=K/8` (`tests/default_lane.py` packs whole files by count; shard 1 adds unsharded manifest witnesses). Two rules preserve the split:
 
 - Mark `@pytest.mark.serial` (or list the file in `_SERIAL_TEST_FILES` in `tests/conftest.py`) only for a shared resource the test cannot isolate: a fixed port, a real daemon, a process-global its fixture cannot restore. An owned child, a private root or port 0 is not one. Under `-n` such a test flakes on kill/reap or port-reclaim timing or crashes its worker, and with `--max-worker-restart=0` a dead worker fails its co-located batch. A merely slow test is made faster or split, never `serial`: that pass has no per-test timeout.
 - Keep every other test parallel-safe: `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr`, no execution-order assumptions; a fixture-restored global stays parallel (`tests/conftest.py::_isolate_workspace_executor_globals`).
@@ -41,7 +41,7 @@ Full default overlaps bounded `--serial-shards` groups; `--sequential` restores 
 
 ### Safe local verification and dirty browser candidates
 
-Before imports/tests, use the stdlib launcher: it checks helper imports, scrubs owner configuration/credentials and prints isolated roots. Use a dependency-only venv: editable installs can import deleted modules from the source checkout:
+Before imports/tests, use the stdlib launcher: it checks helper imports, scrubs owner config/credentials and prints isolated roots. Use a dependency-only venv: an editable install can import deleted modules from the checkout:
 
 ```bash
 uv sync --locked --extra browser --group dev --no-install-project
