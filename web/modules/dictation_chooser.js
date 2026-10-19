@@ -1,8 +1,8 @@
 // "+" → Add dictation… (docs/DESIGN.md "Voice controls"): the ways to dictate on this install, each saying where the
-// audio goes. An engine that is live here is chosen at once; a bundled engine that is off (Browser speech) is turned
-// on through the Skills toggle, then chosen; an OuroborosHub engine (Whisper) is reached through the Skills page — its
-// entry when installed, the OuroborosHub search when not. Choosing saves `voice.stt`; the mic appears once the engine
-// can run here. Nothing here installs code or sends audio.
+// audio goes. An engine that is live here is chosen at once; an installed built-in engine that is off (Browser speech)
+// is turned on through the Skills toggle, then chosen; a built-in engine not installed yet and an OuroborosHub engine
+// (Whisper) are reached through the Skills page — the installed entry, or the Browse search where it installs.
+// Choosing saves `voice.stt`; the mic appears once the engine can run here. Nothing here installs code or sends audio.
 import { fetchJson } from './api_client.js';
 import { fmt, tr } from './i18n.js';
 import { showToast } from './toast.js';
@@ -15,15 +15,16 @@ export const HUB_STT_ENGINES = Object.freeze([
     Object.freeze({ slug: 'whisper-voice', label: 'Whisper', destination: 'host', install_size: '~500 MB' }),
 ]);
 
-/** Ask the Skills page for one installed skill's entry (`{skill}`) or an OuroborosHub search (`{query}`); skills.js
+/** Ask the Skills page for one installed skill's entry (`{skill}`) or a Browse search (`{query}`); skills.js
  * listens. */
 export function openSkills(detail) {
     globalThis.window?.dispatchEvent?.(new CustomEvent('ouro:open-skills', { detail }));
 }
 
 /**
- * The chooser's rows: live engines (`live`), bundled engines that are off (`offer`) and OuroborosHub engines not live
- * here (`hub`, with `installed` from the Skills listing when it could be read). Pure: `speech` is the hub's reading.
+ * The chooser's rows: live engines (`live`), built-in engines that are off or not installed (`offer`; `installed:
+ * false` from the server when the built-in is not installed) and OuroborosHub engines not live here (`hub`, with
+ * `installed` from the Skills listing when it could be read). Pure: `speech` is the hub's reading.
  */
 export function chooserOptions({ speech, installed = null, location = globalThis.location }) {
     const chosen = speech.selected('stt');
@@ -36,7 +37,8 @@ export function chooserOptions({ speech, installed = null, location = globalThis
         if (liveKeys.has(`${offer.skill}:${offer.id}`)) continue;
         rows.push({ kind: 'offer', key: `${offer.skill}:${offer.id}`, label: offer.label, offer,
             line: offer.title || destinationLabel(offer.destination, location),
-            hint: tr('voice.chooser.turn_on', 'Turn on and use') });
+            hint: offer.installed === false ? fmt('Find {label} in Skills', { label: offer.label })
+                : tr('voice.chooser.turn_on', 'Turn on and use') });
     }
     const liveSkills = new Set(live.map((row) => row.skill));
     for (const engine of HUB_STT_ENGINES) {
@@ -49,23 +51,28 @@ export function chooserOptions({ speech, installed = null, location = globalThis
     return { rows, chosen };
 }
 
-/** Choose one row: live → save; offer → toggle on, then save; hub → the Skills page. Resolves to a notice line. */
+/** Choose one row: live → save; offer → toggle on, then save (not installed: Browse); hub → the Skills page.
+ * Resolves to a notice line. */
 export async function chooseOption(row, { speech, open = openSkills }) {
     if (row.kind === 'live') {
         await speech.choose('stt', row.key);
         return fmt('Dictation: {label}. Press the mic to dictate.', { label: row.label });
     }
+    if (row.kind === 'offer' && row.offer.installed === false) {
+        open({ query: row.offer.skill });
+        return '';
+    }
     if (row.kind === 'offer') {
         await speech.enableOffer(row.offer);
         return fmt('{label} is on. Press the mic to dictate.', { label: row.label });
     }
-    open(row.installed ? { skill: row.engine.slug } : { tab: 'ouroboroshub', query: row.engine.slug });
+    open(row.installed ? { skill: row.engine.slug } : { query: row.engine.slug });
     return '';
 }
 
 /**
  * Open the chooser under the room's "+" (or its field). `listing()` reads the installed skills (Skills page index);
- * a failed read still offers the OuroborosHub search.
+ * a failed read still offers the Browse search.
  */
 export async function openDictationChooser({ composer, speech = getSpeech(),
     listing = () => fetchJson('/api/extensions', { cache: 'no-store' }),

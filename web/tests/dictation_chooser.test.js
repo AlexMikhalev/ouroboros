@@ -1,7 +1,8 @@
 // "+" → Add dictation… (dictation_chooser.js) and the page's speech hub (speech_providers.js createSpeechHub): live
-// engines are chosen at once, a bundled engine that is off is turned on through the ordinary Skills toggle and then
-// chosen, Whisper is reached through the Skills page (its entry when installed, the OuroborosHub search when not), a
-// failed start chooses nothing, and the hub's Read aloud engine never substitutes for a chosen one.
+// engines are chosen at once, an installed built-in engine that is off is turned on through the ordinary Skills toggle
+// and then chosen, a built-in not installed yet and Whisper are reached through the Skills page (the installed entry, or
+// the Browse search where they install), a failed start chooses nothing, and the hub's Read aloud engine never
+// substitutes for a chosen one.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { HUB_STT_ENGINES, chooseOption, chooserOptions, openDictationChooser } from '../modules/dictation_chooser.js';
@@ -61,7 +62,20 @@ test('choosing: live → saved; bundled → turned on then saved; Whisper → th
     const whisper = { kind: 'hub', engine: HUB_STT_ENGINES[0] };
     assert.equal(await chooseOption({ ...whisper, installed: false }, { speech, open }), '');
     await chooseOption({ ...whisper, installed: true }, { speech, open });
-    assert.deepEqual(opened, [{ tab: 'ouroboroshub', query: 'whisper-voice' }, { skill: 'whisper-voice' }]);
+    assert.deepEqual(opened, [{ query: 'whisper-voice' }, { skill: 'whisper-voice' }]);
+});
+
+test('a built-in engine this install has not installed is found in Browse, never toggled', async () => {
+    const absent = { ...BROWSER_OFFER, installed: false };
+    const speech = hubReading({ offers: [absent] });
+    const [row] = chooserOptions({ speech, installed: [], location: LOCAL }).rows;
+    assert.deepEqual([row.kind, row.hint], ['offer', 'Find Browser speech in Skills']);
+    const opened = [];
+    assert.equal(await chooseOption(row, { speech, open: (detail) => opened.push(detail) }), '');
+    assert.deepEqual(opened, [{ query: 'browser_speech' }]);
+    assert.deepEqual(speech.calls, [], 'a toggle cannot turn on a skill that is not installed');
+    const installedOff = chooserOptions({ speech: hubReading({ offers: [BROWSER_OFFER] }), installed: [], location: LOCAL });
+    assert.equal(installedOff.rows[0].hint, 'Turn on and use', 'an installed built-in that is off is turned on');
 });
 
 test('the chooser sheet says why a chosen engine cannot dictate and turns Browser speech on from a press', async () => {
@@ -81,7 +95,7 @@ test('the chooser sheet says why a chosen engine cannot dictate and turns Browse
             ['Choose how to dictate', 'Your chosen engine cannot dictate here: Not here.']);
         const options = menu.querySelectorAll('[data-voice-option]');
         assert.deepEqual(options.map((node) => node.dataset.voiceOption), ['browser_speech:speech', 'hub:whisper-voice'],
-            'a failed Skills read still offers the OuroborosHub search');
+            'a failed Skills read still offers the Browse search');
         options[0].click();
         await new Promise((resolve) => setTimeout(resolve, 0));
         assert.deepEqual(speech.calls, [['enable', 'browser_speech']]);

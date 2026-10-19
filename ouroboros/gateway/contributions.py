@@ -54,6 +54,28 @@ class UiContributionsResponse(TypedDict):
     problems: Dict[str, List[str]]
 
 
+def _uninstalled_builtin_offers(installed: set) -> List[Dict[str, Any]]:
+    """Dictation engines of built-ins this install has not installed (the bundled ``skills/`` folder, this host only):
+    the chooser sends the owner to Browse, where the built-in source installs them; nothing here installs."""
+    from ouroboros.extension_ui_validation import validate_contributions
+    from ouroboros.skill_builtin import applies_here, bundled_skills_dir
+    from ouroboros.skill_identity import _parse_manifest
+
+    root, rows = bundled_skills_dir(), []
+    for folder in sorted(root.iterdir()) if root.is_dir() else []:
+        if not folder.is_dir() or folder.name.startswith(".") or folder.name in installed or not applies_here(folder):
+            continue
+        manifest = _parse_manifest(folder)
+        if manifest is None:
+            continue
+        clean, _warnings = validate_contributions(manifest)
+        rows.extend({"skill": folder.name, "skill_label": manifest.name, "id": item["id"], "label": item["label"],
+                     "title": item["title"], "destination": item["destination"],
+                     "install_size": item.get("install_size", ""), "enabled": False, "installed": False}
+                    for item in clean if item.get("provides") == "stt")
+    return rows
+
+
 def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) -> dict:
     from ouroboros.extension_contributions import project_contributions
     from ouroboros.extension_registry_state import live_contribution_problems, live_contribution_projection
@@ -80,8 +102,9 @@ def contribution_catalog(drive_root, repo_path=None, *, skills=None, live=None) 
         if skill.source == "native" and skill.name not in live_names:
             offers.extend({"skill": skill.name, "skill_label": skill.manifest.name, "id": item["id"],
                            "label": item["label"], "title": item["title"], "destination": item["destination"],
-                           "install_size": item.get("install_size", ""), "enabled": False}
+                           "install_size": item.get("install_size", ""), "enabled": False, "installed": True}
                           for item in clean if item.get("provides") == "stt")
+    offers.extend(_uninstalled_builtin_offers({skill.name for skill in skills}))
     try:
         prefs = _stored_preferences(drive_root / "state" / "ui_preferences.json")
     except ValueError:  # a stored value this release refuses (a hand edit, a newer release's) never fails the Skills page

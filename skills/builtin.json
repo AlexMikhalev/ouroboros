@@ -3,6 +3,9 @@
   "skills": [
     {"name": "telegram", "category": ["messaging"], "recommended": true},
     {"name": "unix_computer_use", "category": ["computer"], "recommended": true, "default_on": true},
-    {"name": "windows_computer_use", "category": ["computer"], "recommended": true, "default_on": true}
+    {"name": "windows_computer_use", "category": ["computer"], "recommended": true, "default_on": true},
+    {"name": "templates", "category": ["writing"], "recommended": true, "default_on": true},
+    {"name": "device_voice", "category": ["media"], "recommended": true, "default_on": true},
+    {"name": "browser_speech", "category": ["media"]}
   ]
 }

@@ -535,8 +535,10 @@ carry `source: {url, refresh_s}`. For `skill.request`, `action.url` and `route_u
 name the host-computed absolute route; providers use `route_url`. Optional
 provider fields are `runtime`, `destination`, `languages`, `formats`,
 `install_size`, `max_bytes` and `max_seconds`. `icons` is the validator's icon
-catalog. `offers.stt` lists non-live bundled providers as
-`{skill, skill_label, id, label, destination, install_size, enabled: false}`.
+catalog. `offers.stt` lists non-live built-in providers as
+`{skill, skill_label, id, label, destination, install_size, enabled: false, installed}`;
+`installed: false` names a built-in this install has not installed (clients send the
+owner to the Skills page's Browse, where the built-in source installs it).
 There is no marketplace offer until its catalog exposes contribution metadata;
 clients can link to the Skills entry instead.
 
