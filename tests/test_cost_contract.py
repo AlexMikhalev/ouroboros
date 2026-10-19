@@ -348,3 +348,21 @@ def test_the_rest_law_catches_a_job_that_redoes_its_work(tmp_path, rests):
         done.write_text("done", encoding="utf-8")
 
     assert bool(rest_breaches(second_run(job, tmp_path))) is not rests
+
+
+def test_the_meter_installs_where_a_door_is_missing_and_never_records_a_wrapper_as_the_original(tmp_path, monkeypatch):
+    """``os.pread`` is POSIX-only, so on Windows the meter counts without it. An install that meets a door still
+    wrapped refuses and puts back every door it replaced: a wrapper recorded as the original would recurse in
+    every later caller of that door, in this process and in every test after it."""
+    from tests import _cost_meter
+
+    real_stat, real_open = os.stat, open
+    with monkeypatch.context() as patch:
+        patch.setattr(json, "loads", _cost_meter._w_json_loads)  # left wrapped; os.stat .. open come first
+        with pytest.raises(RuntimeError, match="still the meter's wrapper"):
+            CostMeter(tmp_path).__enter__()
+        assert os.stat is real_stat and open is real_open
+    monkeypatch.delattr(os, "pread", raising=False)
+    with CostMeter(tmp_path) as meter:
+        tagged("read", lambda: os.stat(tmp_path))
+    assert meter.snapshot("read")["counts"]["stat"] == 1 and os.stat is real_stat
