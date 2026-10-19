@@ -961,39 +961,36 @@ an older Failed remains that task's result even after a different task succeeds.
 
 ### Document reading
 
-A Markdown or plain-text file Ouroboros delivers in chat reads in the app: its
-card's `Read` opens a reading dialog over the conversation (a full sheet on a
-phone). Photos, the owner's pictures and delivered PNG, JPEG, GIF, WebP or AVIF
-files (`View`) open there too. Other files, SVG included, keep the card's Open /
-Download dialog; the reader keeps both, a photo's `•••` its actions. Close,
-Escape or the backdrop return to the same place, focus on the card. Leaving that
-chat's screen (another page, a Project room over Main, a notification) closes
-the reader; composer files stay.
+Markdown and plain-text chat files, Ouroboros's or the owner's, open with
+`Read` over the conversation (a full sheet on a phone). Photos (also `View`
+in their `•••`), owner pictures and delivered PNG, JPEG, GIF, WebP or AVIF
+files (`View`) open there too. Other files, SVG included, keep the Open /
+Download dialog; the reader keeps both, plus image Copy. Close, Escape or the
+backdrop return focus to the opener at the same place. Leaving that chat's
+screen (another page, a Project room over Main, a notification) closes the
+reader; composer files stay.
 
-- It shows the delivered copy (an image: what its tile shows), never what a
-  file path holds now. A copy missing, failing its integrity check, changed
-  after delivery or not showable here says so, with Retry only where it can
-  help; nothing else takes its place.
-- Its header (name or a photo's caption, type, size) adds no chat message and,
-  like the document, is never translated; its controls are.
-- An image opens at `Fit` (whole, never enlarged); `Actual size` scrolls its
-  own pixels.
-- Markdown reads as a document: a single line break inside a paragraph is soft
-  (an explicit hard break stays), at the reading size and heading ladder of a
-  rich answer (§1). Everything else follows "Rendered Markdown keeps its
-  author's structure and text": raw HTML and SVG stay literal, images stay
-  references and never load, and a relative link (into a folder the reader
-  does not open) reads as its words. `Source` shows the decoded text
-  unformatted (a leading byte-order mark dropped, invalid bytes read as �), not
-  a byte view. Nothing is editable; all text is selectable.
-- Plain text reads monospaced and wraps; only a table or code block scrolls
-  sideways, inside itself.
-- The reader reads at most the first 1 MiB. A longer file shows that prefix,
-  noting how much is shown and that Download has the whole; a character cut by
-  the limit is withheld, not reported as damage. Bytes that are not UTF-8 show
-  as � with a note; a file with NUL bytes is not shown as text. A read or image
-  unfinished after 30 seconds stops and says so with Retry; nothing retries by
-  itself.
+- Text uses inline bytes, a delivered artifact or current stored owner-upload
+  bytes; uploads are not rehashed per read. Images use their tile's source.
+  Text errors explain known refusals. Image errors hide HTTP reasons: URL
+  images offer Retry even for 404; failed inline images offer Download.
+- The header adds no message. Name/photo caption, type and size stay untranslated;
+  controls translate. Titles preserve line breaks and wrap whole in a bounded
+  keyboard scroller; actions wrap before squeezing the name.
+- Images open at `Fit` (whole, never enlarged); `Actual size` scrolls their pixels.
+- Markdown follows the reading size and heading ladder of a rich answer (§1).
+  Single newlines inside a paragraph are soft; explicit hard breaks stay.
+  Raw HTML and SVG stay literal, images stay references and never load, and
+  relative links read as words. `Source` shows decoded text unformatted,
+  dropping a leading byte-order mark, not a byte view. Nothing is editable;
+  all text is selectable.
+- Plain text reads monospaced and wraps; only tables and code blocks scroll
+  sideways, inside themselves.
+- Text reads at most the first 1 MiB. Longer files show that prefix, noting how
+  much and that Download has the whole; a character cut by the limit is withheld,
+  not called damage. Non-UTF-8 bytes show as � with a note; NUL bytes refuse text
+  display. Reads and images unfinished after 30 seconds stop with Retry;
+  nothing retries by itself.
 
 ### History edges
 

@@ -32,7 +32,7 @@ Shared primitives prevent competing contracts: no page reimplements supervisor, 
 - `skill_card_renderer.js`, `skill_presentation.js` ← skill cards and the words every Skills surface shares.
 - `client_surface.js` ← the send-time surface snapshot (raw observables, no device taxonomy) spread into each chat frame.
 - `chat_markdown.js` ← marked+DOMPurify, chat URLs, KaTeX, lazy Mermaid, bounded charts, unloaded images (DESIGN §5; vendors: `web/vendor/VENDOR-MANIFEST.md`).
-- `document_reader.js` ← delivered text (`DOCUMENT_READER_MAX_BYTES`) and chat images; reads/loads use `DOCUMENT_READER_TIMEOUT_MS` (DESIGN "Document reading").
+- `document_reader.js` ← chat text (`DOCUMENT_READER_MAX_BYTES`) and chat images; reads/loads use `DOCUMENT_READER_TIMEOUT_MS` (DESIGN "Document reading").
 - `log_events.js` ← event classification and the one factual task-presentation projection for Chat and Logs: task truth maps only to `Working` / `Done` / `Done with warnings` / `Failed` / `Cancelled`; it owns no actions, incidents or notifications, and compact headlines never expose raw reason codes. Task-to-task delivery appears in the receiving timeline (`task_message_injected`), delivery or refusal in the sending one (`task_message_routed`).
 - `effort_evidence.js` ← Logs: requested effort, host carrier, engine preparation, sourced provider observation; missing echoes stay unknown.
 - `toast.js`, `masonry.js`, `widget_frame.js`, `widget_job.js` ← toasts, layout, framed-widget bootstrap/lifecycle, bounded widget request/job policy.

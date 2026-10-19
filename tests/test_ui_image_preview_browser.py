@@ -9,6 +9,7 @@ desktop client size and a phone, light and dark. The 503 is a Playwright route s
 answer is the real server's."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import struct
@@ -20,7 +21,7 @@ import pytest
 from devtools.benchmarks.common.server_runner import _api
 from tests.test_ui_document_reader_browser import (
     LEFT_BEHIND, NARROW, OPEN_ROOM, WIDE, _check_reader_place, _close_with_escape,
-    _enter_room, _feed_scroll, _open as _open_document, _send_files_mock,
+    _enter_room, _feed_scroll, _open as _open_document, _reader_place, _send_files_mock, _wait_reader_footer,
 )
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
@@ -405,7 +406,7 @@ def test_owner_upload_preview_in_a_project_room_closes_with_back_and_navigation(
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server_with_data, monkeypatch, engine):  # noqa: F811
+def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server_with_data, monkeypatch, tmp_path, engine):  # noqa: F811
     """A late socket row above an open reader legitimately changes scrollTop.
     Assert the visible card's position instead of mistaking that compensation
     for a close/focus regression; unchanged-layout checks still require both.
@@ -416,6 +417,9 @@ def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server
     source = direct_server_with_data["data_dir"] / "anchor.md"
     source.write_text("# Anchored reader\n\nThe conversation stays in place.\n", encoding="utf-8")
     calls = []
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(tmp_path / "evidence")))
+    evidence.mkdir(parents=True, exist_ok=True)
+    records = {}
     with sync_playwright() as playwright:
         browser = getattr(playwright, engine).launch()
         try:
@@ -424,7 +428,8 @@ def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === WebSocket.OPEN)")
             _deliver(page, monkeypatch, [source], calls, tool="send_file", replies=1)
-            page.locator('#chat-messages .chat-live-card [data-phase="done"]').wait_for()
+            _wait_reader_footer(page)
+            records["footer"] = page.locator('#chat-messages .chat-live-card [data-live-meta]').last.inner_text()
             emit = """frames => {
                 const socket = window.__testSockets.find(s => s.readyState === WebSocket.OPEN);
                 for (const frame of frames) socket.dispatchEvent(new MessageEvent('message', {data: JSON.stringify(frame)}));
@@ -443,20 +448,297 @@ def test_reader_keeps_visible_place_when_a_late_row_grows_the_feed(direct_server
             _feed_scroll(page)
             state = _open_document(page, "anchor.md", ready=".document-reader-markdown")
             before = state["opening_place"]
+            records["before"] = before
             assert before["scroll"] > 0
+            _close_with_escape(page)
+            records["unchanged"] = _reader_place(page, "anchor.md")
+            assert records["unchanged"]["height"] == before["height"], records
+            _check_reader_place(page, "anchor.md", state, current=records["unchanged"])
+            state = _open_document(page, "anchor.md", ready=".document-reader-markdown")
+            before = records["before_growth"] = state["opening_place"]
             page.evaluate(emit, [{"type": "chat", "role": "assistant", "chat_id": 1,
                 "content": "Late history above the visible window. " * 24, "ts": "1998-01-01T00:00:00Z"}])
             page.wait_for_function("h => document.querySelector('#chat-messages').scrollHeight > h", arg=before["height"])
             _close_with_escape(page)
             _check_reader_place(page, "anchor.md", state)
+            records["after_growth"] = _reader_place(page, "anchor.md")
+            page.screenshot(path=str(evidence / f"{engine}-late-row-preserved.png"))
             assert abs(_feed_scroll(page) - before["scroll"]) > 1, "the old raw-offset oracle would falsely fail"
             assert page.evaluate("() => document.activeElement?.classList.contains('chat-file-card')")
             # A real 16 px reveal must still fail even though the feed grew:
             # this oracle does not excuse visible jumps on changed geometry.
-            offset = _feed_scroll(page)
-            page.evaluate("() => { document.querySelector('#chat-messages').scrollTop += 16; }")
-            assert abs(_feed_scroll(page) - offset - 16) <= 1
+            shifted = _reader_place(page, "anchor.md", scroll_by=16)
+            records["shifted"] = shifted
+            assert abs(shifted["scroll"] - shifted["previousScroll"] - 16) <= 1
             with pytest.raises(AssertionError):
-                _check_reader_place(page, "anchor.md", state)
+                _check_reader_place(page, "anchor.md", state, current=shifted)
         finally:
+            (evidence / f"{engine}-late-row.json").write_text(json.dumps(records, indent=2) + "\n")
+            browser.close()
+
+
+INTERMEDIATE = {"width": 621, "height": 844}
+LONG_MD = "quarterly-delivery-notes-for-the-owner-with-a-long-descriptive-name-2026-10-19.md"
+LONG_TXT = "plain-text-checklist-from-the-owner.txt"
+PORTRAIT = "owner-portrait-screenshot-of-the-settings-page-with-a-long-descriptive-name.png"
+TINY = "tiny-owner-icon.png"
+OWNER_MD = "# Owner notes\n\nThe first line\ncontinues here.\n"
+
+# The reader's head, as the owner sees it: every control hit-tests to itself inside the window,
+# none covers the name, and the whole name is laid out (wrapped), never cut to an ellipsis.
+HEAD_STATE = """() => {
+    const dialog = document.querySelector('dialog.document-reader[open]');
+    const rect = (node) => { const b = node.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; };
+    const title = dialog.querySelector('.document-reader-title');
+    const buttons = [...dialog.querySelectorAll('.document-reader-head button')].filter((node) => node.getClientRects().length);
+    return {
+        viewport: [innerWidth, innerHeight], dialog: rect(dialog), head: rect(dialog.querySelector('.document-reader-head')),
+        identity: rect(dialog.querySelector('.document-reader-identity')), title: rect(title),
+        body: rect(dialog.querySelector('.document-reader-body')), name: title.textContent,
+        cut: title.scrollWidth > title.clientWidth + 1 || title.scrollHeight > title.clientHeight + 1,
+        wrap: getComputedStyle(title).whiteSpace,
+        buttons: buttons.map((node) => { const [l, t, r, b] = rect(node);
+            return { label: node.textContent.trim(), box: [l, t, r, b],
+                hit: node.contains(document.elementFromPoint((l + r) / 2, (t + b) / 2)) }; }),
+    };
+}"""
+
+
+def _overlap(a, b):
+    return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def _check_head(state, name, labels, where):
+    width, height = state["viewport"]
+    assert state["name"] == name, where
+    assert not state["cut"] and state["wrap"] != "nowrap", f"{where}: the whole name is laid out, not cut: {state}"
+    assert [button["label"] for button in state["buttons"]] == labels, (where, state["buttons"])
+    for button in state["buttons"]:
+        left, top, right, bottom = button["box"]
+        assert button["hit"] and left >= 0 and top >= 0 and right <= width + 0.5 and bottom <= height + 0.5, (where, button)
+        assert _overlap(button["box"], state["identity"]) == 0, f"{where}: {button['label']} covers the name: {state}"
+    identity = state["identity"][2] - state["identity"][0]
+    assert identity >= 200, f"{where}: the actions wrap before the name is squeezed ({identity:.0f}px): {state}"
+    body = state["body"][3] - state["body"][1]
+    assert state["body"][1] >= state["head"][3] - 0.5 and body >= 0.4 * (state["dialog"][3] - state["dialog"][1]), \
+        f"{where}: the reading region stays reachable under a long name: {state}"
+
+
+def _upload(page, files, count):
+    page.locator("#chat-file-input").set_input_files(files)
+    page.wait_for_function("n => document.querySelectorAll('#chat-attachment-preview .attach-badge').length === n", arg=len(files))
+    page.locator("#chat-send").click()
+    page.wait_for_function("n => document.querySelectorAll('#chat-messages .chat-bubble.user.has-attachments').length === n",
+                           arg=count, timeout=30_000)
+
+
+def _hidden_above(page, opener, offset, feed="#chat-messages"):
+    """Scroll the feed so ``offset`` px of the opener lie above the feed's top edge, and return a
+    point on its visible part that hit-tests to it (the press the owner makes)."""
+    opener.evaluate("""(node, [feed, offset]) => {
+        const root = document.querySelector(feed);
+        root.scrollTop += node.getBoundingClientRect().top - root.getBoundingClientRect().top + offset;
+    }""", [feed, offset])
+    _feed_scroll(page, feed)
+    facts = opener.evaluate("""(node, feed) => {
+        const box = node.getBoundingClientRect(), view = document.querySelector(feed).getBoundingClientRect();
+        const x = box.left + box.width / 2, top = Math.max(box.top, view.top), bottom = Math.min(box.bottom, view.bottom);
+        const ys = [(top + bottom) / 2];
+        for (let y = top + 4; y < bottom - 4; y += 8) ys.push(y);
+        const y = ys.find((value) => node.contains(document.elementFromPoint(x, value)));
+        return { hidden: view.top - box.top, height: box.height, top: box.top, point: y === undefined ? null : [x, y] };
+    }""", feed)
+    assert abs(facts["hidden"] - offset) <= 1 and facts["point"], f"the fixture must hide {offset}px of the opener: {facts}"
+    return facts
+
+
+FOCUSED_TRIGGER = """() => {
+    const node = document.activeElement;
+    return node?.matches('.chat-photo-actions summary') ? node.closest('.chat-gallery-item').querySelector('img').alt : null;
+}"""
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+def test_owner_files_and_photos_read_in_place_with_a_head_that_wraps(direct_server_with_data, tmp_path, engine):  # noqa: F811
+    """The owner's own Markdown and text read in the reader like a delivered file; the head's
+    actions take their own line before the long name is squeezed, and the whole name is shown,
+    at the desktop size, just above the phone breakpoint and on a phone, in both themes. The
+    owner's 320px photo partly above the feed's top edge opens from a press on its visible part
+    and Escape and Close leave the conversation where it was. A tiny photo, whose `•••`
+    covers its centre, views from that menu by pointer, keyboard and touch."""
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    evidence = Path(os.environ.get("OUROBOROS_UI_EVIDENCE_DIR", str(tmp_path / "evidence")))
+    evidence.mkdir(parents=True, exist_ok=True)
+    record = {}
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, engine).launch()
+        try:
+            page = browser.new_page(viewport=WIDE, color_scheme="light")
+            page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+            page.add_init_script(f"({OPEN_RECORDER})()")
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === WebSocket.OPEN)")
+            _upload(page, [{"name": PORTRAIT, "mimeType": "image/png", "buffer": _png(240, 320, cell=40)}], 1)
+            _upload(page, [{"name": LONG_MD, "mimeType": "text/markdown", "buffer": OWNER_MD.encode()},
+                           {"name": LONG_TXT, "mimeType": "text/plain", "buffer": b"first\tline\nsecond line\n"}], 2)
+            _upload(page, [{"name": TINY, "mimeType": "image/png", "buffer": _png(8, 8, cell=2)}], 3)
+            page.evaluate("""frames => {
+                const socket = window.__testSockets.find(s => s.readyState === WebSocket.OPEN);
+                for (const frame of frames) socket.dispatchEvent(new MessageEvent('message', {data: JSON.stringify(frame)}));
+            }""", [{"type": "chat", "role": "assistant", "chat_id": 1, "content": f"Following conversation {i}",
+                    "ts": f"2099-01-01T00:00:{i:02d}Z"} for i in range(24)])
+            feed = "#chat-messages"
+            cards = page.locator(f"{feed} .chat-bubble.user.has-attachments .chat-file-card")
+            md, txt = cards.filter(has_text=LONG_MD), cards.filter(has_text=LONG_TXT)
+            assert [md.locator(".chat-file-more").inner_text(), txt.locator(".chat-file-more").inner_text()] == ["Read", "Read"]
+
+            # The owner's Markdown reads as a document from its own upload; its text file monospaced.
+            requests = []
+            page.on("request", lambda request: requests.append(request.url))
+            md.click()
+            page.locator("dialog.document-reader[open] .document-reader-markdown").wait_for()
+            assert page.locator("dialog.document-reader .document-reader-markdown h1").inner_text() == "Owner notes"
+            assert page.locator(".chat-file-dialog[open]").count() == 0 and page.evaluate("() => window.__opened") == []
+            assert [entry for entry in requests if "/api/files/download?upload=" in entry], requests
+            for viewport in (WIDE, INTERMEDIATE, NARROW):
+                for scheme in ("light", "dark"):
+                    page.set_viewport_size(viewport)
+                    page.emulate_media(color_scheme=scheme)
+                    where = f"{engine}-{viewport['width']}-{scheme}-owner-md"
+                    state = page.evaluate(HEAD_STATE)
+                    record[where] = state
+                    _check_head(state, LONG_MD, ["Formatted", "Source", "Open", "Download", "Close"], where)
+                    page.screenshot(path=str(evidence / f"{where}-head.png"))
+            _escape(page)
+            assert page.evaluate("name => document.activeElement?.closest('.chat-file-card')?.textContent.includes(name)", LONG_MD)
+            page.set_viewport_size(WIDE)
+            txt.click()
+            page.locator("dialog.document-reader[open] .document-reader-source").wait_for()
+            assert page.locator("dialog.document-reader .document-reader-source").inner_text().startswith("first\tline")
+            _escape(page)
+
+            # The photo's head carries the image views and its Copy too.
+            portrait = page.locator(f'{feed} .chat-gallery-item:has(img[alt="{PORTRAIT}"]) .chat-photo-open')
+            portrait.locator("img").evaluate("img => img.decode()")
+            state = _open(page, portrait)
+            _check_fit(state, (240, 320))
+            for viewport in (WIDE, INTERMEDIATE, NARROW):
+                for scheme in ("dark", "light"):
+                    page.set_viewport_size(viewport)
+                    page.emulate_media(color_scheme=scheme)
+                    where = f"{engine}-{viewport['width']}-{scheme}-owner-photo"
+                    state = page.evaluate(HEAD_STATE)
+                    record[where] = state
+                    _check_head(state, PORTRAIT, ["Fit", "Actual size", "Copy", "Open", "Download", "Close"], where)
+                    page.screenshot(path=str(evidence / f"{where}-head.png"))
+            _escape(page)
+
+            # The exact case: on a phone the owner's 320px photo lies partly above the feed's top.
+            page.set_viewport_size(NARROW)
+            page.emulate_media(color_scheme="dark")
+            assert abs(portrait.bounding_box()["height"] - 320) <= 1, portrait.bounding_box()
+            for offset, close in ((40, "escape"), (160, "escape"), (240, "escape"), (160, "close"), (240, "close")):
+                facts = _hidden_above(page, portrait, offset)
+                state = _open(page, portrait, at=facts["point"])
+                assert state["opened"] == [] and state["title"] == PORTRAIT, state
+                if (offset, close) == (160, "escape"):
+                    page.screenshot(path=str(evidence / f"{engine}-390-dark-owner-photo-hidden-160-open.png"))
+                if close == "escape":
+                    _escape(page)
+                else:
+                    page.locator('dialog.document-reader [data-reader-action="close"]').click()
+                    page.locator("dialog.document-reader").wait_for(state="detached")
+                after = _feed_scroll(page)
+                now = portrait.evaluate("node => node.getBoundingClientRect().top")
+                record[f"{engine}-hidden-{offset}-{close}"] = {**facts, "opening_scroll": state["opening_scroll"],
+                                                              "after_scroll": after, "after_top": now}
+                assert abs(after - state["opening_scroll"]) <= 1 and abs(now - facts["top"]) <= 1, \
+                    f"{offset}px hidden, {close}: the chat moved: {record[f'{engine}-hidden-{offset}-{close}']}"
+                assert page.evaluate(FOCUSED_TILE) == PORTRAIT, (offset, close)
+            page.screenshot(path=str(evidence / f"{engine}-390-dark-owner-photo-after-close.png"))
+
+            # A tiny photo: its always-present ••• covers the centre, so its menu views it.
+            tiny = page.locator(f'{feed} .chat-gallery-item:has(img[alt="{TINY}"])')
+            tiny.evaluate("el => el.scrollIntoView({ block: 'center' })")
+            tiny.locator("img").evaluate("img => img.decode()")
+            centre = tiny.evaluate("""item => { const b = item.querySelector('.chat-photo-open').getBoundingClientRect();
+                const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+                return { box: [b.width, b.height], covered: item.querySelector('.chat-photo-actions summary').contains(hit) }; }""")
+            assert centre["covered"], f"the genuine case: ••• covers the tiny photo's centre: {centre}"
+            record[f"{engine}-tiny-centre"] = centre
+            summary = tiny.locator(".chat-photo-actions summary")
+            menu = page.locator(".chat-photo-menu:not([hidden])")
+            for how in ("pointer", "keyboard"):
+                before = _feed_scroll(page)
+                if how == "pointer":
+                    summary.click()
+                    menu.locator('[data-photo-action="view"]').click()
+                else:
+                    summary.focus()
+                    page.keyboard.press("Enter")
+                    menu.wait_for(state="visible")
+                    assert page.evaluate("() => document.activeElement?.dataset.photoAction") == "view", "View comes first"
+                    page.keyboard.press("Enter")
+                page.locator("dialog.document-reader[open]").wait_for(state="visible")
+                page.wait_for_function("() => document.querySelector('dialog.document-reader[open] .document-reader-image')?.naturalWidth > 0")
+                state = _state(page)
+                _check_fit(state, (8, 8))
+                assert state["title"] == TINY and [round(value) for value in state["shown"]] == [8, 8], state
+                quiet = page.evaluate("() => document.querySelector('.document-reader-body').classList.contains('is-quiet-focus')")
+                assert quiet == (how == "pointer"), "a keyboard opening shows its focus ring at once"
+                if how == "pointer":
+                    page.screenshot(path=str(evidence / f"{engine}-390-dark-tiny-view-from-menu.png"))
+                _escape(page)
+                assert page.evaluate(FOCUSED_TRIGGER) == TINY, f"{how}: focus is back on the ••• that opened it"
+                assert abs(_feed_scroll(page) - before) <= 1
+
+            # Touch: the same menu, tapped, on a phone.
+            phone = browser.new_context(viewport=NARROW, has_touch=True, is_mobile=engine == "chromium", color_scheme="light")
+            try:
+                touch = phone.new_page()
+                touch.add_init_script(f"({OPEN_RECORDER})()")
+                touch.goto(url, wait_until="domcontentloaded")
+                item = touch.locator(f'{feed} .chat-gallery-item:has(img[alt="{TINY}"])')
+                item.wait_for(state="visible", timeout=30_000)
+                item.evaluate("el => el.scrollIntoView({ block: 'center' })")
+                item.locator("img").evaluate("img => img.decode()")
+                before = _feed_scroll(touch)
+                item.locator(".chat-photo-actions summary").tap()
+                touch.locator('.chat-photo-menu:not([hidden]) [data-photo-action="view"]').tap()
+                touch.wait_for_function("() => document.querySelector('dialog.document-reader[open] .document-reader-image')?.naturalWidth > 0")
+                assert touch.evaluate(PREVIEW_STATE)["title"] == TINY
+                touch.screenshot(path=str(evidence / f"{engine}-390-light-touch-tiny-view.png"))
+                touch.locator('dialog.document-reader [data-reader-action="close"]').tap()
+                touch.locator("dialog.document-reader").wait_for(state="detached")
+                assert abs(_feed_scroll(touch) - before) <= 1
+            finally:
+                phone.close()
+
+            # The reader's Copy is the menu's: the image itself on the clipboard (Chromium grants it).
+            if engine == "chromium":
+                page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=url)
+                state = _open(page, portrait)
+                page.locator('dialog.document-reader [data-reader-action="copy"]').click()
+                page.locator(".toast", has_text="Image copied.").wait_for(timeout=10_000)
+                types = page.evaluate("async () => (await navigator.clipboard.read()).flatMap((item) => item.types)")
+                assert "image/png" in types, types
+                _escape(page)
+                # A photo with only its inline bytes keeps the explicit Open of its menu.
+                page.evaluate("""frame => window.__testSockets.find(s => s.readyState === WebSocket.OPEN)
+                    .dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }))""", {
+                    "type": "photo", "role": "assistant", "chat_id": 1, "mime": "image/png", "caption": "Ephemeral photo",
+                    "image_base64": base64.b64encode(_png(64, 48, cell=8)).decode("ascii"),
+                    "ts": "2099-02-01T00:00:00Z"})
+                ephemeral = page.locator(f"{feed} .chat-gallery-item").filter(has_text="Ephemeral photo").locator(".chat-photo-open")
+                ephemeral.scroll_into_view_if_needed()
+                state = _open(page, ephemeral)
+                assert state["src"].startswith("data:image/png;base64,"), state["src"]
+                page.locator('dialog.document-reader [data-reader-action="open"]').click()
+                page.wait_for_function("() => window.__opened.length === 1")
+                assert page.evaluate("() => window.__opened[0]").startswith("data:image/png;base64,")
+                _escape(page)
+        finally:
+            (evidence / f"{engine}-owner-reader-geometry.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
             browser.close()

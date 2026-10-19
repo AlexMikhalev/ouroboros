@@ -11,6 +11,7 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { tr } from './i18n.js';
 import { apiClient, apiFetch } from './api_client.js';
+import { documentReaderKind } from './document_reader.js';
 
 // At most this many `[Attached file: …]` lines ride the message text.
 export const ATTACHMENT_PREVIEW_COUNT = 25;
@@ -114,8 +115,16 @@ export function paintAttachmentOutcome(bubble, annotation) {
 const metaText = (view, atoms, note = '') => [atoms.fileExtension(view.name), atoms.humanSize(view.size), note]
     .filter(Boolean).join(' · ');
 
+// The owner's own Markdown or text reads in the reader from its upload; any other file, an image
+// the host did not prove (served only as a download) included, keeps the file dialog.
+function readable(view) {
+    const kind = view.available ? documentReaderKind(view.name, view.mime) : '';
+    return kind === 'markdown' || kind === 'text' ? kind : '';
+}
+
 function cardHtml(view, atoms, note = view.available ? '' : tr('media.attachment_unavailable', 'Unavailable')) {
     const meta = metaText(view, atoms, note);
+    const kind = note ? '' : readable(view);
     return `<div class="chat-file-item${view.available ? '' : ' is-unavailable'}">
         <button type="button" class="chat-file-card" ${view.available ? 'aria-haspopup="dialog"' : 'disabled aria-disabled="true"'}
             aria-label="${escapeHtmlAttr(`${view.name}${meta ? ` — ${meta}` : ''}`)}">
@@ -124,7 +133,7 @@ function cardHtml(view, atoms, note = view.available ? '' : tr('media.attachment
                 <span class="chat-file-name" title="${escapeHtmlAttr(view.name)}">${escapeHtml(view.name)}</span>
                 <span class="chat-file-meta">${escapeHtml(meta)}</span>
             </span>
-            <span class="chat-file-more" aria-hidden="true">•••</span>
+            ${kind ? atoms.readLabelHtml(kind) : '<span class="chat-file-more" aria-hidden="true">•••</span>'}
         </button>
     </div>`;
 }
@@ -180,8 +189,12 @@ export function buildAttachmentBlock(atoms, rawViews) {
 
 function wireCard(atoms, item, view) {
     const card = item?.querySelector('.chat-file-card');
-    if (card && view.available) atoms.listen(card, 'click', () => atoms.openFileDialog({
-        source: sourceOf(view), filename: view.name, mime: view.mime || 'application/octet-stream' }, item), undefined, item);
+    if (!card || !view.available) return;
+    const kind = card.querySelector('.chat-file-more.is-read') ? readable(view) : '';
+    const file = { source: sourceOf(view), filename: view.name, mime: view.mime || 'application/octet-stream', kind,
+        meta: metaText(view, atoms), reader: kind ? { url: view.url } : null, size: view.size, canOpen: true };
+    atoms.listen(card, 'click', (event) => (kind ? atoms.openReader(file, item, card, event)
+        : atoms.openFileDialog(file, item)), undefined, item);
 }
 
 // A preview the engine cannot show (HEIC in Chromium, an unsupported codec) stays an

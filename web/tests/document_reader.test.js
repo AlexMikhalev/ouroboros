@@ -576,9 +576,9 @@ test('closeTransient closes the reader and the file dialog and keeps the chat as
 });
 
 // The owner's attachments and Ouroboros's deliveries share one media controller: an uploaded
-// Markdown file keeps the file dialog (Read takes only a delivered copy), a delivered one reads,
-// and each modal ends with the message that holds its card, a grouped card's earlier bubble too.
-test("owner uploads keep the file dialog beside the delivered reader, and each modal ends with its own card", () => {
+// Markdown or text file reads from its own upload like a delivered one, a PDF keeps the file
+// dialog, and each modal ends with the message that holds its card, a grouped card's earlier bubble too.
+test("owner uploads read beside the delivered reader, other files keep the dialog, and each modal ends with its own card", () => {
     const fx = mediaFixture();
     try {
         const owner = (caption, views) => {
@@ -589,7 +589,8 @@ test("owner uploads keep the file dialog beside the delivered reader, and each m
             return bubble;
         };
         const earlier = owner('Earlier', [uploadView('sheet.pdf', 'file')]);
-        const own = owner('Files', [uploadView('notes.md', 'file', { mime: 'text/markdown' }), uploadView('plan.pdf', 'file')]);
+        const own = owner('Files', [uploadView('notes.md', 'file', { mime: 'application/octet-stream' }),
+            uploadView('log.txt', 'file', { mime: 'application/octet-stream' }), uploadView('plan.pdf', 'file')]);
         // Two tasks each deliver two files; the second card of each joins its first bubble's grid.
         const group = (taskId, messages) => {
             const bubbles = messages.map((msg) => {
@@ -607,12 +608,29 @@ test("owner uploads keep the file dialog beside the delivered reader, and each m
             .find((node) => node.querySelector('.chat-file-name').textContent === name);
         const dialog = () => fx.doc.body.querySelector('.chat-file-dialog');
         const title = () => (dialog()?.open ? dialog().querySelector('.chat-file-dialog-title').textContent : null);
-        assert.deepEqual(['notes.md', 'plan.pdf'].map((name) => Boolean(card(own, name).querySelector('.is-read'))), [false, false]);
+        assert.deepEqual(['notes.md', 'log.txt', 'plan.pdf'].map((name) => card(own, name).querySelector('.chat-file-more').textContent),
+            ['Read', 'Read', '•••']);
         assert.deepEqual(['report.md', 'report.pdf'].map((name) => Boolean(card(report.wrapper, name).querySelector('.is-read'))), [true, false]);
 
-        card(own, 'notes.md').click();
-        assert.deepEqual([title(), fx.reader()], ['notes.md', null], "the owner's Markdown upload opens the file dialog");
+        // The owner's own Markdown and text read in the same reader, from the upload the card names.
+        for (const name of ['notes.md', 'log.txt']) {
+            card(own, name).click();
+            assert.equal(title(), null, `${name} opens no file dialog`);
+            assert.deepEqual(['.document-reader-title', '.document-reader-meta'].map((selector) => fx.reader().querySelector(selector).textContent),
+                [name, `${name.split('.')[1].toUpperCase()} · 2.0 KB`]);
+            assert.equal(fx.held.pending.at(-1).url, uploadView(name, 'file').url, 'read from its own upload, no other address');
+            assert.equal(fx.reader().querySelector('[data-reader-action="open"]').hidden, false, 'Open stays explicit');
+        }
         fx.media.closeTransient();
+        const later = owner('Later', [uploadView('draft.md', 'file', { mime: 'application/octet-stream' })]);
+        card(later, 'draft.md').click();
+        fx.media.release(own);
+        assert.ok(fx.reader(), "another message's release leaves this reader open");
+        fx.media.release(later);
+        assert.equal(fx.reader(), null, "releasing the owner's message closes the reader its card opened");
+        assert.equal(fx.held.pending.at(-1).signal.aborted, true, 'and stops its read');
+        card(later, 'draft.md').click();
+        assert.equal(fx.reader(), null, 'a released card opens nothing');
         card(report.wrapper, 'report.pdf').click();
         assert.equal(title(), 'report.pdf');
         fx.media.release(report.dropped);
@@ -626,15 +644,16 @@ test("owner uploads keep the file dialog beside the delivered reader, and each m
         assert.ok(fx.reader(), "releasing an owner's message leaves the delivered reader open");
         fx.media.release(brief.wrapper);
         assert.equal(fx.reader(), null, 'releasing the group that holds brief.md closes its reader');
-        assert.equal(fx.held.pending[0].signal.aborted, true, 'and stops its read');
+        assert.equal(fx.held.pending.at(-1).signal.aborted, true, 'and stops its read');
 
-        card(own, 'plan.pdf').click();
+        const kept = owner('Kept', [uploadView('plan.pdf', 'file')]);
+        card(kept, 'plan.pdf').click();
         assert.equal(title(), 'plan.pdf');
         fx.media.release(brief.wrapper);
         assert.equal(title(), 'plan.pdf', "another message's release leaves the owner's file dialog open");
-        fx.media.release(own);
+        fx.media.release(kept);
         assert.equal(title(), null, "releasing the owner's message closes the dialog its card opened");
-        card(own, 'notes.md').click();
+        card(kept, 'plan.pdf').click();
         assert.deepEqual([title(), fx.reader()], [null, null], 'a released card opens nothing');
     } finally {
         fx.restore();
@@ -866,10 +885,83 @@ test('a delivered photo tile previews in the chat; Open stays explicit; the tile
         inline.querySelector('[data-photo-action="open"]').click();
         assert.deepEqual(outside.at(-1), ['window.open', 'data:image/png;base64,AAAA', '_blank', 'noopener']);
         inline.querySelector('.chat-photo-open').click();
-        assert.equal(fx.reader().querySelector('[data-reader-action="open"]').hidden, true, 'inline bytes have no address to open');
+        const open = fx.reader().querySelector('[data-reader-action="open"]');
+        assert.equal(open.hidden, false, "an inline photo keeps the menu's explicit Open");
+        open.click();
+        await settle();
+        assert.deepEqual(outside.at(-1), ['window.open', 'data:image/png;base64,AAAA', '_blank', 'noopener'], 'the same Open as its menu');
         assert.equal(first.isConnected, true);
     } finally {
         fx.restore();
+    }
+});
+
+// A tiny photo's always-present ••• covers its centre, so its menu names View too: the tile's own
+// opener, never a second viewer. The reader keeps the menu's explicit Copy and Open, and an inline
+// photo's Open is the menu's window.open of its own bytes.
+test("a photo's ••• menu views it in the same reader, focus back on •••; the reader keeps the menu's Copy and Open", async () => {
+    const fx = mediaFixture();
+    const images = imageCapture(fx.doc);
+    const outside = [];
+    const writes = [];
+    const prior = { item: globalThis.ClipboardItem, navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+        timeout: globalThis.setTimeout };
+    globalThis.window = { open: (...args) => outside.push(args) };
+    fx.doc.getElementById = () => null;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true,
+        value: { clipboard: { write: async (items) => { writes.push(...items); } } } });
+    globalThis.ClipboardItem = class { constructor(values) { this.values = values; } };
+    // A toast's own dismissal timer does not keep the test alive.
+    globalThis.setTimeout = (handler, delay, ...rest) => {
+        const timer = prior.timeout(handler, delay, ...rest);
+        if (delay >= 1000) timer.unref?.();
+        return timer;
+    };
+    try {
+        const bubble = fx.media.buildMediaBubble({ type: 'photo', role: 'assistant', mime: 'image/png', image_base64: 'aGVsbG8=' });
+        fx.feed.append(bubble);
+        assert.deepEqual(bubble.querySelectorAll('[data-photo-action]').map((node) => [node.dataset.photoAction, node.textContent]),
+            [['view', 'View'], ['open', 'Open in new tab'], ['download', 'Download'], ['copy', 'Copy to clipboard']]);
+        const trigger = bubble.querySelector('summary');
+        const returned = [];
+        trigger.focus = (options) => { returned.push(options); fx.doc.activeElement = trigger; };
+        bubble.querySelector('[data-photo-action="view"]').dispatch('click', { detail: 1 });
+        assert.deepEqual(outside, [], 'View opens nothing outside the app');
+        assert.deepEqual(['.document-reader-title', '.document-reader-meta'].map((selector) => fx.reader().querySelector(selector).textContent),
+            ['image.png', 'PNG']);
+        assert.equal(images.at(-1).getAttribute('src'), 'data:image/png;base64,aGVsbG8=', 'the very source the tile shows');
+        assert.equal(fx.reader().querySelector('.document-reader-body').classList.contains('is-quiet-focus'), true, 'opened by a pointer');
+        fx.reader().dispatch('keydown', { key: 'Escape' });
+        assert.equal(fx.reader(), null);
+        assert.equal(fx.doc.activeElement, trigger, 'focus is back on the ••• that opened it');
+        assert.deepEqual(returned.at(-1), { preventScroll: true }, 'the chat keeps its place');
+
+        bubble.querySelector('.chat-photo-open').click();
+        const actions = [...fx.reader().querySelectorAll('[data-reader-action]')].filter((node) => !node.hidden)
+            .map((node) => node.dataset.readerAction);
+        assert.deepEqual(actions, ['copy', 'open', 'download', 'close']);
+        fx.reader().querySelector('[data-reader-action="copy"]').click();
+        await settle();
+        assert.equal(writes.length, 1, "the reader's Copy is the menu's");
+        assert.equal(await writes[0].values['image/png'].text(), 'hello');
+        bubble.querySelector('[data-photo-action="copy"]').click();
+        await settle();
+        assert.equal(writes.length, 2);
+        fx.reader().querySelector('[data-reader-action="open"]').click();
+        await settle();
+        assert.deepEqual(outside, [['data:image/png;base64,aGVsbG8=', '_blank', 'noopener']], "the menu's Open of its own bytes");
+        assert.ok(fx.reader(), 'an explicit action leaves the reader open');
+        // A document has no Copy: its card's actions only.
+        fx.media.closeTransient();
+        const card = fx.media.buildDocumentBubble(fx.delivered('notes.txt', 1));
+        fx.feed.append(card);
+        card.querySelector('.chat-file-card').click();
+        assert.equal(fx.reader().querySelector('[data-reader-action="copy"]').hidden, true);
+    } finally {
+        fx.restore();
+        globalThis.ClipboardItem = prior.item;
+        Object.defineProperty(globalThis, 'navigator', prior.navigator);
+        globalThis.setTimeout = prior.timeout;
     }
 });
 

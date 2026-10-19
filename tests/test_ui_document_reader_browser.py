@@ -153,16 +153,35 @@ def _feed_scroll(page, feed="#chat-messages"):
     return value[0]
 
 
-def _check_reader_place(page, name, state, feed="#chat-messages"):
+def _wait_reader_footer(page, feed="#chat-messages"):
+    # Done precedes model_execution hydration. renderLiveCardMeta can still grow
+    # the card when modelExecutionLabel supplies the Last solve response line.
+    card = page.locator(f"{feed} .chat-live-card").last
+    card.locator('[data-phase="done"]').wait_for()
+    card.locator('[data-live-meta]').filter(has_text="Last solve response:").wait_for()
+    _feed_scroll(page, feed)
+
+
+def _reader_place(page, name, feed="#chat-messages", *, scroll_by=0):
+    card = page.locator(f"{feed} .chat-file-card").filter(has_text=name)
+    return card.evaluate("""(node, [feed, scrollBy]) => {
+        const root = document.querySelector(feed), previousScroll = root.scrollTop;
+        root.scrollTop += scrollBy;
+        return {top: node.getBoundingClientRect().top, height: root.scrollHeight,
+            scroll: root.scrollTop, previousScroll};
+    }""", [feed, scroll_by])
+
+
+def _check_reader_place(page, name, state, feed="#chat-messages", *, current=None):
     """Keep the visible card in place, not an obsolete absolute offset. A late
     task row can grow the feed above it while the reader is open: stable-viewport
     must then change scrollTop to preserve the same visible reading position.
     With unchanged feed geometry, the absolute offset must also remain unchanged.
     """
-    scroll = _feed_scroll(page, feed)
-    card = page.locator(f"{feed} .chat-file-card").filter(has_text=name)
-    current = card.evaluate("""(node, feed) => ({top: node.getBoundingClientRect().top,
-        height: document.querySelector(feed).scrollHeight})""", feed)
+    if current is None:
+        _feed_scroll(page, feed)
+        current = _reader_place(page, name, feed)
+    scroll = current["scroll"]
     before = state["opening_place"]
     assert abs(current["top"] - before["top"]) <= 1, (before, current, scroll)
     if current["height"] == before["height"]:
@@ -238,7 +257,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             # live edge, its arrival legitimately moves the underlying feed.
             page.locator("#chat-messages .chat-bubble.assistant").filter(
                 has_text="The files are delivered.").wait_for(timeout=60_000)
-            page.locator('#chat-messages .chat-live-card [data-phase="done"]').wait_for()
+            _wait_reader_footer(page)
             # Still live: inline delivered bytes, no history reload or file request.
             requests.clear()
             state = _open(page, "brief.md", ready=".document-reader-markdown")
@@ -381,6 +400,7 @@ def test_delivered_documents_open_in_the_reader_live_and_after_reload(direct_ser
             page.on("request", lambda request: requests.append((request.url, request.headers.get("range"))))
             page.goto(url, wait_until="domcontentloaded")
             page.locator(".chat-file-card").filter(has_text="brief.md").wait_for(state="visible", timeout=30_000)
+            _wait_reader_footer(page)
             state = _open(page, "brief.md", ready=".document-reader-markdown")
             _check_brief(state)
             assert state["active"]
@@ -505,7 +525,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             # Like Main, measure the settled turn, not its file-before-final interval.
             page.locator(f"{feed} .chat-bubble.assistant").filter(
                 has_text="The files are delivered.").wait_for(timeout=60_000)
-            page.locator(f'{feed} .chat-live-card [data-phase="done"]').wait_for()
+            _wait_reader_footer(page, feed)
             # Live, in the room: the inline delivered bytes.
             requests.clear()
             state = _open(page, "room-brief.md", ready=".document-reader-markdown", feed=feed)
@@ -569,6 +589,7 @@ def test_project_room_reader_survives_reload_and_closes_with_its_room(direct_ser
             page.goto(url, wait_until="domcontentloaded")
             feed = _enter_room(page, room)
             page.locator(f"{feed} .chat-file-card").filter(has_text="room-brief.md").wait_for(state="visible", timeout=30_000)
+            _wait_reader_footer(page, feed)
             state = _open(page, "room-brief.md", ready=".document-reader-markdown", feed=feed)
             _check_brief(state, "room-brief.md")
             assert [round(value) for value in state["rect"]] == [0, 0, NARROW["width"], NARROW["height"]], state["rect"]

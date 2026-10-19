@@ -1,10 +1,11 @@
 /**
- * Read-only reader for a delivered Markdown or plain-text document, and the
+ * Read-only reader for a Markdown or plain-text document in chat, and the
  * in-chat view of an image (DESIGN "Document reading"). A document is read only
- * from its exact delivered copy — the live frame's inline bytes or the immutable
- * task-artifact route — never a current file path, and at most
- * DOCUMENT_READER_MAX_BYTES of it. An image shows the very source its tile
- * displays, decoded by the engine in a detached <img>, never another address.
+ * from the exact copy its message carries — the live frame's inline bytes, the
+ * immutable task-artifact route or the owner's own upload — never a current
+ * file path, and at most DOCUMENT_READER_MAX_BYTES of it. An image shows the
+ * very source its tile displays, decoded by the engine in a detached <img>,
+ * never another address.
  *
  * The body is streamed to that byte bound; a read or an image load stops after
  * the read timeout, and a transport failure offers Retry. Every close path
@@ -252,6 +253,8 @@ const FAILURES = {
     artifact_unverified: 'This delivered copy is missing or did not pass its integrity check, so it is not shown. Ask Ouroboros to send the file again.',
     artifact_identity_changed: 'This file changed after it was delivered, so the delivered copy cannot be shown. Ask Ouroboros to send the file again.',
     artifact_unavailable: 'This device cannot read the delivered copy right now.',
+    upload_unavailable: 'This attachment is no longer stored, so it cannot be shown. Attach the file again to share it.',
+    upload_unreadable: 'Ouroboros cannot read this attachment right now.',
 };
 
 // `[template, params, retriable]`: what the owner reads and whether Retry can help.
@@ -286,18 +289,21 @@ const IMAGE_VIEWS = [['fit', 'Fit'], ['actual', 'Actual size']];
 
 const DIALOG_HTML = `
     <div class="document-reader-panel">
-        <header class="document-reader-head">
-            <div class="document-reader-identity" data-i18n-authored>
-                <h2 class="document-reader-title"></h2>
-                <div class="document-reader-meta"></div>
-            </div>
-            <div class="document-reader-actions">
-                <div class="document-reader-views" role="group" aria-label="View" hidden>
-                    <button type="button" class="btn btn-default" data-reader-view="formatted" aria-pressed="true">Formatted</button>
-                    <button type="button" class="btn btn-default" data-reader-view="source" aria-pressed="false">Source</button>
+        <header class="document-reader-head has-lead">
+            <div class="document-reader-lead">
+                <div class="document-reader-identity" data-i18n-authored>
+                    <h2 class="document-reader-title" tabindex="0"></h2>
+                    <div class="document-reader-meta"></div>
                 </div>
-                <button type="button" class="btn btn-default" data-reader-action="open">Open</button>
-                <button type="button" class="btn btn-default" data-reader-action="download">Download</button>
+                <div class="document-reader-actions">
+                    <div class="document-reader-views" role="group" aria-label="View" hidden>
+                        <button type="button" class="btn btn-default" data-reader-view="formatted" aria-pressed="true">Formatted</button>
+                        <button type="button" class="btn btn-default" data-reader-view="source" aria-pressed="false">Source</button>
+                    </div>
+                    <button type="button" class="btn btn-default" data-reader-action="copy" hidden>Copy</button>
+                    <button type="button" class="btn btn-default" data-reader-action="open">Open</button>
+                    <button type="button" class="btn btn-default" data-reader-action="download">Download</button>
+                </div>
             </div>
             <button type="button" class="btn btn-default document-reader-close" data-reader-action="close" aria-label="Close document">Close</button>
         </header>
@@ -309,13 +315,13 @@ const DIALOG_HTML = `
  * One reader per chat instance. `open(file, {owner, returnFocus, pointer})`
  * shows a modal over the conversation with the reading region focused, so keys
  * scroll it at once; opened by a pointer, its focus ring waits for the first key.
- * A document `file` carries its delivered copy as `reader`; an `image` one, the
+ * A document `file` carries its message's copy as `reader`; an `image` one, the
  * `src` its tile shows (and `title` when its header names more than the file).
  * `release(root)` closes it when the message that opened it leaves; `destroy()`
  * with the chat. Closing aborts the read, disposes Markdown enhancements and
  * returns focus to the card when it is still there, without scrolling, so the
  * conversation keeps its place. `actions.open/download` are the card's existing
- * file actions.
+ * file actions, and `actions.copy` the photo menu's, offered for an image.
  */
 export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${bytes} B`, doc = globalThis.document } = {}) {
     let session = null;
@@ -462,6 +468,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
         dialog.setAttribute('aria-labelledby', title.id);
         title.textContent = file.title || file.filename;
         dialog.querySelector('.document-reader-meta').textContent = file.meta || '';
+        dialog.querySelector('[data-reader-action="copy"]').hidden = file.kind !== 'image' || !actions.copy;
         dialog.querySelector('[data-reader-action="open"]').hidden = !actions.open || !file.canOpen;
         dialog.querySelector('[data-reader-action="download"]').hidden = !actions.download;
         const current = {
@@ -491,7 +498,7 @@ export function createDocumentReader({ actions = {}, formatSize = (bytes) => `${
                 void load(current);
                 current.body.focus();
             }
-            else if (action === 'open' || action === 'download') void actions[action]?.(file);
+            else if (action === 'open' || action === 'download' || action === 'copy') void actions[action]?.(file);
             else if (view && view !== current.view && current.loaded) {
                 current.view = view;
                 showContent(current);
