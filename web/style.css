@@ -22,10 +22,14 @@ body {
 
 #app {
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
     height: var(--vvh);
     position: relative;
 }
+
+/* An older desktop page can survive a source update with its old #divider in the DOM.
+   Keep that retired grid child out of flow while the WebView reloads newer assets. */
+#app > #divider { display: none; }
 
 /* App navigation shell: a docked sidebar column, a drawer in the stack layout. */
 /* The shell's icon controls (☰, the drawer's ×, a Project's ×): one round neutral capsule holding one glyph, the
@@ -612,6 +616,7 @@ html[data-layout="stack"] .resize-handle { display: none; }
 
 /* Main content in the shell grid. */
 #content {
+    grid-column: 2;
     width: 100%;
     display: flex;
     flex-direction: column;
@@ -3600,6 +3605,7 @@ html[data-layout="stack"] .unread-badge {
     height: 14px;
 }
 html[data-layout="stack"] #content {
+    grid-column: 1;
     padding-left: 0;
     padding-bottom: var(--inset-bottom);
 }
