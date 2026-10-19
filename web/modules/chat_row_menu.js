@@ -1,21 +1,18 @@
 // The row menu of one chat feed (docs/DESIGN.md "Replies"): what a bubble or a root work card offers, reached
 // without hover — a right-click, Shift+F10 or the ContextMenu key on the focused row, a long press (no movement)
-// on touch. Its items are the row's own doors, never second ones: Reply, Copy, Open project (when the row has
-// one) and, on a work card, Resume / Pause / Stop… exactly when the card itself offers them (Pause is the item of
-// the card's Stop… menu, offered by the same rule). A work card's Reply lives only here (owner 17.10, Q9 B): the
-// card's action row holds commands over the work. Esc and an outside press close it; keyboard focus enters the
-// menu and returns to the row. A right-click on a link, a field or selected words keeps the browser's own menu,
-// so selected text stays copyable.
+// on touch (row_menu_gesture.js). Its items are the row's own doors, never second ones: Reply, Copy, Open project
+// (when the row has one) and, on a work card, Resume / Pause / Stop… exactly when the card itself offers them (Pause
+// is the item of the card's Stop… menu, offered by the same rule). A work card's Reply lives only here (owner 17.10,
+// Q9 B): the card's action row holds commands over the work. Esc and an outside press close it; keyboard focus
+// enters the menu and returns to the row.
 import { tr } from './i18n.js';
 import { bindMenu } from './ui_interactions.js';
 import { ACTION_PAUSE, pauseTaskAction } from './task_control_menu.js';
 import { copyTextWithToast } from './ui_helpers.js';
 import { fullText } from './text_fit.js';
+import { bindRowMenuGesture } from './row_menu_gesture.js';
 
-const LONG_PRESS_MS = 450;
-const MOVE_TOLERANCE_PX = 10;
 const ROW = '.chat-bubble, .chat-live-card:not(.subagent)';
-const NATIVE = 'a[href], input, textarea, select, [contenteditable="true"], video, audio';
 
 const shown = (node) => Boolean(node?.isConnected && !node.hidden && !node.disabled);
 
@@ -27,14 +24,6 @@ const shown = (node) => Boolean(node?.isConnected && !node.hidden && !node.disab
 export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterAction = () => {} }) {
     const doc = feed.ownerDocument;
     let current = null;  // { menu, binding, row }
-    let press = null;  // a touch that may become (or became) a long press
-    let swallowClickUntil = 0;
-    let rightPress = null;  // what was selected when a right button went down, before its own default selected a word
-
-    const selectedIn = (row) => {
-        const selection = doc.getSelection?.();
-        return Boolean(selection && !selection.isCollapsed && row.contains(selection.anchorNode));
-    };
 
     const rowOf = (node) => {
         const row = node?.closest?.(ROW);
@@ -119,77 +108,13 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         return true;
     }
 
-    function onContextMenu(event) {
-        const row = rowOf(event.target);
-        if (!row) return;
-        // A long press already answered (Android also fires contextmenu for it).
-        if (press?.fired || Date.now() < swallowClickUntil || current?.row === row) { event.preventDefault(); return; }
-        // Words the owner selected keep the browser's menu (Copy them). A right button on macOS selects the word under
-        // it before this event; that selection is the gesture's own, not the owner's, and goes with the row menu.
-        const owned = rightPress?.row === row ? rightPress.selected : selectedIn(row);
-        rightPress = null;
-        if (event.target.closest(NATIVE) || owned) return;
-        if (!open(row, { point: { x: event.clientX, y: event.clientY } })) return;
-        event.preventDefault();
-        if (selectedIn(row)) doc.getSelection().removeAllRanges();
-    }
-
-    function onKeydown(event) {
-        if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
-        const focused = doc.activeElement;
-        const row = rowOf(focused);
-        if (!row || focused.closest(NATIVE)) return;
-        if (open(row, { anchor: focused })) event.preventDefault();
-    }
-
-    function cancelPress() {
-        if (press) clearTimeout(press.timer);
-        press = null;
-    }
-
-    function onPointerDown(event) {
-        cancelPress();
-        const row = rowOf(event.target);
-        rightPress = event.button === 2 && row ? { row, selected: selectedIn(row) } : null;
-        if (event.pointerType !== 'touch' || !event.isPrimary) return;
-        if (!row || event.target.closest(NATIVE)) return;
-        const { clientX: x, clientY: y } = event;
-        const touch = { id: event.pointerId, x, y, fired: false };
-        touch.timer = setTimeout(() => { touch.fired = open(row, { point: { x, y } }); }, LONG_PRESS_MS);
-        press = touch;
-    }
-
-    function onPointerMove(event) {
-        if (press && !press.fired && event.pointerId === press.id
-            && Math.hypot(event.clientX - press.x, event.clientY - press.y) > MOVE_TOLERANCE_PX) cancelPress();
-    }
-
-    // A touch is captured by its first target, so its end arrives here even when the menu lies under the finger:
-    // the tap that ends a long press is not also a press of whatever is there (a menu item included).
-    function onPointerEnd(event) {
-        if (press?.fired && event.pointerId === press.id) swallowClickUntil = Date.now() + 400;
-        cancelPress();
-    }
-
-    function onClickCapture(event) {
-        if (Date.now() >= swallowClickUntil) return;
-        swallowClickUntil = 0;
-        event.preventDefault();
-        event.stopPropagation();
-    }
-
-    const listeners = [['contextmenu', onContextMenu], ['keydown', onKeydown], ['pointerdown', onPointerDown],
-        ['pointermove', onPointerMove], ['pointerup', onPointerEnd], ['pointercancel', onPointerEnd], ['scroll', cancelPress]];
-    for (const [type, handler] of listeners) feed.addEventListener(type, handler);
-    doc.addEventListener('click', onClickCapture, true);
+    const unbindGesture = bindRowMenuGesture({ root: feed, rowOf, open, isOpen: (row) => current?.row === row });
 
     return {
         open,
         destroy() {
-            cancelPress();
+            unbindGesture();
             close();
-            for (const [type, handler] of listeners) feed.removeEventListener(type, handler);
-            doc.removeEventListener('click', onClickCapture, true);
         },
     };
 }

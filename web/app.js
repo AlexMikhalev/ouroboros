@@ -6,7 +6,9 @@ import { loadVersion } from './modules/utils.js';
 import { bindScrollFade } from './modules/scroll_fade.js';
 import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
-import { IDLE_SUMMARY, buildProjectActivityIndex, reconcileProjectRooms } from './modules/project_activity.js';
+import { IDLE_SUMMARY, buildProjectActivityIndex, markWords, reconcileProjectRooms } from './modules/project_activity.js';
+import { createStatusMark, markView, paintStatusMark } from './modules/status_mark.js';
+import { bindRowMenuGesture } from './modules/row_menu_gesture.js';
 import { initFiles } from './modules/files.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
@@ -60,9 +62,12 @@ window.__ouroWs = ws;
 const beforePageLeaveHandlers = [];
 let settingsControls = null;
 let dashboardControls = null;
+// The Projects collapse is the owner's choice on this device (owner 19.10, 2A): written only by the toggle, read once
+// here; a device that never chose, or whose storage is unavailable, starts expanded.
+const PROJECTS_COLLAPSED_KEY = 'ouroboros.projects.collapsed';
 const navState = {
     activeProjectId: null,
-    projectsExpanded: true,
+    projectsExpanded: (() => { try { return localStorage.getItem(PROJECTS_COLLAPSED_KEY) !== '1'; } catch { return true; } })(),
     mobileDrawerOpen: false,
 };
 // The one stack of layers over the room (layers.js): the drawer and the Project panel register here, so Escape,
@@ -97,16 +102,8 @@ const projectPanelTitle = document.getElementById('project-panel-title');
 const navProjects = document.getElementById('nav-projects');
 const navProjectsToggle = document.getElementById('nav-projects-toggle');
 const navProjectsCount = document.getElementById('nav-projects-count');
-const navProjectsActivity = document.getElementById('nav-projects-activity');
 const navProjectsList = document.getElementById('nav-projects-list');
-// Collapse keeps pinned, live, open and keyboard-owned Projects; other fetched rows wait here.
-const navProjectsShowAll = document.createElement('button');
-navProjectsShowAll.type = 'button';
-navProjectsShowAll.id = 'nav-projects-show-all';
-navProjectsShowAll.className = 'nav-row nav-projects-show-all';
-navProjectsShowAll.hidden = true;
-navProjectsShowAll.setAttribute('aria-controls', 'nav-projects-list');
-navProjectsList?.after(navProjectsShowAll);
+const navMainRow = primarySidebar?.querySelector('.nav-row-main');
 const projectInstances = new Map();
 const projectPaintRequests = new Map();
 // The question reveal the current showing is still making (revealProjectQuestion):
@@ -118,6 +115,7 @@ const pendingProjectPins = new Set();
 let projectRooms = new Map();
 let projectActivityIndex = buildProjectActivityIndex();
 let activitySocketDisconnected = false;
+const navToggleNames = new WeakMap();  // each ☰'s last written name (paintNavToggles)
 let projectPanelHideTimer = null;
 let releaseMobileKeyboardForDrawer = () => {};
 
@@ -192,6 +190,7 @@ function updateUnreadBadge() {
     } else if (badge) {
         badge.remove();
     }
+    paintNavToggles();
 }
 
 // The scrim fades with the drawer (style.css): shown at once when the drawer opens, put away once its fade has run
@@ -280,6 +279,7 @@ function syncNavigationState() {
     } else layers.remove('project');
     // Last: the open Project's row is marked, and a closed Project's focus is back on its row, which then stays.
     syncProjectsCollapse();
+    paintNavToggles();  // a room's composer mounted since the last paint carries its ☰ too
 }
 
 // Keys scroll what is being read: an opened Project gives the focus to its room's feed (focusable, out of the tab
@@ -647,30 +647,27 @@ document.getElementById('project-panel-close')?.addEventListener('click', () => 
 projectPanelBackdrop?.addEventListener('click', () => closeProjectPanel());
 navProjectsToggle?.addEventListener('click', () => {
     navState.projectsExpanded = !navState.projectsExpanded;
-    syncNavigationState();
-});
-navProjectsShowAll.addEventListener('click', () => {
-    navState.projectsExpanded = true;
+    try {
+        if (navState.projectsExpanded) localStorage.removeItem(PROJECTS_COLLAPSED_KEY);
+        else localStorage.setItem(PROJECTS_COLLAPSED_KEY, '1');
+    } catch { /* storage unavailable: the choice holds until the page reloads */ }
     syncNavigationState();
 });
 
-// Collapsed Projects keep the pinned ones, what is alive (a Project whose dots show work running or waiting) and the
-// open one; the rest wait behind "Show all N" (docs/DESIGN.md "Shell"). Expanded, every row shows.
+// Collapse is all or nothing (owner 19.10, 2A): collapsed, the Projects keep only the pinned ones, and the header's mark
+// and unread count speak for the rest (docs/DESIGN.md "Shell"); expanded, every row shows. A row that hides gives the
+// keyboard to the Projects toggle first, and an open menu of a hidden row closes (project_create.js).
 function syncProjectsCollapse() {
     if (!navProjectsList) return;
     const collapsed = !navState.projectsExpanded;
-    const focused = document.activeElement;
     navProjects?.toggleAttribute('data-collapsed', collapsed);
-    let total = 0;
     let shown = 0;
     let pinsShown = false;
     let afterPins = null;
     for (const item of navProjectsList.children) {
         if (!item.classList.contains('nav-project-item')) continue;
-        total += 1;
-        // A row under the keyboard or with its menu open stays until focus leaves it (the list's focusout below).
-        const keep = !collapsed || item.hasAttribute('data-pinned') || item.hasAttribute('data-live') || Boolean(item.querySelector('.nav-project-row.active'))
-            || item.contains(document.activeElement) || Boolean(item.querySelector('[aria-expanded="true"]'));
+        const keep = !collapsed || item.hasAttribute('data-pinned');
+        if (!keep && item.contains(document.activeElement)) navProjectsToggle?.focus({ preventScroll: true });
         item.hidden = !keep;
         if (keep) shown += 1;
         // Pins lead the list; air before the first shown row after them is the group's one boundary, no caption.
@@ -679,20 +676,9 @@ function syncProjectsCollapse() {
     }
     for (const item of navProjectsList.children) item.toggleAttribute('data-after-pins', item === afterPins);
     navProjectsList.hidden = collapsed && shown === 0;
-    navProjectsShowAll.hidden = !collapsed || shown === total;
-    navProjectsShowAll.textContent = fmt('Show all {n}', { n: total });
-    navProjectsShowAll.setAttribute('aria-label', fmt('Show all {n} Projects', { n: total }));
-    // "Show all" hides itself as it expands the list: the keyboard goes on to the first row it revealed.
-    if (focused === navProjectsShowAll && navProjectsShowAll.hidden) {
-        navProjectsList.querySelector('.nav-project-item:not([hidden]) [data-project-id]')?.focus({ preventScroll: true });
-    }
-    // An open row menu follows its anchor once collapsed-row visibility has settled.
+    // An open row menu follows its anchor once row visibility has settled, or closes with its hidden row.
     repositionProjectRowMenu();
 }
-// Focus leaving the Projects lets a row that stayed only for the keyboard go behind "Show all".
-navProjects?.addEventListener('focusout', (event) => {
-    if (!navProjects.contains(event.relatedTarget)) queueMicrotask(syncProjectsCollapse);
-});
 
 function renderProjectsNav(projects, projectChatIds, activityIndex = projectActivityIndex) {
     const all = projects || [];
@@ -760,34 +746,22 @@ function markProjectActivityUnknown() {
     patchProjectActivityMarkers(projectActivityIndex);
 }
 
-function setActivityMarker(marker, summary) {
-    if (!marker) return;
-    const label = summary.label;
-    const active = Boolean(label);
-    marker.hidden = !active;
-    marker.dataset.state = active ? String(summary.state || 'unknown') : 'idle';
-    marker.dataset.motion = summary.motion ? '1' : '0';
-    // Amber: something in the room waits for the owner (the server's room.amber); a pause is not amber.
-    marker.dataset.amber = summary.amber ? '1' : '0';
-    marker.title = active ? label : '';
-    marker.setAttribute('aria-hidden', 'true');
-    // A Project row whose dots show is live: a collapsed list keeps it.
-    const item = marker.closest?.('.nav-project-item');
-    if (item) item.toggleAttribute('data-live', active);
-}
-
-function setActivityOwnerName(owner, baseName, summary) {
+// A mark's words go into its place's name (its tooltip and accessible name): the hue is never the only way it is told.
+function setActivityOwnerName(owner, baseName, words) {
     if (!owner) return;
-    const label = summary.label;
-    const name = label ? `${baseName} · ${label}` : baseName;
+    const name = words ? `${baseName} · ${words}` : baseName;
     owner.setAttribute('aria-label', name);
     owner.title = name;
 }
 
+// Every sidebar mark from the server's rooms (docs/DESIGN.md "Status marks"): a Project row's from its room and its
+// unread fact, the Projects header's from all Project rooms (the owner's move, else the strongest work; unread is its
+// count), Main's row and the ☰ (paintMainRow, paintNavToggles). Nodes are painted in place, so focus and menus stay.
 function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
-    setActivityMarker(navProjectsActivity, activityIndex.aggregate);
+    const aggregate = activityIndex.aggregate;
+    paintStatusMark(navProjectsToggle?.querySelector('.nav-mark'), markView({ mark: aggregate.mark, owner: aggregate.owner }));
     const unread = navProjectsCount?.title;
-    setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', activityIndex.aggregate);
+    setActivityOwnerName(navProjectsToggle, unread ? `Projects · ${unread}` : 'Projects', aggregate.label);
     const buttons = new Map(
         [...(navProjectsList?.querySelectorAll('[data-project-id]') || [])]
             .map((button) => [String(button.dataset.projectId || ''), button]),
@@ -795,15 +769,49 @@ function patchProjectActivityMarkers(activityIndex = projectActivityIndex) {
     for (const row of lastProjectRows) {
         const button = buttons.get(String(row.id));
         const summary = activityIndex.byChat.get(String(row.chat_id)) || IDLE_SUMMARY;
-        setActivityMarker(button?.querySelector('.nav-activity-marker'), summary);
+        const deleting = String(row.lifecycle || 'active') === 'deleting';
+        const unreadRow = Boolean(row._unread) && !deleting;
+        button?.toggleAttribute('data-unread', unreadRow);
+        // A deleting row draws only `Deleting…`; its census fact stays in its name.
+        paintStatusMark(button?.querySelector('.nav-mark'),
+            deleting ? markView() : markView({ mark: summary.mark, owner: summary.owner, unread: unreadRow }));
         // The pin is said in the row's full name (its tooltip and accessible name), never drawn in the row.
         const name = `${row.name || row.id}${row.pinned === true ? ' · Pinned' : ''}`;
-        const baseName = String(row.lifecycle || 'active') === 'deleting'
-            ? `${name} — Deleting…${row.delete_error ? ` ${row.delete_error}` : ''}`
-            : row._unread ? `${name} · Unread` : name;
-        setActivityOwnerName(button, baseName, summary);
+        setActivityOwnerName(button, deleting ? `${name} — Deleting…${row.delete_error ? ` ${row.delete_error}` : ''}` : name,
+            markWords(summary, unreadRow));
     }
+    paintMainRow();
+    paintNavToggles();
     syncProjectsCollapse();
+}
+
+// Main's row carries its room's mark in the ink of the row; its own new messages stay its number badge
+// (updateUnreadBadge). Its words are a text for readers inside the row, so the row keeps the name the interface's
+// language gives its label (a Project row is named by its owner, so its name is an attribute).
+function paintMainRow() {
+    const summary = projectRooms.get('1') || IDLE_SUMMARY;
+    paintStatusMark(navMainRow?.querySelector('.nav-mark'), markView({ mark: summary.mark, owner: summary.owner }));
+    const words = navMainRow?.querySelector('.nav-row-words');
+    const text = summary.label ? ` · ${summary.label}` : '';
+    if (words && words.textContent !== text) words.textContent = text;
+}
+
+// The ☰ tells what waits behind it (owner 19.10, 3A): an amber dot while Main or a Project waits for the owner, else a
+// crimson dot while one has new messages, else nothing; its name says the same. Both placements (a page header's, a
+// room's composer row) are painted; a composer that mounted later is painted by the navigation sync that shows it.
+function paintNavToggles() {
+    const owner = (projectRooms.get('1') || IDLE_SUMMARY).owner || projectActivityIndex.aggregate.owner;
+    const unread = (state.unreadCount > 0 && state.activePage !== 'chat') || lastProjectRows.some((row) => row._unread);
+    const view = markView({ owner, unread });
+    const name = owner ? 'Open navigation · something waits for you' : unread ? 'Open navigation · new messages' : 'Open navigation';
+    for (const toggle of document.querySelectorAll('[data-mobile-nav-toggle]')) {
+        paintStatusMark(toggle.querySelector('.status-mark'), view);
+        // Written only when it changes, so the interface language's overlay is not asked to translate it again.
+        if (navToggleNames.get(toggle) !== name) {
+            navToggleNames.set(toggle, name);
+            toggle.setAttribute('aria-label', name);
+        }
+    }
 }
 
 // ACK exactly the revision painted. The server max-merges and clamps the cursor,
@@ -886,10 +894,7 @@ function paintProjectsNav() {
             btn.dataset.projectId = project.id;
             const label = document.createElement('span');
             label.className = 'nav-row-label';
-            const marker = document.createElement('span');
-            marker.className = 'nav-activity-marker chat-live-typing';
-            for (let i = 0; i < 3; i += 1) marker.appendChild(document.createElement('span'));
-            btn.append(label, marker);
+            btn.append(label, createStatusMark(document, 'nav-mark'));
             item.appendChild(btn);
             if (deleting) {
                 const status = document.createElement('span');
@@ -907,20 +912,7 @@ function paintProjectsNav() {
                 kebab.title = tr('project.kebab_title', 'Project actions');
                 kebab.addEventListener('click', (event) => {
                     event.stopPropagation();
-                    openProjectRowMenu(item.project, {
-                        apiClient, anchorEl: kebab,
-                        isPinPending: () => pendingProjectPins.has(item.project.id),
-                        onPin: (pinned) => setProjectPin(item.project, pinned),
-                        onChanged: (change = {}) => {
-                            if (change.optimistic && change.projectId) {
-                                const row = lastProjectRows.find(p => p.id === change.projectId);
-                                if (row) { row.lifecycle = 'deleting'; row._unread = false; }
-                                if (navState.activeProjectId === change.projectId) closeProjectPanel();
-                                paintProjectsNav();
-                            } else refreshProjectsNav();
-                            knownProjectsJson = '';
-                        },
-                    });
+                    openProjectMenu(item, { anchor: kebab });
                 });
                 item.appendChild(kebab);
             }
@@ -931,14 +923,6 @@ function paintProjectsNav() {
         btn.disabled = deleting;
         btn.querySelector('.nav-row-label').textContent = project.name || project.id;
         btn.classList.toggle('active', project.id === navState.activeProjectId);
-        btn.classList.toggle('has-unread', project._unread && !deleting);
-        const unread = btn.querySelector('.nav-unread-dot');
-        if (project._unread && !deleting && !unread) {
-            const dot = document.createElement('span');
-            dot.className = 'nav-unread-dot';
-            dot.title = 'Unread messages';
-            btn.appendChild(dot);
-        } else if (!project._unread || deleting) unread?.remove();
         const kebab = item.querySelector('.nav-project-kebab');
         if (kebab) kebab.setAttribute('aria-label', fmt('Actions for {name}', { name: project.name || project.id }));
         else item.querySelector('.nav-project-deleting-status').title = project.delete_error || 'Cancellation and cleanup are in progress';
@@ -949,6 +933,41 @@ function paintProjectsNav() {
     if (focused?.isConnected && navProjectsList.contains(focused) && focused !== document.activeElement) focused.focus({ preventScroll: true });
     patchProjectActivityMarkers(projectActivityIndex);
 }
+
+// A Project row's one menu (project_create.js), from its ⋯ or by the row gesture bound once on the list below (a
+// right-click, a long press, Shift+F10 or the ContextMenu key). It reads the row's Project as the menu opens, never a
+// copy a closure kept, and opens with the row's mark and its words. Only the ⋯ says it has a popup. Says whether it opened.
+function openProjectMenu(item, { anchor = null, point = null } = {}) {
+    const project = lastProjectRows.find((row) => row.id === item?.dataset.navProjectId);
+    if (!project || String(project.lifecycle || 'active') !== 'active') return false;
+    const summary = projectActivityIndex.byChat.get(String(project.chat_id)) || IDLE_SUMMARY;
+    const kebab = item.querySelector('.nav-project-kebab');
+    return openProjectRowMenu(project, {
+        apiClient, anchorEl: anchor || item.querySelector('.nav-project-row'), point,
+        menuButton: anchor === kebab ? kebab : null, fallbackFocus: navProjectsToggle,
+        status: { view: markView({ mark: summary.mark, owner: summary.owner, unread: project._unread }),
+            word: summary.word, text: markWords(summary, project._unread) },
+        isPinPending: () => pendingProjectPins.has(project.id),
+        onPin: (pinned) => setProjectPin(project, pinned),
+        onChanged: (change = {}) => {
+            if (change.optimistic && change.projectId) {
+                const row = lastProjectRows.find(p => p.id === change.projectId);
+                if (row) { row.lifecycle = 'deleting'; row._unread = false; }
+                if (navState.activeProjectId === change.projectId) closeProjectPanel();
+                paintProjectsNav();
+            } else refreshProjectsNav();
+            knownProjectsJson = '';
+        },
+    });
+}
+const disposeProjectRowGesture = navProjectsList ? bindRowMenuGesture({
+    root: navProjectsList,
+    rowOf: (node) => {
+        const item = node?.closest?.('.nav-project-item');
+        return item && navProjectsList.contains(item) && !item.classList.contains('is-deleting') ? item : null;
+    },
+    open: openProjectMenu,
+}) : () => {};
 
 // The ⋯ menu's Pin or Unpin asks for the state its label named, so a menu opened before
 // another window changed the pin never flips it back. The row moves only once saved.
@@ -1184,6 +1203,7 @@ window.addEventListener('pagehide', (event) => {
     disposeScrollFades.forEach((dispose) => dispose());
     telegramHost.dispose();
     disposeDrawerDrag();
+    disposeProjectRowGesture();
 });
 loadVersion();
 syncNavigationState();

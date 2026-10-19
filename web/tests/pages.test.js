@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PAGES, ZONES, pageById, pageLabel, pagesInZone, renderNavRow, renderNavRows, renderProjectsHeader } from '../modules/pages.js';
 import { PAGE_ICONS, SHELL_ICONS } from '../modules/page_icons.js';
+import { statusMarkHtml } from '../modules/status_mark.js';
 
 // The one list of places (P9/P11): it renders the sidebar's rows and the Projects header, and names the
 // stack layout's header titles. The parity with app.js's init map and the page sections is pinned statically
@@ -30,18 +31,26 @@ test('rows render from the registry, in order, with the label verbatim and the i
     assert.deepEqual(ids, ['files', 'skills', 'widgets', 'dashboard', 'settings']);
     const main = renderNavRow(pageById('chat'));
     assert.match(main, /^<button class="nav-row nav-row-main" type="button" data-nav-page="chat" title="Main Ouroboros chat">/);
-    assert.match(main, /<span class="nav-row-label">Main Chat<\/span><\/button>$/);
+    // Main's row carries its room's one status mark after the label (app.js paints it, at rest it is hidden) and the
+    // mark's words for readers, which the interface language's overlay leaves to their own translation.
+    assert.ok(main.endsWith(`<span class="nav-row-label">Main Chat</span><span class="nav-row-words" data-i18n-skip></span>${statusMarkHtml('nav-mark')}</button>`));
+    assert.match(statusMarkHtml('nav-mark'), /aria-hidden="true" data-shape="none" data-hue="ink" hidden>/);
     assert.equal((main.match(/<svg/g) || []).length, 1);
     assert.ok(main.includes(PAGE_ICONS.chat));
-    assert.doesNotMatch(renderNavRow(pageById('files')), /nav-row-main/);
+    const files = renderNavRow(pageById('files'));
+    assert.doesNotMatch(files, /nav-row-main|status-mark|nav-row-words/, 'a tool has no status of its own');
+    assert.match(files, /<span class="nav-row-label">Files<\/span><\/button>$/);
     assert.match(renderNavRow({ id: 'x', label: '<b>', icon: 'none', zone: 'foot' }), /title="&lt;b&gt;".*>&lt;b&gt;</);
 });
 
 test('the Projects header keeps the hooks the shell reads and uses the shared glyphs', () => {
     const html = renderProjectsHeader();
-    for (const id of ['nav-projects-toggle', 'nav-projects-activity', 'nav-projects-count', 'nav-projects-add']) {
+    for (const id of ['nav-projects-toggle', 'nav-projects-count', 'nav-projects-add']) {
         assert.ok(html.includes(`id="${id}"`), id);
     }
+    // The Projects' one status mark sits beside the label in both states (app.js paints it); unread is the count.
+    assert.ok(html.includes(`<span class="nav-row-label">Projects</span>${statusMarkHtml('nav-mark')}</span><span id="nav-projects-count"`));
+    assert.doesNotMatch(html, /nav-activity-marker|chat-live-typing|nav-projects-activity/);
     assert.match(html, /aria-expanded="true" aria-controls="nav-projects-list"/);
     assert.ok(html.includes(PAGE_ICONS.projects));
     assert.ok(html.includes(`<span class="nav-chevron" aria-hidden="true">${SHELL_ICONS.chevron}</span>`));

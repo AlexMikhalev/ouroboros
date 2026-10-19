@@ -1,6 +1,7 @@
 // The row menu (chat_row_menu.js): one menu per bubble or root work card, reached by a right-click, Shift+F10 or the
 // ContextMenu key on the focused row, or a long press on touch; its items are the row's own doors; Esc and an outside
-// press close it and focus returns to the row. Native hit testing and real gestures are in the browser lane.
+// press close it and focus returns to the row. The gesture itself (what cancels a long press, which right-click keeps
+// the browser's menu) is row_menu_gesture.test.js's; native hit testing and real gestures are in the browser lane.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatRowMenu } from '../modules/chat_row_menu.js';
@@ -184,30 +185,6 @@ test('a long touch press opens the menu where the finger is; the tap that ends i
     } finally { f.close(); }
 });
 
-test('movement, a mouse, a second finger or a lift before the time is no long press', (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
-    const f = fixture();
-    try {
-        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 1, clientX: 0, clientY: 0 });
-        f.words.emit('pointermove', { pointerId: 1, clientX: 0, clientY: 11 });
-        t.mock.timers.tick(500);
-        assert.equal(f.openMenu(), null, 'a scroll gesture moved the finger');
-        f.words.emit('pointerdown', { pointerType: 'mouse', isPrimary: true, pointerId: 2, clientX: 0, clientY: 0 });
-        t.mock.timers.tick(500);
-        assert.equal(f.openMenu(), null, 'a held mouse button is not a long press');
-        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: false, pointerId: 3, clientX: 0, clientY: 0 });
-        t.mock.timers.tick(500);
-        assert.equal(f.openMenu(), null);
-        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 4, clientX: 0, clientY: 0 });
-        f.words.emit('pointerup', { pointerId: 4 });
-        t.mock.timers.tick(500);
-        assert.equal(f.openMenu(), null, 'a short tap');
-        f.link.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 5, clientX: 0, clientY: 0 });
-        t.mock.timers.tick(500);
-        assert.equal(f.openMenu(), null, 'a link keeps its own long press');
-    } finally { f.close(); }
-});
-
 test('a work card offers Reply, Copy, Open project, Resume, Pause and Stop… exactly when the card does', () => {
     const f = fixture();
     try {
@@ -272,5 +249,6 @@ test('destroy closes an open menu and leaves no listener on the feed or the docu
     assert.equal(f.feed.listenerCount(), 0);
     assert.equal(f.doc.captures.get('click')?.size || 0, 0);
     assert.equal(f.doc.captures.get('pointerdown')?.size || 0, 0);
+    assert.equal([...f.doc.captures.values()].reduce((n, set) => n + set.size, 0), 0, 'the gesture\'s too');
     f.restore();
 });
