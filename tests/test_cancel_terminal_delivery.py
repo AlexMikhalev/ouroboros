@@ -6,6 +6,8 @@ live and finalize-on-miss paths, and the settled-reentry that delivers exactly o
 """
 
 from __future__ import annotations
+
+from tests import _dialogue as dialogue_test
 import hashlib
 import json
 import types
@@ -147,12 +149,12 @@ def test_completed_outcome_reads_as_result_not_salvage(tmp_path):
     queue = _CaptureQueue()
     td.deliver_unreviewed_salvage(
         tmp_path, {"chat_id": 3}, "task-b",
-        outcome="completed before the cancellation (result preserved)",
+        outcome="completed before the stop (result preserved)",
         salvaged_text="the finished answer", settled_status="completed",
         event_queue=queue,
     )
     (event,) = queue.events
-    assert event["text"].startswith("✅ Task task-b completed before the cancellation")
+    assert event["text"].startswith("✅ Task task-b completed before the stop")
     assert "WITHOUT review" not in event["text"]
 
     # Prose that merely STARTS with "completed" no longer forges the ✅ frame:
@@ -336,7 +338,7 @@ def test_finalize_on_miss_delivers_the_unreviewed_salvage(qenv, monkeypatch):
     assert qenv.tl.cancel_task_custody("miss-del") == qenv.tl.CANCEL_CANCELLED
     (row,) = delivered
     assert row["task_id"] == "miss-del"
-    assert row["outcome"] == "cancelled"
+    assert (row["outcome"], row["settled_status"]) == ("stopped", "cancelled")
 
 def test_finalize_on_miss_completion_wins_delivers_the_completed_result(qenv, monkeypatch):
     """AR2-5b: the completion-wins branch of the miss lane delivers the KEPT
@@ -449,13 +451,13 @@ def test_one_cancel_leaves_exactly_one_salvaged_paragraph_in_the_chat(tmp_path, 
     )
     row = next(
         json.loads(line)
-        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()
         if line.strip()
     )
     assert f"{SALVAGE_EXCERPT_LABEL}." in row["text"]
     assert salvage not in row["text"]
     assert "get_task_result" not in row["text"]
-    assert row["text"].startswith("Cancelled. Root task stopped-one.")
+    assert row["text"].startswith("Stopped. Root task stopped-one.")
 
 
 @pytest.mark.serial
@@ -492,7 +494,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
         qenv.drive, "live-kid", "scheduled",
         parent_task_id="settled-root", root_task_id="settled-root",
     )
-    assert qenv.tl.cancel_task_by_id("settled-root", cascade=True)
+    assert qenv.tl.cancel_task_by_id("settled-root")
     event = next(e for e in queue.events if e.get("system_type") == "cancel_receipt")
     assert event["chat_id"] == 77 and text in event["text"]
     before = load_task_result(qenv.drive, "settled-root")
@@ -522,7 +524,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
         {"status": "failed", "chat_id": project["chat_id"]},
     )
     terminal = next(
-        row for row in map(json.loads, (qenv.drive / "logs/chat.jsonl").read_text().splitlines())
+        row for row in map(json.loads, dialogue_test.log_text(qenv.drive / "logs/chat.jsonl").splitlines())
         if row.get("type") == "task_summary"
     )
     assert text not in terminal["text"] and SALVAGE_EXCERPT_LABEL in terminal["text"]
@@ -533,7 +535,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
     )
     summary = next(e for e in queue.events if e.get("system_type") == "project_completion_summary")
     assert summary["chat_id"] == 1 and text in summary["text"]
-    assert summary["text"].endswith("Open the Project for details.")
+    assert "Open the Project" not in summary["text"], "the row's Project reference is its door"
 
 
 @pytest.mark.serial
@@ -697,3 +699,59 @@ def test_salvage_receipt_states_files_rescued_even_without_salvageable_text(tmp_
     stores = load_task_result(tmp_path, "files-s")["cancel_receipt"]["files_rescued"]["stores"]
     assert [row["store"] for row in stores] == [str(task_artifacts_dir(tmp_path, "files-s", create=False)),
                                                 str(task_artifacts_dir(child, "files-s", create=False))]
+
+
+_UNREVIEWED_LEAD = (" Below is the last persisted intermediate model message, preserved WITHOUT review "
+                    "(salvaged best-effort; NOT a final answer).")
+
+
+@pytest.mark.parametrize("files", ["none", "present", "unknown"])
+@pytest.mark.parametrize("settled,outcome,salvage", [
+    ("cancelled", "stopped", "partial draft of the report"),
+    ("cancelled", "stopped", ""),
+    ("completed", "completed before the stop (result preserved)", "the finished answer"),
+    ("completed", "completed before the stop (result preserved)", ""),
+])
+def test_cancel_receipt_promises_a_preview_only_when_it_carries_one(tmp_path, settled, outcome, salvage, files):
+    """#1403: the framing promises a message "below" only when the receipt carries one. A
+    receipt with a preview keeps its exact bytes and content-derived identity; one without
+    states the outcome, the absence and the files fact; a stop episode keeps its identity
+    either way; the outbox stores the built bytes. Delivery stays at-least-once (dedup by id)."""
+    from ouroboros.headless import task_artifacts_dir
+    from supervisor import terminal_delivery as td
+
+    tid = f"rx-{settled}-{'p' if salvage else 'n'}-{files}"
+    write_task_result(tmp_path, tid, STATUS_RUNNING, result="working")
+    if files == "present":
+        (task_artifacts_dir(tmp_path, tid) / "draft.docx").write_bytes(b"x")
+    elif files == "unknown":
+        store = task_artifacts_dir(tmp_path, tid, create=False)
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text("not a directory", encoding="utf-8")
+    else:
+        task_artifacts_dir(tmp_path, tid)
+    event = td.build_unreviewed_salvage_event(tmp_path, {"chat_id": 4}, tid, outcome=outcome,
+                                              salvaged_text=salvage, settled_status=settled)
+    text = event["text"]
+    completed = settled == "completed"
+    head = f"✅ Task {tid} {outcome}." if completed else f"⚠️ Task {tid} was {outcome}."
+    if salvage:
+        lead = head + (" Its completed result is preserved below." if completed else _UNREVIEWED_LEAD)
+        stable = [lead, "", salvage, "", td._preview_note_line("", 0)]
+        assert text.startswith("\n".join(stable) + "\n"), text   # the pre-#1403 bytes
+        assert event["delivery_id"] == td.delivery_id_for(tid, "\n".join(stable))
+    else:
+        assert text.startswith(head + "\n\n(no salvageable agent output was found for this task)\n"), text
+        assert "below" not in text.lower() and "Below" not in text
+    assert {"none": "Files rescued: none", "present": "Files rescued: 1 ",
+            "unknown": "Files rescued: unknown"}[files] in text, text
+    assert event["role"] == "system" and event["system_type"] == "cancel_receipt"
+    assert td.register_pending_delivery(tmp_path, event)
+    (owed,) = [row for row in td.pending_deliveries(tmp_path) if row.get("delivery_id") == event["delivery_id"]
+               or row.get("text") == text]
+    assert owed["text"] == text   # queued bytes are what replay sends
+
+    episode = ci.request_cancel(tmp_path, tid, reason="owner_stop", source="test")
+    keyed = td.build_unreviewed_salvage_event(tmp_path, {"chat_id": 4}, tid, outcome=outcome,
+                                              salvaged_text=salvage, settled_status=settled)
+    assert keyed["delivery_id"] == f"cancel:{tid}:{episode['request_id']}"

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 from ouroboros.tool_capabilities import CORE_TOOL_NAMES, META_TOOL_NAMES
+from ouroboros.contracts.task_contract import canonical_tool_name
 
 
 NANO_SCHEMA_META_NAMES = META_TOOL_NAMES | frozenset({"compact_context"})
@@ -62,8 +63,11 @@ def select_tool_schemas(
     unavailable_reasons: Mapping[str, str] | None = None,
 ) -> ToolSchemaSelection:
     """Pure selection from one permitted snapshot, retaining its canonical order."""
-    requested = _schema_names(schema_names)
     available = {schema["function"]["name"] for schema in canonical_schemas}
+    requested = _schema_names(
+        canonical_tool_name(name) if canonical_tool_name(name) in available else name
+        for name in _schema_names(schema_names)
+    )
     selected = set(requested) | NANO_SCHEMA_META_NAMES
     schemas = tuple(deepcopy(schema) for schema in canonical_schemas
                     if context_mode != "nano" or schema["function"]["name"] in selected)
@@ -247,6 +251,10 @@ def name_miss_guidance(
     outside the namespace or the callable catalog is named, and nothing is called.
     """
     select = f'list_available_tools(namespace="{namespace}")'
+    successor = canonical_tool_name(requested) if namespace == BUILTIN_NAMESPACE else requested
+    if successor != requested:  # a saved or remembered built-in spelling: the rename is the fact the caller lacks
+        return [f"{requested!r} was renamed {successor!r} (not called).",
+                *name_miss_guidance(successor, namespace, rows, discovery=discovery)]
     if rows is None:
         return [f"The current catalog of {namespace} could not be read here"
                 + ("; list_available_tools reports it with any discovery omission." if discovery else ".")]

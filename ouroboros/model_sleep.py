@@ -1,23 +1,28 @@
 """The model's own sleep: warm or cold, woken by what it chose, or at a time it chose.
 
-Owner Batch4 (6B): ``await_messages`` keeps its default bounded in-slot wait;
-``mode="warm"`` or ``"cold"`` is a SLEEP the model chooses itself — no minute
-threshold decides it. The model may select exact sources, and only those wake
-it: mail from named senders, the terminal of named tasks it can read, the
-terminal of delegated runs it owns, the exit of its own named services (warm
-only), and an optional absolute wake time. With no source selected, any
-addressed mail wakes it (the default). Owner words and controls (Stop, Wrap
-up, Hurry, Pause, a quiz answer) are never filtered.
-Unselected mail stays unread until the model is awake; nothing is acknowledged
-until the transcript delivered it.
+``await_messages`` keeps its bounded in-slot default; warm/cold sleep is the
+model's choice, never a duration threshold. It selects senders, readable task
+terminals, own run terminals, own service exits (warm only) and/or a wake time.
+Without selectors, any addressed mail wakes it. Owner words/controls and typed
+descendant escalations bypass sender filters; ordinary unselected mail waits.
+New questions from any ordinary run THIS author owns also wake it, never a
+foreign run or reviewer custody. Exact question sources reach its transcript;
+exposure is remembered per run/interaction only after delivery, never an answer.
+Legacy continuations without exposure memory may show a pending question once
+again; they do not reconstruct it from the latest run's supervision ACK.
 
 Readiness is read from the CANONICAL records every time — the mailbox file,
 the task results, the custody rows, the live service registry (execution facts
 of the start that was selected) — never from a cursor or a sender-side
 latch, so an event that lands between the first check and the park is seen by
 the first check after it: the sequence is check → install the wait → recheck.
+A failed source read cannot hide another ready source or the chosen time.
+If nothing is ready, an explicit source's original error reaches the caller
+(pollers keep sleeping; arming raises). Pollers and implicit question reads
+(open custody rows only) never wait on store contention; arming still does.
+Unavailable implicit observations are logged, not new prerequisites.
 A terminal counts once as the stable fact that the task settled, never as a
-later enrichment of its result. A readiness recorded while the task cannot
+later enrichment of its result. Readiness while the task cannot
 run (no capacity, a lease, money, an owner Pause or a Restart hold) stays
 recorded; readiness is never permission to bypass those.
 
@@ -31,12 +36,13 @@ An explicit calendar ``deadline_at`` never moves.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import logging
 import pathlib
 import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +107,7 @@ def selectors(ctx: Any, *, senders: Any = None, tasks: Any = None, runs: Any = N
             if not load_task_result(root, task_id, strict=True):
                 raise ValueError(f"{key}: task {task_id} is unknown")
     if chosen["runs"]:
-        owned = {run_id for run_id, _settled in _owned_runs(ctx)}
+        owned = _owned_runs(ctx)
         missing = [run_id for run_id in chosen["runs"] if run_id not in owned]
         if missing:
             raise ValueError(f"runs: {', '.join(missing)} are not delegated runs of this task")
@@ -156,65 +162,155 @@ def _service_wake(pin: Dict[str, Any]) -> str:
     return f"service:{name}:unknown"
 
 
-def _owned_runs(ctx: Any) -> List[Tuple[str, bool]]:
+def _owned_runs(ctx: Any, held_only: bool = False) -> dict:
+    """This task's custody rows: every one for a selected terminal (it may already be
+    settled), only the indexed open (``held``) ones for implicit question attention."""
     from ouroboros import delegate_custody as custody
-    from ouroboros.delegate_custody_current import runs
+    from ouroboros.delegate_custody_current import HELD, runs
 
-    root = custody.custody_root(ctx)
     task_id = str(ctx.task_id)
-    return [(str(getattr(run, "run_id", "") or ""), bool(getattr(run, "terminal_state", "") in custody.TERMINAL_STATES
-                                                            or getattr(run, "settled", False)))
-            for run in runs(pathlib.Path(root), "task_id=?", (task_id,)).values()
-            if str(getattr(run, "task_id", "") or "") == task_id]
+    where, params = ("task_id=? AND state=?", (task_id, HELD)) if held_only else ("task_id=?", (task_id,))
+    return {run.run_id: run for run in runs(pathlib.Path(custody.custody_root(ctx)), where, params).values()
+            if run.task_id == task_id}
+
+
+def _pending_question(run: Any) -> bool:
+    from ouroboros.delegate_custody import TERMINAL_STATES
+
+    return bool(run is not None and not run.review_owned and not run.settled and run.terminal_state not in
+                TERMINAL_STATES and run.pending_interaction_ids and run.interaction_source)
+
+
+def _question_runs(ctx: Any) -> dict:
+    """Implicit attention is opportunistic, never a new arm-time prerequisite."""
+    from ouroboros.store import acquisition_budget
+
+    try:
+        with acquisition_budget(0):
+            return _owned_runs(ctx, held_only=True)
+    except Exception:
+        log.debug("Sleep question observations unavailable for %s", ctx.task_id, exc_info=True)
+        return {}
+
+
+def question_sources(ctx: Any, runs: Any = None) -> list:
+    """Unseen own questions accompany a return even when another source woke it."""
+    from ouroboros.sleep_custody import seen_interactions
+
+    seen = seen_interactions(ctx)
+    return [{"run_id": rid, "pending_interaction_ids": list(run.pending_interaction_ids),
+             "interaction_source": dict(run.interaction_source)}
+            for rid, run in (_question_runs(ctx) if runs is None else runs).items()
+            if _pending_question(run) and set(run.pending_interaction_ids) - set(seen.get(rid) or ())]
+
+
+def append_question_notice(ctx: Any, reason: str, messages: list, shown: Any = ()) -> None:
+    """Expose the retained source on every return path, then remember notification only.
+
+    ``shown`` rows already reached this transcript (the cold custody census): their refs
+    count as delivered, so only questions beyond them are repeated, and the question
+    that woke the author could not be re-read when neither they nor a fresh read
+    show it pending. A failed fresh read marks nothing it did not show.
+    """
+    import json
+    from ouroboros.sleep_custody import record_question_notice
+
+    record_question_notice(ctx, shown)
+    if reason.startswith("control:"):
+        return
+    runs = _question_runs(ctx)
+    questions = question_sources(ctx, runs)
+    waking = reason[13:] if reason.startswith("run_question:") else ""
+    delivered = {str(row.get("run_id") or "") for row in shown if isinstance(row, dict)
+                 and row.get("interaction_source") and row.get("pending_interaction_ids")}
+    if questions:
+        messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nDelegated question observation: "
+                         + json.dumps(questions, ensure_ascii=False)
+                         + "\nRead the retained source or use delegate_wait; nothing answered the question."})
+        record_question_notice(ctx, questions)
+    elif waking and waking not in delivered and not _pending_question(runs.get(waking)):
+        messages.append({"role": "user", "content": "[SYSTEM NOTICE]\nThe question that woke you could not "
+                         "be re-read now. Nothing was acknowledged; inspect " + waking + "."})
+
+
+def acknowledge_question_delivery(ctx: Any, text: str) -> None:
+    """A complete ready-result view reached the transcript, not merely its producer."""
+    import json
+    from ouroboros.sleep_custody import record_question_notice
+
+    try:
+        result, _end = json.JSONDecoder().raw_decode(text)
+    except (ValueError, TypeError):
+        return
+    if isinstance(result, dict) and isinstance(result.get("questions"), list):
+        record_question_notice(ctx, result["questions"])
 
 
 def wake_reason(ctx: Any, chosen: Dict[str, Any]) -> str:
     """Why the sleep is ready now (``""`` = not yet). Owner input is never filtered."""
     from ouroboros.deadline_utils import parse_deadline_ts, utc_now
-    from ouroboros.owner_mailbox import KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE
+    from ouroboros.owner_mailbox import KIND_CARD_INPUT, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_TASK_MESSAGE
     from ouroboros.owner_wait import _wait_entries
     from ouroboros.task_status import SETTLED_STATUSES
 
-    for entry in _wait_entries(ctx):
+    first_error = None
+
+    def read_source(read, *args, **kwargs):
+        # Sources are alternatives, not prerequisites for each other. Retain
+        # the original exception for the existing caller if none is ready.
+        nonlocal first_error
+        try:
+            return read(*args, **kwargs)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+                log.debug("Sleep readiness source unreadable for %s", ctx.task_id, exc_info=True)
+            return None
+
+    for entry in read_source(_wait_entries, ctx) or ():
         kind = str(entry.get("kind") or KIND_OWNER_TEXT)
-        if kind in {KIND_OWNER_TEXT, KIND_QUIZ_ANSWER}:
+        if kind in {KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_QUIZ_CLOSED, KIND_CARD_INPUT}:
             return "owner_text"
         if kind != KIND_TASK_MESSAGE:
             return f"control:{kind}"  # finalize_now, hurry, owner_pause, ... always wake
         source = str(entry.get("source_task_id") or "")
-        if chosen.get("any_mail") or source in chosen.get("senders", []):
+        if (entry.get("provenance") == "descendant_task" or chosen.get("any_mail")
+                or source in chosen.get("senders", [])):
             return f"mail:{source or 'unknown'}"
     if chosen.get("tasks"):
         from ouroboros.task_results import load_task_result
 
         root = _canonical_root(ctx)
         for task_id in chosen["tasks"]:
-            row = load_task_result(root, task_id, strict=False) or {}
+            row = read_source(load_task_result, root, task_id, strict=False) or {}
             if str(row.get("status") or "") in SETTLED_STATUSES:
                 return f"task:{task_id}:{row.get('status')}"
-    if chosen.get("runs"):
-        settled = {run_id for run_id, done in _owned_runs(ctx) if done}
-        for run_id in chosen["runs"]:
-            if run_id in settled:
-                return f"run:{run_id}"
-    # A transferred executor may need its absent author's answer before it can
-    # finish. This is a source fact, never an automatic answer or owner command.
-    if chosen.get("body_runs"):
-        from ouroboros.delegate_custody_current import run as current_run
-        for run_id, invocation_id in chosen["body_runs"]:
-            run = current_run(_canonical_root(ctx), run_id)
-            if (run is not None and run.task_id == str(ctx.task_id) and run.invocation_id == invocation_id
-                    and set(getattr(run, "pending_interaction_ids", None) or ())
-                        - set((chosen.get("interaction_seen") or {}).get(run_id) or ())
-                    and getattr(run, "interaction_source", None)):
-                return f"run_question:{run_id}"
+    from ouroboros.delegate_custody import TERMINAL_STATES
+    from ouroboros.sleep_custody import seen_interactions
+
+    # A selected terminal waits on contention like any arm-time read; the pollers
+    # bound their whole readiness pass to a probe instead.
+    owned = (read_source(_owned_runs, ctx) or {}) if chosen.get("runs") else {}
+    for run_id in chosen.get("runs") or ():
+        run = owned.get(run_id)
+        if run is not None and (run.terminal_state in TERMINAL_STATES or run.settled):
+            return f"run:{run_id}"
+    # Questions need their responsible author, even when it selected another
+    # branch. Reviewer custody belongs to its panel, never to this sleeper.
+    seen = seen_interactions(ctx)
+    for run_id, run in _question_runs(ctx).items():
+        shown = set(seen.get(run_id) or ()) | set((chosen.get("interaction_seen") or {}).get(run_id) or ())
+        if _pending_question(run) and set(run.pending_interaction_ids) - shown:
+            return f"run_question:{run_id}"
     for pin in chosen.get("services") or ():
-        observed = _service_wake(pin)
+        observed = _service_wake(pin)  # already returns an unknown wake on a read failure
         if observed:
             return observed
     wake_at = parse_deadline_ts(chosen.get("wake_at") or "")
     if wake_at is not None and utc_now() >= wake_at:
         return "timeout"
+    if first_error is not None:
+        raise first_error
     return ""
 
 
@@ -229,9 +325,19 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
     from ouroboros.budget_pause import observe_task_runs
     from ouroboros import delegate_custody as custody
 
+    from ouroboros.model_detach import is_detach
+
+    chosen = chosen if chosen is not None else (getattr(ctx, "_model_sleep", None) or {})
+    detach = is_detach(chosen)
+    allow_transfer = allow_transfer and not detach
+    if detach:
+        transferred = ()
     blockers: List[Dict[str, str]] = []
-    observed = observe_task_runs(custody.custody_root(ctx), str(ctx.task_id), reason="cold_sleep_check",
-                                 request_stop=False)
+    try:
+        observed = observe_task_runs(custody.custody_root(ctx), str(ctx.task_id), reason="cold_sleep_check",
+                                     request_stop=False)
+    except Exception as exc:
+        observed = {"custody_read": "failed", "error": str(exc), "runs": []}
     if observed.get("custody_read") != "ok":
         blockers.append({"kind": "custody_unreadable", "detail": str(observed.get("error") or "")})
     allowed = {tuple(pair) for pair in transferred}
@@ -261,7 +367,6 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
 
     root = _canonical_root(ctx)
     tree_id = _member_coordinates(ctx)[1]
-    chosen = chosen if chosen is not None else (getattr(ctx, "_model_sleep", None) or {})
     dependencies = set(chosen.get("tasks", []) + chosen.get("senders", []))
     members = {str(ctx.task_id)}
     try:
@@ -275,7 +380,7 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
                 # The root sleep fence would prevent this member from starting,
                 # including a child whose terminal/mail was selected as our wake.
                 blockers.append({"kind": "queued_member", "detail": task_id})
-            own_sleep = current_tool_operation(ctx, "await_messages") if own else ""
+            own_sleep = current_tool_operation(ctx, "continue_in_background" if detach else "await_messages") if own else ""
             from ouroboros.tool_custody import retained_tool_custody
             if retained_tool_custody(root, task_id, row, excluding=own_sleep):
                 blockers.append({"kind": "member_custody", "detail": task_id})
@@ -297,6 +402,15 @@ def cold_blockers(ctx: Any, *, chosen: Dict[str, Any] | None = None,
     return blockers
 
 
+class ColdSleepBlocked(ValueError):
+    def __init__(self, blockers):
+        self.blockers = blockers
+        super().__init__("a cold sleep would leave this task's own work unwatched: "
+                         + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}"
+                                     for b in blockers)
+                         + " — sleep warm, wait for them, or stop them first")
+
+
 def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]:
     """Check, then arm the sleep: warm parks after this tool batch
     (``wait_after_tools``), cold at the next round boundary (``enter_cold_sleep``).
@@ -308,9 +422,13 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
     """
     if mode == MODE_COLD and chosen.get("services"):
         raise ValueError("services wake only a warm sleep: a cold sleep ends the process that holds them")
+    from ouroboros.model_detach import is_detach
+
     ready = wake_reason(ctx, chosen)
-    if ready:
-        return {"reason": "ready", "woke_by": ready, "slept": False, "mode": mode}
+    if ready and (not is_detach(chosen) or ready.startswith("control:")):
+        questions = [] if ready.startswith("control:") else question_sources(ctx)
+        return {"reason": "ready", "woke_by": ready, "slept": False, "mode": mode,
+                **({"questions": questions} if questions else {})}
     from ouroboros.sleep_custody import transferable_pairs
     retains_lane = mode == MODE_WARM
     if mode == MODE_COLD:
@@ -334,10 +452,7 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
     if mode == MODE_COLD:
         blockers = cold_blockers(ctx, chosen=chosen, allow_transfer=True)
         if blockers:
-            raise ValueError("a cold sleep would leave this task's own work unwatched: "
-                             + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}"
-                                         for b in blockers)
-                             + " — sleep warm, wait for them, or stop them first")
+            raise ColdSleepBlocked(blockers)
     sleep_id = uuid.uuid4().hex
     ctx._owner_wait_requested = f"sleep:{sleep_id}"
     ctx._model_sleep = {"sleep_id": sleep_id, "mode": mode, **chosen}
@@ -346,15 +461,17 @@ def request_sleep(ctx: Any, chosen: Dict[str, Any], mode: str) -> Dict[str, Any]
             "note": ("The sleep begins after this tool batch completes; you wake at the next round with the "
                      "reason. Selected mail wakes you" if not chosen.get("any_mail")
                      else "The sleep begins after this tool batch completes; any addressed mail wakes you")
-                    + "; the owner's messages and controls always do."}
+                    + "; owner input and a new question from your own executors always do."}
 
 
-def begin(ctx: Any) -> None:
-    """A warm sleep or owner Pause starts: excluded until the task runs again."""
+def begin(ctx: Any, *, started_at: float | None = None) -> None:
+    """Open a sleep, or restore its known wall start onto this process's monotonic clock."""
+    now = time.time()
+    started = now if started_at is None else started_at
     waiter = getattr(ctx, "model_wait_context", None)
     if waiter is not None:
-        waiter.sleep_started_monotonic = time.monotonic()
-    ctx._model_sleep_started = time.time()
+        waiter.sleep_started_monotonic = time.monotonic() - max(0.0, now - started)
+    ctx._model_sleep_started = started
 
 
 def end(ctx: Any) -> float:
@@ -370,8 +487,85 @@ def end(ctx: Any) -> float:
     return slept
 
 
-def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float) -> Dict[str, Any]:
-    """Host facts for the woken model: what woke it — a fact, never a verdict."""
+IN_SLOT_WAIT_KIND = "in_slot_wait"
+
+
+def announce_resumed(ctx: Any, outcome: Any = "") -> None:
+    """The task's own stack runs again after a wait: re-announce it as its start does.
+
+    A warm resume continues the same attempt, so no new start tells a chat
+    transport that preparation goes on (DESIGN §9, Telegram typing). A stopping
+    control resumes nothing; the owner's Resume of a warm Pause does. Best effort:
+    a lost frame costs one missed cue, never the wait.
+    """
+    from ouroboros.utils import utc_now_iso
+
+    reason, queue = str(outcome or ""), getattr(ctx, "event_queue", None)
+    task_id = str(getattr(ctx, "task_id", "") or "")
+    if queue is None or not task_id or (reason.startswith("control:") and reason != "control:owner_resume"):
+        return
+    try:
+        queue.put({"type": "typing_start", "task_id": task_id, "chat_id": getattr(ctx, "current_chat_id", None),
+                   "phase": "thinking", "ts": utc_now_iso()})
+    except Exception:
+        log.debug("resume announce failed for %s", task_id, exc_info=True)
+
+
+def declare_in_slot_wait(ctx: Any, key: str, until_ts: float) -> None:
+    """A tool holds this task's slot until ``until_ts`` waiting on what ``key`` names:
+    ``mail:``, ``tasks:``, a delegated run (``delegate:<run_id>``) or a review panel
+    (``review:<owner_id>:``). Re-declaring the same key renews it.
+
+    Holding the slot is not preparing a reply; only what the key names may be
+    (``gateway/reply_preparation.py``). The mark lives on the live context (a direct
+    turn's only owner) and rides a typed ``in_slot_wait`` operation lease to the
+    RUNNING row (a pooled task); both expire with the window, so a lost end outlives nothing.
+    """
+    from ouroboros.utils import emit_cognitive_operation_event
+
+    waits = getattr(ctx, "_in_slot_waits", None)
+    if not isinstance(waits, dict):
+        waits = {}
+        try:
+            ctx._in_slot_waits = waits
+        except Exception:  # a context that cannot carry the mark still waits; only the cue misses it
+            log.debug("in-slot wait mark unavailable for %s", getattr(ctx, "task_id", ""), exc_info=True)
+    waits[key] = float(until_ts)
+    emit_cognitive_operation_event(
+        getattr(ctx, "event_queue", None), task_id=str(getattr(ctx, "task_id", "") or ""),
+        operation_id=f"{IN_SLOT_WAIT_KIND}:{key}", phase="started", kind=IN_SLOT_WAIT_KIND,
+        task_attempt=getattr(ctx, "task_attempt", None), lease_until=float(until_ts))
+
+
+def end_in_slot_wait(ctx: Any, key: str) -> None:
+    """The slot wait ``key`` returned: retract its mark and lease, and re-announce the task."""
+    from ouroboros.utils import emit_cognitive_operation_event
+
+    waits = getattr(ctx, "_in_slot_waits", None)
+    if isinstance(waits, dict):
+        waits.pop(key, None)
+    emit_cognitive_operation_event(
+        getattr(ctx, "event_queue", None), task_id=str(getattr(ctx, "task_id", "") or ""),
+        operation_id=f"{IN_SLOT_WAIT_KIND}:{key}", phase="finished", kind=IN_SLOT_WAIT_KIND,
+        task_attempt=getattr(ctx, "task_attempt", None))
+    announce_resumed(ctx)
+
+
+@contextlib.contextmanager
+def in_slot_wait(ctx: Any, window_sec: float, target: str = "mail") -> Iterator[None]:
+    """``declare_in_slot_wait`` for one bounded window (plus a short teardown margin)."""
+    key = f"{target}:{uuid.uuid4().hex}"
+    declare_in_slot_wait(ctx, key, time.time() + max(0.0, float(window_sec)) + 5.0)
+    try:
+        yield
+    finally:
+        end_in_slot_wait(ctx, key)
+
+
+def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float | None) -> Dict[str, Any]:
+    """Host facts for the woken model: what woke it — a fact, never a verdict.
+
+    ``slept`` is ``None`` when no sleep start was recorded: no duration is claimed."""
     what = {
         "timeout": "the wake time you chose",
     }.get(outcome, "")
@@ -397,8 +591,45 @@ def wake_notice(chosen: Dict[str, Any], outcome: str, slept: float) -> Dict[str,
         else:
             what = outcome or "an unconfirmed input"
     return {"role": "user", "content": (
-        f"[SYSTEM NOTICE]\nYou slept {slept:.0f}s ({chosen.get('mode') or 'warm'}) and were woken by {what}. "
+        "[SYSTEM NOTICE]\nYou slept" + ("" if slept is None else f" {slept:.0f}s")
+        + f" ({chosen.get('mode') or 'warm'}) and were woken by {what}. "
         "Mail you did not select stayed unread and reaches you now with everything else pending. "
         "The sleep did not count as execution time; an explicit deadline did not move."
         + (" A cold sleep ended your previous process: its browser and task-local services are gone; "
            "re-read files before building on them." if chosen.get("mode") == "cold" else ""))}
+
+
+def enter_cold_sleep(limit_ctx: Any) -> None:
+    """The round boundary after a COLD sleep was armed (``model_sleep``).
+
+    The loop's own continuation is saved and the process parks under the same
+    exact-pause carrier; nothing wakes it but its selected sources through the
+    supervisor's sleep-wake policy. Bound external work needs the body's exact
+    acceptance before release. Other writers and local services refuse the park:
+    the model is told the blockers and stays awake — never a killed helper.
+    """
+    from ouroboros.budget_pause import request_pause, RAIL_MODEL_SLEEP
+    from ouroboros.model_detach import is_detach, pool_available
+
+    ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
+    sleep = getattr(ctx, "_model_sleep", None) if ctx is not None else None
+    if not isinstance(sleep, dict) or sleep.get("mode") != "cold":
+        return
+    blockers = cold_blockers(ctx, allow_transfer=True)
+    if is_detach(sleep) and not pool_available().get("available"):
+        blockers.append({"kind": "worker_pool_unavailable"})
+    if blockers:
+        if getattr(ctx, "_owner_wait_requested", "") == "sleep:" + str(sleep.get("sleep_id") or ""):
+            ctx._owner_wait_requested, ctx._owner_wait_deadline_at = "", ""
+        ctx._model_sleep = None
+        limit_ctx.messages.append({"role": "user", "content": (
+            "[SYSTEM NOTICE]\nYour cold sleep was not taken: this task still runs "
+            + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or b.get('detail') or ''}" for b in blockers)
+            + ". Sleep warm, wait for it, or stop it first.")})
+        return
+    request_pause(limit_ctx, rail=RAIL_MODEL_SLEEP, scope="task", reason_text="The model chose a cold sleep.")
+    if getattr(ctx, "_owner_wait_requested", "") == "sleep:" + str(sleep.get("sleep_id") or ""):
+        ctx._owner_wait_requested, ctx._owner_wait_deadline_at = "", ""
+    ctx._model_sleep = None  # no continuation owner: the ordinary loop continues awake
+
+

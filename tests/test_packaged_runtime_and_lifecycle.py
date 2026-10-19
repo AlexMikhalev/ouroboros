@@ -189,7 +189,6 @@ def test_bootstrap_repo_reports_a_failed_dependency_install(tmp_path, monkeypatc
         save_settings=lambda s: None, log=_log_stub(sink),
     )
     monkeypatch.setattr(bootstrap_module, "ensure_managed_repo", lambda c: "updated")
-    monkeypatch.setattr(bootstrap_module, "bootstrap_native_skills", lambda c: None)
     monkeypatch.setattr(bootstrap_module, "install_deps", lambda c: False)
     assert bootstrap_module.bootstrap_repo(context) is False
     # WARNING, not ERROR, for the same reason as `install_deps` itself: bootstrap
@@ -797,6 +796,9 @@ def test_cancelling_a_subagent_rescues_its_partial_result(monkeypatch, tmp_path)
     monkeypatch.setattr(
         observability, "latest_llm_response_text", lambda root, tid: "half-written answer",
     )
+    from ouroboros.cancel_intents import request_cancel
+
+    request_cancel(tmp_path, "live-salvage", allow_settled_target=True)
 
     assert q.cancel_task_custody("live-salvage") == q.CANCEL_CANCELLED
     result = load_task_result(tmp_path, "live-salvage")
@@ -902,6 +904,9 @@ def test_cancelling_a_subagent_preserves_the_full_output_on_the_canonical_drive(
         },
     }, raising=False)
     monkeypatch.setattr(q, "_emit_cancel_task_done", lambda *a, **k: None)
+    from ouroboros.cancel_intents import request_cancel
+
+    request_cancel(tmp_path, task_id, allow_settled_target=True)
 
     assert q.cancel_task_custody(task_id) == q.CANCEL_CANCELLED
 

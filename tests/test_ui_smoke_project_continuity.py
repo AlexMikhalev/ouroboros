@@ -6,7 +6,7 @@ through real browser flows using the common server fixture.
 Observable scenarios include:
 1. A stale history rebuild (response assembled before the send was logged)
    must not erase the owner's optimistic bubble or its routing receipt.
-2. A chat opened AFTER a managed task started shows Working... from the
+2. A chat opened AFTER a managed task started shows Working from the
    /api/state activity snapshot, and the snapshot's absence concludes it.
 3. An early final answer holds the card on "Finalizing…" —
    task_cost_finalized does not resolve it, the settled task_done does.
@@ -24,6 +24,7 @@ import json
 
 import pytest
 
+from tests._work_projection_shared import with_work_fields
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_chat_viewport_smoke import _OBSERVE_STATE_READS, _wait_state_reads_quiescent
 
@@ -127,6 +128,12 @@ def _start_stale_state_response_episode(page):
                 if (new URL(raw, location.href).pathname !== '/api/state') {
                     return realFetch(input, init);
                 }
+                // Settings' served-UI probe (settings.js refreshServedUi, run on every socket
+                // `open`) reads /api/state beside the sequencer and applies nothing to cards:
+                // it is not one of the page-wide reads this episode orders.
+                if ((new Error().stack || '').includes('/modules/settings.js')) {
+                    return realFetch(input, init);
+                }
                 return new Promise((resolve) => pending.push({input, init, resolve}));
             };
             window.__settleStateResponse = async (index, activities, patch = {}) => {
@@ -225,7 +232,7 @@ def test_ui_smoke_stale_history_rebuild_keeps_owner_bubble(direct_server_with_da
                     f'.chat-bubble.user[data-client-message-id="{cmid}"] .msg-routing-annotation'
                 )
                 annotation.wait_for(state="visible", timeout=5_000)
-                assert "Delivered to task" in annotation.inner_text()
+                assert "Message saved for task" in annotation.inner_text()
 
                 # Reconnect-driven full rebuild replays the STALE response.
                 page.evaluate(
@@ -239,7 +246,7 @@ def test_ui_smoke_stale_history_rebuild_keeps_owner_bubble(direct_server_with_da
                 )
                 assert survivor.count() == 1
                 assert "please keep this message visible" in survivor.inner_text()
-                assert "Delivered to task" in survivor.locator(
+                assert "Message saved for task" in survivor.locator(
                     ".msg-routing-annotation"
                 ).inner_text()
             finally:
@@ -252,7 +259,7 @@ def test_ui_smoke_stale_history_rebuild_keeps_owner_bubble(direct_server_with_da
 
 @pytest.mark.ui_browser
 def test_ui_smoke_late_open_chat_shows_managed_activity(direct_server_with_data):  # noqa: F811
-    """A chat that missed every typing frame still shows queue-backed Working...;
+    """A chat that missed every typing frame still shows queue-backed Working;
     the next authoritative snapshot without the task concludes it."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -282,11 +289,11 @@ def test_ui_smoke_late_open_chat_shows_managed_activity(direct_server_with_data)
                     )
                     route.fulfill(
                         content_type="application/json",
-                        body=json.dumps(payload),
+                        body=json.dumps(with_work_fields(payload)),
                     )
 
                 page.route("**/api/state*", _inject)
-                _goto_main_ready(page, url, "Working...")
+                _goto_main_ready(page, url, "Working")
                 # The managed activity arrives purely from the snapshot: this
                 # page never saw a typing frame or a progress card.
 
@@ -552,12 +559,12 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     payload = response.json()
                     payload["active_chat_activities"] = list(state["activities"])
                     payload["project_chat_ids"] = [9] if any(a.get("chat_id") == 9 for a in state["activities"]) else []
-                    route.fulfill(content_type="application/json", body=json.dumps(payload))
+                    route.fulfill(content_type="application/json", body=json.dumps(with_work_fields(payload)))
 
                 history = {"messages": []}
                 page.route("**/api/state*", _inject)
                 page.route("**/api/chat/history*", lambda route: route.fulfill(content_type="application/json", body=json.dumps(history)))
-                _goto_main_ready(page, url, "Working...")
+                _goto_main_ready(page, url, "Working")
 
                 page.evaluate(
                     """() => window.__ouroWs.emit('chat', {
@@ -663,12 +670,13 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 page.wait_for_timeout(100)
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 3
                 assert page.evaluate("() => window.__finishTransitions") == 1
-                _wait_status(page, "Online")
+                # The room says what the server lists, here the finished root again; its card stays finished, unread.
+                _wait_status(page, "Working")
 
                 rehome_card = '.chat-live-card[data-task-id="rehome-root"]'
                 state["activities"] = [_activity("rehome-root")]
                 page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-                _wait_status(page, "Working...")
+                _wait_status(page, "Working")
                 page.evaluate(
                     """() => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -681,20 +689,20 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 state["activities"] = [_activity("rehome-root", 9)]
                 with page.expect_response("**/api/state*", timeout=10_000):
                     page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-                page.wait_for_function(
-                    "(sel) => document.querySelector(sel + ' [data-cancel-run]') === null",
-                    arg=rehome_card,
-                )
+                # The work lives in its Project now: Main's room no longer lists it, and Main's card stays the
+                # work's portal with the work's own Stop (DESIGN "Work portal"), never a marker's.
+                _wait_status(page, "Online")
+                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 1
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 3
                 assert page.locator(rehome_card).get_attribute("data-finished") == "0"
                 page.evaluate("() => window.__ouroWs.emit('chat', {type: 'chat', role: 'assistant', is_progress: true, chat_id: 9, task_id: 'rehome-root', cancelable: true, content: 'Project work continues.'})")
-                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 0
+                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 1
                 history["messages"] = [{"text": "Historical project progress.", "role": "assistant", "is_progress": True, "task_id": "rehome-root", "cancelable": True, "project_mirror": True}]
                 with page.expect_response("**/api/chat/history*", timeout=10_000):
                     page.evaluate("() => window.__ouroWs.emit('open', {previouslyConnected: true})")
                 page.wait_for_selector(rehome_card)
                 assert page.get_by_text("Historical project progress.").count() >= 1
-                assert page.locator(f"{rehome_card} [data-cancel-run]").count() == 0
+                page.wait_for_selector(f"{rehome_card} [data-cancel-run]")
 
                 # A later rehome snapshot clears an earlier candidate and response.
                 # cannot finish the still-running card.
@@ -726,7 +734,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 assert page.locator(rehome_card).get_attribute("data-finished") == "0"
 
                 # Fast terminal truth ledgers a root even though rehome left no
-                # local activity/missing entry; late typing and old state stay inert.
+                # local activity/missing entry; late typing and old state leave its card finished.
                 page.evaluate(
                     """() => window.__ouroWs.emit('log', {
                         type: 'log', chat_id: 1,
@@ -749,14 +757,15 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 )
                 page.wait_for_timeout(150)
                 assert page.evaluate("() => window.__taskDetailCalls.length") == 4
-                _wait_status(page, "Online")
+                # The room says what the server lists, here the finished root again; its card stays finished.
+                _wait_status(page, "Working")
 
                 # Durable fallback settles a reusable logical slot without
                 # permanently blocking its next Working cycle.
                 reusable_card = '.chat-live-card[data-task-id="active"]'
                 state["activities"] = [_activity("active")]
                 page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-                _wait_status(page, "Working...")
+                _wait_status(page, "Working")
                 page.evaluate(
                     """() => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -798,7 +807,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     }""",
                     arg=reusable_card,
                 )
-                _wait_status(page, "Working...")
+                # The server lists no work here: the reopened card alone never lights the room.
+                _wait_status(page, "Online")
                 page.evaluate(
                     """() => window.__ouroWs.emit('log', {
                         type: 'log', chat_id: 1,
@@ -827,8 +837,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 _wait_status(page, "Online")
 
                 # A kind-stamped known subagent still gains no convergence
-                # authority; the minted parent ROOT card is now named by the
-                # card-set reconcile — hence one extra parent-root read.
+                # authority, and its frame alone mints no parent card (A5: a parent card
+                # comes only from the parent's OWN evidence) — so no parent-root read.
                 state["activities"] = []
                 page.evaluate(
                     """() => {
@@ -849,8 +859,9 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                 page.wait_for_timeout(200)
                 assert page.evaluate("() => window.__taskDetailCalls") == [
                     "truth-root", "truth-root", "truth-root", "rehome-root", "active",
-                    "progress-only-root", "parent-root",
+                    "progress-only-root",
                 ]
+                assert page.locator('.chat-live-card[data-task-id="parent-root"]').count() == 0
             finally:
                 browser.close()
     except PlaywrightError as exc:
@@ -988,8 +999,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                 # in-flight page read; let it land before minting the card below.
                 _wait_state_reads_quiescent(page)
 
-                # A visible root card carries host-attested Stop authority and is
-                # what lights the panel header (typing frames are receipts only).
+                # A visible root card carries host-attested Stop authority. The panel's header says the
+                # server's room, which does not list this card's work: the card alone never lights it.
                 page.evaluate(
                     """(chatId) => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -1000,7 +1011,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     project_chat,
                 )
                 page.wait_for_selector(f"{card} [data-cancel-run]", timeout=10_000)
-                _panel_status_is(page, "Working...")
+                _panel_status_is(page, "Online")
+                assert page.locator(f"{card} .chat-live-phase").inner_text().strip() == "Working"
 
                 # Early final prose does not conclude while post-task work runs.
                 page.evaluate(
@@ -1011,7 +1023,10 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     })""",
                     project_chat,
                 )
-                _panel_status_is(page, "Working...")
+                # The card says its post-task work; the room still says what the server lists.
+                page.wait_for_function("(sel) => document.querySelector(sel + ' .chat-live-phase')?.textContent.trim()"
+                                       " === 'Finalizing…'", arg=card, timeout=10_000)
+                _panel_status_is(page, "Online")
                 # Make the next request barrier strictly newer than the live
                 # progress frame even on a millisecond-resolution browser clock.
                 page.wait_for_timeout(20)

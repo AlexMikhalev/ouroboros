@@ -276,7 +276,9 @@ def test_gate_subject_binding_mismatch_blocks_commit(tmp_path, monkeypatch):
         ctx, commit_message="binding ok", commit_start=0.0,
         skip_advisory_pre_review=True,
     )
-    assert outcome["status"] == "passed"
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+    # No mismatch block; nonblocking enforcement returns the outcome before Git (#1741).
+    assert outcome["status"] == ("passed" if review_enforcement_blocks() else "reviewed")
 
 
 def test_non_managed_capture_is_byte_identical(tmp_path, monkeypatch):
@@ -725,7 +727,8 @@ def test_an_oversize_drop_never_promotes_an_added_critic_into_the_quorum(tmp_pat
         pool_seat("reading", "anthropic/claude-opus-4.1", delivery="native"),
         pool_seat("extra", "google/gemini-2.5-pro", delivery="native", marked=not additional),
     ))
-    panel = compose_panel(ReviewChangeRequest(root="system_repo", subject="index", reviewers=("extra",)), adds_only=True)
+    panel = compose_panel(ReviewChangeRequest(root="system_repo", subject="index", reviewers=("extra",)),
+                          body=True, strictness="blocking")
     with slots.composed_review_pool(panel.seats):
         plan = slots.commit_triad_delivery()
     assert plan["additional"] == [False, False, additional]

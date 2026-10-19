@@ -292,8 +292,10 @@ def test_panel_chat_zero_stays_hidden_and_request_zero_still_means_main(tmp_path
 def test_panel_zero_exclusion_does_not_override_project_task_binding():
     from ouroboros.gateway.history import _make_thread_filter
 
-    project_filter = _make_thread_filter(42, {42}, [], {"root-1": 42})
-    main_filter = _make_thread_filter(1, {42}, [], {"root-1": 42})
+    from tests._room_shared import RoomsFromBindings
+
+    project_filter = _make_thread_filter(42, {42}, [], RoomsFromBindings({"root-1": 42}))
+    main_filter = _make_thread_filter(1, {42}, [], RoomsFromBindings({"root-1": 42}))
 
     row = {"task_id": "root-1"}
     assert project_filter(0, row) is True
@@ -563,6 +565,8 @@ def test_default_request_does_not_open_archives_when_live_tail_sufficient(
         encoding="utf-8",
     )
 
+    from ouroboros import dialogue_import
+    assert dialogue_import.run_dialogue_import(tmp_path)["state"] == "done"
     seen = []
     real_iter = _helpers.iter_jsonl_objects
 
@@ -573,8 +577,8 @@ def test_default_request_does_not_open_archives_when_live_tail_sufficient(
     monkeypatch.setattr(_helpers, "iter_jsonl_objects", counted)
 
     msgs = _run(tmp_path, {})
-    assert seen  # the bounded reader served the endpoint
-    assert not any("/archive/" in path for path in seen)  # archives untouched
+    assert not any(path.endswith(("chat.jsonl", "progress.jsonl")) or "/archive/" in path for path in seen), \
+        "the dialogue is read out of the store, never a chain file or an archive"
     human = [m for m in msgs if not m.get("is_progress")]
     progress = [m for m in msgs if m.get("is_progress")]
     assert len(human) == 150   # default n_human window
@@ -733,6 +737,8 @@ def test_window_metadata_is_complete_when_the_read_reaches_the_oldest_archive(tm
         encoding="utf-8",
     )
     (logs / "chat.jsonl").write_text("", encoding="utf-8")
+    from ouroboros import dialogue_import
+    assert dialogue_import.run_dialogue_import(tmp_path)["state"] == "done"  # every archive is imported
 
     payload = _run_full(tmp_path, {})
     assert payload["window"] == {"complete": True, "truncated_by": []}

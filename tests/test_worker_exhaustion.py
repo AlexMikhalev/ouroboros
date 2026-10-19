@@ -33,6 +33,7 @@ def pool(tmp_path, monkeypatch):
     for name in ("ADMISSION_RESERVATIONS", "ACCEPTANCE_FENCES", "BUDGET_ROOT_FENCES"):
         monkeypatch.setattr(queue, name, {})
     monkeypatch.setattr(workers, "WORKERS", slots)
+    monkeypatch.setattr(workers, "MAX_WORKERS", 1)
     monkeypatch.setattr(workers, "_WORKER_POOL_DISABLED_REASON", "")
     monkeypatch.setattr(workers, "repo_writer_admission_closed", lambda: "")
     monkeypatch.setattr(workers, "_reconcile_confirmed_dead_review_owner", lambda _pid: None)
@@ -53,7 +54,7 @@ def pool(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worker_pool_lifecycle, "kill_worker_tree", kill)
     monkeypatch.setattr(workers, "kill_worker_tree", kill)
-    slot = workers.Worker(0, Process(50001), stdqueue.Queue(), reaping=True)
+    slot = workers.Worker(0, Process(50001), stdqueue.Queue(), reaping=True, booting=True)
     slots[0] = slot
     return SimpleNamespace(root=tmp_path, slot=slot, events=events)
 
@@ -87,6 +88,7 @@ def test_unexhausted_reservation_remains_a_queue_target(pool, healthy_state):
     workers.WORKERS[1] = workers.Worker(
         1, Process(50002, alive=healthy_state != "temporary_reaping"), stdqueue.Queue(),
         reaping=healthy_state != "working", busy_task_id="busy" if healthy_state == "working" else None,
+        booting=healthy_state == "booting",
     )
     exhaust(pool)
     assert workers.WORKERS[0] is pool.slot and pool.slot.readiness_exhausted

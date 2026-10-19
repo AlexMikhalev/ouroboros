@@ -12,6 +12,7 @@ import pytest
 
 from ouroboros.task_results import load_task_result
 from ouroboros.tools.registry import ToolContext
+from tests import _dialogue as dialogue_test
 from tests._shared import configure_test_subagent
 from tests.test_subagent_role_texts import _env
 from tests._store_shared import result_signature, seed_result, unreadable_result
@@ -178,32 +179,6 @@ def test_role_reaches_child_prompt_and_durable_lifecycle_without_inference(tmp_p
         assert row["parent_task_id"] == "parent"
         assert row["delegation_role"] == "subagent"
 
-    # Exercise the parent's actual reflection assembler and capture only its
-    # external inference boundary: this verifies the prompt it sends, not just
-    # the intermediate child-evidence helper's result.
-    from ouroboros import consolidator
-    from ouroboros.post_task_synthesis import _run_reflection
-
-    prompts = []
-
-    def reflect(_llm, prompt, _label, **_kwargs):
-        prompts.append(prompt)
-        return "Observed child report.\nMEMORY_ACTIONS_JSON: []\nBACKLOG_CANDIDATES_JSON: []", {}
-
-    monkeypatch.setattr(consolidator, "_call_consolidation_llm", reflect)
-    parent_env = Env(repo_dir=repo, drive_root=drive)
-    entry = _run_reflection(parent_env, agent.llm, {
-        "id": "parent", "type": "task", "text": "Inspect the interface",
-        "workspace_root": str(repo), "budget_drive_root": str(drive),
-    }, {}, {}, {})
-    assert entry["reflection"] == "Observed child report."
-    assert len(prompts) == 1
-    child_section = prompts[0].split("## Related child/subtask evidence\n\n", 1)[1]
-    evidence, _end = json.JSONDecoder().raw_decode(child_section)
-    for key in ("children_overview", "children"):
-        assert len(evidence[key]) == 1
-        assert evidence[key][0]["task_id"] == tid
-        assert evidence[key][0]["role"] == role
     assert load_task_result(drive, tid)["role"] == role
 
 
@@ -225,14 +200,13 @@ def test_depth_refusal_persists_only_the_supplied_role(tmp_path, monkeypatch, ro
 def test_final_only_history_recovers_role_without_rewriting_old_rows(tmp_path, role_fields, role):
     from ouroboros.gateway.history import make_chat_history_endpoint
 
-    logs, results = tmp_path / "logs", tmp_path / "task_results"
-    logs.mkdir()
+    results = tmp_path / "task_results"
     results.mkdir()
-    history = logs / "chat.jsonl"
-    history.write_text(json.dumps({
+    history = tmp_path / "archive" / "chat_20260821T100001.jsonl"
+    dialogue_test.seed(tmp_path, archives={history.name: [{
         "ts": "2026-08-21T10:00:01Z", "chat_id": 7, "direction": "out",
         "task_id": "historic-child", "text": "Retained child findings",
-    }) + "\n", encoding="utf-8")
+    }]})
     result = results / "historic-child.json"
     result.write_text(json.dumps({
         "_schema_version": 1, "task_id": "historic-child", "status": "completed",
@@ -242,6 +216,8 @@ def test_final_only_history_recovers_role_without_rewriting_old_rows(tmp_path, r
     originals = {path: path.read_bytes() for path in (history, result)}
     from ouroboros.store_import import ensure_current_store
     ensure_current_store(tmp_path)  # the boot door imports the historic file; a page read never imports
+    dialogue_test.import_all(tmp_path)
+    stored_rows = dialogue_test.chat_rows(tmp_path)
     endpoint = make_chat_history_endpoint(tmp_path)
     response = asyncio.run(endpoint(SimpleNamespace(query_params={"chat_id": "7"})))
     assert response.status_code == 200
@@ -250,6 +226,7 @@ def test_final_only_history_recovers_role_without_rewriting_old_rows(tmp_path, r
     assert row["subagent_role"] == role
     assert row["model"] == "openai/fixture-model"
     assert row["parent_task_id"] == "parent"
+    assert dialogue_test.chat_rows(tmp_path) == stored_rows
     assert {path: path.read_bytes() for path in originals} == originals
 
 

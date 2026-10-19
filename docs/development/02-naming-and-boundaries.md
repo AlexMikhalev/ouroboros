@@ -89,8 +89,7 @@ competes with the task for context. It carries identity and tone, the decision l
 cross-tool policy, prohibitions and safety invariants stated once, and the memory
 contract's resident rule: active summaries stay in the index, archived sources remain
 addressable and explicitly listable (ARCHITECTURE §6 "Durable memory and project focus").
-A missing carrier stays a visible gap. Load-bearing floor rules stay in its preamble, the part
-overflow compaction keeps (ARCHITECTURE §6 "Context fitting, retry, and compaction").
+A missing carrier stays a visible gap.
 It never carries how a tool works: parameters, recipes, typed outcomes and "when to
 choose it" belong to the `get_tools()` schemas selected for the acting profile, so a prompt sentence
 about a schema is a drifting second copy and a new tool
@@ -110,12 +109,12 @@ rule is retried unchanged (`tools/arg_feedback`).
 A producer that knows its call failed publishes that fact typed
 (`tool_result._publish_tool_result`, or a first-line `⚠️ IDENTIFIER`): identifier-less
 `⚠️ prose` and bare `ERROR: ...` are recorded as a successful call in `tools.jsonl`, the
-outcome classifier and the acceptance packet, so the failure is lost where the next
+outcome classifier and the result subject, so the failure is lost where the next
 decision reads it. A wrapper carries its inner producer's failure forward, and a
 supervising wake is acknowledged on the published `supervision_wake_id`, never on the
 tool's name (ARCHITECTURE §6 "Delegated subagents").
 
-Enforcement: CHECKLISTS item 15(b) scores the prompt-edit discipline;
+Enforcement: CHECKLISTS item 14(a) scores the prompt-edit discipline;
 `tests/test_typed_tool_refusals.py` is the shrink-only source lint over returned
 literals in `ouroboros/tools/`, its per-file allowlist the disclosure of the
 identifier-less residual; the owner-judgment and recoverable-failure boundaries are
@@ -145,8 +144,9 @@ Track assets with a continuing purpose (product, contributors, verification, leg
 requirements, evidence for public claims). Plans, campaign backlog, review packets and
 run receipts belong in the external work area or durable task evidence, not the
 tracked tree; a test preserving their presence gives them no product role. Retire
-campaign tooling when its purpose ends. Review enforces this, without automatic
-deletion or filename matching.
+campaign tooling when its purpose ends. Name a new test module for the behaviour or
+owner it protects, not a round, batch, issue, PR or version. Review enforces this,
+without automatic deletion or filename matching.
 
 Both are reference books: an entrypoint plus one chapter file per subject under
 `docs/architecture/` or `docs/development/`. The entrypoint's ordered `## Chapters`
@@ -169,12 +169,11 @@ scanned.
 
 Size is pairwise: a change ends each composed book, entrypoint included, no
 larger than at its event base, so text it adds is paid by shortening the same
-book. A stored budget only moved up and per-change grants made every growth a
-cheap self-raise; comparing tip with base leaves no number to raise. The
-official-CI `size_ratchet` lane blocks growth on owner, member and collaborator
-pull requests and on pushes to `ouroboros`; outside contributors and forks receive
-warnings. The repository owner's `book-growth` label exempts its PR and the exact
-commit that lands it. Local surfaces never block: the edit
+book. With ordinary push/PR CI disabled (ARCHITECTURE §8), manual/tag runs
+lack a per-change base and skip the book comparison; they do not certify this rule.
+Local qualification supplies `OURO_SIZE_RATCHET_BASE_REF` explicitly; review
+checks the actual contribution. The owner's `book-growth` label can exempt it.
+Local surfaces never block: the edit
 tools, `plan_task`, the free `preflight_review(deterministic_only=True)` diagnostic
 and `codebase_health` report the running balance as a fact. Contribution is measured
 against the displayed merge-base of the cached official development ref; an unknown
@@ -184,7 +183,14 @@ Equivalent historical prose stays review-only under CHECKLISTS item 5.
 
 ### Current state first (ARCHITECTURE invariant 10)
 
-Apply ARCHITECTURE §10 invariant 10; enforcement: "Invariant: Projection over replay (hot readers of growing stores)" below.
+Apply ARCHITECTURE §10 invariant 10 (enforcement: 03 "Projection over replay"). Store transactions
+lease the shared core's per-thread connection, capture rows and end before decoding or external
+work; fork only outside them; lifecycle code quiesces users and calls `store.prepare_handoff`
+before renaming a database or handing it to an older runtime, name-tier callers holding their
+name lock (`tests/test_store_connections.py`, `tests/test_store.py`; the WAL gate both ways, FULL
+unchanged: `tests/test_store_journal.py`). Once per process is not once per installation: an
+installation fact is a durable row, and history-sized work is a named job of the maintenance
+child (`ouroboros/maintenance.py`).
 
 ### Generality and emergence (P13)
 
@@ -258,15 +264,15 @@ lane a consciousness wake-up also runs on) and never give the model an argument 
 A task's own words travel as `KIND_TASK_MESSAGE` with provenance `independent_task`,
 never as `KIND_OWNER_TEXT`; the value lands at three seams in one change
 (`owner_mailbox.TASK_MESSAGE_PROVENANCES`, `deliver_task_message`,
-`loop_round_limits`) and enters no owner corpus (`owner_source_sha256`, the acceptance
-premises), because a task-minted message there would let a task authorize its own
-acceptance (`tests/test_task_authored_messages.py`; ARCHITECTURE §6 "Owner routing
+`loop_round_limits`) and enters no owner corpus (`owner_source_sha256`, the result review's
+ask), because a task-minted message there would let a task author its own
+request (`tests/test_task_authored_messages.py`; ARCHITECTURE §6 "Owner routing
 verbs").
 
 ### The owner corpus archives inputs; the owner door's stamp is the only authority
 
 A task-authored objective copies only its retained owner corpus, never the draft. Other
-runs record their first user turn for acceptance, Safety and reflection, labelled by
+runs record their first user turn for the owner corpus and Safety, labelled by
 what the host knows: `initial_user` when owner routing stamped the run
 (`metadata.origin_message_ref` or `origin_suppressed`, inherited by value by a promoted
 root), `initial_text` otherwise. `dialogue_provenance.run_origin` mints that fact once
@@ -366,12 +372,12 @@ readiness signal, test probe or fallback.
 Provider facts that bind routing: the `-pro` suffix is an OpenRouter routing slug, not
 an OpenAI model id, so a direct OpenAI Chat slot uses the plain Sol id; direct OpenAI
 tool conversations stay on Chat Completions, and a model-name prefix is never admission
-authority; DeepSeek and Z.ai carry `reasoning_effort` through projections keyed on the
-provider id; direct Anthropic is the deliberate exception to a purely reconstructed
-provider transcript, and no effort-to-`budget_tokens` policy is synthesized
-(ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional feature may
-be unavailable elsewhere; the core loop degrades explicitly rather than crashing or
-rerouting.
+authority; each non-OpenRouter Chat route sends `reasoning_effort`, DeepSeek and Z.ai
+by provider-id projection; direct Anthropic is the deliberate exception to a purely
+reconstructed provider transcript, and no effort-to-`budget_tokens` policy is
+synthesized (ARCHITECTURE §7 "LLM output token budgets"). A provider-specific optional
+feature may be unavailable elsewhere; the core loop degrades explicitly rather than
+crashing or rerouting.
 
 Canonical assistant history and tool schemas are function-shaped across providers,
 never a second stored transcript for a provider dialect. Static, semantics-preserving

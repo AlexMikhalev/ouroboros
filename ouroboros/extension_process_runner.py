@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import pathlib
-import shutil
 import signal
 import subprocess
 import sys
@@ -442,7 +441,6 @@ def _child_process(
     _ensure_private_dir(calls_dir)
     input_path = calls_dir / f"{uuid.uuid4().hex}.json"
     result_path = calls_dir / f"{uuid.uuid4().hex}.result.json"
-    import_root_base = calls_dir / f"{uuid.uuid4().hex}.imports"
     payload = dict(payload)
     payload["result_path"] = str(result_path)
     _write_private_json(
@@ -452,7 +450,7 @@ def _child_process(
         overflow_error="extension child protocol input exceeded safety cap",
     )
     from ouroboros.process_custody import lifeline_parent_env
-    env = {**env, "OUROBOROS_EXTENSION_IMPORT_ROOT_BASE": str(import_root_base), **lifeline_parent_env()}
+    env = {**env, **lifeline_parent_env()}
     cmd = [_child_python(), "-m", "ouroboros.extension_process_runner", str(input_path)]
     kwargs: Dict[str, Any] = {
         "cwd": str(repo_dir),
@@ -463,12 +461,17 @@ def _child_process(
     }
     kwargs.update(subprocess_new_group_kwargs())
     kwargs = merge_hidden_kwargs(kwargs)
+    from ouroboros.tool_custody import external_handoff
+    confirmed = lambda: None
+    proc = None
     try:
         from ouroboros.owner_pause import operation_start
-
+        confirmed = external_handoff("extension_process")
         with operation_start():
             proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603 - argv is host-constructed
     except BaseException:
+        if proc is None:
+            confirmed()
         try:
             input_path.unlink(missing_ok=True)
         except OSError:
@@ -487,6 +490,7 @@ def _child_process(
             from ouroboros.process_custody import record_process
             record_process(drive_root, pid=proc.pid, cmd=cmd,
                            purpose=f"extension_route:{payload.get('skill_name')}", scope="session")
+            confirmed()
         if on_spawn is not None:
             # Popen has already dispatched the child.  A failed durable
             # disclosure must stop it rather than leave an untracked external
@@ -505,6 +509,8 @@ def _child_process(
                 proc.wait(timeout=EXTENSION_CHILD_CLEANUP_GRACE_SEC)
             except Exception:
                 pass
+            if proc.poll() is not None:
+                confirmed()
             with _subprocess_lock:
                 _active_subprocesses.discard(proc)
             try:
@@ -515,7 +521,6 @@ def _child_process(
                 result_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            shutil.rmtree(import_root_base, ignore_errors=True)
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
                 try:
                     if pipe:
@@ -638,6 +643,7 @@ def _record_extension_dispatch(
         parent_task_id=parent_task_id,
         category="external_skill",
         source=f"extension_{surface_kind}:{skill_name}:{surface}",
+        non_task_operation=root_task_id == system_root,  # no task lineage was bound: a host dispatch
     )
 
 
@@ -674,23 +680,26 @@ def _base_env_for_skill(skill: Any, drive_root: pathlib.Path, repo_dir: pathlib.
     )
 
 
-def _task_settings_for_skill(skill: Any, drive_root: pathlib.Path) -> dict | None:
-    """Forward only the API's permitted values in the existing private call payload."""
-    from ouroboros.config import load_settings
+def _operator_settings_for_child(skill: Any, drive_root: pathlib.Path) -> dict | None:
+    """Inside a task, the operator's own variables for the skill's permitted settings keys (``skill_environ``),
+    forwarded in the existing private call payload: the child's environment is scrubbed, so they would not reach
+    it otherwise. Never a document value: the child reads the document itself on every read, so a save during a
+    long call reaches its next read. Grants filter here and in the child."""
+    from ouroboros.config import SETTINGS_DEFAULTS
     from ouroboros.extension_plugin_api import PluginAPIImpl, _PluginAPIConfig
-    from ouroboros.settings_integrity import _TASK_SETTINGS, _next_task_setting
+    from ouroboros.settings_integrity import _TASK_SETTINGS, skill_environ
 
     if _TASK_SETTINGS.get() is None:
         return None
+    environ = {key: value for key, value in skill_environ().items() if key in SETTINGS_DEFAULTS}
     grants = grant_status_for_skill(drive_root, skill)
     api = PluginAPIImpl(_PluginAPIConfig(
         skill_name=skill.name, permissions=skill.manifest.permissions,
         env_allowlist=skill.manifest.env_from_settings,
-        state_dir=skill_state_dir(drive_root, skill.name), settings_reader=load_settings,
+        state_dir=skill_state_dir(drive_root, skill.name), settings_reader=lambda: environ,
         granted_keys=grants.get("granted_keys") or [],
     ))
-    return {key: value for key, value in api.get_settings(skill.manifest.env_from_settings).items()
-            if _next_task_setting(key)}
+    return api.get_settings(skill.manifest.env_from_settings)
 
 
 def _extension_has_model_credentials(skill: Any, drive_root: pathlib.Path) -> bool:
@@ -707,20 +716,60 @@ def _extension_has_model_credentials(skill: Any, drive_root: pathlib.Path) -> bo
     candidates = granted & allowed & MODEL_PROVIDER_CREDENTIAL_KEYS
     if "read_settings" not in permissions or not candidates:
         return False
-    from ouroboros.config import runtime_settings
+    from ouroboros.settings_integrity import skill_settings
 
-    settings = runtime_settings()
+    # What the child's PluginAPI reads, so this disclosure and the in-process one answer alike.
+    settings = skill_settings()
     return any(str(settings.get(key) or "").strip() for key in candidates)
 
 
-def catalog_extension_surfaces(skill: Any, *, drive_root: pathlib.Path, repo_dir: pathlib.Path, skills_repo_path: pathlib.Path | None = None) -> Dict[str, Any]:
+def _catalog_context(skill, drive_root, repo_dir, settings_reader=None):
+    from ouroboros.extension_import_staging import catalog_identity, declared_catalog_inputs
+    from ouroboros.settings_integrity import skill_settings
+
     env = _base_env_for_skill(skill, pathlib.Path(drive_root), pathlib.Path(repo_dir))
+    declaration = declared_catalog_inputs(skill)
+    settings = None
+    identity = None
+    if declaration is not None:
+        current = skill_settings(settings_reader)
+        settings = {k: current[k] for k in declaration["settings"] if k in current}
+        identity = catalog_identity(skill, settings, env, grant_status_for_skill(drive_root, skill))
+    return identity, env, settings
+
+
+def extension_catalog_identity(skill, drive_root, settings_reader=None):
+    return _catalog_context(skill, drive_root, pathlib.Path(__file__).resolve().parents[1], settings_reader)[0]
+
+
+def catalog_extension_surfaces(skill: Any, *, drive_root: pathlib.Path, repo_dir: pathlib.Path,
+                               skills_repo_path: pathlib.Path | None = None, settings_reader=None) -> Dict[str, Any]:
+    from ouroboros.extension_import_staging import extension_cache_lock
+    from ouroboros.utils import atomic_write_json, read_json_dict
+
+    identity, env, settings = _catalog_context(skill, drive_root, repo_dir, settings_reader)
+    state_dir = skill_state_dir(drive_root, skill.name)
+    if identity is None:
+        return _catalog_child(skill, drive_root, repo_dir, skills_repo_path, env, settings)
+    # One durable result per skill; concurrent workers share the same child run.
+    with extension_cache_lock(state_dir, "catalog"):
+        path = state_dir / "extension_catalog.json"
+        cached = read_json_dict(path) or {}
+        if cached.get("identity") == identity and isinstance(cached.get("catalog"), dict):
+            return {**cached["catalog"], "_cache_identity": identity}
+        catalog = _catalog_child(skill, drive_root, repo_dir, skills_repo_path, env, settings)
+        atomic_write_json(path, {"identity": identity, "catalog": catalog})
+        return {**catalog, "_cache_identity": identity}
+
+
+def _catalog_child(skill, drive_root, repo_dir, skills_repo_path, env, settings):
     model_capable = _extension_has_model_credentials(skill, pathlib.Path(drive_root))
     dispatch_id = f"extension:catalog:{uuid.uuid4().hex}"
     return _run_child(
         {
             "mode": "catalog",
-            "task_settings": _task_settings_for_skill(skill, pathlib.Path(drive_root)),
+            "operator_settings": _operator_settings_for_child(skill, pathlib.Path(drive_root)),
+            "catalog_settings": settings,
             "skill_name": skill.name,
             "drive_root": str(drive_root),
             "repo_dir": str(repo_dir),
@@ -766,7 +815,7 @@ def dispatch_extension_tool_subprocess(ext_tool: Dict[str, Any], ctx: ToolContex
     result = _run_child(
         {
             "mode": "tool",
-            "task_settings": _task_settings_for_skill(skill, dispatch_drive_root),
+            "operator_settings": _operator_settings_for_child(skill, dispatch_drive_root),
             "skill_name": skill.name,
             "surface": str(ext_tool.get("name") or ""),
             "args": dict(args or {}),
@@ -808,7 +857,7 @@ def dispatch_extension_route_subprocess(spec: Dict[str, Any], request_payload: D
     child_factory = partial(_child_process,
         {
             "mode": "route",
-            "task_settings": _task_settings_for_skill(skill, pathlib.Path(drive_root)),
+            "operator_settings": _operator_settings_for_child(skill, pathlib.Path(drive_root)),
             "skill_name": skill.name,
             "surface": str(spec.get("path") or ""),
             "request": request_payload,
@@ -844,7 +893,7 @@ def dispatch_extension_ws_subprocess(spec: Dict[str, Any], msg: Dict[str, Any], 
     result = _run_child(
         {
             "mode": "ws",
-            "task_settings": _task_settings_for_skill(skill, pathlib.Path(drive_root)),
+            "operator_settings": _operator_settings_for_child(skill, pathlib.Path(drive_root)),
             "skill_name": skill.name,
             "surface": str(spec.get("type") or ""),
             "message": dict(msg or {}),
@@ -877,20 +926,20 @@ def _skill_for_dispatch(skill_name: str, drive_root: pathlib.Path, skills_repo_p
     return skill
 
 
-def _load_child_extension(skill_name: str, drive_root: pathlib.Path, repo_dir: pathlib.Path, skills_repo_path: pathlib.Path, *, task_settings: dict | None = None) -> Any:
+def _load_child_extension(skill_name: str, drive_root: pathlib.Path, repo_dir: pathlib.Path, skills_repo_path: pathlib.Path, *, operator_settings: dict | None = None, catalog_settings: dict | None = None) -> Any:
     from ouroboros.config import load_settings
     from ouroboros.extension_loader import load_extension
-    from ouroboros.settings_integrity import _next_task_setting
+    from ouroboros.settings_integrity import settings_read_environ
     from ouroboros.skill_loader import discover_skill_identity
 
     def settings_reader():
-        live = load_settings()
-        if task_settings is None:
-            return live
-        # The complete permitted next-task subset also represents absence.
-        # Immediate controls stay live; the child's normal grants still apply.
-        return {**{key: value for key, value in live.items() if not _next_task_setting(key)},
-                **task_settings}
+        # Opted-in catalogs run against the exact declared inputs named by their
+        # cache key. Ordinary dispatch continues reading current settings.
+        if catalog_settings is not None:
+            return catalog_settings
+        # The document as it reads now; the dispatching task's operator variables stand in where it is unset.
+        with settings_read_environ({**os.environ, **(operator_settings or {})}):
+            return load_settings()
 
     skills = discover_skill_identity(drive_root, skill_name, repo_path=str(skills_repo_path))
     skill = next((item for item in skills if item.name == skill_name), None)
@@ -1076,7 +1125,8 @@ def _child_main(input_path: str) -> None:
     _bootstrap_quiet_child_crash_reporting()
     try:
         skill = _load_child_extension(skill_name, drive_root, repo_dir, skills_repo_path,
-                                      task_settings=payload.get("task_settings"))
+                                      operator_settings=payload.get("operator_settings"),
+                                      catalog_settings=payload.get("catalog_settings") if mode == "catalog" else None)
         if mode == "catalog":
             result = _surface_catalog()
         elif mode == "tool":

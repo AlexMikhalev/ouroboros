@@ -8,6 +8,8 @@
  * @property {string} backend
  * @property {string} model The wire model; empty for ddgs.
  * @property {'selection'|'provider_default'} model_source
+ * @property {('no_credentials'|'package_missing'|'legacy_openai_base_url')=} unavailable_reason Only on an
+ *   `unavailable` leg: the locally known cause, never a provider probe.
  */
 
 /**
@@ -18,7 +20,7 @@
  * @property {string} source `auto` or one strict source.
  * @property {string} model The selection as saved or drafted; empty means provider defaults.
  * @property {WebSearchLeg[]} legs Eligible, in order.
- * @property {WebSearchLeg[]} unavailable Credential or package missing.
+ * @property {WebSearchLeg[]} unavailable Each names its `unavailable_reason`.
  * @property {string} note
  * @property {string=} error The selection has no built-in transport.
  * @property {string=} ignored_legacy_model A saved bare model the Anthropic source does not apply.
@@ -58,4 +60,38 @@
  * @typedef {Object} ResponseLimitAckResponse
  * @property {true} ok
  * @property {ResponseLimit} ack
+ */
+
+/**
+ * `POST /api/owner/capability-ack`: `max_output_tokens` present records the route's maximum response
+ * (0 removes it); otherwise `window_tokens` (> 0) records its context window. A sent `route_fp` must match.
+ * @typedef {Object} CapabilityAckRequest
+ * @property {string} provider
+ * @property {string} model
+ * @property {string=} base_url
+ * @property {Object=} options
+ * @property {Object=} headers
+ * @property {string=} route_fp
+ * @property {number=} max_output_tokens
+ * @property {number=} window_tokens
+ * @property {string=} note
+ */
+
+/**
+ * An owner-asserted context window for one route.
+ * @typedef {Object} ContextWindowAck
+ * @property {string} route_fp
+ * @property {number} window_tokens
+ * @property {string} owner
+ * @property {string} ts
+ * @property {string} note
+ * @property {Object} route
+ * @property {Object=} binding_evidence
+ */
+
+/**
+ * `POST /api/owner/capability-ack` with `window_tokens`.
+ * @typedef {Object} ContextWindowAckResponse
+ * @property {true} ok
+ * @property {ContextWindowAck} ack
  */

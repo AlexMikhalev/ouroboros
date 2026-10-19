@@ -337,14 +337,6 @@ def test_settings_js_reads_and_writes_phase2_keys():
     assert "fieldValue(id).trim()" in src
 
 
-def test_chat_context_mode_toggle_reports_owner_endpoint_errors():
-    # The composer's owner controls (context mode, effort range) live in one module.
-    src = (REPO / "web" / "modules" / "composer_owner_controls.js").read_text(encoding="utf-8")
-    assert "/api/owner/context-mode" in src
-    assert "resp.json()" in src
-    assert "showToast(message, 'error')" in src
-
-
 def test_onboarding_js_has_runtime_mode_selector_and_save_payload():
     src = (REPO / "web" / "modules" / "onboarding_wizard.js").read_text(encoding="utf-8")
     agents = (REPO / "web" / "modules" / "onboarding_agents_step.js").read_text(encoding="utf-8")
@@ -355,19 +347,6 @@ def test_onboarding_js_has_runtime_mode_selector_and_save_payload():
     assert "onboardingSettingsDraft" in src
     assert "OUROBOROS_RUNTIME_MODE" in agents
     assert "OUROBOROS_SKILLS_REPO_PATH" in agents
-
-
-def test_phase4_ui_copy_matches_shipped_runtime():
-    settings_ui = (REPO / "web" / "modules" / "settings_ui.js").read_text(encoding="utf-8")
-    onboarding_html = build_onboarding_html({})
-
-    assert "Phase 2 plumbing only" not in settings_ui
-    assert "land in Phase 3" not in settings_ui
-    assert "data/skills/" in settings_ui
-    assert "Pick both review enforcement and the initial runtime mode" in onboarding_html
-    assert "normal review gate" in onboarding_html
-    assert "triad + scope" not in onboarding_html
-    assert "Phase 6+:" not in onboarding_html
 
 
 def test_the_protected_path_messages_name_the_review_panel_and_the_review_gate(monkeypatch):
@@ -393,14 +372,12 @@ def test_skills_ui_reads_live_extension_state_fields():
     orchestration = (REPO / "web" / "modules" / "skills.js").read_text(encoding="utf-8")
     src = renderer + "\n" + orchestration
     assert "live_loaded" in src
-    assert "review_gate?.executable_review" in src or "review_gate.executable_review" in src
+    assert "gate.executable_review" in src  # the card reads the host's executable-review gate
     assert "executable_review" in src
     assert "skill.review_status === 'blockers' && !reviewReady(skill)" in src
     assert "function statusBadge(status, gate = null, profile = '')" in src
     assert "statusBadge(skill.review_status, skill.review_gate, skill.review_profile)" in src
-    assert "Open widgets" in src
-    assert "retry_install" in src
-    assert "Retry install" in src
+    assert "find_in_browse" in src  # a failed install row leads back to Browse
     assert "result.error" in src
 
 
@@ -787,7 +764,9 @@ def test_pro_commit_uses_normal_review_for_protected_paths(tmp_path, monkeypatch
         skip_advisory_pre_review=True,
     )
 
-    assert result["status"] == "passed"
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+    # The normal review ran; nonblocking enforcement returns its outcome before Git (#1741).
+    assert result["status"] == ("passed" if review_enforcement_blocks() else "reviewed")
     assert calls == {"review": 1}
 
 

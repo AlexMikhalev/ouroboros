@@ -16,6 +16,8 @@ updater shim suite (tests/test_update_tx_nminus1_shim.py).
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 import pathlib
 
@@ -90,13 +92,14 @@ def test_lifecycle_write_stamps_a_live_unstamped_row(tmp_path):
     assert not _quarantine_files(tmp_path)
 
 
-def test_plan_review_writer_stamps_the_row(tmp_path):
-    from ouroboros.task_results import PLAN_REVIEW_STATE_KEY, _update_plan_review_state
+def test_plan_record_writer_stamps_the_row(tmp_path):
+    from ouroboros import plan_record
 
-    _update_plan_review_state(tmp_path, "t2", lambda state: state)
+    plan_record.append_revision(tmp_path, "t2", plan_record.compose_revision(
+        None, goal="g", plan="p", done_when=[], affected_paths=[]), body=False)
     raw = read_result(tmp_path, "t2")
     assert raw[SCHEMA_VERSION_KEY] == TASK_RESULT_SCHEMA_VERSION
-    assert PLAN_REVIEW_STATE_KEY in raw
+    assert plan_record.PLAN_RECORD_KEY in raw
 
 
 def test_owner_hurry_writer_stamps_the_row(tmp_path):
@@ -139,7 +142,7 @@ def test_unstamped_history_is_quarantined_not_converted(tmp_path):
     assert events[0]["count"] == 1 and events[0]["first_task_id"] == "t5"
     assert events[0]["reasons"] == {"unstamped_pre_7_0": 1}
     # 6.3=B: log-only visibility — no chat notice is minted anywhere.
-    assert not (tmp_path / "logs" / "chat.jsonl").exists()
+    assert not dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
 
 
 def test_quarantine_is_idempotent_for_repeat_reads(tmp_path):

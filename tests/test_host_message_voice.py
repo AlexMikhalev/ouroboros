@@ -31,6 +31,7 @@ EXCEPTIONS = {
     ("ouroboros/agent_task_pipeline.py", "emit_task_results", "envelope"): (1, "Final model output; prepare_terminal_send_event applies host terminal provenance separately."),
     ("ouroboros/agent.py", "OuroborosAgent._emit_progress", "envelope"): (1, "Explicit narration fact selects model versus host; end-to-end voice test pins both branches."),
     ("ouroboros/tools/control_runtime.py", "_send_user_message", "envelope"): (1, "The model authors this nonterminal reply; proactive_message is not a System voice."),
+    ("ouroboros/owner_relay.py", "publish_relay", "call"): (1, "One Ouroboros bubble (relay shape F): the teller's own note under the owner's host-held quoted words; no host-authored text."),
 }
 
 
@@ -156,12 +157,11 @@ def test_exceptions_are_counted_and_stale_rows_fail():
 # typed annotation on it, and a landed act publishes no row. A standalone System row exists only
 # where nothing else can carry the fact. Each literal host type: (class, number of producer sites).
 # Two types are mixed and disclosed: `deep_self_review_queued` also echoes the model's own request,
-# `skill_repair` also the host's automatic repair after a marketplace install.
+# `skill_repair` also the host's automatic repair after a marketplace install. Nothing produces an
+# `acceptance_late_settlement` row since the review fold; the old rows still render as card rows.
 HOST_ROW_CLASSES = {
-    "acceptance_late_settlement": ("card_row", 1),
     "budget_notice": ("runtime_state", 1),
     "cancel_receipt": ("owner_act_receipt", 2),
-    "cancellation_notice": ("card_row", 1),
     "command_reply": ("owner_act_receipt", 2),
     "consciousness_notice": ("runtime_state", 1),
     "deep_self_review_queued": ("owner_act_receipt", 1),
@@ -173,22 +173,23 @@ HOST_ROW_CLASSES = {
     "initialization_notice": ("not_started", 1),
     "managed_update_notice": ("runtime_state", 2),
     "owner_pause_notice": ("card_row", 1),
-    "presence_recovery_required": ("no_mind", 1),
     "project_completion_summary": ("main_lifecycle", 1),
     "project_handoff": ("main_lifecycle", 1),
     "project_started": ("main_lifecycle", 1),
     "promotion_notice": ("runtime_state", 4),
     "reminder": ("signed_words", 1),
     "restart_notice": ("runtime_state", 7),
+    "rollback_notice": ("runtime_state", 1),
     "retired_settings_notice": ("runtime_state", 2),
     "review_pool_migration_notice": ("runtime_state", 1),
     "runtime_liveness_notice": ("runtime_state", 1),
     "skill_lifecycle": ("card_row", 2),
     "skill_lifecycle_pointer": ("owner_act_receipt", 1),
     "skill_notice": ("signed_words", 1),
-    "skill_repair": ("owner_act_receipt", 2),
-    "startup_notice": ("runtime_state", 1),
+    "skill_repair": ("owner_act_receipt", 1),  # the owner's Repair; marketplace auto-repair is retired
+    "startup_notice": ("runtime_state", 2),
     "steer_not_delivered": ("not_started", 1),
+    "storage_switch_notice": ("runtime_state", 1),
     "subagent_admission_notice": ("card_row", 1),
     "subagent_started": ("card_row", 1),
     "subagent_terminal_notice": ("card_row", 1),

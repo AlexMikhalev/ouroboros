@@ -87,6 +87,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_video",
         "send_file",
         "send_links",
+        "show_card",
         "search_code",
         "escalate",
         "forward_to_worker",
@@ -139,9 +140,21 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # numbered read views (both cursors count source characters, never display
     # numbers), explicit omitted-root semantics and ordered same-file edit_text
     # replacements; editor calls run in call order and `force` confirms only an
-    # intentional shrink.
+    # intentional shrink. The composed catalog retains both independent changes:
+    # public long-line search_code windows name the first match and read_file range;
+    # #1660 escalate adds explicit close (action, quiz_id, question_task_id, reason),
+    # registered materials and retention after task end. Only ask's validator requires
+    # question. The exact hash below pins their union; parameter types/defaults and
+    # required keys outside escalate, all other schemas and handler owners stay intact.
+    # Published question lifecycle wording changes only escalate's description and
+    # question_task_id description; the parameters and all other catalog entries remain identical.
+    # Rolled for living messages (plugin-first): the catalog gains show_card after send_links, its
+    # entry living beside its handler in tools/cards.py; every other entry is byte-identical (the
+    # catalog without show_card still hashes to 6d10eac1...). Rolled again after review: show_card's
+    # description says an app cannot fetch or load resources and that loading another page closes
+    # it, and that a press after the task ended arrives as the owner's message replying to the card.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "e1093d0a47f57a73ac033524ae3c55c365c1d6646504db0e73a8f5d2ada461eb"
+        "e1c9048c553f1aba16838e91f767a27851f47ffa3f69b3a6176160eaeac6fe7a"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
@@ -155,6 +168,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_video": ("ouroboros.tools.core_artifacts", "_send_video"),
         "send_file": ("ouroboros.tools.core_artifacts", "_send_file"),
         "send_links": ("ouroboros.tools.core_artifacts", "_send_links"),
+        "show_card": ("ouroboros.tools.cards", "_show_card"),
         "search_code": ("ouroboros.tools.core", "_code_search"),
         "escalate": ("ouroboros.tools.core_artifacts", "_escalate"),
         "forward_to_worker": ("ouroboros.tools.core", "_forward_to_worker"),

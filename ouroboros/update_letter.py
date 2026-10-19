@@ -304,7 +304,8 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
         "official_target": {"version": target_version, "sha": _key_from_status(status)["target_sha"]},
         "update_channel": str(status.get("update_channel") or ""),
         "checkout": {"sha": str(status.get("current_sha") or ""),
-                     "commits_behind": status.get("behind"), "commits_ahead": status.get("ahead")},
+                     "commits_behind": status.get("behind"), "commits_ahead": status.get("ahead"),
+                     "local_changes": status.get("local_changes") or "unknown"},
         "checked_at": str(status.get("checked_at") or ""),
     }
     return (
@@ -407,6 +408,12 @@ def _classify(exc: Exception) -> Tuple[str, str]:
         return "budget_exhausted", safe
     if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
         return "timeout", safe
+    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+    from ouroboros.model_wait import ModelWaitInterrupted
+
+    if isinstance(exc, (PhysicalDispatchInterrupted, ModelWaitInterrupted)) and exc.control_reason == "deadline":
+        # Only the refused send is unsent; an earlier one keeps its attempt id on the record.
+        return "timeout", _safe_text(f"the update-letter ceiling ended before a further send ({type(exc).__name__})")
     try:
         from ouroboros.loop_llm_call import classify_llm_exception
 
@@ -509,8 +516,9 @@ def write_letter(
                 record.update(error_kind="timeout",
                               error_text="the update-letter ceiling was spent waiting for a model slot")
                 return record
+            # The same calendar ceiling reaches every physical send, the client's recovery too.
             call = dict(drive_root=data_root, model=model, tools=None, reasoning_effort="low",
-                        model_role="light",
+                        model_role="light", caller_deadline_ts=deadline_ts,
                         max_tokens=UPDATE_LETTER_MAX_TOKENS, use_local=use_local)
             low_retries = 0
 
@@ -877,7 +885,7 @@ def official_update_projection(
                 "status": "unchecked", "status_as_of": "",
                 "running": {"version": get_version(), "sha": head},
                 "update_channel": active_channel, "target": None, "behind": None, "ahead": None,
-                "letter": project_letter(record, head_sha=head, latest_sha=""),
+                "local_changes": "unknown", "letter": project_letter(record, head_sha=head, latest_sha=""),
             }
         latest = str(cache.get("latest_sha") or "")
         checked_head = str((record or {}).get("checked_head_sha") or "")
@@ -909,6 +917,9 @@ def official_update_projection(
             "target": target,
             "behind": cache.get("behind"),
             "ahead": cache.get("ahead"),
+            # Commits ahead are history; this is whether the checked HEAD held content of its own.
+            "local_changes": str(cache.get("local_changes") or "unknown")
+            if head == str(cache.get("checked_head_sha") or "") else "unknown",
             "letter": letter,
         }
     except Exception as exc:  # noqa: BLE001 — a fact that raises would take the whole context with it

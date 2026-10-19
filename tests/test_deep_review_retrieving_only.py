@@ -18,7 +18,7 @@ from ouroboros.deep_self_review import deep_review_route, run_deep_self_review
 from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions
 from tests.test_deep_review_slot import _DEEP_SLOT_ID, _ScriptedLLM, _tool_call
-from tests.test_plan_review_engine import _user_text
+from tests._review_substrate_shared import user_text as _user_text
 
 pytestmark = pytest.mark.usefixtures("provider_catalog_offline")
 

@@ -10,8 +10,6 @@ at unload, so a late call is refused rather than served.
 
 from __future__ import annotations
 
-from ouroboros.config import runtime_settings
-
 import functools
 import hashlib
 import inspect
@@ -83,6 +81,7 @@ from ouroboros.node_runtime import (
     skill_node_argv,
 )
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
+from ouroboros.settings_integrity import skill_settings
 from ouroboros.skill_loader import (
     compute_content_hash,
     requested_core_setting_keys,
@@ -219,6 +218,7 @@ class PluginAPIImpl:
         self._env_allow = frozenset(str(k).strip() for k in (config.env_allowlist or []))
         self._env_allow_upper = frozenset(k.upper() for k in self._env_allow)
         self._state_dir = pathlib.Path(config.state_dir)
+        self._loaded_skill = config.loaded_skill
         self._drive_root = pathlib.Path(config.drive_root) if config.drive_root is not None else self._state_dir
         self._subscribe_events = frozenset(str(t).strip() for t in (config.subscribe_events or []) if str(t).strip())
         self._companion_specs = {
@@ -278,8 +278,14 @@ class PluginAPIImpl:
         candidates = self._env_allow_upper & self._granted_upper & MODEL_PROVIDER_CREDENTIAL_KEYS
         if not candidates:
             return False
-        settings = runtime_settings(settings_reader=self._settings_reader)
+        settings = self._current_settings()
         return any(str(settings.get(key) or "").strip() for key in candidates)
+
+    def _current_settings(self) -> Dict[str, Any]:
+        """The settings document as it reads now (``settings_integrity.skill_settings``): a key saved,
+        rotated, cleared or deleted mid-task reaches the next ``register()`` or handler read; grants,
+        the allowlist and ``read_settings`` still filter every value read here."""
+        return skill_settings(self._settings_reader)
 
     def _disclose_model_capable_dispatch(self, surface_kind: str, surface: str) -> str:
         """Mark one opaque in-process extension callback before it can spend."""
@@ -296,6 +302,7 @@ class PluginAPIImpl:
             root_task_id=system_task,
             category="external_skill",
             source=f"extension_{surface_kind}:{self._skill}:{surface}",
+            non_task_operation=True,  # a host extension callback: no task lineage to read
         )
 
     def _wrap_runtime_handler(
@@ -808,6 +815,11 @@ class PluginAPIImpl:
             if import_root is not None or content_hash is not None:
                 bundle.import_root = import_root
             bundle.plugin_api_generation = self._plugin_api_generation
+            if self._loaded_skill is not None:
+                bundle.loaded_skill = self._loaded_skill
+                declaration = self._loaded_skill.manifest.context_snapshot
+                bundle.context_snapshot = ({"path": declaration["path"], "state_dir": str(self._state_dir)}
+                                           if declaration else None)
             digest = uuid.uuid4().hex
             bundle.generation_digest = digest
             self._published_generation = digest
@@ -836,6 +848,10 @@ class PluginAPIImpl:
                     live[key] = value
                     bundle_keys.append(key)
             bundle.module_sources.update(staged.module_sources)
+            if staged.contributions is not None:
+                bundle.contributions = staged.contributions
+                bundle.contribution_problems = staged.contribution_problems
+                bundle.host_sources = staged.host_sources
             bundle.unload_callbacks.extend(staged.unload_callbacks)
             # Recorded on the bundle BEFORE the attach below so a mid-attach
             # failure's unload reaps every effect (unsubscribing a
@@ -924,7 +940,7 @@ class PluginAPIImpl:
             if "read_settings" not in self._permissions:
                 # Missing permission fails closed without leaking key presence.
                 return {}
-            settings = runtime_settings(settings_reader=self._settings_reader)
+            settings = self._current_settings()
             with _lock:
                 if self._runtime_closing or self._runtime_closed or self._skill in _unloading:
                     return {}

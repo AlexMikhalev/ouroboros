@@ -52,7 +52,7 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     card = page.locator('#executor-proof [data-task-id="child"]')
     card.wait_for()
     root_card = page.locator('#executor-proof [data-task-id="root"]')
-    root_meta = root_card.locator(':scope > .chat-live-summary-button > .chat-live-meta')
+    root_meta = root_card.locator(':scope > .chat-live-foot > .chat-live-meta')
     assert 'Agent model: gpt-6-astra' in root_meta.inner_text()
     # A helper's usage shares the task id but must not replace its coordinator.
     page.evaluate('''async () => {
@@ -68,46 +68,42 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     # #360 A: the chip keeps the observation word; the requested model is detail text
     # on the expanded card, so the collapsed child stays one quiet identity row.
     assert card.locator('.chat-live-executor-chip').inner_text().strip() == 'Cursor · last update'
-    detail = card.locator(':scope > .chat-live-summary-button .chat-live-executor-detail')
+    detail = card.locator(':scope > .chat-live-foot .chat-live-executor-detail')
     assert '(requested)' in detail.text_content() and not detail.locator('.chat-live-meta-text').is_visible()
     activity=card.locator('.chat-live-activity').first
     assert activity.is_visible() and activity.inner_text().startswith('Checking every')
     assert activity.evaluate('e=>getComputedStyle(e).webkitLineClamp') == '1'
-    pointer=page.locator('#executor-proof .project-work-pointer')
-    assert 'UI coherence' in pointer.inner_text()
+    # root card one press away. Outside the real panel bar it stays in the instance's status bar.
+    trigger = page.locator('#executor-proof .rw-trigger')
+    assert trigger.locator('.status-badge').count() == 1
     if linux_metrics:
         # Exercise the Linux status-pill width without bundling another font.
         page.add_style_tag(content='''
-            #executor-proof .chat-panel-statusbar .status-badge { min-width: 81px; }
+            #executor-proof .rw-trigger .status-badge { min-width: 81px; }
         ''')
-    # One-line pointer: the label ellipsizes instead of wrapping the status bar open.
-    label=pointer.locator('.project-work-pointer-label')
-    assert label.evaluate('e=>[getComputedStyle(e).whiteSpace,getComputedStyle(e).textOverflow]')==['nowrap','ellipsis']
-    assert pointer.bounding_box()['height'] <= 40
-    # Pointer and pill share one row. The common history disclosure has its own
-    # readable, wrapping row; its content determines the additional bar height.
-    assert label.evaluate('e=>e.scrollWidth<=e.clientWidth')
+    assert trigger.bounding_box()['height'] <= 40
+    # The common history disclosure has its own readable, wrapping row below the control.
     bar = page.locator('#executor-proof .chat-panel-statusbar')
     note = bar.locator('.chat-history-status')
     assert note.inner_text() == 'Some saved history is not loaded. Shown messages may have gaps.'
     assert page.locator('#executor-proof .chat-load-older-note').count() == 1
-    assert page.locator('#executor-proof .project-work-coverage').count() == 0
     geometry = bar.evaluate('''bar => {
         const box = selector => bar.querySelector(selector).getBoundingClientRect();
-        const pointer = box('.project-work-pointer'), pill = box('.status-badge'), note = box('.chat-history-status');
+        const control = box('.rw-trigger'), note = box('.chat-history-status');
         const css = getComputedStyle(bar), rect = bar.getBoundingClientRect();
-        return {pointer, pill, note, bar:rect,
+        return {control, note, bar:rect,
             spacing:parseFloat(css.paddingTop)+parseFloat(css.paddingBottom)+parseFloat(css.rowGap || 0)};
     }''')
-    assert abs(geometry['pointer']['y'] - geometry['pill']['y']) <= 8
-    assert geometry['note']['y'] >= max(geometry['pointer']['bottom'], geometry['pill']['bottom'])
+    assert geometry['note']['y'] >= geometry['control']['bottom']
     assert geometry['note']['x'] >= geometry['bar']['x']
     assert geometry['note']['right'] <= geometry['bar']['right'] + 1
-    assert geometry['bar']['height'] <= max(geometry['pointer']['height'], geometry['pill']['height']) + geometry['note']['height'] + geometry['spacing'] + 3
+    assert geometry['bar']['height'] <= geometry['control']['height'] + geometry['note']['height'] + geometry['spacing'] + 3
     input_box=page.locator('#proof-input')
     input_box.fill('Message stays in this Project')
-    pointer.click()
+    trigger.click()
+    page.locator('#executor-proof .rw-shade .rw-main', has_text='UI coherence').click()
     assert input_box.input_value() == 'Message stays in this Project'
+    assert page.locator('#executor-proof .rw-shade').is_hidden()
     terminal={**child,'is_progress':True,'subagent_event':'completed','status':'completed','result':'Checks complete',
               'ts':'2026-09-09T10:01:00Z','execution_evidence':{'delegated_runs_started':1,'delegated_runs_settled':1,
               'delegated_runs_failed':0,'harness_models':['Cursor Grok 4.6 Extra High Fast']}}
@@ -116,7 +112,7 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     assert 'Coordinator: gpt-6-astra' in card.inner_text()
     capture(page,f'executor-card-{width}-{"linux-metrics" if linux_metrics else "native-font"}')
     page.evaluate('executorProof.instance.destroy()')
-    assert page.locator('#executor-proof .project-work-pointer').count()==0
+    assert page.locator('#executor-proof .rw-trigger').count()==0
 
 
 # #360 A matrix: the chip names the helper; exceptions stay one visible phrase; the
@@ -199,7 +195,8 @@ def open_matrix(ui, page, theme, size):
 
 
 def part(card, selector):
-    return card.locator(f':scope > .chat-live-summary-button {selector}')
+    # The summary holds chip, title and line; the meta line (executor chip and detail) leads the card's foot.
+    return card.locator(f':scope > .chat-live-summary-button {selector}, :scope > .chat-live-foot {selector}')
 
 
 @pytest.mark.parametrize('size', [{'width': 1100, 'height': 721}, {'width': 375, 'height': 812}],
@@ -220,7 +217,7 @@ def test_quiet_executor_label_matrix_and_details_by_pointer_keyboard_touch(engin
         assert fragment in detail.text_content(), task
         # Collapsed: the sentence is out of sight and out of the copied line, with no dangling dot.
         assert not detail.locator('.chat-live-meta-text').is_visible(), task
-        copied = ' '.join(card.locator(':scope > .chat-live-summary-button [data-live-meta]').evaluate(COPY).split())
+        copied = ' '.join(card.locator(':scope > .chat-live-foot [data-live-meta]').evaluate(COPY).split())
         assert copied.startswith(label) and fragment not in copied and '· ·' not in copied, (task, copied)
         meta = part(card, '[data-live-meta]')
         assert meta.evaluate('e => e.scrollWidth <= e.clientWidth + 1'), task
@@ -235,9 +232,9 @@ def test_quiet_executor_label_matrix_and_details_by_pointer_keyboard_touch(engin
         const probe = document.createElement('div'); probe.innerHTML = html;
         return html.includes('"none"') && probe.innerHTML === html;
     }''', unreadable)
-    # Pointer: the card's own summary opens the sentence as ordinary meta text.
+    # Pointer: the card's Show details button opens the sentence as ordinary meta text.
     mixed = cards['m-mixed']
-    part(mixed, '[data-live-title]').click()
+    part(mixed, '[data-live-disclosure]').click()
     assert mixed.get_attribute('data-expanded') == '1'
     detail_text = part(mixed, '.chat-live-executor-detail .chat-live-meta-text')
     assert detail_text.is_visible()
@@ -250,8 +247,7 @@ def test_quiet_executor_label_matrix_and_details_by_pointer_keyboard_touch(engin
     assert cards['m-assigned'].locator(':scope > .chat-live-summary-button [data-live-phase]').inner_text() == 'Working'
     capture(page, f'{shot}-expanded')
     # Keyboard: Enter closes and Space reopens through the same control.
-    summary = mixed.locator(':scope > .chat-live-summary-button')
-    summary.focus()
+    mixed.locator(':scope > .chat-live-summary-button [data-live-disclosure]').focus()
     page.keyboard.press('Enter')
     assert mixed.get_attribute('data-expanded') == '0' and not detail_text.is_visible()
     page.keyboard.press(' ')
@@ -275,7 +271,7 @@ def test_quiet_executor_label_matrix_and_details_by_pointer_keyboard_touch(engin
     touch = ui['new_page'](has_touch=True, viewport={'width': 375, 'height': 812})
     open_matrix(ui, touch, theme, {'width': 375, 'height': 812})
     unverified = touch.locator('#executor-matrix [data-task-id="m-unverified"]')
-    unverified.locator(':scope > .chat-live-summary-button [data-live-title]').tap()
+    unverified.locator(':scope > .chat-live-summary-button [data-live-disclosure]').tap()
     assert unverified.get_attribute('data-expanded') == '1'
     assert part(unverified, '.chat-live-executor-detail .chat-live-meta-text').is_visible()
     capture(touch, f'{shot}-touch-expanded')

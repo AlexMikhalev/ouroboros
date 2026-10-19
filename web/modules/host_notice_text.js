@@ -11,7 +11,7 @@
 import { tr } from './i18n.js';
 
 export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
-    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
+    startup_notice: ['♻️ Restored pending queue: ', '♻️ Settling '],
     command_reply: ['⚠️ Command ignored: ', '✅ Owner chat registered.', '♻️ Restarting.', '⚠️ Restart cancelled: ',
         '🧬 Evolution campaign: ', '🧬 Evolution stayed OFF: ', '🧬 Evolution did not turn on: ',
         '🧠 Background consciousness ', '🧠 Background consciousness:'],
@@ -20,7 +20,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     consciousness_notice: ['🧠 Background consciousness '],
     evolution_notice: ['🧬⚠️ Evolution paused: ', '🧬 Evolution stayed OFF: ', '🧬 Evolution stayed off: ', '🧬 Evolution paused: ',
         '🧬 Evolution: ', '🧬 Evolution campaigns are self-modification work', '💸 Evolution stopped: ',
-        '🛑 Cancelled evolution task(s): ', '⚠️ Evolution stop INCOMPLETE — still live: '],
+        '🛑 Stopped evolution task(s): ', '⚠️ Evolution stop INCOMPLETE — still live: '],
     evolution_cycle_outcome: ['🧬 Evolution cycle absorbed ', '⚠️ Evolution cycle abandoned '],
     promotion_notice: ['❌ Evolution promotion refused: ', '❌ Failed to promote to stable: ', '✅ Promoted: '],
     managed_update_notice: ['📦 Managed update: ', '🔒 An update is using the repository.'],
@@ -34,7 +34,8 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     budget_notice: ['🚫 Model budget reached. '],
     deep_self_review_queued: ['🔎 Deep self-review queued: '],
     runtime_liveness_notice: ['⚠️ A chat turn looks wedged '],
-    initialization_notice: ['⚠️ System is still initializing.'],
+    initialization_notice: ['⚠️ System is still initializing.', '⚠️ The data store is still being prepared ',
+        '⚠️ Startup failed before the chat could accept messages', '⚠️ The chat is not accepting messages right now'],
     terminal_incident: ['🔌 Task ', '⚠️ Sending a message for task '],
     task_reaper_notice: ['⚠️ A timed-out worker (task '],
     worker_failure: ['⚠️ Frequent worker crashes.', '❌ worker process crashed ',
@@ -43,23 +44,27 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     // Progress rows: a task card's timeline line (`log_events.summarizeChatLiveEvent`).
     task_scheduled: ['🗓️ Scheduled subagent ', '🗓️ Scheduled task '],
     task_error: ['⚠️ Error: '],
-    cancellation_notice: ['❌ cancel '],
     finalization_notice: ['⏳ Task ', '▶️ Task '],
     skill_review: ['✅ Skill review round ', '⚠️ Skill review round ', '❌ Skill review round ', '⏳ Skill review round '],
     host_progress: ['🌐 Connection restored ', '🌐 The new attempt could not reach the provider ',
         '🌐 Provider connection ', '🌐 The primary provider temporarily refused ',
         '🌐 The request did not reach the provider ', '🌐 Primary provider answered after ',
-        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan review:', '📐 Plan review so far:', '✅ PR #', '⚠️ PR #'],
+        '🌐 Stopped waiting for ', '🌐 Still waiting for ', '⚡ Fallback: ', '📐 Plan: ', '✅ PR #', '⚠️ PR #',
+        // web_search legs (`tools/search.py`) and a declared-output baseline (`tools/shell_outputs.py`).
+        '🔍 Trying ', '↪ Trying ', '🔍 Searching: ', '🔍 Answer from ', '⚠️ Web search ', '⚠️ Output baseline unavailable: '],
 }));
 
 // Producers this install no longer runs: rows they already wrote keep losing only the mark at
 // display (host_notice_text.test.js pins that none of them is written again).
 export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
+    startup_notice: ['♻️ Restored pending queue from snapshot: ', '♻️ Cancelling '],
     attachment_notice: ['📎 Attachment staging report for ', '⚠️ Task not started: every attachment was rejected.',
         '⚠️ Some declared attachments could not be staged; '],
+    cancellation_notice: ['❌ cancel '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
-    host_progress: ['🌐 Could not establish a provider connection '],
+    evolution_notice: ['🛑 Cancelled evolution task(s): '],
+    host_progress: ['🌐 Could not establish a provider connection ', '📐 Plan review:', '📐 Plan review so far:'],
 }));
 
 const prefixFor = (text, type) => [...(HOST_NOTICE_PREFIXES.get(String(type || '')) || []),

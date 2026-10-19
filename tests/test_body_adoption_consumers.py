@@ -357,7 +357,8 @@ def test_runtime_fact_lists_retained_candidates_for_a_deliberate_resume(scene):
                           drive_path=lambda name: scene.data / name)
     section = build_runtime_section(env, {"id": "root-consumer", "type": "task"})
     assert '"body_candidates"' in section and "candidate/root-consumer" in section
-    assert f'"repo_dir": "{scene.serving}"' in section  # the Runtime block still names the RUNNING body
+    runtime, _ = json.JSONDecoder().raw_decode(section.split("\n\n", 1)[1])
+    assert runtime["repo_dir"] == str(scene.serving)  # the Runtime block still names the RUNNING body
 
 
 def test_adoption_state_uses_canonical_budget_root_for_forked_task(scene, tmp_path):

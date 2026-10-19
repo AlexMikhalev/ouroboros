@@ -104,6 +104,18 @@ class ElementStub {
         const parent = this.parentNode;
         if (parent) parent.insertBefore(node, parent.children[parent.children.indexOf(this) + 1] || null);
     }
+    insertAdjacentElement(position, node) {
+        switch (position.toLowerCase()) {
+        case 'beforebegin': return this.parentNode?.insertBefore(node, this) || null;
+        case 'afterbegin': return this.insertBefore(node, this.children[0] || null);
+        case 'beforeend': return this.appendChild(node);
+        case 'afterend':
+            if (!this.parentNode) return null;
+            this.after(node);
+            return node;
+        default: throw new Error(`Unsupported insertion position: ${position}`);
+        }
+    }
     insertBefore(node, before) {
         if (node?.isDocumentFragment) {
             for (const child of [...node.children]) this.insertBefore(child, before);
@@ -252,7 +264,7 @@ const PLAIN_ROW = {
     role: 'system',
     system_type: 'project_completion_summary',
     markdown: false,
-    content: 'Launch › Ship · Completed\nOpen the Project for details.',
+    content: 'Launch › Ship · Done with warnings\nThe reviewers did not reach a verdict on this answer.',
     project_id: 'launch',
     project_name: 'Launch',
     ts: '2026-08-31T00:00:00Z',
@@ -307,7 +319,7 @@ test('plain project row renders escaped text with the Project reference and no m
         // Escaped plain text: the raw newline survives (pre-wrap), so the row
         // did NOT pass through the markdown renderer (whose no-parser fallback
         // rewrites \n to <br>) and produced no heading elements.
-        assert.match(bubble.innerHTML, /Launch › Ship · Completed\nOpen the Project for details\./);
+        assert.match(bubble.innerHTML, /Launch › Ship · Done with warnings\nThe reviewers did not reach a verdict on this answer\./);
         assert.doesNotMatch(bubble.innerHTML, /<br>|<h1|<h2|md-h1|md-h2/);
         // Bug report #9: no enhancement pass — Mermaid/Chart/KaTeX/code-copy
         // only ever activate behind enhanceChatMarkdown's enhanced stamp.
@@ -316,7 +328,8 @@ test('plain project row renders escaped text with the Project reference and no m
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
         assert.equal(message.contains(actions), false);
-        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
+        // Right after the prose: the row's one time line is its own time, not a note between (owner 17.10, Q7 A).
+        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 1);
         assert.ok(actions, 'system-message-actions container present');
         // The row points at its Project with the one reference, never a button of its own.
         assert.deepEqual(referenceShape(actions.children[0]), LAUNCH_REFERENCE);
@@ -335,6 +348,34 @@ const MIRROR_ROW = {
     completion_answer: '**Done: PR #7 merged.**\n\nSecond paragraph.',
 };
 
+test('a nonclean final keeps one factual limitation, Project reference, and one logical delivery across retries', () => {
+    const { prior, mount } = installDom();
+    let instance;
+    try {
+        const made = makeInstance(mount);
+        instance = made.instance;
+        const row = { ...MIRROR_ROW, task_id: 'partial-task', delivery_id: 'completion:partial-task',
+            completion_reason: 'Partial result · Windows validation was not completed.' };
+        made.handlers.get('chat')(row);
+        made.handlers.get('chat')({ ...row, ts: '2026-09-01T00:00:00Z' });
+        const messages = document.byId.get('chat-messages');
+        const finals = messages.children.filter(node => node.dataset.deliveryId === row.delivery_id);
+        assert.equal(finals.length, 1, 'physical retry timestamps do not create another outcome');
+        const final = finals[0];
+        assert.equal(final.dataset.ts, String(Date.parse(row.ts)), 'the outcome keeps its original time');
+        const limitation = final.querySelector('.project-answer-limitation');
+        assert.equal(limitation.textContent, row.completion_reason);
+        assert.equal(limitation.title, row.completion_reason);
+        const actions = final.querySelector('.system-message-actions');
+        assert.equal(actions.children.length, 1);
+        assert.equal(actions.children[0].dataset.intent, 'open-project');
+        assert.match(final.innerHTML, /Done: PR #7 merged/);
+        made.handlers.get('chat')({ ...PLAIN_ROW, task_id: 'stopped-task', completion_reason: 'Stopped.' });
+        assert.equal(findBubble('system').querySelector('.project-answer-limitation'), null,
+            'the System fallback already carries its outcome and adds no duplicate limitation');
+    } finally { instance?.destroy(); restoreDom(prior); }
+});
+
 test('a completion row carrying the answer renders as an ordinary Ouroboros message with the Project chip', async () => {
     const { prior, mount } = installDom();
     let instance;
@@ -350,12 +391,12 @@ test('a completion row carrying the answer renders as an ordinary Ouroboros mess
         assert.match(bubble.innerHTML, /<div class="sender">Ouroboros<\/div>/);
         // His words, through the markdown path — and none of the host's pointer text.
         assert.match(bubble.innerHTML, /Done: PR #7 merged\./);
-        assert.doesNotMatch(bubble.innerHTML, /Open the Project for details|Completed/);
+        assert.doesNotMatch(bubble.innerHTML, /Done with warnings|did not reach a verdict/);
         const message = bubble.querySelector('.message');
         const actions = bubble.children.find((node) => node.classList.contains('system-message-actions'));
-        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 2);
-        // One control, and the SAME one the System row carries: the voice of a row never
-        // chooses how the UI points at its Project.
+        assert.equal(bubble.children.indexOf(actions), bubble.children.indexOf(message) + 1);
+        // The SAME reference the System row carries: the voice of a row never chooses how the
+        // UI points at its Project. The mirror has no second route into the result.
         assert.equal(actions.children.length, 1);
         const chip = actions.children[0];
         assert.deepEqual(referenceShape(chip), LAUNCH_REFERENCE);
@@ -431,9 +472,11 @@ test('the fold is CSS over the complete answer: clamp always, fade only when fol
     const rules = block.slice(0, block.indexOf('design-system:migrated-end'));
     assert.match(rules, /\.chat-bubble\.project-answer > \.message \{ max-height: var\(--project-answer-fold\); overflow: hidden; \}/);
     assert.match(rules, /\.chat-bubble\.project-answer\.is-folded > \.message \{[^}]*mask-image/);
+    // The Project is the route to the complete answer; the mirror never expands in place.
+    assert.doesNotMatch(rules, /\.project-answer\.is-expanded/);
     assert.doesNotMatch(rules, /user-select|font-size: \d|#[0-9a-fA-F]{3,6}\b/);
     // chat.js stays a caller: the decoration lives in its own module.
-    assert.match(chatSource, /decorateProjectRow\(bubble, \{ role, projectId, projectName,/);
+    assert.match(chatSource, /decorateProjectRow\(bubble, \{ \.\.\.meta, \.\.\.opts, role,/);
 });
 
 test('plain system row renders identically live and after history reload', async () => {
@@ -803,7 +846,7 @@ test('the legacy-memory notice reads in the install language; other plain system
             restoreDom(prior);
         }
         // Not every System row: a plain Project row stays as the host wrote it.
-        assert.match(render(PLAIN_ROW), /Launch › Ship · Completed/);
+        assert.match(render(PLAIN_ROW), /Launch › Ship · Done with warnings/);
         assert.doesNotMatch(render(PLAIN_ROW), /Запуск/);
         applyPayload({ language: 'ru', english: false, entries: {} });
         assert.match(render(notice), /Memory: what Ouroboros remembered before this update/);

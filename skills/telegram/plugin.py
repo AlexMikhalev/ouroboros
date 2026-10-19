@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import pathlib
@@ -31,10 +32,12 @@ from .lib.telegram_state import (
     _get_silent_msg, _set_silent_msg, _clear_silent_msg, _subagent_cards_enabled,
     _mirror_progress_enabled, _render_subagent_card, _data_dir,
     _jsonl_tail, _load_runtime_state, _read_json_file, _child_row_held_for_root,
+    _mirror_options, _owner_message_seen, _owner_ingress_fields, _same_silent_episode,
 )
 from .lib import telegram_i18n, telegram_inbound, telegram_quiz
 from .lib.telegram_health import _collect_health, _build_menu_tasks
-from .lib.telegram_notifier import _make_notifier
+from .lib.telegram_notifier import _make_notifier, _notify_enabled, _completion_text, _relay_text
+from .lib.telegram_typing import TypingCue, host_reply_preparation
 from .lib.miniapp_registration import _read_status, register as register_miniapp
 from .scripts.telegram_settings import (
     TelegramSettingsError,
@@ -52,11 +55,12 @@ from .scripts.telegram_settings import (
 _HONOR_ENV_PROXIES = (not in_worker_process()) and env_proxies_configured()
 
 
-def _telegram_client(api) -> TelegramClient:
+def _telegram_client(api, event=None, chat_id: int = 0) -> TelegramClient:
     """Build each bridge client with the granted token and skill-local proxy."""
     granted = api.get_settings(["TELEGRAM_BOT_TOKEN"])
     return TelegramClient(granted.get("TELEGRAM_BOT_TOKEN", ""), trust_env=_HONOR_ENV_PROXIES,
-                          proxy=telegram_proxy(pathlib.Path(api.get_state_dir())))
+                          proxy=telegram_proxy(pathlib.Path(api.get_state_dir())),
+                          **(_mirror_options(api, event, chat_id) if event is not None else {}))
 
 _SLASH_COMMAND_RE = re.compile(r"^\s*/[A-Za-z]")
 
@@ -173,10 +177,8 @@ def _build_menu_mind(command_mode: str, lang: str = "en", bg_enabled: bool = Fal
 
 
 def _load_recent_thoughts(api) -> str:
-    """Read the last few blocks from progress.jsonl and build a text snapshot."""
+    """Read the last few SQL progress rows and build a text snapshot."""
     progress_file = _data_dir(api) / "logs" / "progress.jsonl"
-    if not progress_file.exists():
-        return "_No thoughts log created yet._"
     try:
         entries, _prefix_omitted = _jsonl_tail(
             progress_file,
@@ -193,7 +195,7 @@ def _load_recent_thoughts(api) -> str:
             timestamp = str(elem.get("ts") or elem.get("timestamp") or elem.get("created_at") or "")
             task_id = str(elem.get("task_id") or "").strip()
             if preview != text:
-                ref = "data/logs/progress.jsonl"
+                ref = "data/state/dialog.sqlite (progress)"
                 if timestamp:
                     ref += f" @ {timestamp}"
                 if task_id:
@@ -209,7 +211,7 @@ def _load_recent_thoughts(api) -> str:
                 break
         if not recent:
             return "_Thoughts log is empty or waiting for next cycle._"
-        return "\n".join(recent) + "\n\nShowing up to 4 recent entries. Full source: data/logs/progress.jsonl"
+        return "\n".join(recent) + "\n\nShowing up to 4 recent entries. Full source: data/state/dialog.sqlite (progress)"
     except Exception as exc:
         return f"_Failed to read log: {exc}_"
 
@@ -895,6 +897,7 @@ async def _handle_owner_message(
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
     chat_id = int(chat.get("id") or 0)
+    _owner_message_seen(api, chat_id, int(message.get("message_id") or 0))
     # Owner binding + filtering is already enforced at the top of
     # the update loop (TOFU for all command modes), so chat_id is
     # guaranteed to equal the pinned owner chat here.
@@ -996,6 +999,7 @@ async def _handle_owner_message(
         parked = await telegram_inbound.park_inbound_file(api, client, inbound)
     try:
         await _inject(api, {
+            **_owner_ingress_fields(api, chat_id, message, update_id),
             "text": safe_text,
             "chat_id": chat_id,
             "user_id": int(sender.get("id") or chat_id or 1),
@@ -1020,14 +1024,14 @@ def _make_poller(api):
     return lambda: _poller(api)
 
 
-def _make_outbound(api):
+def _make_outbound(api, cue: TypingCue | None = None):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
             if not chat_id:
                 return
+            client = _telegram_client(api, event, chat_id)
             lang = telegram_i18n.language()
 
             # Subagent lifecycle → one dedicated bubble per subagent, edited in
@@ -1058,6 +1062,15 @@ def _make_outbound(api):
             # file it could not attach (no message line here to carry it); an actionable refusal is a numbered list (#198)
             # the owner answers in plain words (the LLM router reads it from history, P5) or on the web picker card.
             if str(event.get("annotation_type") or "") == "routing_ack":
+                from supervisor.steering import _relayed_owner_message
+
+                # Named owner relays have only the annotation; synthetic acts
+                # already get their separate steer_not_delivered System row.
+                if (event.get("action") == "steer_task" and event.get("cause")
+                        and _relayed_owner_message(str(event.get("client_message_id") or ""))):
+                    line = " · ".join(str(event[key]) for key in ("target_label", "cause") if event.get(key))
+                    await client.send_message(chat_id, line, parse_mode="")
+                    return
                 if str(event.get("status") or "") != "needs_manual_target":
                     names = [str(row.get("label") or "file") for row in event.get("attachment_manifest") or [] if isinstance(row, dict) and row.get("status") == "rejected"]
                     if names:
@@ -1080,31 +1093,49 @@ def _make_outbound(api):
                 return
 
             text = str(event.get("text") or "").strip()
+            # A relay quotes the owner's own words above Ouroboros's note; they are sent verbatim, as plain text.
+            relayed = event.get("system_type") == "relay_entry" and isinstance(event.get("relay"), dict)
+            if relayed:
+                text = _relay_text(event["relay"], text, lang)
+            completion_summary = event.get("role") == "system" and event.get("system_type") == "project_completion_summary"
+            if completion_summary:
+                notice = event.get("completion_notice")
+                if not _notify_enabled(local_settings, "TELEGRAM_NOTIFY_TASKS"):
+                    # Preserved intermediate output is content, not the optional status line.
+                    # Unrecoverable legacy metadata must not erase unknown content.
+                    text = str(notice.get("salvage") or "") if isinstance(notice, dict) else text
+                elif isinstance(notice, dict) and isinstance(notice.get("neutral"), bool) and isinstance(notice.get("detail"), str):
+                    text = _completion_text(event, str(event.get("task_id") or ""), lang)
             if not text:
                 return
             # Honor the host's markdown hint: plain text (markdown=False) is sent
             # verbatim so literal *, _, `, [] aren't mis-parsed as Telegram
             # formatting; an absent/True hint renders markdown→HTML as before.
-            parse_mode = "" if event.get("markdown") is False else "HTML"
+            parse_mode = "" if completion_summary or relayed or event.get("markdown") is False else "HTML"
 
             # A host receipt must neither replace nor become the tracked agent reply.
             silent_on = _is_silent_mode_enabled(local_settings) and event.get("role") != "system"
             tracked_msg_id = _get_silent_msg(api, chat_id) if silent_on else 0
 
-            # Silent mode: try to edit the previously tracked message in-place.
-            # editMessageText returns False on any failure (too old, deleted,
-            # identical content, parse error) so we fall back to sendMessage.
-            if silent_on and tracked_msg_id:
-                edited = await client.edit_message_text(chat_id, tracked_msg_id, text, parse_mode=parse_mode)
-                if not edited and parse_mode:
-                    edited = await client.edit_message_text(chat_id, tracked_msg_id, text, parse_mode="")
-                if edited:
-                    return
-                # Edit failed (likely too old or already identical) — clear
-                # tracking and fall through to sendMessage path.
-                _clear_silent_msg(api, chat_id)
+            # An answer never lands under, or revives, the typing it ends (DESIGN §9).
+            async with _cue_message(cue, chat_id) as delivered:
+                # Silent mode: try to edit the previously tracked message in-place.
+                # editMessageText returns False on any failure (too old, deleted,
+                # identical content, parse error) so we fall back to sendMessage.
+                if silent_on and tracked_msg_id and _same_silent_episode(api, chat_id, tracked_msg_id, event):
+                    edited = await client.edit_message_text(chat_id, tracked_msg_id, text, parse_mode=parse_mode)
+                    if not edited and parse_mode:
+                        edited = await client.edit_message_text(chat_id, tracked_msg_id, text, parse_mode="")
+                    if edited:
+                        delivered()
+                        return
+                    # Edit failed (likely too old or already identical) — clear
+                    # tracking and fall through to sendMessage path.
+                    _clear_silent_msg(api, chat_id)
 
-            msg_id = await client.send_message(chat_id, text, parse_mode=parse_mode)
+                msg_id = await client.send_message(chat_id, text, parse_mode=parse_mode)
+                if msg_id:
+                    delivered()
 
             if silent_on and msg_id:
                 _set_silent_msg(api, chat_id, msg_id)
@@ -1113,25 +1144,36 @@ def _make_outbound(api):
     return handle
 
 
-def _make_typing(api):
-    async def handle(event: Dict[str, Any]) -> None:
-        try:
-            local_settings = _load_settings(api)
-            client = _telegram_client(api)
-            chat_id = _target_chat(local_settings, event)
-            if chat_id:
-                await client.send_chat_action(chat_id, "typing")
-        except Exception as exc:
-            api.log("error", f"Telegram typing error: {exc}")
+def _make_typing(cue: TypingCue):
+    async def handle(_event: Dict[str, Any]) -> None:
+        # A start or resume is a wake, never itself a cue: a helper, a wake-up or a
+        # mirrored start shows typing only if the host says a reply is prepared (DESIGN §9).
+        cue.wake()
     return handle
+
+
+def _typing_cue(api) -> TypingCue:
+    """The bridge's one typing refresher over the host's reply-preparation projection."""
+    def targets(state: Dict[str, Any]) -> set:
+        settings = _load_settings(api)
+        rows = [row for row in state.get("chats") or [] if isinstance(row, dict)]
+        return {chat for row in rows if (chat := _target_chat(settings, {"transport": row.get("transport") or {}}))}
+
+    return TypingCue(read_state=lambda: host_reply_preparation(_data_dir(api)), targets=targets,
+                     client_factory=lambda: _telegram_client(api), warn=lambda text: api.log("warning", text))
+
+
+def _cue_message(cue: TypingCue | None, chat_id: int):
+    """The cue's bracket around one message to ``chat_id`` (an empty one without a cue)."""
+    return cue.message(chat_id) if cue is not None else contextlib.nullcontext(lambda: None)
 
 
 def _make_photo(api):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
+            client = _telegram_client(api, event, chat_id)
             image_base64 = str(event.get("image_base64") or "").strip()
             if chat_id and image_base64:
                 # Media cannot replace a text bubble in Telegram — break the
@@ -1152,8 +1194,8 @@ def _make_video(api):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
+            client = _telegram_client(api, event, chat_id)
             video_base64 = str(event.get("video_base64") or "").strip()
             if chat_id and video_base64:
                 # Media cannot replace a text bubble — reset silent tracking.
@@ -1174,8 +1216,8 @@ def _make_document(api):
         file_handle = None
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
+            client = _telegram_client(api, event, chat_id)
             file_base64 = str(event.get("file_base64") or "").strip()
             file_ref = event.get("file_ref") if isinstance(event.get("file_ref"), dict) else None
             if chat_id and (file_base64 or file_ref):
@@ -1262,8 +1304,8 @@ def _make_links(api):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
+            client = _telegram_client(api, event, chat_id)
             if not chat_id:
                 return
             title = str(event.get("title") or "").strip() or "Links"
@@ -1295,12 +1337,12 @@ def _make_links(api):
     return handle
 
 
-def _make_quiz(api):
+def _make_quiz(api, cue: TypingCue | None = None):
     async def handle(event: Dict[str, Any]) -> None:
         try:
             local_settings = _load_settings(api)
-            client = _telegram_client(api)
             chat_id = _target_chat(local_settings, event)
+            client = _telegram_client(api, event, chat_id)
             if not chat_id:
                 return
             question = str(event.get("question") or "").strip()
@@ -1338,12 +1380,13 @@ def _make_quiz(api):
             # arrives as plain parts followed by the compact keyboard message.
             # Creation holds the card's lock so a lifecycle fact cannot edit (or
             # miss) a card mid-send.
-            async with telegram_quiz.card_lock(token):
+            async with telegram_quiz.card_lock(token), _cue_message(cue, chat_id) as delivered:
                 message_id, overflowed = await telegram_quiz.send_quiz_card(
                     client, chat_id, body=body, compact=compact,
                     hint_text=telegram_quiz.hint(lang) if labels else telegram_quiz.hint_open(lang),
                     keyboard=telegram_quiz.quiz_keyboard(token, labels),
                 )
+                delivered()
                 if overflowed:
                     settled_text = compact
                 elif wait_for_answer:
@@ -1356,7 +1399,7 @@ def _make_quiz(api):
                     "message_id": int(message_id or 0), "options": labels,
                     "text": settled_text,
                 })
-                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client)
+                await telegram_quiz.apply_retained_fact(api, token, lang, client_factory=lambda: client, published=event)
         except Exception as exc:
             api.log("error", f"Telegram quiz error: {exc}")
     return handle
@@ -1377,15 +1420,17 @@ def _make_quiz_state(api):
 
 def register(api):
     telegram_i18n.configure(_data_dir(api))
+    cue = _typing_cue(api)  # Telegram failures stay inside it, so they never spend restart budget
     api.register_supervised_task("poller", _make_poller(api), restart_policy="on_failure", max_restarts=10)
     api.register_supervised_task("notifier", _make_notifier(api, trust_env=_HONOR_ENV_PROXIES), restart_policy="on_failure", max_restarts=10)
-    api.subscribe_event("chat.outbound", _make_outbound(api))
-    api.subscribe_event("chat.typing", _make_typing(api))
+    api.register_supervised_task("typing_cue", cue.run, restart_policy="on_failure", max_restarts=10)
+    api.subscribe_event("chat.outbound", _make_outbound(api, cue))
+    api.subscribe_event("chat.typing", _make_typing(cue))
     api.subscribe_event("chat.photo", _make_photo(api))
     api.subscribe_event("chat.video", _make_video(api))
     api.subscribe_event("chat.document", _make_document(api))
     api.subscribe_event("chat.links", _make_links(api))
-    api.subscribe_event("chat.quiz", _make_quiz(api))
+    api.subscribe_event("chat.quiz", _make_quiz(api, cue))
     api.subscribe_event("chat.quiz_state", _make_quiz_state(api))
     # GET hydrates the declarative form with what is stored; POST saves it.
     api.register_route("settings/save", handler=_make_settings_save(api), methods=("GET", "POST"))
@@ -1469,11 +1514,11 @@ def register(api):
                          "placeholder": "on"},
                         {"name": "TELEGRAM_NOTIFY_TASKS", "label": "Notify on task completion", "type": "select",
                          "options": [
-                             {"value": "off", "label": "Off — non-clean finishes only"},
-                             {"value": "on", "label": "On — ✅ Task done · cost · rounds"},
+                             {"value": "off", "label": "Off — no extra completion messages"},
+                             {"value": "on", "label": "On — completion messages"},
                          ],
-                         "help": "A task that ends with warnings, fails or is cancelled always sends one short "
-                                 "line, because Telegram has no task card. On adds the clean finishes.",
+                         "help": "Off also suppresses extra failure and cancellation notices. Replies, files and "
+                                 "questions still arrive; task details retain all outcomes and review evidence.",
                          "placeholder": "off"},
                         {"name": "TELEGRAM_NOTIFY_BUDGET", "label": "Notify on budget thresholds", "type": "select",
                          "options": [

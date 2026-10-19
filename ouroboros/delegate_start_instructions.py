@@ -14,13 +14,22 @@ HOST_INSTRUCTIONS = (
     "but a moved HEAD is disclosed as an instruction violation; it does not authorize "
     "a commit or apply. A self_worktree capture separately requires an unchanged HEAD. "
     "Do not review or accept your own change, do not "
-    "touch the host's runtime controls, skills, or memory. If your environment "
+    "touch the host's runtime controls or memory, or modify its skills. If your environment "
     "offers a way to ask your host a clarifying "
     "question, you may use it: your host may answer from its task context; a question "
     "that carries an engine expiry times out benignly if unanswered — continue with "
     "stated assumptions rather than blocking — while one without an expiry waits until "
     "answered. If your harness cannot ask mid-run, do NOT end the run to ask — "
     "state your assumption and continue."
+)
+
+# Owner 3B: the ONE host-facts sentence for a session that runs with a scoped native-state
+# home (delegated runs, reviewer agent sessions); never a raw API prompt, which has no shell
+# HOME. It names the two facts the engine provides WHEN PRESENT and lists no commands.
+HOST_FACTS_INSTRUCTION = (
+    " Your HOME may be a scoped native-state home your engine selected rather than the "
+    "operator's; when present, CLAUDEXOR_OPERATOR_HOME names the operator's home and "
+    "PLAYWRIGHT_BROWSERS_PATH the operator's existing browser cache."
 )
 
 UNPROVEN_BOUNDARY_INSTRUCTION = (

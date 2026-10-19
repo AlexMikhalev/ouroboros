@@ -45,7 +45,7 @@ from ouroboros.task_results import (
     write_task_result,
 )
 from tests._shared import write_queue_document
-from tests._store_shared import result_signature
+from tests._store_shared import release_store_handles, result_signature
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -204,8 +204,12 @@ def test_gr6_1_every_ingress_passes_the_live_ownership_fact():
 
     gw = (REPO_ROOT / "ouroboros" / "gateway" / "tasks.py").read_text(encoding="utf-8")
     assert "task_has_live_ownership as _live_ownership" in gw
-    assert "allow_settled=live_own" in gw
-    assert "allow_settled_target=bool(cascade_scope or allow_settled)" in gw
+    assert "allow_settled_target=bool(cascade or live_own)" in gw  # graceful ingress
+    # HTTP Stop: a target the intent request found settled is re-requested with
+    # the live-ownership fact (cascade: also its live subtree).
+    assert "return task_has_live_ownership(task_id) or (cascade and task_subtree_is_live(task_id))" in gw
+    assert ('if intent.get("already_settled") and still_owned():\n'
+            '        intent = record(allow_settled_target=True)') in gw
 
     qt = (REPO_ROOT / "supervisor" / "queue_transitions.py").read_text(encoding="utf-8")
     assert qt.count("allow_settled_target=task_has_live_ownership(task_id)") == 2, (
@@ -531,6 +535,7 @@ def test_gr6_4_unreadable_custody_log_is_typed_unknown_not_clean(qenv, monkeypat
 
     unreadable = qenv.drive / STORE_REL
     if unreadable.exists():
+        release_store_handles(unreadable)  # this process's cached handle (Windows refuses the delete)
         unreadable.unlink()
     unreadable.mkdir(parents=True)
     assert dc.custody_log_unreadable(qenv.drive) is True

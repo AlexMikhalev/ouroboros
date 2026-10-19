@@ -6,6 +6,7 @@ import { isStoreMigrating, taskSourceDownloadUrl } from './api_client.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
 import { reconcileReviewMarkup } from './review_dom_patch.js';
 import { actorAwaiting, actorUnresolved, formatReviewProjection } from './review_record_card.js';
+import { planRecordEngaged, planRecordGroup } from './plan_record_presentation.js';
 export { formatReviewProjection } from './review_record_card.js';
 
 const escapeHtmlText = escapeHtmlAttr;
@@ -665,6 +666,7 @@ function legacyPlanReviewGroup(owner, stateRecord) {
 
 export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
     const owner = text(ownerTaskId || detail?.task_id);
+    if (owner && planRecordEngaged(detail?.plan_record)) return planRecordGroup(owner, detail.plan_record, detail);
     const stateRecord = detail?.plan_review_state;
     if (!owner || !stateRecord || typeof stateRecord !== 'object') return null;
     if (stateRecord.schema_version === 1) return legacyPlanReviewGroup(owner, stateRecord);
@@ -781,6 +783,7 @@ function authorDispositionText(author, label = '') {
     ].filter(Boolean).join(' · ');
 }
 
+/** Read-only: a task-acceptance record stored before the result review replaced that machine. */
 export function taskAcceptanceGroupFromTaskDetail(detail, ownerTaskId = '') {
     const owner = text(ownerTaskId || detail?.task_id);
     const projection = detail?.review_projection;
@@ -859,8 +862,8 @@ export function reviewRecordGroupFromTaskDetail(detail, ownerTaskId = '') {
             // NOT_PERFORMED, QUORUM_FAILED and NOT_DISPATCHED reached no verdict: a warning, never a quiet neutral.
             tone: { PASS: 'done', FAIL: 'error' }[verdict] || 'warn', verdict, timestamp: text(panel.ts), ordinal: index,
             label: `${text(panel.surface) || 'review'} record ${text(panel.record_id)}`, summary: text(panel.reason),
-            superseded: false, replayed: false, revised: false, initiatorTaskId: owner, executions: [], execution: null,
-            detailRef: null,
+            superseded: false, replayed: false, revised: false, initiatorTaskId: owner,
+            executions: executionsFromReviewRecord(panel), execution: null, detailRef: null,
             detailText: [formatReviewProjection({ panels: [panel] }), text(panel.source_ref?.path) ? `Full record: ${text(panel.source_ref.path)}` : ''].filter(Boolean).join('\n'),
         };
     });
@@ -1114,6 +1117,35 @@ function reviewRevision(value) {
     return /^[0-9a-f]{64}$/.test(revision) ? revision : null;
 }
 
+// One queue for every card's review detail on the page (issue #1771): a room with
+// many review owners otherwise opened one GET per owner at once and starved the
+// browser's few connections per host (WebKit: 6), videos included. Newest request
+// first: a room opens at its newest cards, and an expansion is the latest ask. A
+// read keeps its slot until it settles; one whose response never comes is aborted
+// at the slot's bound and fails like any lost read (its card offers Retry), so a dead
+// connection neither stalls every card's details nor stays open beside the next
+// reads. A closed owner's queued reads never start.
+export const REVIEW_DETAIL_READS = 2;
+export const REVIEW_DETAIL_SLOT_MS = 30000;
+const detailQueue = [];
+let detailReads = 0;
+function drainDetailReads() {
+    while (detailReads < REVIEW_DETAIL_READS && detailQueue.length) {
+        const job = detailQueue.pop();
+        detailReads += 1;
+        const abort = new AbortController();
+        const lost = new Promise((_resolve, reject) => abort.signal.addEventListener('abort',
+            () => reject(new Error('review detail read lost its connection')), { once: true }));
+        const timer = setTimeout(() => abort.abort(), REVIEW_DETAIL_SLOT_MS);
+        Promise.race([new Promise(resolve => resolve(job.read(abort.signal))), lost]).then(job.resolve, job.reject)
+            .finally(() => { clearTimeout(timer); detailReads -= 1; drainDetailReads(); });
+    }
+}
+const queueDetailRead = (owner, read) => new Promise((resolve, reject) => {
+    detailQueue.push({ owner, read, resolve, reject });
+    drainDetailReads();
+});
+
 // Revisions are opaque SHA-256 tokens; one distinct token may trail a live GET.
 export function createReviewHydrator({ fetchDetail, applyDetail, onState = () => {}, onSettled = () => {} } = {}) {
     const states = new Map();
@@ -1130,7 +1162,7 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
         const request = Promise.resolve()
             .then(() => {
                 if (!state.everApplied || state.lastStatus === 'error') notify('loading');
-                return fetchDetail(taskId);
+                return queueDetailRead(states, (signal) => fetchDetail(taskId, { signal }));
             })
             .then((detail) => {
                 // The strict seam rejects failures; null means genuinely absent (404).
@@ -1219,6 +1251,9 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
         clear() {
             for (const state of states.values()) clearTimeout(state.migrationTimer);
             states.clear();
+            for (const [index, job] of [...detailQueue.entries()].reverse()) {
+                if (job.owner === states) detailQueue.splice(index, 1)[0].reject(new Error('review detail read cancelled'));
+            }
         },
     };
 }

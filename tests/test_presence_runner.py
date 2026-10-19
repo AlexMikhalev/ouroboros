@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from tests._dialogue import chat_rows
 
 
 from ouroboros.presence_admission import PresenceAdmission
@@ -108,7 +109,7 @@ def test_runner_builds_bounded_fresh_task_and_logs_shared_dialogue(tmp_path):
     assert captured["metadata"]["inline_max_rounds"] == 10
     assert captured["metadata"]["presence"]["binding_id"] == "1" * 32
     assert captured["task_contract"]["capability_ceiling"]["digest"] == _admission().capability_ceiling.digest
-    rows = [json.loads(line) for line in (data / "logs" / "chat.jsonl").read_text().splitlines()]
+    rows = chat_rows(data)
     assert [row["direction"] for row in rows] == ["in", "out"]
     assert rows[0]["transport"]["actor"]["platform_actor_id"] == "user-7"
     assert rows[0]["presence_provenance"] == {
@@ -285,11 +286,13 @@ def test_presence_turn_is_live_for_liveness_readers_but_never_an_owner_target(mo
         _accepting_owner_messages=True, _current_task_metadata={}, _current_task_text="owner text",
         _task_started_ts=1.0, _current_chat_id=1)
     armed, seen = [], {}
+    routing_ctx = SimpleNamespace(DRIVE_ROOT=tmp_path)  # the roster now reads each root's room-reader fact
 
     def observe(task_id):
         return {
             "orphan": _is_stale_orphan_running_task(tmp_path, task_id, orphan_row),
-            "drain": workers.drain_repo_writers(timeout=0), "roots": [row["task_id"] for row in _active_direct_roots(None)],
+            "drain": workers.drain_repo_writers(timeout=0),
+            "roots": [row["task_id"] for row in _active_direct_roots(routing_ctx)],
             "turns": [turn["id"] for turn in workers.direct_chat_turns()],
             "state": [row["activity_id"] for row in _direct_turns_snapshot_safe()],
             "busy": (_has_running_agent_tasks(), _has_started_agent_tasks()), "wakes": mind.live_turns(),

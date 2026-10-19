@@ -28,6 +28,7 @@ bars the next admission; it was not prevented.
 from __future__ import annotations
 
 from ouroboros.store import StoreBusy
+from ouroboros.usage_ledger import BillingAuthorityUnavailable
 
 import logging
 import math
@@ -51,51 +52,16 @@ def scope_group(scope: Any) -> tuple:
     return group, (None if limit is None else max(0.0, float(limit)))
 
 
+# Older records may carry an ``unavailable:<id>`` stand-in group with a zero cap. Nothing
+# produces one any more and it names no bucket: an authority that cannot be established
+# raises ``BillingAuthorityUnavailable`` (kind and cause), never a group or a zero.
 UNAVAILABLE_GROUP_PREFIX = "unavailable:"
 
 
-def effective_billing_fields(budget_root: Any, root_id: str, fields: Dict[str, Any],
-                             *, non_task_operation: bool = False) -> Dict[str, Any]:
-    """Overlay canonical owner amendments on the original binding, never spend.
-
-    Only the group's own root can amend its total allowance. A successor's
-    root amendment leaves the original group ceiling independent. The historical
-    source-bound writer owns authorization; old ledger rows remain immutable.
-    """
-    from ouroboros.task_results import load_task_result
-
-    result = dict(fields)
-    group = str(fields.get("billing_group_id") or root_id)
-    # Host operations explicitly bind a non-task scope. They still pay through
-    # the same ledger/global cap, but have no task-result amendment authority.
-    # A task or a carried foreign group never gains this exemption from its ID.
-    if non_task_operation and group == root_id:
-        return result
-    if not budget_root or not group or group.startswith(UNAVAILABLE_GROUP_PREFIX):
-        return result
-    try:
-        for tid in dict.fromkeys((root_id, group)):
-            row = load_task_result(pathlib.Path(budget_root), tid, strict=True) or {}
-            amendments = row.get("acceptance_root_cap_amendments") or []
-            if not amendments:
-                continue
-            last = amendments[-1]
-            cap = last.get("new_cap_usd")
-            if (last.get("accounting_root_task_id") != tid or not last.get("source_identity")
-                    or not last.get("source_ref") or not last.get("recorded_at")
-                    or type(cap) not in (int, float) or not math.isfinite(cap) or cap <= 0):
-                raise ValueError("invalid_group_cap_amendment")
-            if tid == root_id:
-                result.update(root_limit_usd=cap, root_limit_source="owner_amendment", root_limit_revision=last["source_identity"])
-            if tid == group:
-                result.update(billing_group_limit_usd=cap, billing_group_limit_source="owner_amendment",
-                              billing_group_limit_revision=last["source_identity"])
-        return result
-    except StoreBusy:
-        raise
-    except Exception:
-        log.warning("Effective billing authority unavailable for %s", group, exc_info=True)
-        return {**result, "billing_group_id": UNAVAILABLE_GROUP_PREFIX + group, "billing_group_limit_usd": 0.0}
+def authority_unavailable(kind: str, root_task_id: str, cause: str) -> BillingAuthorityUnavailable:
+    """The typed non-money refusal: ``unreadable`` (an operational fault) or ``refused`` (positive policy)."""
+    return BillingAuthorityUnavailable(f"billing group authority unavailable for root {root_task_id} ({kind}: {cause})",
+                                       kind=kind, cause=cause, root_task_id=root_task_id)
 
 
 def ledger_billing_binding(budget_root: Any, root_task_id: str) -> Dict[str, Any]:
@@ -127,7 +93,9 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
     """Resolve the root's durable whole-work binding; only initial admission may pin it.
 
     Root caps remain independent of the original group cap. Missing descendant or
-    continuation authority is unavailable, never an independent wallet. This is
+    continuation authority raises ``BillingAuthorityUnavailable``, never an independent
+    wallet: ``refused`` when a clean read positively shows missing or forbidden lineage
+    (a quarantined identity raises on the strict read instead: ``unreadable``). This is
     also used outside an execution context for late custody settlement. Scheduled
     occurrences derive the initial binding here but persist it atomically with
     their canonical frozen receipt (persist_initial=False).
@@ -135,9 +103,7 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
     from ouroboros.task_results import load_task_result, stamp_task_result_schema
     from ouroboros.utils import utc_now_iso
 
-    unavailable = {"root_limit_usd": root_limit,
-                   "billing_group_id": UNAVAILABLE_GROUP_PREFIX + root_task_id,
-                   "billing_group_limit_usd": 0.0}
+    refused = lambda cause: authority_unavailable("refused", root_task_id, cause)  # noqa: E731
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     carried = metadata.get("continuation") or {}
     task_id = str(task.get("id") or task.get("task_id") or "")
@@ -147,7 +113,7 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
         # group), so the ledger is consulted: a warm view off every other lock.
         historical = ledger_billing_binding(budget_root, root_task_id) if budget_root and not row else {}
         if not row and root_task_id != task_id and not historical:
-            return unavailable
+            raise refused("root_lineage_missing")
         row = row or {}
         root_meta = row.get("metadata") or {}
         schedule_id = str(row.get("schedule_id") or root_meta.get("schedule_id") or metadata.get("schedule_id") or "")
@@ -171,7 +137,7 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
                 # relationship, keeps its own root; nothing else invents one.
                 recorded = root_meta.get("followup_relation") if "followup_relation" in root_meta else {"kind": ""}
                 if (recorded or {}).get("kind") not in {"", "independent", "unknown"}:
-                    return unavailable
+                    raise refused("related_followup_unbound")
             else:
                 scheduled_binding = task_binding(budget_root, schedule)
                 if scheduled_binding is not None:
@@ -180,12 +146,12 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
             # independent root uses only its own canonical initial binding.
             own = row.get("billing_group") or {}
             if own and own.get("billing_group_id") != root_task_id:
-                return unavailable
+                raise refused("foreign_initial_binding")
             metadata = {k: v for k, v in metadata.items() if k not in {"billing_group", "continuation"}}
             root_meta = {k: v for k, v in root_meta.items() if k not in {"billing_group", "continuation"}}
             carried = {}
         elif metadata.get("source") == "task_followup" or root_meta.get("source") == "task_followup":
-            return unavailable
+            raise refused("followup_without_schedule")
         carried = root_meta.get("continuation") or carried
         binding = row.get("billing_group") or root_meta.get("billing_group") or metadata.get("billing_group") or carried or historical
         if not binding and row and budget_root:
@@ -208,25 +174,38 @@ def task_billing_fields(task: Dict[str, Any], root_task_id: str, root_limit: Opt
                 patch_document(pathlib.Path(budget_root), root_task_id, pin)
         if binding:
             if not isinstance(binding, dict) or not binding.get("billing_group_id") or "billing_group_limit_usd" not in binding:
-                return unavailable
+                raise authority_unavailable("unreadable", root_task_id, "malformed_binding")
+            if str(binding["billing_group_id"]).startswith(UNAVAILABLE_GROUP_PREFIX):
+                raise refused("stand_in_binding")  # an older record's stand-in authorizes nothing
             limit = binding["billing_group_limit_usd"]
             if limit is not None and (isinstance(limit, bool) or not math.isfinite(float(limit))):
-                return unavailable
+                raise authority_unavailable("unreadable", root_task_id, "malformed_binding")
             return {"root_limit_usd": root_limit, **{key: binding.get(key) for key in (
                 "billing_group_id", "billing_group_limit_usd", "billing_group_limit_source",
                 "billing_group_limit_revision")}}
         return {"root_limit_usd": root_limit, "billing_group_id": root_task_id,
                 "billing_group_limit_usd": root_limit}
-    except StoreBusy:
+    except (StoreBusy, BillingAuthorityUnavailable):
         raise
-    except Exception:
+    except Exception as exc:
         log.warning("Billing authority unavailable for %s", root_task_id, exc_info=True)
-        return unavailable
+        raise authority_unavailable("unreadable", root_task_id, f"read_failed:{type(exc).__name__}") from exc
 
 
 def settlement_billing_fields(root: Any, task_id: str, root_task_id: str) -> Dict[str, Any]:
-    """Late receipts use durable lineage even without an active execution scope."""
-    binding = task_billing_fields({"id": task_id}, root_task_id, None, root)
+    """Late receipts keep the bucket their admission bound, even without an execution scope.
+
+    Durable lineage, else the tree's delegated START custody. When neither can say,
+    ``BillingAuthorityUnavailable`` leaves the receipt in its existing custody for a
+    later pass: no row is written under a stand-in, missing or caller's own group.
+    """
+    if not root_task_id:  # no task identity at all: an unattributed receipt (global axis), no group to guess
+        return {}
+    failure = None
+    try:
+        binding = task_billing_fields({"id": task_id}, root_task_id, None, root)
+    except BillingAuthorityUnavailable as exc:
+        binding, failure = {}, exc
     if binding.get("billing_group_limit_source"):
         return binding
     from ouroboros.delegate_custody_current import tree_billing_group
@@ -236,9 +215,13 @@ def settlement_billing_fields(root: Any, task_id: str, root_task_id: str) -> Dic
         carried = tree_billing_group(pathlib.Path(root), root_task_id)
     except StoreBusy:
         raise
-    except StoreError:
-        return {"billing_group_id": UNAVAILABLE_GROUP_PREFIX + root_task_id, "billing_group_limit_usd": 0.0}
-    return carried if carried else binding
+    except StoreError as exc:
+        raise authority_unavailable("unreadable", root_task_id, "start_custody_unreadable") from exc
+    if carried:
+        return carried
+    if failure is not None:
+        raise failure
+    return binding
 
 
 def raise_group_refusal(view: Any, scope: Any) -> None:
@@ -246,9 +229,8 @@ def raise_group_refusal(view: Any, scope: Any) -> None:
     from ouroboros import usage_accounting as ua
 
     group, limit = scope_group(scope)
-    if group.startswith(UNAVAILABLE_GROUP_PREFIX):
-        raise ua.BudgetExceeded(f"billing group authority unavailable for root {group[len(UNAVAILABLE_GROUP_PREFIX):]}",
-                                limit_scope="root", root_task_id=str(getattr(scope, "root_task_id", "") or ""))
+    if group.startswith(UNAVAILABLE_GROUP_PREFIX):  # an older record's stand-in is no bucket, never a zero cap
+        raise authority_unavailable("refused", str(getattr(scope, "root_task_id", "") or group), "stand_in_binding")
     if not group or limit is None:
         return
     if view.exceeds_limit(limit, billing_group_id=group):
@@ -371,8 +353,8 @@ def review_wave_admission(
                 remaining = round(max(0.0, limit - known), 6)
                 result.update(limit_usd=limit, known_usd=known, accounted_usd=ua._number(projection.get("accounted_usd")),
                               reserved_usd=holds(projection), binding_axis="root")
-            # Resolve the same task-bound durable group and owner amendments
-            # as a seat reservation, without reserving money or pinning a binding.
+            # Resolve the same task-bound durable group as a seat reservation,
+            # without reserving money or pinning a binding.
             # A raised in-memory root fence alone cannot raise the original group.
             _, bound_scope = ua._merge_scope(ua.AttemptRequest(
                 model="", provider="", drive_root=drive_root,
@@ -380,8 +362,6 @@ def review_wave_admission(
                 root_limit_usd=root_limit_usd,
             ))
             group, group_limit = scope_group(bound_scope)
-            if group.startswith(UNAVAILABLE_GROUP_PREFIX):
-                return {**result, "fits": False, "binding_axis": "group", "reason": "billing_authority_unavailable"}
             if group and group_limit is not None:
                 group_projection = ua.usage_projection(drive_root, billing_group_id=group)
                 group_known = ua._number(group_projection.get("settled_usd"))
@@ -444,22 +424,28 @@ def review_wave_admission(
         # The reservation's equality: no room once known spend reached the limit.
         result["fits"] = remaining > 1e-9
         return result
-    except Exception:
+    except BillingAuthorityUnavailable as exc:
+        # Not money: no seat could reserve. The kind says whether rereading can help.
+        return {**result, "fits": False, "binding_axis": "group", "reason": "billing_authority_unavailable",
+                "billing_authority": exc.kind}
+    except Exception as exc:
+        # Advisory: every seat's own reservation still decides. A failed read is
+        # disclosed as unknown, never shown as room and never a new refusal.
         log.debug("review_wave_admission failed open", exc_info=True)
-        return result
+        return {**result, "fits": None, "admission_unknown": type(exc).__name__}
 
 
 def task_accounting_key(result_root: Any, task: Dict[str, Any], root_task_id: str) -> str:
     """The strict money reader's key for a queued task: its group, or its own root.
 
-    An unavailable group yields a key no ledger row matches under a group
-    projection... it is refused instead: ``refresh_root_accounting`` then reads
-    nothing it could call room (``unavailable:`` is never a real group id).
+    An unestablished authority yields no key: ``refresh_root_accounting`` then reads
+    nothing it could call room.
     """
-    fields = task_billing_fields(task, root_task_id, None, result_root)
-    group = str(fields["billing_group_id"])
-    if group.startswith(UNAVAILABLE_GROUP_PREFIX):
+    try:
+        fields = task_billing_fields(task, root_task_id, None, result_root)
+    except BillingAuthorityUnavailable:
         return ""  # no key: the grant refuses ``root_accounting_unavailable``
+    group = str(fields["billing_group_id"])
     return f"{GROUP_KEY_PREFIX}{group}" if group and group != root_task_id else root_task_id
 
 
@@ -483,7 +469,7 @@ def current_usage_projection(
         with usage_store.read(root, allow_stale=allow_stale) as txn:
             projection = projection_view(txn, root_task_id=root_task_id, billing_group_id=billing_group_id,
                                          degraded=usage_store.integrity_degraded(root))
-        return amended_projection(root, billing_group_id or root_task_id, projection, group=bool(billing_group_id))
+        return projection
     if global_limit_usd is None:
         from ouroboros.settings_setup_contract import resolve_total_budget_usd
         global_limit_usd = resolve_total_budget_usd()  # None: no limit; an unreadable run cap is 0.0
@@ -491,21 +477,6 @@ def current_usage_projection(
     with usage_store.read(root, allow_stale=allow_stale) as txn:
         return projection_view(txn, limit=limit, include_roots=include_roots,
                                degraded=usage_store.integrity_degraded(root))
-
-
-def amended_projection(root, identity, projection, *, group=False):
-    """Read current owner authority over a copy, leaving historical cache intact."""
-    fields = effective_billing_fields(root, identity, {"billing_group_id": identity,
-        "billing_group_limit_usd": projection.get("limit_usd"), "root_limit_usd": projection.get("limit_usd")})
-    result = dict(projection)
-    limit = fields.get("billing_group_limit_usd" if group else "root_limit_usd")
-    if str(fields.get("billing_group_id", "")).startswith(UNAVAILABLE_GROUP_PREFIX):
-        result["integrity_degraded"] = True
-        limit = 0.0
-    result.update({key: value for key, value in fields.items() if key.endswith(("source", "revision"))})
-    if limit is not None:
-        result.update(limit_usd=limit, remaining_known_usd=round(max(0., limit - result["settled_usd"]), 6))
-    return result
 
 
 def task_money_snapshot(root, task, root_id, *, root_limit=None):
@@ -519,11 +490,11 @@ def task_money_snapshot(root, task, root_id, *, root_limit=None):
     """
     from ouroboros import usage_accounting as ua
     from ouroboros import usage_store
-    fields = task_billing_fields(task, root_id, root_limit, root)
-    fields = effective_billing_fields(root, root_id, fields)
-    group = str(fields.get("billing_group_id") or root_id)
-    if group.startswith(UNAVAILABLE_GROUP_PREFIX):
+    try:
+        fields = task_billing_fields(task, root_id, root_limit, root)
+    except BillingAuthorityUnavailable:
         return None
+    group = str(fields.get("billing_group_id") or root_id)
     with usage_store.read(ua._drive_root(root)) as txn:
         own, shared = txn.summary(root_id), txn.summary(billing_group_id=group)
         initial = txn.binding("root", root_id) or {}

@@ -1,11 +1,6 @@
-"""
-Ouroboros — Shared configuration (single source of truth).
-
-Paths, the settings-file lifecycle (locked load/normalize/save plus environment
-projection) and mode-aware write authority. The vocabularies it reads through —
-shipped defaults, closed scales, model slots, reviewer routes, numeric limits —
-live in sibling leaves and are re-exported here, so ``ouroboros.config`` remains
-the one import surface for settings knowledge.
+"""Shared configuration: paths, locked settings lifecycle and mode-aware writes.
+Defaults, scales, model slots, routes and limits live in sibling leaves and are
+re-exported here: one import surface for settings knowledge.
 """
 
 from __future__ import annotations
@@ -25,7 +20,6 @@ from ouroboros.context_mode_compat import (
 from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
 from ouroboros.provider_models import compute_direct_review_models_fallback, fallback_candidate_targets, local_only_review_route_env, migrate_model_value, resolve_model_target, review_model_uses_local as review_model_uses_local  # noqa: F401
 from ouroboros.secret_masking import strip_masked_secrets
-from ouroboros.telegram_token_separation import prepare_bot_tokens
 from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_defaults import (
     CLAUDEXOR_STARTUP_WAIT_SEC, CLAUDEXOR_STARTUP_POLL_SEC,  # noqa: F401
@@ -35,19 +29,18 @@ from ouroboros.settings_defaults import (
     OPENROUTER_DEFAULTS,  # noqa: F401
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
-    PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS, REVIEW_POOL_MIGRATED_SETTING_KEYS, REVIEW_POOL_MIGRATION_CLASS_LINE,  # noqa: F401
     retired_setting_keys_notice,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
-    SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
+    SAVED_CHOICE_SETTINGS, SETTINGS_KEYS_NOT_EXPORTED_TO_ENV, unauthored_saved_choices,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
     _DISK_AUTHORED_SETTINGS,  # noqa: F401
     settings_env_keys,  # noqa: F401
 )
 from ouroboros.settings_scales import (
-    EFFORT_SCALE, OPTIONAL_BOUND_LEGACY, UNLIMITED,  # noqa: F401
+    EFFORT_SCALE, EFFORT_RANGE_KEYS, EFFORT_FORMAT_KEY, normalize_effort_document, OPTIONAL_BOUND_LEGACY, UNLIMITED,  # noqa: F401
     PROMPT_CACHE_TTL_SCALE, defaults_for_settings_document, optional_bound_value,  # noqa: F401
     REVIEW_POOL_DEFAULT_EFFORT,  # noqa: F401
     VALID_RUNTIME_MODES,  # noqa: F401
@@ -81,14 +74,13 @@ from ouroboros.model_slots import (
     parse_fallback_chain,  # noqa: F401
 )
 from ouroboros.review_model_routes import (
-    _DIRECT_PROVIDER_REVIEW_RUNS,  # noqa: F401
     _exclusive_direct_remote_provider_env,  # noqa: F401
     adaptive_quorum,  # noqa: F401
     get_review_enforcement,  # noqa: F401
     resolved_review_model_target,  # noqa: F401
 )
 from ouroboros.runtime_limits import (
-    EXTERNAL_PLATFORM_UPDATE_TIMEOUT_SEC, WORKER_SPAWN_GRACE_SEC,  # noqa: F401
+    ARTIFACT_COMPRESSION_TIMEOUT_SEC, EXTERNAL_PLATFORM_UPDATE_TIMEOUT_SEC, WORKER_SPAWN_GRACE_SEC,  # noqa: F401
     WORKER_READY_WINDOW_SEC,  # noqa: F401
     WORKER_READY_MAX_ATTEMPTS, WORKER_READY_CEILING_SEC,  # noqa: F401
     SUPERVISOR_EVENT_BATCH_MAX_EVENTS, SUPERVISOR_EVENT_BATCH_MAX_SEC, BUDGET_PROJECTION_RETRY_SEC,  # noqa: F401
@@ -107,8 +99,6 @@ from ouroboros.runtime_limits import (
     WAKE_DEFAULT_SEC,  # noqa: F401
     _bounded_positive_int_setting,  # noqa: F401
     _clamped_number_setting,  # noqa: F401
-    get_acceptance_reserve_pct,  # noqa: F401
-    get_acceptance_review_est_sec,  # noqa: F401
     get_bg_wakeup_max_sec, get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
@@ -123,7 +113,6 @@ from ouroboros.runtime_limits import (
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
     get_onboarding_snapshot_timeout_sec,  # noqa: F401
-    get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
@@ -140,6 +129,12 @@ from ouroboros.runtime_limits import (
     get_update_letter_timeout_sec, get_ui_translation_timeout_sec, get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
+
+# Physical safety budgets, not test-value judgments or kernel-enforced quotas.
+TEST_WORKER_PEAK_RSS_BYTES = 1024**3  # Provisional 1 GiB; loaded P0 observed 690 MiB/worker.
+TEST_MEMORY_RESERVE_FRACTION = 0.10  # Keep physical headroom for the OS and other work.
+TEST_PROCESS_SAMPLE_SEC = 1.0  # Poll latency; allocations between samples can outrun the stop.
+TEST_PROCESS_TOKEN_SCAN_SEC = 5.0  # Detached members are found by token this often; the scan reads every environment.
 
 
 def resolve_task_execution_timeout_sec(task: dict, *, global_ceiling=_CURRENT_TASK_CEILING) -> Optional[float]:
@@ -402,8 +397,13 @@ def get_auto_grant_enabled() -> bool:
 
 
 def get_trust_native_seeded_skills() -> bool:
-    """Whether launcher-seeded native skills get the hash-pinned trust verdict."""
+    """Whether built-ins install trusted when the source list has no built-in row (the derived row reads it too)."""
     return _settings_flag_enabled("OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS")
+
+
+def get_starter_skills_turn_on() -> bool:
+    """Whether the build's starter installs request first enablement when ready."""
+    return _settings_flag_enabled("OUROBOROS_STARTER_SKILLS_TURN_ON")
 
 
 def get_runtime_mode() -> str:
@@ -483,13 +483,14 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """Normalize writes under ratchets; only the writer names authored_keys.
-    Preserve disk/forwarded intent and install provenance; persist this write's
-    review-pool receipts before replacing the pre-image (review_pool_receipts)."""
+    """Normalize settings writes under existing ratchets. Only the actual writer names authored_keys; a defaults
+    merge preserves absent disk-owned intent, forwarded environment choices (an absent ``SAVED_CHOICE_SETTINGS``
+    key stays absent) and install-time provenance."""
     from ouroboros.review_pool_receipts import persist_write_receipts
-    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)
+    persist_write_receipts(DATA_DIR, settings, SETTINGS_PATH)  # the review-pool receipts THIS write owes, before the pre-image goes
     authored = set(authored_keys or ())
-    prepared = {k: v for k, v in settings.items() if not (
+    unauthored = unauthored_saved_choices(settings, _settings_integrity.read_settings_json_verified(SETTINGS_PATH), authored)
+    prepared = {k: v for k, v in settings.items() if k not in unauthored and not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
         and not (
             k == "OUROBOROS_CONTEXT_MODE_AUTO_LOW"
@@ -504,7 +505,9 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
     for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         if key in prepared:
             prepared[key] = normalize_model_role_options(key, prepared[key])[1]
-    return prepare_bot_tokens(prepared, SETTINGS_DEFAULTS)
+    from ouroboros.composer_cognition import preserve_project_cognition
+    preserve_project_cognition(prepared, SETTINGS_PATH)
+    return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
 
 
 def _guard_safety_mode_lowering(settings: dict, *, allow_safety_lowering: bool = False) -> None:
@@ -572,14 +575,8 @@ def resolve_data_skills_dir(data_dir: pathlib.Path) -> Optional[pathlib.Path]:
 
 
 def get_ouroboroshub_catalog_url() -> str:
-    """Return the official OuroborosHub static catalog URL."""
+    """The public hub's v1 catalog URL: the derived hub source rows and the publish fallback read it."""
     return str(runtime_settings().get("OUROBOROS_HUB_CATALOG_URL") or SETTINGS_DEFAULTS["OUROBOROS_HUB_CATALOG_URL"]).strip()
-
-
-def get_ouroboroshub_skills_dir() -> pathlib.Path:
-    """Return ``<DATA_DIR>/skills/ouroboroshub/`` (created on demand by
-    ``ensure_data_skills_dir``, which makes every source subdir)."""
-    return ensure_data_skills_dir(DATA_DIR) / SKILL_SOURCE_OUROBOROSHUB
 
 
 def get_clawhub_registry_url() -> str:
@@ -702,9 +699,7 @@ def verify_settings_integrity() -> str | None:
 
 log = logging.getLogger(__name__)
 
-# Dropped-retired-key sets this process has already reported (the notice in
-# ``normalize_settings_raw``). Keyed by the exact set so a document carrying a
-# second ghost still gets its own line.
+# Retired-key combinations reported by normalize_settings_raw each get one notice.
 _RETIREMENT_NOTICE_SEEN: set[tuple[str, ...]] = set()
 
 
@@ -818,7 +813,7 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     compatibility migration is persisted only while that lock is held; the write contains
     the raw mapping plus the normalized pair, never a defaults-merged settings document."""
     from ouroboros.review_pool_migration import apply_at_read_seam, environment_overridable_keys
-    from ouroboros.server_runtime import MODEL_SLOT_KEYS, authored_model_slots, propose_unauthored_model_slots
+    from ouroboros.server_runtime import SAVED_MODEL_ROLE_KEYS, authored_model_slots, propose_unauthored_model_slots
     loaded: dict = {}
     try:
         raw = _settings_integrity.read_settings_json_verified(SETTINGS_PATH)
@@ -838,13 +833,13 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
     settings = defaults_for_settings_document(raw is not None or SETTINGS_PATH.exists())
     settings.update(loaded)
     env_wins = environment_overridable_keys(raw)  # a seam default for an ABSENT key is not the owner's value
-    env_authored, echo = set(), _settings_integrity.projected_proposals(os.environ)
+    env_authored, echo = set(), _settings_integrity.projected_proposals(environ := _settings_integrity.read_environ())
     for key in SETTINGS_DEFAULTS:
-        raw_env = os.environ.get(key)
+        raw_env = environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
             continue
-        if raw_env == echo.get(key) or (key in MODEL_SLOT_KEYS and key in loaded):
-            continue  # this tree's own projection of a proposal is no choice; a saved slot (blank too) is the owner's
+        if raw_env == echo.get(key) or (key in loaded and (key in SAVED_MODEL_ROLE_KEYS or key in SAVED_CHOICE_SETTINGS)):
+            continue  # this tree's own projection of a proposal is no choice; a saved slot or choice (blank too) is the owner's
         if key == "OUROBOROS_RETURN_REASONING" and raw_env == "":
             settings[key] = ""
             continue
@@ -854,7 +849,9 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
             continue
         settings[key] = _coerce_setting_value(key, raw_env)
         env_authored.add(key)
-    # Unauthored model slots follow the configured access; a never-configured install (§1.5) mints its factory catalog here.
+    settings.update(normalize_effort_document({EFFORT_FORMAT_KEY: loaded.get(EFFORT_FORMAT_KEY),
+        **{key: settings[key] for key in EFFORT_RANGE_KEYS if key in loaded or key in env_authored}}))
+    # Unauthored slots and the never-configured catalog follow the configured access.
     propose_unauthored_model_slots(settings, authored_model_slots(loaded) | env_authored)
     apply_at_read_seam(settings, merged=True)
     return settings
@@ -866,14 +863,14 @@ def save_settings(
     allow_elevation: bool = False,
     onboarding_safety_default: bool = False,
 ) -> None:
-    """Persist settings and enforce owner-only mode ratchets.
+    """Persist a view; only an owner writer's authored_keys authors a first saved-choice key.
 
-    Elevation above the boot baseline is refused after initialization (``allow_elevation`` is then
-    inert to agent-reachable subprocesses; production entry points must call
-    ``initialize_runtime_mode_baseline`` before agent code). Context-mode lowering likewise
-    requires the explicit owner path outside Cyber Pro; the retired auto-Low key is an inert false tombstone.
-    ``onboarding_safety_default`` is a NARROW boolean authorizing exactly one transition —
-    a FRESH install (no settings file yet) authoring ``OUROBOROS_SAFETY_MODE="light"``."""
+    Existing SAVED_CHOICE_SETTINGS survive; changed values alone are not authorship.
+    Elevation after initialization is refused (``allow_elevation`` then inert); production calls
+    ``initialize_runtime_mode_baseline`` before agent code. Outside Cyber Pro, context lowering
+    needs the owner path; the retired auto-Low flag stays false.
+    ``onboarding_safety_default`` allows only a fresh install (no settings file) to choose
+    ``OUROBOROS_SAFETY_MODE="light"``."""
     _guard_live_settings_write()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd = _acquire_settings_lock()

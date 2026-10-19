@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from supervisor import state, state_initialization
+from tests._store_shared import remove_store_tree
 
 
 @pytest.fixture
@@ -257,9 +258,11 @@ def test_panic_requests_every_physical_stop_before_any_persistence_and_never_wai
     from supervisor import evolution_lifecycle as lifecycle
 
     # Production exits permanently; this in-process exit stub must not leave
-    # its terminal admission latches set for subsequent consumer tests.
+    # its terminal admission latches set for subsequent consumer tests, nor kill
+    # this worker's own multiprocessing children (the shared supervisor event bus).
     for owner in (workspace_executor, services, shell_process):
         monkeypatch.setattr(owner, "_panic_requested", False)
+    monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     _write(state.STATE_PATH, _prior())
     order: list = []
     release = threading.Event()
@@ -272,6 +275,10 @@ def test_panic_requests_every_physical_stop_before_any_persistence_and_never_wai
     import ouroboros.platform_layer as platform_layer
 
     monkeypatch.setattr(platform_layer, "kill_process_on_port", lambda port: order.append(("port", port)))
+    # The real panic kills every multiprocessing child of THIS process; in a test that
+    # would include another test's process-global event bus manager, leaving a dead
+    # proxy that breaks every later emission. Like the other in-process panic tests.
+    monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     started = time.monotonic()
     with pytest.raises(SystemExit):
         control.execute_panic_stop(  # a stalled log handler and a held clock lock block nothing either
@@ -470,7 +477,7 @@ def test_only_a_directory_ancestor_proves_the_state_absent(root, monkeypatch, er
     assert state_initialization.supervisor_evidence(root) == ("none", "")
     assert state.init_state().quality == "current" == state.read_state().quality
     assert state_initialization.read_witness(root)[1]["phase"] == "complete"
-    shutil.rmtree(root / "state")
+    remove_store_tree(root / "state")  # the boot above opened its stores
     real_stat = os.stat
     monkeypatch.setattr(os, "stat", lambda path, *a, **k: (_ for _ in ()).throw(PermissionError(
         errno.EACCES, "denied")) if pathlib.Path(path) == root / "state" else real_stat(path, *a, **k))

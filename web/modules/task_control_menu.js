@@ -2,15 +2,18 @@
 // "Wrap up" (soft finalize-then-stop), "Hurry up" (typed task-local hurry
 // control, never a chat message), "Pause"/"Resume" (root-only, whole tree; the
 // request_id survives uncertain or latch_pending replies until a confirmed
-// Pause or Resume retires it) and "Stop now" (hard stop). Dismissing the menu
-// continues the run. While a cancel intent is pending, the only offered action
-// is "Stop now", the monotonic escalation of the same durable stop intent;
-// "Hurry up" is refused then and never offered.
+// Pause or Resume retires it), "Stop earlier attempt" (a work's earlier
+// Continue attempt that still owns live helpers) and "Stop now" (hard stop).
+// Dismissing the menu continues the run. While a cancel intent is pending, the
+// only offered action is "Stop now", the monotonic escalation of the same
+// durable stop intent; "Hurry up" is refused then and never offered.
 //
-// Eligibility gates differ per surface; endpoints, stop policy, request-id
+// Which actions a work offers is the server's decision (`/api/state` works,
+// work_status.js lays them on this menu); endpoints, stop policy, request-id
 // retry and verbatim refusals are shared.
 
 import { cancelTask, hurryTask, pauseTask, resumeTask } from './api_client.js';
+import { haptic } from './haptics.js';
 import { showToast } from './toast.js';
 import { tr } from './i18n.js';
 
@@ -18,6 +21,7 @@ export const ACTION_FINALIZE = 'finalize';
 export const ACTION_HURRY = 'hurry';
 export const ACTION_PAUSE = 'pause';
 export const ACTION_RESUME = 'resume';
+export const ACTION_STOP_EARLIER = 'stop_earlier';
 export const ACTION_STOP_NOW = 'stop_now';
 
 // Logical slots that may host multiple independent cycles (v6.82: shared so
@@ -49,18 +53,13 @@ export function cancelRunEligibility({
         && !REUSABLE_TASK_IDS.has(String(groupId || ''));
 }
 
-export function resumeRunEligibility(record, activity) {
-    return !record?.cancelPendingPolicy && activity?.phase === 'budget_paused'
-        && cancelRunEligibility({ ...record, cancelable: true,
-            converted: record?.root?.dataset?.projectCreated === '1' });
-}
-
-// The direct button and the menu use the same request owner. A historical
-// pause never enables this door; the caller checks its current census on click.
+// The direct button and the menu use the same request owner. Only a work's Resume control enables this door
+// (the server offers it where the Resume door accepts now); the caller re-checks that control on click.
 export function createTaskResumeButton(taskId, { canResume, onSettled = () => {} } = {}) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'btn btn-xs btn-default';
+    // Resume is the one primary of a paused card (its Stop… beside it stays neutral).
+    button.className = 'btn btn-sm btn-primary';
     button.dataset.resumeRun = '1';
     button.textContent = tr('task.control.resume', 'Resume');
     button.addEventListener('click', async (event) => {
@@ -74,11 +73,13 @@ export function createTaskResumeButton(taskId, { canResume, onSettled = () => {}
 }
 
 // Frozen owner wording (Q2/HQ1) — exact strings, never localized/reworded here.
+// "Stop earlier attempt" stops what still runs of a held Continue's earlier attempt; the Continue itself stays.
 export const TASK_CONTROL_LABELS = Object.freeze({
     [ACTION_FINALIZE]: 'Wrap up',
     [ACTION_HURRY]: 'Hurry up',
     [ACTION_PAUSE]: 'Pause',
     [ACTION_RESUME]: 'Resume',
+    [ACTION_STOP_EARLIER]: 'Stop earlier attempt',
     [ACTION_STOP_NOW]: 'Stop now',
 });
 
@@ -102,18 +103,19 @@ export function isRootTaskRow(task = {}, id = '') {
 
 /**
  * The action set for the current card state (pure — node-testable).
- * `wholeTree` is false for a child: its Pause would not name its own tree.
- * @param {{cancelPending?: boolean, budgetPaused?: boolean, wholeTree?: boolean}} [state]
+ * `wholeTree` is false for a child: its Pause would not name its own tree. `resume` offers Resume in the menu:
+ * only where a work's Resume control targets this task and no Resume button of its own stands beside it.
+ * @param {{cancelPending?: boolean, budgetPaused?: boolean, wholeTree?: boolean, resume?: boolean}} [state]
  * @returns {string[]} ordered action ids
  */
-export function taskControlActions({ cancelPending = false, budgetPaused = false, wholeTree = true, resumeVisible = false } = {}) {
+export function taskControlActions({ cancelPending = false, budgetPaused = false, wholeTree = true, resume = false } = {}) {
     // A pending cancel refuses hurry (HQ1) and a second soft stop is a no-op:
     // the single offered action is the hard escalation of the same intent.
     if (cancelPending) return [ACTION_STOP_NOW];
     // A budget-paused member is not running: nothing to wrap up or hurry.
     // The host-attested pause fact gates the offer; the server re-validates
     // (replay_unsafe and sibling checks answer 409 with the reason).
-    if (budgetPaused) return resumeVisible ? [ACTION_STOP_NOW] : [ACTION_RESUME, ACTION_STOP_NOW];
+    if (budgetPaused) return resume ? [ACTION_RESUME, ACTION_STOP_NOW] : [ACTION_STOP_NOW];
     // Pause saves the WHOLE tree until an explicit Resume: new work is fenced,
     // members' own runs get a stop, launched reviewers finish; Stop still ends it.
     return wholeTree ? [ACTION_FINALIZE, ACTION_HURRY, ACTION_PAUSE, ACTION_STOP_NOW]
@@ -189,6 +191,36 @@ export async function pauseTaskAction(taskId, { pause = pauseTask, toast = showT
     }
 }
 
+// A held Continue's observed blockers in the owner's words (#1721), from the
+// server's census (supervisor/continuation_admission.py). Facts only: a start
+// with an unknown outcome is not called running or stoppable, and a kind with no
+// sentence yet stays raw (DESIGN §4). The machine record keeps the codes.
+const HELD_FACTS = {
+    running_member: (b) => `task ${b.task_id} is still running`,
+    dispatchable_member: (b) => `task ${b.task_id} is queued to run`,
+    owned_process: (b) => `a process of task ${b.task_id} is still alive`,
+    model_handoff: () => 'a model request has no recorded result',
+    tool_handoff: (b) => `a tool call of task ${b.task_id} has not returned`,
+    merge_operation: (b) => `a merge of task ${b.task_id} is not settled`,
+    workspace_executor: (b) => `a workspace process of task ${b.task_id} is not settled`,
+    delegated_run: (b) => (b.state === 'running' ? `delegated run ${b.run_id} is running`
+        : b.stop_outcome === 'pending_invocation_unbound'
+            ? 'a delegated start has an unknown outcome (no run was recorded)'
+            : b.state === 'stop_requested' ? `delegated run ${b.run_id}: its stop is requested, not confirmed`
+                : `delegated run ${b.run_id || b.invocation_id}: its outcome is unknown`),
+};
+
+/** @returns {string} the distinct observed facts, '' when the census named none */
+export function heldWorkFacts(blockers, limit = 3) {
+    const facts = [...new Set((Array.isArray(blockers) ? blockers : []).filter((b) => b && typeof b === 'object')
+        .map((b) => (HELD_FACTS[b.kind] ? HELD_FACTS[b.kind](b)
+            : /_unreadable$/.test(String(b.kind)) ? 'its custody record could not be read'
+                : String(b.kind || '').startsWith('late_phase_') ? `its work after the answer is ${b.kind.slice(11)}`
+                    : String(b.kind || 'unknown'))))];
+    return facts.length > limit
+        ? `${facts.slice(0, limit).join('; ')}; and ${facts.length - limit} more` : facts.join('; ');
+}
+
 export async function resumeTaskAction(taskId, { resume = resumeTask, toast = showToast } = {}) {
     const id = String(taskId || '').trim();
     if (!id || inFlight.has(id)) return;
@@ -202,9 +234,12 @@ export async function resumeTaskAction(taskId, { resume = resumeTask, toast = sh
             : 'Resuming: the task returns to the queue.', 'info');
     } catch (exc) {
         // The server names the refusal (replay_unsafe / fence missing /
-        // not budget-paused): show it verbatim instead of a generic failure.
+        // not budget-paused): show it verbatim instead of a generic failure,
+        // and a held Continue's observed blockers as facts (#1721).
         // Handled here, never rethrown: the menu callback is fire-and-forget.
-        toast(`Resume refused: ${exc?.message || exc}`, 'error');
+        const facts = heldWorkFacts(exc?.body?.blockers);
+        toast(facts ? `Resume refused: ${facts}.${exc.body.action === 'wait_or_stop_the_previous_work'
+            ? ' Wait for that work or stop it.' : ''}` : `Resume refused: ${exc?.message || exc}`, 'error');
     } finally {
         inFlight.delete(id);
     }
@@ -313,6 +348,27 @@ export async function requestStop(taskId, action) {
     } finally {
         inFlight.delete(id);
     }
+}
+
+/**
+ * One owner Stop over a work's targets, in the server's order (a held Continue before its earlier attempt): each
+ * target goes through the existing cascade door (`stopOne`, a card's own path where the caller has one) and the
+ * owner hears one combined result. A target that already ended (404) is settled, not a failure.
+ * @returns {Promise<boolean>} whether every target accepted its Stop
+ */
+export async function requestStopAll(targets, action, { stopOne = requestStop, toast = showToast } = {}) {
+    const ids = [...new Set((Array.isArray(targets) ? targets : []).map((id) => String(id || '').trim()).filter(Boolean))];
+    const failed = [];
+    for (const id of ids) {
+        try { await stopOne(id, action); } catch (exc) {
+            if (exc?.status !== 404) failed.push(exc?.message || String(exc));
+        }
+    }
+    if (failed.length) {
+        toast(failed.length === ids.length ? `Stop failed: ${failed[0]}`
+            : `Stop failed for ${failed.length} of ${ids.length} parts of this work: ${failed[0]}`, 'error');
+    }
+    return !failed.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,13 +508,17 @@ function onMenuKeydown(event) {
 /**
  * Open the three-action dropdown in a viewport-level portal anchored to `anchor`.
  * Dismissing (outside click / Escape) continues the run. Selecting an item
- * closes the menu and invokes `onAction(actionId)`.
+ * closes the menu and invokes `onAction(actionId)`. `actions` (a work's controls,
+ * work_status.js) replaces the card-state set; `pauseTarget` names Pause's task
+ * when the anchor does not; `afterAction` runs once an item's effect settled.
  * @param {HTMLElement} anchor trigger element
- * @param {{cancelPending?: boolean, budgetPaused?: boolean, wholeTree?: boolean, busy?: boolean,
- *     onAction: (action: string) => void}} opts
+ * @param {{cancelPending?: boolean, budgetPaused?: boolean, wholeTree?: boolean, resume?: boolean, busy?: boolean,
+ *     actions?: string[], pauseTarget?: string, canAct?: (action: string) => boolean,
+ *     onAction: (action: string) => void, afterAction?: (action: string) => void}} opts
  */
 export function openTaskControlMenu(anchor, {
-    cancelPending = false, budgetPaused = false, wholeTree = true, resumeVisible = false, busy = false, onAction,
+    cancelPending = false, budgetPaused = false, wholeTree = true, resume = false, busy = false, canAct = () => true, onAction,
+    actions = null, pauseTarget = '', afterAction = null,
 } = {}) {
     closeTaskControlMenu();
     if (!anchor?.isConnected || !document.body) return null;
@@ -468,7 +528,7 @@ export function openTaskControlMenu(anchor, {
     const menu = document.createElement('div');
     menu.className = 'task-control-menu';
     menu.setAttribute('role', 'menu');
-    for (const action of taskControlActions({ cancelPending, budgetPaused, wholeTree, resumeVisible })) {
+    for (const action of actions || taskControlActions({ cancelPending, budgetPaused, wholeTree, resume })) {
         const item = document.createElement('button');
         item.type = 'button';
         item.className = `task-control-item${action === ACTION_STOP_NOW ? ' danger' : ''}`;
@@ -478,14 +538,17 @@ export function openTaskControlMenu(anchor, {
         if (busy) item.disabled = true;
         item.addEventListener('click', (event) => {
             event.stopPropagation();
+            // A portal can outlive the facts that offered it. Its owner rechecks before EVERY effect,
+            // including Pause, which dispatches here rather than through onAction.
+            if (!canAct(action)) { closeTaskControlMenu(); return; }
+            if (action === ACTION_STOP_NOW || action === ACTION_STOP_EARLIER) haptic('stop');  // a decisive press, felt
             closeTaskControlMenu();
             // Both surfaces' anchors name their task (Activity row `data-id`,
             // chat card root `data-task-id`), so Pause needs no per-surface hook.
-            if (action === ACTION_PAUSE) {
-                pauseTaskAction(anchor.dataset?.id || anchor.closest?.('[data-task-id]')?.dataset?.taskId || '');
-                return;
-            }
-            onAction?.(action);
+            const effect = action === ACTION_PAUSE
+                ? pauseTaskAction(pauseTarget || anchor.dataset?.id || anchor.closest?.('[data-task-id]')?.dataset?.taskId || '')
+                : onAction?.(action);
+            if (afterAction) Promise.resolve(effect).then(() => afterAction(action), () => afterAction(action));
         });
         menu.appendChild(item);
     }
@@ -499,6 +562,22 @@ export function openTaskControlMenu(anchor, {
     document.addEventListener('pointerdown', onOutsidePointer, true);
     document.addEventListener('keydown', onMenuKeydown, true);
     return menu;
+}
+
+/**
+ * The shared controls of one exact task that no work row speaks for (a card the work projection does not list):
+ * the same request owners, never Resume (only a work's Resume control offers it). `stop` is the caller's own stop
+ * path (a card keeps its optimistic chip); the Pause item reads its target from the anchor.
+ */
+export function openTaskControls(anchor, taskId, { activity = null, cancelPending = false, canAct, stop }) {
+    const id = String(taskId || '').trim();
+    return openTaskControlMenu(anchor, {
+        cancelPending,
+        budgetPaused: activity?.phase === 'budget_paused',
+        busy: taskControlBusy(id),
+        canAct,
+        onAction: (action) => (action === ACTION_HURRY ? hurryTaskAction(id) : stop(action)),
+    });
 }
 
 // The trigger's constant label. The trigger always opens the dropdown; the

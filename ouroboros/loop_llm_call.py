@@ -938,7 +938,7 @@ def _record_llm_call_error(
             "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
             **({"same_operation_recoverable": True} if getattr(error, "same_operation_recoverable", False) else {}),
         }
-        # Only a caller with a repeat budget (inline Presence) repeats here; every other
+        # Only an explicit low-level repeat budget repeats here; each running turn's
         # new generation belongs to the round's recovery (configured routes, then the wait).
         if (
             is_retryable_transport_death(error)
@@ -1216,7 +1216,6 @@ def _send_main_candidate(
     deadline_ts: Optional[float],
     physical_context: Optional[PhysicalAttemptContext],
     candidate_predicate: Optional[Callable[[Any], Any]],
-    model_context_observer: Any = None,
     send_clock_policy: Any = None, canonical_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     binding = (contextlib.nullcontext() if physical_context is None and candidate_predicate is None
@@ -1224,10 +1223,7 @@ def _send_main_candidate(
     # Main's clock line per physical send; the consumed one joins ``canonical_messages``.
     clock = main_send_scope(send_clock_policy, canonical_messages)
     with model_concurrency.model_call_slot(model, use_local, deadline_ts), binding, clock:
-        result = llm.chat(**kwargs)
-        if callable(model_context_observer):
-            model_context_observer(kwargs["messages"])
-        return result
+        return llm.chat(**kwargs)
 
 
 def _take_response_facts(usage: Dict[str, Any], msg: Dict[str, Any], accumulated_usage: Dict[str, Any]) -> None:
@@ -1338,7 +1334,7 @@ def call_llm_with_retry(
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
     model_account_override: Optional[str] = None, processing_preference: Optional[str] = None,
-    model_context_observer: Any = None, send_clock_policy: Any = None, max_tokens: int = MAIN_LOOP_MAX_TOKENS,
+    send_clock_policy: Any = None, max_tokens: int = MAIN_LOOP_MAX_TOKENS,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with bounded retries and deadline-aware transport.
 
@@ -1442,7 +1438,7 @@ def call_llm_with_retry(
             _emit_main_llm_call_state(event_queue, call_identity, "started")
             msg, usage = _send_main_candidate(
                 llm, kwargs, model=model, use_local=use_local, deadline_ts=deadline_ts,
-                physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None, model_context_observer=model_context_observer,
+                physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None,
                 send_clock_policy=send_clock_policy, canonical_messages=messages,
             )
             from ouroboros.observability import mark_last_answer

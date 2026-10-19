@@ -22,8 +22,12 @@ from ouroboros.delegate_custody import RunCustody as _RunCustody
 # ONE refusal author for the whole delegate surface: the neutral leaf
 # `delegate_shared` (phase B's facade split), never a local twin that could drift.
 from ouroboros.delegate_registration_policy import (
-    INVESTIGATION_AUTHORITY, no_write_authority, record_persistent as _record_persistent)
+    INVESTIGATION_AUTHORITY, INVESTIGATION_NOTE, evidence_only, no_write_authority,
+    record_persistent as _record_persistent)
 from ouroboros.delegate_shared import _fail, lock_busy_facts
+from ouroboros.delegate_start_claims import (
+    PAYLOAD_CUSTODY_UNREADABLE as _UNREADABLE_HOLDER, payload_busy_detail,
+)
 from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.tools.tool_result import ToolResult
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for
@@ -392,7 +396,8 @@ def _provision_snapshot(ctx: ToolContext, drive: pathlib.Path, target_root: str,
             "delegated run executes only in its own snapshot, never in the shared tree.",
             target_root=target_root, definitely_unrun=True, **lock_busy_facts(exc))
     if folder.parts and not (pathlib.Path(handle.path) / folder).is_dir():
-        try:  # unclaimed: nothing else names it, and the startup GC reconciles a failed release
+        # Unclaimed; custody GC retries a failed release once the owning task is proven over.
+        try:
             remove_execution_snapshot(handle.snapshot_id)
         except Exception:
             log.warning("Failed to release snapshot %s without its starting folder", handle.snapshot_id, exc_info=True)
@@ -516,6 +521,10 @@ def _capture_block(entry: _RunCustody, cap_dir: pathlib.Path,
         # A failed manifest's own typed note (unreviewable_metadata_change,
         # non-UTF-8, …) is the actionable fact — never hide it in boilerplate.
         block["note"] = str(manifest.get("note") or "") or block["note"]
+    elif evidence_only(entry):  # evidence owes no apply/reject, on every read (#1969)
+        block["note"] = INVESTIGATION_NOTE
+        if getattr(entry, "patch_disposed", "") == custody.EVIDENCE_RETAINED:
+            block["disposition"] = custody.EVIDENCE_RETAINED
     current_head = str(manifest.get("current_head") or "")
     if current_head and entry.baseline_sha and current_head != entry.baseline_sha:
         # Single-writer snapshot: a moved HEAD can only mean the run itself committed.
@@ -722,12 +731,14 @@ from ouroboros.tool_access import (
 
 
 def payload_content_hash(payload_root: Any) -> str:
-    """The whole-payload CAS hash — the existing skill-loader inventory hash.
-    One definition for snapshot baseline, capture result, and apply-time CAS;
-    raises ``SkillPayloadUnreadable`` (fail-closed) exactly like the loader."""
-    from ouroboros.skill_loader import compute_content_hash
+    """The whole-payload CAS hash over the skill-loader inventory, the bucket's
+    per-install notes included: the snapshot copy sits outside data/skills/<bucket>/,
+    so it and the live folder hash the same bytes. One definition for snapshot
+    baseline, capture result, and apply-time CAS; raises ``SkillPayloadUnreadable``
+    (fail-closed) exactly like the loader."""
+    from ouroboros.skill_identity import payload_digest
 
-    return compute_content_hash(pathlib.Path(str(payload_root)))
+    return payload_digest(pathlib.Path(str(payload_root)), bucket="")
 
 
 def _payload_delegation_busy(drive: pathlib.Path, target: pathlib.Path) -> str:
@@ -735,28 +746,36 @@ def _payload_delegation_busy(drive: pathlib.Path, target: pathlib.Path) -> str:
 
     Two concurrent delegations against one payload would race the same CAS
     baseline, so the second is refused while the first has undisposed custody.
-    Single-pass (Sol delta, fix 5a): both projections replay ONE pre-read row
-    snapshot — two separate log reads let the holder's REQUESTED→STARTED
-    transition land between them and a second start slipped the claim lock;
-    against one snapshot the holder is in exactly one state, never missed.
+    Single-pass (Sol delta, fix 5a): both projections come from ONE store read
+    transaction (``delegate_custody_current.payload_snapshot``) — two separate
+    reads let the holder's REQUESTED→STARTED transition land between them and a
+    second start slipped the claim lock; against one snapshot the holder is in
+    exactly one state, never missed. A failed read names ``_UNREADABLE_HOLDER``:
+    unknown custody refuses the start, never reads as a free payload.
 
     An obligation is held by the payload, not by the task that created it: a
     holder whose OWNER TASK is terminal cannot race the CAS baseline (its
     snapshot is frozen; the apply-time whole-payload CAS is the real race
     guard), so it stops locking the payload. Unprovable terminality keeps the
-    lock, and the cheap authority/target filters short-circuit first.
+    lock, and the cheap authority/target filters short-circuit first; the
+    terminality read follows the closed transaction.
     """
+    from ouroboros.delegate_custody_current import payload_snapshot
     from ouroboros.delegate_terminal import _task_is_terminal
 
     resolved = _resolved(target)
-    rows = list(custody.custody_rows(drive))
-    for run in custody.replay(drive, rows=rows).values():
+    try:
+        held = payload_snapshot(drive)
+    except Exception:
+        log.warning("Payload custody unreadable under %s; the start is refused", drive, exc_info=True)
+        return _UNREADABLE_HOLDER
+    for run in held["runs"].values():
         if (run.authority_source == "skill_payload"
                 and _resolved(run.target_root) == resolved
                 and not (run.settled and run.patch_disposed)
                 and not _task_is_terminal(drive, run.task_id)):
             return run.run_id or run.invocation_id
-    for record in custody.pending_invocations(drive, rows=rows):
+    for record in held["pending"]:
         if (str(record.get("authority_source") or "") == "skill_payload"
                 and _resolved(record.get("target_root")) == resolved
                 and not _task_is_terminal(drive, str(record.get("task_id") or ""))):
@@ -789,12 +808,12 @@ def _payload_selector_refusal(selector_root: str, retry_of: Any, bucket: Any,
 def payload_host_instructions(text: str, skill_name: str) -> str:
     """The payload-run variant of the host instructions (gate fix 3).
 
-    The generic text bans touching the host's "skills" — for a payload run that
+    The generic text bans modifying the host's skills — for a payload run that
     blanket ban would contradict the assignment itself, so it is narrowed and an
     explicit, truthful permission block is appended.
     """
     adjusted = text.replace(
-        "do not touch the host's runtime controls, skills, or memory",
+        "do not touch the host's runtime controls or memory, or modify its skills",
         "do not touch the host's runtime controls or memory")
     return adjusted + (
         "\nPAYLOAD ASSIGNMENT: this working tree is a PRIVATE standalone copy of "
@@ -893,18 +912,15 @@ def _payload_mutation_authority(
     if busy:
         # Name the HOLDER'S OWNER, not a call the refused caller cannot make:
         # delegate_wait and integrate_delegated_patch both refuse a non-owner.
-        # A PENDING (START_REQUESTED-only) holder has no replayed run row.
-        holder_owner = str(
+        # A PENDING (START_REQUESTED-only) holder has no replayed run row;
+        # unreadable custody has no holder to name.
+        holder_owner = "" if busy == _UNREADABLE_HOLDER else (str(
             getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "") or next(
             (str(r.get("task_id") or "") for r in custody.pending_invocations(drive)
-             if str(r.get("invocation_id") or "") == busy), "")
+             if str(r.get("invocation_id") or "") == busy), ""))
         return None, None, _fail(
             "delegate_start", "payload_delegation_busy",
-            "Another delegated run holds this exact payload open: its custody is "
-            "not yet settled AND disposed, and its owner task is still live (or its "
-            "terminality cannot be proven from task results). Wait for that task to "
-            "finish, or pick another skill: a non-owner can neither delegate_wait "
-            "that run nor integrate its capture.",
+            payload_busy_detail(busy),
             holder=busy, holder_owner_task_id=holder_owner,
             target_root=str(target))
     record = {

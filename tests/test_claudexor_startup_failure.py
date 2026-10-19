@@ -852,7 +852,7 @@ def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypa
     with caplog.at_level(logging.WARNING):
         threads = _run_real_sweep(monkeypatch, stand.manager, order)
     assert order == ["reap", "reconcile"], "the swallowed refusal never skips the reconcile"
-    assert [thread.name for thread in threads] == ["custody-maintenance", "owned-daemon-latch-retry"]
+    assert [thread.name for thread in threads if thread.name != "schedule-admission"] == ["custody-maintenance", "owned-daemon-latch-retry"]
     assert len(stand.spawned) == 2 and len(stand.ensures) == 2, "exactly one retry, made by the sweep"
     assert stand.manager._last_start_failure is not None, "the failed retry re-latched"
     assert any("retry after latch release refused (daemon_spawn_failed)" in rec.getMessage()
@@ -872,7 +872,7 @@ def test_a_healthy_sweep_never_ensures_or_spawns(monkeypatch, tmp_path):
     order: list = []
     threads = _run_real_sweep(monkeypatch, stand.manager, order)
     assert order == ["reap", "reconcile"], "a healthy sweep still does its custody work"
-    assert [thread.name for thread in threads] == ["custody-maintenance"], "no retry thread"
+    assert [thread.name for thread in threads if thread.name != "schedule-admission"] == ["custody-maintenance"], "no retry thread"
     assert stand.spawned == [] and stand.ensures == [] and not _rows(stand.data_dir)
     assert stand.manager._last_start_failure is None
 
@@ -903,7 +903,8 @@ def test_periodic_sweep_retries_only_after_it_released_a_latch(monkeypatch, rele
         thread.join(5)
     assert order[0] == "clear:supervisor_sweep" and order.index("reap") < order.index("reconcile")
     # The block's own daemon thread always exists; the retry rides a second one.
-    assert ("retry" in order) is released and len(threads) == (2 if released else 1)
+    assert ("retry" in order) is released
+    assert len([thread for thread in threads if thread.name != "schedule-admission"]) == (2 if released else 1)
 
 
 def test_a_raising_reap_cannot_pin_the_latch(monkeypatch):
@@ -964,8 +965,9 @@ def test_the_sweep_retry_runs_on_its_own_thread_and_never_blocks_the_tick(monkey
     try:
         sm._periodic_supervisor_maintenance([0.0], [time.time()])  # returns while the ensure is held
         assert entered.wait(5), "the retry thread reached the ensure"
-        assert [thread.name for thread in threads] == ["custody-maintenance", "owned-daemon-latch-retry"]
-        assert threads[1].daemon and threads[1].is_alive(), "exactly one retry thread, still in the ensure"
+        assert [thread.name for thread in threads if thread.name != "schedule-admission"] == ["custody-maintenance", "owned-daemon-latch-retry"]
+        retry = next(thread for thread in threads if thread.name == "owned-daemon-latch-retry")
+        assert retry.daemon and retry.is_alive(), "exactly one retry thread, still in the ensure"
     finally:
         release.set()
         for thread in threads:

@@ -2,7 +2,6 @@
 
 import contextvars
 import json
-import socket
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -11,6 +10,7 @@ import pytest
 
 from ouroboros import config, model_wait, subagent_runtime
 from ouroboros.settings_integrity import task_settings_snapshot
+from tests._socket_seal import block_network_except_socketpair
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def isolated_runtime(tmp_path, monkeypatch):
     def no_network(*args, **kwargs):
         raise AssertionError("Snapshot regressions must never contact a provider")
 
-    monkeypatch.setattr(socket.socket, "connect", no_network)
+    block_network_except_socketpair(monkeypatch, no_network)
     yield data
 
 
@@ -446,7 +446,7 @@ def test_private_projection_uses_incoming_roster_and_keeps_empty_env(monkeypatch
         assert [row.target_id for row in review_pool_rows()] == ["openai::old"]
 
 
-def test_plugin_settings_reader_keeps_grants_and_uses_task_values(tmp_path):
+def test_plugin_settings_reader_keeps_grants_and_reads_current_values(tmp_path):
     from ouroboros import extension_loader
 
     save_owner(document("old"))
@@ -460,9 +460,47 @@ def test_plugin_settings_reader_keeps_grants_and_uses_task_values(tmp_path):
     allowed, denied = impl(keys), impl([])
     save_owner(document("new"))
     with config.task_settings_scope(snapshot):
-        assert allowed.get_settings(keys) == {"OPENAI_API_KEY": "test-key-old", "CUSTOM_SERVICE_KEY": "test-custom-old"}
+        # A skill's permitted configuration is current; the task's own reads keep the snapshot.
+        assert allowed.get_settings(keys) == {"OPENAI_API_KEY": "test-key-new", "CUSTOM_SERVICE_KEY": "test-custom-new"}
         assert denied.get_settings(keys) == {}
-    assert allowed.get_settings(keys)["OPENAI_API_KEY"] == "test-key-new"
+        assert config.runtime_settings()["CUSTOM_SERVICE_KEY"] == "test-custom-old"
+        assert observe()["key"] == "test-key-old"
+
+
+def test_script_and_companion_env_read_current_permitted_values(tmp_path):
+    from ouroboros.extension_companion import companion_spawn_env
+    from ouroboros.skill_loader import SkillReviewState, find_skill, save_enabled, save_review_state, save_skill_grants
+    from ouroboros.tools import skill_exec
+    from ouroboros.tools.registry import ToolContext
+
+    skills, keys = tmp_path / "skills", ["CUSTOM_SERVICE_KEY", "OPENAI_API_KEY"]
+    (skills / "envreader" / "scripts").mkdir(parents=True)
+    (skills / "envreader" / "SKILL.md").write_text(
+        "---\nname: envreader\ndescription: Prints its env.\nversion: 0.1.0\ntype: script\n"
+        f"runtime: python3\nenv_from_settings: {json.dumps(keys)}\n"
+        "scripts:\n  - name: show.py\n    description: Print env.\n---\nbody\n", encoding="utf-8")
+    (skills / "envreader" / "scripts" / "show.py").write_text(
+        f"import json, os\nprint(json.dumps({{k: os.environ.get(k) for k in {keys!r}}}))\n", encoding="utf-8")
+    save_owner({**document("old"), "OUROBOROS_SKILLS_REPO_PATH": str(skills)})
+    data = config.DATA_DIR
+    loaded = find_skill(data, "envreader", repo_path=str(skills))
+    save_review_state(data, "envreader", SkillReviewState(status="pass", content_hash=loaded.content_hash))
+    save_enabled(data, "envreader", True)
+    save_skill_grants(data, "envreader", keys, content_hash=loaded.content_hash,
+                      requested_keys=keys, granted_permissions=[], requested_permissions=[])
+    snapshot = subagent_runtime.apply_task_start_settings()
+    save_owner({**document("new"), "OUROBOROS_SKILLS_REPO_PATH": str(skills)})
+    with config.task_settings_scope(snapshot):
+        raw = skill_exec._handle_skill_exec(ToolContext(repo_dir=tmp_path, drive_root=data),
+                                            skill="envreader", script="scripts/show.py")
+        printed = json.loads(json.loads(raw)["stdout"].strip().splitlines()[-1])
+        # Both granted keys are current, the shared model key included.
+        assert printed == {"CUSTOM_SERVICE_KEY": "test-custom-new", "OPENAI_API_KEY": "test-key-new"}
+        # A key without a grant is still never forwarded.
+        env = companion_spawn_env({"env": {}}, "token", env_allow=keys, granted_upper={"CUSTOM_SERVICE_KEY"},
+                                  skill="envreader", skill_dir=None, state_dir=tmp_path / "state")
+        assert env["CUSTOM_SERVICE_KEY"] == "test-custom-new" and "OPENAI_API_KEY" not in env
+        assert config.runtime_settings()["CUSTOM_SERVICE_KEY"] == "test-custom-old"
 
 
 def test_vision_child_gets_snapshot_env_without_snapshot_in_ipc(monkeypatch):

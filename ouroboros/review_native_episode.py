@@ -47,11 +47,13 @@ from ouroboros.deadline_utils import caller_deadline_arguments, owner_deadline_e
 from ouroboros.event_usage import event_token_counts
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
-from ouroboros.triad_review import review_output_shape
+from ouroboros.triad_review import request_output_shape
 from ouroboros.delegate_custody_usage import observe_failed_review_send
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
+    BillingAuthorityUnavailable,
     BudgetExceeded,
+    ControlAuthorityUnavailable,
     physical_attempt_limit,
 )
 from ouroboros.utils import utc_now_iso
@@ -158,7 +160,7 @@ def native_mandatory_read_facts(request: Any, bound: int) -> Dict[str, Any]:
 
 def native_or_packet_attempt_rail(slot: Any, two_send_surface: bool) -> Any:
     """The physical-send rail for one actor: the historical two-send rail for
-    a packet/session actor on the P3/acceptance surfaces; NO local send count
+    a packet/session actor on the P3 surfaces; NO local send count
     for a native tool-round slot (its bounds are the provider, owner deadline
     and paid ledger — a count would be a round cap by
     another name, and `llm.py` already rails its own recovery sends); no rail
@@ -244,13 +246,21 @@ def native_episode_prompt(surface: str, role_hint: str, task: str, output_contra
     ])
 
 
-def native_first_send_messages(prompt: str) -> List[Dict[str, Any]]:
-    """Cache the completed assignment, stable throughout this review episode."""
+def native_first_send_messages(prompt: str, required_sources_ref: Any = None) -> List[Dict[str, Any]]:
+    """Cache the completed assignment, stable throughout this review episode: the
+    task plus the required-manifest reference when the surface declared one
+    (``None``: no manifest). ``_open_episode`` and every pre-dispatch measure
+    build the opening here."""
     from ouroboros.tools.review_helpers import cached_prompt_blocks
 
+    task = prompt if required_sources_ref is None else prompt + (
+        "\nRequired source manifest: " + json.dumps(required_sources_ref, ensure_ascii=False)
+        + "\nSources marked delivered_inline are already included in full. Read the other required "
+        "sources through their exact physical addresses, using multiple working views as needed. "
+        "Observed read coverage remains diagnostic evidence beside your findings.")
     return [
         {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
-        {"role": "user", "content": cached_prompt_blocks(prompt)},
+        {"role": "user", "content": cached_prompt_blocks(task)},
     ]
 
 
@@ -266,8 +276,8 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
     per-instance, so the worker's own registry/context is never touched.
     ``drive_root`` is the data plane the inspection tools may read: an
     empty scratch directory by default, or the surface's opt-in
-    ``policy["native_data_root"]`` (task acceptance reads task results and
-    receipts there; deep self-review exposes the runtime root while its
+    ``policy["native_data_root"]`` (a stored paged source or skill index
+    resolves there; deep self-review exposes the runtime root while its
     memory whitelist arrives inline) — the read-only constraint applies to
     it exactly as to the repository.
     """
@@ -316,18 +326,18 @@ def inspection_registry(root: str, drive_root: Any, task_id: str = "") -> tuple[
 
 def native_first_send_chars(
     root: str, *, surface: str, role_hint: str, slot_id: str, session_task: str,
-    output_contract: str, task_id: str = "",
+    output_contract: str, task_id: str = "", required_sources_ref: Any = None,
 ) -> int:
     """The wire size of a native episode's FIRST send — the prompt its first
     ``reserve_attempt`` prices (every later round reserves itself, on the
     ledger, against the transcript it has grown to). Built from the same
-    work-order, message objects, schemas and measure ``_open_episode`` uses,
-    so the commit gate's wave admission prices a native seat the way the
-    ledger will; the registry is built read-only against ``root`` and
-    discarded."""
+    work-order, message objects (the declared manifest reference included),
+    schemas and measure ``_open_episode`` uses, so an initial layout decision and
+    the wave admission price a native seat the way the ledger will; the registry
+    is built read-only against ``root`` and discarded."""
     _registry, _ctx, schemas = inspection_registry(root, root, task_id)
     prompt = native_episode_prompt(surface, role_hint, str(session_task or "").strip(), output_contract, slot_id)
-    return _wire_size(native_first_send_messages(prompt), schemas)
+    return _wire_size(native_first_send_messages(prompt, required_sources_ref), schemas)
 
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
@@ -359,6 +369,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         self._window: dict = {}
         self._previous_request: Optional[dict] = None
         self._episode_prompt: Optional[str] = None
+        self._initial_source: dict = {}
         self._raw_transcript: Optional[str] = None
         self._episode_usage: Dict[str, Any] = {}
         self._tool_receipts: List[Dict[str, Any]] = []
@@ -393,13 +404,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             ref = store_actor_source_bytes(root, task_id, category=category,
                 source_id=f"{self.assignment.call_id}-{source_id}", data=data,
                 extension="txt" if isinstance(payload, str) else "json")
-            if (self.assignment.request.policy or {}).get('review_source_closure'):
-                from ouroboros.review_source_closure import retain_review_refs
-
-                # The inspection root contains only this request's named inputs.
-                # Its continuation closure also belongs to canonical operation custody.
-                ref = retain_review_refs(ref, root, pathlib.Path(self.assignment.custody_root), task_id)
-                retain_review_refs(ref, pathlib.Path(self.assignment.custody_root), root, task_id)
             return ref
         except Exception as exc:
             self._source_gap = f"native_source_persistence_failed:{type(exc).__name__}"
@@ -481,7 +485,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             return {"accepted": True, "input_chars": _wire_size(candidate, selected_tools),
                     "output_reserve_tokens": int(self.assignment.request.max_tokens or self.assignment.slot.max_tokens),
                     "measurement_basis": "canonical_serialized_characters", "strict_bound_proven": False}
-        candidate, receipt, _ = compact_tool_history_llm(
+        candidate, receipt = compact_tool_history_llm(
             messages, request=request, observed_messages=observed["messages"],
             observed_tool_schemas=observed["tool_schemas"], tool_schemas=schemas,
             fit_candidate=fit, drive_root=root, task_id=self.assignment.request.task_id or "review")
@@ -569,6 +573,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             coverage = {**coverage, "status": "incomplete", "reason": self._source_gap}
         facts = {"native_read_coverage": coverage, "native_history_source": history_ref,
                  "native_view_changes": self._view_changes, "native_source_gap": self._source_gap}
+        if self._initial_source:
+            facts["native_initial_source"] = self._initial_source
         if coverage["status"] == "incomplete":
             facts["native_incomplete"] = "required_source_coverage_incomplete"
         return facts
@@ -646,8 +652,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         per-instance, so the worker's own registry/context is never touched.
         ``drive_root`` is the data plane the inspection tools may read: an
         empty scratch directory by default, or the surface's opt-in
-        ``policy["native_data_root"]`` (task acceptance reads task results and
-        receipts there; deep self-review exposes the runtime root while its
+        ``policy["native_data_root"]`` (a stored paged source or skill index
+        resolves there; deep self-review exposes the runtime root while its
         memory whitelist arrives inline) — the read-only constraint applies to
         it exactly as to the repository.
         """
@@ -690,7 +696,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         max_tokens = int(request.max_tokens or slot.max_tokens)
         self._sizing_hint = native_episode_transcript_bound(request, slot)
         self._refresh_window()
-        shape = review_output_shape(request.surface)
+        shape = request_output_shape(request)
         # The operation's durable task root keeps continuation sources readable.
         # Explicit native_data_root still wins; only our own scratch is removed.
         data_root = str(self._source_root() or "").strip()
@@ -749,9 +755,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
-                        # The paid ledger refusing the NEXT send is the money
-                        # floor landing, not a transport fault: name it.
-                        end_reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error"
+                        # A budget or authority refusal of the NEXT send is not a transport fault.
+                        end_reason = ("budget_exhausted" if isinstance(exc, BudgetExceeded) else "billing_authority_unavailable"
+                                      if isinstance(exc, BillingAuthorityUnavailable) else "control_authority_unavailable"
+                                      if isinstance(exc, ControlAuthorityUnavailable) else "transport_error")
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             # A send that was physically dispatched IS a round
@@ -762,7 +769,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             self._observe_sent_view(messages, schemas)
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         observe_failed_review_send(self.usage_observer, exc)
-                        if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
+                        if isinstance(exc, (BudgetExceeded, BillingAuthorityUnavailable, ControlAuthorityUnavailable)) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
                 self._rounds_used, last_send_chars = round_idx, transcript_chars  # a returned send is the last physical send
@@ -932,17 +939,33 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "the repository root the reviewer episode runs in",
                 code="session_root_missing")
         registry, schemas = self._inspection_registry(root, drive_root)
-        prompt = self.episode_prompt
-        required = (self.assignment.request.policy or {}).get("native_required_sources")
-        if required is not None:
-            ref = (self.assignment.request.policy or {}).get("native_required_sources_ref") or self._store_source("required-sources", required)
-            prompt += "\nRequired source manifest: " + json.dumps(ref, ensure_ascii=False)
-            prompt += (
-                "\nSources marked delivered_inline are already included in full. Read the other required "
-                "sources through their exact physical addresses, using multiple working views as needed. "
-                "Observed read coverage remains diagnostic evidence beside your findings."
-            )
-        messages = native_first_send_messages(prompt)
+        policy = self.assignment.request.policy or {}
+        required = policy.get("native_required_sources")
+        ref = None if required is None else (
+            policy.get("native_required_sources_ref") or self._store_source("required-sources", required))
+        messages = native_first_send_messages(self.episode_prompt, ref)
+        # Only initial layout: later working views remain the reviewer's choice.
+        # Other surfaces may supply a large work order without the brief builder.
+        bound = native_episode_transcript_bound(self.assignment.request, self.assignment.slot)
+        if _wire_size(messages, schemas) >= native_landing_at(bound):
+            source = self._store_source("initial-brief", self.episode_prompt)
+            if source:
+                from ouroboros.tools.review_brief_coupling import paged_review_text
+                from ouroboros.tools.scope_required_sources import source_text_identity
+
+                self._initial_source = source
+                required = [{**row, "coverage_basis": "candidate_blob"}
+                            if row.get("coverage_basis") == "delivered_inline" else row
+                            for row in (required or [])]
+                required.append({"root": "artifact_store", "path": source["path"],
+                                 **source_text_identity(self.episode_prompt.encode("utf-8")),
+                                 "coverage_basis": "candidate_blob"})
+                policy["native_required_sources"] = required
+                ref = self._store_source("required-sources", required)
+                policy["native_required_sources_ref"] = ref
+                prompt = paged_review_text(self.episode_prompt, source, label="review brief", delegated=False)
+                prompt += "\nOUTPUT CONTRACT:\n" + self._output_contract()
+                messages = native_first_send_messages(prompt, ref)
         return registry, schemas, messages, _wire_size(messages, schemas)
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
@@ -956,7 +979,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             "tools": schemas,
             "tool_choice": "auto",
             "reasoning_effort": slot.effort,
-            "processing_preference": slot.processing_preference or None,
+            "processing_preference": slot.processing_preference,
             "max_tokens": max_tokens,
             "no_proxy": bool(request.no_proxy),
             "use_local": bool(slot.use_local),
@@ -999,13 +1022,22 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 return registry.execute_result(name, args)
 
         with abandoned_on_timeout(timeout) as submit:
-            future = submit(execute)
+            from ouroboros.tool_custody import submit_tool_future
+            from ouroboros.tool_call_log import new_invocation
+            context = getattr(registry, "_ctx", None)
+            from ouroboros.model_wait import current_model_wait
+            owner = current_model_wait()
+            attempt = owner.attempt if owner is not None else getattr(context, "task_attempt", 1)
+            invocation = new_invocation("", {}, attempt)
+            future, release = submit_tool_future(context, invocation["invocation_id"], name, submit, execute)
             try:
                 return future_result(future, timeout)
             except (TimeoutError, concurrent.futures.TimeoutError):
                 if future.done():
                     raise
                 raise _ToolAbandoned(tool_timeout_text(name, timeout)) from None
+            finally:
+                release()
 
     def _execute_inspection_call(
         self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],
@@ -1366,7 +1398,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
-            shape=review_output_shape(self.assignment.request.surface),
+            shape=request_output_shape(self.assignment.request),
         )
         usage = dict(self._episode_usage)
         deltas: List[Dict[str, Any]] = list(self._episode_deltas)

@@ -105,8 +105,16 @@ def make_serving(root: pathlib.Path) -> pathlib.Path:
     return repo
 
 
+def stub_adoption_evidence(monkeypatch) -> None:
+    """Miniature bodies exercise switching, not the battery; the real full-evidence
+    acceptance/refusal boundary is exercised in test_preflight_selection.py."""
+    monkeypatch.setattr("ouroboros.preflight_qualification.adoption_test_evidence",
+                        lambda *args, **kwargs: {"tier": "full", "source": "stub", "head": args[2]})
+
+
 def isolate(monkeypatch, root: pathlib.Path) -> pathlib.Path:
     """Point the worktree registry and data root at ``root``; returns the data dir."""
+    stub_adoption_evidence(monkeypatch)
     data = root / "data"
     (data / "state").mkdir(parents=True, exist_ok=True)
     (data / "logs").mkdir(parents=True, exist_ok=True)

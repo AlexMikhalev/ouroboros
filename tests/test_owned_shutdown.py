@@ -323,7 +323,8 @@ def test_a_target_recorded_after_the_stop_began_is_finished_by_the_next_start(tm
     finally:
         _reap(late, machinery)
 
-def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, monkeypatch):
+@pytest.mark.parametrize("measurable", [True, False])
+def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, monkeypatch, measurable):
     from ouroboros import owned_shutdown
     from ouroboros import workspace_executor as executor
 
@@ -336,9 +337,17 @@ def test_a_live_process_under_an_unproven_identity_is_never_signalled(tmp_path, 
         record = json.loads(path.read_text(encoding="utf-8"))
         record["host_command_sha256"] = "0" * 64  # the pid now names some other command
         path.write_text(json.dumps(record), encoding="utf-8")
+        if not measurable:
+            monkeypatch.setattr(executor, "_process_command_sha256", lambda _: "")
         monkeypatch.setattr(executor, "_kill_host_pid", lambda _pid: pytest.fail("unproven identity signalled"))
         outcome = owned_shutdown.stop_owned_work(data)
-        assert outcome["unconfirmed"] == [path.stem] and proc.poll() is None
+        assert proc.poll() is None
+        if measurable:
+            assert outcome["state"] == "completed" and not path.exists()
+            event = json.loads((data / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            assert event["outcome"] == "not_ours" and event["record_id"] == path.stem
+        else:
+            assert outcome["unconfirmed"] == [path.stem] and path.exists()
     finally:
         _reap(proc)
 
@@ -402,8 +411,8 @@ def test_the_shutdown_entry_records_every_pending_stop_before_any_wait(tmp_path,
 
 def test_the_grace_starts_at_the_first_door_and_no_lock_is_awaited_after_it(tmp_path, monkeypatch):
     """The stop's deadline is the one the first door started; past it the stop takes no fresh lock wait
-    (a held custody lock costs one attempt, not two 2 s waits) and leaves the target stamped."""
-    from ouroboros import owned_shutdown
+    (including the unconfirmed-event append) and leaves the target stamped."""
+    from ouroboros import owned_shutdown, platform_layer
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
     from ouroboros.process_custody import ledger_path
     from ouroboros.utils import jsonl_append_lock_path
@@ -413,23 +422,56 @@ def test_the_grace_starts_at_the_first_door_and_no_lock_is_awaited_after_it(tmp_
     data = tmp_path / "data"
     proc = _sleeper()
     lock_path = jsonl_append_lock_path(ledger_path(data))
-    fd = None
+    log_lock_path = jsonl_append_lock_path(data / "logs" / "supervisor.jsonl")
+    held = []
     try:
         path = executor._register_process(data, {"record_type": "foreground", "executor_type": "local",
                                                   "executor_id": "host", "host_pid": proc.pid})
         owned_shutdown.begin_owned_stop(data)  # the grace starts at this door
+        first_deadline = owned_shutdown._GENERATION_STOP.deadline
         time.sleep(1.1)  # other owners used the whole grace before the stop runs
-        fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0)
-        assert fd is not None
-        started = time.monotonic()
+        assert first_deadline < time.monotonic()
+        for held_path in (lock_path, log_lock_path):
+            fd = acquire_exclusive_file_lock(held_path, timeout_sec=1.0)
+            assert fd is not None
+            held.append((held_path, fd))
+        caller = threading.current_thread()
+        attempts, deadlines, joins = [], [], []
+        run_stop = owned_shutdown._run_stop
+        join = threading.Thread.join
+
+        def observe_lock(path, **kwargs):
+            fd = acquire_exclusive_file_lock(path, **kwargs)
+            if threading.current_thread() is caller:
+                attempts.append((path, kwargs.get("timeout_sec", 4.0), fd))
+            return fd
+
+        def observe_stop(root, deadline):
+            deadlines.append(deadline)
+            return run_stop(root, deadline)
+
+        def observe_join(thread, timeout=None):
+            if threading.current_thread() is caller and thread.name.startswith("owned-stop-"):
+                joins.append(timeout)
+            return join(thread, timeout)
+
+        monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", observe_lock)
+        monkeypatch.setattr(owned_shutdown, "_run_stop", observe_stop)
+        monkeypatch.setattr(threading.Thread, "join", observe_join)
         outcome = owned_shutdown.stop_owned_work(data)
-        # A deadline restarted at the stop would wait ~1 s on the held lock; an expired one waits for nothing.
-        assert time.monotonic() - started < 0.5
         assert outcome["state"] == "unconfirmed" and path.stem in outcome["unconfirmed"]
         assert _by_id(data)[path.stem]["stop_requested_at"]  # the next start retries it
+        proc.wait(timeout=10)  # the real child is stopped even while custody stays unconfirmed
+        assert deadlines == [first_deadline] and owned_shutdown._GENERATION_STOP.deadline == first_deadline
+        assert joins and all(timeout == 0.0 for timeout in joins)
+        # Observe the real primitive: disk I/O, logging and scheduling are not lock-wait budgets.
+        # The caller stamps twice and appends one event; background cleanup is not joined past expiry.
+        assert attempts == [(lock_path, 0.0, None), (lock_path, 0.0, None), (log_lock_path, 0.0, None)]
+        rows = (data / "logs" / "supervisor.jsonl").read_text(encoding="utf-8").splitlines()
+        assert json.loads(rows[-1])["type"] == "owned_stop_unconfirmed"
     finally:
-        if fd is not None:
-            release_exclusive_file_lock(lock_path, fd)
+        for held_path, fd in reversed(held):
+            release_exclusive_file_lock(held_path, fd)
         _reap(proc)
 
 
@@ -732,11 +774,23 @@ def test_every_door_joins_the_one_stop_and_the_boot_retry_precedes_launches():
     from ouroboros import server_restart
 
     lifespan = inspect.getsource(server.lifespan)
-    boot = lifespan.index("finish_unconfirmed_stops(lifespan_drive_root)")
-    assert boot < lifespan.index("start_inherited_import(lifespan_drive_root)")
-    for later in ("auto_start_local_model", "warm_owned_daemon()", "create_host_service_app(",
-                  "_reload_extensions(lifespan_drive_root", "_start_supervisor_if_needed(settings)"):
-        assert boot < lifespan.index(later), later
+    # The boot coordinator's step list is the order: the owned-stop retry is its first step, every
+    # launch (background services, the Host Service, the extension reload) a later one, and the
+    # supervisor start waits for the extensions' event behind them.
+    steps = lifespan[lifespan.index("    steps = ["):lifespan.index("    start_boot_coordinator(steps")]
+    order = [name for name in ("owned_stops", "inherited_records", "services", "host_service", "extensions")
+             if f'("{name}", ' in steps]
+    assert order == ["owned_stops", "inherited_records", "services", "host_service", "extensions"]
+    assert steps.index('("owned_stops", ') < steps.index('("inherited_records", ') < steps.index('("services", ') \
+        < steps.index('("host_service", ') < steps.index('("extensions", ')
+    from ouroboros import server_boot
+    boot_steps = inspect.getsource(server_boot)
+    for launch, step in (("auto_start_local_model", "start_background_services"), ("warm_owned_daemon()", "start_background_services"),
+                         ("create_host_service_app(", "serve_host_service")):
+        assert launch in boot_steps[boot_steps.index(f"def {step}("):], launch
+    assert "_reload_extensions(lifespan_drive_root" in lifespan[lifespan.index("def _extensions("):]
+    gate = lifespan[lifespan.index("def _after_extensions("):lifespan.index("store_switch.when_ready(")]
+    assert gate.index("_await_extensions_ready(body_stop)") < gate.index("start_body()") < gate.index("_start_supervisor_if_needed(settings)")
     teardown = lifespan.split("\n    finally:\n", 1)[1]
     assert teardown.index("kill_workers(") < teardown.index("stop_owned_work(lifespan_drive_root)")
     emergency = inspect.getsource(server._emergency_process_cleanup)

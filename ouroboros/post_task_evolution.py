@@ -106,15 +106,6 @@ def _counter_due(drive_root: pathlib.Path, k: int) -> bool:
     return (n % max(1, k)) == 0
 
 
-def _backlog_digest(drive_root: pathlib.Path) -> str:
-    try:
-        from ouroboros.improvement_backlog import format_backlog_digest
-
-        return format_backlog_digest(drive_root, limit=8) or ""
-    except Exception:
-        return ""
-
-
 def _loose_json(text: str) -> Optional[Dict[str, Any]]:
     try:
         start, end = text.find("{"), text.rfind("}")
@@ -128,10 +119,10 @@ def _loose_json(text: str) -> Optional[Dict[str, Any]]:
 
 _DECISION_PROMPT = """You decide whether Ouroboros should run ONE reviewed self-improvement (evolution) cycle now, based on the task it just finished and its improvement backlog.
 
-[JUST-FINISHED TASK REFLECTION]
-{reflection}
+[JUST-FINISHED TASK — host-recorded facts]
+{task_facts}
 
-[CURRENT IMPROVEMENT BACKLOG]
+[CURRENT IMPROVEMENT BACKLOG — the complete authored note; its structure, statuses and any counts are its author's text]
 {backlog}
 
 [SOLVE-CAPABILITY HISTORY — what past evolution cycles actually landed]
@@ -144,7 +135,7 @@ _DECISION_PROMPT = """You decide whether Ouroboros should run ONE reviewed self-
 {active_objective}
 
 Return ONLY a JSON object:
-{{"promote": true|false, "objective": "<one concrete, self-contained improvement to Ouroboros's own code/process; empty if not promoting>", "requires_plan_review": true|false, "backlog_id": "<id if this maps to a backlog item, else empty>"}}
+{{"promote": true|false, "objective": "<one concrete, self-contained improvement to Ouroboros's own code/process; empty if not promoting>", "requires_plan_review": true|false, "backlog_id": "<the backlog entry this maps to, as the note names it; else empty>"}}
 
 Rules: set promote=true ONLY when there is a concrete, high-value, self-contained code/process improvement worth a reviewed cycle right now. Prefer items already in the backlog, and weigh the solve-capability history: objective classes that historically got ABSORBED are better bets than classes that kept ending no_op/abandoned. Bias toward SMALL, TARGETED objectives that directly improve the ability to solve tasks (a sharper tool, a fixed failure mode, a removed bottleneck) over broad refactors or speculative platform work — small reviewed wins absorb; sprawling objectives historically die as no_op. Do NOT propose anything in the CLOSED / DROPPED list, or a restatement of the ACTIVE CAMPAIGN OBJECTIVE — those are already handled; if the only candidates are closed/active, return promote=false. If nothing is clearly worthwhile, return promote=false. {force_note}"""
 
@@ -156,7 +147,8 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
     so it cannot rot when prose formatting changes. An objective is closed when its latest cycle
     outcome is absorbed (already shipped), abandoned/no_op (attempted and dropped), or the
     objective/review axis recorded outcome_tier == "blocked_with_evidence" (hard-blocked).
-    A typed review-cap/unavailable stop is only this attempt's limit, not a
+    A typed review-cap/unavailable stop, or a result review of the task still pending
+    in the review ledger, is only this attempt's limit, not a
     permanently closed objective. Its retained task source remains discoverable;
     this readout neither schedules a retry nor resets campaign counters.
     Deduped by the SSOT fingerprint so the same base objective appears once. "" when nothing.
@@ -202,6 +194,7 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
         axes = row.get("outcome_axes") if isinstance(row.get("outcome_axes"), dict) else {}
         objective = axes.get("objective") if isinstance(axes.get("objective"), dict) else {}
         review = axes.get("review") if isinstance(axes.get("review"), dict) else {}
+        # An old row may carry a task-acceptance decision written before the result review.
         decision = review.get("acceptance_decision") if isinstance(review.get("acceptance_decision"), dict) else {}
         if (objective.get("reason") in {REASON_REVIEW_CYCLES_EXHAUSTED, REASON_REVIEW_QUORUM_UNREACHABLE}
                 or (decision.get("status") == ACCEPTANCE_FINALIZED_UNACCEPTED
@@ -211,13 +204,14 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
             axis_obj = axes.get(axis) if isinstance(axes.get(axis), dict) else {}
             if str(axis_obj.get("outcome_tier") or "") == "blocked_with_evidence":
                 merged["blocked"] = True
+    pending = _pending_result_review_tasks(drive_root)
     seen = set()
     out: list = []
     for task_id in reversed(order):  # newest first
         info = by_task.get(task_id) or {}
         blocked = bool(info.get("blocked"))
         outcome = str(info.get("cycle_outcome") or "")
-        waiting = info.get("waiting_for_review") and outcome not in {"absorbed", "abandoned"}
+        waiting = (info.get("waiting_for_review") or task_id in pending) and outcome not in {"absorbed", "abandoned"}
         if not waiting and outcome not in {"absorbed", "abandoned", "no_op"} and not blocked:
             continue
         objective = str(info.get("objective") or "").strip().replace("\n", " ")
@@ -237,6 +231,19 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
     return "\n".join(out)
 
 
+def _pending_result_review_tasks(drive_root: pathlib.Path) -> set:
+    """Tasks whose own result review is still pending, read once from the review
+    ledger's hot index (a row count can never exceed the index's byte bound)."""
+    try:
+        from ouroboros import review_ledger as ledger
+
+        rows = ledger.recent_records(drive_root, limit=ledger.INDEX_MAX_BYTES, hot_only=True, surface="result")
+    except Exception:
+        log.debug("Review ledger unreadable for the closed-objectives digest", exc_info=True)
+        return set()
+    return {str(row.get("task_id") or "") for row in rows if row.get("state") == ledger.STATE_PENDING}
+
+
 def _active_campaign_objective() -> str:
     """BUG3 Layer A: the current campaign objective (a cycle is already running it)."""
     try:
@@ -246,15 +253,32 @@ def _active_campaign_objective() -> str:
         return ""
 
 
-def _decide_promotion(env: Any, task: Dict[str, Any], reflection_entry: Optional[Dict[str, Any]],
+def _task_facts(task: Dict[str, Any], sealed_final: Optional[Dict[str, Any]]) -> str:
+    """The finished run's recorded facts: its exact initial text and its sealed outcome.
+
+    The initial text rides whole; a request the route cannot hold fails the stage visibly.
+    A split Project root's globalized view deliberately omits it, and this tool-less
+    chooser has no reader to reach it, so the prompt says it is unavailable here.
+    The sealed outcome is bounded, not whole: ``task_finalization.sealed_final_prompt_section``
+    cuts each recorded text (final answer, internal text, host notice) at
+    ``_SEALED_FINAL_TEXT_PROMPT_CHARS`` (4000) under an OMISSION NOTE, and the artifact
+    manifest names its omitted count.
+    """
+    from ouroboros.task_finalization import sealed_final_prompt_section
+
+    text = str(task.get("text") or "")
+    initial = (f"Initial text of the run (exact):\n{text}" if text else
+               "Initial text of the run: unavailable in this view.")
+    sealed = sealed_final_prompt_section(sealed_final) or "Sealed final outcome: not recorded for this run.\n"
+    return f"{initial}\n\n{sealed}"
+
+
+def _decide_promotion(env: Any, task: Dict[str, Any], sealed_final: Optional[Dict[str, Any]],
                       llm_client: Any, *, force: bool) -> Optional[Dict[str, Any]]:
+    from ouroboros.improvement_backlog import authored_backlog_text
     from ouroboros.utils import truncate_review_artifact
 
     drive_root = pathlib.Path(str(env.drive_root))
-    # No silent slicing of cognitive artifacts (BIBLE P1 / DEVELOPMENT.md): use the
-    # omission-note truncation helper so the model sees that content was capped.
-    reflection = truncate_review_artifact(str((reflection_entry or {}).get("reflection") or ""), 1500)
-    backlog = truncate_review_artifact(_backlog_digest(drive_root), 3000)
     try:
         from ouroboros.evolution_checkpoints import build_solve_capability_digest
         capability = truncate_review_artifact(build_solve_capability_digest(drive_root), 2000)
@@ -274,7 +298,7 @@ def _decide_promotion(env: Any, task: Dict[str, Any], reflection_entry: Optional
         if force else ""
     )
     prompt = _DECISION_PROMPT.format(
-        reflection=reflection or "(none)", backlog=backlog or "(empty)",
+        task_facts=_task_facts(task, sealed_final), backlog=authored_backlog_text(drive_root),
         capability=capability or "(no evolution-cycle history yet)",
         closed=closed or "(none)", active_objective=active_objective or "(no active campaign)",
         force_note=force_note,
@@ -343,13 +367,14 @@ def _write_request(drive_root: pathlib.Path, decision: Dict[str, Any], task: Dic
     atomic_write_json(path, req)
 
 
-def maybe_promote(env: Any, task: Dict[str, Any], reflection_entry: Optional[Dict[str, Any]],
+def maybe_promote(env: Any, task: Dict[str, Any], sealed_final: Optional[Dict[str, Any]],
                   llm_client: Any = None) -> Optional[Dict[str, Any]]:
-    """Worker-side: write a durable promotion signal if the envelope is on and a
-    qualifying task surfaced a worthwhile self-improvement. Returns the decision
-    or None. NEVER enqueues/enables evolution (that is the supervisor's job).
-    A failure raises to the post-task promotion stage (TZ-2 C3): None is only
-    a genuine no-op, never a swallowed chooser failure."""
+    """Worker-side: write a durable promotion signal if the envelope is on and the
+    chooser finds a worthwhile self-improvement in the finished run's recorded facts
+    (``sealed_final``) and the authored backlog. Returns the decision or None. NEVER
+    enqueues/enables evolution (that is the supervisor's job). A failure raises to
+    the post-task promotion stage: None is only a genuine no-op, never a swallowed
+    chooser failure."""
     from ouroboros.config import (
         get_post_task_evolution_cadence,
         get_post_task_evolution_enabled,
@@ -375,7 +400,7 @@ def maybe_promote(env: Any, task: Dict[str, Any], reflection_entry: Optional[Dic
     force = not cadence.startswith("llm")
     if cadence.startswith("every_n") and not _counter_due(drive_root, _parse_every_n(cadence)):
         return None
-    decision = _decide_promotion(env, task, reflection_entry, llm_client, force=force)
+    decision = _decide_promotion(env, task, sealed_final, llm_client, force=force)
     if not decision or not decision.get("promote") or not decision.get("objective"):
         return None
     _write_request(drive_root, decision, task)
@@ -471,23 +496,10 @@ def apply_pending_request(drive_root: Any) -> bool:
         origin = consciousness_origin_metadata(req)
         if not start_evolution_campaign(objective, source="post_task", **({"origin": origin} if origin else {})):
             return False
-        # Link the promoted backlog id to the campaign so close-on-commit (Phase 2 C)
-        # can mark it done when the cycle is absorbed. Validate it against the OPEN
-        # backlog first: never link (and later close) a hallucinated or stale id.
+        # The chooser's stated backlog entry rides the campaign into its cycle-outcome
+        # history as evidence of what it chose from: it is not checked against, and
+        # never changes, the authored note, whose author alone revises it.
         backlog_id = str(req.get("backlog_id") or "").strip()
-        if backlog_id:
-            try:
-                from ouroboros.improvement_backlog import load_backlog_items
-
-                open_ids = {
-                    str(i.get("id"))
-                    for i in load_backlog_items(drive_root)
-                    if str(i.get("status") or "open").lower() != "done"
-                }
-                if backlog_id not in open_ids:
-                    backlog_id = ""
-            except Exception:
-                backlog_id = ""
         if backlog_id:
             try:
                 from supervisor.evolution_lifecycle import _read_evolution_campaign, _write_evolution_campaign

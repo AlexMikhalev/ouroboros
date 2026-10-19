@@ -274,6 +274,10 @@ def pending_deadline_expirable(task: Dict[str, Any]) -> bool:
             if (task.get("admitted_dispatch") == "none" and stored.get("status") == "scheduled"
                     and not stored.get("started_at") and stored.get("admitted_dispatch", "none") == "none"):
                 return True
+            from supervisor.schedule_occurrence import first_dispatch_unsent
+
+            if task.get("admitted_dispatch") == "none" and first_dispatch_unsent(task):
+                return True  # an earlier launcher's Project mark; its receipt proves no handoff
             # With no carrier selected, Project release's exact planned grant (#1500) is the
             # other positive authority, only while its successor attempt was never claimed.
             from ouroboros.delegate_recovery import planned_handoff_resume_allowed
@@ -393,6 +397,30 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             cost_fields = q.reconstruct_task_cost(task_id, fields=True)
         except Exception:
             cost_fields = {"cost_accounting_status": "unavailable", "cost_final": False}
+        # The durable outbox owes delivery before the terminal frame; a root reaches its
+        # own lineage, a child its parent through the ordinary handoff.
+        from supervisor.terminal_delivery import (
+            build_unreviewed_salvage_event, deliver_miss_lane_outcome, deliver_unreviewed_salvage,
+            register_pending_delivery, salvage_cancelled_output,
+        )
+
+        drive = _task_drive_for_task(task, task_id)
+        salvage_root = str(task.get("delegation_role") or "") != "subagent"
+
+        def owe_salvage(current: Dict[str, Any]) -> "Dict[str, Any] | None":
+            """Register the deadline salvage answer as OWED; None when the registration failed."""
+            text, path = salvage
+            delivery = dict(outcome="", reason_code=REASON_DEADLINE, salvaged_text=text, preserved_path=path,
+                            settled_status="failed",
+                            unreconciled_runs=list(current.get("delegated_runs_unreconciled") or []))
+            event = build_unreviewed_salvage_event(q.DRIVE_ROOT, {**task, **current}, task_id, **delivery)
+            if event is not None and not register_pending_delivery(q.DRIVE_ROOT, event):
+                return None
+            return delivery
+
+        delivery, salvage = None, ("", "")
+        if salvage_root:  # the response-history read and copy run before Q; only the owed registration rides it
+            salvage = tuple(salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)[1:])
         # Only the terminal write is serialized against Stop; custody and delivery
         # never make a Q-held cancel wait on this projection.
         with q._queue_lock, cancellation_projection_lock(q.DRIVE_ROOT):
@@ -410,6 +438,14 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             if stored.get("status") not in _TRULY_TERMINAL_STATUSES:
                 if not pending_deadline_expirable(task):  # Pause/authority can change while custody runs off Q.
                     return False
+                # Owe the salvage answer BEFORE the terminal row exists (owner Fork 2): a
+                # settle landing between the write and the registration sees the debt and
+                # never publishes a card without the answer. A refused registration keeps
+                # the row in custody, exactly as the post-write refusal used to.
+                if salvage_root:
+                    delivery = owe_salvage(stored)
+                    if delivery is None:
+                        return False
                 stored = write_task_result(
                     q.DRIVE_ROOT, task_id, "failed", strict_existing_dict=True, reason_code=REASON_DEADLINE,
                     outcome_axes=terminal_outcome_axes(
@@ -423,23 +459,14 @@ def _settle_pending_deadline(task: Dict[str, Any], *, event_already_published: b
             return False
         if event_already_published:
             return True
-        # The durable outbox owes delivery before the terminal frame; a root reaches its
-        # own lineage, a child its parent through the ordinary handoff.
-        from supervisor.terminal_delivery import (
-            build_unreviewed_salvage_event, deliver_miss_lane_outcome, deliver_unreviewed_salvage,
-            register_pending_delivery, salvage_cancelled_output,
-        )
-
-        row, drive = {**task, **stored}, _task_drive_for_task(task, task_id)
+        row = {**task, **stored}
         unreconciled = list(stored.get("delegated_runs_unreconciled") or [])
         if status == "failed" and stored.get("reason_code") == REASON_DEADLINE:
-            if str(task.get("delegation_role") or "") != "subagent":
-                _, text, path = salvage_cancelled_output(q.DRIVE_ROOT, drive, task_id)
-                delivery = dict(outcome="", reason_code=REASON_DEADLINE, salvaged_text=text,
-                                preserved_path=path, settled_status=status, unreconciled_runs=unreconciled)
-                event = build_unreviewed_salvage_event(q.DRIVE_ROOT, row, task_id, **delivery)
-                if event is not None and not register_pending_delivery(q.DRIVE_ROOT, event):
-                    return False
+            if salvage_root:
+                if delivery is None:  # the row was already terminal when custody caught up: owe its answer now
+                    delivery = owe_salvage(stored)
+                    if delivery is None:
+                        return False
                 deliver_unreviewed_salvage(q.DRIVE_ROOT, row, task_id, **delivery)
         elif not deliver_miss_lane_outcome(q.DRIVE_ROOT, drive, row, task_id, status,
                                            unreconciled_runs=unreconciled):
@@ -558,7 +585,7 @@ def _enforce_task_timeouts_locked(
     # a later graceful request can never extend either hard axis.
     from supervisor.owner_stop import running_owner_stop_tasks
     from supervisor.restart_retention import RETAINED_FOR_BOOT
-    from supervisor.worker_owner_wait import has_owner_wait_checkpoint
+    from supervisor.worker_owner_wait import has_owner_wait_checkpoint, waiting_on_owner
 
     owner_stop_held = running_owner_stop_tasks(
         _queue().DRIVE_ROOT, grace_sec=_queue().FINALIZATION_GRACE_SEC,
@@ -608,13 +635,10 @@ def _enforce_task_timeouts_locked(
         lease_ts = meta.get("external_wait_lease_until")
         active_llm_call = meta.get("active_llm_call")
         llm_call_in_flight = isinstance(active_llm_call, dict) and active_llm_call.get("task_attempt") == attempt
-        owner_wait = meta.get("owner_wait")
-        waiting_on_owner = (isinstance(owner_wait, dict) and owner_wait.get("state") == "waiting"
-                            and owner_wait.get("task_attempt") == attempt)
         progressing = (own_progress or subtree_progressing or _queue()._has_pending_descendant(task_id)
                        or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now)
                        or llm_call_in_flight
-                       or model_waiting(meta) or waiting_on_owner
+                       or model_waiting(meta) or waiting_on_owner(meta, attempt)
                        or _active_operation_progressing(meta, now))
         ceiling_reached = abs_ceiling is not None and runtime_sec >= float(abs_ceiling)
         if (ceiling_reached and not task.get("parent_task_id")

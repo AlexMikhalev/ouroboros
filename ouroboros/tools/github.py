@@ -566,8 +566,13 @@ def _pr_merge(ctx: ToolContext, number: int, expected_head_sha: str, method: str
     from ouroboros.merge_receipts import REVIEW_SCOPES, _VERDICT_RE, _sha, run_pr_merge
     from ouroboros.tool_access import canonical_data_root
 
-    if review_scope not in REVIEW_SCOPES or (review_verdict and not _VERDICT_RE.fullmatch(review_verdict)):
-        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: review_scope is full|delta; review_verdict is a short word such as PASS.", no_effect=True)
+    if review_scope not in REVIEW_SCOPES:
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: review_scope is full or delta; nothing was merged.", no_effect=True)
+    if review_verdict and not _VERDICT_RE.fullmatch(review_verdict):
+        return _refuse(ctx, (
+            f"⚠️ TOOL_ARG_ERROR: review_verdict must match {_VERDICT_RE.pattern}: a letter, then at most 39 "
+            "letters, digits, spaces, '_' or '-' (e.g. PASS, PASS_WITH_ADVISORIES). The "
+            f"{len(review_verdict)}-character value was refused, not shortened; nothing was merged."), no_effect=True)
     record_id = str(review_record_id or "").strip()
     declared = ({"reviewed_head_sha": _sha(reviewed_head_sha), "reviewed_base_sha": _sha(reviewed_base_sha),
                  "scope": review_scope, "verdict": review_verdict}
@@ -580,15 +585,33 @@ def _pr_merge(ctx: ToolContext, number: int, expected_head_sha: str, method: str
     if receipt.get("refused"):
         code = "TOOL_ARG_ERROR" if receipt["refused"] == "arguments" else "TOOL_ERROR"
         return _refuse(ctx, f"⚠️ PR_MERGE_REFUSED: {receipt['refused']} — {receipt.get('detail', '')}", code, no_effect=True)
-    from ouroboros.merge_receipts import card_row_text
+    from ouroboros.merge_receipts import card_row_text, queued_earlier_note
 
     status = (receipt.get("outcome") or {}).get("status", "unknown")
     lines = [card_row_text(receipt), f"receipt_id={receipt['receipt_id']} (task result: merge_receipts)"]
-    if receipt.get("readback_only"):
+    prior = receipt.get("prior_status", "unknown") if receipt.get("readback_only") else None
+    if prior == "merged":
+        lines.append("This PR's merge is already recorded in this receipt, so this call only read GitHub back "
+                     "and sent no new merge request.")
+    elif prior == "":
+        lines.append("An earlier or concurrent request for this PR holds its merge intent with no recorded outcome "
+                     "yet, so this call only read GitHub back and sent no new merge request.")
+    elif prior is not None:
         lines.append("An earlier request for this PR had no confirmed outcome, so this call only read GitHub back "
                      "and sent no new merge request. Unknown and queued requests remain observation-only.")
-    if receipt.get("republished"):
-        lines.append("Receipt publication retried; the merge was not repeated.")
+    # The receipt's retained, already bounded and redacted gh facts belong in this local
+    # response (#1555); the public PR-body block never carries them.
+    effect = receipt.get("effect") or {}
+    if effect and not effect.get("ok"):
+        facts = ", ".join([f"failure={effect.get('failure') or 'unknown'}"] + [
+            f"{key}={effect[key]}" for key in ("exit_code", "http_status") if effect.get(key) is not None])
+        output = str(effect.get("output") or "").strip()
+        lines.append(("Earlier merge request: " if receipt.get("readback_only") else "Merge request: ")
+                     + facts + (f": {output}" if output else ""))
+    if (receipt.get("outcome") or {}).get("reason"):
+        # The first line already names the latest readback beside an earlier queue state.
+        lines.append(("Earlier GitHub readback: " if queued_earlier_note(receipt) else "GitHub readback: ")
+                     + f"{receipt['outcome']['reason']}.")
     publication = receipt.get("publication") or {}
     if receipt.get("receipt_write_gap"):
         lines.append("⚠️ Merge receipt persistence is unknown after the external effect: "
@@ -722,12 +745,15 @@ def get_tools() -> List[ToolEntry]:
                 "expected_head_sha": {"type": "string", "description": "The PR head you intend to merge; GitHub refuses if it moved"},
                 "method": {"type": "string", "enum": ["merge", "squash", "rebase"]},
                 "review_task_ids": {"type": "array", "items": {"type": "string"}, "default": [],
-                                    "description": "Task ids of the reviews you rely on; the host records what it can observe of each"},
+                                    "description": "Task ids of the reviews you rely on; the host records whether each "
+                                                   "completed, not its kind or reviewed subject"},
                 "reviewed_head_sha": {"type": "string", "default": "", "description": "The head those reviews covered (declared)"},
                 "reviewed_base_sha": {"type": "string", "default": "", "description": "The base those reviews covered (declared)"},
                 "review_scope": {"type": "string", "enum": ["full", "delta"], "default": "full",
                                  "description": "delta = only the change since an earlier review; never counted as whole-PR coverage"},
-                "review_verdict": {"type": "string", "default": "", "description": "The declared verdict word, e.g. PASS"},
+                "review_verdict": {"type": "string", "default": "", "maxLength": 40,
+                                   "description": "Your declared verdict, recorded as your statement, never as the host "
+                                                  "review result; must match ^[A-Za-z][A-Za-z0-9_ -]{0,39}$, e.g. PASS"},
                 "review_record_id": {"type": "string", "default": "",
                                      "description": "Id of the host review record to bind (e.g. the review_record_id commit_reviewed "
                                                     "returns); the host then reads the reviewed subject and verdict from it instead "

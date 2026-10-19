@@ -137,16 +137,25 @@ def test_route_reprojection_keeps_the_captured_handbook_and_counts_it_in_the_flo
     chapter.write_text("# Rules\n\nChanged after capture.\n", encoding="utf-8")
     rebuilt = plan.reproject_for_route(window_tokens=2_000_000, known_window=True, ratio=1.0,
                                       output_reserve=plan.output_reserve_tokens, tool_schemas=None)
+    # A window the Max request cannot hold narrows Max's memory: D is still the captured one, counted the same.
+    tight = plan.projection("max").estimated_tokens + plan.output_reserve_tokens - 1
+    narrowed = plan.reproject_for_route(window_tokens=tight, known_window=True, ratio=1.0,
+                                       output_reserve=plan.output_reserve_tokens, tool_schemas=None)
     for mode in ("max", "low", "nano"):
         before, after = plan.messages_for(mode)[0], rebuilt.messages_for(mode)[0]
-        assert after["content"] == before["content"]
+        assert after["content"] == before["content"]  # a larger window keeps every shown view
+        assert rebuilt.projection(mode).memory_facts == plan.projection(mode).memory_facts
         texts = [block["text"] for block in after["content"]]
         assert sum(text.startswith("## DEVELOPMENT.md\n") for text in texts) == int(book and mode == "max")
         if book and mode == "max":
             assert texts[1] == "## DEVELOPMENT.md\n\n" + core.development_md
         assert all("Changed after capture" not in text for text in texts)
-        assert (rebuilt.projection(mode).memory_facts["floor"]["physical_allowance_tokens"]
-                - plan.projection(mode).memory_facts["floor"]["physical_allowance_tokens"]) == 1_000_000
+    texts = [block["text"] for block in narrowed.messages_for("max")[0]["content"]]
+    assert narrowed.projection("max").system_content_json != plan.projection("max").system_content_json
+    assert sum(text.startswith("## DEVELOPMENT.md\n") for text in texts) == int(book)
+    assert all("Changed after capture" not in text for text in texts)
+    assert (narrowed.projection("max").memory_facts["floor"]["physical_allowance_tokens"]
+            - plan.projection("max").memory_facts["floor"]["physical_allowance_tokens"]) == tight - 1_000_000
 
 
 def test_a_knowledge_edit_changes_only_c_and_a_new_page_changes_b_but_never_a(tmp_path):
@@ -211,40 +220,6 @@ def test_anthropic_preserves_the_message_seal_and_gives_schemas_only_a_free_slot
     assert any(block.get("text", "").startswith("## DEVELOPMENT.md\n") for block in kept) == has_book
     assert all(block["cache_control"] == {"type": "ephemeral", "ttl": "1h"} for block in kept)
     assert messages == canonical and tools == _tools()
-
-
-def test_local_compaction_keeps_my_story_and_this_room_and_never_splits_a_reply(tmp_path):
-    from ouroboros.llm_local import _compact_local_text
-
-    env, memory, _rooms = world(tmp_path)
-    _a, b, c, _cap = blocks(env, memory, MAIN)
-    kept_b = _compact_local_text(b, "semi_stable")
-    assert section(b, "## My story") in kept_b
-    kept_c = _compact_local_text(c, "dynamic")
-    assert section(c, "## This room (Main)") in kept_c  # the label in parentheses still matches "This room"
-    assert "  ## with a heading" in kept_c and "## with a heading\n\n[Compacted" not in kept_c
-    assert "[Compacted for local-model context" in section(kept_c, "## Live rooms")  # not a kept title
-
-
-@pytest.mark.parametrize("book", [False, True])
-def test_local_compaction_keeps_identity_and_my_story_whichever_block_holds_them(tmp_path, monkeypatch, book):
-    """The handbook moves B off the second block; a local model still gets my identity, story and room."""
-    from ouroboros import llm_local
-    from ouroboros.llm import LLMClient
-
-    env, memory, _rooms = world(tmp_path)
-    messages, _cap = _messages(env, memory, {**MAIN, "workspace_root": "" if book else str(tmp_path / "project")})
-    a, *middle, c = (block["text"] for block in messages[0]["content"])
-    b = middle[-1]
-    assert [text.startswith("## DEVELOPMENT.md\n") for text in middle] == ([True, False] if book else [False])
-    sizes = iter([10**9, 0])  # the request is over the local window; its compacted form fits
-    monkeypatch.setattr(llm_local, "_estimate_message_chars", lambda _messages: next(sizes))
-    kept_a, *kept_middle, kept_c = (block["text"] for block in
-                                    LLMClient()._prepare_messages_for_local_context(messages, 8192, 512)[0]["content"])
-    assert section(b, "## Identity") in kept_middle[-1] and section(b, "## My story") in kept_middle[-1]
-    assert section(c, "## This room (Main)") in kept_c and section(a, "## BIBLE.md") in kept_a
-    if book:  # the handbook compacts as a book, like the governance block before it
-        assert kept_middle[0].startswith("## DEVELOPMENT.md\n\n[Compacted for local-model context")
 
 
 def test_the_view_fact_reaches_the_cap_info_the_task_context_and_one_event(tmp_path):
@@ -390,7 +365,7 @@ def test_the_task_trace_keeps_the_view_fact_of_its_request(tmp_path, monkeypatch
 
     monkeypatch.setattr(loop, "call_llm_with_retry",
                         lambda *_a, **_kw: ({"role": "assistant", "content": "done"}, 0.0))
-    monkeypatch.setattr(loop, "_run_task_acceptance_review_once", lambda **_kw: False)
+    monkeypatch.setattr("ouroboros.tools.review_result.result_review_at_delivery", lambda *_a, **_kw: False)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     facts = {"role": "integrator", "room_id": "1", "floor": {"steps": {}}, "story_status": {"folded": 0, "total": 2}}
     for given in (facts, None):
@@ -476,17 +451,24 @@ def test_direct_openai_and_openrouter_keep_all_stable_items_and_one_notice(tmp_p
         assert target["wire_layout"] == {"system_prefix_split": True, "moved_blocks": 1}
 
 
-def test_the_task_input_pointer_follows_the_calibrated_nano_request_and_the_floor_counts_resident_schemas(tmp_path, monkeypatch):
-    """A11. The pointer trigger compares the CALIBRATED Nano request, schemas it sends included, plus the
-    reply floor with the target: a fitting calibrated input gets no pointer, and a schema-heavy request that
-    only the schemas push over the target gets one. On a route switch the floor's fixed part counts the
-    schemas a running task actually sends (an enable_tools addition), not a fresh Nano selection that drops them."""
+def test_the_task_input_pointer_is_a_physical_rescue_and_the_floor_counts_resident_schemas(tmp_path, monkeypatch):
+    """A11, #1527 (owner 2026-10-13, A). The owner's words reach Nano as text whatever the 85K target: the
+    pointer replaces them only when a known fresh window cannot hold the calibrated Nano request (schemas it
+    sends and its reply floor included) and the pointer request does fit it. An unknown window, a pointer that
+    does not fit either, or a failed source write keep the words. The pointer's reader reaches the end of the
+    exact input. On a route switch the resident list (an enable_tools addition) counts in the fit and the floor."""
+    import math
     from types import SimpleNamespace
 
-    from ouroboros import context, context_fit
+    from ouroboros import artifacts, context, context_fit
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
+    from ouroboros.tool_policy import select_tool_schemas
+    from ouroboros.tools.core import _read_file
+    from ouroboros.tools.registry import ToolContext
 
     env, memory, _rooms = world(tmp_path)
-    task = {"type": "task", "text": "x" * 240_000, **MAIN}  # ~60K raw tokens: under the target alone, over it with the schemas
+    final = "FINAL CONSTRAINT: keep the old API alive."
+    task = {"type": "task", "text": "x" * 240_000 + "\n" + final, **MAIN}  # ~60K raw tokens of owner words
     core = context._capture_context_core(env, memory, task, None, None)
     big = [{"type": "function", "function": {"name": f"tool_{i}", "description": "d" * 4_000,
                                              "parameters": {"type": "object", "properties": {}}}} for i in range(30)]
@@ -495,27 +477,57 @@ def test_the_task_input_pointer_follows_the_calibrated_nano_request_and_the_floo
     heavy_meta = [{"type": "function", "function": {"name": "enable_tools", "description": "d" * 120_000,  # ~30K tokens Nano DOES send
                                                     "parameters": {"type": "object", "properties": {}}}}, meta[1]]
 
-    def plan(tools, ratio):
+    def plan(tools, ratio, window=1_000_000, *, status="asserted", stale=False):
         monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a, **_kw: ratio)
         return context._build_context_fit_plan(env, core, task, preferred_mode="nano", tool_schemas=tools,
                                                route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, SimpleNamespace(
-                                                   route_fp="r", status="asserted", stale=False, window_tokens=1_000_000)))
+                                                   route_fp="r", status=status, stale=stale, window_tokens=window)))
+
+    def total(built, tools, ratio):  # the calibrated Nano request: schemas it sends and its reply floor
+        sent = context_fit.tool_schema_tokens(list(select_tool_schemas(tools, context_mode="nano").schemas))
+        return math.ceil((built.nano_projection.estimated_tokens + sent) * ratio) + NANO_MIN_HEADROOM_TOKENS
 
     pointer = lambda built: built.nano_projection.user_content_json is not None  # noqa: E731
-    assert not pointer(plan(meta, 1.0))  # 60K + floor < 85K
-    assert not pointer(plan(meta + big, 1.0))  # schemas the Nano request does not send do not count
-    assert pointer(plan(heavy_meta, 1.0))  # the 30K of schemas the Nano request sends push it over
-    assert not pointer(plan(heavy_meta, 0.8))  # calibrated: (60K + 30K) x 0.8 + floor fits the target
-    assert pointer(plan(meta, 1.5))  # calibrated the other way: a dense tokenizer makes the same input a pointer
+    # Over the target, inside a known window: the words stay text, whatever schemas or density push it there.
+    assert total(plan(heavy_meta, 1.0), heavy_meta, 1.0) > OWNER_NANO_TARGET_TOKENS
+    for tools, ratio in ((meta, 1.0), (meta + big, 1.0), (heavy_meta, 1.0), (heavy_meta, 0.8), (meta, 1.5)):
+        assert not pointer(plan(tools, ratio)), (len(tools), ratio)
+    full = total(plan(heavy_meta, 1.0), heavy_meta, 1.0)
+    # A known window that cannot hold the words, and holds the pointer request: the exact source replaces them.
+    window = full - 30_000
+    rescued = plan(heavy_meta, 1.0, window)
+    assert pointer(rescued) and total(rescued, heavy_meta, 1.0) <= window
+    shown = json.loads(rescued.nano_projection.user_content_json)
+    assert shown.startswith("[Exact task input source]") and final not in shown
+    assert rescued.max_projection.user_content_json is None and rescued.low_projection.user_content_json is None
+    locator = json.loads(shown.split("\n", 2)[2])
+    stored = artifacts.read_actor_source_bytes(env.drive_root, task["id"], locator).decode("utf-8")
+    assert stored == core.user_content_json  # the exact original input, never a summary
+    reader = ToolContext(repo_dir=tmp_path, drive_root=env.drive_root, task_id=task["id"])
+    at = stored.rindex(final)
+    page = _read_file(reader, locator["path"], root="artifact_store", start_line=1, max_lines=1,
+                      start_char=at, max_chars=len(final))
+    assert page.endswith(final) and at > 240_000  # the reader reaches the input's last constraint
+    # Neither a window that cannot hold the pointer request, nor an unknown or stale window, hides the words.
+    assert not pointer(plan(heavy_meta, 1.0, total(rescued, heavy_meta, 1.0) - 1))
+    assert not pointer(plan(heavy_meta, 1.0, window, status="failed"))
+    assert not pointer(plan(heavy_meta, 1.0, window, stale=True))
+    monkeypatch.setattr(artifacts, "store_actor_source_bytes", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("disk")))
+    assert not pointer(plan(heavy_meta, 1.0, window))  # no exact source: the words stay
+    monkeypatch.undo()
 
-    # The floor on a route switch: the resident list (a big schema enable_tools added) narrows Nano's room.
+    # The fit on a route switch counts the resident list: the same window keeps the bare view and narrows the loaded one.
     built = plan(meta, 1.0)
-    bare = built.reproject_for_route(window_tokens=1_000_000, known_window=True, ratio=1.0, output_reserve=65_536,
-                                     tool_schemas=meta, start_mode="nano")
-    loaded = built.reproject_for_route(window_tokens=1_000_000, known_window=True, ratio=1.0, output_reserve=65_536,
-                                       tool_schemas=meta + big, start_mode="nano")
-    room = lambda plan_: plan_.nano_projection.memory_facts["floor"]["allowance_tokens"]  # noqa: E731
-    assert room(bare) - room(loaded) >= 30_000
+    resident = lambda tools: built.nano_projection.estimated_tokens + context_fit.tool_schema_tokens(tools) + NANO_MIN_HEADROOM_TOKENS  # noqa: E731
+    middle = resident(meta) + 15_000
+    assert resident(meta + big) > middle
+    on = lambda tools, **kw: built.reproject_for_route(window_tokens=kw.pop("window", middle), known_window=True,  # noqa: E731
+                                                       ratio=1.0, output_reserve=65_536, tool_schemas=tools, start_mode="nano", **kw)
+    assert on(meta).nano_projection.system_content_json == built.nano_projection.system_content_json
+    assert on(meta + big).nano_projection.system_content_json != built.nano_projection.system_content_json
+    # A narrowing floor counts the same resident schemas in its fixed part.
+    room = lambda plan_: plan_.nano_projection.memory_facts["floor"]["physical_allowance_tokens"]  # noqa: E731
+    assert room(on(meta, window=1_000_000, refused_tokens=1)) - room(on(meta + big, window=1_000_000, refused_tokens=1)) >= 30_000
     # The first request keeps the owner-mode selection: a full list is not what Nano sends there.
     assert (built.nano_projection.memory_facts["floor"]["physical_allowance_tokens"]
             == plan(meta + big, 1.0).nano_projection.memory_facts["floor"]["physical_allowance_tokens"])

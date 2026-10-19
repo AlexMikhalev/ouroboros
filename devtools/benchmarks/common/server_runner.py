@@ -92,8 +92,8 @@ _ISO_SETTINGS_ALLOW_EXACT = frozenset({
     # The roster carries the delegation actor AND the review pool (its marked rows).
     "OUROBOROS_SUBAGENTS",
     "OUROBOROS_WEBSEARCH_MODEL",
-    # Review policy knobs (non-secret): must propagate so settings.json's task-acceptance
-    # self-review config is honored by isolated benchmark servers (else it silently
+    # Review policy knobs (non-secret): must propagate so settings.json's result-review
+    # config is honored by isolated benchmark servers (else it silently
     # falls back to the "auto" default and the end-of-task review never runs).
     "OUROBOROS_TASK_REVIEW_MODE", "OUROBOROS_REVIEW_ENFORCEMENT",
     # Shared paid review-cycle ceiling (non-secret): bench templates pin it to
@@ -654,9 +654,11 @@ class IsolatedServer:
         callers (a driver cleaning up after its own ``wait_task`` deadline) keep the
         byte-identical legacy single-task request they have always sent.
 
-        The cascade lane answers only once the subtree is actually torn down, hence the
-        wide default timeout. Returns the ``_api_status`` envelope; the refusal statuses are
-        part of the contract under test, so nothing is raised or swallowed.
+        A hard Stop records the intent first and answers 200 once the teardown was driven,
+        404 when nothing was live, or 202 ``cancel_state=pending`` while the intent is still
+        open for the watchdog; the cascade lane still waits for the kills it asked for, hence
+        the wide default timeout. Returns the ``_api_status`` envelope; the refusal statuses
+        are part of the contract under test, so nothing is raised or swallowed.
         """
         body: dict = {}
         if cascade:

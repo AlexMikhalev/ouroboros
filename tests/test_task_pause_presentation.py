@@ -38,3 +38,36 @@ def test_census_carries_typed_pause_cause_for_a_parked_direct_root(tmp_path, mon
     row = next(row for row in rows if row["activity_id"] == "paused")
     assert row["kind"] == "direct_chat" and row["phase"] == "budget_paused"
     assert row["pause_cause"] == cause
+
+
+@pytest.mark.parametrize("synthesis,named", [("running", True), ("pending_once", True), ("refresh", False), ("", False)])
+def test_only_a_stored_answer_names_its_late_work(tmp_path, synthesis, named):
+    """Activity names an answered root's remaining work; a working turn whose checkpoint holds
+    only the pre-answer cost "refresh" pseudo-status is not answered and is never so labelled."""
+    from ouroboros.gateway.state import _task_activity_facts
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "root", "running" if synthesis in {"refresh", ""} else "completed",
+                      suggested_name="Audit the release", chat_id=1,
+                      **({"root_phase_checkpoint": {"post_task_synthesis": synthesis}} if synthesis else {}))
+    display = _task_activity_facts(tmp_path, "root")["display"]
+    assert ("late_work" in display) is named
+    if named:
+        assert display["late_work"]["title"] == "Audit the release"
+
+
+def test_late_work_dates_the_answer_only_by_the_executor_terminal_fact(tmp_path):
+    from ouroboros.gateway.state import _task_activity_facts
+    from ouroboros.task_results import write_task_result
+    from ouroboros.terminal_time import terminal_time_fact
+
+    running = {"root_phase_checkpoint": {"post_task_synthesis": "running"}}
+    observed = write_task_result(tmp_path, "observed", "completed", _terminal_observed=True,
+                                 suggested_name="Audit the release", **running)
+    occurred = terminal_time_fact(observed)["occurred_at"]
+    assert occurred, "the executor observed this terminal"
+    assert _task_activity_facts(tmp_path, "observed")["display"]["late_work"] == {
+        "title": "Audit the release", "answered_at": occurred}
+    # A record without the executor's own observation keeps an unknown time, never its row ts.
+    write_task_result(tmp_path, "legacy", "completed", suggested_name="Legacy", **running)
+    assert _task_activity_facts(tmp_path, "legacy")["display"]["late_work"]["answered_at"] == ""

@@ -294,13 +294,13 @@ def read_book_section(book: ReferenceBook, title: str) -> BookView:
 
 
 # --------------------------------------------------------------------------- book balance
-# A measurement, never a gate (BIBLE P3 c5): the official CI `size_ratchet` lane is the
-# only surface that refuses a grown book; every local surface states the same fact.
+# A measurement, never a gate (BIBLE P3 c5). The size lane needs an explicit
+# contribution base; ordinary manual/tag CI cannot certify per-change book growth.
 
 BOOK_GROWTH_RULE = (
-    "Official CI requires each touched book to end no larger than at its base; text a change "
-    "adds is paid by shortening the same book. The repository owner's book-growth label can "
-    "approve an exception. Local commits are not blocked."
+    "Each touched book must end no larger than at its contribution base; added text is paid "
+    "by shortening the same book. Manual/tag CI without that base does not verify this rule. "
+    "The owner's book-growth label can approve an exception; local commits are not blocked."
 )
 
 
@@ -362,6 +362,17 @@ def _official_contribution_target(root: Path) -> str:
     return ""
 
 
+def contribution_base(root: Path) -> tuple[str, str]:
+    """``(official ref, HEAD's merge-base with it)``, each ``""`` when unavailable.
+
+    The one base every contribution measurement uses (the book balance and
+    ``review.diff_pulse``): a branch's own earlier commits stay inside what it contributes.
+    """
+    upstream = _official_contribution_target(root)
+    base = (_git_bytes(root, "merge-base", "HEAD", upstream) or b"").decode().strip() if upstream else ""
+    return upstream, base
+
+
 def book_source_sizes(root: Path, book_id: str, ref: str = "") -> dict[str, int] | None:
     """UTF-8 bytes of each book source, entrypoint first, in the working tree or at ``ref``.
 
@@ -402,8 +413,7 @@ def book_balances(root: Path, paths: Iterable[str] | None = None) -> list[BookBa
          for path in paths if book_entrypoint_for(path) == entry})
     if not wanted:
         return []
-    upstream = _official_contribution_target(root)
-    base = (_git_bytes(root, "merge-base", "HEAD", upstream) or b"").decode().strip() if upstream else ""
+    upstream, base = contribution_base(root)
     balances: list[BookBalance] = []
     for book_id in wanted:
         now = book_source_sizes(root, book_id)
@@ -458,24 +468,3 @@ def book_balance_note(root: Path, paths: Iterable[str]) -> str:
         return "ℹ️ Reference books:\n" + "\n".join(lines) + "\n" + BOOK_GROWTH_RULE
     measured = not unavailable and all(balance.vs_upstream is not None for balance in balances)
     return "ℹ️ Reference book: " + "; ".join(lines) + ("; nothing owed." if measured else ".")
-
-
-def book_plan_fact(root: Path, paths: Iterable[str]) -> str:
-    """The author-facing plan fact for repository paths a plan will change; ``""`` when none applies.
-
-    A named book source, or a new ``ouroboros/``/``supervisor/`` module (the commit gate then
-    requires a staged Architecture-book source), means the work adds book text.
-    """
-    paths = [str(path).replace("\\", "/").lstrip("./") for path in paths]
-    books = sorted({book_entrypoint_for(path) for path in paths if book_path_role(path)})
-    new_modules = [path for path in paths if path.startswith(("ouroboros/", "supervisor/"))
-                   and path.endswith(".py") and not (Path(root) / path).exists()]
-    if not books and not new_modules:
-        return ""
-    named = [f"book sources of {', '.join(books)}"] if books else []
-    if new_modules:
-        named.append(f"new module(s) {', '.join(new_modules[:5])}, and the commit gate requires a "
-                     "staged Architecture-book source with a new module")
-    balances = "; ".join(render_book_balance(balance) for balance in book_balances(root))
-    return (f"FACT: affected_paths name {' and '.join(named)}. {BOOK_GROWTH_RULE}"
-            + (f" Now: {balances}." if balances else ""))

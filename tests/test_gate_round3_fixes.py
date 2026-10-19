@@ -109,7 +109,7 @@ def test_cascade_replay_after_crash_delivers_exactly_one_summary(qenv, monkeypat
         qenv.drive, "cr1", scope=ci.SCOPE_CASCADE, allow_settled_target=True,
     )
 
-    assert qenv.tl.cancel_task_by_id("cr1", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cr1") is True
 
     sends = [e for e in queue.events if e.get("type") == "send_message"]
     assert len(sends) == 1, "the replay/already-down path still owes the summary"
@@ -130,7 +130,7 @@ def test_cascade_replay_after_crash_delivers_exactly_one_summary(qenv, monkeypat
         qenv.drive, "cr1", scope=ci.SCOPE_CASCADE, allow_settled_target=True,
     )
     assert second["request_id"] != minted["request_id"]
-    assert qenv.tl.cancel_task_by_id("cr1", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cr1") is True
     later = [e for e in queue.events if e.get("type") == "send_message"]
     assert len(later) == 1
     assert later[0]["delivery_id"] == f"cascade:cr1:{second['request_id']}"
@@ -630,7 +630,7 @@ def test_stale_sweep_failures_do_not_veto_a_converged_tree(qenv, monkeypatch):
 
     monkeypatch.setattr(qenv.q, "cancel_task_custody", _concurrently_settled)
 
-    assert qenv.tl.cancel_task_by_id("st-root", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("st-root") is True
     assert delivered == ["st-root"], "one summary; no 503 over a settled tree"
     assert ci.active_intent(qenv.drive, "st-root") is None
 

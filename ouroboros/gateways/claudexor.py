@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -94,6 +95,15 @@ def _observation_reason(exc: BaseException) -> str:
     """The typed reason for a read-only observation hole."""
     return (_OBSERVATION_READ_TIMEOUT if isinstance(exc, httpx.ReadTimeout)
             else "daemon_unreachable")
+
+
+def _request_timeout(timeout_sec: Optional[float]) -> Dict[str, Any]:
+    if timeout_sec is None:
+        return {}
+    bounded = max(0.000001, float(timeout_sec))
+    return {"timeout": httpx.Timeout(bounded, connect=min(_CONNECT_TIMEOUT_SEC, bounded))}
+
+
 _ATTEMPTS_REL = "attempts"
 _ATTEMPT_RECORD = "attempt.yaml"
 
@@ -479,30 +489,25 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         # Absent, the call is not passed at all rather than passed as None — httpx reads
         # an explicit ``timeout=None`` as "no timeout", which is the opposite of the
         # default it would otherwise inherit.
-        if timeout_sec is None:
-            bound: Dict[str, Any] = {}
-        else:
-            bounded = max(0.000001, float(timeout_sec))
-            bound = {
-                "timeout": httpx.Timeout(
-                    bounded,
-                    connect=min(_CONNECT_TIMEOUT_SEC, bounded),
-                )
-            }
         response = None
+        started = time.monotonic()
         try:
             # Preserve received headers even when decoding or reading the body
             # fails. In particular, a 401/403 must survive a later read timeout.
             payload = {"content": content_body} if content_body is not None else {"json": json_body}
             with self._client.stream(method, path, **payload,
-                                     headers=headers or None, **bound) as response:
+                                     headers=headers or None, **_request_timeout(timeout_sec)) as response:
                 response.read()
         except httpx.HTTPError as exc:
             retryable = (isinstance(exc, _OBSERVATION_RETRYABLE_ERRORS)
                          and (response is None or response.status_code < 400))
+            # Only the code-owned endpoint family: no query, IDs, paths or exception URL.
+            parts = path.split("?", 1)[0].split("/", 3)
+            endpoint = "/".join(parts[:3]) + ("/..." if len(parts) > 3 else "")
             raise ClaudexorUnavailable(
                 "daemon_unreachable",
-                f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
+                f"Claudexor control {method} {endpoint} failed after "
+                f"{time.monotonic() - started:.3f}s: {type(exc).__name__}",
                 status_code=response.status_code if response is not None else 0,
                 observation_timeout=retryable,
                 observation_reason=_observation_reason(exc) if retryable else "",
@@ -805,14 +810,16 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         rows = body.get("harnesses") if isinstance(body, dict) else None
         return [row for row in (rows or []) if isinstance(row, dict)]
 
-    def quota_state(self, *, view: Optional[str] = None) -> Dict[str, Any]:
+    def quota_state(self, *, view: Optional[str] = None, model: Optional[str] = None,
+                    request_kind: Optional[str] = None) -> Dict[str, Any]:
         """GET one quota epoch; pass resource or freshness selectors to the engine.
 
-        Old engines may ignore/refuse a selector; claudexor_passive owns fallback.
+        Old engines may ignore/refuse a selector; claudexor_observations owns fallback.
         """
-        from urllib.parse import urlencode
-
-        body = self._request("GET", "/v2/quota" + (f"?{urlencode({'view': view})}" if view else ""))
+        query = {key: value for key, value in (
+            ("view", view), ("model", model), ("requestKind", request_kind),
+        ) if value is not None}
+        body = self._request("GET", "/v2/quota" + (f"?{urlencode(query)}" if query else ""))
         return body if isinstance(body, dict) else {}
 
     def refresh_quota(self, *, target: Optional[Dict[str, str]] = None,
@@ -835,8 +842,7 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         return self._request("GET", f"/v2/account-resets/{quote(operation_id, safe='')}")
 
     def quota_snapshots(self) -> List[Dict[str, Any]]:
-        body = self.quota_state()
-        snapshots = body.get("snapshots") if isinstance(body, dict) else None
+        snapshots = self.quota_state().get("snapshots")
         return [row for row in (snapshots or []) if isinstance(row, dict)]
 
     def quota_absences(self) -> List[Dict[str, Any]]:
@@ -846,8 +852,7 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         An absence is typed evidence that quota could not be read for a profile;
         route health treats that state as unknown and therefore fail-open.
         """
-        body = self.quota_state()
-        absences = body.get("absences") if isinstance(body, dict) else None
+        absences = self.quota_state().get("absences")
         return [row for row in (absences or []) if isinstance(row, dict)]
 
     def register_project(self, root: str) -> str:
@@ -1138,14 +1143,10 @@ class ClaudexorGateway(ClaudexorMaintenanceGateway):
         payload: Dict[str, Any] = {"text": str(text)}
         if expected_attempt_id:
             payload["expectedAttemptId"] = str(expected_attempt_id)
-        bound: Dict[str, Any] = {}
-        if timeout_sec is not None:
-            bounded = max(0.000001, float(timeout_sec))
-            bound = {"timeout": httpx.Timeout(bounded, connect=min(_CONNECT_TIMEOUT_SEC, bounded))}
         try:
             response = self._client.request(
                 "POST", path, json=payload,
-                headers={"Idempotency-Key": str(idempotency_key)}, **bound)
+                headers={"Idempotency-Key": str(idempotency_key)}, **_request_timeout(timeout_sec))
         except httpx.HTTPError as exc:
             raise ClaudexorUnavailable(
                 "daemon_unreachable",

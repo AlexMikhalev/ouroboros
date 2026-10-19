@@ -101,7 +101,7 @@ def test_gr4_1_cascade_summary_registration_failure_keeps_the_intent(qenv, monke
     ci.request_cancel(qenv.drive, "cs1", scope=ci.SCOPE_CASCADE, allow_settled_target=True)
     store = _corrupt_delivery_registry(qenv.drive)
 
-    assert qenv.tl.cancel_task_by_id("cs1", cascade=True) is True, (
+    assert qenv.tl.cancel_task_by_id("cs1") is True, (
         "the teardown itself is not gated on the registry"
     )
     row = ci.active_intent(qenv.drive, "cs1")
@@ -114,7 +114,7 @@ def test_gr4_1_cascade_summary_registration_failure_keeps_the_intent(qenv, monke
 
     # Healed registry: the watchdog replay owes the summary and settles.
     store.unlink()
-    assert qenv.tl.cancel_task_by_id("cs1", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cs1") is True
     assert ci.active_intent(qenv.drive, "cs1") is None, "healed registry converges"
 
 
@@ -223,7 +223,7 @@ def test_gr4_2_same_intent_replay_dedups_by_the_per_intent_delivery_id(qenv, mon
 
     monkeypatch.setattr("ouroboros.cancel_intents.settle_intent", _crashy)
 
-    assert qenv.tl.cancel_task_by_id("cr2", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cr2") is True
     sends = [e for e in queue.events if e.get("type") == "send_message"]
     assert [e["delivery_id"] for e in sends] == [did]
     assert ci.active_intent(qenv.drive, "cr2") is not None, "crash shape: intent open"
@@ -231,7 +231,7 @@ def test_gr4_2_same_intent_replay_dedups_by_the_per_intent_delivery_id(qenv, mon
     # Confirmed send → the same-intent replay delivers NOTHING new and settles.
     td.register_delivery(qenv.drive, did)
     queue.events.clear()
-    assert qenv.tl.cancel_task_by_id("cr2", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cr2") is True
     assert [e for e in queue.events if e.get("type") == "send_message"] == []
     assert ci.active_intent(qenv.drive, "cr2") is None
 
@@ -241,7 +241,7 @@ def test_gr4_2_same_intent_replay_dedups_by_the_per_intent_delivery_id(qenv, mon
     )
     assert second["request_id"] != minted["request_id"]
     queue.events.clear()
-    assert qenv.tl.cancel_task_by_id("cr2", cascade=True) is True
+    assert qenv.tl.cancel_task_by_id("cr2") is True
     later = [e for e in queue.events if e.get("type") == "send_message"]
     assert [e["delivery_id"] for e in later] == [f"cascade:cr2:{second['request_id']}"]
 

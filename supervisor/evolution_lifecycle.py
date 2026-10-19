@@ -921,7 +921,7 @@ def _bump_objective_repeat_count(campaign: Dict[str, Any], tx: Dict[str, Any]) -
     counts = campaign.setdefault("objective_repeat_counts", {})
     counts[fp] = int(counts.get(fp, 0) or 0) + 1
     # Layer B: mark the objective attempted-and-dropped so the chooser stops re-proposing it;
-    # a campaign-local signal, the backlog item stays "open".
+    # a campaign-local signal: the authored backlog is untouched, its author alone revises it.
     dropped = campaign.setdefault("dropped_objective_fps", [])
     if fp not in dropped:
         dropped.append(fp)
@@ -1419,26 +1419,15 @@ def build_evolution_task_text(cycle: int) -> str:
                 f"- {row.get('task_id')}: execution={execution_status}, objective={objective_status}; "
                 f"rounds={row.get('rounds', 0)}; cost={row_cost}"
             )
-    # The durable backlog and recent solve-capability are optional CONTEXT, never a directive:
-    # a cycle is not obligated to draw from the backlog or repeat past patterns.
+    # Recent solve-capability is optional CONTEXT, never a directive: a cycle is not
+    # obligated to repeat past patterns. The complete authored backlog reaches an
+    # evolution task once, through its context (context.py), never as a ranked digest.
     try:
         from ouroboros.evolution_checkpoints import build_solve_capability_digest
-        from ouroboros.improvement_backlog import format_backlog_digest
         from ouroboros.utils import truncate_review_artifact
         from supervisor import queue
 
         _digest_root = pathlib.Path(queue.DRIVE_ROOT)
-        _backlog_digest = format_backlog_digest(_digest_root, limit=8, max_chars=3000)
-        if _backlog_digest:
-            parts.extend([
-                "",
-                "## Improvement Backlog (context only — NOT a work order)",
-                "Standing nominations from past cycles. Weigh them if useful, but you are "
-                "free to pursue the Objective however you judge best; you need not pick "
-                "from this list.",
-                "",
-                _backlog_digest,
-            ])
         _capability_digest = truncate_review_artifact(build_solve_capability_digest(_digest_root), 2000)
         if _capability_digest:
             parts.extend([

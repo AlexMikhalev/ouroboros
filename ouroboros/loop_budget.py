@@ -18,7 +18,7 @@ from ouroboros import task_pacing
 from ouroboros.loop_transport import TransportWaitEpisode, end_episode_budget as _end_episode_budget
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.context_fit import messages_carry_native_images
-from ouroboros.usage_accounting import BudgetExceeded
+from ouroboros.usage_accounting import BillingAuthorityUnavailable, BudgetExceeded, ControlAuthorityUnavailable
 from ouroboros.utils import truncate_within_limit
 
 
@@ -47,6 +47,14 @@ def _loop():
     return loop
 
 
+def _server_web_allowed_by_task(ctx: Any) -> bool:
+    """Whether the task's contract leaves the network to the main loop (native server-side search)."""
+    contract = getattr(ctx, "task_contract", {}) if isinstance(getattr(ctx, "task_contract", {}), dict) else {}
+    resources = contract.get("allowed_resources") if isinstance(contract.get("allowed_resources"), dict) else {}
+    forbidden_names = {"web", "allow_web", "network", "allow_network", "internet", "external_network"}
+    return not any(resources.get(name) is False for name in forbidden_names)
+
+
 def _check_budget_limits(
     ctx: "_RoundLimitContext",
     budget_remaining_usd: Optional[float],
@@ -55,8 +63,8 @@ def _check_budget_limits(
     """Budget decision after every unfinished spending round, tool and no-tool alike.
 
     ``ctx.budget_tail`` names the tail, and a cold Resume re-enters the tail
-    recorded in ``resume_point.budget_tail``; only the tool tail advances nanny
-    baselines and arms tool controls (see ``_finish_no_tool_round_budget``). An
+    recorded in ``resume_point.budget_tail``. Response handling anchors nanny
+    requests before saving; only the tool tail arms tool controls. An
     accepted answer returns before this check, so it buys no extra paid final.
     """
     accumulated_usage = ctx.accumulated_usage
@@ -471,7 +479,8 @@ def _handle_budget_exceeded(
                 physical_calls = None
     except Exception:
         log.exception("Could not inspect task attempts after budget rail")
-    direct_chat = bool(getattr(ctx.tools._ctx, "is_direct_chat", False))
+    from ouroboros.task_carrier import inline_execution
+    direct_chat = inline_execution(ctx.tools._ctx)
     replay_safe = physical_calls == 0 and not direct_chat
     scope = str(getattr(exc, "limit_scope", "global") or "global")
     resource_limit = {
@@ -604,6 +613,57 @@ def _handle_budget_exceeded(
     return message, ctx.accumulated_usage, ctx.llm_trace
 
 
+def _handle_authority_unavailable(
+    exc: BillingAuthorityUnavailable | ControlAuthorityUnavailable,
+    ctx: _LoopExitContext,
+    *,
+    limit_ctx: Optional[_RoundLimitContext] = None,
+    episode: Optional[TransportWaitEpisode] = None,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """An authority that cannot be established is no money fact (owner 2026-10-14, ab53 = A).
+
+    An unreadable billing authority or dispatch fence parks the SAME thought on the
+    exact pause under reason ``authority``, member-only: its Resume rereads the original
+    group and global authority strictly, and its sent runs are observed, never stopped
+    (00a5 = A). That raises, so this returns only when no exact pause can be saved, or
+    for a refused billing authority (missing lineage, foreign binding): then an
+    infrastructure interruption keeps the saved work, with no root fence, budget advice
+    or paid wrap-up, and never promises that waiting fixes it.
+    """
+    billing = isinstance(exc, BillingAuthorityUnavailable)
+    subject = "billing authority" if billing else "dispatch-fence authority"
+    code = f"billing_authority_{exc.kind}" if billing else "control_authority_unreadable"
+    if episode is not None:
+        _end_episode_budget(episode, ctx.drive_logs, ctx.task_id,
+                            limit_ctx.active_model if limit_ctx is not None else "", detail=code)
+    usage = ctx.accumulated_usage
+    if exc.kind == "unreadable" and limit_ctx is not None:
+        limit_ctx.tools, limit_ctx.llm_trace = ctx.tools, ctx.llm_trace
+        # The failed authority may name a billing group; the saved member keeps its own root lineage.
+        budget_pause.request_pause(
+            limit_ctx, rail=budget_pause.RAIL_BILLING_AUTHORITY if billing else budget_pause.RAIL_CONTROL_AUTHORITY,
+            scope="task", reason_text=str(exc))
+    fact = {"kind": exc.kind, "cause": exc.cause, "root_task_id": getattr(exc, "root_task_id", ""), "detail": str(exc),
+            "exact_pause_unavailable": str(usage.get("exact_pause_unavailable") or "")}
+    usage.update(execution_status="infra_failed", reason_code=code, billing_authority=fact)
+    ctx.llm_trace["billing_authority"] = fact
+    message = (
+        f"⚠️ No new paid call was admitted at this boundary: this task's billing lineage is missing or not its own "
+        f"({exc}). This is not a budget limit, and neither waiting nor a budget change repairs it. "
+        "Work already saved stays retained."
+        if exc.kind == "refused" else
+        f"⚠️ No new paid call was admitted at this boundary: this task's {subject} could not be read ({exc}), "
+        f"and its exact pause could not be saved ({fact['exact_pause_unavailable'] or 'no actor context'}). "
+        "This is not a budget limit. Work already saved stays retained; nothing unsaved is promised back.")
+    if limit_ctx is None:
+        _loop()._finalize_task_services(ctx)
+        return message, usage, ctx.llm_trace
+    limit_ctx.tools, limit_ctx.llm_trace = ctx.tools, ctx.llm_trace
+    _loop()._finalize_forced_services(limit_ctx, ctx.llm_trace)
+    return _loop()._forced_fallback_result(limit_ctx, ctx.llm_trace, message, code,
+                                           source="authority_host_notice")
+
+
 def _cleanup_loop_resources(
     stateful_executor: Any,
     ctx: _LoopExitContext,
@@ -611,9 +671,8 @@ def _cleanup_loop_resources(
     """Release attempt-scoped executors, services, and delegated runs."""
     if ctx.trace_ctx is not None:
         ctx.trace_ctx._execution_trace = ctx.previous_execution_trace
-    # This attempt's tool-future quiescence rows end with it (#1196): a pause
-    # only got here after they settled, and any other exit is on the task's own
-    # control rail; the registry prunes nothing across attempts by itself.
+    # Caller release has already transferred any physical tail before this
+    # logical exit. Prune only joined observations; old-attempt tails stay owned.
     try:
         budget_pause.forget_tool_scope(ctx.tools._ctx)
     except Exception:
@@ -646,6 +705,7 @@ def _cleanup_loop_resources(
         return
     try:
         from ouroboros.delegate_custody import custody_root, release_task_runs
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
         # A delegated run is a resource this task HOLDS, like a service or
         # an executor: a terminalized parent leaving one running has a
@@ -653,8 +713,10 @@ def _cleanup_loop_resources(
         # covers a worker dying before here; this is the ordinary path. The
         # run is cancelled only behind a DELIBERATE owner terminal (B1-A); the
         # durable result is usually not written yet at this point, so a live
-        # run is left to the next sweep, which re-reads it.
-        release_task_runs(custody_root(ctx.tools._ctx), ctx.task_id)
+        # run is left to the next sweep, which re-reads it. Exit does not
+        # admit: the transport attaches only (a dead daemon is never started
+        # from a loop exit) and no pending invocation is replayed here.
+        release_task_runs(custody_root(ctx.tools._ctx), ctx.task_id, gateway_factory=attach_only_gateway)
     except Exception:
         log.debug("Failed to release delegated runs for task %s", ctx.task_id, exc_info=True)
 
@@ -766,15 +828,14 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
 def _finish_tool_round_budget(
     ctx: _RoundLimitContext, budget_remaining_usd: Optional[float],
     cost_ceiling: "task_pacing.CostCeiling", active_model: str,
-    active_use_local: bool, active_effort: str, tool_calls: Optional[list[Dict[str, Any]]] = None,
+    active_use_local: bool, active_effort: str,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Complete the existing budget decision after warm or cold owner input.
 
-    Only a freshly executed tool batch advances the nanny's metered baseline;
-    cold continuation owes the budget decision, never execution of old tools.
+    The batch's delegate requests were observed with its response, before any
+    save or park, so a cold continuation owes only this decision: no old tool
+    is executed and no nanny anchor is rebuilt here.
     """
-    if tool_calls is not None:
-        _loop()._note_nanny_delegate_activity(ctx.tools._ctx, ctx.round_idx, ctx.accumulated_usage, tool_calls)
     _loop()._prepare_post_tool_budget_context(
         ctx.tools, ctx, ctx.llm_trace, active_model, active_use_local, active_effort)
     result = _loop()._check_budget_limits(ctx, budget_remaining_usd, cost_ceiling=cost_ceiling)
@@ -795,8 +856,7 @@ def _finish_no_tool_round_budget(
     called tools — but only the tool tail ever reached `_check_budget_limits`,
     so a task that kept re-answering under review feedback could run past the
     ceiling untouched (#1223). This is the tool tail's own comparison and
-    nothing else: no metered-baseline bookkeeping (no tools ran) and no
-    `_prepare_post_tool_budget_context`, whose delivery-control arming belongs
+    nothing else: no `_prepare_post_tool_budget_context`, whose delivery-control arming belongs
     to a tool batch's effects. The current delivery candidate is untouched, so a
     eligible budget exit checkpoints the answer the round produced. Its cold
     continuation must return to this tail without tool-only control arming.

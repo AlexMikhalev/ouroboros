@@ -1,10 +1,12 @@
 """Quiz display path: shared validator, bridge send, delivery handler, replay."""
+
+from tests import _dialogue as dialogue_test
 import json
 import types
 
 import pytest
 
-from ouroboros import event_bus
+from ouroboros import dialogue_store, event_bus
 from ouroboros.tools.core import (
     _MAX_QUIZ_OPTIONS,
     QuizValidationError,
@@ -144,13 +146,17 @@ class TestValidateQuizPayload:
 
 @pytest.mark.parametrize("wait_for_answer", [False, True])
 def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path, wait_for_answer):
+    from ouroboros.owner_quiz import record_asked
+
+    record_asked(tmp_path, "task-quiz", quiz_id="qz-1", question="Merge now?", options=["Yes", "No"],
+                 option_details=["", "wait for CI"], stake="release timing",
+                 assumption="" if wait_for_answer else "continuing with the merge", wait_for_answer=wait_for_answer)
     bridge = _make_bridge(monkeypatch)
     frames = []
     events = []
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(
         message_bus, "publish_event", lambda topic, data: events.append((topic, data)),
     )
@@ -181,9 +187,9 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path, 
         # a host subscriber (Telegram) cannot compose the answer address
         # "quiz:{task_id}:{quiz_id}" without it.
         "chat_id", "transport", "quiz_id", "task_id", "question", "options",
-        "stake", "assumption", "state", "ts", "wait_for_answer",
+        "stake", "assumption", "state", "ts", "wait_for_answer", "question_delivery",
     }
-    row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text().splitlines()[-1])
+    row = json.loads(dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()[-1])
     assert row["type"] == "quiz"
     assert row["text"] == "Merge now?"
     assert row["task_id"] == "task-quiz"
@@ -199,10 +205,13 @@ def test_send_quiz_accepts_a_long_question_through_the_shared_validator(monkeypa
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "s", "owner_id": 7})
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat_id: None)
     monkeypatch.setattr(message_bus, "publish_event", lambda topic, data: events.append((topic, data)))
     question = "Длинное объяснение решения. " * 200
     detail = "consequence " * 60
+    from ouroboros.owner_quiz import record_asked
+
+    record_asked(tmp_path, "task-quiz", quiz_id="qz-long", question=question.strip(), options=["Yes", "No"],
+                 option_details=[detail.strip(), ""], assumption="continuing")
     ok, error = bridge.send_quiz(
         123, quiz_id="qz-long", question=question,
         options=[{"label": "Yes", "detail": detail}, {"label": "No"}],
@@ -213,7 +222,7 @@ def test_send_quiz_accepts_a_long_question_through_the_shared_validator(monkeypa
     assert live["question"] == question.strip()
     assert live["options"][0]["detail"] == detail.strip()
     assert events[-1][1]["question"] == question.strip()
-    row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    row = json.loads(dialogue_test.log_text(tmp_path / "logs" / "chat.jsonl").splitlines()[-1])
     assert row["text"] == question.strip()
     # The same validator still refuses an over-long label atomically.
     ok, error = bridge.send_quiz(
@@ -233,12 +242,25 @@ def test_send_quiz_refuses_invalid_payload_and_missing_ids(monkeypatch, tmp_path
     ok, error = bridge.send_quiz(1, quiz_id="qz", question="q", options=[{"label": "a"}, {"label": "b"}], assumption="x")
     assert not ok and "task_id" in error
     ok, error = bridge.send_quiz(1, quiz_id="qz", question="q", options=[{"label": "a"}], assumption="x", task_id="t")
+    assert not ok and "canonical quiz" in error
+    from ouroboros.owner_quiz import record_asked
+
+    record_asked(tmp_path, "t", quiz_id="qz", question="q", options=["a"], assumption="x")
+    ok, error = bridge.send_quiz(1, quiz_id="qz", question="q", options=[{"label": "a"}], assumption="x", task_id="t")
     assert (ok, error) == (True, "ok")
     ok, error = bridge.send_quiz(-5, quiz_id="qz", question="q", options=[{"label": "a"}, {"label": "b"}], assumption="x")
     assert (ok, error) == (True, "ok")  # A2A chats: silent no-op, like links
 
 
-def test_handle_send_quiz_prefers_bound_project_chat(monkeypatch):
+def test_handle_send_quiz_prefers_bound_project_chat(tmp_path):
+    from ouroboros.owner_quiz import record_asked
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "bound", name="Question source")
+    bind_task_to_project(tmp_path, "t1", project["id"], origin={"absent": "system"})
+    for qid in ("qz-2", "qz-empty", "qz-missing"):
+        record_asked(tmp_path, "t1", quiz_id=qid, question="Which path?", options=[], assumption="path A meanwhile")
+    record_asked(tmp_path, "hidden", quiz_id="qz-hidden", question="Which path?", options=[], assumption="path A meanwhile")
     from supervisor.events_chat_delivery import _handle_send_quiz
 
     sent = []
@@ -249,10 +271,7 @@ def test_handle_send_quiz_prefers_bound_project_chat(monkeypatch):
             return True, ""
 
     ctx = types.SimpleNamespace(bridge=_Bridge(), append_jsonl=lambda *a, **k: None,
-                                DRIVE_ROOT=None)
-    import supervisor.events_chat_delivery as cde
-
-    monkeypatch.setattr(cde, "_bound_project_chat_id", lambda *a, **k: 4242)
+                                DRIVE_ROOT=tmp_path)
     evt = {
         "type": "send_quiz", "chat_id": 1, "task_id": "t1",
         "parent_task_id": "", "root_task_id": "",
@@ -261,23 +280,22 @@ def test_handle_send_quiz_prefers_bound_project_chat(monkeypatch):
         "stake": "", "assumption": "path A meanwhile", "state": "open",
     }
     _handle_send_quiz(evt, ctx)
-    assert sent and sent[0][0] == 4242
+    assert sent and sent[0][0] == project["chat_id"]
     assert sent[0][1]["quiz_id"] == "qz-2"
     assert sent[0][1]["assumption"] == "path A meanwhile"
 
     # An explicitly empty options list is an open question; absence is not.
     sent.clear()
-    _handle_send_quiz({**evt, "options": []}, ctx)
+    _handle_send_quiz({**evt, "quiz_id": "qz-empty", "options": []}, ctx)
     assert sent and sent[0][1]["options"] == []
     sent.clear()
-    _handle_send_quiz({key: value for key, value in evt.items() if key != "options"}, ctx)
+    _handle_send_quiz({key: value for key, value in {**evt, "quiz_id": "qz-missing"}.items() if key != "options"}, ctx)
     assert sent == []
 
     # Headless exception: an interactive card in the hidden chat-0 panel can
     # never be answered, so it goes to Main instead.
     sent.clear()
-    monkeypatch.setattr(cde, "_bound_project_chat_id", lambda *a, **k: None)
-    _handle_send_quiz({**evt, "chat_id": 0}, ctx)
+    _handle_send_quiz({**evt, "task_id": "hidden", "quiz_id": "qz-hidden", "chat_id": 0}, ctx)
     assert sent and sent[0][0] == 1
 
 
@@ -298,12 +316,16 @@ def test_telegram_manifest_declares_every_plugin_subscription():
     assert subscribed <= declared, f"undeclared topics: {sorted(subscribed - declared)}"
 
 
-def test_chat_quiz_event_reaches_telegram_consumer():
+def test_chat_quiz_event_reaches_telegram_consumer(tmp_path, monkeypatch):
     """Real producer -> real consumer addressing: the exact host event
     send_quiz publishes on the shared bus is what the Telegram quiz handler
     addresses (the chat.links cross-stream wiring, cloned for quiz)."""
     from ouroboros.event_bus import CHAT_QUIZ, VALID_TOPICS, get_global_event_bus
     from skills.telegram import plugin as telegram_plugin
+    from ouroboros.owner_quiz import record_asked
+
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    record_asked(tmp_path, "t-e2e", quiz_id="qz-e2e", question="Which path?", options=["A", "B"], assumption="path A meanwhile")
 
     assert CHAT_QUIZ == "chat.quiz"
     assert CHAT_QUIZ in VALID_TOPICS
@@ -343,15 +365,14 @@ def test_atif_final_answer_skips_typed_delivery_rows(tmp_path):
     except Exception:
         import pytest as _pytest
         _pytest.skip("atif module has optional deps not present here")
-    data = tmp_path / "ouroboros-data" / "logs"
-    data.mkdir(parents=True)
+    data = tmp_path / "ouroboros-data"
     rows = [
         {"direction": "out", "text": "the real final", "ts": "1"},
         {"direction": "out", "text": "Which path?", "type": "quiz", "ts": "2",
          "quiz": {"quiz_id": "q", "options": []}},
     ]
-    (data / "chat.jsonl").write_text(
-        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    for row in rows:
+        dialogue_store.append(data, "chat", row)
     assert module._final_answer(tmp_path) == "the real final"
 
 
@@ -365,8 +386,6 @@ def test_history_replays_quiz_row_with_state(tmp_path):
 
     from ouroboros.gateway.history import make_chat_history_endpoint
 
-    logs = tmp_path / "logs"
-    logs.mkdir(parents=True)
     row = {
         "ts": "2026-08-31T10:00:00Z", "session_id": "s", "direction": "out",
         "chat_id": 1, "user_id": 7, "text": "Merge now?", "format": "",
@@ -379,8 +398,7 @@ def test_history_replays_quiz_row_with_state(tmp_path):
             "stake": "", "assumption": "merging meanwhile", "state": "open",
         },
     }
-    (logs / "chat.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
-    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+    dialogue_store.append(tmp_path, "chat", row)
     endpoint = make_chat_history_endpoint(tmp_path)
     response = asyncio.run(endpoint(types.SimpleNamespace(query_params={"limit": "10"})))
     messages = json.loads(response.body.decode("utf-8"))["messages"]

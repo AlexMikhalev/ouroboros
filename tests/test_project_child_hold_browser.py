@@ -7,16 +7,18 @@ No provider is called. Live scheduled/terminal frames use the normal WS consumer
 """
 import copy
 import json
-import os
 import time
-from pathlib import Path
 
 import pytest
 
+from ouroboros import dialogue_store
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
+from tests._shared import producer_evidence_dir
+from tests._work_projection_shared import state_fields
 from tests.test_project_admission_refusal_browser import _producers
 from tests.test_project_authority_outages import _uncertain_child
 from tests.test_project_hold_recovery import worker
+from tests._store_shared import result_signature
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
@@ -30,8 +32,8 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     from ouroboros import projects_registry as registry
     from ouroboros.gateway.state import _chat_activities_snapshot_safe
     from ouroboros.gateway.tasks import _tasks_list_payload
+    from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result, write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor import queue, workers
 
     server = direct_server_with_data
@@ -40,15 +42,15 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     host = _producers(monkeypatch, root, server["repo_dir"])
     host.root = root
     registry.create_project(root, "target", name="Synthetic Project")
-    child, original = _uncertain_child(host, monkeypatch)
+    child, original, unreadable = _uncertain_child(host, monkeypatch)
     # Start from the accepted scheduled receipt, then lose it while the card is open.
-    result_path = root / "task_results" / "held.json"
-    result_path.write_bytes(original)
+    unreadable["on"] = False
     queue.RUNNING["parent"] = {"task": {"id": "parent", "chat_id": 1}, "started_at": time.time(), "attempt": 1}
     sent = worker(host, monkeypatch)
     assert queue.persist_queue_snapshot()
     snapshots, request_count, errors = [], [], []
-    evidence = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tmp_path) / "child-hold" / f"{engine}-{ending}"
+    evidence = producer_evidence_dir(tmp_path / "child-hold" / f"{engine}-{ending}",
+                                     f"child-hold-{engine}-{ending}")
     evidence.mkdir(parents=True, exist_ok=True)
     print(f"CHILD_HOLD_EVIDENCE={evidence}")
 
@@ -62,7 +64,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             tid = route.request.url.rsplit("/", 1)[-1]
             try:
                 row = load_task_result(root, tid, strict=True)
-            except ValueError:
+            except (ValueError, StoreError):
                 route.fulfill(status=503, json={"error": "result unavailable"})
                 return
             route.fulfill(status=200 if row else 404, json=row or {"error": "not found"})
@@ -70,14 +72,14 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
     def state_transport(route):
         response = route.fetch()
         body = response.json()
-        body.update(active_chat_activities=_chat_activities_snapshot_safe(root), active_chat_activities_complete=True,
-                    supervisor_ready=True, task_bindings={})
+        # This process's census and the server's own work projection of it.
+        body.update(**state_fields(root, {}), active_chat_activities_complete=True, supervisor_ready=True, task_bindings={})
         route.fulfill(response=response, json=body)
 
     def frame(page, tid, **fields):
         row = {"type": "chat", "role": "assistant", "is_progress": True,
                "chat_id": 1, "task_id": tid, "ts": "2026-09-30T10:00:00Z", **fields}
-        append_jsonl(server["data_dir"] / "logs" / "progress.jsonl", row)
+        dialogue_store.append(server["data_dir"], "progress", row)
         _emit_ws_frame(page, row)
 
     def shot(page, name):
@@ -99,7 +101,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             frame(page, "parent", content="Inspecting the Project with a child researcher.")
             frame(page, "held", content="Child research scheduled", delegation_role="subagent", subagent_event="scheduled",
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher")
-            page.locator('.chat-live-card[data-task-id="parent"] > [data-live-summary-button]').click()
+            page.locator('.chat-live-card[data-task-id="parent"] > [data-live-summary-button] [data-live-disclosure]').click()
             child_card = page.locator(CHILD)
             child_card.wait_for(state="visible")
             # The scheduled receipt precedes the authoritative pending queue read.
@@ -108,7 +110,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             assert not child_card.locator('[data-live-typing]').is_visible()
             page.evaluate("() => window.__heldCard = document.querySelector('.chat-live-card[data-task-id=held]')")
             shot(page, "scheduled")
-            result_path.write_text("{torn", encoding="utf-8")
+            unreadable["on"] = True
             workers.assign_tasks()
             assert not sent
             page.wait_for_function("text => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === text", arg=WAIT)
@@ -128,7 +130,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
                 page.wait_for_function("text => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === text", arg=WAIT)
                 parent = page.locator('.chat-live-card[data-task-id="parent"]')
                 if parent.get_attribute("data-expanded") != "1":
-                    parent.locator(':scope > [data-live-summary-button]').click()
+                    parent.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
                 assert not child_card.locator('[data-live-typing]').is_visible()
                 shot(page, episode)
             page.evaluate("() => window.__heldCard = document.querySelector('.chat-live-card[data-task-id=held]')")
@@ -147,7 +149,8 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             assert not child_card.locator('[data-live-typing]').is_visible()
             shot(page, "previous-run-unconfirmed-narrow")
             held["_project_admission_restore_hold"] = previous_hold
-            result_path.write_bytes(original)
+            unreadable["on"] = False
+            assert result_signature(root, "held") == original  # the original receipt, unchanged
             if ending == "recovery":
                 # Same accepted receipt returns; the assignment owner dispatches exactly once.
                 workers.assign_tasks()
@@ -169,7 +172,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher",
                   status="cancelled")
             page.wait_for_function("() => document.querySelector('.chat-live-card[data-task-id=held]')?.dataset.finished === '1'")
-            assert child_card.locator('[data-live-phase]').inner_text() == "Cancelled"
+            assert child_card.locator('[data-live-phase]').inner_text() == "Stopped"
             assert not child_card.locator('[data-live-typing]').is_visible()
             shot(page, "cancelled-narrow")
             assert not errors, errors
@@ -188,8 +191,8 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
     from ouroboros import projects_registry as registry
     from ouroboros.gateway.state import _chat_activities_snapshot_safe
     from ouroboros.gateway.tasks import _tasks_list_payload
+    from ouroboros.store import StoreError
     from ouroboros.task_results import load_task_result, write_task_result
-    from ouroboros.utils import append_jsonl
     from supervisor import queue, workers
 
     server = direct_server_with_data
@@ -198,10 +201,9 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
     host = _producers(monkeypatch, root, server["repo_dir"])
     host.root = root
     registry.create_project(root, "target", name="Synthetic Project")
-    child, original = _uncertain_child(host, monkeypatch)
+    child, original, unreadable = _uncertain_child(host, monkeypatch)
     # Start from the accepted scheduled receipt, then lose it while the card is open.
-    result_path = root / "task_results" / "held.json"
-    result_path.write_bytes(original)
+    unreadable["on"] = False
     queue.RUNNING["parent"] = {"task": {"id": "parent", "chat_id": 1}, "started_at": time.time(), "attempt": 1}
     sent = worker(host, monkeypatch)
     assert queue.persist_queue_snapshot()
@@ -217,7 +219,8 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
     show_child_hold = freeze_next_child_reply = block_state = False
     completed_states, deferred_states = [], []
     state_count_at_child_reply = None
-    evidence = Path(os.environ.get("OUROBOROS_TEST_TEMP_ROOT") or tmp_path) / "child-hold" / f"{engine}-{ending}"
+    evidence = producer_evidence_dir(tmp_path / "child-hold" / f"{engine}-{ending}",
+                                     f"child-hold-{engine}-{ending}")
     evidence.mkdir(parents=True, exist_ok=True)
     print(f"CHILD_HOLD_EVIDENCE={evidence}")
 
@@ -235,7 +238,7 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             tid = route.request.url.rsplit("/", 1)[-1]
             try:
                 row = load_task_result(root, tid, strict=True)
-            except ValueError:
+            except (ValueError, StoreError):
                 route.fulfill(status=503, json={"error": "result unavailable"})
                 return
             route.fulfill(status=200 if row else 404, json=row or {"error": "not found"})
@@ -246,15 +249,15 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             return
         response = route.fetch()
         body = response.json()
-        body.update(active_chat_activities=_chat_activities_snapshot_safe(root), active_chat_activities_complete=True,
-                    supervisor_ready=True, task_bindings={})
+        # This process's census and the server's own work projection of it.
+        body.update(**state_fields(root, {}), active_chat_activities_complete=True, supervisor_ready=True, task_bindings={})
         completed_states.append(body)
         route.fulfill(response=response, json=body)
 
     def frame(page, tid, **fields):
         row = {"type": "chat", "role": "assistant", "is_progress": True,
                "chat_id": 1, "task_id": tid, "ts": "2026-09-30T10:00:00Z", **fields}
-        append_jsonl(server["data_dir"] / "logs" / "progress.jsonl", row)
+        dialogue_store.append(server["data_dir"], "progress", row)
         _emit_ws_frame(page, row)
 
     def shot(page, name):
@@ -276,13 +279,13 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             frame(page, "parent", content="Inspecting the Project with a child researcher.")
             frame(page, "held", content="Child research scheduled", delegation_role="subagent", subagent_event="scheduled",
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher")
-            page.locator('.chat-live-card[data-task-id="parent"] > [data-live-summary-button]').click()
+            page.locator('.chat-live-card[data-task-id="parent"] > [data-live-summary-button] [data-live-disclosure]').click()
             child_card = page.locator(CHILD)
             child_card.wait_for(state="visible")
             assert child_card.locator('[data-live-phase]').inner_text() == "Working"
             page.evaluate("() => window.__heldCard = document.querySelector('.chat-live-card[data-task-id=held]')")
             shot(page, "scheduled")
-            result_path.write_text("{torn", encoding="utf-8")
+            unreadable["on"] = True
             workers.assign_tasks()
             assert not sent
             # Both real producer rows now hold, but the child's earlier running
@@ -295,14 +298,18 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             assert queue.persist_queue_snapshot()
             page.wait_for_function("text => document.querySelector('.chat-live-card[data-task-id=parent] [data-live-phase]')?.textContent === text", arg=WAIT)
             assert child_card.locator('[data-live-phase]').inner_text() == "Working"
-            assert page.locator('#chat-status').inner_text() == 'Working...'
+            # The room says the server's room: the parent waits and the child's state is unconfirmed (a ring),
+            # whatever the child's card still shows from its earlier snapshot.
+            page.wait_for_function("() => { const s = document.querySelector('#chat-status');"
+                                   " return s?.textContent === 'Waiting' && s.dataset.mark === 'ring'; }")
             # Deliver the real child hold response, then keep subsequent state
             # reads unresolved: another census cannot mask a missing async sync.
             show_child_hold = freeze_next_child_reply = True
             with page.expect_response(lambda response: "queue_only=1" in response.url):
                 pass
-            page.wait_for_function("text => document.querySelector('#chat-status')?.textContent === text", arg=WAIT, timeout=10000)
+            page.wait_for_function("text => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === text", arg=WAIT, timeout=10000)
             assert len(completed_states) == state_count_at_child_reply
+            assert page.locator('#chat-status').inner_text() == 'Waiting'
             assert parent.locator(':scope > [data-live-summary-button] [data-live-phase]').inner_text() == WAIT
             assert child_card.locator('[data-live-phase]').inner_text() == WAIT
             assert not parent.locator(':scope > [data-live-summary-button] [data-live-typing]').is_visible()
@@ -316,17 +323,23 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
                 state_transport(route)
             deferred_states.clear()
             # Once the child is terminal, the same held parent alone says Waiting.
-            result_path.write_bytes(original)
+            unreadable["on"] = False
+            assert result_signature(root, "held") == original  # the original receipt, unchanged
             write_task_result(root, "held", "cancelled", result="Stopped by the owner.")
             frame(page, "held", content="Stopped by the owner.", delegation_role="subagent", subagent_event="cancelled",
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher",status="cancelled")
-            page.wait_for_function("text => document.querySelector('#chat-status')?.textContent === text", arg=WAIT)
+            # Every member is confirmed again: the same word, one dot, and the parent's row says what it waits for.
+            page.wait_for_function("() => { const s = document.querySelector('#chat-status');"
+                                   " return s?.textContent === 'Waiting' && s.dataset.mark === 'dot'; }")
+            page.locator("#page-chat .rw-trigger").click()
+            page.wait_for_function("text => document.querySelector('#page-chat .rw-row[data-id=parent] .rw-secondary')?.textContent === text", arg=WAIT)
             shot(page, "held-parent-header-waiting")
+            page.keyboard.press("Escape")
             # Real working sibling is still entitled to Working in the same room.
             queue.RUNNING["working-sibling"]={"task":{"id":"working-sibling","chat_id":1},"started_at":time.time(),"attempt":1}
             write_task_result(root,"working-sibling","running",chat_id=1)
             frame(page,"working-sibling",content="Independent sibling is working.")
-            page.wait_for_function("() => document.querySelector('#chat-status')?.textContent === 'Working...'")
+            page.wait_for_function("() => document.querySelector('#chat-status')?.textContent === 'Working'")
             shot(page, "real-working-sibling")
             # A live child's first review group must not enroll it in the root
             # census's missing-task polling; its review body is already present.
@@ -347,7 +360,7 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
                 with page.expect_response(lambda response: "queue_only=1" in response.url, timeout=10000):
                     pass
             assert not [url for url in request_count if url.split("?")[0].endswith("/api/tasks/review-child")]
-            assert page.locator('#chat-status').inner_text() == "Working..."
+            assert page.locator('#chat-status').inner_text() == "Working"
             shot(page, "working-review-child-no-detail-poll")
             assert not errors, errors
         except Exception:

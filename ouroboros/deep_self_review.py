@@ -50,6 +50,7 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
     ROUTE_KIND_API,
     ROUTE_KIND_SESSION,
     ConfiguredReviewerSlot,
+    main_review_row,  # the direct Main row lives with the pool it also serves when empty
     row_effort,
 )
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
@@ -213,26 +214,6 @@ def _session_route_reason(row: ConfiguredReviewerSlot) -> str:
     finally:
         gateway.close()
     return str(unavailable or "")
-
-
-def main_review_row() -> ConfiguredReviewerSlot:
-    """The direct Main row — ``OUROBOROS_MODEL``, its local flag and Main's pinned
-    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``): ``/review``'s executor when the
-    call names none (decision 3A) and the deep self-review default.
-
-    The pin rides as the row's credential profile because the executor sends under
-    ``model_role=reviewer:main`` with ``model_account_override=<row profile>``, and an
-    EMPTY override is Auto, never a lookup of Main's own role: without it a pinned
-    Main would review on whatever account the engine picked. An unpinned Main stays
-    Auto; an invalid pin document raises here as it does for Main's own calls.
-    """
-    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
-    from ouroboros.subagents import _lane_model, _use_local_for_lane
-
-    model = _lane_model("main")
-    return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
-                                  use_local=True if _use_local_for_lane("main", model) else None,
-                                  profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""))
 
 
 def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str, Optional[str]]:
@@ -697,7 +678,7 @@ def _run_retrieving_review(
         route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
         session_target=row.session_target, session_profile=row.profile_id,
         session_access=row.access if row.is_session else "",
-        subagent_id=row.subagent_id,
+        subagent_id=row.subagent_id, processing_preference=row.processing_preference,
     )
     from ouroboros.review_checking import wave_checking_source
     from ouroboros.observability import new_call_id

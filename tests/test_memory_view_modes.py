@@ -8,9 +8,10 @@ document mode. Memory granularity still fits; unknown capacity supplies no windo
 An owner-selected Low or Nano target is a second boundary for its own steps
 only; task-local Low and a mode the window lowered have none (only the owner's own choice
 carries a target). A built Max plan never claims a predicted document-mode switch. A new
-route re-renders memory for its own window from the captured snapshot without rereading it;
-owner Low/Nano and explicitly retained lower starts preserve their existing behavior.
-Each rule is pinned in both directions.
+route keeps the shown view while its request fits the known window (or the window is unknown)
+and narrows one it cannot hold from the level it shows, from the captured snapshot without
+rereading it and never unfolding an address; owner Low/Nano and explicitly retained lower
+starts preserve their existing behavior. Each rule is pinned in both directions.
 """
 from __future__ import annotations
 
@@ -68,7 +69,7 @@ def test_in_the_500k_to_640k_band_max_holds_and_the_conversation_stays_verbatim(
         assert item["line"] in room
     if window == 500_000:  # the working margins still take host facts, pointers and the retold page
         assert list(steps) == ["F1", "F1b", "F3", "F4"]
-        assert "### Physical floor\nThis window (500000 tokens, Max) does not hold" in room
+        assert "### Physical floor\nThis Max view retains memory cuts for the window (500000 tokens)." in room
 
 
 def test_where_even_f1_to_f5_leave_too_much_peoples_words_go_last_other_rooms_first():
@@ -126,8 +127,8 @@ def test_an_unknown_window_keeps_the_preferred_mode_and_takes_no_step():
 def test_a_lowered_mode_is_a_visible_fact_of_the_room_and_of_the_trace():
     mode, _total, _story, room, facts = _start("main", 400_000, "max")
     assert mode == "low" and facts["floor"]["mode_switch"] == {"from": "max", "to": "low"}
-    assert ("This window (400000 tokens) cannot hold Max with even the shortest view of my memory; this task "
-            "started in Low.") in room
+    assert ("The window this view was cut for (400000 tokens) cannot hold Max with even the shortest view of my memory; "
+            "this task runs in Low.") in room
     assert facts["floor"]["target_tokens"] is None  # the window chose Low; the owner did not, so no Low budget
     kept, _total, _story, room, facts = _start("main", 872_000, "max")
     assert kept == "max" and facts["floor"]["mode_switch"] is None and "cannot hold" not in room
@@ -150,7 +151,7 @@ def test_an_owner_low_target_takes_only_its_steps_and_task_local_low_has_none():
     assert facts["floor"]["budget_allowance_tokens"] == budget - 31_250  # one landing level under the target
     for item in snapshot.room["lane1"]:  # people's words and my replies: the window alone may take them
         assert item["line"] in room
-    assert "The Low mode budget (250000 tokens) does not hold all of my memory verbatim" in room
+    assert "This Low view retains memory cuts for the Low mode budget (250000 tokens)." in room
     assert mf.view_tokens(story) + mf.view_tokens(room) <= budget - 31_250 + 200  # the note is not budgeted
     # The same view in Max, and in task-local Low under the owner's Max: no target, no step.
     for mode, owner in (("max", "max"), ("low", "max")):
@@ -240,7 +241,6 @@ def _needs(core, plan):
 
 
 def test_a_built_max_keeps_books_before_refusal_while_memory_still_fits(tmp_path, monkeypatch):
-    from ouroboros import capability_evidence
     from ouroboros.context_fit import measure_main_fit
 
     core, plan = _built(tmp_path, monkeypatch)
@@ -259,8 +259,7 @@ def test_a_built_max_keeps_books_before_refusal_while_memory_still_fits(tmp_path
             assert built.projection(mode).memory_facts["floor"]["mode_switch"] is None
     tiny = plan(1)
     assert tiny.projection("max").memory_facts["floor"]["steps"]
-    monkeypatch.setattr(capability_evidence, "resolve_main_token_density", lambda *_a, **_kw: (1.0, "cold_estimate"))
-    measured = measure_main_fit(tiny, tiny.messages_for("max"), [], drive_root=tmp_path,
+    measured = measure_main_fit(tiny, tiny.messages_for("max"), [],
                                profile="owner_max", rendered_mode="max", round_id="e:round:1")
     assert measured.predicted_capacity_miss and measured.measurement.capacity_deficit_tokens > 0
     unknown = plan(1, status="failed")
@@ -281,6 +280,9 @@ def test_owner_lower_mode_startup_still_selects_its_existing_sized_mode(tmp_path
         assert built.projection(expected).memory_facts["floor"]["target_tokens"] == (
             {"low": cb.OWNER_LOW_TARGET_TOKENS, "nano": cb.OWNER_NANO_TARGET_TOKENS}[preferred]
             if expected == preferred else None)
+        # Lowered at the start, the mode line names where the task runs (one sentence for a later route too).
+        assert ("cannot hold Low with even the shortest view of my memory; this task runs in Nano."
+                in built.projection(expected).system_content_json) is (expected != preferred)
     assert plan(1, status="failed", preferred=preferred).initial_mode == preferred
 
 
@@ -311,7 +313,7 @@ def test_prediction_does_not_claim_a_mode_switch_in_any_prepared_projection(tmp_
     for mode in mf.MODES:
         projection = built.projection(mode)
         assert projection.memory_facts["floor"]["mode_switch"] is None
-        assert "this task started in" not in projection.system_content_json
+        assert "this task runs in" not in projection.system_content_json
         assert "cannot hold Max" not in section(block_c, "## Runtime context")
 
 
@@ -328,7 +330,7 @@ def test_the_loop_does_not_report_predicted_max_as_a_lowered_start(tmp_path, mon
             return "test-model"
 
     monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_kw: ({"role": "assistant", "content": "done"}, 0.0))
-    monkeypatch.setattr(loop, "_run_task_acceptance_review_once", lambda **_kw: False)
+    monkeypatch.setattr("ouroboros.tools.review_result.result_review_at_delivery", lambda *_a, **_kw: False)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     core, plan = _built(tmp_path / "w", monkeypatch)
     for name, window in (("tight", 1), ("roomy", 10_000_000)):
@@ -346,7 +348,7 @@ def test_the_loop_does_not_report_predicted_max_as_a_lowered_start(tmp_path, mon
 
 
 
-def test_a_new_route_rerenders_the_view_for_its_window_without_reading_memory_again(tmp_path, monkeypatch):
+def test_a_new_route_keeps_a_fitting_view_and_narrows_one_it_cannot_hold_without_reading_memory_again(tmp_path, monkeypatch):
     import ouroboros.chat_chain
     import ouroboros.chronicle_store
     import ouroboros.memory_view
@@ -366,22 +368,23 @@ def test_a_new_route_rerenders_the_view_for_its_window_without_reading_memory_ag
         return plan_.reproject_for_route(window_tokens=window, known_window=True, ratio=1.0, output_reserve=65_536,
                                          tool_schemas=None)
 
-    smaller = on(roomy, need["max"] + 2_000)  # Max still fits, but not with two working margins: the floor steps in
-    steps = smaller.projection("max").memory_facts["floor"]["steps"]
-    assert smaller.initial_mode == "max" and steps and set(steps) <= {"F1", "F1b", "F3"}
-    assert roomy.projection("max").memory_facts["floor"]["steps"] == {}
-    assert smaller.projection("max").system_content_json != roomy.projection("max").system_content_json
-    assert smaller.projection("max").estimated_tokens < roomy.projection("max").estimated_tokens
-    assert smaller.core_sha256 == roomy.core_sha256 and smaller.window_tokens == need["max"] + 2_000
-    tiny = on(roomy, need["nano"] + 50)
-    assert tiny.initial_mode == "max"
-    assert tiny.projection("max").memory_facts["floor"]["mode_switch"] is None
-    assert tiny.projection("max").memory_facts["floor"]["steps"]
-    assert tiny.messages_for("max")[0]["content"][0] == roomy.messages_for("max")[0]["content"][0]
-    larger = on(smaller, 10_000_000)  # back on a roomy route: every step gone, the very texts of the first plan
-    assert larger.initial_mode == "max" and larger.projection("max").memory_facts["floor"]["steps"] == {}
+    # A smaller window that still holds the request, though not with two working margins: every view kept (2A).
+    smaller = on(roomy, need["max"] + 2_000)
+    assert smaller.initial_mode == "max" and roomy.projection("max").memory_facts["floor"]["steps"] == {}
     for mode in mf.MODES:
-        assert larger.projection(mode).system_content_json == roomy.projection(mode).system_content_json
+        assert smaller.projection(mode).system_content_json == roomy.projection(mode).system_content_json
+        assert smaller.projection(mode).memory_facts == roomy.projection(mode).memory_facts
+    assert smaller.core_sha256 == roomy.core_sha256 and smaller.window_tokens == need["max"] + 2_000
+    tiny = on(roomy, need["nano"] + 50)  # a window that cannot hold it: narrowed against the window alone
+    floor = tiny.projection("max").memory_facts["floor"]
+    assert tiny.initial_mode == "max" and floor["mode_switch"] is None and floor["steps"]
+    assert floor["allowance_tokens"] == floor["physical_allowance_tokens"]  # no working margin reapplied
+    assert tiny.messages_for("max")[0]["content"][0] == roomy.messages_for("max")[0]["content"][0]
+    assert tiny.projection("max").estimated_tokens < roomy.projection("max").estimated_tokens
+    larger = on(tiny, 10_000_000)  # back on a roomy route: nothing unfolds
+    assert larger.initial_mode == "max"
+    for mode in mf.MODES:
+        assert larger.projection(mode).system_content_json == tiny.projection(mode).system_content_json
 
 
 def test_a_route_switch_keeps_max_books_and_moves_its_memory_fact_to_the_new_window(tmp_path, monkeypatch):
@@ -423,26 +426,24 @@ def test_a_nano_the_window_chose_is_measured_against_the_window_alone(monkeypatc
     """The task trace's measurement of a Nano the window chose has Nano's reserve and no owner target."""
     from types import SimpleNamespace
 
-    from ouroboros import capability_evidence
     from ouroboros.context_fit import measure_main_fit
     from ouroboros.loop_model_call import _main_context_profile
 
     assert _main_context_profile(SimpleNamespace(preferred_mode="nano"), "nano") == "owner_nano"
     assert _main_context_profile(SimpleNamespace(preferred_mode="max"), "nano") == "task_local_nano"
     assert _main_context_profile(SimpleNamespace(preferred_mode="low"), "nano") == "task_local_nano"
-    monkeypatch.setattr(capability_evidence, "resolve_main_token_density", lambda *_a, **_kw: (1.0, "cold_estimate"))
     core, plan = _built(tmp_path, monkeypatch)
     built = plan(200_000)
     messages = built.messages_for("nano") + [{"role": "user", "content": "x" * 400_000}]  # ≈100k: over 85k, under 200k
 
     def measure(profile):
-        return measure_main_fit(built, messages, [], drive_root=tmp_path, profile=profile, rendered_mode="nano",
+        return measure_main_fit(built, messages, [], profile=profile, rendered_mode="nano",
                                 round_id="e:round:1")
 
     window, owner = measure("task_local_nano"), measure("owner_nano")
     assert window.measurement.response_reserve_tokens == owner.measurement.response_reserve_tokens == cb.NANO_MIN_HEADROOM_TOKENS
     assert window.measurement.target_total_tokens is None and window.action == "send"
-    assert owner.measurement.target_total_tokens == cb.OWNER_NANO_TARGET_TOKENS and owner.action == "reclaim_once"
+    assert owner.measurement.target_total_tokens == cb.OWNER_NANO_TARGET_TOKENS and owner.action == "send_target_miss"
 
 
 def test_a_route_switch_keeps_the_owners_mode_and_starts_from_the_tasks_own(tmp_path, monkeypatch):
@@ -460,8 +461,12 @@ def test_a_route_switch_keeps_the_owners_mode_and_starts_from_the_tasks_own(tmp_
     # Built with the schemas the rebind sends (none), so the same window can render the same bytes.
     lowered, roomy, owner_low = (plan(need["max"] - 50, tool_schemas=[]), plan(10_000_000, tool_schemas=[]),
                                  plan(10_000_000, preferred="low", tool_schemas=[]))
+    # A Low the window chose: a size refusal narrows it where even Max's shortest view cannot fit, which
+    # names the switch. A view that fits is kept and claims no switch the window did not make.
+    assert lowered.reproject_for_route(window_tokens=need["max"] - 50, known_window=True, ratio=1.0, output_reserve=65_536,
+        tool_schemas=[], start_mode="low").low_projection.system_content_json == lowered.low_projection.system_content_json
     lowered = lowered.reproject_for_route(window_tokens=need["max"] - 50, known_window=True, ratio=1.0,
-        output_reserve=65_536, tool_schemas=[], start_mode="low")
+        output_reserve=65_536, tool_schemas=[], start_mode="low", refused_tokens=1)
     assert lowered.initial_mode == "low" and roomy.initial_mode == "max" and owner_low.initial_mode == "low"
     for name, built, window in (("lowered", lowered, need["max"] - 50), ("task_local", roomy, 10_000_000),
                                 ("owner_low", owner_low, 10_000_000)):
@@ -513,16 +518,18 @@ def test_explicit_post_refusal_low_projection_remains_available(tmp_path, monkey
 
     from ouroboros import loop
     from ouroboros.loop_model_call import _reproject_actual_overflow_low
+    from ouroboros.memory_inventory import VIEW_TRACE_KEY
 
     core, plan = _built(tmp_path, monkeypatch)
     built = plan(1)
     messages = built.messages_for("max")
     owner = {"role": "user", "content": "Keep this current owner instruction exact."}
     messages.append(owner)
-    tool_ctx = SimpleNamespace()
-    ctx = SimpleNamespace(active_context_mode="max", context_fit_plan=built, messages=messages,
+    shown = mf.trace_facts(built.projection("max").memory_facts)  # the refused Max view's fact
+    tool_ctx = SimpleNamespace(memory_view_facts=shown, _execution_trace={VIEW_TRACE_KEY: dict(shown)})
+    ctx = SimpleNamespace(active_context_mode="max", context_fit_plan=built, messages=messages, tool_schemas=[],
                           tools=SimpleNamespace(_ctx=tool_ctx), task_id="t", round_idx=1,
-                          event_queue=None, drive_logs=tmp_path)
+                          event_queue=None, drive_logs=tmp_path, accumulated_usage={})
     events = []
     monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda *_a, **_kw: events.append(_a[-1]))
     # This helper is entered by the typed-refusal caller, not by a prediction.
@@ -532,3 +539,10 @@ def test_explicit_post_refusal_low_projection_remains_available(tmp_path, monkey
     assert ctx.messages[-1] == owner
     assert ctx.messages[0]["content"][0] != built.projection("max").system_message()["content"][0]
     assert [e["checkpoint_kind"] for e in events] == ["context_fit_low_retry"]
+    # The Low view sent is the fact the task context and its trace keep (a writer reads it back as a shortage).
+    sent = mf.trace_facts(ctx.context_fit_plan.projection("low").memory_facts)
+    assert sent["floor"]["mode"] == "low" and sent != shown
+    assert tool_ctx.memory_view_facts == tool_ctx._execution_trace[VIEW_TRACE_KEY] == sent
+    kept = tool_ctx.memory_view_facts
+    _reproject_actual_overflow_low(ctx)  # Low stays Low: nothing new is sent, the fact is not rewritten
+    assert tool_ctx.memory_view_facts is kept and tool_ctx._execution_trace[VIEW_TRACE_KEY] == sent and len(events) == 1

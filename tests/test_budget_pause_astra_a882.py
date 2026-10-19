@@ -21,11 +21,12 @@ from tests._budget_pause_exact_helpers import (  # noqa: F401 -- shared fixtures
     _loop_ctx,
     _parked,
 )
+from tests.worker_pool_support import affirm_ready
 
 
 def _idle_worker(workers, sent):
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda t: sent.append(dict(t)))))
 
 
 def _recording_writer(monkeypatch, budget_pause):

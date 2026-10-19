@@ -80,6 +80,7 @@ TELEMETRY_EVENT_HANDLERS = {
     "review_density_probe": _handle_typed_telemetry,
     "review_wave_admission_unavailable": _handle_typed_telemetry,
     "review_wave_budget_insufficient": _handle_typed_telemetry,
+    "review_wave_billing_authority_unavailable": _handle_typed_telemetry,
     "review_wave_budget_partial_unknown": _handle_typed_telemetry,
     "plan_task_deadline_skip": _handle_typed_telemetry,
     "task_message_injected": _handle_task_message_injected,

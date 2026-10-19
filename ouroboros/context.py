@@ -9,7 +9,7 @@ import pathlib
 import re
 import sys
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_context_mode
 from ouroboros.desktop_autostart import runtime_facts as desktop_runtime_facts
@@ -68,7 +68,6 @@ from ouroboros.utils import (
     read_json_dict,
     read_text,
     safe_relpath,
-    truncate_review_artifact,
     utc_now_iso,
 )
 
@@ -304,6 +303,7 @@ from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported
     _runtime_budget_info,
     task_execution_clock_fact,
     task_schedule_fact,
+    storage_fact,
 )
 
 
@@ -314,10 +314,7 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
     )
     from ouroboros.main_context_authority import project_main_task_authority
 
-    projection = project_main_task_authority(task, drive_root=canonical_root)
-    from ouroboros.main_context_authority import project_predecessor_review_views
-    projection = project_predecessor_review_views(projection, drive_root=canonical_root,
-        repo_roots=(task.get("workspace_root"), getattr(env, "repo_dir", None)))
+    projection = project_main_task_authority(task)
     task_id = str(task.get("id") or "").strip()
     if not task_id:
         return projection
@@ -326,22 +323,25 @@ def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]
         "arguments": {"task_id": task_id, "include_authority": True},
     }
     try:
+        # One plan authority: the task's plan record (and any earlier-schema waves it still
+        # holds) as review history; capture moves it into the resident review index.
         from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
         from ouroboros.review_history_view import current_plan_history
         from types import SimpleNamespace
 
         state = load_plan_review_state(canonical_root, task_id)
-        wave = current_plan_review_wave(state)
-        if state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"):
-            history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        history, operative = current_plan_history(SimpleNamespace(drive_root=canonical_root, task_id=task_id), state=state)
+        legacy = bool(state.get("waves") or state.get("current_attempt") or state.get("legacy_v1"))
+        if legacy or history.get("rounds") or history.get("decision_rows") or history.get("gaps") or operative:
+            wave = current_plan_review_wave(state)
             projection["plan_review_authority"] = {
-                "current_attempt": state.get("current_attempt") or {},
-                "current_wave": {key: wave[key] for key in (
-                    "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
-                    "custody_pending", "wave_artifact") if key in wave} if wave is not None else None,
+                **({"current_attempt": state.get("current_attempt") or {},
+                    "current_wave": {key: wave[key] for key in (
+                        "cycle_index", "request_fingerprint", "spec_hash", "aggregate", "closed", "paid",
+                        "custody_pending", "wave_artifact") if key in wave} if wave is not None else None} if legacy else {}),
                 "dispute_history": history, "operative_subject": operative,
-                "legacy_v1_projection": state.get("legacy_v1_projection") or {},
-                "waves_omitted": int(state.get("waves_omitted") or 0),
+                **({"legacy_v1_projection": state.get("legacy_v1_projection") or {},
+                    "waves_omitted": int(state.get("waves_omitted") or 0)} if legacy else {}),
                 "source": source,
             }
     except Exception as exc:
@@ -427,13 +427,21 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     from ouroboros.settings_scales import effort_range
 
     runtime_data["effort_range"] = {**effort_range(), "binds": effort_range_binds(task.get("metadata"))}
+    # What Ouroboros owns on disk, from the last finished count (Dashboard -> Storage): a fact, no threshold.
+    storage = storage_fact(pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root))
+    if storage is not None:
+        runtime_data["storage"] = storage
     runtime_data.update(_task_authority_projection(env, task))
     if supplementary_messages_out is not None:
+        from ouroboros.main_context_authority import predecessor_notes_message
         from ouroboros.review_history_view import capture_review_history_messages
 
+        canonical_root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root)
         runtime_data, supplemental = capture_review_history_messages(runtime_data, task_id=str(task.get("id") or ""),
-            drive_root=pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root))
-        supplementary_messages_out.extend(supplemental)
+                                                                     drive_root=canonical_root)
+        # The predecessor mind's notes are the first row after the assignment (never a declared input).
+        notes = None if declared else predecessor_notes_message(task, drive_root=canonical_root)
+        supplementary_messages_out.extend([*([notes] if notes else []), *supplemental])
     if declared:
         runtime_data["task_constraint"] = task.get("task_constraint") or getattr(ctx, "task_constraint", {})
     runtime_data["operational_reality_rule"] = (
@@ -535,6 +543,9 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             scheduled_tasks_digest_out.update(schedule_digest)
     # Surface running tasks so a busy-chat turn can steer instead of duplicating it.
     _meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    if ctx is not None:
+        from ouroboros.owner_relay import held_owner_messages
+        runtime_data["owner_quote_handles"] = list(held_owner_messages(ctx))
     # Owner Surface Fact: the surface that SENT the message this task/turn came
     # from. A web message carries raw observables (pywebview/ua/viewport/...);
     # a non-web ingress carries {"channel": <source>} STAMPED AT ITS PRODUCER
@@ -546,25 +557,25 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     # internal producers: scheduler, skill schedules); absence stays honest.
     from ouroboros.client_surface import owner_client_fact
 
+    if _meta.get("reply_reference"):
+        runtime_data["reply_to"] = _meta["reply_reference"]
     _owner_client = owner_client_fact(_meta)
     if _owner_client:
         runtime_data["owner_client"] = dict(_owner_client)
         runtime_data["owner_client_note"] = _OWNER_CLIENT_NOTE
     _current_chat = _meta.get("current_chat") if isinstance(_meta.get("current_chat"), dict) else None
+    if not declared:
+        from ouroboros.live_works import context_present
+        runtime_data["live_works_present"] = context_present(env, task)
     if not declared and _current_chat and (_current_chat.get("running_tasks") or _current_chat.get("addressable_root_tasks")):
         runtime_data["current_chat"] = _current_chat
         runtime_data["current_chat_rule"] = (
             "addressable_root_tasks are RUNNING/PENDING roots in THIS chat. If a new message continues or "
-            "redirects one of them, steer_task(task_id, message) it rather than spawning a duplicate; "
-            "your judgment picks the target (or none -> answer inline / promote_chat_to_task). A "
+            "redirects one of them, tell_task(task_id, note, quote) can carry your note and held owner words; "
+            "your judgment picks the target; otherwise do this request here. start_task begins separate work. A "
             "message in a project room defaults to that project unless it clearly says otherwise."
         )
-    # Host-built ground truth about what THIS lane may continue: Main's bounded
-    # manifest, a project room's own hint (its recent ROOT results and the roots
-    # still live in it) and the thread's most recent result (id/status/workspace
-    # facts/artifact refs). Read these before framing a "continue" promotion;
-    # never reconstruct prior work from chat memory. What promote ACCEPTS is the
-    # predicate in ARCHITECTURE ch. 10 - these rows are the hint, not the door.
+    # Host facts identify live work and recorded results independently of the spawn tool.
     for _routing_key in (
         "main_routing_manifest", "project_routing_manifest", "project_last_task_result",
     ):
@@ -604,8 +615,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
                     "If the task is genuinely AMBIGUOUS (several defensible readings/formats "
                     "survive your research), you may add an optional block before that line: "
                     "`CANDIDATES:` on its own line, then one `- <candidate> — <why/when it holds>` "
-                    "per line, then the `FINAL ANSWER:` line with your chosen one — the "
-                    "candidates are latched for the acceptance reviewer to adjudicate. "
+                    "per line, then the `FINAL ANSWER:` line with your chosen one — a "
+                    "review of your result reads the candidates beside your choice. "
                     "The internal review-ledger identifiers `best_effort` and "
                     "`blocked_with_evidence` are metadata, never the answer: even when "
                     "blocked, the FINAL ANSWER line must carry your best-supported actual "
@@ -865,7 +876,7 @@ def build_memory_sections(memory: Memory, partition: str = "all", *, include_scr
     return sections
 
 
-def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20) -> str:
+def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20, *, ctx: Any = None) -> str:
     if not entries:
         return ""
 
@@ -886,9 +897,11 @@ def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20) -
             where = str(entry.get("reflection_path", "")).strip() or "(unknown path)"
             pid = str(entry.get("project_id", "")).strip() or "(unknown project)"
             note = " (project write FAILED)" if entry.get("write_failed") else ""
+            reader = (f"; read: {_project_reflections_reader(ctx, pid)}"
+                      if entry.get("project_id") and not entry.get("write_failed") else "")
             blocks.append(
                 f"### {header}\n- Full reflection lives on project drive: "
-                f"{pid} — {where}{note}"
+                f"{pid} — {where}{note}{reader}"
             )
             continue
 
@@ -929,11 +942,60 @@ def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20) -
     return "\n\n".join(blocks)
 
 
-def build_recent_sections(memory: Memory, env: Any, task_id: str = "", project_id: str = "") -> List[str]:
+def _split_reflection_rows(entries: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Host rows that stay whole (a late review settlement, a project pointer) and old automatic bodies."""
+    from ouroboros.plan_review_facts import LATE_SETTLEMENT_TASK_TYPE
+
+    shown = [row for row in entries if str(row.get("type") or "") in {LATE_SETTLEMENT_TASK_TYPE, "project_reflection_pointer"}]
+    return shown, [row for row in entries if row not in shown]
+
+
+def _historical_reflections_pointer(rows: List[Dict[str, Any]], reader: str, window: str) -> str:
+    """One dated pointer for automatic reflections an earlier version wrote; their bodies stay at the source."""
+    if not rows:
+        return ""
+    stamps = sorted(str(row.get("ts") or "") for row in rows if str(row.get("ts") or ""))
+    dated = f"dated {stamps[0][:19]} … {stamps[-1][:19]}" if stamps else "undated"
+    return (f"Historical automatic reflections: {len(rows)} row(s) in {window}, {dated} by their recorded ts, "
+            "not shown. An earlier version wrote them after tasks; they are dated evidence, "
+            f"not current understanding. Read: {reader}.")
+
+
+_READER_AUTHORITY_NOTE = (
+    " (reader address, subject to this task's tool/resource restrictions and Presence grants; "
+    "see Runtime context)"
+)
+
+
+def _canonical_runtime_reader(ctx: Any, canonical_root: pathlib.Path, rel: str) -> str:
+    """Address the original, without predicting dispatch or reading its contents.
+
+    Relative runtime paths keep execution-local bytes. A fork names the canonical
+    source absolutely under the same logical root; actual dispatch owns admission.
+    """
+    source = (canonical_root / rel).resolve(strict=False)
+    if ctx is None:
+        return f"{source} (no tool context here, so whether this actor can open it is unknown)"
+    path = rel if pathlib.Path(ctx.drive_root).resolve(strict=False) == canonical_root.resolve(strict=False) else str(source)
+    return f"read_file(root='runtime_data', path={path!r})" + _READER_AUTHORITY_NOTE
+
+
+def _project_reflections_reader(ctx: Any, project_id: str) -> str:
+    """Name the scoped journal reader; its handler remains the project authority."""
+    call = f"journal_read(project_id={project_id!r}, source='reflections')"
+    if ctx is None:
+        return f"{call} (no tool context here, so whether this actor may call it is unknown)"
+    return call + _READER_AUTHORITY_NOTE + " (journal project scope applies)"
+
+
+def build_recent_sections(memory: Memory, env: Any, task_id: str = "", project_id: str = "",
+                          *, ctx: Any = None) -> List[str]:
     """My own recent process: this task's windows, the supervisor, reflections (the project's too).
 
     Conversations are not here: the current room's open conversation, its task facts
     and the other live rooms are the memory view's (``memory_view.render_room``).
+    Reflection logs render their host rows whole; an earlier version's automatic
+    reflection bodies become one dated pointer naming the reader ``ctx`` may use.
     """
     sections = []
 
@@ -949,24 +1011,36 @@ def build_recent_sections(memory: Memory, env: Any, task_id: str = "", project_i
     if supervisor_summary:
         sections.append(f"## Supervisor ({coverage_line(supervisor_coverage)})\n\n" + supervisor_summary)
 
-    reflections_entries = memory.read_task_recent("task_reflections.jsonl", "", 20)[0]
-    reflections_text = _format_recent_reflections(reflections_entries, limit=20)
+    reflections_entries, reflections_coverage = memory.read_task_recent("task_reflections.jsonl", "", 20)
+    shown, history = _split_reflection_rows(reflections_entries)
+    reflections_text = "\n\n".join(part for part in (
+        _format_recent_reflections(shown, limit=20, ctx=ctx),
+        _historical_reflections_pointer(
+            history, _canonical_runtime_reader(ctx, memory.drive_root, "logs/task_reflections.jsonl")
+            if history else "", f"this window ({coverage_line(reflections_coverage)})"),
+    ) if part)
     if reflections_text:
         sections.append("## Execution reflections\n\n" + reflections_text)
+        if history:
+            sections.extend("Archived reflection source: " + _canonical_runtime_reader(ctx, memory.drive_root, path)
+                            for path in reflections_coverage.get("archive_sources", []))
 
-    # Read-back of the project's OWN full reflections (F5 wrote them to the
-    # project drive; the canonical tail above carries only pointer rows). Same
-    # bounds as the canonical read: last 20 rows, all 20 rendered.
+    # The project's OWN reflection rows live on its store (the canonical tail above
+    # carries only pointer rows); the project reader opens them, same bounds: 20 rows.
     _pid = str(project_id or "").strip()
     if _pid:
         try:
             from ouroboros.project_facts import project_reflections_path
             from ouroboros.utils import iter_jsonl_objects
 
-            project_rows = list(iter_jsonl_objects(
+            shown, history = _split_reflection_rows(list(iter_jsonl_objects(
                 project_reflections_path(_pid), max_entries=20,
-            ))
-            project_text = _format_recent_reflections(project_rows, limit=20)
+            )))
+            project_text = "\n\n".join(part for part in (
+                _format_recent_reflections(shown, limit=20, ctx=ctx),
+                _historical_reflections_pointer(
+                    history, _project_reflections_reader(ctx, _pid) if history else "", "the newest 20"),
+            ) if part)
             if project_text:
                 sections.append(
                     f"## Project execution reflections (this project's own: {_pid})\n\n"
@@ -1249,21 +1323,11 @@ def _capture_context_core(
     if design_nav:
         head_parts.append(design_nav)
 
-    deep_review_path = context_env.drive_path("memory/deep_review.md")
-    try:
-        if not is_child and deep_review_path.exists():
-            dr_text = deep_review_path.read_text(encoding="utf-8")
-            if dr_text.strip():
-                semi_stable_parts.append(
-                    "## Last Deep Self-Review\n\n"
-                    "Historical report from memory/deep_review.md, not a verdict on the current tree. "
-                    "Use its recorded provenance; an unrecorded date or source revision is unknown, "
-                    "not implied by the file timestamp or today's checkout. Recheck findings against "
-                    "current evidence.\n\n"
-                    + truncate_review_artifact(dr_text, limit=8000)
-                )
-    except Exception:
-        pass
+    if not is_child:
+        deep_review = _deep_review_pointer(context_env.drive_path("memory/deep_review.md"),
+                                           lambda: _canonical_runtime_reader(ctx, canonical_root, "memory/deep_review.md"))
+        if deep_review:
+            semi_stable_parts.append(deep_review)
 
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
@@ -1299,20 +1363,15 @@ def _capture_context_core(
             "## Task Contract Discipline\n\n"
             "For non-trivial work, state your success criteria early in your plan or reasoning, "
             "then keep tool use, artifact production, and the final claim aligned with the "
-            "visible task_contract. If task_acceptance_review is available and the work is "
-            "non-trivial, effectful, headless, workspace, or delegated, call it before finalizing "
-            "unless task review mode is off."
+            "visible task_contract."
         ),
     ])
 
-    try:
-        from ouroboros.improvement_backlog import format_backlog_digest
+    if str(task.get("type") or "") in {"evolution", "deep_self_review"}:
+        from ouroboros.improvement_backlog import authored_backlog_text
 
-        backlog_digest = format_backlog_digest(canonical_root)
-        if backlog_digest and str(task.get("type") or "") in {"evolution", "deep_self_review"}:
-            dynamic_parts.append(backlog_digest)
-    except Exception:
-        log.debug("Failed to build improvement backlog digest", exc_info=True)
+        dynamic_parts.append("## Improvement Backlog (authored; context only, not a work order)\n\n"
+                             + authored_backlog_text(canonical_root))
 
     review_section = ""
     if review_context_builder is not None:
@@ -1354,7 +1413,8 @@ def _capture_context_core(
         own_drive = memory if context_memory is not memory else None
         recent = context_memory.recent_activity_sections(str(task.get("id") or ""), own_drive=own_drive)
     else:
-        recent = build_recent_sections(context_memory, env, task_id=task.get("id", ""), project_id=_reflections_pid)
+        recent = build_recent_sections(
+            context_memory, env, task_id=task.get("id", ""), project_id=_reflections_pid, ctx=ctx)
     dynamic_parts.extend(snapshot_labelled(section, captured_at) for section in recent)
     try:
         from ouroboros.presence_context import build_presence_context_section
@@ -1388,6 +1448,37 @@ def _capture_context_core(
         memory_view_json=view_json,
         supplementary_messages_json=json.dumps(supplementary_messages, ensure_ascii=False, sort_keys=True),
     )
+
+
+def _deep_review_pointer(path: pathlib.Path, reader: Callable[[], str]) -> str:
+    """The last deep self-review as a source pointer, from the report's own bytes only.
+
+    Its provenance header names ``generated_at`` and ``source_revision``; a report
+    without one is undated, never dated by its file time or today's clock, so the
+    cached block changes only when the report does. ``reader`` names how this actor opens it.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        return f"## Last Deep Self-Review\n\nReport source unavailable ({type(exc).__name__}): {reader()}."
+    text = raw.decode("utf-8", errors="replace")
+    if not text.strip():
+        return ""
+    first = text.split("\n", 1)[0]
+    facts = {key: "unknown" for key in ("generated_at", "source_revision")}
+    if first.startswith("<!-- deep-review provenance:"):
+        for key in facts:
+            match = re.search(rf"(?:^|[ ,]){key}=([^ ,]+)", first)
+            facts[key] = match.group(1) if match else "unknown"
+        provenance = f"generated_at={facts['generated_at']}, source_revision={facts['source_revision']} (its provenance header)"
+    else:
+        provenance = "generated_at=unknown, source_revision=unknown (no provenance header)"
+    return ("## Last Deep Self-Review\n\n"
+            f"A historical report kept at its source, not in this context: {provenance}, {len(text)} chars. "
+            "It is not a verdict on the current tree; recheck any finding against current evidence. "
+            f"Read: {reader()}.")
 
 
 def _capture_memory_view(task: Dict[str, Any], canonical_root: pathlib.Path, ctx: Any) -> Tuple[Any, Any, str]:

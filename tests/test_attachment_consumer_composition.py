@@ -3,7 +3,7 @@
 Three paths the first file does not walk, each through the real candidate server
 (CandidateCheckout via ``direct_server_with_data``) with synthetic bytes, Chromium and WebKit:
 
-* a phone's composer by touch: the paperclip opens the file chooser, a finger removes a staged
+* a phone's composer by touch: "+" → Attach file opens the file chooser, a finger removes a staged
   file, an IME's Enter never sends, a failed upload is retried and cleaned up, thumbnails are released;
 * a Project room with a mixed message (photos, a playable video, audio, a document), live and in
   replay (reload, a new tab, a server restart), then at phone width;
@@ -17,6 +17,8 @@ Three paths the first file does not walk, each through the real candidate server
 Playwright emulation, not the native PyWebView shell or a physical phone; no real Telegram network.
 """
 from __future__ import annotations
+
+from tests import _dialogue as dialogue_test
 
 import asyncio
 import hashlib
@@ -76,9 +78,7 @@ def _phone(browser, engine: str):
 
 def _rows(data: Path) -> list[dict]:
     chat = data / "logs" / "chat.jsonl"
-    if not chat.exists():
-        return []
-    return [json.loads(line) for line in chat.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return dialogue_test.log_rows(chat)
 
 
 def _inbound(data: Path) -> list[dict]:
@@ -182,9 +182,10 @@ def test_phone_composer_touch_removal_ime_failed_upload_and_cleanup(direct_serve
             _ready(page, url)
             badges = page.locator("#chat-attachment-preview .attach-badge")
 
-            # The paperclip, tapped, opens the chooser; the chosen files are staged as badges.
+            # "+", tapped, opens the composer's menu; its Attach file opens the chooser; the chosen files are staged.
+            page.locator("#chat-plus").tap()
             with page.expect_file_chooser() as chooser:
-                page.locator("#chat-attach").tap()
+                page.locator(".chat-plus-menu [data-plus-item='attach']").tap()
             chooser.value.set_files(_phone_files())
             page.wait_for_function("() => document.querySelectorAll('#chat-attachment-preview .attach-badge').length === 6")
             geometry = page.evaluate(_COMPOSER_GEOMETRY)
@@ -434,7 +435,8 @@ def test_project_mixed_media_live_replay_restart_and_phone(direct_server_with_da
             _assert_inside(small, f"{engine} project, phone after restart")
             _phone_fits(mobile, f"{engine} project, phone")
             if engine == "chromium":
-                assert all(a["width"] >= 36 and a["height"] >= 36 for a in shape["actions"]), shape["actions"]
+                # 36 px targets; at device scale 2 a fractional position reports exactly 36 as 35.999996.
+                assert all(min(a["width"], a["height"]) >= 36 - 1e-3 for a in shape["actions"]), shape["actions"]
             small.locator(".chat-photo-actions summary").first.tap()
             mobile.locator(".chat-photo-menu:not([hidden])").wait_for(state="visible")
             mobile.keyboard.press("Escape")

@@ -21,7 +21,7 @@ from tests import _memory_inventory_shared as shared
 from tests._store_shared import seed_result
 
 NOW = 1_900_000_000.0  # well after the fixture's rows
-NOTHING_NEW = "\n- wake cause: scheduled heartbeat; no event reason is recorded for this wake"
+NOTHING_NEW = "\n- wake cause: the scheduled wake time; events never move it, they are listed as observed"
 HELPER = {"kind": "helper", "writer": "fallback_page", "attribution": "helper draft, not lived"}
 WAKE_MIND = {"kind": "mind", "task_id": "wake-1", "focus": {"role": "consciousness", "task_id": "wake-1"}}
 MEMORY_HEADER = "Recorded in memory after the accepted sequence (source dates do not order publication):"
@@ -190,7 +190,7 @@ def test_observe_seals_a_page_and_still_cannot_start_work(tmp_path, monkeypatch)
     from ouroboros.tools.registry import ToolContext, ToolRegistry
 
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
-    assert {"promote_chat_to_task", "run_command"} <= set(ca.disabled_tools_for("observe"))
+    assert {"start_task", "run_command"} <= set(ca.disabled_tools_for("observe"))
     shared.world(tmp_path)
     accepted = bind(tmp_path, observe(tmp_path), "wake-baseline")
     task = ca.apply_consciousness_authority({"id": "wake-1", "metadata": {
@@ -205,7 +205,8 @@ def test_observe_seals_a_page_and_still_cannot_start_work(tmp_path, monkeypatch)
         "covers": {"from": addresses[10], "to": addresses[12]}}))
     assert written["ok"], written
     assert ChronicleStore(tmp_path).get(written["node_id"])["author"]["kind"] == "mind"
-    for name, args in (("promote_chat_to_task", {"text": "start this"}), ("run_command", {"cmd": "touch x.py"})):
+    for name, args in (("start_task", {"objective": "start this", "title": "Start this"}),
+                       ("run_command", {"cmd": "touch x.py"})):
         result = registry.execute(name, args)
         assert "RESOURCE_CONSTRAINT_BLOCKED" in result and name in result, (name, result[:300])
     assert not (tmp_path / "x.py").exists()

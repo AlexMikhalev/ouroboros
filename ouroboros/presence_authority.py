@@ -27,15 +27,16 @@ from ouroboros.presence_capabilities import (
     PresenceToolTarget,
 )
 from ouroboros.tool_capabilities import COGNITIVE_MEMORY_TOOL_NAMES
+from ouroboros.contracts.task_contract import canonical_tool_name
 
 PRESENCE_CEILING_SCHEMA_VERSION = 1
 _SHA256_LEN = 64
 # The own-work baseline (owner Q1/Q2): a Presence mind may find, read and message
 # the independent work it started from ANY conversation of its own binding. The two
-# readers arrive bound to that scope (the host overwrites the argument); steer_task
+# readers arrive bound to that scope (the host overwrites the argument); tell_task
 # is narrowed by its handler for every Presence caller. A profile that selected one
 # of these names keeps that grant, so a selected global reader stays global.
-_OWN_WORK_BASELINE = (("get_task_result", True), ("recent_tasks", True), ("steer_task", False))
+_OWN_WORK_BASELINE = (("get_task_result", True), ("recent_tasks", True), ("tell_task", False))
 
 
 class PresenceAuthorityError(ValueError):
@@ -373,7 +374,7 @@ def build_presence_capability_ceiling(
 
 
 def presence_ceiling_allows_tool(ceiling: PresenceCapabilityCeiling, tool_name: str) -> bool:
-    return any(grant.name == tool_name for grant in ceiling.tool_grants)
+    return any(canonical_tool_name(grant.name) == tool_name for grant in ceiling.tool_grants)  # frozen old spellings
 
 
 def presence_ceiling_allows_delegated_surface(ctx: Any, surface: str, workspace_root: str = "") -> bool:
@@ -477,7 +478,7 @@ def apply_presence_argument_bindings(ctx: Any, tool_name: str, args: Mapping[str
     result = dict(args or {})
     if ceiling is None:
         return result
-    grant = next((item for item in ceiling.tool_grants if item.name == tool_name), None)
+    grant = next((item for item in ceiling.tool_grants if canonical_tool_name(item.name) == tool_name), None)
     if grant is None:
         return result
     for binding in grant.bindings:

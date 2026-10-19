@@ -5,6 +5,8 @@ import copy
 import json
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 
 from ouroboros import projects_registry as registry
@@ -59,10 +61,14 @@ def resume_after_app_stop(host, *task_ids):  # noqa: F811
 
 def worker(host, monkeypatch):  # noqa: F811
     sent = []
+    # These consumers finish each task on slot 0 before assigning the next one.
+    # Keep demand reconciliation inside this one-slot fake pool.
+    monkeypatch.setattr(workers, "MAX_WORKERS", 1)
     monkeypatch.setattr(workers, "get_event_q", lambda: SimpleNamespace(put=lambda _event: None))
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 5.0)
-    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
-        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))))
+    workers.WORKERS[0] = affirm_ready(SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+        in_q=SimpleNamespace(put=lambda row: sent.append(copy.deepcopy(row))
+                             if row.get("type") != "worker_quiescence" else None)))
     return sent
 
 
@@ -379,7 +385,7 @@ def test_held_deadline_keeps_custody_without_replay(host, tmp_path, monkeypatch,
 
 def test_unchanged_hold_does_not_rewrite_snapshot_but_changed_reason_does(host, tmp_path, monkeypatch):  # noqa: F811
     accepted(host, tmp_path)
-    restore_unreadable(host)
+    path, original = restore_unreadable(host)
     sent = worker(host, monkeypatch)
     workers.assign_tasks()  # First failure projects its current cause.
     writes = []
@@ -392,6 +398,9 @@ def test_unchanged_hold_does_not_rewrite_snapshot_but_changed_reason_does(host, 
     workers.assign_tasks()
     assert not writes and not sent
     host.pending[0]["_project_admission"] = None
+    workers.assign_tasks()
+    assert not writes  # Unreadable placement authority still owns the refusal.
+    path.write_bytes(original)
     workers.assign_tasks()
     assert len(writes) == 1
     assert "original" in host.pending[0]["_project_admission_restore_hold"]["detail"].lower()

@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros import consciousness_wake as wake
+from ouroboros import consciousness_wake as wake, dialogue_store as ds
+from tests._dialogue import import_all
 from tests._store_shared import read_result, result_exists, seed_result
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -40,7 +41,7 @@ def test_wake_task_metadata_carries_origin_level_and_tree_cap(monkeypatch):
     assert meta["consciousness_autonomy"] == "observe" and meta["runtime_mode_cap"] == "light"
     assert meta["model_role"] == "consciousness" and meta["wake_reason"] == "heartbeat"
     # P3e: the cap the wake's own root scope binds, never the non-root member ceiling.
-    assert "promote_chat_to_task" in meta["disabled_tools"] and meta["root_cost_ceiling_usd"] == 3.5
+    assert "start_task" in meta["disabled_tools"] and meta["root_cost_ceiling_usd"] == 3.5
     assert "root_limit_usd" not in meta
     full = wake.wake_task_metadata("full", "event:x")
     assert full["disabled_tools"] == [] and full["runtime_mode_cap"] == "" and "root_cost_ceiling_usd" not in full
@@ -53,6 +54,10 @@ def test_wake_task_metadata_carries_origin_level_and_tree_cap(monkeypatch):
 def _chat(root, *rows, archive: str = ""):
     """Append rows to the live chat log, or write them as one rotated archive segment."""
     path = root / ("archive" if archive else "logs") / (f"chat_{archive}.jsonl" if archive else "chat.jsonl")
+    if ds.present(root):
+        for row in rows:
+            ds.append(root, "chat", row)
+        return path
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         for row in rows:
@@ -121,7 +126,7 @@ def test_the_boundary_is_the_accepted_position_not_the_alarm_finish(tmp_path):
     assert "before the first wake" not in second.full_text()
     # Nothing new since: an empty window, and the same accepted position again.
     third = _observe(tmp_path, boundary=second.boundary, since=T0)
-    assert third.events == () and third.full_text() == "\n- wake cause: scheduled heartbeat; no event reason is recorded for this wake"
+    assert third.events == () and third.full_text() == "\n- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert third.boundary["upper"] == second.boundary["upper"]
 
 
@@ -140,8 +145,8 @@ def test_the_boundary_survives_rotation_and_a_replaced_chain_is_disclosed(tmp_pa
     (tmp_path / "archive" / "chat_20270115T100000.jsonl").write_text(
         json.dumps(_owner("rewritten history", since + 5, cmid="z")) + "\n", encoding="utf-8")
     replaced = _observe(tmp_path, boundary=accepted, since=T0 - 60)
-    assert replaced.window["basis"] == "time_bootstrap_boundary_mismatch"
-    assert "accepted_boundary_no_longer_matches_chat_chain" in replaced.gaps
+    assert replaced.window["basis"] == "accepted_boundary"
+    assert "accepted_boundary_no_longer_matches_chat_chain" not in replaced.gaps
     assert [line.rsplit('"', 2)[-2] for line in _lines(replaced)] == ["after rotation"]
 
 
@@ -222,7 +227,7 @@ def test_an_expired_card_is_a_transition_and_stays_answerable_in_the_inventory(t
     kinds = [kind for kind, _offset, _line in second.events]
     assert sorted(kinds) == ["card_state", "task_terminal"]
     card = next(line for kind, _o, line in second.events if kind == "card_state")
-    assert card.startswith("- owner card q1 on task asker: Unanswered · the task finished; a late answer is accepted")
+    assert card.startswith("- owner card q1 on task asker: Unanswered · task finished")
     assert "Ship it?" in card
     assert len(second.outstanding) == 1 and "q1" in second.outstanding[0]  # still answerable
     assert "1 card closed unanswered" in second.full_text()
@@ -235,77 +240,21 @@ def test_an_expired_card_is_a_transition_and_stays_answerable_in_the_inventory(t
     assert "answered in own words: yes" in _lines(third)[0] and third.outstanding == ()
 
 
-def _late_panel(tmp_path, task_id, *, settled_at=None, pending=False):
-    """The acceptance panel exactly as the review writer publishes it (real producer functions)."""
-    from ouroboros.acceptance_settlement import late_evidence_fact
-    from ouroboros.artifacts import store_actor_source_bytes
-    from ouroboros.review_projection import compact_review_projection
-
-    actor = {"slot_id": "s1", "operation_id": "op1", "status": "ok", "raw_text": "FAIL: the tests were never run",
-             "semantic_verdict": "FAIL", "operation_state": "in_flight" if pending else "settled"}
-    run = {"authority": "host_root", "panel_id": "p1", "aggregate_signal": "FAIL", "actors": [actor],
-           "request": {"surface": "task_acceptance", "retry_key": "rk-9", "subject": "answer A", "task_id": task_id}}
-    if settled_at:
-        fact = late_evidence_fact(run, {"source": "terminal_delivery_registry", "state": "unknown",
-                                        "delivery_ids": []}, settled_at=_iso(settled_at))
-        run["late_settlement"] = {"note": "On the reviewed version of this answer, reviewers later rejected it.\n"
-                                          "- s1: FAIL", **fact}
-    ref = store_actor_source_bytes(tmp_path, task_id, category="context_checkpoints", source_id="acceptance",
-                                   data=json.dumps(run).encode(), extension="json")
-    run['applied_source_ref'] = ref
-    return compact_review_projection([run]), ref
-
-
-def test_a_late_review_is_read_from_its_canonical_fact_with_its_exact_source(tmp_path):
-    """No invented chat fields: the settlement, its subject and its exact published source come
-    from ``acceptance_settlement.late_acceptance_facts``; the source is readable by read_file."""
-    from ouroboros.tools.registry import ToolRegistry
-    from tests.test_review_operation_source_closure import read_late_source
-    from ouroboros.tools.tool_context import ToolContext
-
-    projection, ref = _late_panel(tmp_path, "rv", pending=True)
-    _write(tmp_path, "rv", status="completed", ts=_iso(T0 - 900), updated_at=_iso(T0 - 100),
-           review_projection=projection)
-    first = _wake(tmp_path, None, T0)
-    assert "rv" in first.boundary["transitions"]["inventory"]  # its panel may still settle
-    projection, ref = _late_panel(tmp_path, "rv", settled_at=T0 + 60)
-    _write(tmp_path, "rv", review_projection=projection)
-    second = _wake(tmp_path, first.boundary, T0 + 600)  # the outbox row has not landed yet
-    assert [(kind, offset) for kind, offset, _l in second.events] == [("late_review", None)]
-    line = _lines(second)[0]
-    assert line.startswith("- late review settled for task rv, 9 min ago: On the reviewed version of this answer, "
-                           "reviewers later rejected it.; panel p1; signal FAIL; reviewed version unknown; "
-                           "emitted answer unknown; 1 reviewer outputs; exact source ")
-    assert f"sha256 {ref['sha256']}" in line and "rv" in second.boundary["transitions"]["inventory"]
-    read = json.loads(line.split("exact source ", 1)[1].rsplit(" sha256 ", 1)[0])
-    reader = ToolContext(repo_dir=REPO, drive_root=tmp_path, task_id="wake0002", task_metadata={})
-    registry = ToolRegistry(repo_dir=REPO, drive_root=tmp_path)
-    registry.set_context(reader)
-    assert '"FAIL: the tests were never run"' in read_late_source(registry, read)
-    # The owner-visible row lands afterwards: already accepted, not a second report.
-    _chat(tmp_path, {"ts": _iso(T0 + 700), "direction": "system", "type": "acceptance_late_settlement",
-                     "task_id": "rv", "text": "On the reviewed version…", "card_row": "reviews",
-                     "card_row_id": "acceptance-late:rk-9"})
-    assert _wake(tmp_path, second.boundary, T0 + 1200).events == ()
-
-
 def test_a_transition_takes_the_position_of_the_row_that_announced_it_once(tmp_path):
-    projection, _ref = _late_panel(tmp_path, "rv", pending=True)
-    _write(tmp_path, "rv", status="completed", ts=_iso(T0 - 900), updated_at=_iso(T0 - 100),
-           review_projection=projection)
     _write(tmp_path, "kid", status="running", ts=_iso(T0 - 900), updated_at=_iso(T0 - 900))
     first = _wake(tmp_path, None, T0)
-    projection, _ref = _late_panel(tmp_path, "rv", settled_at=T0 + 60)
-    _write(tmp_path, "rv", review_projection=projection)
     _write(tmp_path, "kid", status="completed", updated_at=_iso(T0 + 90))
+    # A pre-fold acceptance_late_settlement row stays ordinary chat history, never a wake event.
     late_row = {"ts": _iso(T0 + 61), "direction": "system", "type": "acceptance_late_settlement", "task_id": "rv",
                 "text": "On the reviewed version…", "card_row": "reviews", "card_row_id": "acceptance-late:rk-9"}
-    _chat(tmp_path, _owner("hello", T0 + 30, cmid="h"), late_row, dict(late_row), _summary("kid", T0 + 95))
+    summary = _summary("kid", T0 + 95)
+    _chat(tmp_path, _owner("hello", T0 + 30, cmid="h"), late_row, summary, dict(summary))
     second = _wake(tmp_path, first.boundary, T0 + 600)
-    assert [kind for kind, _o, _l in second.events] == ["owner_message", "late_review", "task_terminal"]
+    assert [kind for kind, _o, _l in second.events] == ["owner_message", "task_terminal"]
     assert all(offset is not None for _k, offset, _l in second.events)  # each at its announcing row, once
     assert "no chat row in this window" not in second.full_text()
-    assert "- task kid completed" in _lines(second)[2]
+    assert "- task kid completed" in _lines(second)[1]
+    assert "On the reviewed version" not in second.full_text()
 
 
 def test_a_result_first_written_late_under_an_old_stamp_is_found_through_its_row(tmp_path):
@@ -343,32 +292,34 @@ def test_unfinished_and_malformed_lines_are_gaps_not_silence(tmp_path):
         handle.write(json.dumps(_owner("unfinished", since + 2, cmid="b"))[:-1])
     first = _observe(tmp_path)
     assert [line.rsplit('"', 2)[-2] for line in _lines(first)] == ["complete"]
-    assert "malformed_jsonl" in first.gaps and "gaps: malformed_jsonl" in first.full_text()
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("}\n")  # the writer completes its line after the snapshot
+    assert any("jsonl_malformed" in gap for gap in first.gaps)
+    ds.append(tmp_path, "chat", _owner("unfinished", since + 2, cmid="b"))
     second = _observe(tmp_path, boundary=first.boundary)
     assert [line.rsplit('"', 2)[-2] for line in _lines(second)] == ["unfinished"]
 
 
-@pytest.mark.parametrize('rotate', [False, True])
-def test_first_partial_line_survives_completion_after_accepted_wake(tmp_path, rotate):
+def test_invalid_only_import_has_an_explicit_gap_and_later_sql_row_keeps_its_old_stamp(tmp_path):
     path = _chat(tmp_path)
-    raw = json.dumps(_owner('old timestamp, newly complete', T0 - 100, cmid='partial'))
-    path.write_text(raw[:-1], encoding='utf-8')
+    row = _owner("old timestamp, newly complete", T0 - 100, cmid="partial")
+    path.write_text(json.dumps(row)[:-1], encoding="utf-8")
     first = wake.observe_wake(tmp_path, boundary=None, since=T0 - 500, now=T0)
-    assert not first.events and first.boundary['upper'] == 0
-    with path.open('a', encoding='utf-8') as handle:
-        handle.write('}\n')
-    if rotate:
-        archive = tmp_path / 'archive'
-        archive.mkdir()
-        path.rename(archive / 'chat_2027-01-15.jsonl')
-        path.write_text('', encoding='utf-8')
+    assert not first.events and first.gaps and first.boundary["upper"] > 0
+    ds.append(tmp_path, "chat", row)
     second = wake.observe_wake(tmp_path, boundary=first.boundary, since=T0 + 10, now=T0 + 100)
-    assert len(second.events) == 1 and 'newly complete' in second.full_text()
-    assert second.window['basis'] == 'accepted_boundary' and not second.gaps
-    third = wake.observe_wake(tmp_path, boundary=second.boundary, since=T0 + 110, now=T0 + 200)
-    assert third.events == ()
+    assert len(second.events) == 1 and "newly complete" in second.full_text()
+    assert second.window["basis"] == "accepted_boundary" and not second.gaps
+    assert wake.observe_wake(tmp_path, boundary=second.boundary, since=T0 + 110, now=T0 + 200).events == ()
+
+
+def test_pending_import_does_not_advance_an_accepted_wake_boundary(tmp_path):
+    from tests._dialogue import seed
+
+    seed(tmp_path, archives={"chat_20261016T000000.jsonl": [_owner("pending", T0 - 100)]})
+    first = _observe(tmp_path)
+    assert any("still importing" in gap for gap in first.gaps)
+    assert "upper" not in first.boundary
+    import_all(tmp_path)
+    assert "pending" in _observe(tmp_path, boundary=first.boundary).full_text()
 
 
 def test_human_input_is_classified_by_producer_provenance(tmp_path):
@@ -386,7 +337,7 @@ def test_human_input_is_classified_by_producer_provenance(tmp_path):
           {"ts": _iso(since + 30), "direction": "system", "type": "quiz_answer", "task_id": "asker", "quiz": block},
           {**_owner("Keep", since + 30), "client_message_id": "quiz_late_answer:asker:q9"},
           {"ts": _iso(since + 40), "direction": "out", "chat_id": 1, "text": "my reply"},
-          # The durable row as the producer writes it (``log_chat``): its text and card placement only.
+          # A pre-fold late acceptance row exactly as its retired producer wrote it (``log_chat``).
           {"ts": _iso(since + 50), "direction": "system", "type": "acceptance_late_settlement", "task_id": "t1",
            "text": "Late review of an earlier revision: 2 findings", "card_row": "reviews",
            "card_row_id": "acceptance-late:rk-1"},
@@ -394,15 +345,15 @@ def test_human_input_is_classified_by_producer_provenance(tmp_path):
            "text": "⚠️ Error: RuntimeError: boom", "task_terminal_status": "failed"})
     observation = _observe(tmp_path)
     assert [kind for kind, _o, _l in observation.events] == [
-        "owner_message", "correspondent_message", "card_answer", "late_review", "task_error"]
+        "owner_message", "correspondent_message", "card_answer", "task_error"]
     lines = _lines(observation)
     assert "Presence correspondent message" in lines[1] and "from a correspondent" in lines[1]
     assert lines[2].startswith("- owner card q9 on task asker: answered") and "chose option 1: Keep" in lines[2]
-    # No task result records that settlement: the row's own words, never invented subject fields.
-    assert lines[3] == "- late review announced for task t1, 59 min ago: Late review of an earlier revision: 2 findings"
-    assert "task w1 runner failed" in lines[4]
+    assert "task w1 runner failed" in lines[3]
     text = observation.full_text()
     assert "I opened this cycle" not in text and "machine traffic" not in text and "my reply" not in text
+    # A pre-fold acceptance_late_settlement row is ordinary history of its chat, never a wake event.
+    assert "Late review of an earlier revision" not in text
 
 
 @pytest.mark.parametrize("status, origin", [("failed", "host_notice"), ("cancelled", ""),
@@ -439,7 +390,7 @@ def test_answered_cards_of_the_window_render_their_whole_answer(tmp_path):
              "options": ["A", "B"], "comment": long_comment, "question": "Which parser?"}
     _chat(tmp_path, {"ts": _iso(since + 2400), "direction": "system", "type": "quiz_answer",
                      "task_id": "asker", "quiz": block})
-    own = _lines(_observe(tmp_path, reason="task_finished:asker:completed"))[0]
+    own = _lines(_observe(tmp_path))[0]
     assert own.startswith("- owner card qown on task asker: answered 20 min ago; asked 59 min ago; "
                           "answered in own words: Keep the old parser.")
     assert long_comment in own and "END-OF-COMMENT; question: Which parser?" in own  # whole, never clipped
@@ -459,42 +410,26 @@ def test_answered_card_line_renders_mixed_answers_and_missing_facts_honestly():
     empty = wake._answered_card_line("t1", "q3", {"answered_at": _iso(now - 60)}, now=now)
     assert "answer text unavailable" in empty
 
-def test_project_digest_pins_human_project_and_related_task_before_cards(tmp_path):
+def test_a_project_task_is_an_observed_event_not_a_wake_cause(tmp_path):
+    """#1603: a project digest no longer names itself as the wake's cause; the settled
+    project task reaches the scheduled wake as an observed transition, the cause line is
+    the schedule, and the outstanding cards still follow the events."""
     since = T0 - 3600
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "projects.json").write_text(json.dumps({
         "projects": [{"id": "p1", "name": "System audit", "chat_id": 42, "lifecycle": "active"}],
     }), encoding="utf-8")
-    _result(tmp_path, "finished", ts=since - 10, project_id="p1", description="audit completed")
-    _result(tmp_path, "still-running", ts=since + 20, status="running", project_id="p1", description="in progress")
-    _result(tmp_path, "direct-finished", ts=since + 30, direct=True, project_id="p1", description="owner chat")
+    _result(tmp_path, "finished", ts=since + 10, project_id="p1", description="audit completed")
     _result(tmp_path, "card-task", ts=since - 100, status="running",
             quizzes={"q1": {"state": "expired_terminal", "asked_at": _iso(since - 50),
                               "question": "Should the audit continue?"}})
-    observation = _observe(tmp_path, since=since, reason="project_digest:p1:finished")
-    trigger = observation.trigger
-    assert trigger.startswith("- wake cause: project System audit settled task finished (completed), $1.25")
-    assert "audit completed" in trigger and "1 h 0 min ago" in trigger
-    assert "still-running" not in trigger and "direct-finished" not in trigger
+    observation = _observe(tmp_path, since=since)
+    assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
+    assert any("finished" in line and "audit completed" in line for line in _lines(observation))
     card = observation.outstanding[0]
-    assert card.startswith("- owner card q1 on task card-task: Unanswered · the task finished")
-    assert "Should the audit continue?" in card
+    assert card.startswith("- owner card q1 on task card-task: Unanswered · task finished")
     text = observation.full_text()
-    assert text.index(trigger) < text.index("Outstanding owner cards (1):") < text.index(card)
-
-
-def test_project_digest_task_id_wins_when_multiple_settled_rows_share_a_project(tmp_path):
-    since = T0 - 3600
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "projects.json").write_text(json.dumps({
-        "projects": [{"id": "p1", "name": "System audit", "chat_id": 42, "lifecycle": "active"}],
-    }), encoding="utf-8")
-    _result(tmp_path, "trigger", ts=since - 10, project_id="p1", description="triggered result")
-    _result(tmp_path, "newer", ts=since + 10, project_id="p1", description="newer result")
-    trigger = _observe(tmp_path, since=since, reason="project_digest:p1:trigger").trigger
-    assert "task trigger" in trigger and "triggered result" in trigger
-    assert "latest settled" not in trigger
-    assert "task newer" not in trigger
+    assert text.index(observation.trigger) < text.index("Outstanding owner cards (1):") < text.index(card)
 
 
 def test_trigger_stays_first_when_task_results_are_unreadable(tmp_path, monkeypatch):
@@ -504,11 +439,11 @@ def test_trigger_stays_first_when_task_results_are_unreadable(tmp_path, monkeypa
         raise OSError("broken task store")
 
     monkeypatch.setattr(task_results, "list_task_results", broken)
-    observation = _observe(tmp_path, since=T0 - 1, reason="task_finished:t1:completed")
-    assert observation.trigger == "- wake cause: task t1 finished (completed)"
+    observation = _observe(tmp_path, since=T0 - 1)
+    assert observation.trigger == "- wake cause: the scheduled wake time; events never move it, they are listed as observed"
     assert observation.gaps == ("task_results unreadable: OSError",)
     assert observation.full_text().split("\n")[1:] == [
-        "- wake cause: task t1 finished (completed)",
+        "- wake cause: the scheduled wake time; events never move it, they are listed as observed",
         "Observation coverage: chat log bytes 0–0 (empty chain); task results: unreadable, the accepted "
         "inventory is kept for the next wake; gaps: task_results unreadable: OSError"]
 
@@ -521,9 +456,9 @@ def test_render_substitutes_every_placeholder_and_keeps_every_event(tmp_path, mo
     for index in range(15):
         _result(tmp_path, f"t{index:02d}", ts=T0 - 100 + index)
     _chat(tmp_path, *[_summary(f"t{index:02d}", T0 - 100 + index) for index in range(15)])
-    observation = _observe(tmp_path, since=T0 - 5400, reason="task_finished:t14:completed")
+    observation = _observe(tmp_path, since=T0 - 5400)
     text = wake.render_wake_message(
-        repo, reason="task_finished:t14:completed", last_wake_at=T0 - 5400, now=T0,
+        repo, reason="heartbeat", last_wake_at=T0 - 5400, now=T0,
         level="act", disabled_tools=["toggle_evolution", "request_restart"], spent_usd=4.0, daily_usd=20.0,
         running=1, max_tasks=2, interval=3300, events=observation.full_text())
     for key in wake.PLACEHOLDERS:
@@ -533,13 +468,13 @@ def test_render_substitutes_every_placeholder_and_keeps_every_event(tmp_path, mo
     assert "toggle_evolution, request_restart" in text
     assert "allowance known spend (last 24 h): 4.00 / 20.00 USD" in text and "tasks running: 1/2" in text
     assert "next interval: 3300 s" in text
-    assert "- wake cause: task t14 finished (completed)" in text
-    assert text.count("- task t") == 15 and "more; see" not in text  # the trigger's own terminal stays an event
+    assert "- wake cause: the scheduled wake time; events never move it, they are listed as observed" in text
+    assert text.count("- task t") == 15 and "more; see" not in text  # every terminal stays an event
     quiet = wake.render_wake_message(
         repo, reason="heartbeat", last_wake_at=0.0, now=T0, level="full",
         disabled_tools=[], spent_usd=None, daily_usd=0, running=0, max_tasks=0, interval=900,
         events=_observe(tmp_path / "empty", since=T0 + 1).full_text())
-    assert "no wake since this process started" in quiet and "wake cause: scheduled heartbeat" in quiet
+    assert "no wake since this process started" in quiet and "wake cause: the scheduled wake time" in quiet
     assert "unavailable tools: none" in quiet and "allowance known spend (last 24 h): unknown / 0.00 USD" in quiet
     assert "including evolution" in quiet
 
@@ -560,7 +495,7 @@ def test_template_names_only_its_placeholders_and_the_wake_hints():
 
     assert set(re.findall(r"\{([a-z_]+)\}", template)) == set(wake.PLACEHOLDERS)
     for hint in ("A pause is a legitimate decision", "Distinguish incremental cash cost",
-                 "do not request task acceptance", "wake facts", "recent facts"):
+                 "do not ask the review pool to review the wake itself as a result", "wake facts", "recent facts"):
         assert hint in template, hint
     assert "a heartbeat, a task that finished, a project digest" not in template
     assert "up to 10 rounds" not in template and "300 seconds" not in template
@@ -578,7 +513,7 @@ def describe(monkeypatch):
     return lambda snapshot, enabled=True: (holder.clear(), holder.update(snapshot), server._describe_bg_consciousness_state(enabled))[2]
 
 
-BASE = {"enabled": True, "level": "act", "next_wake_at": "2027-01-15T12:30:00+00:00", "pending_reason": "",
+BASE = {"enabled": True, "level": "act", "next_wake_at": "2027-01-15T12:30:00+00:00",
         "last_wake_at": "", "last_wake_task_id": "", "last_wake_outcome": "", "last_error": "",
         "spent_24h_usd": 1.0, "daily_usd": 20.0, "allowance_resets_at": "", "tasks_running": 0, "max_tasks": 2,
         "live_wake_task_id": ""}
@@ -592,8 +527,9 @@ def test_projection_names_every_honest_status(describe):
     sleeping = describe(BASE)
     assert sleeping["status"] == "sleeping" and sleeping["detail"] == f"Sleeping until {server._clock_of(BASE['next_wake_at'])}."
     assert sleeping["next_wake_at"] == BASE["next_wake_at"] and sleeping["enabled"] is True
-    pending = describe({**BASE, "pending_reason": "task_finished:a:completed"})
-    assert pending["detail"].endswith(" Early wake pending: task_finished:a:completed.")
+    # #1603: no early wake exists, so even a stale snapshot key is never rendered as one.
+    stale = describe({**BASE, "pending_reason": "task_finished:a:completed"})
+    assert "Early wake" not in stale["detail"] and stale["detail"] == sleeping["detail"]
     thinking = describe({**BASE, "live_wake_task_id": "wake0001"})
     assert thinking["status"] == "thinking" and "wake0001" in thinking["detail"]
     first = describe({**BASE, "last_wake_outcome": "skipped:waiting_for_first_conversation"})
@@ -654,17 +590,6 @@ def test_new_result_with_old_timestamps_and_no_chat_row_is_observed_once(tmp_pat
     assert _wake(tmp_path, second.boundary, T0 + 1200).events == ()
 
 
-def test_new_and_settled_panel_on_old_closed_task_is_observed_without_chat(tmp_path):
-    _write(tmp_path, "old", status="completed", ts=_iso(T0 - 86400), updated_at=_iso(T0 - 80000))
-    first = _wake(tmp_path, None, T0)
-    projection, _ref = _late_panel(tmp_path, "old", settled_at=T0 - 70000)
-    _write(tmp_path, "old", review_projection=projection)
-    second = _wake(tmp_path, first.boundary, T0 + 600)
-    assert [(kind, offset) for kind, offset, _ in second.events] == [("late_review", None)]
-    assert "late review settled for task old" in second.full_text()
-    assert _wake(tmp_path, second.boundary, T0 + 1200).events == ()
-
-
 def test_partial_old_inventory_upgrades_with_explicit_coverage_gap(tmp_path):
     _write(tmp_path, "old", status="completed", ts=_iso(T0 - 86400))
     boundary = _wake(tmp_path, None, T0).boundary
@@ -683,7 +608,7 @@ def test_wake_scan_reads_each_result_and_project_registry_once(tmp_path, monkeyp
     for index in range(total):
         _write(tmp_path, f"t{index:04d}", status="completed", ts=_iso(T0 - 10), updated_at=_iso(T0 - 10), project_id="p1")
     reads, project_reads = Counter(), []
-    real_decode, real_load = task_store._decode, store.Txn.load
+    real_decode, real_body = task_store._decode, store.Txn.body_text
 
     def decode(*args):  # every body the scan decodes, by task
         rows = real_decode(*args)
@@ -691,12 +616,12 @@ def test_wake_scan_reads_each_result_and_project_registry_once(tmp_path, monkeyp
             reads[row["task_id"]] += 1
         return rows
 
-    def load(self, task_id):
+    def body_text(self, task_id):
         reads[task_id] += 1
-        return real_load(self, task_id)
+        return real_body(self, task_id)
 
     monkeypatch.setattr(task_store, "_decode", decode)
-    monkeypatch.setattr(store.Txn, "load", load)
+    monkeypatch.setattr(store.Txn, "body_text", body_text)
     monkeypatch.setattr(projects, "list_reserved_projects", lambda _root: project_reads.append(True) or [
         {"id": "p1", "name": "Project", "chat_id": 42, "lifecycle": "active"}])
     observed = _wake(tmp_path, None, T0)

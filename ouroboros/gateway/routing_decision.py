@@ -56,32 +56,21 @@ def _origin_message(drive_root: pathlib.Path, client_message_id: str) -> Dict[st
 
     The picker transports the owner's exact ingress bytes to the chosen
     destination (the same rule the steer tool follows: a paraphrase must
-    never replace the owner's text). Bounded reverse scan over the live
-    chat log plus its rotation archives."""
-    from ouroboros.gateway._helpers import read_rotated_jsonl_entries
+    never replace the owner's text). Only rows carrying this id are read."""
+    from ouroboros import dialogue_store as ds
 
     target = str(client_message_id or "")
-
-    def _is_origin(entry: Dict[str, Any]) -> bool:
-        return (
-            str(entry.get("direction") or "") == "in"
-            and str(entry.get("client_message_id") or "") == target
-        )
-
-    try:
-        entries = read_rotated_jsonl_entries(
-            drive_root / "logs" / "chat.jsonl",
-            drive_root / "archive",
-            "chat",
-            want=1,
-            counts_toward_quota=_is_origin,
-        )
-    except Exception:
-        log.debug("origin-message scan failed for %s", client_message_id, exc_info=True)
+    if not target:
         return {}
-    for entry in reversed(list(entries or [])):
-        if isinstance(entry, dict) and _is_origin(entry):
-            return entry
+    try:
+        for entry in ds.iter_probes(drive_root, "chat", [("client_message_id", target)], newest_first=True):
+            if entry.row.get("direction") == "in":
+                return entry.row
+        ds.require_imported(drive_root, "chat")
+    except ds.StoreError:
+        raise
+    except Exception:
+        log.debug("origin-message lookup failed for %s", client_message_id, exc_info=True)
     return {}
 
 
@@ -157,7 +146,16 @@ def handle_routing_decision(
         return 400, {"ok": False, "error": "option_not_dispatchable",
                      "decision_id": decision_id, "action": action}
 
-    origin = _origin_message(drive_root, client_message_id)
+    from ouroboros.store import StoreError, StoreMigrating
+
+    try:
+        origin = _origin_message(drive_root, client_message_id)
+    except StoreMigrating as exc:
+        return 503, {"ok": False, "error": "history_importing", "decision_id": decision_id,
+                     "state": "open", "reason": str(exc)}
+    except StoreError as exc:
+        return 503, {"ok": False, "error": "history_unavailable", "decision_id": decision_id,
+                     "state": "open", "reason": str(exc)}
     # VERBATIM contract: the dispatched message is the owner's exact ingress
     # bytes; strip() is only the emptiness CHECK, never a rewrite.
     raw_origin_text = str(origin.get("text") or "")
@@ -198,11 +196,16 @@ def handle_routing_decision(
     if isinstance(origin.get("client_surface"), dict) and origin.get("client_surface"):
         provenance["client_surface"] = dict(origin["client_surface"])
     if action == "steer_task":
+        from ouroboros.owner_relay import owner_quote
+
         evt: Dict[str, Any] = {
             "type": "steer_task",
             "routing_token": dispatch_token,
             "target_task_id": str(chosen.get("task_id") or ""),
-            "message": origin_text,
+            # His click names this live work for his own retained message: the words
+            # travel as a verified quote with his force (D7); the note is only his comment.
+            "message": f"[Owner picker comment] {comment}" if comment else "",
+            "quotes": [owner_quote(drive_root, origin)],
             "chat_id": chat_id,
             "client_message_id": client_message_id,
             # The owner clicked: an owner turn by construction. The option list
@@ -280,6 +283,10 @@ def handle_routing_decision(
         ForkingPickler.dumps(dict(evt))
         from supervisor.workers import get_event_q
 
+        if action == "new_task_in_project":
+            from ouroboros.promotion_intent import prepare_promotion_intent
+
+            prepare_promotion_intent(drive_root, evt)
         get_event_q().put_nowait(dict(evt))
     except Exception as exc:
         log.warning("routing decision dispatch failed", exc_info=True)

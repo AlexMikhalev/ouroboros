@@ -1,11 +1,12 @@
 """Visible lifecycle import of current boot state, never a reader fallback.
 
-Run before producers on every startup door: ``ensure_current_store`` creates or
-reconciles ``state/current.sqlite`` (the one importer; details in
+Run before producers on every startup door: ``ensure_current_store`` opens or creates
+``state/current.sqlite`` (the one importer; legacy reconcile is a named job in
 ``store_import``), the admissible legacy cancel latches become intents, and the
 boot admissions no document derives (drives present on disk, the one-time upgrade
-receipts) join the owner-held rows. ``state/migrations.json`` keeps the
-watermarks: the store generation and the cancel-latch generation.
+receipts) join the owner-held rows, and legacy questions bind their publication
+address once. ``state/migrations.json`` keeps the watermarks: the store, the
+cancel-latch and the question-publication generations.
 ``python -m ouroboros.startup_migrations`` is the explicit rebuild job, including
 its historical seal audit (no audit watermark).
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from ouroboros.utils import append_jsonl, read_json_dict, update_json_locked, ut
 
 log = logging.getLogger(__name__)
 SCHEMA_GENERATION = 7
+QUESTION_PUBLICATIONS_GENERATION = 1
 
 
 def watermarks(root) -> dict:
@@ -52,6 +55,96 @@ def migrate_cancel_latches(root, *, records, generation=SCHEMA_GENERATION, rebui
     return migrated
 
 
+def _legacy_question_publications(root, needed):
+    """Import exact publication evidence once; current routing proves no history.
+
+    Conflicting addresses or unstable history stay unknown. Ask-time chat and
+    binding timestamps cannot establish whether a queued quiz was rebound.
+    """
+    from ouroboros.memory import Memory
+
+    if not needed:
+        return {}, {}, False
+    try:
+        rows, coverage = Memory(root).read_chat_generations(
+            predicate=lambda row: row.get("type") == "quiz" and row.get("direction") == "out")
+    except (OSError, ValueError) as exc:
+        rows, coverage = [], {"snapshot_stable": True, "gaps": [
+            {"kind": "generation_unreadable", "error": type(exc).__name__}]}
+    gaps = coverage.get("gaps") or []
+    unstable = not coverage.get("snapshot_stable")
+    unreadable = any(gap.get("kind") == "generation_unreadable" for gap in gaps)
+    addresses = {}
+    for row in rows:
+        quiz = row.get("quiz")
+        if not isinstance(quiz, dict):
+            continue
+        key = (str(row.get("task_id") or ""), str(quiz.get("quiz_id") or ""))
+        chat_id = row.get("chat_id")
+        if key in needed and isinstance(chat_id, int) and not isinstance(chat_id, bool):
+            addresses.setdefault(key, set()).add(chat_id)
+    publications = {key: next(iter(values)) for key, values in addresses.items()
+                    if len(values) == 1 and not unstable}
+    unknowns = {f"question:{tid}:{qid}": {"task_id": tid, "quiz_id": qid,
+        "reason": ("publication_address_ambiguous" if len(addresses.get((tid, qid), ())) > 1 else
+                   "publication_history_unstable" if unstable else
+                   "publication_history_unavailable" if unreadable else "publication_address_missing"),
+        **({"history_gaps": gaps} if gaps else {})}
+        for tid, qid in needed if (tid, qid) not in publications}
+    return publications, unknowns, bool(unknowns and (unstable or unreadable))
+
+
+def migrate_question_publications(root, *, rebuild=False, legacy=False):
+    """Questions asked without publication addressing bind it once, from the store's
+    ``owner_questions`` members and exact chat evidence (a GET never migrates): those asked
+    before it existed, and those an older body asked after a rollback (no delivery record and
+    no ``question:`` row yet, discovered by the legacy reconcile job). The rest stay addressed ``question:`` unknowns, never a guessed
+    Main; a moving or unreadable history earns one maintenance retry, and the explicit rebuild
+    starts a fresh repair. Current generations never read history during boot."""
+    from ouroboros import obligations
+    from ouroboros.owner_quiz import quiz_needs_retention, record_publication
+    from ouroboros.task_store import read_document
+
+    marks = watermarks(root)
+    current = marks.get("question_publications_generation") == QUESTION_PUBLICATIONS_GENERATION
+    retry = marks.get("question_publication_retry") or {}
+    if current and not (rebuild or legacy):
+        if retry.get("state") == "pending":
+            from ouroboros import maintenance_jobs
+            job = maintenance_jobs.job(root, "legacy_reconcile") or {}
+            if not job or job.get("state") == "done":
+                maintenance_jobs.record(root, "legacy_reconcile", state="pending", reason="question_publication_retry",
+                                        cursor=None, done=0, total=None, error=None)
+        return {}
+    needed = set()
+    for tid in obligations.members(root, "owner_questions"):
+        try:
+            quizzes = (read_document(root, tid) or {}).get("owner_quiz")
+        except ValueError:
+            continue  # an unreadable member stays flagged: Main discloses its gap
+        for qid, block in quizzes.items() if isinstance(quizzes, dict) else ():
+            # A current ask carries its own publication debt, which a closure before publication
+            # takes over (``publication_pending``); either binds its address before exposure.
+            # Only an older body's ask (no such debt) is legacy for this import.
+            owed = block.get("delivery") if isinstance(block, dict) else None
+            if (quiz_needs_retention(block) and "publication_chat_id" not in block
+                    and not (isinstance(owed, dict)
+                             and (owed.get("kind") == "publication" or owed.get("publication_pending")))):
+                needed.add((tid, str(qid)))
+    publications, unknowns, unsettled = _legacy_question_publications(root, needed)
+    for (tid, qid), chat_id in publications.items():
+        record_publication(root, tid, qid, chat_id, evidence="history")
+    for key in obligations.members(root, "unknowns"):
+        if key.startswith("question:") and key not in unknowns:
+            obligations.remove(root, "unknowns", key)  # re-classified: bound, answered or gone
+    for key, facts in unknowns.items():
+        obligations.add(root, "unknowns", key, facts)
+    attempts = (retry.get("attempts", 0) if current and not rebuild else 0) + 1
+    stamp(root, question_publications_generation=QUESTION_PUBLICATIONS_GENERATION, question_publication_retry=(
+        {"attempts": attempts, "state": "pending" if attempts < 2 else "rebuild_required"} if unsettled else None))
+    return {"bound": len(publications), "unknown": len(unknowns)}
+
+
 def boot_admissions(root) -> dict:
     """Owner-held rows no document derives: a drive directory present on disk owes its terminal
     files (a terminal result can land in the drive before the canonical start/result did), and
@@ -74,7 +167,7 @@ def prepare_startup_state(root, *, rebuild=False, repo_dir=None, strict=True):
     """Boot may continue with an unavailable store (every door then answers typed); the explicit
     repair reports its failure."""
     try:
-        return _prepare_startup_state(root, rebuild=rebuild)
+        return _prepare_startup_state(root, rebuild=rebuild, repo_dir=repo_dir)
     except Exception as exc:
         log.error("Startup import failed; the current-facts store is unavailable", exc_info=True)
         try:
@@ -87,7 +180,7 @@ def prepare_startup_state(root, *, rebuild=False, repo_dir=None, strict=True):
         return {"imported": False, "status": "unavailable"}
 
 
-def _prepare_startup_state(root, *, rebuild):
+def _prepare_startup_state(root, *, rebuild, repo_dir=None):
     from ouroboros.store_import import ensure_current_store
 
     root = Path(root)
@@ -99,11 +192,24 @@ def _prepare_startup_state(root, *, rebuild):
         from ouroboros.utils import atomic_write_json
         atomic_write_json(root / "state" / "migrations.json", {}, trailing_newline=True)
     started = time.monotonic()
-    report = ensure_current_store(root)
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir or Path(__file__).resolve().parents[1],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        head = ""  # unknown current body is recorded; never substitute the previous body's SHA
+    report = ensure_current_store(root, rederive=rebuild, body_sha=head)
     if rebuild:
         from ouroboros.delegate_custody_current import rebuild as rebuild_custody
         report["custody_open"] = rebuild_custody(root, replace=True)
         report["cancel_latches"] = len(migrate_cancel_latches(root, records=None, rebuild=True))
+    if report["status"] in {"unchanged", "completed", "reconciled"}:
+        if not rebuild:
+            migrate_cancel_latches(root, records=None)  # the generation gate precedes every history read
+        try:  # unstamped on failure: the next boot repeats it
+            report["question_publications"] = migrate_question_publications(root, rebuild=rebuild)
+        except Exception as exc:
+            log.warning("Legacy question publication import failed; it reruns at the next start", exc_info=True)
+            report["question_publications"] = {"error": type(exc).__name__}
     append_jsonl(root / "logs/supervisor.jsonl", {"ts": utc_now_iso(), "type": "startup_migration",
         "phase": "completed", "job": "current_store", "counts": {key: value for key, value in report.items()
                                                                   if key != "drives"},

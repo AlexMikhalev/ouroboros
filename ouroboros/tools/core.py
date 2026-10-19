@@ -95,6 +95,7 @@ from ouroboros.tools.core_artifacts import (  # noqa: F401
     validate_link_actions,
     validate_quiz_payload,
 )
+from ouroboros.tools.cards import SHOW_CARD_TOOL_SCHEMA, _show_card
 
 log = logging.getLogger(__name__)
 
@@ -855,6 +856,7 @@ from ouroboros.code_search_rg import (  # noqa: E402
     _search_wall_clock_sec,
     is_search_skippable as _is_search_skippable,  # noqa: F401 — re-exported for tests/call sites
     search_skip_reason as _search_skip_reason, matches_include,
+    MATCH_WINDOW_CHARS, match_window, search_text,
 )
 
 
@@ -946,7 +948,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             rel_parts = fp.relative_to(root_resolved).parts
         except Exception:
             return _drop("escapes_root")
-        # runtime_data per-project store is reachable only via scoped knowledge tools.
+        # runtime_data per-project store is reachable only via project-scoped tools.
         if normalized == "runtime_data" and rel_parts and str(rel_parts[0]).casefold() == "projects":
             return _drop("project_store_scoped")
         if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
@@ -1012,7 +1014,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             deadline_hit = True  # ran out of TIME (distinct from the file-count cap)
             break
         # Prune skipped dirs in-place. For runtime_data, also prune the top-level
-        # per-project store (reachable only via the scoped knowledge tools).
+        # per-project store (reachable only via the project-scoped tools).
         from ouroboros.code_intelligence import SKIP_DIRS
 
         # SKIP_DIRS pruning is a documented walk convention (parity with rg's
@@ -1067,7 +1069,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 break
 
             try:
-                text = fp.read_text(encoding="utf-8", errors="replace")
+                text, decodable = search_text(fp.read_bytes())
             except Exception:
                 _drop("read_error")
                 continue
@@ -1075,9 +1077,13 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             files_searched += 1
             rel = fp.relative_to(root_path).as_posix()
 
+            # These lines are read_file's own (universal newlines, splitlines, code points).
             for lineno, line in enumerate(text.splitlines(), 1):
-                if pattern.search(line):
-                    matches.append(f"{_root_display_path(normalized, rel)}:{lineno}: {line.rstrip()}")
+                if found := pattern.search(line):
+                    shown = line.rstrip() if len(line) <= MATCH_WINDOW_CHARS else match_window(
+                        line, found.start(), found.end(), count=sum(1 for _ in pattern.finditer(line)),
+                        read_line=lineno if decodable else 0)
+                    matches.append(f"{_root_display_path(normalized, rel)}:{lineno}: {shown}")
                     if len(matches) >= max_results:
                         truncated = True
                         break
@@ -1425,6 +1431,9 @@ def get_tools() -> List[ToolEntry]:
                     }, "required": ["label", "url"]}},
             }, "required": ["links"]},
         }, _send_links),
+        ToolEntry("show_card", copy.deepcopy(SHOW_CARD_TOOL_SCHEMA), _show_card,
+                  # Owner-chat delivery like send_file; an app runs only in the opaque sandbox frame.
+                  safety_policy="skip"),
         ToolEntry("search_code", {
             "name": "search_code",
             "description": (
@@ -1432,7 +1441,8 @@ def get_tools() -> List[ToolEntry]:
                 "Literal search by default; set regex=True for regular expressions. "
                 "Scoped to path (default: entire active workspace). "
                 "Skips binaries, caches, vendor dirs, and files >1MB. "
-                "Returns up to max_results matches (default 200) with root:file:line context. "
+                "Returns up to max_results matches (default 200) with root:file:line context; a long matched "
+                "line shows a window around its first match with that window's read_file range. "
                 "Use this for plain-text/regex matches (prefer it over grep/find-as-search in run_command); "
                 "for symbol-aware lookups (definitions, callers, references, impact) prefer query_code."
             ),

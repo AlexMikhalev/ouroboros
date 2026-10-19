@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._dialogue import chat_rows
 from ouroboros.terminal_time import terminal_time_fact, task_attempt_witness
 
 T1 = '2026-09-24T18:18:27+00:00'
@@ -259,7 +260,7 @@ def test_late_failure_publication_after_other_success_keeps_both_outcomes_and_ti
     assert append_terminal_task_projection(tmp_path, 'new', {'id': 'new'}, new, {})
     monkeypatch.setattr('ouroboros.terminal_projection.utc_now_iso', lambda: T3)
     assert append_terminal_task_projection(tmp_path, 'old', {'id': 'old'}, old, {'ts': T1})
-    rows = [json.loads(line) for line in (tmp_path / 'logs/chat.jsonl').read_text().splitlines()]
+    rows = chat_rows(tmp_path)
     assert [(row['task_id'], row['ts']) for row in rows] == [('new', T2), ('old', T3)]
     assert rows[-1]['terminal_time']['occurred_at'] == T1
     assert rows[-1]['status'] == 'failed' and rows[0]['status'] == 'completed'
@@ -303,15 +304,18 @@ def test_unknown_fact_cannot_be_upgraded_by_untyped_or_mismatched_metadata():
 
 
 def published_terminal_fixture(root, monkeypatch):
-    """Real producer/outbox replay/bus rows for backend and browser qualification."""
-    from queue import Queue
+    """Real settlement/readiness retry/strict-sender rows for backend and browser qualification."""
+    from collections import deque
+    from tests._cancel_intents_shared import DeliveryBus
+    import supervisor.events_chat_delivery as sender
     import supervisor.message_bus as bus
     import supervisor.terminal_delivery as delivery
-    from ouroboros.project_dialogue import enqueue_project_completion_summary
     from ouroboros.projects_registry import create_project, bind_task_to_project
+    from ouroboros.terminal_projection import SETTLEMENT_DEFERRED, settle_terminal_projection
+    from ouroboros.utils import append_jsonl
 
     project = create_project(root, 'terminal-times', name='Terminal times')
-    queue = Queue()
+    queue = DeliveryBus()
     bridge = bus.LocalChatBridge({})
     frames = []
     bridge._broadcast_fn = frames.append
@@ -319,9 +323,10 @@ def published_terminal_fixture(root, monkeypatch):
     monkeypatch.setattr(bus, 'DATA_DIR', root)
     monkeypatch.setattr(bus, 'get_bridge', lambda: bridge)
     monkeypatch.setattr(bus, 'load_state', lambda: {'session_id': 'qualification', 'owner_id': 7})
-    monkeypatch.setattr(bus, '_advance_project_visible_revision', lambda *_: None)
     monkeypatch.setattr(bus, 'publish_event', lambda *_a, **_k: None)
-    monkeypatch.setattr(delivery, '_REPLAY_MIN_AGE_SEC', 0)
+    monkeypatch.setattr(sender, '_DELIVERED_MESSAGE_IDS', deque(maxlen=256))
+    context = SimpleNamespace(DRIVE_ROOT=root, RUNNING={}, send_with_budget=bus.send_with_budget,
+                              append_jsonl=append_jsonl)
     results = {}
     for task_id, status, ended in [('old', 'failed', T1), ('new', 'completed', T2), ('legacy', 'failed', None)]:
         bind_task_to_project(root, task_id, project['id'], project['chat_id'], origin={'absent':'system'})
@@ -331,18 +336,19 @@ def published_terminal_fixture(root, monkeypatch):
         results[task_id] = write_task_result(root, task_id, status, _terminal_observed=bool(ended),
             result=f'{task_id.upper()}_TASK_ANSWER', terminal_origin='model_final')
     for task_id, added in [('new', T2), ('old', T3), ('legacy', T3)]:
-        row = results[task_id]
-        assert enqueue_project_completion_summary(root, {'status':row['status']}, task_id,
-            {'id':task_id, 'project_id':project['id'], 'chat_id':project['chat_id']}, row,
-            {'status':row['status']})
+        # Settlement freezes the Main event, its address and its notification time.
+        monkeypatch.setattr('ouroboros.terminal_projection.utc_now_iso', lambda: added)
+        assert settle_terminal_projection(root, task_id) == SETTLEMENT_DEFERRED
         queued = queue.get_nowait()  # lost before delivery, as on restart
-        assert queued['progress_meta']['terminal_time'] == row['terminal_time']
-        assert delivery.replay_pending_deliveries(root, event_queue=queue) == [queued['delivery_id']]
+        queue.release_delivery(queued['delivery_id'])  # a restart replaces the bus: no membership survives
+        assert queued['progress_meta']['terminal_time'] == results[task_id]['terminal_time']
+        # Canonical readiness, not the outbox, re-offers the exact retained event once due.
+        assert settle_terminal_projection(root, task_id) == SETTLEMENT_DEFERRED
         replay = queue.get_nowait()
-        monkeypatch.setattr(bus, 'utc_now_iso', lambda: added)
-        bus.send_with_budget(replay['chat_id'], replay['text'], task_id=task_id,
-            role=replay['role'], system_type=replay['system_type'], progress_meta=replay['progress_meta'])
-        assert delivery.register_delivery(root, replay['delivery_id'])
+        assert replay == queued
+        sender._handle_send_message(replay, context)
+        # The strict receipt retires the debt, so a later generation has nothing to republish.
+        assert load_task_result(root, task_id)['canonical_terminal_projection']['main_disposition'] == 'delivered'
     assert not delivery.pending_deliveries(root)
     return project, frames
 

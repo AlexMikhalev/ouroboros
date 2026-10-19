@@ -230,10 +230,43 @@ def imported_projection_debt(root, buckets, *, degraded=False):
         yield owner
 
 
-def _refresh_costs(root: pathlib.Path, reads) -> None:
-    from ouroboros import usage_store
+def _contended(exc) -> bool:
+    """Store contention, possibly wrapped: a busy reader proves neither change nor absence."""
+    from ouroboros.store import StoreBusy
+
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, StoreBusy) and getattr(exc, "reason", "") == "contention":
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _present_facts(root, task_ids) -> tuple:
+    """``(ids, facts)``: the valid task ids among TASK_IDS and the typed facts of those with a row, in
+    one statement; ``facts`` is ``None`` when the query went unanswered, which proves nothing."""
     from ouroboros.task_results import validate_task_id
     from ouroboros.task_store import task_facts
+
+    ids = set()
+    for task_id in task_ids:
+        try:
+            ids.add(validate_task_id(task_id))
+        except ValueError:
+            pass  # System accounting scopes own no task result.
+    if not ids:
+        return ids, {}
+    try:
+        return ids, task_facts(root, where="task_id IN (SELECT value FROM json_each(?))", params=(json.dumps(sorted(ids)),))
+    except Exception:
+        return ids, None  # Only proven absence skips a read; the ownership read reports the rest.
+
+
+def _refresh_costs(root: pathlib.Path, reads) -> None:
+    from ouroboros import usage_store
+    from ouroboros.obligations import DutyRest
+    from ouroboros.task_results import validate_task_id
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from supervisor.events_task_done import _refresh_terminal_task_cost
@@ -260,25 +293,30 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
             ids[owner] = validate_task_id(owner)
         except ValueError:
             pass  # System accounting scopes own no task result.
-    try:
-        # Presence precedes the ownership read, for every owner in one statement: an
-        # absent row keeps this exact revision without the fence's authority read, and
-        # the next pass projects a row copied back after the last ledger write.
-        present = set(task_facts(root, where="task_id IN (SELECT value FROM json_each(?))",
-                                 params=(json.dumps(sorted(set(ids.values()))),))) if ids else set()
-    except Exception:
-        present = None  # Only proven absence skips the read; the ownership read reports the rest.
+    # Presence precedes the ownership read, for every owner in one statement: an
+    # absent row keeps this exact revision without the fence's authority read, and
+    # the next pass projects a row copied back after the last ledger write. A row
+    # not settled yet waits for its own settlement unread; a settled owner whose
+    # late phase is open rests (``obligations.DutyRest``) until its row or receipts change.
+    _ids, facts = _present_facts(root, ids.values())
+    settled = set() if facts is None else {tid for tid, row in facts.items() if row["status"] in SETTLED_STATUSES}
+    rest = DutyRest(root, "cost_projection", {ids[owner]: {"usage_revision": revision}
+                                              for owner, revision in owners if ids.get(owner) in settled})
     acknowledged, pending, failures, faults = [], set(), {}, {}
     for owner, revision in owners:
         task_id = ids.get(owner)
         if task_id is None:
             continue
         pending.add(task_id)
-        if present is not None and task_id not in present:
+        if facts is not None and task_id not in facts:
             failures[task_id] = "result_absent"
+            continue
+        if facts is not None and task_id not in settled or task_id in rest.resting:
             continue
         try:
             current = reads.load(task_id)
+            if post_task_synthesis_is_open((current.get("root_phase_checkpoint") or {}).get("post_task_synthesis")):
+                rest.wait(task_id, "post_task_synthesis_open")  # only its own phase write closes it
             if (not current or current.get("status") not in SETTLED_STATUSES
                     or post_task_synthesis_is_open((current.get("root_phase_checkpoint") or {}).get("post_task_synthesis"))
                     or task_has_live_ownership(task_id, ownership=reads)):
@@ -290,6 +328,8 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
                 acknowledged.append((owner, revision))
                 pending.discard(task_id)
         except Exception as exc:
+            if _contended(exc):
+                continue  # Busy is not a change: the owner keeps its last observation, read again next pass.
             failures[task_id], faults[task_id] = _reason(exc), exc
     if acknowledged:
         # One short acknowledgement transaction after all result I/O. A crash
@@ -297,6 +337,7 @@ def _refresh_costs(root: pathlib.Path, reads) -> None:
         with usage_store.hold(root) as txn:
             for owner, revision in acknowledged:
                 txn.ack_dirty_owner(owner, revision)
+    rest.commit()
     _publish_unresolved(root, failures, subject=COST_PROJECTIONS, faults=faults, keep=pending)
 
 
@@ -319,6 +360,10 @@ def reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     with usage_store.read(root) as txn:
         rows = txn.attempts(f"{usage_store._OPEN_PREDICATE} AND {_RECOVERABLE}")
     reads, eligible, observations, faults = TaskOwnershipRead(root), {}, {}, {}
+    # A task proven absent or not settled yet cannot be eligible: one statement, not 3-4 reads per task per pass.
+    ids, facts = _present_facts(root, {str(row.get("task_id") or "") for row in rows})
+    if facts is not None:
+        eligible.update({tid: False for tid in ids if (facts.get(tid) or {}).get("status") not in SETTLED_STATUSES})
     # An open attempt keeps its last reason unless this pass observes a new one or
     # proves an outcome: a recovered receipt, a release, a terminal settlement or
     # terminal remote custody. Skipped, live or lost-race outcomes prove nothing.

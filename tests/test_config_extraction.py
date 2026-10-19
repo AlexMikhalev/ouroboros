@@ -41,6 +41,9 @@ _ADDED_OWNERS = {
     # The owner's effort range: its keys, the owner-facing tiers, the tolerant read, the Cyber
     # Pro predicate, the clamp, the one effort decision and its recorded fact.
     "EFFORT_RANGE_KEYS": settings_scales,
+    "EFFORT_FORMAT_KEY": settings_scales,
+    "normalize_effort_document": settings_scales,
+    "normalize_legacy_effort_settings": settings_scales,
     "OWNER_EFFORT_TIERS": settings_scales,
     "EFFORT_SOURCES": settings_scales,
     "_tier": settings_scales,
@@ -52,6 +55,10 @@ _ADDED_OWNERS = {
     "effort_fact_phrase": settings_scales,
     # The retired role effort keys the range replaced (the RC auditor's note class).
     "EFFORT_RANGE_RETIRED_SETTING_KEYS": settings_defaults,
+    # Replaceable interface: a saved value (blank included) wins over the environment, an absent key
+    # stays the environment's, and a merged write does not author it (config read and persist seams).
+    "SAVED_CHOICE_SETTINGS": settings_defaults,
+    "unauthored_saved_choices": settings_defaults,
     "get_finalization_grace_sec": runtime_limits,
     "PROMOTE_CONFIRM_WAIT_SEC": runtime_limits,
     "get_promote_confirm_wait_sec": runtime_limits,
@@ -119,6 +126,7 @@ _ADDED_OWNERS = {
 
 _MOVED_OWNERS = {
     "WORKER_SPAWN_GRACE_SEC": runtime_limits,
+    "ARTIFACT_COMPRESSION_TIMEOUT_SEC": runtime_limits,
     "WORKER_READY_WINDOW_SEC": runtime_limits,
     "WORKER_READY_MAX_ATTEMPTS": runtime_limits,
     "EXTENSION_STREAM_CHUNK_BYTES": runtime_limits,
@@ -147,7 +155,6 @@ _MOVED_OWNERS = {
     "OPENROUTER_REVIEW_DEFAULTS": settings_defaults,
     "FINALIZATION_GRACE_DEFAULT_SEC": settings_defaults,
     "OWNER_STOP_OUTER_CAP_SEC": settings_defaults,
-    "PACING_INTERVAL_DEFAULT_SEC": settings_defaults,
     "RETIRED_SETTING_KEYS": settings_defaults,
     # ABI 7.0 (ABI-7b): the comma-list classification INSIDE the retirement
     # SSOT, born in this leaf (not an extraction) for the RC auditor to snap.
@@ -197,7 +204,6 @@ _MOVED_OWNERS = {
     "get_vision_model": model_slots,
     "migrate_legacy_slot_keys": model_slots,
     "parse_fallback_chain": model_slots,
-    "_DIRECT_PROVIDER_REVIEW_RUNS": review_model_routes,
     "_exclusive_direct_remote_provider_env": review_model_routes,
     "adaptive_quorum": review_model_routes,
     "get_review_enforcement": review_model_routes,
@@ -212,8 +218,8 @@ _MOVED_OWNERS = {
     "MAX_SUBAGENT_DEPTH_HARD_CAP": runtime_limits,
     "_bounded_positive_int_setting": runtime_limits,
     "_clamped_number_setting": runtime_limits,
-    "get_acceptance_reserve_pct": runtime_limits,
-    "get_acceptance_review_est_sec": runtime_limits,
+    # get_acceptance_reserve_pct / get_acceptance_review_est_sec left with the task-acceptance launch
+    # floor (the review fold); their two keys are retired in settings_defaults.
     "get_delegate_wait_max_sec": runtime_limits,
     "get_delegate_wait_sec": runtime_limits,
     "get_llm_transport_read_timeout_sec": runtime_limits,
@@ -225,7 +231,6 @@ _MOVED_OWNERS = {
     "get_max_active_subagents_per_root": runtime_limits,
     "get_max_subagent_depth": runtime_limits,
     "get_max_workers": runtime_limits,
-    "get_pacing_interval_sec": runtime_limits,
     "get_per_call_timeout_ceiling_sec": runtime_limits,
     "get_plan_task_deadline_min_sec": runtime_limits,
     "get_post_task_evolution_budget_usd": runtime_limits,
@@ -369,5 +374,7 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     # 521 -> 538: PR-3 (review pool) — the five review-lane keys leave SETTINGS_DEFAULTS
     # for RETIRED_SETTING_KEYS and gain the REVIEW_POOL_MIGRATED_SETTING_KEYS class
     # (+ its shared «migrated» line) the read seam, the RC auditor and the boot notice read.
-    assert counts["ouroboros.settings_defaults"] <= 538
+    # 538 -> 560: the main-interface key (OUROBOROS_UI_DIR) with its export exclusion and the
+    # saved-choice precedence the config read and persist seams share.
+    assert counts["ouroboros.settings_defaults"] <= 560
     assert (PACKAGE / "config.py").is_file()

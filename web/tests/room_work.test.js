@@ -1,0 +1,551 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { cardRowView, createRoomWork, latestRepresentedRoot, workCard } from '../modules/room_work.js';
+import { desiredLiveCardPhase } from '../modules/task_phase_chip.js';
+import { emptyWorkState, reconcileWorkState } from '../modules/work_status.js';
+import { installDom, restoreDom } from './chat_dom_fixture.js';
+import { SERVER_CASES, projection, room, work } from './work_fixture.js';
+const work_ = work;  // a test-local name where `work` is a mounted list
+
+// The instance's work state for one room, from the works a test states (the server's shapes).
+function workState(works = [], activeRoom = null, chatId = 1) {
+    return reconcileWorkState(emptyWorkState(), { supervisor_ready: true, ...projection(chatId, works, activeRoom) }, chatId);
+}
+const running = (id, extra = {}) => work({ activity_id: id, chat_id: 1, kind: 'managed_task' }, {
+    controls: [{ action: 'wrap_up', target: id }, { action: 'hurry', target: id }, { action: 'pause', target: id },
+        { action: 'stop', target: id, scope: 'cascade' }], ...extra });
+const asking = (id, quizId) => work({ activity_id: id, chat_id: 1, kind: 'managed_task' }, { activity: 'waiting',
+    release: 'owner', because: [{ code: 'owner_answer', text: 'Waiting for your answer' }],
+    turn: [{ kind: 'question', task_id: id, quiz_id: quizId }], controls: [{ action: 'stop', target: id }] });
+
+test('a Project keeps its latest represented root: an unfinished one first, never a child or a removed card', () => {
+    const done = { root: { isConnected: true }, finished: true };
+    const active = { root: { isConnected: true }, finished: false };
+    const child = { root: { isConnected: true }, isSubagent: true };
+    const removed = { root: { isConnected: false } };
+    assert.equal(latestRepresentedRoot([done, active, child, removed]), active);
+    active.finished = true;
+    assert.equal(latestRepresentedRoot([done, active, child]), active);
+    assert.equal(latestRepresentedRoot([child, removed]), null);
+});
+
+test('an older prepended card at the same timestamp does not become the latest root', () => {
+    const card = (offset) => ({ root: { isConnected: true, dataset: { ts: '1000' } },
+        historyPosition: { source: 'progress', offset }, finished: true });
+    const newer = card(500), older = card(100);
+    assert.equal(latestRepresentedRoot([newer, older]), newer);
+});
+
+test('a card\'s own words as a row keep the outcome colour; an unfinished card that leads nowhere is unknown', () => {
+    assert.equal(cardRowView(desiredLiveCardPhase({ finished: true }, 'error'), { settled: true }).tone, 'failed');
+    assert.equal(cardRowView(desiredLiveCardPhase({ finished: true }, 'done'), { settled: true }).tone, 'done');
+    assert.equal(cardRowView({ phase: 'ended', text: 'No longer listed as active' }, { settled: true }).tone, 'ended');
+    assert.equal(cardRowView(desiredLiveCardPhase({}), {}).tone, 'unknown');
+    assert.deepEqual(cardRowView({ phase: 'error', text: 'Failed', secondary: 'Finalizing…' }),
+        { word: 'Failed', secondary: 'Finalizing…', tone: 'failed', amber: false, focus: '' });
+});
+
+test('a work\'s row goes to its current episode\'s card, else another shown episode card; never a helper\'s', () => {
+    const held = SERVER_CASES.held_continue.works[0];
+    const card = (extra = {}) => ({ root: { isConnected: true, hidden: false }, ...extra });
+    const current = card(), first = card(), helper = card({ isSubagent: true });
+    assert.equal(workCard(held, new Map([['c', current], ['p', first]])), current);
+    assert.equal(workCard(held, new Map([['p', first], ['h0', helper]])), first, 'the work\'s first card stands for it');
+    assert.equal(workCard(held, new Map([['h0', helper]])), null, 'a helper card is never the work\'s place');
+    assert.equal(workCard(held, new Map([['c', card({ root: { isConnected: true, hidden: true } })]])), null,
+        'an earlier episode hidden under the chain\'s card is not shown');
+});
+
+test('the mounted list holds its order while open, settles ended work and only navigates to a question', async () => {
+    const calls = [];
+    const { prior, mount } = installDom(async (url, init) => {
+        calls.push([String(url), init?.method || 'GET']);
+        return { ok: true, json: async () => ({}) };
+    });
+    let shade = null;
+    try {
+        const doc = globalThis.document;
+        const node = (className, parent) => { const el = doc.createElement('div'); el.className = className; parent.appendChild(el); return el; };
+        const page = node('page', mount);
+        const input = doc.createElement('textarea');
+        input.id = 'chat-input'; // Main has the id; only namespaced Project inputs gain its mirror class.
+        page.appendChild(input);
+        const header = node('chat-page-header', page);
+        // The product's bar: the title row (where the status goes) and the trailing commands (where it was).
+        const titleRow = node('app-page-title-row', node('app-page-title-block', header));
+        const group = node('app-page-actions ui-chrome-group', header);
+        const badge = doc.createElement('span');
+        badge.className = 'status-badge thinking';
+        badge.textContent = 'Working';
+        Object.assign(badge.dataset, { tone: 'live', dots: 'moving' });  // what setStatus writes from the producer
+        group.appendChild(badge);
+        const messages = node('chat-messages', page);
+        let works = [running('t-run')];
+        const reveals = [];
+        shade = createRoomWork({
+            page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { stick: true, cancel() {}, scroll() {} },
+            works: () => workState(works, room('working')), liveCardRecords: new Map(), pendingSubmissions: new Map(),
+            revealQuestion: async (...args) => { reveals.push(args); return true; },
+        });
+        // The status follows the room's title (1A) and its Shade hangs from the bar's bottom edge (one Shade).
+        const trigger = titleRow.children.find((child) => child.classList.contains('rw-trigger'));
+        assert.equal(group.children.some((child) => child.classList.contains('rw-trigger')), false);
+        const anchor = header.children.find((child) => child.classList.contains('rw-shade-anchor'));
+        const surface = anchor.children.find((child) => child.classList.contains('rw-surface'));
+        assert.ok(surface.classList.contains('rw-shade'));
+        const list = surface.children[0];
+        const ids = () => list.children.map((row) => row.dataset.id);
+        assert.ok(trigger.contains(badge), 'the real status badge is the control’s word');
+        assert.equal(trigger.dataset.tone, 'live');
+        assert.equal(trigger.disabled, false);
+
+        trigger.click();
+        assert.equal(shade.isOpen(), true);
+        assert.deepEqual(ids(), ['t-run']);
+        // A question arriving while open joins at the end: order holds under the reader.
+        works = [running('t-run'), asking('t-ask', 'q-ask')];
+        shade.update();
+        assert.deepEqual(ids(), ['t-run', 't-ask']);
+        // Work that ends while open keeps its row, says so, and offers nothing.
+        works = [asking('t-ask', 'q-ask')];
+        shade.update();
+        const ended = list.children[0];
+        assert.equal(ended.dataset.settled, '1');
+        assert.equal(ended.dataset.tone, 'ended');
+        assert.equal(ended.children.find((child) => child.classList.contains('rw-more-slot')).children.length, 0);
+        // View question goes to the exact waited question, closes the list and posts nothing.
+        const verb = list.children[1].children.find((child) => child.classList.contains('rw-verb'));
+        verb.children[0].click();
+        await Promise.resolve();
+        assert.deepEqual(reveals, [['t-ask', 'q-ask', { focus: 'question' }]]);
+        assert.equal(shade.isOpen(), false);
+        assert.ok(calls.every(([url, method]) => method === 'GET' && !url.includes('/api/decisions')), JSON.stringify(calls));
+        // Closed, the list sorts again: the owner's turn first.
+        works = [running('t-run'), asking('t-ask', 'q-ask')];
+        trigger.click();
+        assert.deepEqual(ids(), ['t-ask', 't-run']);
+        // Reconcile ended-only Main membership before returning focus: a now-disabled
+        // status trigger cannot be the keyboard owner's next place.
+        works = [];
+        shade.update();
+        assert.equal(shade.isOpen(), true);
+        trigger.click();
+        assert.equal(shade.isOpen(), false);
+        assert.equal(trigger.disabled, true);
+        assert.ok(doc.activeElement === input, 'closing an ended-only list returns focus to the composer');
+    } finally {
+        shade?.destroy();
+        restoreDom(prior);
+    }
+});
+
+// A Continue or a helper asks: View question goes to the task that asked, never the work's first root.
+test('View question reaches the asking task of a work, not its first root', async () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let shade = null;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge online', group);
+        Object.assign(badge.dataset, { tone: 'wait', dots: 'one' });
+        const messages = node('div', 'chat-messages', page);
+        const reveals = [];
+        const asked = (taskId) => ({ ...asking('w-first', 'q-next'), episode: { task_id: 'c-next', live: true },
+            turn: [{ kind: 'question', task_id: taskId, quiz_id: 'q-next' }] });
+        let works = [asked('c-next')];
+        shade = createRoomWork({
+            page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { stick: true, cancel() {}, scroll() {} },
+            works: () => workState(works, room('waiting')), liveCardRecords: new Map(), pendingSubmissions: new Map(),
+            revealQuestion: async (...args) => { reveals.push(args); return true; },
+        });
+        const trigger = titleRow.children.find((child) => child.classList.contains('rw-trigger'));
+        const list = header.children.find((child) => child.classList.contains('rw-shade-anchor')).children
+            .find((child) => child.classList.contains('rw-surface')).children[0];
+        const ask = async () => {
+            trigger.click();
+            list.children[0].children.find((child) => child.classList.contains('rw-verb')).children[0].click();
+            await Promise.resolve();
+        };
+        await ask();
+        works = [asked('h-helper')];
+        await ask();
+        works = [asked('w-first')];
+        await ask();
+        assert.deepEqual(reveals.map((args) => args.slice(0, 2)),
+            [['c-next', 'q-next'], ['h-helper', 'q-next'], ['w-first', 'q-next']]);
+    } finally {
+        shade?.destroy();
+        restoreDom(prior);
+    }
+});
+
+// A progress card can be painted before the slow projection lists the work that answers the same send.
+test('a pending send keeps its slot until its work is listed; the work takes the same node, never a ghost', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let work;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge thinking', group);
+        const messages = node('div', 'chat-messages', page);
+        let works = [];
+        const records = new Map();
+        const pending = new Map([['send-1', { timestamp: 1000 }]]);
+        work = createRoomWork({ page, statusBadge: badge, messagesDiv: messages,
+            ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
+            works: () => workState(works), liveCardRecords: records, pendingSubmissions: pending });
+        const trigger = titleRow.children.find(el => el.classList.contains('rw-trigger'));
+        const list = header.children.find(el => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const turns = () => list.children.filter(el => el.dataset.id === 'turn-1');
+        trigger.click();
+        const card = node('div', 'chat-live-block', messages);
+        records.set('turn-1', { root: card, groupId: 'turn-1', phase: 'working' });
+        // The send's own row takes the slot until the work that answers it is listed.
+        work.update();
+        const sendRow = list.children.find(el => el.dataset.id === 'pending:send-1');
+        assert.ok(sendRow, 'the owner\'s own unconfirmed send has its row');
+        works = [work_({ activity_id: 'turn-1', kind: 'direct_chat', chat_id: 1, client_message_id: 'send-1' })];
+        pending.clear();
+        work.update();
+        const existing = turns()[0];
+        assert.equal(turns().length, 1, 'the send and its work converge to one tracked view');
+        assert.equal(existing, sendRow, 'the work takes the send\'s own node and slot');
+        assert.equal(existing.dataset.settled, '0');
+        assert.equal(existing.querySelector('.rw-main').dataset.target, 'card', 'the listed work goes to its card');
+        trigger.click(); trigger.click();
+        assert.equal(turns().length, 1, 'reopening leaves no orphan Working row');
+        assert.equal(turns()[0].dataset.settled, '0');
+    } finally { work?.destroy(); restoreDom(prior); }
+});
+
+test('a work the server lists but cannot confirm keeps its Stop; a work kept from an incomplete body offers nothing', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let shade = null;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const badge = node('span', 'status-badge', node('div', 'app-page-actions ui-chrome-group', header));
+        const messages = node('div', 'chat-messages', page);
+        // The server's own shape for an unconfirmed member: unknown, unconfirmed, and still its Stop.
+        const unknown = work_({ activity_id: 't-unknown', chat_id: 1, kind: 'managed_task' }, { activity: 'unknown',
+            confirmed: false, controls: [{ action: 'stop', target: 't-unknown', scope: 'cascade' }] });
+        let state = workState([unknown], room('unknown'));
+        shade = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { cancel() {}, scroll() {} }, works: () => state, liveCardRecords: new Map(), pendingSubmissions: new Map() });
+        titleRow.children.find((el) => el.classList.contains('rw-trigger')).click();
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const row = () => list.children.find((el) => el.dataset.id === 't-unknown');
+        const more = () => row().children.find((el) => el.classList.contains('rw-more-slot')).children.length;
+        assert.equal(row().dataset.tone, 'unknown');
+        assert.equal(more(), 1, 'the server offers Stop for work it lists, confirmed or not');
+        // The next body is incomplete and omits it: the row stays unconfirmed, with nothing to press.
+        state = reconcileWorkState(state, { supervisor_ready: true, ...projection(1, [], null, false) }, 1);
+        shade.update();
+        assert.equal(row().dataset.tone, 'unknown');
+        assert.equal(more(), 0, 'a work no current body lists has no controls');
+    } finally { shade?.destroy(); restoreDom(prior); }
+});
+
+test('a row names its card\'s coined name first, then its work\'s own name; a host not ready leaves every row unknown', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let shade = null;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const badge = node('span', 'status-badge', node('div', 'app-page-actions ui-chrome-group', header));
+        const messages = node('div', 'chat-messages', page);
+        const card = node('div', 'chat-live-block', messages);
+        const record = { root: card, groupId: 't-run', suggestedName: 'Compare the cited pages' };
+        let ready = true;
+        shade = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { cancel() {}, scroll() {} }, works: () => workState([running('t-run', { name: 'Source comparison' })],
+                room('working')), liveCardRecords: new Map([['t-run', record]]), pendingSubmissions: new Map(),
+            hostReady: () => ready });
+        titleRow.children.find((el) => el.classList.contains('rw-trigger')).click();
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const row = () => list.children.find((el) => el.dataset.id === 't-run');
+        const name = () => row().querySelector('.rw-name').textContent;
+        const more = () => row().children.find((el) => el.classList.contains('rw-more-slot')).children.length;
+        // The card's coined name is the newest: the server's work name may still lag behind it.
+        assert.equal(name(), 'Compare the cited pages');
+        record.suggestedName = '';
+        shade.update();
+        assert.equal(name(), 'Source comparison', 'without a coined name, the work\'s own name');
+        assert.deepEqual([row().dataset.tone, more()], ['live', 1]);
+        // A host that is not ready proves nothing current: the row stays, unknown and with nothing to press.
+        ready = false;
+        shade.update();
+        assert.deepEqual([row().dataset.tone, more()], ['unknown', 0]);
+        ready = true;
+        shade.update();
+        assert.deepEqual([row().dataset.tone, more()], ['live', 1]);
+    } finally { shade?.destroy(); restoreDom(prior); }
+});
+
+test('the one mark after the word turns amber for the owner\'s question beside any other word; the control paints the producer\'s tone', () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let work;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge thinking', group);
+        const messages = node('div', 'chat-messages', page);
+        const works = [work_({ activity_id: 't-q', kind: 'managed_task', chat_id: 1 }, { activity: 'queued' }), asking('t-ask', 'q-1')];
+        work = createRoomWork({ page, statusBadge: badge, messagesDiv: messages,
+            ws: { isConnected: () => true }, reading: { cancel() {}, scroll() {} },
+            works: () => workState(works, room('queued')), liveCardRecords: new Map(), pendingSubmissions: new Map() });
+        const trigger = titleRow.children.find(el => el.classList.contains('rw-trigger'));
+        // The word leads; its one mark (three dots or one) follows it, and nothing else is a dot.
+        const order = trigger.children.map(el => el.className.split(' ').find(c => /^(status-badge|rw-mark|rw-dots|rw-caret)$/.test(c)))
+            .filter(Boolean);
+        assert.deepEqual(order, ['status-badge', 'rw-mark', 'rw-dots', 'rw-caret']);
+        assert.equal(trigger.children.some(el => el.classList.contains('rw-amber')), false);
+        const waitNote = trigger.children.find(el => el.classList.contains('rw-sr'));
+        // The producer (work_status.roomStatusView via setStatus) writes the word, tone, mark and amber together.
+        const paint = (text, tone, dots, amber = '') => {
+            badge.textContent = text;
+            Object.assign(badge.dataset, { tone, dots, amber });
+            work.update();
+            return [trigger.dataset.tone, trigger.dataset.wait !== '1'];
+        };
+        // Before the producer's first answer (no tone on the badge) the control never claims Online.
+        work.update();
+        assert.equal(trigger.dataset.tone, 'offline');
+        // Queued speaks in the word; the question still turns the mark amber, said in words too.
+        assert.deepEqual(paint('Queued', 'queued', 'still', 'question'), ['queued', false]);
+        assert.equal(waitNote.hidden, false);
+        assert.equal(waitNote.textContent, 'A question waits for your answer');
+        assert.deepEqual(paint('Working', 'live', 'moving', 'question'), ['live', false]);
+        // An action only the owner takes (a spending limit, a sign-in) is amber too; a Pause by him is not.
+        assert.deepEqual(paint('Paused', 'held', 'one', 'action'), ['held', false]);
+        assert.equal(waitNote.textContent, 'Something here waits for you');
+        assert.deepEqual(paint('Paused', 'held', 'one'), ['held', true]);
+        // The word already says it: the mark keeps the word's own tone.
+        assert.deepEqual(paint('Waiting for your answer', 'wait', 'one', 'question'), ['wait', true]);
+        // Without the server's amber there is none, whatever the word or the rows.
+        assert.deepEqual(paint('Queued', 'queued', 'still'), ['queued', true]);
+        assert.equal(waitNote.hidden, true);
+    } finally { work?.destroy(); restoreDom(prior); }
+});
+
+// DESIGN "Room work status": a row goes to its message wherever it lies in the room's history.
+test('an unloaded row reads the page around its task and lands on its card; one with no message says so', async () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let work;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const group = node('div', 'app-page-actions ui-chrome-group', header);
+        const badge = node('span', 'status-badge thinking', group);
+        const messages = node('div', 'chat-messages', page);
+        const records = new Map(), asked = [];
+        const turn = (id, extra = {}, row = {}) => work_({ activity_id: id, kind: 'direct_chat', chat_id: 1, ...row },
+            { controls: [{ action: 'stop', target: id }], ...extra });
+        const paused = { activity: 'paused', because: [{ code: 'paused_by_owner', text: 'Paused by you' }] };
+        const works = new Map([['t-old', turn('t-old', paused)], ['t-wake', turn('t-wake')],
+            ['t-own', turn('t-own', {}, { client_message_id: 'msg-1' })]]);
+        const historyPager = {
+            pageOf: () => 'replay:recent', revisit: async () => ({ status: 'applied' }),
+            around: async (address, wanted) => {
+                asked.push([address, wanted()]);
+                if (address !== 'task:t-old') return { status: 'anchor', anchor: { state: 'absent', task_id: address.slice(5) } };
+                const card = node('div', 'chat-live-card', messages);  // the page around it mounts its card
+                records.set('t-old', { root: card, groupId: 't-old' });
+                return { status: 'applied', anchor: { state: 'found', task_id: 't-old', history_id: 'chat:100' } };
+            },
+        };
+        work = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true },
+            reading: { stick: false, cancel() {}, scroll() {}, claim: () => () => true }, historyPager,
+            captureVisibleTimelineAnchor: () => ({ historyId: 'chat:900' }),
+            works: () => workState([...works.values()]), liveCardRecords: records, pendingSubmissions: new Map() });
+        const trigger = titleRow.children.find((el) => el.classList.contains('rw-trigger'));
+        const anchor = header.children.find((el) => el.classList.contains('rw-shade-anchor'));
+        const list = anchor.children.find((el) => el.classList.contains('rw-surface')).children[0];
+        const row = (id) => list.children.find((el) => el.dataset.id === id);
+        const main = (id) => row(id).querySelector('.rw-main');
+        const text = (el) => [el.textContent, ...el.children.map(text)].join(' ');
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+        trigger.click();
+        // Before it asks, a row claims nothing about where its message is.
+        assert.match(main('t-old').getAttribute('aria-label'), /^Open: /);
+        assert.doesNotMatch(main('t-old').getAttribute('aria-label'), /loaded/);
+        assert.equal(main('t-old').dataset.target, 'history');
+        assert.doesNotMatch(text(list), /Not in loaded messages|cannot take you to it/);
+
+        main('t-old').click();
+        await settle();
+        assert.deepEqual(asked, [['task:t-old', true]]);
+        assert.equal(work.isOpen(), false, 'landed: the reader came to read it');
+        assert.equal(page.children.find((el) => el.classList.contains('rw-back')).hidden, false, 'Back returns to the passage left');
+
+        trigger.click();
+        assert.match(main('t-old').getAttribute('aria-label'), /^Go to task: /, 'its card is loaded now');
+        main('t-wake').click();
+        await settle();
+        assert.equal(work.isOpen(), true, 'nothing to land on: the list stays and says so');
+        assert.match(text(row('t-wake')), /No message yet\./);
+        assert.match(main('t-wake').getAttribute('aria-label'), /^Details: /);
+        main('t-wake').click();  // its details close; it does not ask again
+        await settle();
+        assert.equal(asked.length, 2);
+        // Work whose facts change may have a message now: its row claims nothing again and a press asks.
+        works.set('t-wake', turn('t-wake', paused));
+        work.update();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.match(main('t-wake').getAttribute('aria-label'), /^Open: /);
+        main('t-wake').click();
+        await settle();
+        assert.equal(asked.length, 3);
+        assert.match(text(row('t-wake')), /No message yet\./, 'the press answered again');
+        // Its details are open now: another change keeps them open, without the stale answer.
+        works.set('t-wake', turn('t-wake'));
+        work.update();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(main('t-wake').getAttribute('aria-expanded'), 'true', 'opened details survive');
+        assert.match(main('t-wake').getAttribute('aria-label'), /^Open: /, 'without the stale answer: a press asks again');
+        main('t-own').click();
+        await settle();
+        assert.match(text(row('t-own')), /Its message could not be checked\./, 'an owner’s message is never “no message”');
+        assert.doesNotMatch(text(list), /Not in loaded messages|cannot take you to it/);
+        trigger.click();
+        trigger.click();
+        assert.match(main('t-wake').getAttribute('aria-label'), /^Open: /, 'a later open asks again');
+        // A list dismissed while a row looks drops that look: nothing moves when it answers later.
+        let answer, wantedThen = null;
+        historyPager.around = (address, wanted) => new Promise((resolve) => {
+            answer = () => { wantedThen = wanted(); resolve({ status: 'superseded' }); };
+        });
+        main('t-wake').click();
+        await settle();
+        trigger.click();  // dismissed
+        answer();
+        await settle();
+        assert.equal(wantedThen, false, 'the dismissed list no longer wants that page');
+        // Pressed again after the list reopened, then dismissed again: the first look's late answer never undoes
+        // the second look's cancellation.
+        const answers = [], wanted = [];
+        historyPager.around = (address, isWanted) => new Promise((resolve) => {
+            answers.push(() => { wanted.push(isWanted()); resolve({ status: 'superseded' }); });
+        });
+        trigger.click();
+        main('t-wake').click();
+        await settle();
+        trigger.click();  // dismissed
+        trigger.click();
+        main('t-wake').click();  // the same row again
+        await settle();
+        answers[0]();
+        await settle();
+        trigger.click();  // dismissed again
+        answers[1]();
+        await settle();
+        assert.deepEqual(wanted, [false, false], 'neither look applies once its list closed');
+    } finally { work?.destroy(); restoreDom(prior); }
+});
+
+test('Back reads the page it left again, stays after a failed read and takes a follower back to the present', async () => {
+    const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({}) }));
+    let work;
+    try {
+        const node = (tag, cls, parent) => {
+            const el = document.createElement(tag); el.className = cls; parent.appendChild(el); return el;
+        };
+        const page = node('div', 'page', mount);
+        const header = node('div', 'chat-page-header', page);
+        const titleRow = node('div', 'app-page-title-row', node('div', 'app-page-title-block', header));
+        const badge = node('span', 'status-badge thinking', node('div', 'app-page-actions ui-chrome-group', header));
+        const messages = node('div', 'chat-messages', page);
+        const records = new Map(), revisits = [], presents = [];
+        let mounted = false, fails = 1, gone = false;
+        const historyPager = {
+            pageOf: () => 'replay:left',
+            revisit: async (cursor, wanted) => {
+                revisits.push([cursor, wanted()]);
+                if (gone) return { status: 'error', error: { status: 409 } };
+                if (fails-- > 0) return { status: 'error' };
+                mounted = true;  // the page the reader left is drawn again
+                return { status: 'applied' };
+            },
+            around: async () => {
+                records.set('t-old', { root: node('div', 'chat-live-card', messages), groupId: 't-old' });
+                return { status: 'applied', anchor: { state: 'found', task_id: 't-old', history_id: 'chat:100' } };
+            },
+        };
+        const reading = { stick: false, nearBottom: () => false, cancel() {}, scroll() {}, claim: () => () => true };
+        work = createRoomWork({ page, statusBadge: badge, messagesDiv: messages, ws: { isConnected: () => true }, reading,
+            historyPager, showLatest: async () => presents.push('newest'),
+            captureVisibleTimelineAnchor: () => ({ historyId: 'chat:900' }),
+            restoreVisibleTimelineAnchor: (_anchor, { exact } = {}) => Boolean(exact && mounted),
+            works: () => workState([work_({ activity_id: 't-old', kind: 'direct_chat', chat_id: 1 })]),
+            liveCardRecords: records, pendingSubmissions: new Map() });
+        const trigger = titleRow.children.find((el) => el.classList.contains('rw-trigger'));
+        const list = header.children.find((el) => el.classList.contains('rw-shade-anchor')).children[0].children[0];
+        const main = () => list.children.find((el) => el.dataset.id === 't-old').querySelector('.rw-main');
+        const back = page.children.find((el) => el.classList.contains('rw-back'));
+        const live = page.children.find((el) => el.getAttribute('role') === 'status');
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+        trigger.click();
+        main().click();
+        await settle();
+        back.click();
+        await settle();
+        assert.deepEqual(revisits, [['replay:left', true]], 'the passage was let go: its page is read again, once');
+        assert.equal(back.hidden, false, 'a failed read keeps Back for another try');
+        assert.match(live.textContent, /could not be read/);
+        back.click();
+        await settle();
+        assert.equal(revisits.length, 2);
+        assert.equal(back.hidden, true);
+        assert.equal(live.textContent, 'Returned to where you were reading.');
+        assert.deepEqual(presents, []);
+        // A page that cannot be read again (the room's view changed) ends Back instead of asking for a retry.
+        mounted = false;
+        gone = true;
+        trigger.click();
+        main().click();
+        await settle();
+        back.click();
+        await settle();
+        assert.equal(revisits.length, 3);
+        assert.equal(live.textContent, 'The earlier reading place is no longer loaded.');
+        gone = false;
+        // A reader following the present goes back to it and reads no left page.
+        Object.assign(reading, { stick: true, nearBottom: () => true });
+        trigger.click();
+        main().click();
+        await settle();
+        back.click();
+        await settle();
+        assert.deepEqual(presents, ['newest']);
+        assert.equal(revisits.length, 3);
+    } finally { work?.destroy(); restoreDom(prior); }
+});

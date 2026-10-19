@@ -1,9 +1,13 @@
-"""External work retained by the body during one exact model-chosen cold sleep.
+"""External work retained by the body during one exact cold park: a model-chosen
+sleep, or a technical park on an unreadable authority (reason ``authority``).
 
 The existing pause document owns the request and receipt. The runtime accepts
 exact run identities before the actor releases its process; its identity is
 provenance, not a lease or a Resume grant. Discovery uses current actor/queue
-carriers, never task history. Notifications are optional hints.
+carriers, never task history. Notifications are optional hints. A sleep binds
+its sleep identity and may wake; an authority park binds by its pause identity
+alone and never wakes by itself: only an explicit Resume returns its author.
+A started review panel's run keeps its own controller and is not transferred.
 """
 from __future__ import annotations
 
@@ -15,25 +19,32 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+RETAINED_REASONS = frozenset({"sleep", "authority"})
+
+
 def _binding(task_id: str, row: dict) -> dict:
-    return {"task_id": str(task_id), "sleep_id": str((row.get("sleep") or {}).get("sleep_id") or ""),
-            **{key: row.get(key) for key in ("pause_id", "pause_generation", "task_attempt", "source_ref",
-                                            "root_task_id", "project_id")}}
+    binding = {"task_id": str(task_id), **{key: row.get(key) for key in (
+        "pause_id", "pause_generation", "task_attempt", "source_ref", "root_task_id", "project_id")}}
+    if row.get("reason") == "authority":
+        return {**binding, "reason": "authority"}  # no sleep identity is invented
+    return {**binding, "sleep_id": str((row.get("sleep") or {}).get("sleep_id") or "")}
 
 
 def accepted_receipt(task_id: str, row: dict) -> dict:
     """Logical receipt only; callers separately check current controls/runtime."""
     receipt = row.get("external_custody") or {}
     binding = _binding(task_id, row)
-    if (row.get("reason") != "sleep" or row.get("state") not in {"pausing", "paused", "resume_granted"}
+    required = ("pause_id", "task_attempt", "source_ref") + (("sleep_id",) if row.get("reason") == "sleep" else ())
+    if (row.get("reason") not in RETAINED_REASONS or row.get("state") not in {"pausing", "paused", "resume_granted"}
             or receipt.get("state") != "accepted" or receipt.get("binding") != binding
-            or not all(binding.get(k) for k in ("sleep_id", "pause_id", "task_attempt", "source_ref"))):
+            or not all(binding.get(k) for k in required)):
         return {}
     return receipt
 
 
-def transferable_pairs(root: Any, task_id: str) -> tuple[list[list[str]], bool]:
-    """The exact task's bound ordinary runs; unknown starts remain blockers."""
+def transferable_pairs(root: Any, task_id: str, *, panel_keeps_reviews: bool = False) -> tuple[list[list[str]], bool]:
+    """The exact task's bound ordinary runs; unknown starts remain blockers. A sleep refuses
+    to leave a panel run behind; an authority park leaves it with its panel's controller."""
     from ouroboros.delegate_custody_current import task_snapshot
     from ouroboros.delegate_registration_policy import review_owned_source
 
@@ -42,7 +53,7 @@ def transferable_pairs(root: Any, task_id: str) -> tuple[list[list[str]], bool]:
         raise ValueError("unbound external invocation cannot transfer to cold custody")
     pairs, writer = [], False
     for run in view["runs"].values():
-        if run.settled:
+        if run.settled or (panel_keeps_reviews and review_owned_source(run.source)):
             continue
         if not run.run_id or not run.invocation_id or review_owned_source(run.source):
             raise ValueError("external run has no transferable ordinary owner binding")
@@ -54,32 +65,31 @@ def transferable_pairs(root: Any, task_id: str) -> tuple[list[list[str]], bool]:
 def request_fields(ctx: Any, row: dict) -> dict:
     from ouroboros.delegate_custody import custody_root
 
-    pairs, writer = transferable_pairs(custody_root(ctx), str(ctx.task_id))
+    pairs, writer = transferable_pairs(custody_root(ctx), str(ctx.task_id),
+                                       panel_keeps_reviews=row.get("reason") == "authority")
     if not pairs:
         return {}
     return {"state": "requested", "binding": _binding(str(ctx.task_id), row), "runs": pairs,
             "retains_project_lane": bool(row.get("project_id") and writer), "requested_at": time.time()}
 
 
-def seen_interactions(ctx: Any, pairs: Any) -> dict:
+def seen_interactions(ctx: Any, pairs: Any = None) -> dict:
     """Notification exposure carried by the actor, never question consumption."""
-    from ouroboros.delegate_supervision import _load_state
-
-    remembered = getattr(ctx, "_sleep_interaction_seen", None) or {}
-    ack = _load_state(ctx, "")  # actual supervision delivery ACK, not producer's seen memo
-    return {run_id: sorted(set(remembered.get(run_id) or ()) | (
-                set(ack.get("interaction_acknowledged_ids") or ()) if ack.get("run_id") == run_id else set()))
-            for run_id, _invocation_id in pairs}
+    remembered = dict(getattr(ctx, "_sleep_interaction_seen", None) or {})
+    # Old transcripts lacking this map may receive one extra notification;
+    # a latest-run supervision ACK alone proves no question was in this view.
+    ids = remembered if pairs is None else (run_id for run_id, _invocation_id in pairs)
+    return {run_id: sorted(set(remembered.get(run_id) or ())) for run_id in ids}
 
 
-def record_question_notice(ctx: Any, row: dict, external: list) -> None:
-    """Called only after the restored actor's question-source notice is appended."""
-    seen = {**(getattr(ctx, "_sleep_interaction_seen", None) or {}),
-            **((row.get("sleep") or {}).get("interaction_seen") or {})}
-    reason = str((row.get("sleep_ready") or {}).get("reason") or "")
+def record_question_notice(ctx: Any, external: list) -> None:
+    """Called only after this actor's question-source notice reaches its transcript."""
+    seen = seen_interactions(ctx)
     for run in external:
+        if not isinstance(run, dict):
+            continue
         rid = str(run.get("run_id") or "")
-        if reason == f"run_question:{rid}" and run.get("interaction_source"):
+        if rid and not run.get("review_owned") and run.get("interaction_source"):
             seen[rid] = sorted(set(seen.get(rid) or ()) | set(run.get("pending_interaction_ids") or ()))
     ctx._sleep_interaction_seen = seen
 
@@ -123,6 +133,10 @@ def confirm_release(ctx: Any, prepared: dict, seed: dict, *, control: Any) -> di
         if _binding(tid, current) != _binding(tid, prepared):
             from ouroboros.budget_pause import BudgetPauseSuperseded
             raise BudgetPauseSuperseded("cold sleep source/attempt changed during transfer")
+        if accepted_receipt(tid, current) and current.get("reason") == "authority":
+            # A member-only technical park: its own producers already settled, and the
+            # owner's Pause reaches these runs through the accepted receipt afterwards.
+            return current
         if accepted_receipt(tid, current):
             from ouroboros.model_sleep import cold_blockers
             from ouroboros.owner_pause import member_fence
@@ -210,7 +224,7 @@ def reconcile(q: Any = None, *, direct: Any = (), runtime: Any = None, stop_requ
             row = budget_pause_row(root, tid)
             transfer = row.get("external_custody") or {}
             accepted = accepted_receipt(tid, row)
-            if not accepted and not (row.get("reason") == "sleep" and row.get("state") == "pausing"
+            if not accepted and not (row.get("reason") in RETAINED_REASONS and row.get("state") == "pausing"
                                      and transfer.get("state") == "requested"):
                 continue
             if transfer.get("binding") != _binding(tid, row) or not row.get("source_ref"):
@@ -235,8 +249,12 @@ def reconcile(q: Any = None, *, direct: Any = (), runtime: Any = None, stop_requ
             from ouroboros.owner_pause import member_fence
             from ouroboros.cancel_intents import cancel_pending
             from types import SimpleNamespace
-            if member_fence(SimpleNamespace(task_id=tid, root_task_id=row.get("root_task_id") or tid,
-                                           budget_drive_root=str(root))) or cancel_pending(root, tid):
+            # Authority custody preserves already-admitted runs; it grants no execution.
+            # The owner's fence still gates Resume and reaches these runs through this
+            # receipt. Sleep retains its stricter execution-fence prerequisite.
+            if cancel_pending(root, tid) or (row.get("reason") != "authority" and member_fence(
+                    SimpleNamespace(task_id=tid, root_task_id=row.get("root_task_id") or tid,
+                                    budget_drive_root=str(root)))):
                 continue
             receipt = {**transfer, "state": "accepted", "accepted_at": time.time(),
                        "runtime": owner.identity()}
@@ -258,8 +276,9 @@ def observe_return(root: Any, task_id: str, external: dict) -> dict:
     if not receipt or external.get("custody_read") != "ok":
         return {}
     pairs = {tuple(pair) for pair in receipt["runs"]}
+    panel_kept = row.get("reason") == "authority"  # a started panel's run is its controller's, not returned
     if any((str(run.get("run_id") or ""), str(run.get("invocation_id") or "")) not in pairs
-           for run in external.get("runs") or []):
+           for run in external.get("runs") or [] if not (panel_kept and run.get("review_owned"))):
         return {}
     runtime = _runtime(root)
     if runtime is None or not runtime.ensure_runs(receipt["runs"], task_id=task_id):

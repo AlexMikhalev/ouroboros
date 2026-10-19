@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import copy
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,10 @@ def _isolate_worker_crash_state(tmp_path, monkeypatch):
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers, "REPO_DIR", tmp_path / "repo")
     monkeypatch.setattr(workers, "WORKERS", {})
+    # Real retry admission appends to PENDING; isolate both aliases so imported
+    # consumers cannot leave their retry in the next test's activity census.
+    monkeypatch.setattr(workers, "PENDING", [])
+    monkeypatch.setattr(q, "PENDING", workers.PENDING)
     monkeypatch.setattr(workers, "RUNNING", {})
     monkeypatch.setattr(q, "RUNNING", workers.RUNNING)
     monkeypatch.setattr(workers, "_LAST_SPAWN_TIME", 0)
@@ -1152,11 +1157,12 @@ def test_real_crash_retry_keeps_prepared_scope_across_registry_activity(tmp_path
         from ouroboros.gateway.projects import api_project_from_task
         from tests.test_project_lease_ui_conversion import _request
 
+        running_before = copy.deepcopy(admitted)
         response = asyncio.run(api_project_from_task(_request(tmp_path, {
             "task_id": "crash", "id": "target", "name": "Target"})))
         assert response.status_code == 200
-        assert admitted["_project_admission"] == registry.project_admission_basis(
-            "target", registry.get_reserved_project(tmp_path, "target"), frozen=True)
+        assert admitted == running_before  # conversion does not retarget a running execution
+        assert registry.project_id_for_task(tmp_path, "crash") == "target"
     real_enqueue = q.enqueue_task
     def enqueue(payload, **kwargs):
         registry.touch_project(tmp_path, "other")
@@ -1174,7 +1180,10 @@ def test_real_crash_retry_keeps_prepared_scope_across_registry_activity(tmp_path
         [retry] = q.PENDING
         assert retry["id"] == "crash" and retry["_attempt"] == 2
         assert retry["_project_admission"]["project_id"] == "target"
-        if basis_kind != "legacy":
+        if basis_kind.startswith("converted"):
+            assert retry["_project_admission"] == registry.project_admission_basis(
+                "target", registry.get_reserved_project(tmp_path, "target"), frozen=True)
+        elif basis_kind != "legacy":
             assert retry["_project_admission"] == admitted["_project_admission"]
         assert retry["workspace_root"] == "/synthetic/frozen-resource"
         assert not done

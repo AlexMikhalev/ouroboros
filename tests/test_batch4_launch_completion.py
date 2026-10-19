@@ -86,7 +86,7 @@ def test_foreground_nonzero_completion_is_not_unresolved_effect(tmp_path, monkey
 @pytest.mark.parametrize('service', [False, True])
 def test_pause_during_process_preparation_prevents_process_start(tmp_path, monkeypatch, service):
     from ouroboros.tools.registry import ToolRegistry
-    from ouroboros.tools import shell
+    from ouroboros.tools import shell_outputs
     from ouroboros.owner_pause import install_fence
     from ouroboros.task_results import load_task_result
 
@@ -98,13 +98,17 @@ def test_pause_during_process_preparation_prevents_process_start(tmp_path, monke
     def preparation(*_a, **_k):
         install_fence(tmp_path, 'root', request_id='during-preparation')
         return {}
-    monkeypatch.setattr(shell, '_snapshot_declared_outputs', preparation)
+    # Both process doors take their output baseline through the shell_outputs owner.
+    monkeypatch.setattr(shell_outputs, '_snapshot_declared_outputs', preparation)
     args = {'cmd': [sys.executable, '-c', f'from pathlib import Path; Path({str(marker)!r}).touch()']}
     if service:
         args['name'] = 'held'
     result = registry.execute_result('start_service' if service else 'run_command', args)
     assert not marker.exists(), result
-    assert result.code == 'OWNER_PAUSE_NOT_STARTED', result
+    # The process was not launched, but its tool handler/preparation did run.
+    assert result.code == 'OWNER_OPERATION_REFUSED', result
+    assert result.meta['owner_pause_not_started'] is False
+    assert result.meta.get('operation_outcome') != 'completed_no_effect'
     assert not load_task_result(tmp_path, 'root').get('launch_handoffs')
 
 
@@ -279,7 +283,7 @@ def test_authority_lock_unavailability_is_unsent_infrastructure_not_owner_pause(
     @contextmanager
     def recovered(*_a, **_k):
         if len(checks) == 1:
-            raise owner_pause.OwnerPauseRefused('owner_launch_authority_unavailable')
+            raise owner_pause.LaunchBusy('contention')
         yield
     monkeypatch.setattr(owner_pause, 'launch_admission', recovered)
     error = model_wait.ModelWaitInterrupted('owner_launch_authority_unavailable')
@@ -317,13 +321,13 @@ def test_enqueue_snapshot_and_first_reservation_keep_original_billing_without_li
 def test_focused_node_control_consumers():
     import pathlib
     import shutil
-    import subprocess
+    from tests.group_run import run_in_group
     root = pathlib.Path(__file__).resolve().parents[1]
     node = shutil.which('node')
     assert node, 'focused frontend verification requires the provided Node runtime'
-    result = subprocess.run([node, '--test', 'web/tests/task_continue.test.js',
-                             'web/tests/chat_activity_block.test.js', 'web/tests/activity_schedule_time.test.js'],
-                            cwd=root, capture_output=True, text=True, timeout=60)
+    result = run_in_group([node, '--test', 'web/tests/task_continue.test.js',
+                           'web/tests/chat_activity_block.test.js', 'web/tests/activity_schedule_time.test.js'],
+                          cwd=root, timeout=60)
     print(result.stdout)
     assert result.returncode == 0, result.stdout + result.stderr
 

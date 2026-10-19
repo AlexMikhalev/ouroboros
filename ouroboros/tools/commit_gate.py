@@ -19,11 +19,7 @@ from ouroboros.review_state import (
     infer_review_phase,
 )
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tools.review_helpers import (
-    REVIEW_POOL_EMPTY_REASON,
-    REVIEW_POOL_EMPTY_SENTENCE,
-    review_enforcement_blocks,
-)
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.utils import (
     truncate_review_artifact as _truncate_review_reason,
 )
@@ -269,6 +265,9 @@ def commit_review_contract_fingerprint() -> str:
         if any(writable):
             for row, access in zip(rows, writable):
                 row.append(access)
+        if any(row_plan.get("additional") or []):
+            for row, extra in zip(rows, row_plan["additional"]):
+                row.append({"additional": bool(extra)})
         # What each seat is ASKED is contract identity: a seat that gains or
         # loses the coupling question is a different review.
         parts = {str(slot_id or ""): list(seat_parts) for slot_id, seat_parts in zip(row_plan["slot_ids"], row_plan["parts"])}
@@ -448,11 +447,30 @@ def count_paid_review_cycles(ctx: ToolContext, *, root_task_id: str) -> int:
         return 0
     from ouroboros.review_state import load_state, make_repo_key
 
-    state = load_state(pathlib.Path(ctx.drive_root))
-    attempts = state.filter_attempts(
-        repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)),
-        tool_name=_current_review_tool_name(ctx),
-    )
+    tool = _current_review_tool_name(ctx)
+    if tool in ("review_change", "review_result"):  # review_change waves: canonical custody
+        from ouroboros.tools.review_change_custody import paid_repo_key, review_state_root
+
+        state = load_state(review_state_root(ctx))
+        owner = paid_repo_key(ctx, ctx.repo_dir)
+        # Filter unrelated history before filesystem provenance reads; equal
+        # physical keys share one resolution within this observation only.
+        owners = {str(pathlib.Path(ctx.repo_dir).resolve()): owner}
+        paid = 0
+        for item in state.filter_attempts(tool_name=tool):
+            if not item.paid or item.root_task_id != root:
+                continue
+            if tool == "review_result":  # a result's allowance is its root task's, wherever its material lives
+                paid += 1
+                continue
+            key = item.review_budget_repo_key or owners.get(item.repo_key)
+            if key is None:
+                key = owners[item.repo_key] = paid_repo_key(ctx, item.repo_key)
+            paid += key == owner
+        return paid
+    else:
+        state = load_state(pathlib.Path(ctx.drive_root))
+        attempts = state.filter_attempts(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)), tool_name=tool)
     return sum(
         1
         for item in attempts
@@ -483,16 +501,22 @@ def check_review_cycles_ceiling(
         return None
     if paid < cap:
         return None
-    message = (
+    head = (
         f"⚠️ REVIEW_CYCLES_EXHAUSTED: this task tree (root {root}) already spent "
         f"{paid} of {cap} paid review wave(s) "
         "(OUROBOROS_REVIEW_MAX_CYCLES). Refusing to buy another review.\n"
+    )
+    message = head + ((
         "Honest exits: finalize honestly with what is already reviewed and committed; "
         "escalate to the owner (the ceiling is the owner's Max Review Cycles setting — "
         "3/5/unlimited are one settings change away); or leave the remaining work to a "
         "follow-up task with its own budget. A rebuttal cannot buy past the ceiling — "
         "rebuttal cycles count toward it."
-    )
+    ) if review_enforcement_blocks() else (
+        "The paid review allowance is spent. Decide whether what was reviewed is enough: finish, "
+        "or land with a plain statement of what was not reviewed. If the reviewers do not work at "
+        "all and recovery fails, explain that to your human."
+    ))
     return {"message": message, "cycles_paid": paid, "cap": cap}
 
 
@@ -853,12 +877,17 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
     ctx._review_resume_pending = False
     ctx._pending_review_attempt = None
     ctx._review_cyber_pending = ""
+    ctx._review_open_peers = []
 
     def _mutate(state):
+        from ouroboros.review_ledger import counted_pending
+        from ouroboros.review_state_custody import _attempt_review_roster_rows
+
         expired = state.expire_stale_attempts(now_ts=_utc_now())
         rows = [
             item for item in state.get_active_attempts(repo_key=repo_key)
             if item.tool_name in REVIEWED_MUTATIVE_TOOLS
+            and counted_pending(_attempt_review_roster_rows(item), pending=True)
         ]
         return ReviewStateMutation(rows, changed=bool(expired))
 
@@ -882,16 +911,17 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
             (source.repo_key, source.tool_name, source.task_id)]
     if not active_attempts:
         return None
-    if not review_enforcement_blocks("blocking"):
-        ctx._review_cyber_pending = (
-            "Existing review custody remains active: "
-            + ", ".join(f"{item.tool_name}#{item.attempt}" for item in active_attempts)
-            + ". No new reviewer will be dispatched; the original attempts remain collectible."
-        )
-        return None
-
     task_id = str(getattr(ctx, "task_id", "") or "")
     tool_name = _current_review_tool_name(ctx)
+    if _readers_frozen(ctx, active_attempts):
+        # Their reviewers keep custody over retained frozen checkouts, so restaging the live
+        # index changes nothing they read: this call stages its own candidate and either
+        # rejoins its exact-identity attempt or gets its own panel (``exact_open_peer``).
+        ctx._review_open_peers = [item for item in active_attempts if item.task_id == task_id
+                                  and item.tool_name == tool_name and item.review_retry_key]
+        return None
+    # The caller's own exact open attempt is rejoined in every mode before any
+    # free-cycle or Cyber continuation: one request never buys a second wave.
     if len(active_attempts) == 1:
         candidate = active_attempts[0]
         if (
@@ -904,6 +934,14 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
             ctx._pending_review_attempt = candidate
             ctx._current_review_attempt_number = int(candidate.attempt or 0)
             return None
+    if not review_enforcement_blocks("blocking"):
+        # Cyber Pro: foreign custody is no veto, and no new reviewer is bought beside it.
+        ctx._review_cyber_pending = (
+            "Existing review custody remains active: "
+            + ", ".join(f"{item.tool_name}#{item.attempt}" for item in active_attempts)
+            + ". No new reviewer will be dispatched; the original attempts remain collectible."
+        )
+        return None
 
     active = active_attempts[-1]
     attempt_label = (
@@ -919,6 +957,38 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
         "reconcile retained custody; otherwise operator recovery is required. "
         f"Only an unpaid legacy row auto-expires after {expiration_window}s."
     )
+
+
+def _readers_frozen(ctx: ToolContext, attempts: Sequence[Any]) -> bool:
+    """Every open attempt's reviewers read its round's retained isolated checkout (a wave
+    whose author could leave it); a live-index reader, or an unverifiable one, keeps the
+    index as part of its wave's identity."""
+    from ouroboros.tools.review_subject import round_checkout_repo
+
+    try:
+        return bool(attempts) and all(item.review_retry_key and round_checkout_repo(
+            ctx, item.review_retry_key, item.task_id).is_dir() for item in attempts)
+    except Exception:
+        return False
+
+
+def exact_open_peer(ctx: ToolContext, commit_message: str, *, goal: str, scope: str, review_rebuttal: str,
+                    fingerprint: str) -> Any:
+    """The caller's own open attempt whose exact identity this call repeats — the same staged
+    bytes and intent under that attempt's own paid contract — or ``None``: a distinct candidate
+    then gets its own panel and the open attempt keeps its custody, never blessing these bytes."""
+    from ouroboros.tools.parallel_review import _commit_review_retry_key
+
+    current = getattr(ctx, "_current_review_contract_fingerprint", "")
+    try:
+        for peer in getattr(ctx, "_review_open_peers", None) or []:
+            ctx._current_review_contract_fingerprint = str(peer.review_contract_fingerprint or current)
+            if _commit_review_retry_key(ctx, commit_message, goal=goal, scope=scope, review_rebuttal=review_rebuttal,
+                                        binding_fingerprint=fingerprint) == peer.review_retry_key:
+                return peer
+    finally:
+        ctx._current_review_contract_fingerprint = current
+    return None
 
 
 def review_failure_is_technical(facts: Dict[str, Any]) -> bool:
@@ -966,23 +1036,15 @@ def commit_preflight_choice_error(selector: str, *, skipped: bool, continuation:
 
 
 def compose_commit_panel(ctx: ToolContext, reviewers: Sequence[str], reason: str) -> Any:
-    """This commit's panel through the ONE composer ``review_change`` uses
-    (``review_change.compose_panel``, decision 1A). In Cyber Pro the marked pool rows are
-    the owner's menu: ``reviewers`` names the counted seats (an enabled catalog row outside
-    the pool is an added critic, never the quorum) and ``reason`` says why; below Cyber Pro
-    the whole pool judges and ``reviewers`` only add critics outside it. No ``reviewers`` is
-    ``None``: the configured pool exactly as the gate reads it today (an empty pool stays the
-    gate's own typed ``pool_empty`` refusal). The runtime mode is the gate's own reading (the
-    ``mode`` fact of its record). Raises ``ReviewChangeArgumentError`` — before anything is
-    staged, reviewed or recorded."""
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
-    from ouroboros.tools import git as git_mod
+    """Freeze the shared own-body panel before staging or paying for review."""
     from ouroboros.tools import review_change as rc
+    from ouroboros.reviewer_slot_config import review_strictness
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.tools import git as git_mod
 
     request = rc.parse_request({"root": "system_repo", "subject": "index", "reviewers": list(reviewers), "reason": reason})
-    if not request.reviewers:
-        return None
-    return rc.compose_panel(request, adds_only=not runtime_mode_at_least(git_mod._current_runtime_mode(), "cyber_pro"))
+    return rc.compose_panel(request, body=True,
+                            strictness=review_strictness(get_review_enforcement(), git_mod._current_runtime_mode()))
 
 
 def release_diagnostics(ctx: ToolContext, paths: Optional[List[str]], source: str) -> Dict[str, Any]:
@@ -1008,17 +1070,20 @@ def release_diagnostics(ctx: ToolContext, paths: Optional[List[str]], source: st
 
 def deterministic_preflight(ctx: ToolContext, commit_message: str, paths: Optional[List[str]]) -> str:
     """The free checks that ran ahead of the retired advisory delivery, kept whole for every
-    commit: size headroom and readiness (information and warnings), release metadata of the
-    staged index, and the syntax of staged ``.py`` files. Returns the blocking message or ""."""
+    commit: size headroom, the staged change's diff pulse (the text the panel's seats read
+    first) and readiness (information and warnings), release metadata of the staged index,
+    and the syntax of staged ``.py`` files. Returns the blocking message or ""."""
     from ouroboros.commit_admission import release_metadata_preflight, syntax_preflight_staged_py_files
+    from ouroboros.review import diff_pulse
     from ouroboros.tools.review_helpers import check_worktree_readiness
     from ouroboros.utils import append_jsonl, utc_now_iso
 
     repo_dir = pathlib.Path(ctx.repo_dir)
     information: List[str] = []
     warnings = check_worktree_readiness(repo_dir, paths=paths, information=information)
+    information = [line for line in (*information, diff_pulse(repo_dir, staged=True)) if line]
     if information:
-        ctx.emit_progress_fn("Size headroom (information):\n" + "\n".join(information))
+        ctx.emit_progress_fn("Size (information):\n" + "\n".join(information))
     if warnings:
         ctx.emit_progress_fn(f"⚠️ Readiness: {'; '.join(warnings)}")
         try:
@@ -1044,7 +1109,8 @@ def run_commit_preflight(ctx: ToolContext, reviewer: str, *, commit_message: str
     try:
         result = rc.run_review_change(ctx, root="system_repo", subject="worktree", surface="preflight",
                                       reviewers=[reviewer], goal=goal or commit_message, scope=scope,
-                                      review_rebuttal=review_rebuttal)
+                                      review_rebuttal=review_rebuttal,
+                                      _preflight_execution=getattr(ctx, "_preflight_execution", None))
     except (BudgetExceeded, BudgetPauseRequested):
         raise
     except Exception as exc:
@@ -1061,16 +1127,21 @@ def run_commit_preflight(ctx: ToolContext, reviewer: str, *, commit_message: str
 
 
 def _return_commit_feedback(ctx: ToolContext, message: str, started: float, before: dict, after: dict,
-                            *, pending: bool = False, reason: str = "author_decision_required", findings: Optional[list] = None) -> dict:
-    """Return material criticism before Git effects, preserving its original attempt."""
+                            *, pending: bool = False, reason: str = "author_decision_required", findings: Optional[list] = None,
+                            note: str = "") -> dict:
+    """Return the received outcome before any Git effect, preserving its original attempt.
+
+    Nonblocking application hands back every outcome of a committing call, a clean PASS
+    included; a pending wave keeps its exact index and attempt for a free rejoin. The
+    commit is the author's explicit continuation with the returned reference."""
     from dataclasses import asdict
     import time
     from ouroboros.tools import git as git_mod
     from ouroboros.review_state import load_state, make_repo_key
 
-    if not pending:
+    if not pending:  # a settled wave: no custody stays open behind its handback, in Cyber Pro too
         git_mod._record_commit_attempt(ctx, message, "reviewed", phase="review_only", block_reason=reason,
-            duration_sec=time.time() - started, pre_review_fingerprint=before["fingerprint"],
+            late_result_pending=False, duration_sec=time.time() - started, pre_review_fingerprint=before["fingerprint"],
             post_review_fingerprint=after.get("fingerprint", ""), fingerprint_status="matched",
             critical_findings=findings if findings is not None else getattr(ctx, "_last_review_critical_findings", []),
             advisory_findings=getattr(ctx, "_review_advisory", []),
@@ -1080,28 +1151,52 @@ def _return_commit_feedback(ctx: ToolContext, message: str, started: float, befo
     row = state.latest_attempt_for(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)),
         task_id=str(getattr(ctx, "task_id", "") or ""), tool_name="commit_reviewed", attempt=ctx._current_review_attempt_number)
     reference = {"surface": "commit", **{key: getattr(row, key) for key in ("repo_key", "task_id", "tool_name", "attempt", "pre_review_fingerprint")},
-                 "review_record_id": str(getattr(row, "review_record_id", "") or "")}
-    choice = ("Inspect the outcome, then revise/request review, stop, or explicitly continue in Advisory using the same "
-              "commit tool with review_reference and author_disposition {disposition: accepted|rejected|partial|deferred, "
-              "rationale: ...}. Author continuation buys no reviewer cycle. ")
+                 "review_record_id": str(getattr(row, "review_record_id", "") or "")} if row is not None else {}
     try:
         resolve_commit_review_reference(ctx, reference, state=state)
+        continuable = True
     except ValueError:
-        choice = "Reviewers are still running without feedback. Collect the existing wave or stop; informed author continuation is not available yet. "
+        continuable = False
+    collect = "Re-issue the same unchanged commit call to collect this paid wave at $0 (no second dispatch), "
+    choice = ("Inspect it, then revise and review again, stop, or explicitly continue with the same commit tool "
+              "passing review_reference and author_disposition {disposition: accepted|rejected|partial|deferred, "
+              "rationale: ...}; continuation re-checks the current bytes, buys no reviewer and is no reviewer PASS. ")
+    if row is None:
+        choice = "The attempt row is unreadable, so no continuation reference exists; retry or stop. "
+    elif pending:
+        choice = collect + ("or explicitly continue now with review_reference and author_disposition; the pending "
+                            "review stays recorded and is no PASS. " if continuable
+                            else "or stop; informed continuation needs received feedback. ")
+        left = getattr(ctx, "_left_review_wait", None) or {}
+        if left.get("surface") == "commit" and left.get("retry_key") == getattr(ctx, "_current_review_retry_key", ""):
+            note = ("An addressed message reached you while the reviewers ran: this call returned and their paid "
+                    "work continues separately; a [Review settled] notice follows the whole wave. " + note)
     if not pending:
         git_mod.run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
-    text = ("Review outcome returned before commit. " + choice +
+    text = ("Review outcome returned before commit" + (": reviewers are still running. " if pending else ". ") + note + choice +
             "Current files are preserved; no commit, tag or push occurred.\n" + json.dumps({"review_reference": reference,
-            "review_outcome": asdict(row)}, ensure_ascii=False, default=str))
+            "review_outcome": asdict(row) if row is not None else {}}, ensure_ascii=False, default=str))
     return {"status": "reviewed", "message": text, "review_reference": reference,
             "pre_fingerprint": before, "post_fingerprint": after}
+
+
+def watch_left_commit_review(ctx: ToolContext) -> bool:
+    """The author left this commit's paid wave on an addressed message: keep the wait
+    intention and one whole-wave settlement notice (``review_pause.watch_left_review``)."""
+    from ouroboros import review_pause
+
+    return review_pause.watch_left_review(
+        ctx, surface="commit", retry_key=str(getattr(ctx, "_current_review_retry_key", "") or ""),
+        attempt=int(getattr(ctx, "_current_review_attempt_number", 0) or 0),
+        record_id=str(getattr(ctx, "_current_review_record_id", "") or ""),
+        reissue="the same unchanged commit_reviewed call") is not None
 
 
 def disclose_commit_review_replay(ctx: ToolContext, replay: dict) -> None:
     """Keep the free replay cause separate from authority to create a commit."""
     replay_reason = str(replay.get("replay_reason") or "")
     if not review_enforcement_blocks("blocking"):
-        progress_note = "Cyber Pro: continuing without a new reviewer dispatch; original review facts are retained."
+        progress_note = "Cyber Pro: no new reviewer dispatched; original review facts are retained and the outcome returns first."
     elif replay_reason == IDENTICAL_DIFF_BLOCK_REASON:
         progress_note = (
             "Max Review Cycles: identical staged diff — reusing the recorded "
@@ -1119,7 +1214,7 @@ def disclose_commit_review_replay(ctx: ToolContext, replay: dict) -> None:
         + str(replay.get("advisory_replay") or "")
     )
     if not review_enforcement_blocks("blocking"):
-        disclosure = "Cyber Pro: proceeding without a new review. " + str(replay.get("advisory_replay") or "")
+        disclosure = "Cyber Pro: no new review was dispatched. " + str(replay.get("advisory_replay") or "")
     advisory_list = getattr(ctx, "_review_advisory", None)
     if isinstance(advisory_list, list):
         advisory_list.append(disclosure)
@@ -1137,8 +1232,17 @@ def bind_author_commit_candidate(ctx: ToolContext, commit_message: str, pre_fing
     from ouroboros.tools.review import _preflight_check, format_name_status_for_preflight
     from ouroboros.config import get_review_enforcement
 
+    # The critic's own aggregate on ITS subject (the reference's fingerprint), never this candidate's verdict.
+    signal = ""
+    if str(getattr(author_source, "review_record_id", "") or ""):
+        from ouroboros import review_ledger
+        try:
+            record = review_ledger.load_record(review_ledger.ledger_root(ctx), author_source.review_record_id) or {}
+            signal = str((record.get("verdict") or {}).get("aggregate") or "")
+        except Exception:
+            log.debug("critic aggregate unavailable for the author continuation", exc_info=True)
     author = build_author_disposition_from_mapping(ctx._author_commit_decision, subject_hash=pre_fingerprint["fingerprint"],
-        reviewer_signal=author_source.block_reason or author_source.status, enforcement=get_review_enforcement())
+        reviewer_signal=signal or author_source.block_reason or author_source.status, enforcement=get_review_enforcement())
     author["review_reference"] = ctx._author_commit_reference
     ctx._author_commit_record = author
     staged = git_mod.run_cmd(["git", "diff", "--cached", "--name-status"], cwd=ctx.repo_dir)
@@ -1243,7 +1347,7 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
     panel = commit_panel_facts(ctx)
     return {
         **_review_body_facts(ctx),
-        "composition": str(panel.get("composition") or "full_pool"),
+        "panel": panel, "composition": str(panel.get("composition") or "full_pool"),
         "composition_reason": str(panel.get("reason") or ""), "chosen_by": str(panel.get("chosen_by") or "owner"),
         "task_id": task_id, "root_task_id": resolve_root_task_id(ctx),
         "review_wave_id": resolve_review_wave(ReviewRequest(
@@ -1263,7 +1367,10 @@ def _review_ledger_facts(ctx: ToolContext, commit_message: str, *, goal: str, sc
         "critical_findings": list(combined_findings or getattr(ctx, "_last_review_critical_findings", []) or []),
         "advisory_findings": list(getattr(ctx, "_last_review_advisory_findings", []) or []),
         "tests": _review_tests_facts(ctx, tests_passed),
+        "test_request": dict(getattr(ctx, "_commit_test_request", None) or {}),
         "preflight": _review_preflight_facts(ctx),
+        # The exhibit frozen before this attempt's dispatch, never re-derived at settle.
+        "preflight_execution": dict(getattr(ctx, "_preflight_execution", None) or {"status": "unobserved"}),
     }
 
 
@@ -1280,19 +1387,21 @@ def name_review_record(ctx: ToolContext, result: Any) -> Any:
 
 
 def _review_tests_facts(ctx: ToolContext, tests_passed: Any) -> Dict[str, Any]:
-    """``passed`` only for THIS candidate: the runner's flag is process state that outlives
-    the checkout it tested, so it counts only when the process-held test proof still covers
-    the current tree/index/workload (``commit_admission.PreflightTestProof``); a skipped
-    or stale run is ``NOT_RUN`` with its reason, never a passed result borrowed from an
-    earlier candidate."""
+    """Passed requires a proof covering this tree/index/workload, not merely a kept flag.
+    Skipped/stale runs are NOT_RUN. The frozen exhibit governs too: deterministic
+    refusal means tests never started, even when an older proof still covers the tree.
+    """
     if tests_passed is not True:
         return {"policy": "NOT_RUN", "result": "unknown"}
     try:
         from ouroboros.commit_admission import preflight_test_proof_matches
 
-        bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir))
+        bound = bool(preflight_test_proof_matches(ctx, ctx.repo_dir, require_full=False))
     except Exception:
         bound = False
+    exhibit = getattr(ctx, "_preflight_execution", None)
+    if bound and isinstance(exhibit, dict) and exhibit.get("status") == "not_run":
+        return {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_not_started"}
     if bound:
         return {"policy": "run", "result": "passed", "proof": "candidate_bound"}
     return {"policy": "NOT_RUN", "result": "unknown", "reason": "tests_proof_not_for_this_candidate"}
@@ -1330,10 +1439,6 @@ def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: 
                        "message": str(advisory_replay.get("advisory_replay") or "")}
         elif str(getattr(ctx, "_last_review_block_reason", "") or "") == "review_wave_budget_insufficient":
             refusal = {"kind": "review_wave_budget_insufficient", "message": str(structured.get("wave_refusal") or "")}
-        elif str(getattr(ctx, "_last_review_block_reason", "") or "") == REVIEW_POOL_EMPTY_REASON:
-            # An empty pool dispatches nothing under either enforcement: the record
-            # names that cause itself, not only the gate's block.
-            refusal = {"kind": REVIEW_POOL_EMPTY_REASON, "message": REVIEW_POOL_EMPTY_SENTENCE}
         pending = advisory_replay is None and bool(git_mod._review_custody_pending(ctx))
         facts = _review_ledger_facts(
             ctx, commit_message, goal=goal, scope=scope, pre_fingerprint=pre_fingerprint or {},
@@ -1358,7 +1463,7 @@ def settle_commit_review_ledger(ctx: ToolContext, commit_message: str, *, goal: 
             # The composition facts the panel was built with (requested rows, added critics,
             # the reason) ride the record's panel block as on ``review_change`` (its
             # ``reason_missing`` is the composer's: a panel that names the whole pool owes none).
-            record.panel = {**dict(record.panel or {}), **commit_panel_facts(ctx)}
+            record.panel = {**commit_panel_facts(ctx), **dict(record.panel or {})}
             if rejoined and existing is None:
                 # Late answers to a wave whose dispatching attempt left no record: the
                 # rules and brief the seats saw are not this attempt's — say so.

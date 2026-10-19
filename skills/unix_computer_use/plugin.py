@@ -18,7 +18,7 @@ is NOT probed — ``screencapture``/``cliclick`` exit 0 even when permission is
 denied (capturing only the wallpaper, or dropping synthetic input), so callers
 must ensure the host has granted these. Wayland support depends on ydotool
 (input) and grim/gnome-screenshot (capture); X11 uses xdotool/scrot. Windows
-support is deferred to a separate skill.
+desktops use the separate windows_computer_use skill.
 """
 
 from __future__ import annotations
@@ -564,7 +564,7 @@ class _ComputerUse:
             return [], "scroll unsupported via cliclick; use key page-down/page-up"
         return [], f"unsupported pyautogui snippet for ssh_macos/cliclick: {text[:120]}"
 
-    def _remote_pyautogui(self, conn: dict[str, Any], code: str, *, note: dict[str, Any] | None = None, timeout: int = 30) -> str:
+    def _remote_pyautogui(self, conn: dict[str, Any], code: str, *, note: dict[str, Any] | None = None, timeout: int = 30, input_effect: bool = True) -> str:
         if conn.get("disabled"):
             return self._disabled_connection_error(str(self._read_connections().get("active") or "?"), conn)
         backend = str(conn.get("backend") or "").lower()
@@ -574,6 +574,8 @@ class _ComputerUse:
                 out = self._osworld_execute(conn, ["python", "-c", wrapped], timeout=timeout)
                 ok, err = _osworld_result_ok(out)
                 payload: dict[str, Any] = {"ok": ok, "backend": backend, "status": out["status"], "execute_result": out["result"]}
+                if ok and input_effect:
+                    payload["observed_effect"] = True
                 if not ok:
                     payload["error"] = err
             elif backend == "ssh_macos":
@@ -848,7 +850,7 @@ class _ComputerUse:
                 "+ grim or gnome-screenshot (capture). xdotool does NOT work on Wayland.",
                 "Input coordinates default to the LAST screenshot's image space (auto-remapped); "
                 "pass raw=true for native input coordinates.",
-                "Windows support is deferred to a separate skill.",
+                "Windows desktops use the separate windows_computer_use skill.",
             ],
             "permission_state_verified": False,
         }
@@ -1241,7 +1243,7 @@ class _ComputerUse:
         plat = _platform()
         if self._is_remote():
             _name, conn = self._active_connection()
-            return self._remote_pyautogui(conn, "print('pos', pyautogui.position())")
+            return self._remote_pyautogui(conn, "print('pos', pyautogui.position())", input_effect=False)
         if plat == "macos" and _which("cliclick"):
             try:
                 rc, out, err = _run(["cliclick", "p"])

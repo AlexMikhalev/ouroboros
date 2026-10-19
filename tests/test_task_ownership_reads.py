@@ -56,6 +56,9 @@ def test_reciprocal_retry_links_read_once_before_locked_resolution(env, monkeypa
 
 
 def test_control_review_and_paused_fence_share_the_same_parse(env, monkeypatch):
+    """The review-operation check and the Pause fence read one parse. A preparation bound to the
+    owner's Pause was written only by the retired task acceptance: with its controller dead it holds
+    nothing any more, while a live controller still owns the task."""
     entry = {'state': review_operation.OPERATION_PREPARING,
              'controller': {'fixture': 'dead'}, 'intent_ref': {'id': 'intent'},
              'preparation_pause': {'root_task_id': 'root', 'fence_id': 'fence'}}
@@ -63,8 +66,11 @@ def test_control_review_and_paused_fence_share_the_same_parse(env, monkeypatch):
                                    review_operations={'operation': entry})
     monkeypatch.setattr(review_operation, 'controller_state', lambda _: 'dead')
     counts = count_reads(monkeypatch)
-    assert queue_transitions.task_has_live_ownership('root')
+    assert not queue_transitions.task_has_live_ownership('root')
     assert counts == {'root': 1}
+    monkeypatch.setattr(review_operation, 'controller_state', lambda _: 'alive')
+    assert queue_transitions.task_has_live_ownership('root')
+    assert counts == {'root': 2}  # one parse per check
 
 
 def test_mutation_boundary_observes_new_memory_owner(env, monkeypatch):
@@ -110,3 +116,51 @@ def test_unconsumed_settlement_preparations_are_bounded_per_thread(tmp_path):
     newest = f"t{task_ownership._PREPARED_READS_MAX + 39}"
     assert task_ownership.settlement_reads(tmp_path, newest, locked=True) is not None
     pending.clear()
+
+
+def test_recheck_is_tri_state_and_never_waits_under_the_queue_lock(env, monkeypatch):
+    """A3: the prepared signature is re-checked as UNCHANGED / CHANGED / BUSY. Under Q the
+    probe uses a zero budget, so a busy store answers BUSY (unknown) — never CHANGED and
+    never UNCHANGED — while ``unchanged()`` keeps its boolean 'proven unchanged' meaning."""
+    from ouroboros import store, task_store
+    from supervisor.task_ownership import BUSY, CHANGED, UNCHANGED
+
+    budgets = []
+    real_budget = store.acquisition_budget
+
+    def _spy_budget(seconds):
+        budgets.append((seconds, queue._queue_lock._is_owned()))
+        return real_budget(seconds)
+
+    monkeypatch.setattr(store, 'acquisition_budget', _spy_budget)
+    reads = TaskOwnershipRead(env)
+    reads.load('root')
+    assert budgets == [], 'the signed read needs no zero-budget probe outside Q'
+    assert reads.recheck(('root',)) == UNCHANGED and reads.unchanged(('root',)) is True
+    assert budgets == []
+    with queue._queue_lock:
+        assert reads.recheck(('root',)) == UNCHANGED
+    assert budgets == [(0, True)]
+
+    task_results.write_task_result(env, 'root', 'completed', result='Rewritten answer')
+    with queue._queue_lock:
+        assert reads.recheck(('root',)) == CHANGED and reads.unchanged(('root',)) is False
+        with pytest.raises(ValueError, match='changed'):
+            reads.load('root')
+
+    reads = TaskOwnershipRead(env)
+    reads.load('root')
+    real_sig = task_store.signature
+
+    def _busy_at_zero(root, tid, *, txn=None):
+        if store._WAIT_BUDGET.get() == 0:
+            raise store.StoreBusy('writer active')
+        return real_sig(root, tid, txn=txn)
+
+    monkeypatch.setattr(task_store, 'signature', _busy_at_zero)
+    with queue._queue_lock:
+        assert reads.recheck(('root',)) == BUSY and reads.unchanged(('root',)) is False
+        with pytest.raises(ValueError, match='busy'):
+            reads.load('root')
+        assert reads.prepared('root')['status'] == 'completed', 'the prepared row needs no re-check'
+    assert reads.recheck(('root',)) == UNCHANGED, 'outside Q the probe waits with the normal budget'

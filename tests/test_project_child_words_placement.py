@@ -23,7 +23,6 @@ import json
 import os
 import pathlib
 import shutil
-import subprocess
 from collections import deque
 from types import SimpleNamespace
 
@@ -37,6 +36,7 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.utils import append_jsonl
 from supervisor import events_chat_delivery as delivery
 from supervisor import message_bus
+from tests.group_run import run_in_group
 
 pytestmark = pytest.mark.serial  # Access is read from the process environment
 
@@ -84,12 +84,12 @@ def room(tmp_path, monkeypatch):
         return json.loads(response.body)
 
     def row_id(text: str) -> str:
-        offset = 0
-        for line in (tmp_path / "logs" / "chat.jsonl").read_bytes().splitlines(keepends=True):
-            row = json.loads(line)
+        from ouroboros import dialogue_store as ds
+
+        for entry in ds.iter_rows(tmp_path, "chat"):
+            row = entry.row
             if text in str(row.get("text") or row.get("caption") or ""):
-                return f"chat:{offset}"
-            offset += len(line)
+                return entry.history_id
         raise AssertionError(f"no stored row {text!r}")
 
     return SimpleNamespace(chat_id=chat_id, host=host, frames=frames, root=tmp_path, read=read, row_id=row_id,
@@ -142,7 +142,7 @@ def test_a_routing_notice_borrows_nothing_from_the_task_it_refused(room, target,
     page = room.read()
     unknown, notice = [row for row in page["messages"] if row.get("system_type") == "steer_not_delivered"]
     assert (unknown["task_id"], notice["task_id"]) == ("gone-1", target)
-    identity = {"text", "ts", "task_id", "history_id", "history_position"}
+    identity = {"text", "ts", "task_id", "history_id", "history_position", "row_address"}
     assert {k: v for k, v in notice.items() if k not in identity} == \
         {k: v for k, v in unknown.items() if k not in identity}
     assert page["window"]["latest_message"] == {"history_id": notice["history_id"], "out_of_order": False}
@@ -205,7 +205,7 @@ def test_a_routing_notice_for_a_child_stands_alone_and_the_childs_words_stay_in_
     assert all(row.get("delegation_role") == "subagent" for row in words)
 
     (worktree / "chart.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 200)
-    assert "photo sent" in registry.execute("send_photo", {"file_path": str(worktree / "chart.png"),
+    assert "photo accepted for delivery" in registry.execute("send_photo", {"file_path": str(worktree / "chart.png"),
                                                            "caption": "CHILD_PHOTO"})
     assert deliver(ctx.event_queue.pop()) == 1, "what a child delivers is shown alone and counts"
     assert say("CHILD_FINAL: root listed.", task_id="kid-1") == 0
@@ -221,10 +221,9 @@ def test_a_routing_notice_for_a_child_stands_alone_and_the_childs_words_stay_in_
                                    "running_history": notice_read["messages"]}), encoding="utf-8")
     node = shutil.which("node")
     assert node, "node is required for the real chat.js live/replay consumer"
-    result = subprocess.run([node, "--test", "--test-reporter=tap", "--test-name-pattern=child words",
-                             "web/tests/chat_card_row_placement.test.js"],
-                            cwd=REPO, env={**os.environ, "CHILD_WORDS_PROJECTION": str(fixture)},
-                            capture_output=True, text=True, timeout=60)
+    result = run_in_group([node, "--test", "--test-reporter=tap", "--test-name-pattern=child words",
+                           "web/tests/chat_card_row_placement.test.js"],
+                          cwd=REPO, env={**os.environ, "CHILD_WORDS_PROJECTION": str(fixture)}, timeout=60)
     assert result.returncode == 0 and "# pass 7\n" in result.stdout, result.stdout + result.stderr
 
 

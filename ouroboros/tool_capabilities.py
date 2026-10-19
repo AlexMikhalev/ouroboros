@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any, Optional
 
 OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
-    "send_user_message", "send_photo", "send_video", "send_file", "send_links",
+    "send_user_message", "send_photo", "send_video", "send_file", "send_links", "show_card",
 })
 
 # One class: an actor's own memory. Reading and revising what I know about my
@@ -26,7 +26,7 @@ COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
 })
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
-    "inspect_harness", "maintain_harness",
+    "inspect_harness", "inspect_subagent", "maintain_harness",
     "finish_task",
     "read_file", "list_files", "write_file", "edit_text",
     "apply_patch", "edit_batch",
@@ -45,8 +45,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "wait_task", "wait_tasks", "get_task_result",
     # Serial addressed turns: wait for an unread mailbox entry without spending
     # model rounds (slot held, clamped to the per-call ceiling, delivers nothing).
-    "await_messages",
-    # D#7 soft-join child controls (siblings of steer_task): inspect/decide a child's fate
+    "await_messages", "continue_in_background", "pause_task", "resume_task", "continue_task",
+    # D#7 soft-join child controls (siblings of tell_task): inspect/decide a child's fate
     # before finalizing (peek = pure read, discard = explicit abandon, cancel = real stop).
     "cancel_task", "peek_task", "discard_child_result", "override_delegation_constraint",
     # The same family (#1196, owner Q9): a resumed parent selects each of its OWN
@@ -61,8 +61,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # (kept in the core envelope so the anti-freeze ephemeral turn never needs an
     # enable_tools detour to route — though initial_tool_schemas exposes the full
     # set today, this makes the coupling explicit).
-    "list_projects", "route_to_project", "promote_chat_to_task", "steer_task",
-    "ensure_project_scope",
+    "list_projects", "start_task", "tell_task",
+    "move_to_project",
     *COGNITIVE_MEMORY_TOOL_NAMES,
     "chronicle_write",
     "recent_tasks", "live_roots", "update_focus",
@@ -74,11 +74,12 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "escalate",
     "switch_model",
     "request_restart", "promote_to_stable", "prepare_self_change",
-    "preflight_review", "advisory_review", "review_change", "review_status", "task_acceptance_review",
+    "preflight_review", "advisory_review", "review_change", "review_status",
     "verify_and_record",
-    # Skill discovery and review are core authoring capabilities.
+    # Skill discovery and review are core capabilities; installing, updating and source changes
+    # load on demand (enable_tools) after a search found something worth it.
     "list_skills", "skill_review", "skill_preflight",
-    "submit_skill_to_hub",
+    "submit_skill_to_hub", "skill_search",
 })
 
 # Meta-tools: always visible alongside core tools
@@ -93,6 +94,7 @@ LOCAL_READONLY_SUBAGENT_MODE: str = "local_readonly_subagent"
 # by explicit product decision, so this mode is not a remote website sandbox.
 LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
     # the cheap lane and finds the work harder raises itself instead of failing or
@@ -154,6 +156,7 @@ ACTING_SUBAGENT_MODE: str = "acting_subagent"
 # explicitly granted per-child via TaskConstraint.external_tool_grants.
 ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
     # the cheap lane and finds the work harder raises itself instead of failing or
@@ -172,6 +175,9 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "forward_to_worker", "peek_task", "cancel_task", "discard_child_result",
     "resume_child_task",
     "verify_and_record",
+    # An independent look at the assigned work, never child approval or commit.
+    # review_change admits the physical subject before freezing or dispatching.
+    "review_change",
     "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chronicle_write",
     "chat_history",
     "tree_note", "tree_read", "override_delegation_constraint",
@@ -206,6 +212,7 @@ def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) 
 
 READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({
     "inspect_harness",
+    "inspect_subagent",
     "read_file", "list_files",
     "search_code", "query_code", "query_data", "recent_tasks",
     "web_search", "chat_history",
@@ -235,7 +242,6 @@ UNTRUNCATED_TOOL_RESULTS: frozenset[str] = frozenset({
     "commit_reviewed",
     "vcs_commit_reviewed",
     "plan_task",
-    "task_acceptance_review",
     "preflight_review",
     "advisory_review",
     "review_change",
@@ -414,10 +420,9 @@ FOREGROUND_MUTATIVE_TOOLS: frozenset[str] = frozenset({
 # verb rides the same receipt rail (``ensure_project_scope`` moves THIS task;
 # its receipt is the Started annotation and the project pointer).
 ROUTING_VERBS: dict[str, frozenset[str]] = {
-    "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
-    "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
-    "steer_task": frozenset({"steer_task"}),
-    "ensure_project_scope": frozenset({"ensure_project_scope"}),
+    "start_task": frozenset({"promote_chat_to_task"}),
+    "tell_task": frozenset({"steer_task"}),
+    "move_to_project": frozenset({"ensure_project_scope"}),
 }
 
 
@@ -439,10 +444,11 @@ def routing_action_for_tool(name: object) -> str:
 # set (``FOREGROUND_MUTATIVE_TOOLS``: publication and the file editors) joins it
 # at the authority module.
 OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
+    "pause_task", "resume_task", "continue_task",
     "maintain_harness",
-    # starting or steering work (steer_task stays: the nanny of a running campaign)
-    "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
-    "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
+    # starting or steering work (tell_task stays: the nanny of a running campaign)
+    "start_task", "schedule_subagent", "schedule_followup", "plan_task",
+    "move_to_project", "delegate_start", "initiate_presence",
     "cancel_task", "resume_child_task", "override_delegation_constraint", "request_deep_self_review",
     # writing files, running processes, integrating patches
     "write_file", "edit_text", "apply_patch", "edit_batch",
@@ -461,19 +467,15 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     "generate_evolution_stats",
     # the world beyond the repository: forms, skills, project notes
     "browser_action", "submit_skill_to_hub", "toggle_skill", "skill_owner_action",
+    "skill_install", "skill_update",
     "journal_write", "workpad_write",
     "create_github_issue", "comment_on_issue", "comment_on_pr", "close_github_issue", "pr_merge",
 })
 
 
-def completion_control_call(name: str, args: object = None) -> bool:
+def completion_control_call(name: str) -> bool:
     """Host-owned local completion identity, independent of presentation or success."""
-    if name in {"finish_task", "presence_finish"}:
-        return True
-    return name == "task_acceptance_review" and isinstance(args, dict) and (
-        args.get("author_action") in {"finish", "stop"}
-        or args.get("agent_disposition") in {"accepted", "rejected", "partial", "deferred"}
-    )
+    return name in {"finish_task", "presence_finish"}
 
 
 def substantive_tool_calls(calls: object) -> list:

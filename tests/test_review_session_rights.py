@@ -80,8 +80,7 @@ def test_a_writable_seat_runs_in_its_own_copy_and_leaves_evidence(repo, tmp_path
     row = custody.invocation_record(drive, FakeGateway.instances[-1].start_keys[0])
     assert row["authority_source"] == "investigation" and row["execution_root"] == str(area)
     assert facts["requested_access"] == "full" and facts["checking_evidence"]["status"] == "retained"
-    assert not area.exists()  # complete capture follows the settled success receipt
-    assert facts["checking_evidence"]["refresh_safe"] is True
+    assert not area.exists()  # the copy goes once its receipt is written
     assert pathlib.Path(facts["checking_evidence"]["evidence_dir"], "summary.json").is_file()
     assert (repo / "f.txt").read_text() == "A staged\nB unstaged\n" and _git(repo, "write-tree") == source["tree"]
 
@@ -212,48 +211,9 @@ def test_common_review_consumer_preserves_seat_access_and_evidence(
     assert actor["usage"]["requested_access"] == access
     if access == "full":
         evidence = actor["usage"]["checking_evidence"]
-        assert evidence["status"] == "retained" and evidence["refresh_safe"]
+        assert evidence["status"] == "retained"
         assert pathlib.Path(evidence["evidence_dir"], "summary.json").is_file()
         assert not pathlib.Path(body["execution"]["workspaceRoot"]).exists()
     else:
         assert "checking_evidence" not in actor["usage"]
     assert (repo / "f.txt").read_text() == "A staged\nB unstaged\n"
-
-
-@pytest.mark.parametrize("access, same_assignment", [("", True), ("readonly", True),
-                                                     ("workspace_write", False), ("full", False)])
-def test_plan_continuity_reads_legacy_and_readonly_session_rows_as_one_assignment(
-        tmp_path, access, same_assignment):
-    """A plan wave recorded before seats carried rights resumes its sticky thread for a
-    legacy or explicitly read-only seat; writable rights are a changed assignment, never
-    a silent retarget of the read-only thread, and a frozen roster keeps them."""
-    from ouroboros.review_execution import ReviewRouteKind
-    from ouroboros.review_records import ReviewSlot
-    from ouroboros.tools.plan_review_artifacts import (
-        continuation_inputs, frozen_plan_slots, persist_wave, slot_row,
-    )
-
-    def seats(seat_access):
-        return [ReviewSlot(slot_id="t1", model="fake/session", route=ReviewRouteKind.AGENT_SESSION,
-                           session_target="fake-review", session_access=seat_access),
-                ReviewSlot(slot_id="p1", model="fake/packet")]
-
-    legacy = [{key: value for key, value in slot_row(slot).items() if key not in {"delivery", "subagent_id",
-              "use_local", "processing_preference"}} for slot in seats("")]
-    assert "session_access" not in legacy[0]
-    ref = persist_wave(tmp_path, "task-1", {
-        "schema_version": 1, "cycle_index": 1, "request_fingerprint": "c" * 64, "slots": legacy,
-        "reviewer_outputs": [{"slot_id": "t1", "review_thread_id": "thread-7", "text": "[]"},
-                             {"slot_id": "p1", "request_messages": [{"role": "user", "content": "prior"}],
-                              "text": "[]"}]})
-    current = seats(access)
-    _slots, _messages, threads, causes = continuation_inputs(
-        tmp_path, "task-1", {"wave_artifact": ref}, current, user_content="continue")
-    if same_assignment:
-        assert threads == {"t1": "thread-7"} and causes == {}
-        assert slot_row(current[0]) == slot_row(seats("")[0])
-    else:
-        assert threads == {} and causes == {"p1": "prior_reviewer_assignment_set_changed"}
-        assert slot_row(current[0])["session_access"] == access
-    [restored, _packet] = frozen_plan_slots({"slots": [slot_row(slot) for slot in current]})
-    assert restored.session_access == ("" if same_assignment else access)

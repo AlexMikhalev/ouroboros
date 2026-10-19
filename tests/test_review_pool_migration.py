@@ -858,13 +858,13 @@ def test_m1_the_no_settings_file_path_reaches_the_factory_pool(tmp_path, monkeyp
 
 DIRECT_PROVIDER_CELLS = [
     ("OPENAI_API_KEY", "openai", "openai::gpt-5.6-terra"),
-    ("ANTHROPIC_API_KEY", "anthropic", "anthropic::claude-opus-5"),
+    ("ANTHROPIC_API_KEY", "anthropic", "anthropic::claude-opus-5-5"),
 ]
 
 
 def _exactly_the_factory_pool(loaded, document, provider, main):
     """FIX5 M1-direct: the marked rows ARE ``factory_review_rows(document)`` — the provider's
-    three direct rows around its default Main — and nothing else is marked (the wizard's Auto
+    one direct row on its default Main (owner Q5=A) — and nothing else is marked (the wizard's Auto
     helpers stand beside them unmarked); every seat routes to the provider the document holds a
     credential for, none to the credential-less OpenRouter ids."""
     from ouroboros import reviewer_slot_config as rs
@@ -873,11 +873,11 @@ def _exactly_the_factory_pool(loaded, document, provider, main):
 
     items = json.loads(loaded[SUBAGENTS])["items"]
     assert items == factory_actor_rows(document) + factory_review_rows(document), items
-    assert _marked(items) == ["review-1", "review-2", "review-3"]
-    assert [row["route"]["target_id"] for row in _reviewers(items)] == [main] * 3
+    assert _marked(items) == ["review-1"]
+    assert [row["route"]["target_id"] for row in _reviewers(items)] == [main]
     assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in _reviewers(items))
     pool = rs.review_pool_rows(loaded)
-    assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
+    assert [(row.slot_id, row.target_id) for row in pool] == [("review-1", main)]
     assert {provider_for_model(row.target_id) for row in pool} == {provider}
     assert all(model_has_credentials_in_settings(row.target_id, dict(document)) for row in pool)
     assert not {row.target_id for row in pool} & set(OPENROUTER_REVIEW_DEFAULTS["triad"])
@@ -902,14 +902,14 @@ def test_m1_a_never_configured_direct_provider_document_reads_exactly_its_factor
     _exactly_the_factory_pool(loaded, document, provider, main)
     (outcome,) = cfg.review_pool_migrations_seen()
     assert outcome.trigger == m.TRIGGER_NEVER_CONFIGURED and not outcome.error and not outcome.noop
-    assert outcome.snapshot["summary"]["rows_marked_after"] == 3 and outcome.snapshot["summary"]["distinct_models"] == 1
+    assert outcome.snapshot["summary"]["rows_marked_after"] == 1 and outcome.snapshot["summary"]["distinct_models"] == 1
     assert document == ({key: "present", SUBAGENTS: ""} if catalog_cell == "blank-string" else {key: "present"})
     # Idempotent: the migrated document is a pool document; a second read re-mints nothing.
     assert m.migrate_review_lanes(dict(loaded)) is None
     assert _read(loaded) == loaded
     assert len(cfg.review_pool_migrations_seen()) == 1
     text = m.owner_message(outcome, "snap.json")
-    assert text.startswith("⚙️ Review pool initialized.") and "3 reviewer rows, 1 distinct models" in text
+    assert text.startswith("⚙️ Review pool initialized.") and "1 reviewer rows, 1 distinct models" in text
 
 
 @pytest.mark.parametrize("key, provider, main", DIRECT_PROVIDER_CELLS, ids=["openai-only", "anthropic-only"])
@@ -929,9 +929,9 @@ def test_m1_the_no_settings_file_path_of_a_direct_provider_reaches_exactly_its_f
     settings = cfg.load_settings_lock_held(_settings_lock_held=False)
     assert not path.exists() and not path.parent.exists(), "a read never creates the document"
     pool = rs.review_pool_rows(settings)
-    assert [(row.slot_id, row.target_id) for row in pool] == [(f"review-{n}", main) for n in (1, 2, 3)]
+    assert [(row.slot_id, row.target_id) for row in pool] == [("review-1", main)]
     items = json.loads(settings[SUBAGENTS])["items"]
-    assert _marked(items) == ["review-1", "review-2", "review-3"]
+    assert _marked(items) == ["review-1"]
     assert all(row["minted_from"] == "factory_default" for row in _reviewers(items))
     assert not {row.target_id for row in pool} & set(OPENROUTER_REVIEW_DEFAULTS["triad"])
     (outcome,) = cfg.review_pool_migrations_seen()
@@ -1051,7 +1051,7 @@ def test_n1_the_ui_saved_n_minus_1_document_does_not_shadow_an_environment_catal
     assert settings[SUBAGENTS] == unmarked and rs.review_pool_rows(settings) == []
     assert rs.review_pool_state(settings[SUBAGENTS]) == {"state": "empty", "error": ""}
     facts = block(settings)
-    assert (facts["source"], facts["pool_empty"], facts["pool"], facts["error"]) == ("empty", True, [], "")
+    assert (facts["source"], facts["pool_empty"], facts["error"], facts["main_self_review"]) == ("empty", True, "", True)
     assert "migration_snapshot" not in facts, "the environment's pool was not decided by the document's migration"
 
     monkeypatch.delenv(SUBAGENTS)
@@ -1176,25 +1176,25 @@ def test_package_a_factory_rows_seam_is_the_one_factory_source(monkeypatch):
     ("local-only", {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local.gguf", "OUROBOROS_MODEL": "owner/local-main"}),
     ("compatible-only", {"OPENAI_COMPATIBLE_BASE_URL": "https://llm.example/v1", "OUROBOROS_MODEL": "openai-compatible::glm-5.3"}),
 ])
-def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(install, main):
-    """I3-1: the factory pool of a local-only or compatible-only install (cells (A,0),
-    (C,0), (D,0), (E,0)) is what those installs ran — three independent seats of
-    Main (twins, quorum 2 of 3) — through package A's bound seam, so the migration
-    and a fresh onboarding mint one shape; an OpenRouter install keeps three models."""
+def test_factory_cells_of_a_one_model_install_mint_main_once(install, main):
+    """I3-1 after owner Q5=A: the factory pool of a local-only or compatible-only install
+    (cells (A,0), (C,0), (D,0), (E,0)) is ONE seat of Main, never copies of it (each copy
+    paid a run and added no second opinion; quorum 1 of 1), through package A's bound seam,
+    so the migration and a fresh onboarding mint one shape; OpenRouter keeps three models."""
     from ouroboros.review_model_routes import adaptive_quorum
 
     target = main["OUROBOROS_MODEL"] + (" (local)" if install == "local-only" else "")  # the full route identity
     outcome, after = _migrated({SLOTS: "", **main})
     marked = [row for row in after["items"] if row.get("review_eligible")]
-    assert [row["subagent_id"] for row in marked] == ["review-1", "review-2", "review-3"], install
-    assert [row["route"]["target_id"] for row in marked] == [target] * 3, install
+    assert [row["subagent_id"] for row in marked] == ["review-1"], install
+    assert [row["route"]["target_id"] for row in marked] == [target], install
     assert all(row["minted_from"] == "factory_default" and row["effort"] == "high" for row in marked), install
-    assert outcome.snapshot["summary"]["rows_marked_after"] == 3 and adaptive_quorum(len(marked)) == 2
-    assert outcome.snapshot["summary"]["distinct_models"] == 1, "twins are one engine, disclosed"
-    # The same seam on an existing catalog with one row of that engine: marked, not twinned (F6).
+    assert outcome.snapshot["summary"]["rows_marked_after"] == 1 and adaptive_quorum(len(marked)) == 1
+    assert outcome.snapshot["summary"]["distinct_models"] == 1
+    # The same seam on an existing catalog with one row of that engine: that row is marked, nothing minted (F6).
     twin = api_row("mine", target, "high")
     _outcome, after = _migrated({SLOTS: "", SUBAGENTS: catalog(twin), **main})
-    assert _marked(after["items"]) == ["mine", "review-1", "review-2"], install
+    assert _marked(after["items"]) == ["mine"] and len(after["items"]) == 1, install
     # OpenRouter: three different models, as before.
     _outcome, after = _migrated({SLOTS: "", "OPENROUTER_API_KEY": "present"})
     assert [r["route"]["target_id"] for r in after["items"] if r.get("review_eligible")] == list(
@@ -1204,7 +1204,7 @@ def test_factory_cells_of_a_one_model_install_mint_the_three_runs_of_main(instal
 @pytest.mark.parametrize("install, document, seats", [
     ("local Main behind a dead OPENAI_BASE_URL (D1-V04)",
      {"USE_LOCAL_MAIN": True, "LOCAL_MODEL_SOURCE": "owner/local.gguf", "OUROBOROS_MODEL": "local-demo",
-      "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, 3),
+      "OPENAI_BASE_URL": "http://127.0.0.1:9/v1"}, 1),
     ("one direct key beside an OpenRouter-style Main (the Colab re-run over N-1)",
      {"OPENAI_API_KEY": "present", "OUROBOROS_MODEL": "anthropic/claude-opus-5"}, 0),
 ])
@@ -1231,7 +1231,7 @@ def test_d1_v04_a_document_without_lanes_gets_exactly_the_factory_rows_from_one_
         outcome, after = _migrated({**document, **lanes_cell})
         marked = [row for row in after["items"] if row.get("review_eligible")]
         assert [row["route"]["target_id"] for row in marked] == targets, (install, lanes_cell)
-        assert len(marked) == 3 and outcome.snapshot["summary"]["seats_before"] == 3, (install, lanes_cell)
+        assert len(marked) == seats and outcome.snapshot["summary"]["seats_before"] == seats, (install, lanes_cell)
         # Only the never-configured cell (no lanes key) adds the wizard's unmarked Auto helpers;
         # the historical blank-lanes cell migrates exactly as it did.
         helpers = [row["subagent_id"] for row in after["items"] if not row.get("review_eligible")]
@@ -1435,7 +1435,7 @@ def test_n1_the_boot_notice_names_the_environment_pool_in_force_not_the_minted_r
 
     text = boot_with(catalog(api_row("helper", "env/model", "high")))
     assert "is in force" in text and "the review pool is empty (pool_empty)" in text
-    assert "will not run and will report not performed" in text and not any(claim in text for claim in minted_claims)
+    assert "the Main model reviews alone" in text and not any(claim in text for claim in minted_claims)
 
     text = boot_with(None)
     assert "is in force" not in text and "pool_empty" not in text

@@ -133,12 +133,12 @@ def test_actual_presence_and_cached_read_keep_authored_speech_and_owner_notice_s
         response = host_service._presence_exception(err, 409)
         body = json.loads(response.body)
         assert response.status_code == 409 and body["code"] == "presence_attempt_outcome_unknown"
-        assert body["disposition"] == "retry" and not body.get("text") and "outcome" not in body
+        assert body["disposition"] == "retained" and not body.get("text") and "outcome" not in body
         assert body["error"] == "presence_attempt_outcome_unknown: source_event_id"
         assert (body["turn_ref"], body["work_ref"]) == (task_id, "next-task")
         assert all(RAW not in str(value) and notice not in str(value) for value in body.values())
-    # each refusal consults the owner-notice writer (mocked here; production dedups on
-    # presence_recovery_owner_notified, so the owner hears it once)
+    # Each refusal consults the recovery-fact writer (mocked here); production deduplicates
+    # its nonfinal room observation through presence_recovery_recorded, without owner speech.
     assert notices == [task_id] * 2
     view = presence_result_from_stored(stored, task_id)
     assert (view.outcome, view.text, view.work_ref) == ("silent", "", "next-task")

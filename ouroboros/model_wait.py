@@ -46,7 +46,7 @@ from typing import Any, Callable, Iterator
 
 from ouroboros.usage_accounting import current_usage_scope
 from ouroboros.task_store import patch_handoff, put_handoffs
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import utc_now_iso
 
 
 class ModelWaitInterrupted(RuntimeError):
@@ -221,6 +221,13 @@ def stamp_execution_handoff(successor: dict, meta: dict | None, now: float | Non
     successor["_execution_handoff_sec"] = execution_elapsed_seconds(closed, time.time() if now is None else now)
 
 
+def native_sleep_started_at(handoff: Any) -> float | None:
+    """The selected native sleep's recorded open start; absent/invalid is unknown."""
+    started = handoff.get("sleep_started_at") if isinstance(handoff, dict) and handoff.get("reason") == "sleep" else None
+    return float(started) if (isinstance(started, (int, float)) and not isinstance(started, bool)
+                             and math.isfinite(started) and started > 0) else None
+
+
 def settle_execution_carry(task: dict, *, origin_preserved: bool) -> float:
     """Settle the ended total once at handoff, excluding queued time for #939."""
     handoff = task.pop("_execution_handoff_sec", None)
@@ -235,7 +242,11 @@ def settle_execution_carry(task: dict, *, origin_preserved: bool) -> float:
                 key = next(key for key in ("_owner_wait_resume", "_budget_pause_resume", "_working_recovery")
                            if task.get(key))
                 resume = dict(task[key])
-                queued = max(0.0, execution_elapsed_seconds({**resume, "task": task}, time.time()) - total)
+                # A returning native sleep already owns the interval across stop/boot;
+                # it cannot also become a closed queue exclusion at this assignment.
+                sleeping = native_sleep_started_at(resume) if key == "_owner_wait_resume" else None
+                queued = max(0.0, execution_elapsed_seconds(
+                    {**resume, "task": task, "sleep_parked_at": sleeping}, time.time()) - total)
                 resume["budget_paused_sec"] = budget_paused_seconds(resume) + queued
                 task[key] = resume
     return execution_consumed_seconds(task)
@@ -737,6 +748,12 @@ class TaskModelWait:
             self.revision += 1
             row["revision"] = self.revision
             row["updated_at"] = utc_now_iso()
+            # The live owner knows whether this call has a non-generating access
+            # observer. A reset forecast alone cannot resume an API-only call;
+            # mixed auth/quota with a viable automatic route needs no human.
+            row["requires_owner_action"] = bool(row["state"] == "waiting" and (
+                row.get("reason") == "auth" or row.get("auto_continue") is False
+                or not row.get("source") or row.get("_unproven_account")))
             if applied_request_id:
                 row["applied_request_id"] = applied_request_id
             if applied_request_id or row["state"] == "resolved":
@@ -765,7 +782,9 @@ class TaskModelWait:
         if self.event_queue is not None:
             self.event_queue.put(event)
         else:
-            append_jsonl(pathlib.Path(self.canonical_root) / "logs" / "progress.jsonl", event)
+            from ouroboros import dialogue_store
+
+            dialogue_store.append_quietly(pathlib.Path(self.canonical_root), "progress", event)
 
     def _drain_controls(self) -> None:
         from ouroboros.owner_mailbox import KIND_MODEL_WAIT, _mailbox_path, drain_owner_entries
@@ -857,6 +876,7 @@ class TaskModelWait:
             reason == "quota" and not account_intent and getattr(error, "status_code", 0)
             and getattr(getattr(error, "physical_attempt_capture", None), "state", None) == "settled"
             and not (problem_context.get("resetsAt") or problem_context.get("retryAfterMs"))) else ""
+        row["_unproven_account"] = unproven
         with self.lock:
             self.waits[wait_id] = row
         if quota_wait:
@@ -929,6 +949,15 @@ class TaskModelWait:
                 self.quota_leave(wait_id, slot_id)
             row.update(state="resolved", resolution=resolution)
             self._publish(row, applied_request_id=request_id)
+            if resolution in {"resource_available", "model_switched", "retry_requested"} and (
+                    self.tool_context is not None or "review_operation" in self.row_facts):
+                from types import SimpleNamespace
+
+                from ouroboros.model_sleep import announce_resumed
+
+                # The call goes on: the author's own, or a reviewer's for the task its panel serves.
+                announce_resumed(self.tool_context or SimpleNamespace(
+                    event_queue=self.event_queue, task_id=self.task_id, current_chat_id=self.task.get("chat_id")))
 
     def bind_answer_consumer(self) -> dict:
         """Bind this local receiver before dispatch; birth absence grants no death recovery."""
@@ -965,8 +994,15 @@ class TaskModelWait:
     def close(self) -> None:
         with self.lock:
             self.closed = True
-            if not self.answer_consumer_bound:
-                return
+            bound = self.answer_consumer_bound
+        from types import SimpleNamespace
+        from ouroboros.budget_pause import forget_tool_scope
+        # Native review scopes may never enter loop cleanup. Use THIS frozen
+        # owner even when close is called under a different current context.
+        forget_tool_scope(SimpleNamespace(drive_root=self.canonical_root, task_id=self.task_id),
+                          attempt=self.attempt)
+        if not bound:
+            return
         # Positive retirement of THIS consumer, not terminal task status, PID
         # absence or the pool's current assignment. Cash and remote custody stay.
         try:

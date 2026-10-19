@@ -54,6 +54,14 @@ def _owned_gateway_uses_each_test_transport(monkeypatch):
         "ensure_owned_gateway",
         lambda: gateway_module.ClaudexorGateway(),
     )
+    # The fixture models a SERVING daemon, so the attach-only release surfaces
+    # (loop exit, kill boundaries) reach the same test transport the admitted
+    # sweep does; neither starts anything here.
+    monkeypatch.setattr(
+        claudexor_daemon,
+        "read_owned_gateway",
+        lambda **_kw: gateway_module.ClaudexorGateway(),
+    )
     original_actor = delegate.prepare_delegate_start_actor
 
     def explicit_transport_actor(ctx, drive_root, **kwargs):
@@ -116,6 +124,12 @@ class _HealthStub:
             "constraints": [{"used_ratio": 1.0, "resets_at": self.reset_at}],
         }]
 
+    def quota_state(self, *, model=None, request_kind="text", **_kw):
+        return {"snapshots": [{**row, "availability": {
+            "state": "exhausted" if self.reset_at else "available", "resets_at": self.reset_at or None,
+        }} for row in self.quota_snapshots()], "absences": [],
+            "availability_scope": {"model": model, "requestKind": request_kind, "basis": "quota_block"}}
+
     def close(self): pass
 
 
@@ -171,6 +185,11 @@ def _delegating_ctx(tmp_path, *, acting: bool, task_id: str = "t-nanny"):
         ctx.workspace_mode = "self_worktree"
     ctx.task_id = task_id
     ctx.task_metadata = {"root_task_id": "t-root", "parent_task_id": "t-root"}
+    # A child's root exists before the child runs: its lineage is the delegated start's billing
+    # authority (a missing root is refused, never a stand-in bucket).
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(tmp_path, "t-root") is None:
+        write_task_result(tmp_path, "t-root", "running", root_task_id="t-root")
     return ctx
 
 
@@ -233,6 +252,9 @@ def _plain_ctx(tmp_path):
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "t-nanny"
     ctx.task_metadata = {"root_task_id": "t-root", "parent_task_id": "t-root"}
+    from ouroboros.task_results import load_task_result, write_task_result
+    if load_task_result(tmp_path, "t-root") is None:  # the nanny's real root
+        write_task_result(tmp_path, "t-root", "running", root_task_id="t-root")
     return ctx
 
 

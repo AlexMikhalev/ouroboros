@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from ouroboros import delegate_custody as custody
+from ouroboros import delegate_custody as custody, store
 from ouroboros.store import STORE_REL
 from ouroboros.task_results import write_task_result
 from ouroboros.subagent_worktrees import (
@@ -108,13 +108,15 @@ class TestRemoveAndGC:
         assert find_execution_snapshot("snapR", data_dir=data) is None
         assert _git(target, "rev-parse", handle.baseline_ref, check=False).returncode != 0
 
-    def test_gc_keeps_open_snapshots_and_removes_closed_ones(self, tmp_path):
+    def test_gc_keeps_open_snapshots_and_removes_closed_ones(self, tmp_path, monkeypatch):
         target = _seed_target(tmp_path)
         snaps, data = tmp_path / "snaps", tmp_path / "data"
         provision_execution_snapshot(target_root=target, task_id="t1",
                                      snapshot_id="open1", worktree_root=snaps, data_dir=data)
         provision_execution_snapshot(target_root=target, task_id="t1",
                                      snapshot_id="closed1", worktree_root=snaps, data_dir=data)
+        write_task_result(data, "t1", "completed")
+        monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
         report = prune_execution_snapshots({"open1"}, worktree_root=snaps, data_dir=data)
         assert report["kept"] == ["open1"] and report["removed"] == ["closed1"]
         assert find_execution_snapshot("open1", data_dir=data) is not None
@@ -620,14 +622,14 @@ class TestOrphanReconciliation:
         # Blocker 1: the worker died between the accepted POST and record_started.
         # Recovery used to rebuild custody WITHOUT the C1 binding, so the recovered
         # run replayed bindingless, open_snapshot_ids went empty the moment the
-        # invocation stopped being pending, and the startup GC deleted the snapshot
+        # invocation stopped being pending, and the custody GC deleted the snapshot
         # holding the child's ONLY copy of its work.
         target, data, handle = self._stranded(
             tmp_path, snapshot_id="inv-lost", task_id="t-dead", started=False)
         assert custody.open_snapshot_ids(data) == {"inv-lost"}
 
         outcomes = custody.reconcile_orphaned_runs(
-            data, set(), gateway_factory=lambda: _TerminalSweepGateway("run-rec"))
+            data, set(), gateway_factory=lambda: _TerminalSweepGateway("run-rec"), replay_pending=lambda: True)
         custody._CUSTODY.clear()
         assert [o["action"] for o in outcomes] == ["settle_attempted"]
         assert outcomes[0]["settled"] is True
@@ -638,7 +640,7 @@ class TestOrphanReconciliation:
         assert replayed.baseline_sha == handle.baseline_sha
         assert replayed.target_root == handle.target_root
         assert replayed.authority_source == "acting_constraint"
-        # Undisposed -> still OPEN to custody, so the startup GC keeps everything.
+        # Undisposed -> still OPEN to custody, so custody GC keeps everything.
         assert "inv-lost" in custody.open_snapshot_ids(data)
         report = prune_execution_snapshots(custody.open_snapshot_ids(data),
                                            worktree_root=tmp_path / "snaps", data_dir=data)
@@ -705,10 +707,8 @@ class TestOrphanReconciliation:
                     / "workspace.patch").exists()
         custody._CUSTODY.clear()
 
-    def test_gc_requires_a_closed_run_and_a_recorded_disposition(self, tmp_path):
-        # The GC predicate, end to end against real snapshots: settled+disposed is
-        # the ONLY disposable combination; settled-but-undisposed (the orphan
-        # shape) is preserved.
+    def test_gc_requires_a_closed_run_and_a_recorded_disposition(self, tmp_path, monkeypatch):
+        # Even for a task proven over, its settled but undisposed snapshot stays.
         target, data, handle = self._stranded(
             tmp_path, snapshot_id="inv-und", task_id="t-und")
         done = provision_execution_snapshot(
@@ -719,6 +719,8 @@ class TestOrphanReconciliation:
         custody.record_started(data, entry)
         custody.emit(data, custody.SETTLED, {"run_id": "run-done", "task_id": "t-done"})
         custody.record_patch_disposed(data, entry, disposition="applied")
+        write_task_result(data, "t-done", "completed")
+        monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
         custody.reconcile_orphaned_runs(
             data, {"t-done"}, gateway_factory=lambda: _TerminalSweepGateway("run-inv-und"))
         custody._CUSTODY.clear()
@@ -897,7 +899,11 @@ class TestLazyCaptureAtDisposition:
         (exec_root / "tracked.txt").write_text(
             "one\ntwo\nEARLY-EDIT\nLATE-WRITE\n", encoding="utf-8")
         custody._CUSTODY.clear()
-        out = _integrate_delegated_patch(ctx, "run-lazy", "apply", "collect the orphan")
+        shown = _integrate_delegated_patch(ctx, "run-lazy", "apply", "collect the orphan")
+        assert "INTEGRATE_DELEGATED_INSPECT_CAPTURE" in shown and "LATE-WRITE" in pathlib.Path(
+            json.loads(shown.split("\n", 1)[1])["patch_artifact"]).read_text(encoding="utf-8"), shown
+        assert "LATE-WRITE" not in (target / "tracked.txt").read_text(encoding="utf-8")  # prepared, not applied
+        out = _integrate_delegated_patch(ctx, "run-lazy", "apply", "inspected")
         assert "✅ Integrated" in out, out
         applied = (target / "tracked.txt").read_text(encoding="utf-8")
         assert "LATE-WRITE" in applied and "EARLY-EDIT" in applied
@@ -1157,12 +1163,10 @@ class TestCaptureHonesty:
 
 
 class TestStartupGCFailClosed:
-    """CR1-1: the startup GC must not destroy open snapshots when the custody
-    log is unreadable. `_iter_rows` swallows OSError (right for the fail-soft
-    readers), so an unreadable log replayed as "no open runs", the keep-set
-    went empty, and `prune_execution_snapshots` deleted live, never-captured
-    work. GC deletes only over PROVEN settled && patch_disposed; UNKNOWN
-    custody state skips the destructive prune and says so loudly."""
+    """CR1-1: each custody pass fails closed when snapshot custody is unreadable.
+    A fail-soft keep-set alone can read unknown as empty. Retirement needs both
+    proven-over task ownership and closed/disposed custody; disclose a skipped pass.
+    """
 
     def _server_gc(self, tmp_path, monkeypatch):
         data, snaps = tmp_path / "data", tmp_path / "snaps"
@@ -1189,7 +1193,7 @@ class TestStartupGCFailClosed:
         custody._CUSTODY.clear()
         assert "gc-open" in custody.open_snapshot_ids(data)
         events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
-        store_path.chmod(0o000)  # the custody rows EXIST but cannot be READ: typed unreadable
+        store_path.chmod(0o000), store.close_connections()  # the custody rows EXIST but cannot be READ
         try:
             assert custody.custody_log_unreadable(data)
             srv._prune_delegated_snapshots()
@@ -1223,7 +1227,7 @@ class TestStartupGCFailClosed:
         assert custody.record_started(data, entry)
         custody._CUSTODY.clear()
         events, store_path = data / "logs" / "events.jsonl", data / STORE_REL
-        store_path.chmod(0o000)  # the custody rows cannot be read...
+        store_path.chmod(0o000), store.close_connections()  # the custody rows cannot be read...
         events.chmod(0o000)  # ...and the chain cannot take the skip row
         try:
             with caplog.at_level(logging.ERROR, logger="server"):
@@ -1251,6 +1255,8 @@ class TestStartupGCFailClosed:
         custody.record_started(data, done)
         custody.emit(data, custody.SETTLED, {"run_id": "run-done", "task_id": "t-gc2"})
         custody.record_patch_disposed(data, done, disposition="applied")
+        write_task_result(data, "t-gc2", "completed")
+        monkeypatch.setattr("supervisor.queue.task_settlement_liveness", lambda _task: False)
         custody._CUSTODY.clear()
         srv._prune_delegated_snapshots()
         assert find_execution_snapshot("gc-done", data_dir=data) is None
@@ -1327,20 +1333,13 @@ class TestApplyIntentAmbiguity:
     of pretending "not applied"."""
 
     def _settled_run(self, tmp_path, monkeypatch, *, snapshot_id, run_id):
-        target = _seed_target(tmp_path)
-        ctx = _nanny_ctx(tmp_path, target, monkeypatch)
-        handle = provision_execution_snapshot(
-            target_root=target, task_id="t-nanny", snapshot_id=snapshot_id)
-        (pathlib.Path(handle.path) / "tracked.txt").write_text(
-            "one\ntwo\nCHILD-EDIT\n", encoding="utf-8")
-        drive = custody.custody_root(ctx)
-        entry = custody.RunCustody(
-            run_id=run_id, task_id="t-nanny", route_id="some-route",
-            snapshot_id=handle.snapshot_id, execution_root=handle.path,
-            baseline_sha=handle.baseline_sha, target_root=str(target),
-            authority_source="external_workspace_root")
-        assert custody.record_started(drive, entry)
-        custody.emit(drive, custody.SETTLED, {"run_id": run_id, "task_id": "t-nanny"})
+        """The same settled run, captured by the body before any decision: a capture prepared BY
+        a decision is returned for inspection first (#1969), which these crash tests do not probe."""
+        from ouroboros.tools.delegate_integration import capture_terminal_patch_for_drive
+
+        target, ctx, handle, drive = TestCaptureHonesty._settled_run(
+            self, tmp_path, monkeypatch, snapshot_id=snapshot_id, run_id=run_id)
+        assert capture_terminal_patch_for_drive(drive, custody.replay(drive)[run_id])["status"] == "ready_with_changes"
         custody._CUSTODY.clear()
         return target, ctx, handle, drive
 

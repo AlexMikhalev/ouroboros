@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from ouroboros.extension_loader import list_routes, snapshot
+from ouroboros.gateway.contributions import contribution_catalog
 from ouroboros.gateway._helpers import (
     coerce_bool,
     json_error,
@@ -23,7 +24,6 @@ from ouroboros.gateway._helpers import (
     request_repo_dir as _request_repo_dir,
 )
 from ouroboros.gateway.extension_receipts import extension_process_receipt, extension_reconcile_receipt
-from ouroboros.marketplace.ouroboroshub import display_catalog_files
 from ouroboros.skill_lifecycle_queue import (
     queue_snapshot,
     run_blocking_preserving_cancellation,
@@ -113,31 +113,12 @@ async def _read_child_dispatch_body(request: Request) -> bytes:
 def _review_fields(
     loaded: Any, *, stale: bool | None = None, gate: dict[str, Any] | None = None,
     github_token_configured: bool | None = None,
-    hub_catalog_files: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stale = loaded.review.is_stale_for(loaded.content_hash) if stale is None else stale
     gate = loaded.review.gate_for(loaded.content_hash) if gate is None else gate
-    source = str(getattr(loaded, "source", "") or "")
-    # Hub hint: matched against the display-plane catalog view (§7.1a) the caller
-    # peeked, never fetched here — a local listing must not wait for the network.
-    # None = no fresh view yet; the page re-reads once its own catalog read lands.
-    # With a view, an unreadable payload is a definitive negative for THIS row —
-    # never a 500 for the whole listing.
-    official_hub_verified: bool | None = False
-    if source == "ouroboroshub":
-        from ouroboros.skill_review import hub_payload_matches
-
-        if hub_catalog_files is None:
-            official_hub_verified = None
-        else:
-            try:
-                official_hub_verified = hub_payload_matches(loaded, hub_catalog_files.__getitem__)
-            except Exception:
-                official_hub_verified = False
-    owner_attestable = official_hub_verified if source == "ouroboroshub" else (
-        source not in {"native", "clawhub"}
-        and (source == "external" or bool(getattr(loaded, "is_self_authored", False)))
-    )
+    # The owner may skip the review for the exact bytes of a skill from any origin
+    # (skill_owner_attestation); the endpoint repeats the authoritative checks.
+    owner_attestable = not loaded.load_error and bool(loaded.content_hash)
     # FR1: the host computes the single Submit-to-Hub eligibility verdict so the card
     # renders it instead of recomputing a divergent clean-only rule (the SSOT shared with
     # the backend gate). The github-token check is request-INVARIANT, so the index builder
@@ -160,7 +141,6 @@ def _review_fields(
         # from a normal LLM-clean verdict, and hide the "Skip review" action once attested.
         "review_profile": getattr(loaded.review, "review_profile", ""),
         # UI hint only: the owner-attestation endpoint repeats the authoritative checks.
-        "official_hub_verified": official_hub_verified,
         "owner_attestable": owner_attestable,
         # FR1: SSOT publish-eligibility verdict {visible, disabled, reason}.
         "submit_hub": submit_hub,
@@ -239,8 +219,9 @@ def _build_extensions_index(drive_root, repo_path):
     from ouroboros.extension_loader import extension_name_prefix, runtime_state_for_loaded_skill
 
     live_snapshot = snapshot()
-    live_routes = list_routes()
-    hub_catalog_files = display_catalog_files()  # one view per response, never a fetch
+    from ouroboros.skill_source_catalog import listing_install_fields, listing_snapshots
+
+    source_snapshots = listing_snapshots(drive_root)  # cached catalogs only, never a fetch
     # Scan data plane plus optional external checkout; bootstrap copies native refs.
     skills = discover_skills(drive_root, repo_path=repo_path)
     unique_skills = [
@@ -342,7 +323,6 @@ def _build_extensions_index(drive_root, repo_path):
                 "review_gate": gate,
                 "executable_review": False,
                 "review_profile": "",
-                "official_hub_verified": False,
                 "owner_attestable": False,
                 "submit_hub": _passive_submit_hub(
                     s,
@@ -358,6 +338,8 @@ def _build_extensions_index(drive_root, repo_path):
                 "review_findings": [],
                 "skill_review": {},
                 "grants": {},
+                "install": None,
+                "category": [],
             })
             catalog.append(entry)
             continue
@@ -365,8 +347,9 @@ def _build_extensions_index(drive_root, repo_path):
         health = read_extension_health(drive_root, s.name) if s.manifest.is_extension() else None
         entry.update({
             **_review_fields(
-                s, github_token_configured=_gh_token_configured, hub_catalog_files=hub_catalog_files,
+                s, github_token_configured=_gh_token_configured,
             ),
+            **listing_install_fields(drive_root, s, source_snapshots),
             "conflict": skill_conflict_status(s, skills),
             "load_error": runtime_states.get(s.name, {}).get("load_error", s.load_error),
             "desired_live": runtime_states.get(s.name, {}).get("desired_live", False),
@@ -392,17 +375,6 @@ def _build_extensions_index(drive_root, repo_path):
                 else grant_status_for_skill(drive_root, s)
             ),
         })
-        # A declaration alone cannot light the composer. This is the passive,
-        # change-relative projection of a currently executable registered POST
-        # route. The route dispatch independently repeats its live skill gate.
-        voice = getattr(s.manifest, "voice_input", None)
-        voice_route = f"/api/extensions/{s.name}/{voice['route']}" if voice else ""
-        live_route = live_routes.get(voice_route) if voice_route else None
-        if (voice and s.enabled and entry["executable_review"]
-                and entry["desired_live"] and entry["live_loaded"]
-                and live_route and "POST" in live_route.get("methods", ())
-                and live_route.get("skill") == s.name):
-            entry["voice_input"] = {**voice, "route_url": voice_route}
         presence_runtime = presence_runtime_card_projection(drive_root, s)
         if presence_runtime is not None:
             entry["presence_runtime"] = presence_runtime
@@ -444,7 +416,8 @@ def _build_extensions_index(drive_root, repo_path):
                         "registry_url": prov.get("registry_url", ""),
                     })
         catalog.append(entry)
-    return {"skills": catalog, "live": live_snapshot}
+    return {"skills": catalog, "live": live_snapshot,
+            **contribution_catalog(drive_root, repo_path, skills=skills, live=live_snapshot)}
 
 
 async def api_extension_manifest(request: Request) -> JSONResponse:
@@ -469,10 +442,7 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
     load_error = runtime_state.get("load_error")
     if not isinstance(load_error, str) or not load_error.strip():
         load_error = loaded.load_error
-    # The hub hint hashes payload bytes: off the event loop, like the index.
-    review_fields = await asyncio.to_thread(
-        lambda: _review_fields(loaded, hub_catalog_files=display_catalog_files()),
-    )
+    review_fields = await asyncio.to_thread(lambda: _review_fields(loaded))
     return JSONResponse(
         {
             "name": loaded.name,
@@ -487,6 +457,7 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
                 "env_from_settings": list(loaded.manifest.env_from_settings or []),
                 "scheduled_tasks": list(getattr(loaded.manifest, "scheduled_tasks", []) or []),
                 "ui_tab": loaded.manifest.ui_tab,
+                "contributes": list(getattr(loaded.manifest, "contributes", []) or []),
             },
             "enabled": loaded.enabled,
             **review_fields,
@@ -732,7 +703,8 @@ async def _run_owner_skill_action(request: Request, skill_name: str, action: str
         repo_path=get_skills_repo_path(), _owner_actor="owner_ui",
         log_label=f"skill {action} lifecycle operation",
     )
-    _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action"), payload.get("extension_reason"))
+    if not payload.get("error"):
+        _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action") or action, payload.get("extension_reason"))
     return payload
 
 

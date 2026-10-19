@@ -112,10 +112,10 @@ def list_candidates(data_dir: Optional[Any] = None) -> List[Dict[str, Any]]:
     return _rows(data_dir)
 
 
-def find(owner: str, data_dir: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+def find(owner: str, data_dir: Optional[Any] = None, *, strict: bool = False) -> Optional[Dict[str, Any]]:
     owner = str(owner or "").strip()
-    for row in _rows(data_dir) if owner else []:
-        if row.get("task_id") == owner:
+    for row in _rows(data_dir, strict=strict) if owner else []:
+        if row.get("task_id") == owner and not row.get("retiring"):
             return row
     return None
 
@@ -125,8 +125,10 @@ def context_fact(owner: str = "", data_dir: Optional[Any] = None, *, limit: int 
 
     The mind sees what exists and who owns it, so continuing one is a deliberate
     ``prepare_self_change(resume=...)`` and never an inference from a room or a date.
+    A candidate the GC is retiring is left out: no resume would accept it.
     """
-    rows = sorted(list_candidates(data_dir), key=lambda row: float(row.get("created_at") or 0), reverse=True)
+    rows = sorted((row for row in list_candidates(data_dir) if not row.get("retiring")),
+                  key=lambda row: float(row.get("created_at") or 0), reverse=True)
     shown: List[Dict[str, Any]] = [{
         "id": row.get("candidate_id"), "owner_task": row.get("task_id"), "branch": row.get("branch"),
         "path": row.get("path"), "base": str(row.get("base_sha") or "")[:12],
@@ -141,7 +143,8 @@ def context_fact(owner: str = "", data_dir: Optional[Any] = None, *, limit: int 
 def _select(selector: str, data_dir: Optional[Any] = None) -> Optional[Dict[str, Any]]:
     selector = str(selector or "").strip()
     for row in _rows(data_dir) if selector else []:
-        if selector in (row.get("candidate_id"), row.get("task_id"), row.get("path"), row.get("branch")):
+        if not row.get("retiring") and selector in (
+                row.get("candidate_id"), row.get("task_id"), row.get("path"), row.get("branch")):
             return row
     return None
 
@@ -223,6 +226,8 @@ def _update_row(row: Dict[str, Any], change, data_dir: Optional[Any] = None) -> 
         entries = _wt._load_registry(data_dir, strict=True, op="update_body_candidate")
         for entry in entries:
             if entry.get("kind") == KIND and entry.get("path") == row.get("path"):
+                if entry.get("retiring"):
+                    raise CandidateRefused("CANDIDATE_MISSING", "the candidate is being retired; nothing was changed.")
                 change(entry)
                 _wt._save_registry(entries, data_dir)
                 return dict(entry)
@@ -315,10 +320,13 @@ def live_lineage_processes(results_root: Any, task_id: str) -> List[int]:
         return [-1]
 
 
-def _continuation_predecessor(ctx: Any) -> str:
-    contract = getattr(ctx, "task_contract", None)
+def continuation_predecessor(carrier: Any) -> str:
+    """The host-validated predecessor whose candidate ``prepare`` inherits: the contract's
+    source, or a queued row's admitted pointer before its worker projects it there."""
+    row = carrier if isinstance(carrier, dict) else {}
+    contract = row.get("task_contract") if row else getattr(carrier, "task_contract", None)
     authority = contract.get("predecessor_authority") if isinstance(contract, dict) else None
-    source = authority.get("source") if isinstance(authority, dict) else None
+    source = authority.get("source") if isinstance(authority, dict) else row.get("predecessor_authority_source")
     return str(source.get("task_id") or "").strip() if isinstance(source, dict) else ""
 
 
@@ -326,7 +334,7 @@ def _transfer(ctx: Any, row: Dict[str, Any], owner: str, *, via: str) -> Dict[st
     """Hand a retained candidate to this lineage once its previous owner has ended."""
     previous = str(row.get("task_id") or "")
     if previous == owner:
-        return row
+        return _update_row(row, lambda entry: None)  # recheck retirement even for an explicit self-resume
     if not _owner_is_terminal(ctx, previous):
         raise CandidateRefused(
             "CANDIDATE_OWNER_LIVE",
@@ -492,10 +500,15 @@ def _prepare_locked(ctx: Any, resume: str) -> Dict[str, Any]:
         row = _transfer(ctx, row, owner, via="explicit_resume")
     else:
         row = find(owner)
-        predecessor = _continuation_predecessor(ctx)
+        predecessor = continuation_predecessor(ctx)
         if row is None and predecessor and (inherited := find(predecessor)) is not None \
                 and pathlib.Path(str(inherited.get("path") or "")).is_dir():
-            row = _transfer(ctx, inherited, owner, via="continuation")
+            try:
+                row = _transfer(ctx, inherited, owner, via="continuation")
+            except CandidateRefused as exc:
+                if exc.code != "CANDIDATE_MISSING":
+                    raise
+                # GC won the decision lock after find: continue in a fresh checkout.
         lost_branch = ""
         if row is not None and not pathlib.Path(str(row.get("path") or "")).is_dir():
             # Nothing on disk to lose: start again; the old branch keeps its commits.

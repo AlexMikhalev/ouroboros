@@ -41,7 +41,7 @@ def _source(root, db, seconds):
         with store.open_store(root, write=False, wait_sec=seconds) as txn:
             if txn.phase() != store.PUBLISHED:
                 raise store.StoreRetired("current store is not published")
-            yield txn.meta("lock_tier") or store.TIER_ENFORCED
+            yield store.probe(root)[1]  # the owner's header protocol; metadata also carries mount identity
     elif db == "money":
         from ouroboros import usage_store
         with usage_store.hold(root, write=False, migrate=False, timeout_sec=seconds):
@@ -144,7 +144,7 @@ def run_sql(ctx, root, *, db, query, max_rows, max_bytes, snapshot, timeout_sec)
 
     repo = Path(__file__).resolve().parents[1]
     env = {key: value for key, value in os.environ.items()
-           if key in {"PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
+           if key.upper() in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
                       "LANG", "LC_ALL", "OUROBOROS_SETTINGS_PATH"}
            or key.startswith(CONTAINMENT_ENV_PREFIX)}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(repo),

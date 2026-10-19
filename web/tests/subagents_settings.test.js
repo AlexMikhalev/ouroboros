@@ -12,8 +12,9 @@ import {
     serializeRouteSpec,
 } from '../modules/route_editor_primitives.js';
 import {
-    ALLOW_EMPTY_REVIEW_POOL,
     MAX_AVAILABLE_SUBAGENTS,
+    REVIEWER_TICK_CAPTIONS,
+    applySubagentsSettings,
     availableSubagentsHasExplicitDraft,
     availableSubagentRowMarkup,
     availableSubagentsLoadValue,
@@ -24,48 +25,21 @@ import {
     generatedPreviewCanReplace,
     lastReviewRunText,
     parseAvailableSubagentsSetting,
+    destroySubagentsSection,
     renderSubagentsSection,
     reviewCostText,
-    reviewPoolErrors,
-    reviewPoolRows,
+    reviewerTickCaption,
     subagentSettingsFingerprint,
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { reviewTwinAllowed, rowMeta, rowStatus, rowTaskRun, sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
 import { revealNewRow } from '../modules/ui_helpers.js';
+import { accessEditorDom, apiRow, sessionRow, setting } from './helpers/subagents_editor.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
     new URL('./fixtures/available_subagents_contract.json', import.meta.url),
     'utf8',
 ));
-
-function apiRow(overrides = {}) {
-    return {
-        subagent_id: 'api_scout',
-        recommended_use: 'Fast independent research and verification.',
-        route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai/gpt-5.6-luna' },
-        effort: 'high',
-        ...overrides,
-    };
-}
-
-function sessionRow(overrides = {}) {
-    return {
-        subagent_id: 'codex_builder',
-        access: 'full',
-        recommended_use: 'Implementation in a real workspace.',
-        route: {
-            kind: ROUTE_KIND_AGENT_SESSION,
-            target_id: 'codex=gpt-5.6-sol-high',
-            credential_profile_id: 'koshak',
-        },
-        ...overrides,
-    };
-}
-
-function setting(items = [apiRow(), sessionRow()]) {
-    return { enabled: true, items };
-}
 
 // An edited catalog is judged for its review pool too; this row keeps that
 // pool non-empty on its own engine, so the twin rules under test stay alone.
@@ -76,8 +50,6 @@ function poolReviewer(overrides = {}) {
         review_eligible: true, ...overrides,
     });
 }
-
-const EMPTY_POOL_ERROR = 'No row is marked Reviewer. Mark at least one row, or tick “Save without reviewers”.';
 
 test('canonical parser accepts object or JSON and refuses unknown saved fields', () => {
     const objectResult = parseAvailableSubagentsSetting(setting());
@@ -511,9 +483,11 @@ test('session status uses model-scoped quota and keeps missing quota as not prov
     assert.doesNotMatch(availableSubagentRowMarkup(sessionRow(), state), /available now/);
 
     state.quotaKnown = true;
+    state.snapshot.availability_scope = { model: 'gpt-5.6-sol-high', requestKind: 'text', basis: 'quota_block' };
     state.snapshot.quota = [{
         subject: { harness: 'codex', subject_id: 'koshak' },
         freshness: 'fresh',
+        availability: { state: 'exhausted' },
         constraints: [{
             applies_to_models: ['gpt-5.6-sol'], used_ratio: 1, resets_at: '2099-01-01T00:00:00Z',
         }],
@@ -523,6 +497,8 @@ test('session status uses model-scoped quota and keeps missing quota as not prov
     assert.doesNotMatch(exhausted, /available now/);
 
     state.snapshot.quota[0].constraints[0].applies_to_models = ['other-model'];
+    assert.match(availableSubagentRowMarkup(sessionRow(), state), /pinned account koshak limit reached/);
+    state.snapshot.quota[0].availability.state = 'available';
     assert.match(availableSubagentRowMarkup(sessionRow(), state), /available now/);
 });
 
@@ -558,7 +534,7 @@ test('session render signature follows account-pool routing verdict changes', ()
     assert.notEqual(availableSubagentsRenderSignature(state), available);
 });
 
-test('session render signature expires a cooldown without a changed payload', () => {
+test('session render signature waits for an engine verdict instead of inferring cooldown expiry', () => {
     const cooldownUntil = Date.parse('2030-01-01T00:00:00Z');
     const state = {
         loaded: true, parseError: '', setting: setting(), baseline: 'saved',
@@ -582,8 +558,10 @@ test('session render signature expires a cooldown without a changed payload', ()
         },
     };
     const cooling = availableSubagentsRenderSignature(state, cooldownUntil - 1);
-    const healed = availableSubagentsRenderSignature(state, cooldownUntil + 1);
-    assert.notEqual(healed, cooling);
+    assert.equal(availableSubagentsRenderSignature(state, cooldownUntil + 1), cooling);
+    state.snapshot.availability_scope = { model: 'gpt-5.6-sol-high', requestKind: 'text', basis: 'quota_block' };
+    state.snapshot.quota[0].availability = { state: 'available' };
+    assert.notEqual(availableSubagentsRenderSignature(state, cooldownUntil + 1), cooling);
 });
 
 test('last actual execution uses the one typed receipt and only its exact actor id', () => {
@@ -730,6 +708,44 @@ test('Settings section keeps global task-authority controls beside the actor lis
     assert.doesNotMatch(html, /review lane|triad|scope review/i);
 });
 
+// IMPL_SPEC §5, verbatim: the Reviewer tick means whose agreement counts, said per saved strictness.
+const TICK = {
+    blocking: 'Counts toward review: every ticked reviewer checks each change Ouroboros makes to itself, each skill and each required result; a critical finding stops it.',
+    advisory: 'Counts when chosen: for each check Ouroboros asks one, several or all ticked reviewers and writes why; it never skips a check that is owed.',
+    cyber_pro: 'Trusted to judge: Ouroboros decides whom to ask, if anyone; reviews inform and never block.',
+};
+
+test('the Reviewer tick caption is one line per strictness; Cyber Pro Access outranks the enforcement it keeps', () => {
+    assert.deepEqual({ ...REVIEWER_TICK_CAPTIONS }, TICK);
+    assert.equal(reviewerTickCaption('blocking', 'advanced'), TICK.blocking);
+    assert.equal(reviewerTickCaption('blocking', 'light'), TICK.blocking);
+    assert.equal(reviewerTickCaption('advisory', 'pro'), TICK.advisory);
+    assert.equal(reviewerTickCaption('blocking', 'cyber_pro'), TICK.cyber_pro);
+    assert.equal(reviewerTickCaption('advisory', 'cyber_pro'), TICK.cyber_pro);
+    // The shipped defaults (advisory, advanced) when the document names neither.
+    assert.equal(reviewerTickCaption(undefined, undefined), TICK.advisory);
+    for (const caption of Object.values(TICK)) assert.doesNotMatch(caption, /\n/);
+});
+
+test('Settings paints the caption from the saved document it loads, and the every-change sentence is gone', () => {
+    destroySubagentsSection();
+    const html = renderSubagentsSection();
+    // Unknown until a document is loaded: an empty, hidden line claims no strictness.
+    assert.match(html, /<div class="settings-inline-note" data-reviewer-tick-caption hidden><\/div>/);
+    assert.doesNotMatch(html, /each of them reviews every change|composes the panel from the pool/);
+    assert.match(html, /an unmarked row Ouroboros asks is an adviser, heard but never counted/);
+    const caption = { textContent: '', hidden: true };
+    const doc = { querySelector: (selector) => (selector === '#subagents-section [data-reviewer-tick-caption]' ? caption : null) };
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking', OUROBOROS_RUNTIME_MODE: 'pro' }, doc);
+    assert.deepEqual(caption, { textContent: TICK.blocking, hidden: false });
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking', OUROBOROS_RUNTIME_MODE: 'cyber_pro' }, doc);
+    assert.equal(caption.textContent, TICK.cyber_pro);
+    applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'advisory', OUROBOROS_RUNTIME_MODE: 'advanced' }, doc);
+    assert.equal(caption.textContent, TICK.advisory);
+    // A page without the section (the wizard mounts the editor alone) is left untouched.
+    assert.doesNotThrow(() => applySubagentsSettings({ OUROBOROS_REVIEW_ENFORCEMENT: 'blocking' }, { querySelector: () => null }));
+});
+
 test('revealNewRow scrolls the shortest distance and focuses the named field without a second scroll', () => {
     // docs/DESIGN.md "List editors": a freshly added entry is scrolled into
     // view without animation and takes the caret. Both arguments are the
@@ -829,6 +845,7 @@ test('the verdict reads a reviewer row pin, spelled profile_id, not only the ros
     const state = {
         catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
         snapshot: {
+            availability_scope: { model: 'gpt-5.6-sol-high', requestKind: 'text', basis: 'quota_block' },
             harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
             profiles: { harnessAccounts: [], profiles: [{
                 profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true },
@@ -849,11 +866,13 @@ function pinnedAccountState(verification) {
     return {
         ...QUIET_STATE, catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
         snapshot: {
+            availability_scope: { model: 'gpt-5.6-sol-high', requestKind: 'text', basis: 'quota_block' },
             harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
             profiles: { harnessAccounts: [], profiles: [{
                 profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification },
             }] },
-            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh',
+                availability: { state: 'available' }, constraints: [] }],
         },
     };
 }
@@ -897,12 +916,14 @@ test('an unpinned verdict intersects the usable accounts with the accounts carry
     // works" and "some account has this model" were both true of DIFFERENT
     // accounts and the row still read Available.
     const snapshot = (models) => ({
+        availability_scope: { model: 'gpt-5.4', requestKind: 'text', basis: 'quota_block' },
         harnesses: [{ id: 'codex', status: 'ok', enabled: true, models }],
         profiles: { harnessAccounts: [], profiles: [
             { profile: { harness_id: 'codex', profile_id: 'gptopro6', enabled: true }, status: { verification: '' } },
             { profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification: 'passed' } },
         ] },
-        quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+        quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh',
+                availability: { state: 'available' }, constraints: [] }],
     });
     const facets = { catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '' };
     const row = { route: { kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-5.4', profile_id: '' } };
@@ -938,12 +959,14 @@ test('the card status is availability alone; saved/draft intent never repeats pe
         catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
         dirty: false, baseline: 'saved', saveAttempted: false,
         snapshot: {
+            availability_scope: { model: 'gpt-5.6-sol-high', requestKind: 'text', basis: 'quota_block' },
             harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
             profiles: { harnessAccounts: [], profiles: [{
                 profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true },
                 status: { verification: 'passed' },
             }] },
-            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh',
+                availability: { state: 'available' }, constraints: [] }],
         },
     };
     assert.match(availableSubagentRowMarkup(sessionRow(), live, 0),
@@ -996,69 +1019,6 @@ test('session access uses a named native select with a readable capability expla
     assert.match(both, /data-subagent-field="access"/);
     assert.match(both, /data-subagent-last-task><dt>Last task run<\/dt><dd>codex session · observed/);
 });
-
-// A small event surface for the real editor binder. Only the controls this
-// test operates are parsed; rendered geometry/chooser behavior is browser QA.
-function accessEditorDom() {
-    const field = (name) => ({
-        dataset: { subagentField: name }, attributes: {}, listeners: {},
-        addEventListener(type, handler) { this.listeners[type] = handler; },
-        setAttribute(name, value) { this.attributes[name] = value; },
-        emit(type, value) { this.listeners[type]({ target: { value } }); },
-        toggle(checked) { this.listeners.change({ target: { checked } }); },
-    });
-    let rows = [];
-    // The toolbar controls the real binder wires beside the rows, and the
-    // review-pool lines the painter fills in place.
-    const toolbar = { add: field('add'), listEnabled: field('listEnabled'), allowEmpty: field('allowEmpty') };
-    const pool = Object.fromEntries(['count', 'stays', 'empty', 'empty-text', 'confirm', 'note', 'history', 'history-text']
-        .map((name) => [name, { textContent: '', hidden: false }]));
-    const container = {
-        scrollTop: 0,
-        toolbar,
-        set innerHTML(html) {
-            rows = [...html.matchAll(/<article[^>]*data-subagent-row="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)].map((match) => {
-                const fields = new Map([...match[2].matchAll(/data-subagent-field="([^"]+)"/g)]
-                    .map((entry) => [entry[1], field(entry[1])]));
-                const duplicate = field('duplicate');
-                const meta = { dataset: {}, toggleAttribute() {}, textContent: '' };
-                const facts = { textContent: '' };
-                const notes = { textContent: '', hidden: true };
-                const status = { dataset: {}, textContent: '', title: '' };
-                const reason = { textContent: '', hidden: true };
-                const lastReview = { hidden: true, dd: { textContent: '' }, querySelector() { return this.dd; } };
-                return {
-                    dataset: { subagentRow: match[1] }, toggleAttribute() {}, meta, facts, notes, status, reason, lastReview, html: match[2],
-                    querySelector(selector) {
-                        if (selector === '[data-subagent-duplicate]') return duplicate;
-                        if (selector === '[data-subagent-meta]') return meta;
-                        if (selector === '[data-subagent-review-facts]') return facts;
-                        if (selector === '[data-subagent-review-notes]') return notes;
-                        if (selector === '[data-subagent-status]') return status;
-                        if (selector === '[data-subagent-status-reason]') return reason;
-                        if (selector === '[data-subagent-last-review]') return lastReview;
-                        return fields.get(selector.match(/data-subagent-field="([^"]+)"/)?.[1]) || null;
-                    },
-                    querySelectorAll: (selector) => selector === '[data-subagent-field]' ? [...fields.values()] : [],
-                };
-            });
-        },
-        querySelector(selector) {
-            if (selector === '[data-subagent-add]') return toolbar.add;
-            if (selector === '[data-subagents-enabled]') return toolbar.listEnabled;
-            if (selector === '[data-review-pool-allow-empty]') return toolbar.allowEmpty;
-            const line = selector.match(/^\[data-review-pool-([a-z-]+)\]$/)?.[1];
-            if (line) return pool[line] || null;
-            const key = selector.match(/data-subagent-row="([^"]+)"/)?.[1];
-            return rows.find((row) => row.dataset.subagentRow === key) || null;
-        },
-        querySelectorAll: (selector) => selector === '[data-subagent-row]' ? rows : [],
-    };
-    return {
-        doc: { getElementById: () => container }, toolbar, pool,
-        row: (index = 0) => rows[index],
-    };
-}
 
 test('access edit saves and clones the lower choice, resets for API and restores full', () => {
     const dom = accessEditorDom();
@@ -1371,7 +1331,7 @@ test('every card carries the Reviewer box and its Review cost; a marked API row 
         /data-subagent-review-exception>Switched off, so not in the review pool\.</);
 });
 
-test('a price is the route tariff or plainly unknown, and a seat is spoken as time, never as $0', () => {
+test('a price is what one review measured or plainly unknown, and a seat is spoken as time, never as $0', () => {
     const api = apiRow();
     assert.equal(reviewCostText(sessionRow()), 'uses a session seat and time');
     assert.equal(reviewCostText(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'claudexor::codex-models=gpt' } })),
@@ -1379,13 +1339,15 @@ test('a price is the route tariff or plainly unknown, and a seat is spoken as ti
     assert.equal(reviewCostText(api), 'price appears after saving');
     assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'unknown' }), 'cost unknown');
     assert.equal(reviewCostText(api, { usd_per_review: 0.5, basis: 'unknown' }), 'cost unknown');
-    assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'route_tariff' }), 'cost unknown');
-    assert.equal(reviewCostText(api, { usd_per_review: 0, basis: 'route_tariff' }), 'no API cost per review');
-    // One full call of the row, never a cap on a whole review: a reading reviewer makes several.
-    assert.equal(reviewCostText(api, { usd_per_review: 1.234, basis: 'route_tariff' }),
-        '≈$1.23 per full call (route tariff); a reading reviewer makes several');
-    assert.equal(reviewCostText(apiRow({ delivery: 'packet' }), { usd_per_review: 0.0042, basis: 'route_tariff' }),
-        '≈$0.0042 per full call (route tariff)');
+    assert.equal(reviewCostText(api, { usd_per_review: 0.5, basis: 'route_tariff' }), 'cost unknown', 'a one-call tariff is no price');
+    assert.equal(reviewCostText(api, { usd_per_review: null, basis: 'observed_reviews' }), 'cost unknown');
+    assert.equal(reviewCostText(api, { usd_per_review: 0, basis: 'observed_reviews', reviews: 4, low: 0, high: 0 }),
+        'no API cost per review');
+    // A whole review: every turn of the seat in one wave, the median of its measured reviews.
+    assert.equal(reviewCostText(api, { usd_per_review: 1.234, basis: 'observed_reviews', reviews: 7, low: 0.5, high: 3.1 }),
+        '≈$1.23 per review (median of 7 measured, $0.50–$3.10)');
+    assert.equal(reviewCostText(apiRow({ delivery: 'packet' }), { usd_per_review: 0.0042, basis: 'observed_reviews', reviews: 1,
+        low: 0.0042, high: 0.0042 }), '≈$0.0042 per review (1 measured)');
 });
 
 test('a minted row names its origin, and a copy keeps the mark but never the origin', () => {
@@ -1447,14 +1409,13 @@ test('review-pool facts price saved rows by their loaded route; an edited route 
     editor.load(setting([apiRow({ review_eligible: true }), sessionRow()]));
     editor.setReviewPool({
         row_costs: {
-            api_scout: { usd_per_review: 0.42, basis: 'route_tariff' },
+            api_scout: { usd_per_review: 0.42, basis: 'observed_reviews', reviews: 3, low: 0.3, high: 0.9 },
             codex_builder: { usd_per_review: null, basis: 'subscription_seat' },
         },
         pool: [{ subagent_id: 'api_scout', last_execution: { observed_model: 'openai/gpt-5.6-luna', record_id: 'rev_7' } }],
         last_executions: { codex_builder: { effective: { route: 'agent_session:codex', model: 'gpt-5.6-sol-high' } } },
     });
-    assert.equal(dom.row(0).facts.textContent,
-        '≈$0.42 per full call (route tariff); a reading reviewer makes several');
+    assert.equal(dom.row(0).facts.textContent, '≈$0.42 per review (median of 3 measured, $0.30–$0.90)');
     assert.deepEqual([dom.row(0).lastReview.hidden, dom.row(0).lastReview.dd.textContent], [false, 'openai/gpt-5.6-luna · record rev_7']);
     assert.equal(dom.row(1).facts.textContent, 'uses a session seat and time');
     assert.equal(dom.row(1).lastReview.dd.textContent, 'codex session · gpt-5.6-sol-high');
@@ -1516,72 +1477,5 @@ test('the pool note says what the migration did to the owner\'s review settings 
     // Both facts stand side by side; a pool error still comes first.
     editor.setReviewPool({ row_costs: {}, pool, migration: receipt({ outcome: 'error', error: 'bad' }), pool_without_credentials: ['api_scout'] });
     assert.match(dom.pool.note.textContent, /^Review migration failed: bad; .* No pool row has credentials: /);
-    editor.destroy();
-});
-
-test('an edited catalog with rows but no Reviewer is refused until the owner saves without reviewers', () => {
-    assert.deepEqual(reviewPoolErrors(setting([apiRow()]), { judged: true }), [EMPTY_POOL_ERROR]);
-    assert.deepEqual(reviewPoolErrors(setting([apiRow()]), { judged: false }), [], 'an untouched saved catalog is not judged');
-    assert.deepEqual(reviewPoolErrors(setting([]), { judged: true }), [], 'no rows leaves nothing to mark');
-    assert.deepEqual(reviewPoolErrors(setting([apiRow()]), { judged: true, allowEmpty: true }), []);
-    // A pool of switched-off reviewers reviews nothing either: the server refuses it the same way.
-    assert.deepEqual(reviewPoolErrors(setting([apiRow({ review_eligible: true, enabled: false })]), { judged: true }),
-        ['Every row marked Reviewer is switched off. Switch one on, or tick “Save without reviewers”.']);
-    assert.deepEqual(reviewPoolErrors(setting([
-        apiRow({ review_eligible: true, enabled: false }), sessionRow({ review_eligible: true }),
-    ]), { judged: true }), [], 'one reviewer switched on is a pool');
-    assert.deepEqual(reviewPoolRows(setting([
-        apiRow({ review_eligible: true }), sessionRow({ review_eligible: true, enabled: false }), apiRow({ subagent_id: 'plain' }),
-    ])).map((row) => row.subagent_id), ['api_scout']);
-
-    const dom = accessEditorDom();
-    const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null });
-    editor.load(setting([apiRow(), sessionRow()]));
-    assert.deepEqual(editor.validate(), [], 'loading is not saving');
-    assert.equal(dom.pool.count.textContent, 'Reviewers: 0');
-    assert.equal(dom.pool.empty.hidden, false);
-    assert.equal(dom.pool['empty-text'].textContent, 'No row is marked Reviewer, so reviews will not run and will report “not performed”.');
-    assert.equal(dom.pool.confirm.hidden, false);
-    assert.equal(dom.pool.stays.hidden, true);
-
-    dom.row(1).querySelector('[data-subagent-field="recommended_use"]').emit('input', 'Edited.');
-    assert.deepEqual(editor.validate(), [EMPTY_POOL_ERROR]);
-    assert.equal(editor.allowEmptyReviewPool, false);
-    assert.equal(ALLOW_EMPTY_REVIEW_POOL in editor.collect(), false);
-
-    dom.toolbar.allowEmpty.toggle(true);
-    assert.deepEqual(editor.validate(), []);
-    assert.equal(editor.allowEmptyReviewPool, true);
-    assert.equal(editor.collect()[ALLOW_EMPTY_REVIEW_POOL], true);
-
-    // A marked row makes the confirmation moot: the flag never rides a non-empty pool.
-    dom.row(0).querySelector('[data-subagent-field="review_eligible"]').toggle(true);
-    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].review_eligible, true);
-    assert.equal(ALLOW_EMPTY_REVIEW_POOL in editor.collect(), false);
-    assert.deepEqual(editor.validate(), []);
-    assert.equal(dom.pool.count.textContent, 'Reviewers: 1');
-    assert.equal(dom.pool.empty.hidden, true);
-    dom.toolbar.listEnabled.toggle(false);
-    assert.deepEqual([dom.pool.stays.textContent, dom.pool.stays.hidden], ['Delegation is off; rows marked Reviewer still review.', false]);
-    assert.ok(dom.row(0).querySelector('[data-subagent-field="delivery"]'), 'every API card carries its delivery, shown while marked');
-    dom.row(0).querySelector('[data-subagent-field="delivery"]').emit('change', 'packet');
-    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].delivery, 'packet');
-    dom.row(0).querySelector('[data-subagent-field="delivery"]').emit('change', 'native');
-    assert.equal('delivery' in editor.collect().OUROBOROS_SUBAGENTS.items[0], false);
-
-    // A reload forgets the confirmation: it answered one save.
-    editor.load(setting([apiRow(), sessionRow()]));
-    assert.equal(editor.allowEmptyReviewPool, false);
-
-    // Switching the only reviewer off empties the pool: the same confirmation is asked.
-    editor.load(setting([apiRow({ review_eligible: true }), sessionRow()]));
-    assert.equal(dom.pool.confirm.hidden, true);
-    dom.row(0).querySelector('[data-subagent-field="enabled"]').toggle(false);
-    assert.equal(dom.pool['empty-text'].textContent,
-        'Every row marked Reviewer is switched off, so reviews will not run and will report “not performed”.');
-    assert.equal(dom.pool.confirm.hidden, false);
-    assert.deepEqual(editor.validate(), ['Every row marked Reviewer is switched off. Switch one on, or tick “Save without reviewers”.']);
-    dom.toolbar.allowEmpty.toggle(true);
-    assert.equal(editor.collect()[ALLOW_EMPTY_REVIEW_POOL], true);
     editor.destroy();
 });

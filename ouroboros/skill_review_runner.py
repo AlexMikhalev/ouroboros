@@ -20,7 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
-from ouroboros import skill_review_history
+from ouroboros import dialogue_store, skill_review_history
 from ouroboros.config import get_skills_repo_path, load_settings
 from ouroboros.skill_lifecycle_queue import (
     DuplicateLifecycleJobError,
@@ -36,7 +36,6 @@ from ouroboros.skill_loader import (
     SkillPayloadUnreadable,
     compute_content_hash,
     find_skill,
-    review_status_allows_execution,
     save_enabled,
     skill_identity_collision_names,
     skill_review_gate,
@@ -97,7 +96,7 @@ _UI_REVIEW_FIELDS = (
     "content_hash", "job_id", "group_id", "review_round", "snapshot_attempt",
     "snapshot_revised", "task_id", "root_task_id", "origin_task_id",
     "origin_root_task_id", "presentation_owner_task_id", "chat_id", "source",
-    "terminal_reason", "started_at", "finished_at", "executions",
+    "terminal_reason", "started_at", "finished_at", "executions", "panel",
 )
 
 
@@ -187,14 +186,6 @@ def _present_dead_running_job(projection: Dict[str, Any], current: Dict[str, Any
 
 def _events_path(drive_root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(drive_root) / "logs" / "events.jsonl"
-
-
-def _chat_jsonl_path(drive_root: pathlib.Path) -> pathlib.Path:
-    return pathlib.Path(drive_root) / "logs" / "chat.jsonl"
-
-
-def _progress_jsonl_path(drive_root: pathlib.Path) -> pathlib.Path:
-    return pathlib.Path(drive_root) / "logs" / "progress.jsonl"
 
 
 def _read_review_job(path: pathlib.Path) -> Dict[str, Any]:
@@ -329,6 +320,7 @@ def _terminal_history_payload(
         "failure_signature": skill_review_history.finding_signature(findings),
         "fail_findings": skill_review_history.extract_fail_findings(findings),
         "job_id": str(job_data.get("job_id") or ""),
+        "panel": dict(getattr(result, "panel", None) or job_data.get("panel") or {}),
     }
     for key in (
         "group_id", "review_round", "snapshot_attempt", "snapshot_revised",
@@ -414,8 +406,8 @@ def _append_review_chat_summary(
     task_id = str(payload.get("task_id") or "")
     task_suffix = f", task={task_id}" if task_id else ""
     text = f"{title}: `{skill_name}` — status={status}, source={provenance}{task_suffix}"
-    append_jsonl(
-        _chat_jsonl_path(drive_root),
+    dialogue_store.append_quietly(
+        drive_root, "chat",
         {
             "ts": ts,
             "direction": "system",
@@ -508,8 +500,8 @@ def _append_interrupted_review_progress(
         if key in payload:
             lifecycle[key] = payload[key]
     text = f"Skill review: `{skill_name}` — interrupted — {reason}"
-    append_jsonl(
-        _progress_jsonl_path(drive_root),
+    dialogue_store.append_quietly(
+        drive_root, "progress",
         {
             "ts": ts,
             "type": "send_message",
@@ -700,8 +692,10 @@ def _skill_content_hash(
 
 
 def _review_dedupe_key(skill_name: str, content_hash: str) -> str:
-    suffix = content_hash or "unknown"
-    return f"review:{skill_name}:{suffix}"
+    """One review per skill at a time: the panel lends the lifecycle lane out, so a
+    second review of the same skill (other bytes) gets a pointer, not a race on its
+    job record."""
+    return f"review:{skill_name}"
 
 
 def _call_review_with_lifecycle_guard(
@@ -710,9 +704,11 @@ def _call_review_with_lifecycle_guard(
     skill_name: str,
     drive_root: pathlib.Path | None = None,
     binding: ResolvedResourceBinding | None = None,
+    panel: Any = None,
 ) -> SkillReviewOutcome:
     sentinel = object()
     previous = {
+        "_skill_review_panel": getattr(ctx, "_skill_review_panel", sentinel),
         "_skill_review_lifecycle_guard": getattr(ctx, "_skill_review_lifecycle_guard", sentinel),
         "_skill_review_lifecycle_job_id": getattr(ctx, "_skill_review_lifecycle_job_id", sentinel),
         "_skill_review_content_hash": getattr(ctx, "_skill_review_content_hash", sentinel),
@@ -726,6 +722,7 @@ def _call_review_with_lifecycle_guard(
     }
     state_root = pathlib.Path(drive_root or ctx.drive_root)
     job_data = _read_review_job(review_job_state_path(state_root, skill_name))
+    setattr(ctx, "_skill_review_panel", dict(panel.facts) if panel is not None else {})
     setattr(ctx, "_skill_review_lifecycle_guard", True)
     setattr(ctx, "_skill_review_lifecycle_job_id", str(job_data.get("job_id") or ""))
     setattr(ctx, "_skill_review_content_hash", str(job_data.get("content_hash") or ""))
@@ -928,7 +925,7 @@ def _outcome_payload(
         "content_hash": outcome.content_hash,
         "reviewer_models": outcome.reviewer_models,
         "review_profile": str(getattr(outcome, "review_profile", "") or ""),
-        "findings": outcome.findings,
+        "findings": outcome.findings, "panel": dict(outcome.panel),
         "raw_actor_records": list(getattr(outcome, "raw_actor_records", []) or []),
         "advisory_result": dict(getattr(outcome, "advisory_result", {}) or {}),
         "error": outcome.error,
@@ -948,6 +945,10 @@ def _outcome_payload(
         "extension_load_error": getattr(outcome, "extension_load_error", None),
         "extension_live_loaded": getattr(outcome, "extension_live_loaded", None),
     }
+    if getattr(outcome, "dispatch_refusal_code", ""):
+        payload["dispatch_refusal_code"] = outcome.dispatch_refusal_code
+    if getattr(outcome, "turn_on_when_ready", ""):
+        payload["turn_on_when_ready"] = outcome.turn_on_when_ready
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
     if job is not None:
@@ -1011,6 +1012,7 @@ def _on_started(
     refresh_content_hash: Callable[[], str] | None = None,
     bound_content_hash: Dict[str, str] | None = None,
     owned_job: Dict[str, str] | None = None,
+    owner_attestation: bool = False,
 ) -> Callable[[LifecycleJob], None]:
     def _callback(job: LifecycleJob) -> None:
         now = utc_now_iso()
@@ -1018,7 +1020,7 @@ def _on_started(
         group_id = str(provenance_data.get("group_id") or f"manual:{skill_name}")
         previous = _read_review_job(review_job_state_path(drive_root, skill_name))
         if (
-            str(previous.get("status") or "") == "running"
+            not owner_attestation and str(previous.get("status") or "") == "running"
             and str(previous.get("job_id") or "")
             and str(previous.get("job_id") or "") != job.id
         ):
@@ -1064,6 +1066,11 @@ def _on_started(
         _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         if owned_job is not None:
             owned_job["job_id"] = job.id  # the one record this caller may later time out
+            if owner_attestation:
+                from ouroboros.skill_install_record import read_install_record
+
+                pending = (read_install_record(drive_root, skill_name) or {}).get("pending_update") or {}
+                owned_job["update_digest"] = str(pending.get("digest") or "")
         append_jsonl(
             _events_path(drive_root),
             {
@@ -1120,6 +1127,7 @@ def _on_finished(
                 "finished_at": job.finished_at or now,
                 "duration_sec": duration,
                 "pid": os.getpid(),
+                "panel": dict(getattr(result, "panel", {}) or {}),
                 "review_status": review_status,
                 "error": error,
                 "deps_error": deps_error,
@@ -1207,16 +1215,17 @@ def _on_finished(
     return _callback
 
 
-def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJob) -> Dict[str, Any]:
+def _duplicate_payload(skill_name: str, content_hash: str, duplicate: LifecycleJob, gate: Dict[str, Any]) -> Dict[str, Any]:
+    """The invocation stays pending; execution authority describes the selected current bytes."""
     return {
         "skill": skill_name,
         "status": "pending",
         "content_hash": content_hash,
         "reviewer_models": [],
         "findings": [],
-        "error": f"review already {duplicate.status} for this skill/content hash",
-        "review_gate": skill_review_gate("pending"),
-        "executable_review": False,
+        "error": f"review already {duplicate.status} for this skill",
+        "review_gate": gate,
+        "executable_review": gate["executable_review"],
         "deps_status": "not_required",
         "deps_error": "",
         "extension_action": None,
@@ -1256,7 +1265,12 @@ def _review_result_message(outcome: Any) -> str:
     status = normalize_skill_review_status(str(getattr(outcome, "status", "") or STATUS_PENDING))
     summary = _review_finding_summary(outcome)
     gate = skill_review_gate(status)
-    if gate["executable_review"]:
+    cyber = gate.get("blocking_reason") == "cyber_authority"
+    if cyber:
+        # Cyber Pro's permission to run is not the critic's outcome: name the outcome.
+        prefix = {STATUS_WARNINGS: "Review passed with findings", STATUS_BLOCKERS: "Review found blockers",
+                  STATUS_PENDING: "Review pending"}.get(status, "Review passed")
+    elif gate["executable_review"]:
         prefix = "Review executable with findings" if status in {STATUS_WARNINGS, STATUS_BLOCKERS} else "Review executable"
     elif status == STATUS_WARNINGS:
         prefix = "Review warnings blocked by current enforcement"
@@ -1276,7 +1290,7 @@ def _review_result_message(outcome: Any) -> str:
         if auto_granted_permissions:
             auto_parts.append(f"permissions: {', '.join(auto_granted_permissions)}")
         base = base + f" | auto-granted: {'; '.join(auto_parts)}"
-    return base
+    return base + (" | Cyber Pro: execution is Ouroboros's decision, not a review result" if cyber else "")
 
 
 async def run_skill_review_lifecycle(
@@ -1307,6 +1321,8 @@ def run_skill_review_lifecycle_blocking(
     review_impl: ReviewImpl = _default_review_skill,
     repo_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    owner_attestation: bool = False,
+    reviewers: Optional[list[str]] = None, reason: str = "", _panel: Any = None,
 ) -> Dict[str, Any]:
     binding = _resolved_binding
     if binding is None and repo_path is None:
@@ -1356,26 +1372,51 @@ def run_skill_review_lifecycle_blocking(
             deps_status="not_run", deps_error="",
             extension_action=None, extension_reason=None,
         )
-    content_hash = _skill_content_hash(
-        drive_root, skill_name, repo_path, binding,
-    )
+    from ouroboros.reviewer_slot_config import ComposedPanel, PanelCompositionError, compose_review_panel, composed_review_pool
+    content_hash = _skill_content_hash(drive_root, skill_name, repo_path, binding)
+    try:
+        panel = None if owner_attestation else _panel or compose_review_panel(reviewers or (), reason, surface="skill",
+                                                chosen_by="ouroboros" if source == "tool" else "owner")
+    except PanelCompositionError as exc:
+        previous = skill_review_history.load_history(drive_root, skill_name, limit=1)
+        prior = _read_review_job(review_job_state_path(drive_root, skill_name))
+        candidates = [prior, *previous]
+        if not any(row.get("content_hash") == content_hash and row.get("status") in {"running", "pending", "timeout", "failed", "interrupted"}
+                   and (row.get("review_wave") or (row.get("status") == "running" and row.get("panel"))) for row in candidates):
+            return _outcome_payload(SkillReviewOutcome(skill_name=skill_name, status=STATUS_PENDING,
+                error=str(exc), dispatch_refusal_code="TOOL_ARG_ERROR"), deps_status="not_run", deps_error="",
+                extension_action=None, extension_reason=None)
+        # Current tick edits cannot revoke collection. The existing resume selector still
+        # verifies every material/lifecycle axis; without that match this error refuses a new send.
+        panel = ComposedPanel((), True, {"composition_error": str(exc)})
+    except ValueError:
+        panel = None  # the review collects its paid wave or returns its typed configuration refusal
     mark_stale_review_job_interrupted(drive_root, skill_name, current_content_hash=content_hash)
-    dedupe_key = _review_dedupe_key(skill_name, content_hash)
+    dedupe_key = _review_dedupe_key(skill_name, content_hash) + (":owner_attestation" if owner_attestation else "")
     started_monotonic: Dict[str, float] = {}
     bound_content_hash: Dict[str, str] = {}
     owned_job: Dict[str, str] = {}
     progress = JobProgressTarget()
-    provenance = _review_provenance(ctx, source, skill_name)
+    provenance = {**_review_provenance(ctx, source, skill_name), "panel": panel.facts if panel is not None else {}}
 
     def _run_review() -> SkillReviewOutcome:
         with _review_job_heartbeat(drive_root, skill_name):
-            progress.set("Running tri-model review…")
-            outcome = _call_review_with_lifecycle_guard(
-                review_impl, ctx, skill_name, drive_root, binding,
-            )
+            progress.set("Running skill review…")
+            with composed_review_pool(panel.seats) if panel is not None else contextlib.nullcontext():
+                outcome = _call_review_with_lifecycle_guard(review_impl, ctx, skill_name, drive_root, binding, panel)
+            if not outcome.panel and panel is not None:
+                outcome.panel = dict(panel.facts)
             deps_status = "not_required"
             deps_error = ""
-            executable_review = review_status_allows_execution(getattr(outcome, "status", ""))
+            reviewed = _load_binding_skill(binding) if binding is not None else find_skill(
+                drive_root, skill_name, repo_path=repo_path,
+            )
+            # The verdict just produced under this skill's acceptance facts (a source
+            # that reviews each skill keeps blockers off): deps only for runnable bytes.
+            executable_review = skill_review_gate(
+                getattr(outcome, "status", ""), current_hash=str(getattr(outcome, "content_hash", "") or ""),
+                acceptance=reviewed.review.acceptance if reviewed is not None else None,
+            )["executable_review"]
             if executable_review:
                 progress.set("Installing dependencies…")
                 deps_status, deps_error = _reconcile_deps_after_pass_review(
@@ -1403,6 +1444,12 @@ def run_skill_review_lifecycle_blocking(
             )
             if just_auto_enabled:
                 save_enabled(drive_root, skill_name, True, actor="review_auto_enable")
+            else:
+                from ouroboros.skill_lifecycle_actions import reconcile_turn_on_when_ready
+
+                turn_on = reconcile_turn_on_when_ready(drive_root, skill_name, repo_path=repo_path,
+                                                       reason="review finished")
+                setattr(outcome, "turn_on_when_ready", turn_on["action"])
             progress.set("Reloading extension…")
             reconcile = _reconcile_extension_payload(
                 ctx,
@@ -1416,6 +1463,7 @@ def run_skill_review_lifecycle_blocking(
                 setattr(outcome, f"extension_{key}", value)
         return outcome
 
+    outcome = None
     try:
         outcome = run_lifecycle_job_blocking(
             kind="review",
@@ -1440,6 +1488,7 @@ def run_skill_review_lifecycle_blocking(
                     ),
                     bound_content_hash=bound_content_hash,
                     owned_job=owned_job,
+                    owner_attestation=owner_attestation,
                 ),
                 on_finished=_on_finished(
                     drive_root,
@@ -1451,13 +1500,23 @@ def run_skill_review_lifecycle_blocking(
             ),
         )
     except DuplicateLifecycleJobError as exc:
-        return _duplicate_payload(skill_name, content_hash, exc.job)
+        return _duplicate_payload(skill_name, content_hash, exc.job, selected.review.gate_for(content_hash))
     except TimeoutError as exc:
         _mark_review_job_timeout(
             drive_root, skill_name, content_hash, reason=f"{type(exc).__name__}: {exc}",
             job_id=owned_job.get("job_id", ""),
         )
         raise
+    finally:
+        from ouroboros.skill_install_record import update_backup_path
+
+        if owned_job and update_backup_path(drive_root, skill_name).exists():
+            from ouroboros.skill_source_install import run_in_lane, settle_pending_update
+
+            run_in_lane(drive_root, "update_settle", skill_name, lambda: settle_pending_update(
+                drive_root, skill_name, expected_digest=owned_job.get("update_digest")
+                or bound_content_hash.get("value") or content_hash,
+                landing_failed=getattr(outcome, "deps_status", "") == "failed"))
 
     try:
         from ouroboros.skill_loader import discover_skills

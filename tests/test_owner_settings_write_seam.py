@@ -167,9 +167,9 @@ def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_s
     assert "owner-test-key" not in json.dumps(change)
 
 
-@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 409)])
+@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 200)])
 @pytest.mark.parametrize("context_mode", ["low", "nano"])
-def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
+def test_context_owner_endpoint_updates_future_actors_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
     from ouroboros import config as cfg
     from ouroboros.gateway import settings as settings_mod
     from supervisor.active_activity import get_direct_activity_registry
@@ -524,7 +524,7 @@ def _pool_world(monkeypatch, *, records=None):
     monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {
         "api-critic": {"surface": "commit_gate", "observed_model": "openai/gpt-5.6-luna", "record_id": "rec-1"}})
     monkeypatch.setattr(server_maintenance, "review_pool_migration_records", lambda: records or {})
-    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items, env: {
+    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items: {
         "api-critic": {"usd_per_review": 0.12, "basis": "route_tariff"},
         "session-critic": {"usd_per_review": None, "basis": "subscription_seat"},
         "helper": {"usd_per_review": None, "basis": "unknown"}})
@@ -571,6 +571,25 @@ def test_review_pool_endpoint_reports_the_pool_in_catalog_order(monkeypatch):
     assert body["excluded"] == [{"subagent_id": "paused", "reason": "row_disabled"}]
     assert body["row_costs"]["helper"] == {"usd_per_review": None, "basis": "unknown"}
     assert body["config_error"] == "" and body["migration"] is None
+
+
+def test_review_pool_endpoint_lists_catalog_rows_only_when_the_main_model_reviews_alone(monkeypatch):
+    """An empty pool reviews on the Main seat, which is no catalog row: ``GET /api/review-pool``
+    keeps its frozen shape and lists none (no invented row, no credentials fact about it, no
+    error), while the same catalog with one mark lists exactly that row."""
+    settings_mod = _pool_world(monkeypatch)
+    for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    helper = {"subagent_id": "helper", "recommended_use": "Helps.",
+              "route": {"kind": "api_model", "target_id": "openai/gpt-5.6-luna"}}
+
+    empty = settings_mod.review_pool_payload({"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [helper]})})
+    assert (empty["pool"], empty["excluded"], empty["pool_without_credentials"], empty["config_error"]) == ([], [], [], "")
+    assert empty["catalog"] == {"present": True, "enabled": True, "rows": 1, "eligible": 0}
+
+    marked = settings_mod.review_pool_payload(
+        {"OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [{**helper, "review_eligible": True}]})})
+    assert [row["subagent_id"] for row in marked["pool"]] == ["helper"] and marked["pool_without_credentials"] == ["helper"]
 
 
 def test_review_pool_endpoint_types_a_bad_catalog_and_names_the_migration_snapshot(monkeypatch):
@@ -649,7 +668,7 @@ def test_review_pool_payload_carries_the_migration_outcome_that_decides_the_docu
     from ouroboros.gateway import settings as settings_mod
 
     monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {})
-    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items, env: {})
+    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items: {})
 
     loaded, body = _served(settings_mod, {"OUROBOROS_REVIEWER_SLOTS": _AUTHORED_LANES, "OPENROUTER_API_KEY": "present"})
     (snapshot,) = sorted((pool_root / "state" / "review_migrations").glob("*-slots-to-pool.json"))
@@ -672,7 +691,7 @@ def test_review_pool_payload_names_the_reason_a_broken_lanes_key_was_retained(po
     from ouroboros.gateway import settings as settings_mod
 
     monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {})
-    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items, env: {})
+    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items: {})
 
     loaded, body = _served(settings_mod, {"OUROBOROS_REVIEWER_SLOTS": _BROKEN_LANES, "OPENROUTER_API_KEY": "present"})
     assert loaded["OUROBOROS_REVIEWER_SLOTS"] == _BROKEN_LANES, "retained for the owner's catalog save"
@@ -702,7 +721,7 @@ def test_the_live_handler_judges_the_receipt_by_the_document_on_disk_not_the_pro
     from ouroboros.gateway import settings as settings_mod
     from tests.test_review_pool_migration import N1_DOC, _served_from_disk
 
-    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items, env: {})
+    monkeypatch.setattr(settings_mod, "_review_pool_costs", lambda items: {})
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
     loaded = _served_from_disk(pool_root, monkeypatch, {"OUROBOROS_REVIEWER_SLOTS": _BROKEN_LANES} if refused
                                else dict(N1_DOC))

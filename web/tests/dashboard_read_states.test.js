@@ -34,6 +34,11 @@ class NodeStub {
     }
     get id() { return this.attrs.id || ''; }
     set id(value) { this.attrs.id = value; }
+    get ownerDocument() { return globalThis.document; }
+    get isConnected() { return true; }
+    get tabIndex() { return this.attrs.tabindex === undefined ? 0 : Number(this.attrs.tabindex); }
+    set tabIndex(value) { this.attrs.tabindex = String(value); }
+    getClientRects() { return [{ width: 1, height: 1 }]; }
     get className() { return this.attrs.class || ''; }
     set className(value) { this.attrs.class = value; }
     setAttribute(key, value) {
@@ -104,6 +109,8 @@ function setup(t) {
     const document = {
         body,
         hidden: false,
+        activeElement: null,
+        defaultView: { getComputedStyle: () => ({ visibility: 'visible' }) },
         createElement: (tag) => new NodeStub(tag),
         getElementById: (id) => mount.querySelector(`#${id}`) || body.querySelector(`#${id}`),
         addEventListener: (type, fn) => documentEvents.addEventListener(type, fn),
@@ -844,17 +851,199 @@ test('Activity names saved sleep without claiming a budget pause and preserves o
     assert.doesNotMatch(section(mount, 'queue').textContent, /sleeping|budget/);
 });
 
+// Census rows as gateway/state.py publishes them: the row's own stored status, axes and checkpoint.
+const censusAxes = (status, execution) => ({ schema_version: 1, lifecycle: { status },
+    execution: { status: execution, reason_code: execution === 'ok' ? 'final_message' : 'provider_unavailable' },
+    artifacts: { status: 'not_applicable' }, objective: { status: 'not_evaluated', source: 'none' },
+    review: { status: 'skipped', trigger: 'not_evaluated' } });
+const outcomeRow = (activity_id, status, execution, phase, synthesis, extra = {}) => ({ activity_id, kind: 'managed_task',
+    phase, status, outcome_axes: censusAxes(status, execution), root_phase_checkpoint: { post_task_synthesis: synthesis }, ...extra });
+const chip = (row) => {
+    const status = row.querySelector('[data-activity-phase]');
+    const second = status?.nextElementSibling;
+    return status && { text: status.textContent, phase: status.dataset.phase, label: status.getAttribute('aria-label'),
+        secondary: second.hidden ? '' : second.textContent };
+};
+const rowOf = (mount, id) => section(mount, 'queue').querySelector(`[data-id="${id}"]`).parentElement.parentElement;
+
+test('Activity shows a row\'s own known outcome first and its unfinished finalization beside it', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const now = Date.now;
+    Date.now = () => 100000;
+    t.after(() => { Date.now = now; });
+    const running = (id, extra = {}) => ({ id, type: 'task', runtime_sec: 9, task: { id, root_task_id: id, title: `Work ${id}`, ...extra } });
+    routes.set(queueUrl, response({ queue: {
+        running: ['failed-root', 'done-root', 'warn-root', 'cancelled-root', 'live-root'].map((id) => running(id)).concat(
+            running('child-1', { root_task_id: 'failed-root', parent_task_id: 'failed-root', title: 'Child of the failed root' })),
+        pending: [{ id: 'queued-root', type: 'task', task: { id: 'queued-root', root_task_id: 'queued-root', title: 'Queued work' } }],
+    } }));
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
+        active_chat_activities: [
+            outcomeRow('failed-root', 'failed', 'infra_failed', 'finalizing', 'running'),
+            outcomeRow('done-root', 'completed', 'ok', 'finalizing', 'pending_once'),
+            outcomeRow('warn-root', 'completed', 'degraded', 'working', 'completed'),
+            outcomeRow('cancelled-root', 'cancelled', 'cancelled', 'working', ''),
+            { activity_id: 'live-root', kind: 'managed_task', phase: 'working', status: 'running', outcome_axes: censusAxes('running', 'ok') },
+            { activity_id: 'queued-root', kind: 'managed_task', phase: 'queued' },
+            outcomeRow('answered-direct', 'completed', 'ok', 'finalizing', 'running', { kind: 'direct_chat', started_at: 90 }),
+            outcomeRow('late-root', 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' }),
+            { activity_id: 'thinking-direct', kind: 'direct_chat', phase: 'thinking', started_at: 95 },
+        ] }));
+    await initActivity({ mount, ws }).refresh();
+    const queue = section(mount, 'queue');
+    assert.equal(queue.querySelectorAll('.activity-row').length, 10, 'every occupied row stays listed');
+    assert.deepEqual(chip(rowOf(mount, 'failed-root')), { text: 'Failed', phase: 'error',
+        label: 'Task status: Failed, Finalizing…', secondary: 'Finalizing…' });
+    assert.doesNotMatch(rowOf(mount, 'failed-root').textContent, /running/, 'the outcome replaces the occupancy word');
+    assert.match(rowOf(mount, 'failed-root').textContent, /· task · 9s/);
+    assert.deepEqual(chip(rowOf(mount, 'done-root')).text + chip(rowOf(mount, 'done-root')).secondary, 'DoneFinalizing…');
+    assert.deepEqual(chip(rowOf(mount, 'warn-root')), { text: 'Done with warnings', phase: 'warn',
+        label: 'Task status: Done with warnings', secondary: '' });
+    assert.equal(chip(rowOf(mount, 'cancelled-root')).text, 'Stopped');
+    // No known outcome: the queue's own words, exactly as before.
+    for (const [id, word] of [['live-root', /running · task · 9s/], ['queued-root', /Queued work[\s\S]*pending · task/]]) {
+        assert.equal(chip(rowOf(mount, id)), null, id);
+        assert.match(rowOf(mount, id).textContent, word);
+    }
+    // A child never borrows its root's result, even while that root's census row is Failed.
+    assert.equal(chip(rowOf(mount, 'child-1')), null);
+    assert.match(rowOf(mount, 'child-1').textContent, /Child of the failed root[\s\S]*running/);
+    assert.doesNotMatch(rowOf(mount, 'child-1').textContent, /Failed/);
+    // Census-only rows: a known answer with late work, a late Pause beside its Done, a plain turn.
+    assert.deepEqual(chip(rowOf(mount, 'answered-direct')).text + '|' + chip(rowOf(mount, 'answered-direct')).secondary,
+        'Done|Finalizing…');
+    assert.match(rowOf(mount, 'answered-direct').textContent, /Direct turn[\s\S]*· 10s/);
+    // The census's `owner` cause also covers Ouroboros's own Pause: without a work it never says who paused.
+    assert.deepEqual(chip(rowOf(mount, 'late-root')), { text: 'Done', phase: 'done',
+        label: 'Task status: Done, Paused', secondary: 'Paused' });
+    assert.equal(chip(rowOf(mount, 'thinking-direct')), null);
+    assert.match(rowOf(mount, 'thinking-direct').textContent, /thinking · 5s/);
+    // Controls follow occupancy and the existing pause facts, never the outcome.
+    const controls = Object.fromEntries(queue.querySelectorAll('[data-act="task-control"]').map((button) =>
+        [button.dataset.id, [button.dataset.root, button.dataset.budgetPaused]]));
+    assert.deepEqual(controls, {
+        'failed-root': ['1', undefined], 'done-root': ['1', undefined], 'warn-root': ['1', undefined],
+        'cancelled-root': ['1', undefined], 'live-root': ['1', undefined], 'child-1': [undefined, undefined],
+        'queued-root': ['1', undefined], 'answered-direct': ['1', undefined], 'late-root': ['1', '1'],
+        'thinking-direct': ['1', undefined],
+    });
+    assert.ok(queue.querySelectorAll('[data-activity-phase]').every((node) => node.closest('[data-i18n-skip]')),
+        'chip words come from the translation seam, so the overlay leaves them alone');
+});
+
+test('Activity says who paused only where the work projection names it', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const paused = (id) => outcomeRow(id, 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' });
+    const pausedWork = (id, code, extra = {}) => ({ work_id: id, room: 1, activity: 'paused', confirmed: true,
+        episode: { task_id: id, live: true }, because: [{ code, text: 'Paused' }], controls: [], ...extra });
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
+        active_chat_activities: ['by-owner', 'by-mind', 'unnamed', 'unconfirmed'].map(paused),
+        works: [pausedWork('by-owner', 'paused_by_owner'), pausedWork('by-mind', 'paused_by_mind'),
+            pausedWork('unconfirmed', 'paused_by_owner', { confirmed: false })], works_complete: true }));
+    await initActivity({ mount, ws }).refresh();
+    assert.equal(chip(rowOf(mount, 'by-owner')).secondary, 'Paused · by you');
+    assert.equal(chip(rowOf(mount, 'by-mind')).secondary, 'Paused · by Ouroboros');
+    // No work, or a work the server could not confirm: the census alone never names who paused.
+    assert.equal(chip(rowOf(mount, 'unnamed')).secondary, 'Paused');
+    assert.equal(chip(rowOf(mount, 'unconfirmed')).secondary, 'Paused');
+});
+
+test('Activity keeps pause words for members and paints a host hold beside a known outcome as text', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const member = (id) => ({ id, task: { id, root_task_id: 'paused-root', parent_task_id: id === 'paused-root' ? '' : 'paused-root',
+        type: 'task', title: id, _budget_pause: { reason: 'owner' } } });
+    routes.set(queueUrl, response({ queue: { running: [], pending: [member('paused-root'), member('member-1')],
+        budget_root_fences: [{ root_task_id: 'paused-root', status: 'paused', cause: 'owner_pause' }] } }));
+    const hold = { label: '<img src=x onerror="globalThis.pwned=1">', detail: 'binding unavailable' };
+    const activities = [outcomeRow('paused-root', 'completed', 'ok', 'budget_paused', 'paused', { pause_cause: 'owner' }),
+        outcomeRow('held-root', 'failed', 'infra_failed', 'finalizing', 'running', { project_admission_hold: hold })];
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities: activities,
+        active_chat_activities_complete: false }));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    // The root's own row knows its answer; its member keeps the tree's pause word and Resume.
+    assert.equal(chip(rowOf(mount, 'paused-root')).text, 'Done');
+    assert.equal(chip(rowOf(mount, 'member-1')), null);
+    assert.match(rowOf(mount, 'member-1').textContent, /paused/);
+    for (const id of ['paused-root', 'member-1']) {
+        assert.equal(section(mount, 'queue').querySelector(`[data-id="${id}"]`).dataset.budgetPaused, '1', id);
+    }
+    // A partial census still describes its own rows; the host's hold text never becomes markup.
+    assert.deepEqual(chip(rowOf(mount, 'held-root')).secondary, hold.label);
+    assert.equal(section(mount, 'queue').querySelectorAll('img').length, 0);
+    assert.doesNotMatch(section(mount, 'queue').textContent, /Nothing running/);
+    // Without a census the queue rows keep their words; nothing is erased or called idle.
+    routes.set(backgroundUrl, response({}, 503));
+    await activity.refresh();
+    assert.equal(section(mount, 'queue').querySelectorAll('[data-activity-phase]').length, 0);
+    assert.match(rowOf(mount, 'paused-root').textContent, /paused/);
+    assert.equal(section(mount, 'queue').querySelectorAll('.activity-row').length, 2);
+});
+
+test('Activity keeps a queue row\'s own wait beside its known outcome and shows no model-call telemetry', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const hold = { label: 'Waiting for Project verification', detail: 'binding unavailable' };
+    const root = (id, title, extra = {}) => ({ id, type: 'task', task: { id, root_task_id: id, title, ...extra } });
+    routes.set(queueUrl, response({ queue: {
+        running: [
+            { ...root('sleep-root', 'Sleeping answered work'), owner_wait: { state: 'waiting', reason: 'sleep', sleep: { mode: 'warm' } } },
+            root('live-model', 'Finalizing with a model'),
+            root('held-queue', 'Held work', { project_admission_hold: hold }),
+        ],
+        pending: [
+            root('restart-root', 'Saved before Quit', { _budget_pause_hold: { reason: 'saved_work_hold' } }),
+            root('pending-root', 'Requeued'),
+        ],
+    } }));
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities_complete: true,
+        active_chat_activities: [
+            outcomeRow('sleep-root', 'completed', 'ok', 'finalizing', 'running'),
+            outcomeRow('live-model', 'completed', 'ok', 'working', 'running',
+                { model_activity: { phase: 'awaiting_response', task_attempt: 1 } }),
+            outcomeRow('held-queue', 'failed', 'infra_failed', 'finalizing', 'running', { project_admission_hold: hold }),
+            outcomeRow('restart-root', 'completed', 'ok', 'budget_paused', 'completed', { pause_cause: 'restart' }),
+            outcomeRow('pending-root', 'failed', 'infra_failed', 'queued', 'completed'),
+        ] }));
+    await initActivity({ mount, ws }).refresh();
+    const pair = (id) => [chip(rowOf(mount, id)).text, chip(rowOf(mount, id)).secondary];
+    // A queue wait outranks the census's merely active phase; the outcome still leads.
+    assert.deepEqual(pair('sleep-root'), ['Done', 'sleeping']);
+    assert.deepEqual(pair('restart-root'), ['Done', 'held after Restart']);
+    assert.deepEqual(pair('pending-root'), ['Failed', 'pending']);
+    assert.equal(chip(rowOf(mount, 'sleep-root')).label, 'Task status: Done, sleeping');
+    // Activity carries no model-call telemetry: finalization stays a generic fact.
+    assert.deepEqual(pair('live-model'), ['Done', 'Finalizing…']);
+    assert.doesNotMatch(section(mount, 'queue').textContent, /request|response/i);
+    // The queue line names its own hold once; the chip does not repeat it.
+    assert.deepEqual(pair('held-queue'), ['Failed', 'Finalizing…']);
+    assert.equal(rowOf(mount, 'held-queue').textContent.split(hold.label).length, 2);
+    // Resume stays exactly where the queue facts put it.
+    const paused = Object.fromEntries(section(mount, 'queue').querySelectorAll('[data-act="task-control"]')
+        .map((button) => [button.dataset.id, button.dataset.budgetPaused]));
+    assert.deepEqual(paused, { 'sleep-root': undefined, 'live-model': undefined, 'held-queue': undefined,
+        'restart-root': '1', 'pending-root': undefined });
+});
+
 // ---------------------------------------------------------------------------
 // Dashboard -> Storage: the real controller over the fixture's fetch, window and document.
 // ---------------------------------------------------------------------------
 
 const storageUrl = '/api/storage';
 const measureUrl = '/api/storage/measure';
-const storageBody = (overrides = {}) => ({ measuring: false, measurement: null, error: null, ...overrides });
-const measuredBody = () => storageBody({ measurement: {
-    finished_at: '2026-10-05T10:00:01Z', duration_seconds: 1, measured_bytes: 1400000, complete: true, free_bytes: null,
-    categories: [{ id: 'results', bytes: 1400000, files: 3, coverage: 'complete', stopped: '', errors: 0, skipped: 0 }],
-    not_measured: [],
+const cancelUrl = '/api/storage/measure/cancel';
+const storageVolume = { free_bytes: 170e9, total_bytes: 4e12, observed_at: '2026-10-05T10:00:00Z' };
+const storageBody = (overrides = {}) => ({ count: null, counting: null, error: null, volume: storageVolume, retention_days: 7, ...overrides });
+const storageCounting = () => ({ started_at: '2026-10-05T10:00:00Z', place: 'model_calls', current: 'blobs', places_done: 0, places_total: 12,
+    bytes: 1000, files: 1, done: [] });
+const measuredBody = () => storageBody({ count: {
+    started_at: '2026-10-05T10:00:00Z', finished_at: '2026-10-05T10:00:01Z', duration_seconds: 1, io_priority: 'utility', basis: 'allocated',
+    bytes: 1400000, logical_bytes: 1400000, files: 3, unreadable: 0, volume: storageVolume,
+    places: [{ id: 'task_results', group: 'work', roots: ['/data/task_results'], present: true, same_volume: true, bytes: 1400000,
+        logical_bytes: 1400000, files: 3, unreadable: 0, parts: [], rest: { count: 0, bytes: 0 } }],
 } });
 const deferred = () => {
     const handle = {};
@@ -898,27 +1087,31 @@ test('Storage opens with one passive read; only the button measures, then polls 
     start();
     await settle();
     assert.deepEqual(calls, [storageUrl]);
-    assert.match(storageSummary(mount), /Not measured yet/);
+    assert.match(storageSummary(mount), /Not counted yet/);
     assert.equal(timers.polls(), 0, 'nothing runs, so nothing is polled');
+    assert.equal(mount.querySelector('[data-storage-places]').textContent, '', 'no list before a finished count');
 
     routes.set(measureUrl, (_url, init) => {
         assert.equal(init.method, 'POST');
-        return response(storageBody({ measuring: true, started: true }), 202);
+        return response(storageBody({ counting: storageCounting(), started: true }), 202);
     });
     await mount.querySelector('[data-storage-action="measure"]').fire('click');
     await settle();
     assert.deepEqual(calls, [storageUrl, measureUrl]);
     assert.equal(timers.polls(), 1);
+    assert.equal(mount.querySelector('[data-storage-action="stop"]').hidden, false, 'Stop is offered while a count runs');
     routes.set(storageUrl, response(measuredBody()));
     await timers.fire();
     await settle();
     assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl]);
-    assert.match(storageSummary(mount), /Measured data/);
+    assert.match(storageSummary(mount), /Ouroboros uses/);
     assert.match(storageSummary(mount), /1\.4 MB/);
-    assert.equal(timers.polls(), 0, 'a finished walk is not polled');
+    assert.equal(timers.polls(), 0, 'a finished count is not polled');
+    assert.equal(mount.querySelector('[data-storage-panel]').hidden, false);
+    assert.equal(mount.querySelector('[data-storage-action="stop"]').hidden, true);
 });
 
-test('Storage holds one measurement busy from the click to the finished walk', async (t) => {
+test('Storage holds one count busy from the click to the finished walk, and names the count it holds on later reads', async (t) => {
     const { mount, routes, calls, timers, start } = openStorage(t);
     routes.set(storageUrl, response(storageBody()));
     start();
@@ -936,10 +1129,10 @@ test('Storage holds one measurement busy from the click to the finished walk', a
     await button.fire('click');
     assert.deepEqual(calls, [storageUrl, measureUrl]);
 
-    posted.resolve(response(storageBody({ measuring: true, started: true }), 202));
+    posted.resolve(response(storageBody({ counting: storageCounting(), started: true }), 202));
     await click;
     await settle();
-    assert.equal(button.getAttribute('aria-disabled'), 'true', 'a running walk keeps it busy');
+    assert.equal(button.getAttribute('aria-disabled'), 'true', 'a running count keeps it busy');
     await button.fire('click');
     assert.deepEqual(calls, [storageUrl, measureUrl]);
     assert.equal(timers.polls(), 1);
@@ -947,51 +1140,72 @@ test('Storage holds one measurement busy from the click to the finished walk', a
     routes.set(storageUrl, response(measuredBody()));
     await timers.fire();
     await settle();
-    assert.equal(button.textContent, 'Refresh');
+    assert.equal(button.textContent, 'Measure again');
     assert.equal(button.getAttribute('aria-disabled'), 'false');
     assert.equal(button.hasAttribute('aria-busy'), false);
 
-    // A walk that finished before its POST answered is shown at once, with nothing to poll.
-    routes.set(measureUrl, response({ ...measuredBody(), started: true }, 202));
+    // A recount: the held count is named, and an answer without `count` keeps it on screen.
+    routes.set(measureUrl, response({ ...measuredBody(), counting: storageCounting(), started: true }, 202));
     await button.fire('click');
     await settle();
-    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl, measureUrl]);
-    assert.equal(timers.polls(), 0);
-    assert.equal(button.textContent, 'Refresh');
-    assert.equal(button.getAttribute('aria-disabled'), 'false');
+    assert.match(storageSummary(mount), /1\.4 MB[\s\S]*Measuring/);
+    const held = `${storageUrl}?count=${encodeURIComponent('2026-10-05T10:00:01Z')}`;
+    routes.set(held, response({ counting: null, error: null, volume: storageVolume, retention_days: 7 }));
+    await timers.fire();
+    await settle();
+    assert.equal(calls.at(-1), held);
+    assert.match(storageSummary(mount), /1\.4 MB/);
+    assert.doesNotMatch(storageSummary(mount), /Measuring/);
 });
 
-test('Storage says when a first measurement cannot be read, keeps polling and does not measure twice', async (t) => {
+test('Storage says when a first count cannot be read, keeps polling and does not measure twice', async (t) => {
     const { mount, routes, calls, timers, start } = openStorage(t);
     routes.set(storageUrl, response(storageBody()));
     start();
     await settle();
     const button = mount.querySelector('[data-storage-action="measure"]');
-    routes.set(measureUrl, response(storageBody({ measuring: true, started: true }), 202));
+    routes.set(measureUrl, response(storageBody({ counting: storageCounting(), started: true }), 202));
     await button.fire('click');
     await settle();
-    assert.match(storageSummary(mount), /Measuring…[\s\S]*Reading file sizes/);
+    assert.match(storageSummary(mount), /Measuring Model call records · blobs/);
 
     routes.set(storageUrl, response({ error: 'synthetic storage read refusal' }, 503));
     await timers.fire();
     await settle();
-    assert.match(storageSummary(mount), /Measuring…/);
-    assert.match(storageSummary(mount), /Storage status could not be read\. The last answer was still measuring; checking again\./);
-    assert.doesNotMatch(storageSummary(mount), /Reading file sizes/);
+    assert.match(storageSummary(mount), /Measuring Model call records/);
+    assert.match(storageSummary(mount), /Storage status could not be read\. Showing the last answer\./);
     assert.equal(timers.polls(), 1, 'the passive read is retried');
     assert.equal(button.getAttribute('aria-disabled'), 'true');
     await button.fire('click');
     await settle();
-    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl], 'no second measurement');
+    assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl], 'no second count');
 
     routes.set(storageUrl, response(measuredBody()));
     await timers.fire();
     await settle();
-    assert.match(storageSummary(mount), /Measured data/);
+    assert.match(storageSummary(mount), /1\.4 MB/);
     assert.doesNotMatch(storageSummary(mount), /could not be read/);
-    assert.equal(mount.querySelector('[data-storage-notes]').textContent, '');
     assert.equal(timers.polls(), 0);
     assert.equal(button.getAttribute('aria-disabled'), 'false');
+});
+
+test('Storage Stop asks the server to kill the count and keeps the saved count', async (t) => {
+    const { mount, routes, calls, start } = openStorage(t);
+    routes.set(storageUrl, response({ ...measuredBody(), counting: storageCounting() }));
+    start();
+    await settle();
+    const stop = mount.querySelector('[data-storage-action="stop"]');
+    assert.equal(stop.hidden, false);
+    routes.set(cancelUrl, (_url, init) => {
+        assert.equal(init.method, 'POST');
+        return response({ ...measuredBody(), error: { at: 'x', message: 'Stopped before it finished.', stopped: true } }, 202);
+    });
+    await stop.fire('click');
+    await settle();
+    assert.deepEqual(calls, [storageUrl, cancelUrl]);
+    assert.match(storageSummary(mount), /1\.4 MB[\s\S]*Stopped before it finished\. Showing the count from/);
+    assert.equal(stop.hidden, true);
+    assert.equal(mount.querySelector('[data-storage-action="measure"]').textContent, 'Measure again');
 });
 
 test('Storage drops a read answered after its tab was left, and does not poll for it', async (t) => {
@@ -1002,7 +1216,7 @@ test('Storage drops a read answered after its tab was left, and does not poll fo
     start();
     show('logs');
     assert.equal(signal.aborted, true, 'leaving the tab aborts its read');
-    late.resolve(response(storageBody({ measuring: true })));  // a server that answered anyway
+    late.resolve(response(storageBody({ counting: storageCounting() })));  // a server that answered anyway
     await settle();
     assert.match(storageSummary(mount), /Loading/);
     assert.equal(timers.polls(), 0);
@@ -1020,25 +1234,25 @@ for (const outcome of ['answers', 'fails']) {
         const click = mount.querySelector('[data-storage-action="measure"]').fire('click');
         await settle();
         show('logs');
-        if (outcome === 'answers') posted.resolve(response(storageBody({ measuring: true, started: true }), 202));
-        else posted.resolve(response({ error: 'The measurement could not be started.' }, 500));
+        if (outcome === 'answers') posted.resolve(response(storageBody({ counting: storageCounting(), started: true }), 202));
+        else posted.resolve(response({ error: 'The count could not be started.' }, 500));
         await click;
         await settle();
         assert.deepEqual(calls, [storageUrl, measureUrl], 'no read while the tab is hidden');
         assert.equal(timers.polls(), 0);
-        if (outcome === 'fails') assert.deepEqual(toasts(), ['The measurement could not be started.']);
+        if (outcome === 'fails') assert.deepEqual(toasts(), ['The count could not be started.']);
 
         routes.set(storageUrl, response(measuredBody()));
         show('storage');
         await settle();
         assert.deepEqual(calls, [storageUrl, measureUrl, storageUrl], 'showing the tab again reads once');
-        assert.match(storageSummary(mount), /Measured data/);
+        assert.match(storageSummary(mount), /1\.4 MB/);
     });
 }
 
 test('Storage stops polling while the page is hidden and resumes when it returns', async (t) => {
     const { routes, calls, timers, document, start } = openStorage(t);
-    routes.set(storageUrl, response(storageBody({ measuring: true })));
+    routes.set(storageUrl, response(storageBody({ counting: storageCounting() })));
     start();
     await settle();
     assert.equal(timers.polls(), 1);
@@ -1068,4 +1282,167 @@ test('Storage destroy aborts its read and ignores late answers, tab events and c
     await settle();
     assert.deepEqual(calls, [storageUrl]);
     assert.equal(timers.polls(), 0);
+});
+
+// ---------------------------------------------------------------------------
+// Dashboard -> Storage -> Temporary space: the tray's requests through the real controller.
+// ---------------------------------------------------------------------------
+
+const previewUrl = '/api/storage/free/preview';
+const freeUrl = '/api/storage/free';
+const freeCancelUrl = '/api/storage/free/cancel';
+const freeGroup = (id, bytes) => ({ id, count: 3, inside_wait: 2, in_use: 1, unreadable: 0, bytes, bytes_complete: true,
+    items: [{ id: `${id}:a`, name: 'Run the QA wave', bytes }] });
+const freeBody = (state, overrides = {}) => storageBody({ free: { state, plan: 'p1', started_at: '2026-10-05T11:00:00Z', finished_at: null,
+    done: 0, total: 0, groups: [], run: null, error: null, ...overrides } });
+const storageTray = (mount) => mount.querySelector('[data-storage-tray]');
+const trayButton = (mount, name) => storageTray(mount).querySelector(`[${name}]`);
+
+test('Storage tray previews on its door, polls while listing, and shows the checklist once ready', async (t) => {
+    const { mount, routes, calls, timers, start, document } = openStorage(t);
+    routes.set(storageUrl, response(storageBody()));
+    start();
+    await settle();
+    assert.match(storageTray(mount).textContent, /Copies the app already removes on its own/);
+    routes.set(previewUrl, (_url, init) => {
+        assert.equal(init.method, 'POST');
+        return response(freeBody('listing', { total: 2, groups: [freeGroup('work_folders', null)], started: true }), 202);
+    });
+    const door = trayButton(mount, 'data-free-preview');
+    door.focus();
+    const measureButton = mount.querySelector('[data-storage-action="measure"]');
+    await storageTray(mount).fire('click', { target: door });
+    await settle();
+    assert.deepEqual(calls, [storageUrl, previewUrl]);
+    assert.match(storageTray(mount).textContent, /Checking what can go · 0 of 2 folders/);
+    assert.equal(measureButton.textContent, 'Measure now', 'a preview POST never reads as a count');
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-stop', 'focus follows the door into the listing');
+    assert.equal(timers.polls(), 1, 'a listing is polled');
+    routes.set(storageUrl, response(freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9), freeGroup('working_copies', 2.1e9)] })));
+    await timers.fire();
+    await settle();
+    assert.match(storageTray(mount).textContent, /8\.9 GB can be freed[\s\S]*Free 8\.9 GB/);
+    assert.equal(timers.polls(), 0, 'a ready list is not polled');
+    // Unchecking a group moves the sum; Cancel hides the list without a request.
+    const box = storageTray(mount).querySelector('[data-free-group="working_copies"]');
+    box.checked = false;
+    await storageTray(mount).fire('change', { target: box });
+    assert.match(storageTray(mount).textContent, /Free 6\.8 GB/);
+    const cancel = trayButton(mount, 'data-free-cancel');
+    cancel.focus();
+    await storageTray(mount).fire('click', { target: cancel });
+    assert.match(storageTray(mount).textContent, /Show what can go/);
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-preview', 'focus lands on the door');
+    assert.deepEqual(calls, [storageUrl, previewUrl, storageUrl]);
+});
+
+test('Storage tray frees the checked groups under the plan after the shared confirm, then shows the result', async (t) => {
+    const { mount, routes, calls, timers, start, show, document } = openStorage(t);
+    routes.set(storageUrl, response(freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9), freeGroup('working_copies', 2.1e9)] })));
+    start();
+    await settle();
+    const go = trayButton(mount, 'data-free-go');
+    assert.ok(go.className.includes('btn-danger'));
+    let posted = null;
+    routes.set(freeUrl, async (_url, init) => {
+        posted = JSON.parse(init.body);
+        return response(freeBody('running', { total: 6, run: { groups: posted.groups, selected: 6, done: 2, removed: 0, removed_bytes: 0,
+            deleting: 2, deleting_bytes: 1e9, deleting_bytes_unused: 0, kept: [], free_before: 140e9, free_after: null, stopped: false, error: null },
+            started: true }), 202);
+    });
+    const click = storageTray(mount).fire('click', { target: go });
+    await settle();
+    const dialog = document.body.querySelector('[role="dialog"]');
+    assert.ok(dialog, 'the shared confirm dialog opened');
+    assert.match(dialog.textContent, /Free temporary space\?[\s\S]*This removes 8\.9 GB for good/);
+    const ok = dialog.querySelector('[data-confirm-ok]');
+    assert.equal(ok.textContent, 'Free 8.9 GB');
+    await dialog.parentElement.fire('click', { target: ok });
+    await click;
+    await settle();
+    assert.deepEqual(posted, { plan: 'p1', groups: ['work_folders', 'working_copies'] });
+    assert.match(storageTray(mount).textContent, /Freeing space · 0 bytes removed · 2 of 6 folders/);
+    assert.match(storageTray(mount).textContent, /2 are still being deleted/);
+    assert.equal(document.activeElement?.getAttribute('data-key'), 'data-free-stop', 'focus moves to the running tray\'s Stop');
+    assert.equal(timers.polls(), 1);
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
+        deleting: 1, deleting_bytes: 0.2e9, kept: [{ reason: 'results_pending', count: 0 }], free_before: 140e9, free_after: 148e9,
+        stopped: false, error: null } })));
+    await timers.fire();
+    await settle();
+    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 is still being deleted\. 140 GB free is now 148 GB\. The next count will show the new total\./);
+    assert.equal(timers.polls(), 1, 'the maintenance child is still deleting');
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
+        deleting: 0, deleting_bytes: 0, stuck: 1, kept: [], free_before: 140e9, free_after: 148e9, stopped: false, error: null } })));
+    await timers.fire();
+    await settle();
+    assert.match(storageTray(mount).textContent, /Removed 8\.0 GB \(5 folders\)\.\s*1 could not be deleted yet; the app retries at its next maintenance run\./);
+    assert.equal(timers.polls(), 0, 'an entry the child reported stuck is not polled for');
+    assert.equal(mount.querySelector('[data-storage-live]').textContent, 'Not counted yet. Removed 8.0 GB (5 folders).', 'the live region carries one phase sentence');
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 5, removed_bytes: 8e9,
+        deleting: 1, deleting_bytes: 0.2e9, kept: [{ reason: 'results_pending', count: 0 }], free_before: 140e9, free_after: 148e9,
+        stopped: false, error: null } })));
+    show('storage');
+    await settle();
+    assert.equal(timers.polls(), 1, 'the entry changed, the tab was shown again: it is deleting again');
+    routes.set(storageUrl, response(freeBody('done', { run: { groups: posted.groups, selected: 6, done: 6, removed: 6, removed_bytes: 8.2e9,
+        deleting: 0, deleting_bytes: 0, kept: [], free_before: 140e9, free_after: 149e9, stopped: false, error: null } })));
+    await timers.fire();
+    await settle();
+    assert.match(storageTray(mount).textContent, /Removed 8\.2 GB \(6 folders\)\.\s*140 GB free is now 149 GB/);
+    assert.doesNotMatch(storageTray(mount).textContent, /still being deleted/);
+    assert.equal(timers.polls(), 0);
+    assert.deepEqual(calls, [storageUrl, freeUrl, storageUrl, storageUrl, storageUrl, storageUrl]);
+});
+
+test('Storage tray says why a run did not start and stops a run on Stop', async (t) => {
+    const { mount, routes, calls, start, toasts, document } = openStorage(t);
+    routes.set(storageUrl, response(freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9)] })));
+    start();
+    await settle();
+    routes.set(freeUrl, response({ ...freeBody('ready', { groups: [freeGroup('work_folders', 6.8e9)] }), started: false, reason: 'preview_outdated' }, 202));
+    const go = trayButton(mount, 'data-free-go');
+    const click = storageTray(mount).fire('click', { target: go });
+    await settle();
+    const dialog = document.body.querySelector('[role="dialog"]');
+    await dialog.parentElement.fire('click', { target: dialog.querySelector('[data-confirm-ok]') });
+    await click;
+    await settle();
+    assert.deepEqual(toasts(), ['Nothing was removed. The list changed; check again.']);
+    routes.set(storageUrl, response(freeBody('running', { total: 3, run: { groups: ['work_folders'], selected: 3, done: 1, removed: 0, removed_bytes: 0,
+        deleting: 1, deleting_bytes: 1e9, kept: [], free_before: 1e12, free_after: null, stopped: false, error: null } })));
+    const storage = start();
+    await settle();
+    routes.set(freeCancelUrl, (_url, init) => {
+        assert.equal(init.method, 'POST');
+        return response(freeBody('stopped', { run: { groups: ['work_folders'], selected: 3, done: 1, removed: 0, removed_bytes: 0, deleting: 1,
+            deleting_bytes: 1e9, kept: [], free_before: 1e12, free_after: 1.001e12, stopped: true, error: null } }), 202);
+    });
+    const stop = mount.querySelectorAll('[data-free-stop]').at(-1);
+    await stop.parentElement.parentElement.fire('click', { target: stop });
+    await settle();
+    assert.ok(calls.includes(freeCancelUrl));
+    assert.match(mount.querySelectorAll('[data-storage-tray]').at(-1).textContent, /Removed 0 bytes, then stopped\. The rest was left as it was\./);
+    storage.destroy();
+});
+
+test('Activity says why a held Continue waits, keeps its Resume, and never calls it a budget pause (#1721)', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    routes.set(queueUrl, response({ queue: { running: [], pending: [{ id: 'pred-1-s1', task: {
+        id: 'pred-1-s1', root_task_id: 'pred-1-s1', title: 'Continue Friday report',
+        _budget_pause_hold: { reason: 'continuation_writer_unsettled', selected: false, dispatchable: false,
+            detail: "the interrupted task's own work is not proven settled; this Continue waits",
+            predecessor_task_id: 'pred-1', blockers: [{ kind: 'delegated_run', task_id: 'pred-1', run_id: 'run-leaf',
+                invocation_id: '', state: 'running', stop_outcome: '', source: 'delegated_subagent' }] } } }] } }));
+    const activity = initActivity({ mount, ws });
+    await activity.refresh();
+    const row = section(mount, 'queue').querySelector('.activity-row');
+    assert.match(row.querySelector('.activity-sub').textContent,
+        /^held: earlier work not proven settled · delegated run run-leaf is running$/);
+    assert.ok(row.classList.contains('activity-held'), 'its cause wraps instead of ending in an ellipsis');
+    assert.doesNotMatch(row.textContent, /paused \(budget\)/);
+    const control = row.querySelector('[data-act="task-control"]');
+    assert.equal(control.getAttribute('data-budget-paused'), '1', 'the existing Resume rechecks it');
+    activity.destroy();
 });

@@ -159,7 +159,7 @@ def _subagent_and_update_guard_result(
             "⚠️ ACTING_SUBAGENT_BLOCKED: this mutative subagent may read and "
             "write inside its assigned write root and run shell/services "
             f"there, but may not call first-party tool {name!r}. It cannot "
-            "commit the live body, run review/runtime/skills lifecycle, enable "
+            "commit the live body, run review gates/runtime/skills lifecycle, enable "
             "tools, or write identity or scratchpad (chronicle pages and parts only "
             "as its own drafts); the parent applies isolated patches "
             "or verifies shared external files and is the sole live-body committer."
@@ -326,6 +326,9 @@ def _disabled_tools(ctx: Any) -> frozenset:
     # too (harmless: nothing registers it), so old contracts round-trip as-is.
     if "claude_code_edit" in names:
         names.add("delegate_start")
+    from ouroboros.contracts.task_contract import expand_disabled_tool_names
+
+    names.update(expand_disabled_tool_names(names))
     # Rename compatibility: contracts that withheld `advisory_review` keep
     # withholding the SAME organ under its new name, and vice versa (a new
     # contract naming only the new spelling must also silence the alias).
@@ -374,10 +377,10 @@ def _builtin_tool_availability(name: str, ctx: Any = None) -> tuple[bool, str, s
     tool = str(name or "").strip()
     if tool == "web_search":
         try:
-            from ouroboros.tools.search import _available_web_search_backends
+            from ouroboros.tools.search import _available_web_search_backends, _web_search_unavailability
 
             if not _available_web_search_backends():
-                return False, "missing_credential", "web_search_backend"
+                return (False, *_web_search_unavailability())
         except ImportError:
             return True, "", ""
         except Exception:

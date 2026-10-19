@@ -551,14 +551,14 @@ DEEPSEEK_DIRECT_DEFAULTS = {
 }
 
 ANTHROPIC_DIRECT_DEFAULTS = {
-    "main": "anthropic::claude-opus-5",
+    "main": "anthropic::claude-opus-5-5",
     "heavy": "",
     "light": "anthropic::claude-sonnet-5",
     "fallback": "anthropic::claude-sonnet-5",
     # Deep self-review is a real slot with a SHIPPED default; without a
     # per-provider value a direct-only install keeps an unreachable
     # OpenRouter-form id it has no credential for (v6.82.0).
-    "deep_self_review": "anthropic::claude-opus-5",
+    "deep_self_review": "anthropic::claude-opus-5-5",
 }
 
 DIRECT_PROVIDER_DEFAULTS = {
@@ -571,22 +571,20 @@ DIRECT_PROVIDER_DEFAULTS = {
     "zai": ZAI_DIRECT_DEFAULTS,
 }
 
-# Review panels are declared as provider ROLE sequences, then compiled against
-# the owner's current provider-prefixed Main/Light values. This keeps explicit
-# custom models useful while making the shipped single-provider policy obvious:
-# OpenAI and Anthropic run their strongest Main model three independent times.
-# The older MiniMax mixed panel is preserved because that profile was not part of
-# this policy change.
+# Review panels are declared as provider ROLE sequences, one seat per role, then
+# compiled against the owner's current provider-prefixed Main/Light values. This
+# keeps explicit custom models useful while making the shipped single-provider
+# policy obvious: a provider reviews on its strongest Main ONCE (owner Q5=A —
+# copies of one model would each pay a run and add no second opinion), and
+# MiniMax keeps its mixed panel of two models.
 DIRECT_PROVIDER_REVIEW_ROLES = {
-    "openai": ("main", "main", "main"),
-    "anthropic": ("main", "main", "main"),
-    "cloudru": ("main", "main", "main"),
-    "gigachat": ("main", "main", "main"),
+    "openai": ("main",),
+    "anthropic": ("main",),
+    "cloudru": ("main",),
+    "gigachat": ("main",),
     "minimax": ("main", "light", "light"),
-    # Strongest-main ×3 policy (same as OpenAI/Anthropic): an exclusive
-    # DeepSeek install reviews with three independent thinking v4-pro calls.
-    "deepseek": ("main", "main", "main"),
-    "zai": ("main", "main", "main"),
+    "deepseek": ("main",),
+    "zai": ("main",),
 }
 
 _ANTHROPIC_MODEL_ALIASES = {
@@ -594,6 +592,7 @@ _ANTHROPIC_MODEL_ALIASES = {
     "claude-opus-4.7": "claude-opus-4-7",
     "claude-opus-4.8": "claude-opus-4-8",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
+    "claude-opus-5.5": "claude-opus-5-5",
 }
 
 
@@ -671,23 +670,19 @@ def compute_direct_review_models_fallback(
     provider: str,
     main_model: str,
     light_model: str = "",
-    *,
-    review_runs: int = 3,
 ) -> list[str]:
     """Compile a direct-provider review panel from declarative role names."""
-    return [model for _role, model in compute_direct_review_seats(
-        provider, main_model, light_model, review_runs=review_runs)]
+    return [model for _role, model in compute_direct_review_seats(provider, main_model, light_model)]
 
 
 def compute_direct_review_seats(
     provider: str,
     main_model: str,
     light_model: str = "",
-    *,
-    review_runs: int = 3,
 ) -> list[tuple[str, str]]:
-    """The same panel as ``(role, model)`` seats: ``role`` is the owner slot a seat runs (``main``,
-    or ``light`` for a Light of this provider), '' where the provider's shipped Light stands in."""
+    """The same panel as ``(role, model)`` seats, one per declared role: ``role`` is the owner slot a
+    seat runs (``main``, or ``light`` for a Light of this provider), '' where the provider's shipped
+    Light stands in."""
     if provider not in DIRECT_PROVIDER_DEFAULTS:
         return []
     provider_prefix = f"{provider}::"
@@ -699,16 +694,28 @@ def compute_direct_review_seats(
     seats = {"main": ("main", main), "light": ("light", light) if light.startswith(provider_prefix)
              else ("", default_light) if default_light else ("main", main)}
     roles = DIRECT_PROVIDER_REVIEW_ROLES.get(provider, ("main", "light", "light"))
-    compiled = [seats.get(role, seats["main"]) for role in roles]
-    count = max(1, int(review_runs or 3))
-    return [compiled[index % len(compiled)] for index in range(count)]
+    return [seats.get(role, seats["main"]) for role in roles]
+
+
+def image_input_from_modalities(value: Any) -> bool | None:
+    """Image input stated by one input-modality list: True/False, or None when it says nothing.
+
+    Only a non-empty list of non-blank strings is a statement. A missing, null or empty
+    list, another shape, or one item that is not a non-blank string leaves it unknown:
+    the valid remainder of ``["text", 42]`` or ``["text", ""]`` is not a complete list
+    that omits images.
+    """
+    if isinstance(value, list) and value and all(isinstance(item, str) and item.strip() for item in value):
+        return "image" in {item.strip().lower() for item in value}
+    return None
 
 
 def supports_vision(model_id: str, *, model_role: str = "",
                     model_account_override: str | None = None) -> bool | None:
     """Image input of the exact route: True, False, or None when nothing sourced says.
 
-    A Claudexor route answers from the catalog of this call's role/account, never
+    A Claudexor route answers from the input modalities in the catalog of this
+    call's role/account (``image_input_from_modalities``), never
     a global overlay; an API route answers from the fresh route-scoped catalog
     record (``vision_routing.route_image_input``). A model's name is not
     evidence, so every other case is None: image senders preserve input when the
@@ -737,8 +744,7 @@ def supports_vision(model_id: str, *, model_role: str = "",
         if catalog.get("source") != source or (account and catalog.get("credentialProfileId") != account):
             return None
         item = next((row for row in catalog.get("models", []) if row.get("id") == native_model), {})
-        modalities = item.get("inputModalities")
-        return "image" in modalities if isinstance(modalities, list) and modalities else None
+        return image_input_from_modalities(item.get("inputModalities"))
     from ouroboros.vision_routing import route_image_input
 
     return route_image_input(model_id).verdict

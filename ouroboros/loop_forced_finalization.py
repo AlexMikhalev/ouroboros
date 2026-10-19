@@ -1,5 +1,5 @@
 """Forced finalization of a task that ran out of road: orphan notes, child claims
-and the absorption gate, forced children acceptance, swarm-action enforcement,
+and the absorption gate, swarm-action enforcement,
 forced services and owner-directive drain, the one forced model call, stale and
 fallback candidates and the forced final answer.
 
@@ -8,10 +8,8 @@ executes no tool and buys no repair call: a reply that still asks for a tool is
 a preamble and falls back to the retained or host text. A second call happens
 only to answer owner directives that arrived during the first.
 
-Every rail records through ``_record_forced_finalization``, whose acceptance
-write is a ledger entry, never a gate: a task eligible for a panel that did not
-run gets an eligible bypass record with trigger ``bypassed_<reason_code>``; a
-panel that already ran, or a host decision already recorded, is not overwritten.
+Every rail records through ``_record_forced_finalization``; a rail runs no result
+review (its outcome says what ended the task).
 Extracted from loop.py (v7 L-B split); loop.py re-exports every name."""
 
 from __future__ import annotations
@@ -28,10 +26,10 @@ from ouroboros.finalization_timing import finalization_child_scope
 from ouroboros._usage_wait import receiver_abandonable
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
 from ouroboros.model_wait import ModelWaitInterrupted
-from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_DELIVERY_CONTROL_DEGRADED
+from ouroboros.outcomes import REASON_DELIVERY_CONTROL_DEGRADED
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
 from ouroboros.tools.registry import ToolRegistry
-from ouroboros.usage_accounting import BudgetExceeded, PhysicalAttemptPreconditionFailed
+from ouroboros.usage_accounting import BillingAuthorityUnavailable, BudgetExceeded, ControlAuthorityUnavailable, PhysicalAttemptPreconditionFailed
 from ouroboros.utils import sanitize_tool_result_for_log
 
 
@@ -123,7 +121,7 @@ def _project_child_result_dispositions(
     ctx: _RoundLimitContext,
     llm_trace: Dict[str, Any],
 ) -> None:
-    """Expose a compact exact-hash projection for acceptance/outcome reducers."""
+    """Expose a compact exact-hash projection for the outcome reducers."""
 
     try:
         from ouroboros.tools.join_ledger import _child_result_sha256
@@ -163,8 +161,14 @@ def _record_forced_finalization(
     # Common terminal recorder = the ONE seam over the LLM-seam forced
     # answer (`_forced_final_answer`) and the no-spend host-fallback fence
     # path (`_handle_budget_exceeded` -> `_forced_fallback_result`).
-    _loop()._record_forced_acceptance_bypass(ctx, llm_trace, reason_code)
     ctx.accumulated_usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_NOTICE)
+    # Every rail returns this candidate's bytes. A wake's quiet selection stays
+    # internal here too (the pipeline publishes only the host's outcome notice);
+    # an ordinary replacement or the host's own fallback text is speech.
+    if getattr(candidate, "quiet", False):
+        ctx.accumulated_usage.update(wake_silent=True, terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL)
+    else:
+        ctx.accumulated_usage.pop("wake_silent", None)
     binding = dict(candidate.acceptance_binding or {}) if candidate is not None else {}
     tools = getattr(ctx, "tools", None)
     current_fingerprint = str(
@@ -188,8 +192,6 @@ def _record_forced_finalization(
             and bool(current_fingerprint) and not binding.get("stale_evidence")
             and candidate.evidence_fingerprint == current_fingerprint
         ),
-        "acceptance_status": str(binding.get("acceptance_status") or "unaccepted"),
-        "acceptance_authoritative": bool(binding.get("authoritative", False)),
     }
 
 
@@ -386,14 +388,12 @@ def _maybe_enforce_child_absorption_gate(
 
 
 def _plan_gate_identity(decision: Dict[str, Any]) -> str:
-    """Typed identity of the plan-review gate as the mind was last TOLD it.
-    Existing decision fields only — never the rendered English, which cannot tell
-    two different waves apart (astra F3)."""
+    """Typed identity of the planning gate as the mind was last TOLD it: the decision's
+    own typed fields (status, the holding objections, the pending asks, the hurry
+    attribution) — never the rendered English (astra F3)."""
     return "|".join(str(decision.get(key) or "") for key in (
-        "status", "allow", "closed", "outcome", "enforcement", "cycles_paid",
-        "custody_pending", "reviewer_slots_degraded", "review_late_result_pending",
-        "quorum_unreachable", "owner_hurry_local_advisory",
-    ))
+        "status", "allow", "enforcement", "owner_hurry_local_advisory", "unreadable", "force_plan_met",
+    )) + "|" + ",".join(str(x) for x in decision.get("holding") or []) + "|" + ",".join(str(x) for x in decision.get("pending_asks") or [])
 
 
 def _enforce_swarm_actions(
@@ -410,11 +410,10 @@ def _enforce_swarm_actions(
     ``messages`` — the hold reminder and the release note — so it records what
     entered the MIND's context, not what this gate observed. Every other gate
     transition already reaches the mind by its own route and must not buy a round:
-    a settled reviewer slot arrives as a ``[System task message]`` through the task
-    mailbox (``plan_review_collect.announce_released_settlement`` ->
-    ``loop_round_limits`` drain), a rail release rides the forced prompt's typed
-    facts, and ``closed``/``author_stopped``/``cycles_exhausted`` are the mind's own
-    ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
+    a settled ask arrives as a ``[System task message]`` through the task mailbox
+    (``plan_ask.settle_released_reply`` -> ``loop_round_limits`` drain), a rail
+    release rides the forced prompt's typed facts, and objections and withdrawals
+    are the mind's own ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
     no-chat contract forbids putting into ``messages``
     (``loop_round_limits.py``) — that is the only release this fires on."""
 
@@ -424,10 +423,12 @@ def _enforce_swarm_actions(
     identity = _plan_gate_identity(decision) if decision.get("required") else ""
     told = str(getattr(tools._ctx, "_plan_gate_told_identity", "") or "")
     if decision.get("allow"):
+        # The one release the mind cannot see otherwise: the owner's hurry let it past
+        # objections that still hold (``holding``); a gate the mind cleared itself — a
+        # withdrawal, nothing pending — buys no round.
         if not (
             told and identity and identity != told
-            and not decision.get("closed")
-            and decision.get("status") != "author_stopped"
+            and decision.get("holding")
             and decision.get("owner_hurry_local_advisory")
             and not getattr(tools._ctx, "_plan_gate_release_told", False)
         ):
@@ -479,11 +480,15 @@ def _plan_gate_facts(decision: Dict[str, Any]) -> str:
     true on the normal rail and on every forced rail. ``owner_hurry_local_advisory``/
     ``configured_enforcement`` carry the accurate hurry-vs-advisory attribution that
     the recorded notice does not distinguish."""
-    if not decision.get("required") or decision.get("closed"):
+    if not decision.get("required"):
         return ""
-    parts = ["plan_review_open=true"]
-    if decision.get("outcome"):
-        parts.append(f"plan_review_outcome={decision['outcome']}")
+    objections, pending = decision.get("open_objections") or [], decision.get("pending_asks") or []
+    status = str(decision.get("status") or "")
+    if not objections and not pending and status not in {"force_plan_unmet", "unreadable", "held"}:
+        return ""
+    parts = ["plan_review_open=true", f"plan_gate_status={status}",
+             f"plan_open_objections={len(objections)}", f"plan_holding={len(decision.get('holding') or [])}",
+             f"plan_pending_asks={len(pending)}"]
     if decision.get("enforcement"):
         parts.append(f"plan_review_enforcement={decision['enforcement']}")
     if decision.get("decision_authority"):
@@ -491,14 +496,10 @@ def _plan_gate_facts(decision: Dict[str, Any]) -> str:
     if decision.get("owner_hurry_local_advisory"):
         parts.append("owner_hurry_local_advisory=true")
         parts.append(f"configured_enforcement={decision.get('configured_enforcement') or 'blocking'}")
-    for key in (
-        "reviewer_slots_degraded", "custody_pending",
-        "review_late_result_pending", "quorum_unreachable",
-    ):
-        if decision.get(key):
-            parts.append(f"{key}=true")
-    if decision.get("cycles_paid"):
-        parts.append(f"cycles_paid={decision['cycles_paid']}")
+    if decision.get("force_plan_met") is False:
+        parts.append("force_plan_met=false")
+    if decision.get("unreadable"):
+        parts.append("plan_record_unreadable=true")
     return " ".join(parts)
 
 
@@ -548,7 +549,7 @@ def _prepare_forced_prompt(
     _loop()._drain_forced_owner_directives(ctx, llm_trace)
     _loop()._finalize_forced_services(ctx, llm_trace)
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    # The typed facts sit BEFORE the acceptance observation so that one-shot block
+    # The typed facts sit BEFORE the owner-source observation so that one-shot block
     # stays the tail of the message (the prompt-cache prefix rule).
     return (
         prompt
@@ -652,7 +653,7 @@ def _read_presence_declaration(tools_ctx: Any, extracted: str) -> None:
 
 def _forced_subject_prompt(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> str:
     """Capture the source before pricing/sending, never after a reply arrives."""
-    from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
+    from ouroboros.loop_messages import capture_acceptance_observation, acceptance_observation_prompt
 
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     if tools_ctx is None:
@@ -771,19 +772,8 @@ def _drain_forced_owner_directives(
     after = len(directives) if isinstance(directives, list) else 0
     if after <= before:
         return False
-    candidate = _loop()._live_delivery_candidate(ctx)
-    binding = (
-        candidate.acceptance_binding
-        if isinstance(candidate, _loop().DeliveryCandidate)
-        and isinstance(candidate.acceptance_binding, dict)
-        else {}
-    )
-    if (
-        binding.get("authoritative") is True
-        or bool(getattr(tools._ctx, "_task_acceptance_reviewed", False))
-        or bool(getattr(tools._ctx, "_task_acceptance_sealed_fence_token", None))
-    ):
-        _loop()._supersede_task_acceptance_for_owner_followup(tools._ctx, llm_trace)
+    if getattr(tools._ctx, "_task_acceptance_sealed_fence_token", None):
+        _loop()._release_for_owner_followup(tools._ctx, llm_trace)
     _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     return True
 
@@ -809,17 +799,20 @@ def _forced_physical_context(ctx: _RoundLimitContext, messages: List[Dict[str, A
     plan = getattr(tools_ctx, "context_fit_plan", None)
     if plan is None or str(ctx.active_model or "") != str(getattr(plan, "model", "") or ""):
         return None
+    from ouroboros.context_anchor import main_input_anchor
     from ouroboros.context_fit import measure_main_fit
     from ouroboros.loop_model_call import _main_context_profile, _physical_context_for_fit, _remember_main_fit
     from ouroboros.observability import new_execution_id
+    from ouroboros.transcript_prefix import rewrite_epoch
 
     mode = str(getattr(tools_ctx, "active_context_mode", "") or "")
     mode = mode if mode in {"max", "low", "nano"} else "max"
     round_id = f"{ctx.accumulated_usage.setdefault('execution_id', new_execution_id())}:round:{ctx.round_idx}"
+    anchor, accepted = main_input_anchor(ctx.accumulated_usage, plan, rewrite_epoch=rewrite_epoch(tools_ctx))
     disposition = measure_main_fit(
         plan, messages, getattr(ctx, "tool_schemas", None), profile=_main_context_profile(plan, mode),
         rendered_mode=mode, round_id=round_id, reasoning_effort=ctx.active_effort,
-        automatic_pass_used=(str(plan.route_fp or ""), round_id) in _loop()._context_reclaim_materializations(tools_ctx))
+        anchor=anchor, accepted_input_tokens=accepted)
     _remember_main_fit(ctx, disposition)
     return _physical_context_for_fit(disposition)
 
@@ -985,6 +978,7 @@ def _publish_stale_forced_candidate(
     candidate.evidence_revision = stale_candidate.evidence_revision
     candidate.evidence_fingerprint = stale_candidate.evidence_fingerprint
     candidate.owner_source_sha256 = stale_candidate.owner_source_sha256
+    candidate.quiet = stale_candidate.quiet  # nor make a wake's internal words speech
     candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
         tools, candidate, reason_code,
     )
@@ -1169,11 +1163,6 @@ def _resolve_forced_delivery_control(
                     candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
                         ctx.tools, candidate, REASON_DELIVERY_CONTROL_DEGRADED,
                     )
-                    tools_ctx._task_acceptance_reviewed = False
-                    _loop()._set_acceptance_decision(llm_trace, {
-                        "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": REASON_DELIVERY_CONTROL_DEGRADED,
-                        "source": "forced_acceptance_subject", "rationale": error,
-                    })
     if consumed and not degraded and llm_trace is not None:
         parsed, _, _ = _parse_delivery_control_body(extracted)
         if isinstance(parsed, dict) and parsed.get("action") == "stop":
@@ -1274,6 +1263,17 @@ def _forced_final_answer(
         except BudgetExceeded:
             _loop()._drain_forced_owner_directives(ctx, llm_trace)
             raise
+        except (BillingAuthorityUnavailable, ControlAuthorityUnavailable) as error:
+            _loop()._drain_forced_owner_directives(ctx, llm_trace)
+            if reason_code not in {"budget_exhausted", "owner_requested_finalization", "finalization_grace", "deadline_local"}:
+                raise  # the real loop owns the exact authority pause / infrastructure exit
+            # A selected money/Stop/deadline rail remains binding. An unavailable
+            # wrap-up neither reopens it nor buys a retry for a late owner directive.
+            ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code,
+                forced_authority_unavailable={"kind": error.kind, "cause": error.cause, "detail": str(error)})
+            return _loop()._forced_fallback_result(ctx, llm_trace, fallback_text, reason_code,
+                source="forced_authority_unavailable", provider_terminal=provider_terminal,
+                host_words=fallback_host_words)
         except ForcedCandidateUnaffordable:
             _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
                 "checkpoint_kind": "forced_candidate_unaffordable", "reason_code": reason_code})

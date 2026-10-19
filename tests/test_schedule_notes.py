@@ -10,6 +10,8 @@ turn's context, both times after downtime, and never a model task.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import types
@@ -48,9 +50,7 @@ def _note(queue, schedule_id="note-1", *, text="Call mother", trigger=None, sour
 
 def _chat_rows(root):
     path = root / "logs" / "chat.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return dialogue_test.log_rows(path)
 
 
 def _row(queue, root, schedule_id="note-1"):
@@ -69,6 +69,7 @@ def test_a_due_note_is_one_signed_system_row_and_never_a_task(host):
     assert body == "Call mother", "the mind's words ride verbatim"
     [frame] = [f for f in host.frames if f.get("type") == "chat"]
     assert (frame["role"], frame["system_type"], frame["source"]) == ("system", "reminder", "Ouroboros")
+    assert row["source"] == frame["source"]
     assert frame["set_at"] == "1999-12-31T22:00:00+00:00"
     assert frame["scheduled_for"] == ONCE_PAST["run_at"] and frame["delivered_at"]
     assert [topic for topic, _ in host.published] == ["chat.outbound"], "transports see it like any System row"
@@ -107,6 +108,7 @@ def test_an_overdue_note_reaches_extension_subscribers_on_a_provider_boot(host, 
     _patch_lifespan_for_drive_root_test(monkeypatch, srv, {})
     monkeypatch.setattr(srv, "has_startup_ready_provider", lambda _settings: True)
     monkeypatch.setattr(srv, "_boot_managed_update_tasks", lambda: None)
+    monkeypatch.setattr(srv, "_open_dialogue", lambda *_a, **_k: None)  # this fixture's bus and bridge stay
     delivered = []
     first_tick_finished = threading.Event()
 
@@ -249,6 +251,11 @@ def test_history_shows_the_row_and_only_live_frames_ring(host):
     messages = json.loads(response.body)["messages"]
     [replayed] = [m for m in messages if m.get("system_type") == "reminder"]
     assert replayed["role"] == "system" and replayed["text"].endswith("\nCall mother")
+    [row] = _chat_rows(host.root)
+    [frame] = [f for f in host.frames if f.get("type") == "chat"]
+    assert replayed["source"] == row["source"] == frame["source"] == "Ouroboros"
+    assert replayed["text"] == row["text"] == frame["content"]
+    assert replayed["ts"] == row["ts"] == frame["ts"]
 
 
 def test_the_next_turn_reads_the_note_as_a_host_fact(host):
@@ -272,7 +279,10 @@ def test_a_note_from_another_source_keeps_its_own_author(host):
     """The voice follows authorship: only the mind's own follow-up is signed Ouroboros."""
     _note(host.queue, source="owner")
     host.queue.check_scheduled_tasks()
-    assert _chat_rows(host.root)[0]["text"].startswith("Reminder · owner · written ")
+    [row] = _chat_rows(host.root)
+    assert row["text"].startswith("Reminder · owner · written ")
+    [frame] = [f for f in host.frames if f.get("type") == "chat"]
+    assert row["source"] == frame["source"] == "owner"
 
 
 def test_note_label_reads_both_times_in_the_schedule_zone():

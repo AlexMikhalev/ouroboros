@@ -308,7 +308,7 @@ class HostServiceContext:
         if loaded is None:
             raise HostServiceAuthError(f"skill {skill_name!r} is not installed")
         if not loaded.review.gate_for(loaded.content_hash)["executable_review"]:
-            raise HostServiceAuthError(f"skill {skill_name!r} does not have a fresh executable review")
+            raise HostServiceAuthError(f"skill {skill_name!r} has no current executable review authority")
         if not load_enabled(self.data_dir, skill_name):
             raise HostServiceAuthError(f"skill {skill_name!r} is disabled")
         if str(token_payload.get("content_hash") or "") != str(loaded.content_hash or ""):
@@ -508,6 +508,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
     try:
         from ouroboros.task_status import SETTLED_STATUSES
 
+        if not isinstance(payload.get("reply_to", ""), str):
+            return _json_error("reply_to must be an address string", 400)
         text = str(payload.get("text") or "")
         image_caption = str(payload.get("image_caption") or "")
         client_message_id = str(payload.get("client_message_id") or "").strip()[:128]
@@ -541,7 +543,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 # Reuse the accepted byte-proven kinds; same_message still checks every incoming digest/name.
                 logged = text.strip() or image_caption.strip() or chat_uploads.attachment_placeholder(
                     inline_image, {"chat_attachments": inbound.get("attachments"), "chat_attachment_uploads": incoming})
-                if not chat_uploads.same_message(inbound, logged, incoming):
+                if (not chat_uploads.same_message(inbound, logged, incoming)
+                        or (inbound.get("reply_to") or {}).get("address", "") != payload.get("reply_to", "")):
                     return _json_error("client_message_id was already used for a different message", 409)
                 state = _operation_state(ctx, rows, inbound)
                 if state["status"] in SETTLED_STATUSES:
@@ -549,8 +552,12 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                         "ok": True, "response": str(state.get("text") or ""),
                         "status": state["status"], "rejoined": True, **correlated,
                     })
-                # Proven never dispatched by THIS process: the named ingress below hands it over, once.
-                rejoined = state.get("reason") != "acceptance_write_failed"
+                # A dispatch still owed (the acceptor died before the handoff): the named ingress below
+                # hands it over, once; anything else rejoins.
+                from supervisor.message_ingress import dispatch_facts
+
+                facts = dispatch_facts(inbound, ctx.data_dir)
+                rejoined = facts is None or facts["state"] != "pending"
         metadata: dict[str, Any] = {}
         inline, image_mime = "", ""
         if not rejoined:
@@ -565,6 +572,8 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
             inline = str(payload.get("image_base64") or "") if image_mime else ""
             metadata = {**({"chat_attachment_uploads": uploads} if uploads else {}),
                         **({"chat_attachments": refs} if refs else {})}
+        if payload.get("reply_to"):  # no reference adds nothing to a plain inject's kwargs
+            metadata["reply_to"] = payload["reply_to"]
         bridge = ctx.bridge_getter()
         response_event: asyncio.Event = asyncio.Event()
         response_holder: dict[str, str] = {}
@@ -807,6 +816,9 @@ async def _api_presence_delivery(request: Request) -> JSONResponse:
         return _presence_error(str(exc), 409, "presence_receipt_conflict", "rejected")
     except (ValueError, TypeError) as exc:
         return _presence_error(str(exc), 400, "presence_receipt_invalid", "rejected")
+    except store.StoreMigrating:  # the receipt's earlier rows are in saved history that is still being upgraded
+        return _presence_error("presence delivery history is still importing; retry the same receipt", 503,
+                               "presence_history_importing", "retry")
     except Exception:
         log.warning("Presence delivery history write failed for skill %s", skill_name, exc_info=True)
         return _presence_error("presence delivery history write failed; retry the same receipt", 503,
@@ -837,9 +849,12 @@ def _presence_exception(exc: Exception, status: int) -> JSONResponse:
                   "presence_conversation_key_required", "presence_admission_conversation_mismatch",
                   "presence_event_identity_conflict"}:
         disposition = "rejected"
+    if getattr(exc, "disposition", "") in {"retained", "retry"}:
+        disposition = exc.disposition  # the runner holds the durable attempt authority
     facts = {"field": getattr(exc, "field", "presence")}
     if getattr(exc, "turn_ref", ""):
         facts["turn_ref"] = exc.turn_ref
+        facts["delivery_reporting_version"] = getattr(exc, "delivery_reporting_version", 0)
     if getattr(exc, "work_ref", ""):
         facts["work_ref"] = exc.work_ref
     manifest = getattr(exc, "attachment_manifest", None)
@@ -1008,20 +1023,9 @@ def _presence_work_view(
     if str(presence.get("binding_id") or "") != binding_id:
         return 404, {"ok": False, "error": "presence work reference not found",
                      "code": "presence_work_not_found", "disposition": "rejected"}
-    from ouroboros.presence_continuation import work_view
+    from ouroboros.presence_recovery import retained_work_view
 
-    continued = work_view(stored, work_ref)  # a continuing Presence author's own poll (#1536)
-    if continued is not None:
-        return continued
-    status = str(stored.get("status") or "")
-    if status not in {"completed", "failed", "cancelled"}:
-        return 202, {"ok": True, "status": "pending", "work_ref": work_ref,
-                     "delivery_reporting_version": presence.get("delivery_reporting_version", 0)}
-    from ouroboros.presence_runner import presence_result_from_stored
-
-    result = presence_result_from_stored(stored, work_ref)
-    return 200, {"ok": True, "status": status, "outcome": result.outcome, "text": result.text, "work_ref": work_ref,
-                 "delivery_reporting_version": result.delivery_reporting_version}
+    return retained_work_view(stored, work_ref, ctx.data_dir)
 
 
 async def _api_presence_work(request: Request) -> JSONResponse:
@@ -1219,12 +1223,11 @@ def _parse_operation_ref(value: Any) -> tuple[int, str]:
 
 
 def _chat_rows(ctx: HostServiceContext, chat_id: int) -> list:
-    """Read retained canonical sources; a display tail cannot prove absence."""
-    from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles
+    """The chat's retained canonical rows (the dialogue store's room probe, oldest first)."""
+    from ouroboros import dialogue_store
 
-    with jsonl_chain_handles(ctx.data_dir / "logs" / "chat.jsonl", strict=True) as handles:
-        return [row for path, handle in handles for row in iter_jsonl_objects(path, _handle=handle)
-                if row.get("chat_id") == chat_id]
+    found = dialogue_store.probe_rows(ctx.data_dir, "chat", [("chat_id", int(chat_id))], limit=10_000)
+    return [row.row for row in reversed(found)]
 
 
 def _inbound_row(rows: list, client_message_id: str) -> Optional[Dict[str, Any]]:
@@ -1331,16 +1334,15 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
         if row.get("direction") in {"out", "system"} and terminal in SETTLED_STATUSES and owns(row):
             state.update({"status": terminal, "text": str(row.get("text") or "")})
             return state
-    from supervisor.message_ingress import accepted_here, acceptance_undispatched
+    from supervisor.message_ingress import dispatch_lost, dispatch_taken_over_here
 
-    if acceptance_undispatched(chat_id, client_message_id):  # its write raised; nothing was queued
-        state.update({"status": "lost", "reason": "acceptance_write_failed"})
-        return state
     accepted_session = str(inbound.get("session_id") or "")
     live_session = str((read_json_dict(ctx.data_dir / "state" / "state.json") or {}).get("session_id") or "")
-    # A crash keeps the session: the row's process stamp names the ended process (and its queue).
-    ended = bool(inbound.get("ingress_process")) and not accepted_here(inbound)
-    if ended or (accepted_session and live_session and accepted_session != live_session):
+    # A crash keeps the session: the dispatch fact names the ended process (and its queue). A dispatch
+    # THIS process took over after the restart (an owed one, by a retry or the recovery) is live.
+    ended = dispatch_lost(inbound, ctx.data_dir)
+    restarted = accepted_session and live_session and accepted_session != live_session
+    if ended or (restarted and not dispatch_taken_over_here(inbound, ctx.data_dir)):
         state.update({"status": "lost", "reason": "host_restarted_before_answer"})
     return state
 
@@ -1462,10 +1464,10 @@ async def _api_chat_cancel(request: Request) -> JSONResponse:
     The cancellation owner does the work — durable intent first
     (``cancel_intents.request_cancel``), then custody through the cascade path
     the browser Stop uses — and the answer is its typed outcome: ``cancelled``,
-    ``already_terminal``, ``unresolved`` (custody did not settle; the work is
-    still live) or ``cancel_unsupported`` (nothing this request started is
-    addressable yet: still queued, or a message delivered into a pre-existing
-    task). Never a ``cancelled`` that did not happen.
+    ``already_terminal``, ``unresolved`` (custody did not confirm settlement,
+    proving neither live nor ended work) or ``cancel_unsupported`` (nothing this
+    request started is addressable yet: still queued, or a message delivered
+    into a pre-existing task). Never a ``cancelled`` that did not happen.
     """
     ctx: HostServiceContext = request.app.state.host_service_context
     try:

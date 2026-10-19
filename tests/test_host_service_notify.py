@@ -10,6 +10,8 @@ is written; a write that cannot be confirmed answers one 503.
 
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import asyncio
 import json
 import pathlib
@@ -49,9 +51,7 @@ def _client(tmp_path: pathlib.Path, *, granted: bool = True):
 
 def _rows(tmp_path: pathlib.Path) -> list[dict]:
     path = tmp_path / "logs" / "chat.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return dialogue_test.log_rows(path)
 
 
 def test_identity_advertises_the_notify_route(tmp_path: pathlib.Path) -> None:
@@ -61,6 +61,8 @@ def test_identity_advertises_the_notify_route(tmp_path: pathlib.Path) -> None:
 
 
 def test_a_notice_is_one_signed_system_row_in_the_owners_chat(tmp_path: pathlib.Path, chat) -> None:
+    from ouroboros.gateway.history import make_chat_history_endpoint
+
     client, _app = _client(tmp_path)
     response = client.post("/notify", headers=HEADERS,
                            json={"text": "  ⏰ Meeting with Ivan in 15 min ", "source": "Ouroboros"})
@@ -73,6 +75,12 @@ def test_a_notice_is_one_signed_system_row_in_the_owners_chat(tmp_path: pathlib.
     assert row["ts"] == body["ts"]
     [frame] = [f for f in chat.frames if f.get("type") == "chat"]
     assert (frame["role"], frame["system_type"], frame["source"]) == ("system", "skill_notice", "cal")
+    history = asyncio.run(make_chat_history_endpoint(tmp_path)(types.SimpleNamespace(query_params={"chat_id": "1"})))
+    [replayed] = json.loads(history.body)["messages"]
+    assert replayed["source"] == row["source"] == frame["source"] == "cal", "the body cannot spoof the skill's source"
+    assert replayed["text"] == row["text"] == frame["content"]
+    assert replayed["ts"] == row["ts"] == frame["ts"]
+    assert replayed["role"] == "system" and replayed["system_type"] == "skill_notice" and replayed["task_id"] == ""
     assert [topic for topic, _ in chat.published] == ["chat.outbound"]
 
 

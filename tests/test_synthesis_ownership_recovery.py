@@ -30,9 +30,7 @@ def work(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "_record_task_facts", lambda *a: None)
     monkeypatch.setattr(pipeline, "_run_memory_fallback_draft", lambda *a: calls.append("fallback"))
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", lambda *a: calls.append("scratch"))
-    monkeypatch.setattr(pipeline, "_run_reflection", lambda *a, **k: calls.append("reflection"))
-    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda *a: calls.append("backlog"))
-    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", lambda *a: None)
+    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", lambda *a: calls.append("promotion"))
     monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: object())
     monkeypatch.setattr("ouroboros.memory.Memory", lambda **k: object())
     yield SimpleNamespace(root=tmp_path, env=env, task=task, calls=calls, q=q)
@@ -40,7 +38,7 @@ def work(tmp_path, monkeypatch):
 
 
 def run(work, **kwargs):
-    return pipeline._run_post_task_processing_async(work.env, work.task, {}, {}, {},
+    return pipeline._run_post_task_processing_async(work.env, work.task, {}, {},
         work.root / "logs", blocking=True, **kwargs)
 
 
@@ -94,7 +92,7 @@ def test_unconfirmed_running_publication_never_enters_stages_and_recovers_once(w
     assert recover(work) == 1
     _until(lambda: checkpoint(work)["post_task_synthesis"] == "completed")
     _until(lambda: not phase.post_task_synthesis_in_flight(work.root, work.task["id"]))
-    assert work.calls == ["fallback", "scratch", "reflection", "backlog"]
+    assert work.calls == ["fallback", "scratch", "promotion"]
     assert recover(work) == 0
 
 
@@ -107,7 +105,7 @@ def test_unstarted_preparation_exception_leaves_no_physical_reservation(work, mo
     else:
         monkeypatch.setattr(pipeline.threading, "Thread", lambda *a, **k: SimpleNamespace(start=fail))
     with pytest.raises(RuntimeError, match="pre-worker"):
-        pipeline._run_post_task_processing_async(work.env, work.task, {}, {}, {}, work.root / "logs")
+        pipeline._run_post_task_processing_async(work.env, work.task, {}, {}, work.root / "logs")
     assert not phase.post_task_synthesis_in_flight(work.root, work.task["id"])
     assert work.calls == []
 
@@ -131,22 +129,22 @@ def test_final_publication_retries_only_the_computed_result_with_locks_released(
     monkeypatch.setattr(pipeline.time, "sleep", wait)
     run(work)
     assert final_writes == [True, True] and pauses == [True]
-    assert work.calls == ["fallback", "scratch", "reflection", "backlog"]
+    assert work.calls == ["fallback", "scratch", "promotion"]
     assert checkpoint(work)["post_task_synthesis"] == "completed"
     assert load_task_result(work.root, work.task["id"])["result"] == "Preserved solve answer"
 
 
 def test_acceptance_enrichment_during_paid_work_does_not_disown_its_final_checkpoint(work, monkeypatch):
-    def reflect(*a, **k):
-        work.calls.append("reflection")
+    def promote(*a, **k):
+        work.calls.append("promotion")
         current = checkpoint(work)
         write_task_result(work.root, work.task["id"], "failed",
             root_phase_checkpoint={**current, "phase": "task_acceptance", "status": "pass", "pass_index": 3})
-    monkeypatch.setattr(pipeline, "_run_reflection", reflect)
+    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", promote)
     run(work)
     assert checkpoint(work)["post_task_synthesis"] == "completed"
     assert checkpoint(work)["status"] == "pass" and checkpoint(work)["pass_index"] == 3
-    assert work.calls.count("reflection") == 1
+    assert work.calls.count("promotion") == 1
 
 
 @pytest.mark.parametrize("ending", ["stop", "unconfirmed_write", "permission"])
@@ -167,7 +165,7 @@ def test_final_publication_debt_keeps_paid_results_without_retrying_unknown_writ
         return writer(*args, **kwargs)
     monkeypatch.setattr(phase, "write_task_result", write)
     run(work, stop_requested=stopped.is_set)
-    assert attempts == [True] and work.calls == ["fallback", "scratch", "reflection", "backlog"]
+    assert attempts == [True] and work.calls == ["fallback", "scratch", "promotion"]
     assert checkpoint(work)["post_task_synthesis"] == "running"
     assert not phase.post_task_synthesis_in_flight(work.root, work.task["id"])
     assert load_task_result(work.root, work.task["id"])["result"] == "Preserved solve answer"
@@ -175,9 +173,9 @@ def test_final_publication_debt_keeps_paid_results_without_retrying_unknown_writ
 
 def test_new_attempt_during_phase_cannot_receive_the_previous_attempts_final(work, monkeypatch):
     from ouroboros.task_store import patch_document
-    def reflect(*a, **k):
+    def promote(*a, **k):
         patch_document(work.root, work.task["id"], lambda current: {**current, "task_attempt": 2})
-    monkeypatch.setattr(pipeline, "_run_reflection", reflect)
+    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote", promote)
     run(work)
     assert checkpoint(work)["post_task_synthesis"] == "running"
     assert not phase.post_task_synthesis_in_flight(work.root, work.task["id"])
@@ -217,7 +215,7 @@ def test_real_agent_start_record_allows_the_original_unstamped_task_to_finish(wo
     stored = load_task_result(work.root, task["id"], strict=True)
     assert stored["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
     assert stored["result"] == "Actual completed answer"
-    assert work.calls == ["fallback", "scratch", "reflection", "backlog"]
+    assert work.calls == ["fallback", "scratch", "promotion"]
     assert not phase.post_task_synthesis_in_flight(work.root, task["id"])
 
 
@@ -246,7 +244,7 @@ def test_a_positively_unrun_release_does_not_remove_synthesis_recovery(work):
     money.release_attempt(held, "not_sent")
     assert recover(work) == 1
     _until(lambda: checkpoint(work)["post_task_synthesis"] == "completed")
-    assert work.calls == ["fallback", "scratch", "reflection", "backlog"]
+    assert work.calls == ["fallback", "scratch", "promotion"]
 
 
 def test_unreadable_legacy_dispatch_history_keeps_debt_without_a_paid_retry(work, monkeypatch):
@@ -275,23 +273,21 @@ def test_startup_revival_never_degrades_an_inprocess_owner(work):
         phase.release_post_task_synthesis(key)
 
 
-def test_new_pause_wins_exact_phase_cas_and_periodic_recovery_preserves_its_grant(work, monkeypatch):
+def test_newer_phase_write_wins_exact_phase_cas_and_periodic_recovery_keeps_it(work, monkeypatch):
     writer, changed = phase.write_task_result, []
-    saved = {"pause_id": "owner-pause", "payload_ref": {"sha256": "completed-work"},
-             "completed_stages": ["memory_fallback_draft", "scratchpad_consolidation"],
-             "grant": {"grant_id": "explicit-owner-grant"}}
+    stopped = {"post_task_synthesis": "degraded",
+               "post_task_stop_reason": "owner_stopped:skipped=memory_fallback_draft,scratchpad_consolidation,promotion"}
     def race(*args, **kwargs):
         if kwargs.get("root_phase_checkpoint", {}).get("post_task_synthesis") == "running" and not changed:
             changed.append(True)
-            writer(work.root, work.task["id"], "failed",
-                root_phase_checkpoint={"post_task_synthesis": "paused", "post_task_pause": saved})
+            writer(work.root, work.task["id"], "failed", root_phase_checkpoint=stopped)
         return writer(*args, **kwargs)
     monkeypatch.setattr(phase, "write_task_result", race)
     with pytest.raises(phase.PostTaskCheckpointChanged):
         run(work)
     before = copy.deepcopy(checkpoint(work))
     assert recover(work) == 0
-    assert checkpoint(work) == before and checkpoint(work)["post_task_pause"] == saved
+    assert checkpoint(work) == before and before["post_task_stop_reason"] == stopped["post_task_stop_reason"]
     assert work.calls == []
 
 

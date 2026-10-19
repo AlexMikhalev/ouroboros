@@ -21,7 +21,7 @@ never written as a result:
   under its own id and CHARLIE is admitted as ordinary queued work, both to
   completion without a click, while ALPHA is STILL paused (not cancelled, not
   auto-resumed) until the owner's Resume runs it to completion. Its card says
-  ``Paused · owner pause`` once saved, including after Restart.
+  ``Paused · by you`` once saved, including after Restart, and the room says ``Paused``.
 
 ``test_owner_restart_returns_running_work_under_its_own_id``
   The owner Restart stops a running root whose working state is saved; the
@@ -59,6 +59,7 @@ import time
 
 import pytest
 
+from ouroboros import dialogue_store
 from tests import test_ui_smoke_playwright as smoke
 from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 
@@ -179,7 +180,6 @@ def _seed_roots(data_dir, task_ids, children=None, workspace=None):
 
     now = _dt.datetime.now(_dt.timezone.utc)
     (data_dir / "state").mkdir(parents=True, exist_ok=True)
-    (data_dir / "logs").mkdir(parents=True, exist_ok=True)
     pending, progress, chat = [], [], []
     for seq, task_id in enumerate(task_ids, start=1):
         text = _TEXT[task_id]
@@ -217,9 +217,9 @@ def _seed_roots(data_dir, task_ids, children=None, workspace=None):
         "pending_count": len(pending), "running_count": 0, "reaping_count": 0,
         "acceptance_fences": [], "budget_root_fences": [], "pending": pending, "running": [],
     }), encoding="utf-8")
-    (data_dir / "logs" / "chat.jsonl").write_text("".join(json.dumps(row) + "\n" for row in chat), encoding="utf-8")
-    (data_dir / "logs" / "progress.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in progress), encoding="utf-8")
+    for stream, rows in (("chat", chat), ("progress", progress)):
+        for row in rows:
+            dialogue_store.append(data_dir, stream, row)
 
 
 def _http(url, method, path):
@@ -429,7 +429,7 @@ def test_pause_restart_retention_and_resume(direct_server_with_data, monkeypatch
                 assert model.bravo_sent.wait(60), "BRAVO never started after ALPHA parked"
                 _wait(lambda: _phase(page, url, ALPHA) == "budget_paused", 30, "ALPHA paused")
                 assert _phase(page, url, CHARLIE) == "queued"
-                expect(_chip(page, ALPHA)).to_have_text("Paused · owner pause", timeout=30_000)
+                expect(_chip(page, ALPHA)).to_have_text("Paused · by you", timeout=30_000)
                 expect(_card(page, ALPHA).locator("[data-resume-run]")).to_be_visible()
                 expect(_card(page, BRAVO).locator("[data-live-phase]")).to_have_text("Working", timeout=30_000)
                 shot("01-paused-while-its-call-was-sent")
@@ -488,11 +488,12 @@ def test_pause_restart_retention_and_resume(direct_server_with_data, monkeypatch
                     "BRAVO returns under its own id, never as a Continue successor"
                 assert model.main_calls("CHARLIE") == 1
                 assert not _events(data_dir, "owner_continue_admitted")
-                expect(_chip(page, ALPHA)).to_have_text("Paused · owner pause", timeout=60_000)
+                expect(_chip(page, ALPHA)).to_have_text("Paused · by you", timeout=60_000)
                 expect(_card(page, ALPHA).locator("[data-resume-run]")).to_be_visible()
                 for task_id in (BRAVO, CHARLIE):
                     expect(_chip(page, task_id)).to_have_text("Done", timeout=60_000)
-                expect(page.locator("#chat-status")).to_have_text("Paused · owner pause", timeout=30_000)
+                # The room's word; who paused is said on its card and its row, never in the header.
+                expect(page.locator("#chat-status")).to_have_text("Paused", timeout=30_000)
                 shot("06-after-restart-chat")
                 panel = _open_activity(page)
                 expect(panel.locator(".activity-row", has_text="Batch4 Alpha")).to_contain_text("paused", timeout=30_000)
@@ -684,17 +685,23 @@ def test_continue_after_a_crash_rejoins_a_lost_answer_and_survives_reload(direct
                 page.route(f"**/api/tasks/{DELTA}/continue", lose_answer)
                 button.click()
                 expect(page.locator(".toast").last).to_contain_text("Continue not confirmed", timeout=15_000)
-                expect(button).to_be_enabled()
+                # A lost answer never strands the card: it offers the same Continue again, or the
+                # settled card's rows have already named the successor (task_continue.js).
+                page.wait_for_function("b => !b.disabled || Boolean(b.dataset.continueSuccessor)",
+                                       arg=button.element_handle(), timeout=15_000)
                 assert dropped == [200]
                 page.unroute(f"**/api/tasks/{DELTA}/continue")
                 offer = _task(page, url, DELTA).get("continuation_offer") or {}
                 successor = offer.get("successor_task_id")
                 assert successor and offer.get("refusal") == "already_continued", offer
                 shot("03-continue-answer-lost")
-                button.click()
+                # A press on a still-offered Continue retries the very admission; a disabled
+                # button ignores it, exactly as for the owner.
+                retried = button.evaluate("b => { const offered = !b.disabled; b.click(); return offered; }")
                 expect(button).to_have_text("Continued", timeout=15_000)
                 expect(button).to_have_attribute("data-continue-successor", successor)
-                expect(page.locator(".toast").last).to_contain_text("Continue accepted.")
+                if retried:
+                    expect(page.locator(".toast").last).to_contain_text("Continue accepted.")
                 nonce = page.evaluate(f"localStorage.getItem('ouro_continue_nonce:{DELTA}')")
                 assert nonce
                 shot("04-continue-retry-same-successor")
@@ -709,7 +716,7 @@ def test_continue_after_a_crash_rejoins_a_lost_answer_and_survives_reload(direct
                 expect(button).to_have_text("Continued", timeout=30_000)
                 expect(button).to_have_attribute("data-continue-successor", successor)
                 expect(button).to_be_disabled()
-                assert card.locator(":scope > [data-live-summary-button]").get_attribute("aria-expanded") != "true"
+                assert card.locator(":scope > [data-live-summary-button] [data-live-disclosure]").get_attribute("aria-expanded") != "true"
                 assert page.evaluate(f"localStorage.getItem('ouro_continue_nonce:{DELTA}')") == nonce
                 shot("05-continue-after-reload")
                 admitted = [row["task_id"] for row in _events(data_dir, "owner_continue_admitted")

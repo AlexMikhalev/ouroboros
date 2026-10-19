@@ -89,10 +89,11 @@ def terminal_custody_notice_text(result: Dict[str, Any]) -> str:
     Issue #1006: the custody fact is a typed row of the task card, so the live
     send and the outbox replay carry it as its own field instead of folding it
     into the host notice's text. Single-body transports keep the joined text.
+    That row is read by the owner, so it omits empty categories (#1403).
     """
     from ouroboros.delegate_terminal import terminal_custody_notice
 
-    return terminal_custody_notice(result)
+    return terminal_custody_notice(result, owner_row=True)
 
 
 def terminal_notice_text(result: Dict[str, Any]) -> str:
@@ -133,20 +134,25 @@ def provider_terminal_body(text: str, notice: str) -> str:
     return (text + "\n\n" if text else "") + "[Host status]\n" + notice
 
 
-def host_operation_reply_kwargs(source_ref: Any, terminal_status: str = "") -> Dict[str, Any]:
+def host_operation_reply_kwargs(
+    source_ref: Any, terminal_status: str = "", client_message_id: str = "",
+) -> Dict[str, Any]:
     """Correlate a host-accepted reply without inventing a durable task result.
 
     Callers supply the host-captured source, never a transport's arbitrary
     metadata. An empty status marks an acknowledgement, not completion.
+    ``client_message_id`` names the owner submission a System row answers, so the
+    live frame settles that submission's ``Sending...`` and no other; it is not
+    persisted and confers no finality.
     """
     from ouroboros.project_dialogue import owner_message_ref_is_valid
 
-    if not owner_message_ref_is_valid(source_ref):
-        return {}
-    meta = {"origin_message_ref": dict(source_ref)}
-    if terminal_status:
-        meta["task_terminal_status"] = terminal_status
-    return {"progress_meta": meta}
+    meta: Dict[str, Any] = {"client_message_id": str(client_message_id)} if client_message_id else {}
+    if owner_message_ref_is_valid(source_ref):
+        meta["origin_message_ref"] = dict(source_ref)
+        if terminal_status:
+            meta["task_terminal_status"] = terminal_status
+    return {"progress_meta": meta} if meta else {}
 
 
 def stamp_root_final_phase(
@@ -246,6 +252,8 @@ def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
     path = str(usage.get("terminal_salvage_path") or "")
     if path:
         fields["terminal_salvage_path"] = path
+    if usage.get("wake_silent") is True:
+        fields["wake_silent"] = True
     if usage.get("terminal_plan_review_open") is True:
         fields["terminal_plan_review_open"] = True
     for key in ("terminal_provider_notice", "terminal_host_notice"):
@@ -259,9 +267,15 @@ def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
 
 def deliver_final_message_live(
     event_queue: Any, pending_events: List[Dict[str, Any]], task_id: str,
-    *, drive_root: Any = None,
+    *, drive_root: Any = None, register: bool = True,
 ) -> bool:
     """Send the buffered FINAL ``send_message`` through the live worker queue.
+
+    Returns True only when the live ``put`` actually succeeded; a missing final
+    frame or a refused transport answers False (the buffered copy still exists).
+    ``register=False`` is the answer-first pipeline's word that it already owed
+    this frame (``register_final_answer_owed`` ran just before): the row is not
+    registered a second time.
 
     The buffer can also hold proactive ``send_user_message`` events that fell
     back to deferred delivery mid-task (live-first frames stamp ``task_id``
@@ -303,7 +317,7 @@ def deliver_final_message_live(
     if not str(final.get("delivery_id") or "").strip():
         digest = hashlib.sha256(str(final.get("text") or "").encode("utf-8")).hexdigest()[:16]
         final["delivery_id"] = f"final:{tid}:{digest}"
-    if drive_root is not None and str(drive_root).strip() and final.get("chat_id"):
+    if register and drive_root is not None and str(drive_root).strip() and final.get("chat_id"):
         # OWED before ENQUEUED. Rows without a chat id are not registered (the
         # replay could never send them, so they would only age into a false
         # "delivery gave up" disclosure), and an EMPTY root is refused rather
@@ -325,46 +339,57 @@ def deliver_final_message_live(
     return True
 
 
+OWED_REGISTERED, OWED_UNREGISTERED, OWED_SKIPPED = "registered", "unregistered", "skipped"
+
+
 def register_final_answer_owed(
     task: Dict[str, Any], send_event: Dict[str, Any], *, env_drive_root: Any,
-) -> None:
+) -> str:
     """GR2-5 (§8-A2, ONE outbox for EVERY root): owe the final answer durably.
 
-    Called immediately BEFORE durable result persistence for every
-    ROOT (``agent_task_pipeline.emit_task_results`` registers, then stores), so a
-    crash in that window leaves an owed row the boot replay delivers instead of
-    a persisted result nobody was told about — the cancel lanes are the ones that
-    write first and owe before they SETTLE the intent. Registration happens
-    regardless of the blocking/nonblocking post-task split: the nonblocking
-    lane used to buffer the send with NO delivery_id and NO owed registration,
-    so a worker crash before the buffered drain lost the owner's answer with
-    nothing to replay. Mints the canonical ``final:<tid>:<digest>`` id onto the
-    buffered event and registers it in the durable outbox; the registry's
-    delivery_id dedupe keeps the normal path single-send
-    (``deliver_final_message_live`` re-registers idempotently and the send
-    handler suppresses the second copy). Fail-soft: registration is crash
-    insurance, never a gate on the send. Rows without a chat id are skipped
-    (the replay could never send them), and an EMPTY canonical root is refused
-    rather than resolved relative to the process CWD (AR2-4).
+    Called as soon as the final frame is built, BEFORE the live send and before
+    durable result persistence for every ROOT (``agent_task_pipeline.emit_task_results``
+    owes, sends, then stores), so a crash in that window leaves an owed row the
+    boot replay delivers instead of a persisted result nobody was told about — the
+    cancel lanes are the ones that write first and owe before they SETTLE the
+    intent. Registration happens regardless of the blocking/nonblocking post-task
+    split: the nonblocking lane used to buffer the send with NO delivery_id and NO
+    owed registration, so a worker crash before the buffered drain lost the
+    owner's answer with nothing to replay. Mints the canonical
+    ``final:<tid>:<digest>`` id onto the buffered event and registers it in the
+    durable outbox; the registry's delivery_id dedupe keeps the normal path
+    single-send (the live put passes ``register=False`` to
+    ``deliver_final_message_live`` and the send handler suppresses the second
+    copy). Fail-soft: registration is crash insurance, never a gate on the send.
+    Rows without a chat id are skipped (the replay could never send them), and an
+    EMPTY canonical root is refused rather than resolved relative to the process
+    CWD (AR2-4).
+
+    Returns the typed disposition: ``registered`` (newly owed, already owed or
+    already delivered — the answer is durably tracked), ``unregistered`` (a
+    disclosed write failure: the send still happens, without crash insurance)
+    or ``skipped`` (no chat id / no canonical root: nothing to owe).
     """
     if not send_event.get("chat_id"):
-        return
+        return OWED_SKIPPED
     try:
         # The CANONICAL data root the supervisor's boot/tick replay reads: the
         # parent/budget root for split children, the task's own drive for an
         # ordinary root (whose ``budget_drive_root`` is legitimately empty).
         outbox_root = str(task.get("budget_drive_root") or env_drive_root or "").strip()
         if not outbox_root:
-            return
+            return OWED_SKIPPED
         from supervisor.terminal_delivery import register_pending_delivery
 
         tid = str(task.get("id") or "")
         if not str(send_event.get("delivery_id") or "").strip():
             digest = hashlib.sha256(str(send_event.get("text") or "").encode("utf-8")).hexdigest()[:16]
             send_event["delivery_id"] = f"final:{tid}:{digest}"
-        register_pending_delivery(pathlib.Path(outbox_root), dict(send_event))
+        registered = register_pending_delivery(pathlib.Path(outbox_root), dict(send_event))
     except Exception:
         log.debug("final-answer owed registration failed for %s", task.get("id"), exc_info=True)
+        return OWED_UNREGISTERED
+    return OWED_REGISTERED if registered else OWED_UNREGISTERED
 
 
 def build_completion_observations(drive_root: Any, task: Dict[str, Any], trace: Dict[str, Any]) -> Dict[str, Any]:
@@ -514,19 +539,14 @@ def focus_source_projection(
     return {**payload, **current, **({"reason": reason} if reason else {})}
 
 
-def review_source_reader(task_id: str, ref: Dict[str, Any]) -> Dict[str, Any]:
-    """A receiver-independent selector for one author's immutable acceptance source."""
-    return {"tool": "get_task_result", "arguments": {
-        "task_id": task_id, "review_source_sha256": str(ref.get("sha256") or "")}}
-
-
 def host_acceptance_source(drive_root: Any, task_id: str, digest: str) -> tuple:
     """``(ref, bytes)`` of this physical author's own HOST acceptance record, named by digest.
 
-    The digest fixes the path (no caller path, no store search); the bytes must
-    hash to it and decode to a host-root task-acceptance run of this very task,
-    or this raises. The model's ``review_source_sha256`` reader and the owner's
-    record download (``gateway.task_archive.serve_task_source``) share it.
+    These records are history: the retired task acceptance wrote them and nothing
+    writes a new one. The digest fixes the path (no caller path, no store search);
+    the bytes must hash to it and decode to a host-root task-acceptance run of this
+    very task, or this raises. The model's ``review_source_sha256`` reader and the
+    owner's record download (``gateway.task_archive.serve_task_source``) share it.
     """
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.source_retention import retained_task_roots
@@ -554,11 +574,11 @@ def host_acceptance_source(drive_root: Any, task_id: str, digest: str) -> tuple:
 
 def review_source_projection(drive_root: Any, task_id: str, digest: str,
                              start_char: Any = None, end_char: Any = None) -> Dict[str, Any]:
-    """Read a physical author's exact acceptance source, including historical panels.
+    """Read a physical author's exact host acceptance record, named by its digest.
 
-    Only host acceptance panels (``host_acceptance_source``) and the canonical
-    debt's exact pinned subject qualify; no caller path, successor substitution
-    or artifact-store search.
+    Host acceptance panels (``host_acceptance_source``) and the exact subject an
+    older record's acceptance debt pinned qualify (both read-only history); no
+    caller path, successor substitution or artifact-store search.
     """
     from ouroboros.artifacts import read_actor_source_bytes, text_source_range_projection
 
@@ -570,12 +590,8 @@ def review_source_projection(drive_root: Any, task_id: str, digest: str,
 
         debt = (load_task_result(drive_root, task_id, strict=True) or {}).get("acceptance_debt") or {}
         historical_ref = debt.get("source_ref") or {}
-        if historical_ref.get("sha256") == digest:
-            from ouroboros.acceptance_history import read_acceptance_history
-
-            read_acceptance_history(drive_root, task_id, debt)
-            ref = historical_ref
-            raw = read_actor_source_bytes(drive_root, task_id, ref)
+        if isinstance(historical_ref, dict) and historical_ref.get("sha256") == digest:
+            ref, raw = historical_ref, read_actor_source_bytes(drive_root, task_id, historical_ref)
         else:
             ref, raw = host_acceptance_source(drive_root, task_id, digest)
         projection, reason = text_source_range_projection(raw.decode("utf-8"), unavailable["kind"], start_char, end_char)
@@ -614,6 +630,8 @@ def build_sealed_final_package(result_row: Any, final_text: str) -> Dict[str, An
         "completion_observations": row.get("completion_observations") or {"status": "unavailable"},
         **({"terminal_host_notice": terminal_host_notice_text(row)} if terminal_host_notice_text(row) else {}),
     }
+    if row.get("wake_silent") is True:  # no model words were submitted; the retained ones are not speech
+        package.update(final_result_text="", wake_silent=True, internal_terminal_text=str(row.get("result") or ""))
     if is_presence_task(row):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         # Remember the event-time body, not today's replay policy: a historical
@@ -664,6 +682,11 @@ def sealed_final_prompt_section(sealed_final: Dict[str, Any] | None) -> str:
     )
     heading, presence_facts, internal_text = "Final result text (submitted for delivery):\n", "", ""
     presence = sealed_final.get("presence_delivery")
+    if sealed_final.get("wake_silent") is True:
+        heading, final_text = "Final result text:\n", "(none: the wake finished silently; no model words were submitted)"
+        if raw := str(sealed_final.get("internal_terminal_text") or ""):
+            internal_text = "Internal wake result (retained, never sent to the owner):\n" + truncate_review_artifact(
+                raw, limit=_SEALED_FINAL_TEXT_PROMPT_CHARS) + "\n"
     if isinstance(presence, dict):
         introduction = (
             "The recorded automatic-reply body was prepared for the Presence adapter;\n"

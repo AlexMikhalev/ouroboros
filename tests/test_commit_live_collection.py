@@ -1,9 +1,9 @@
-"""Recorded commit collection joins a live worker; acceptance stays a pure read."""
+"""Recorded commit collection joins a live worker."""
 from __future__ import annotations
 
 import copy
+import queue
 import threading
-import time
 from dataclasses import asdict, replace
 from types import SimpleNamespace
 
@@ -16,6 +16,10 @@ from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_req
 from ouroboros.task_results import write_task_result
 from ouroboros.tools.review_change_custody import collect_recorded_commit_actor
 from tests.test_review_operation_lifetime import until
+
+
+# A no-send assertion raised in a review worker must fail the owning test too.
+pytestmark = pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
 
 
 @pytest.fixture
@@ -240,38 +244,31 @@ def test_missing_prompt_only_joins_exact_retained_preparation(live, monkeypatch,
 
 def test_live_rejoin_uses_remaining_original_window_and_does_not_refresh_it(live, monkeypatch):
     f = live
-    # Advance the original operation's slot clock to the end of its saved window.
-    # Both original and rejoined drains now see the same clock; no wall-clock sleep.
-    original_clock = custody.monotonic_now
-    offset = f.entry.logical_deadline - original_clock(f.slot.slot_id) - .15
-    monkeypatch.setattr(custody, "monotonic_now", lambda slot=None: original_clock(slot) + offset)
-    started = time.monotonic()
+    deadline = f.entry.logical_deadline
+    now, waits = [deadline - .15], []
+
+    class ExpiringQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            # Consume only the remaining saved window, including any poll slices.
+            assert timeout is not None and 0 < timeout <= deadline - now[0]
+            waits.append(timeout)
+            now[0] += timeout
+            raise queue.Empty
+
+    # Replace only custody's queue reference: the original worker stays held,
+    # and its already-created queue and other modules' queues remain real.
+    monkeypatch.setattr(custody, "queue", SimpleNamespace(Queue=ExpiringQueue, Empty=queue.Empty))
+    monkeypatch.setattr(custody, "monotonic_now", lambda slot=None: now[0])
     actor = _collect(f)
-    assert .08 < time.monotonic() - started < 1
+    assert sum(waits) == pytest.approx(.15)
     assert actor["operation_id"] == f.entry.operation_id and actor["operation_state"] == "in_flight"
-    started = time.monotonic()
-    assert _collect(f)["operation_state"] == "in_flight"
-    assert time.monotonic() - started < .1
-
-
-def test_pure_acceptance_collection_does_not_wait_for_live_worker(live, monkeypatch):
-    f = live
-    request = replace(f.request, surface="task_acceptance")
-    key = custody._attempt_key(request, f.slot)
-    monkeypatch.setitem(custody._ACTIVE, key, f.entry)
-    run = dict(request=asdict(request), slot_roster=[asdict(f.slot)], actors=[copy.deepcopy(f.row)])
-
-    def no_runner(*_a, **_kw):
-        pytest.fail("pure acceptance collection entered the waiting runner")
-
-    monkeypatch.setattr("ouroboros.review_substrate.run_review_request", no_runner)
-    try:
-        result = operation.collect_recorded_acceptance_run(run, drive_root=f.ctx.drive_root, usage_ctx=f.ctx)
-        assert result.collection["facts"] == {f.slot.slot_id: "deferred"}
-        assert result.actors[0]["operation_id"] == f.entry.operation_id
-        assert not f.entry.event.is_set()
-    finally:
-        custody._ACTIVE.pop(key)
+    waits.clear()
+    actor = _collect(f)
+    assert actor["operation_id"] == f.entry.operation_id and actor["operation_state"] == "in_flight"
+    assert waits == []
+    assert f.entry.logical_deadline == deadline
+    assert not f.entry.event.is_set()
+    assert len(f.calls) == 1
 
 
 @pytest.mark.parametrize("stop", ["cancel", "panic"])

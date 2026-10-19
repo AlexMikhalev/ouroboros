@@ -3,8 +3,8 @@
 PR-3 (one transition): a reviewer is a row of ``OUROBOROS_SUBAGENTS`` whose owner
 marked it ``review_eligible`` and left it enabled; the former
 ``OUROBOROS_REVIEWER_SLOTS`` lanes are gone as a configuration surface, and every
-review surface (commit gate, plan review, skill review, task acceptance, the
-author's ``review_change`` wave) reads ONE builder, ``review_pool_slots``. A seat's
+review surface (commit gate, plan review, skill review, the author's
+``review_change`` wave) reads ONE builder, ``review_pool_slots``. A seat's
 identity IS the row's stored id (``slot_id == subagent_id``); model, route, pin,
 effort, processing and delivery are the row's own facts, read at wave time.
 
@@ -16,7 +16,8 @@ field alone — never from the presence of a subagent id.
 The pool ignores the catalog's global switch (``payload.enabled`` governs
 delegation, not review) and reads the catalog WITHOUT the delegation resolver; a
 row with ``enabled: false`` is not in the pool. An empty pool is a configured fact
-(``review_pool_state`` → ``empty``): a save that leaves rows but no marks is refused
+(``review_pool_state`` → ``empty``) that every surface reviews on the Main model
+alone (``review_pool_slots``); a save that leaves rows but no marks is refused
 unless the owner says ``allow_empty_review_pool`` (``review_pool_save_error``).
 
 Malformed configuration RAISES: a typo mapped to ``api_chat`` would silently spend
@@ -198,8 +199,9 @@ def _pool_rows(settings: Any) -> List[ConfiguredReviewerSlot]:
 
 
 def review_pool_rows(snapshot: Any = None) -> List[ConfiguredReviewerSlot]:
-    """The pool as frozen reviewer rows (not yet delivery slots): catalog order,
-    ``slot_id == subagent_id``. ``snapshot`` as in :func:`review_pool_slots`."""
+    """The owner's marked rows as frozen reviewer rows (not yet delivery slots): catalog
+    order, ``slot_id == subagent_id``, ``[]`` for an empty pool (the Main seat the surfaces
+    then run is not a catalog row). ``snapshot`` as in :func:`review_pool_slots`."""
     return _pool_rows(_catalog_settings(snapshot))
 
 
@@ -225,25 +227,40 @@ def catalog_review_row(snapshot: Any, selector: str) -> ConfiguredReviewerSlot:
     return _catalog_row_slot(row, settings)
 
 
-def _stored_id_for_selector(selector: str) -> str:
-    """The stored id a catalog handle names, or '' when nothing resolves."""
-    from ouroboros.configured_subagents import resolve_roster_selector
+def main_review_row(snapshot: Any = None) -> ConfiguredReviewerSlot:
+    """The direct Main row — Main's whole binding under ``snapshot`` (as in
+    :func:`review_pool_slots`): ``OUROBOROS_MODEL``, its local flag, Main's pinned
+    account (``OUROBOROS_MODEL_ACCOUNTS["main"]``) and Main's processing. It is
+    ``/review``'s executor when the call names none (decision 3A), the deep
+    self-review default, and the one seat of an empty pool.
 
-    try:
-        settings = _catalog_settings()
-        config = _parse_catalog(settings)
-        row = resolve_roster_selector(config, selector, settings)[0] if config is not None else None
-    except ValueError:
-        return ""
-    return row.subagent_id if row is not None else ""
+    The pin rides as the row's credential profile because the executor sends under
+    ``model_role=reviewer:main`` with ``model_account_override=<row profile>``, and an
+    EMPTY override is Auto, never a lookup of Main's own role: without it a pinned
+    Main would review on whatever account the engine picked. Processing is captured
+    here for the same reason. An unpinned Main stays Auto; an invalid pin document
+    raises here as it does for Main's own calls.
+    """
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+    from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
+    from ouroboros.subagents import _lane_model, _use_local_for_lane
+
+    # Main's own readers, bound to an explicit plane for this read only (the task's otherwise).
+    plane = None if snapshot is None else dict(snapshot)
+    with _contextlib.nullcontext() if plane is None else task_settings_scope(task_settings_snapshot(plane, plane)):
+        model = _lane_model("main")
+        return ConfiguredReviewerSlot(slot_id="main", kind=ROUTE_KIND_API, target_id=model,
+                                      use_local=_use_local_for_lane("main", model),
+                                      profile_id=str(model_role_option(MODEL_ACCOUNTS_KEY, "main") or ""),
+                                      processing_preference=resolve_processing_preference("main"))
 
 
 def review_pool_state(raw: Any) -> Dict[str, str]:
     """``{"state": structured|empty|error, "error": str}`` of ONE catalog document.
 
     ``structured``: at least one enabled, marked row; ``empty``: a readable
-    catalog (or none) with no such row — a configured fact, never an absence;
-    ``error``: a malformed catalog, with its typed text.
+    catalog (or none) with no such row — a configured fact, never an absence, whose
+    reviews run on the Main model alone; ``error``: a malformed catalog, with its typed text.
     """
     try:
         rows = _pool_rows({"OUROBOROS_SUBAGENTS": raw})
@@ -256,7 +273,7 @@ def review_pool_save_error(raw: Any, *, allow_empty: bool) -> str:
     """The SAVE-path judge of an empty pool; ``""`` means acceptable.
 
     A catalog that has rows but no review mark would silently leave every review
-    surface without a reviewer, so the save is refused (400) unless the owner
+    surface to the Main model alone, so the save is refused (400) unless the owner
     says ``allow_empty_review_pool`` — the one place "empty" is confirmed rather
     than inferred. An absent catalog, a catalog without rows, or a marked row
     pass; a malformed catalog returns its typed text.
@@ -287,6 +304,134 @@ class PoolSeat(NamedTuple):
     slot: ReviewSlot
     parts: Tuple[str, ...]
     additional: bool = False
+
+
+class PanelCompositionError(ValueError):
+    """A typed refusal before any review is dispatched or paid."""
+
+
+@dataclass(frozen=True)
+class ComposedPanel:
+    seats: Tuple[PoolSeat, ...]
+    override: bool
+    facts: Dict[str, Any]
+
+    @property
+    def additional(self) -> Tuple[str, ...]:
+        return tuple(seat.slot.slot_id for seat in self.seats if seat.additional)
+
+    @property
+    def assigned(self) -> Tuple[Tuple[str, str, str], ...]:
+        return tuple(sorted((slot.slot_id, part, "additional" if extra else "assigned")
+                            for slot, parts, extra in self.seats for part in parts))
+
+
+def review_strictness(enforcement: Optional[str] = None, mode: Optional[str] = None) -> str:
+    """Effective authority, independent of the runtime mode's other capabilities."""
+    from ouroboros.config import get_review_enforcement, get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    return ("cyber_pro" if mode_has_unrestricted_agency(mode if mode is not None else get_runtime_mode())
+            else enforcement if enforcement is not None else get_review_enforcement())
+
+
+def review_cost_facts(cost: Any, *, route: str = "", model: str = "") -> Dict[str, Any]:
+    """Measured money, subscription delivery or unknown; never estimate a receipt."""
+    from ouroboros.provider_models import provider_for_model
+
+    subscription = route == ROUTE_KIND_SESSION or provider_for_model(model) == "claudexor"
+    known = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+    return {"cost_usd": cost if known else None,
+            "cost_kind": "subscription" if subscription else "measured" if known else "unknown"}
+
+
+def compose_review_panel(reviewers: Sequence[str] = (), reason: str = "", *, surface: str,
+                         strictness: Optional[str] = None, snapshot: Any = None,
+                         pool: Optional[Sequence[Any]] = None, reviewer_effort: str = "",
+                         coupling_only: Sequence[str] = (), chosen_by: str = "ouroboros",
+                         reason_field: str = "reason") -> ComposedPanel:
+    """Compose one frozen wave. Only Blocking body/skill/first-body-plan asks widen.
+
+    Advisory narrowing requires a reason; an adviser neither satisfies the counted
+    minimum nor acquires authority from its delivery. Optional plan follow-ups and
+    preflight keep their existing named-row semantics. Omission selects the pool,
+    including its disclosed Main fallback. The caller retains these facts on retries.
+    """
+    from ouroboros.configured_subagents import MAX_CONFIGURED_SUBAGENTS
+    from ouroboros.review_ledger import seat_parts
+    from ouroboros.settings_scales import effort_rank
+
+    if not isinstance(reason, str) or not isinstance(reviewers, (list, tuple)) or any(not isinstance(name, str) for name in reviewers):
+        raise PanelCompositionError(f"REVIEW_PANEL_ARGUMENT: reviewers must be a list of row ids or handles and {reason_field} must be a string. No review was dispatched ($0).")
+    strictness = strictness or review_strictness()
+    configured = list(pool) if pool is not None else review_pool_slots(snapshot)
+    main_alone = len(configured) == 1 and configured[0].slot_id == "main" and not configured[0].subagent_id
+    ordered = (review_pool_slots(snapshot, default_effort=reviewer_effort)
+               if reviewer_effort and pool is None else configured)
+    by_id = {slot.slot_id: slot for slot in ordered}
+    own = {slot.slot_id: slot.effort for slot in configured}
+
+    def resolve(name: str) -> Any:
+        if name in by_id:
+            return by_id[name]
+        try:
+            row = catalog_review_row(snapshot, name)
+        except ValueError as exc:
+            raise PanelCompositionError(f"REVIEWER_UNKNOWN: reviewer {name!r} is not an enabled catalog row ({exc})") from exc
+        if row.subagent_id in by_id:
+            return by_id[row.subagent_id]
+        own[row.subagent_id] = _delivery_slot(row, role_hint="").effort
+        return _delivery_slot(row, role_hint="", default_effort=reviewer_effort)
+
+    named = list({slot.slot_id: slot for slot in map(resolve, reviewers)}.values())
+    requested = {slot.slot_id for slot in named}
+    counted = requested & by_id.keys()
+    widens = strictness == "blocking" and surface in {"own_body", "skill", "plan_first"}
+    narrowed = surface != "preflight" and bool(named) and counted != by_id.keys()
+    counted_hint = "name main (the empty pool's counted seat)" if main_alone else "name at least one reviewer from the review pool"
+    if strictness == "advisory" and narrowed and surface in {"own_body", "skill", "plan_first"}:
+        if not counted:
+            raise PanelCompositionError(f"REVIEW_PANEL_EMPTY: {counted_hint}; advisers are heard, not counted. No review was dispatched ($0).")
+        if not str(reason).strip():
+            raise PanelCompositionError(f"REVIEW_PANEL_REASON_REQUIRED: an Advisory panel with fewer than all ticked reviewers requires a reason. Supply {reason_field} or omit reviewers to ask the whole pool. No review was dispatched ($0).")
+    selected = ordered if not named or widens else [slot for slot in named if slot.slot_id in by_id]
+    seats = [PoolSeat(slot, tuple(seat_parts(slot))) for slot in selected]
+    seats.extend(PoolSeat(slot, tuple(seat_parts(slot)), surface != "preflight")
+                 for slot in named if slot.slot_id not in by_id)
+    ignored = []
+    for name in coupling_only:
+        slot = resolve(name)
+        if any(seat.slot.slot_id == slot.slot_id for seat in seats):
+            ignored.append(name)
+        else:
+            seats.append(PoolSeat(slot, tuple(seat_parts(slot, coupling_only=True)), True))
+    if not any(not seat.additional for seat in seats) and surface not in {"plan", "plan_first"}:
+        raise PanelCompositionError(f"REVIEW_PANEL_EMPTY: {counted_hint}; an added critic never satisfies quorum. No review was dispatched ($0).")
+    if len(seats) > MAX_CONFIGURED_SUBAGENTS:
+        raise PanelCompositionError(f"REVIEW_PANEL_TOO_LARGE: a wave seats at most {MAX_CONFIGURED_SUBAGENTS} reviewers (this call asks {len(seats)}).")
+    applied = [seat.slot.slot_id for seat in seats if reviewer_effort and seat.slot.declared_effort]
+    facts = {
+        "pool": [{"seat_id": slot.slot_id, "model": slot.model, "effort": slot.effort,
+                  "delivery": "retrieving" if slot.retrieves else "packet",
+                  "route": str(getattr(slot.route, "value", slot.route))} for slot in configured if not main_alone],
+        "pool_empty": main_alone, "main_self_review": main_alone,
+        "chosen_by": chosen_by, "strictness": strictness, "reason": str(reason),
+        "composition": "full_pool" if not named or widens else "composed",
+        "widened_from": list(reviewers) if widens and narrowed else [],
+        "reviewers_subset_ignored": widens and narrowed, "reason_missing": narrowed and not str(reason).strip() and not widens,
+        "reviewers_requested": list(reviewers), "coupling_only": list(coupling_only), "coupling_only_ignored": ignored,
+        "additional": [seat.slot.slot_id for seat in seats if seat.additional], "not_reached": [],
+        "assigned": [seat.slot.slot_id for seat in seats if not seat.additional],
+        "seats": sum(not seat.additional for seat in seats), "additional_seats": sum(seat.additional for seat in seats),
+        "reviewer_effort": {"order": reviewer_effort, "applied": applied,
+                            "not_applied": [seat.slot.slot_id for seat in seats if reviewer_effort and seat.slot.slot_id not in applied],
+                            "weaker_than_configured": [seat.slot.slot_id for seat in seats if seat.slot.slot_id in applied
+                                and effort_rank(seat.slot.effort) < effort_rank(own[seat.slot.slot_id])]},
+    }
+    if surface == "preflight":
+        for key in ("pool", "strictness", "pool_empty", "main_self_review", "reason_missing"):
+            facts.pop(key, None)
+    return ComposedPanel(tuple(seats), True, facts)
 
 
 # Context-local: a concurrent wave on another thread keeps the configured pool,
@@ -325,9 +470,9 @@ def reviewer_slot_config_error() -> str:
     """The pool's configuration error — the catalog's row-precise parse text — or ''.
 
     Thin facade for the surfaces that must refuse loudly instead of reviewing
-    with no pool at all (plan review, skill review, the settings panel). An
-    empty pool is NOT an error here (it is a configured fact every surface
-    reports as ``pool_empty``). No caching: the check re-parses so a hot-reloaded
+    on an unreadable pool (plan review, skill review, the settings panel). An
+    empty pool is NOT an error here (it is a configured fact: the Main model
+    reviews alone). No caching: the check re-parses so a hot-reloaded
     fix is seen immediately."""
     from ouroboros.configured_subagents import SUBAGENTS_SETTING
 
@@ -383,8 +528,8 @@ def review_pool_slots(
 ) -> List[Any]:
     """THE review pool as ``ReviewSlot`` rows — the one builder every review
     surface reads: the commit gate (through ``commit_triad_delivery``'s aligned
-    vectors), plan review, skill review, task acceptance and the author's own
-    wave. Inside ``composed_review_pool`` it is that wave's seats, in order.
+    vectors), plan review, skill review and the author's own wave. Inside
+    ``composed_review_pool`` it is that wave's seats, in order.
 
     The pool is the catalog's enabled rows the owner marked review-eligible, in
     catalog order, read from ``snapshot`` (a task's frozen settings) or the
@@ -394,8 +539,11 @@ def review_pool_slots(
     caller's ``default_effort`` (a wave's order). ``slot_fields`` are the caller's
     per-surface ReviewSlot properties (timeout, output budget, temperature). A
     malformed catalog RAISES ValueError — every surface turns that into its typed
-    refusal; a valid catalog with no marked row is ``[]`` (the surface reports
-    ``pool_empty``, it does not fall back).
+    refusal; a valid catalog with no marked row (none at all included) is ONE seat,
+    the Main model reviewing alone: ``main``, the direct Main row ``/review`` runs by
+    default (:func:`main_review_row`), a native reading seat asked every part. That
+    is one model with no second opinion, said as for any one-seat pool
+    (``single_reviewer_no_diversity``); ``review_pool_state`` still reads ``empty``.
     """
     composed = _COMPOSED_POOL.get()
     if composed is not None:
@@ -405,9 +553,10 @@ def review_pool_slots(
     # once, together, so the decision, the roster fingerprint and the ordered-weaker
     # baseline of one build agree (the parent task keeps the range it started with).
     rng = live_effort_range()
+    rows = _pool_rows(_catalog_settings(snapshot)) or [main_review_row(snapshot)]
     return [
         _delivery_slot(row, role_hint=role_hint, default_effort=default_effort, rng=rng, **slot_fields)
-        for row in _pool_rows(_catalog_settings(snapshot))
+        for row in rows
     ]
 
 
@@ -419,43 +568,8 @@ def triad_delivery_slots(
 ) -> List[Any]:
     """The pool under its historical name: an alias of ``review_pool_slots`` for
     the surfaces that still spell the builder this way (plan review, skill
-    review, task acceptance, the commit gate's projection)."""
+    review, the commit gate's projection)."""
     return review_pool_slots(role_hint=role_hint, default_effort=default_effort, **slot_fields)
-
-
-def child_acceptance_slots(slots: Sequence[Any], reviewer_slot_id: str = "") -> Tuple[List[Any], Dict[str, Any]]:
-    """At most ONE pool row for a child task's acceptance (#1334).
-
-    One reviewer is panel BREADTH, not a reading or round cap: the row keeps its
-    own delivery. The only pool row needs no name; otherwise the caller names a
-    member — by its stored id (``slot_id == subagent_id``) or its catalog handle
-    — and the host checks membership. Returns ``(slots, refusal)``; a refusal is
-    a typed ``not_dispatched`` payload, never a review run.
-    """
-    rows = list(slots or [])
-    wanted = str(reviewer_slot_id or "").strip()
-    if wanted:
-        chosen = [slot for slot in rows if wanted in (slot.slot_id, getattr(slot, "subagent_id", ""))]
-        if not chosen:
-            chosen = [slot for slot in rows if slot.slot_id == _stored_id_for_selector(wanted)]
-        if chosen:
-            return chosen, {}
-        reason = "reviewer_slot_unknown"
-    elif len(rows) <= 1:
-        return rows, {}
-    else:
-        reason = "reviewer_selection_required"
-    return [], {
-        "status": "not_dispatched", "reason": reason,
-        "detail": ("a child task's acceptance uses at most one review-pool row; name one "
-                   "with reviewer_slot_id (its id or catalog handle) — no reviewer was called"),
-        "reviewer_rows": [{"slot_id": str(getattr(slot, "slot_id", "") or ""),
-                           "model": str(getattr(slot, "model", "") or ""),
-                           "route": str(getattr(getattr(slot, "route", ""), "value", getattr(slot, "route", "")) or ""),
-                           "delivery": ("native" if getattr(slot, "native_retrieval", False)
-                                        else "agent_session" if getattr(slot, "retrieves", False) else "packet")}
-                          for slot in rows],
-    }
 
 
 def commit_triad_delivery() -> Dict[str, Any]:
@@ -491,6 +605,7 @@ def commit_triad_delivery() -> Dict[str, Any]:
         # consumer may infer it from the catalog id every pool row carries.
         "retrieves": [bool(slot.retrieves) for slot in slots],
         "use_local": [slot.use_local for slot in slots],
+        "processing_preferences": [slot.processing_preference for slot in slots],
         # What each seat is ASKED: a composed seat's own parts (a ``coupling_only``
         # seat answers Part 2 alone), else derived from its delivery (``seat_parts``).
         "parts": [tuple(composed[i].parts) if i < len(composed) else tuple(seat_parts(slot))
@@ -498,8 +613,8 @@ def commit_triad_delivery() -> Dict[str, Any]:
         # A seat the author added beside the configured pool is heard, not counted.
         "additional": [bool(composed[i].additional) if i < len(composed) else False for i in range(len(slots))],
         # The pool is always a configured panel (the migration mints the factory
-        # rows into the catalog), so the pre-structured all-packet identity of
-        # the skill-review fingerprint never applies to it.
+        # rows into the catalog; an empty one is the native Main seat), so the
+        # pre-structured all-packet identity of the skill-review fingerprint never applies.
         "legacy_skill_fingerprint": False,
     }
 
@@ -596,6 +711,7 @@ def reviewer_slot_execution_rows(surface: str, actors: Any, slots_by_id: Dict[st
     projection written by :func:`record_reviewer_slot_executions` may be overwritten by
     another surface's later run of the same seat."""
     from ouroboros.review_substrate import TYPED_FAILURE_FACT_KEYS
+    from ouroboros.tools.review_response import _reported_cost
     from ouroboros.utils import utc_now_iso
 
     rows: Dict[str, Dict[str, Any]] = {}
@@ -656,6 +772,7 @@ def reviewer_slot_execution_rows(surface: str, actors: Any, slots_by_id: Dict[st
             **({"effort": dict(usage["effort"])} if isinstance(usage.get("effort"), dict) else {}),
             "capability_delta": usage.get("capability_delta") or [],
             "status": str(getattr(actor, "status", "") or ""),
+            **review_cost_facts(_reported_cost(usage, None), route=route_kind, model=str(getattr(slot, "model", "") or "")),
             **({"review_record_id": str(record_id)} if record_id else {}),
         }
         # B1: typed failure facts, present only when the substrate carried them
@@ -747,6 +864,18 @@ def reviewer_slot_last_executions() -> Dict[str, Any]:
         return {}
 
 
+def public_slot_executions(entries: Dict[str, Any]) -> Dict[str, Any]:
+    """The slot-execution receipts as a gateway payload shows them (``GET /api/review-pool``): each seat's
+    measured cost the way the review card names it, ``cost: {kind, usd}``, never the retired ``cost_usd``
+    alias (frozen contracts §11.4). The receipts themselves keep their ledger spelling."""
+    from ouroboros.review_projection import _seat_cost
+
+    return {slot: {**{key: value for key, value in entry.items() if key not in ("cost_usd", "cost_kind")},
+                   "cost": _seat_cost(entry)}
+            if isinstance(entry, dict) and {"cost_usd", "cost_kind"} & entry.keys() else entry
+            for slot, entry in (entries or {}).items()}
+
+
 __all__ = [
     # The pool.
     "ConfiguredReviewerSlot",
@@ -754,10 +883,11 @@ __all__ = [
     "ROUTE_KIND_API",
     "ROUTE_KIND_SESSION",
     "catalog_review_row",
-    "child_acceptance_slots",
     "commit_triad_delivery",
     "composed_pool_seats",
     "composed_review_pool",
+    "main_review_row",
+    "public_slot_executions",
     "review_pool_rows",
     "review_pool_save_error",
     "review_pool_slots",

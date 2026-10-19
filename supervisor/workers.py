@@ -92,6 +92,12 @@ class Worker:
     # Unlike temporary reaping, the readiness owner exhausted its bounded attempts.
     readiness_exhausted: bool = False
     process_birth: str = ""  # captured while this exact Process is alive; never inferred after death
+    ready_identity: tuple[int, str] | None = None
+    booting: bool = False  # positive readiness-owner reservation, not arbitrary reaping
+    quiescence_token: str = ""
+    quiescence_confirmed: bool = False
+    retiring: bool = False  # intentional, charged until observed dead; never crash recovery
+    resume_hold: str = ""  # this tick's authorized warm Resume: held idle slot, or the parked author
 
 
 _EVENT_Q = None
@@ -306,14 +312,17 @@ def drain_repo_writers(timeout: float = 30.0) -> List[str]:
     return get_direct_activity_registry().wait_until_empty(float(timeout))
 
 
-def _repo_writer_turn_allowed(chat_id: int) -> bool:
+def _repo_writer_turn_allowed(chat_id: int, client_message_id: str = "") -> bool:
     reason = repo_writer_admission_closed()
     if not reason:
         return True
     try:
+        from ouroboros.task_finalization import host_operation_reply_kwargs
+
         send_with_budget(
             chat_id,
             "🔒 An update is using the repository. Try this message again when it finishes.",
+            **host_operation_reply_kwargs(None, "", client_message_id),
             role="system", system_type="managed_update_notice")
     except Exception:
         log.debug("Could not report managed-update writer gate", exc_info=True)
@@ -326,11 +335,9 @@ def _get_chat_agent():
         sys.path.insert(0, str(REPO_DIR))
     from ouroboros.agent import make_agent
     from ouroboros.owner_wait import direct_owner_wait
-    from supervisor.queue import transition_acceptance_fence
 
     agent = make_agent(repo_dir=str(REPO_DIR), drive_root=str(DRIVE_ROOT), event_queue=get_event_q())
-    agent.owner_wait_callback = direct_owner_wait
-    agent.fence_transition = transition_acceptance_fence  # in-process fence: no event, no ack file, no wait
+    agent.owner_wait_callback = direct_owner_wait  # the fence is in-process by the process fact, not a flag
     return agent
 
 
@@ -945,9 +952,10 @@ def _audit_delegate_terminal_custody(
         return
     try:
         from ouroboros import delegate_terminal
+        from ouroboros.delegate_custody_reconcile import attach_only_gateway
 
-        audit = delegate_terminal.terminal_reconcile_task(
-            DRIVE_ROOT, task_id, trigger=trigger,
+        audit = delegate_terminal.terminal_reconcile_task(  # a kill boundary: attach only, no replay
+            DRIVE_ROOT, task_id, trigger=trigger, gateway_factory=attach_only_gateway,
         )
         delegate_terminal.record_terminal_reconciliation(
             DRIVE_ROOT, task_id, audit,
@@ -1157,7 +1165,7 @@ def spawn_workers(n: int = 0) -> None:
     event_q = get_event_q()
     events_cursor, spawned_at = events_log_cursor(), time.time()
 
-    count = n or MAX_WORKERS
+    count = n or 1
     append_jsonl(
         DRIVE_ROOT / "logs" / "supervisor.jsonl",
         {
@@ -1177,7 +1185,7 @@ def spawn_workers(n: int = 0) -> None:
             in_q = _CTX.Queue()
             proc = spawn_worker_process(_CTX, i, in_q, event_q, REPO_DIR, DRIVE_ROOT)
             # Unassignable until the readiness seam observes this child's worker_ready row.
-            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True)
+            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True, booting=True)
     except Exception:
         for worker in new_workers.values():
             try:
@@ -1227,7 +1235,7 @@ def kill_workers(
     from supervisor import queue, restart_retention as retention  # every door retains saved pauses
     with _queue_lock:
         if disable_reason:
-            _WORKER_POOL_DISABLED_REASON = str(disable_reason)
+            previous_disable_reason, _WORKER_POOL_DISABLED_REASON = _WORKER_POOL_DISABLED_REASON, str(disable_reason)
             # Publish the admission fence before slow process-tree teardown so
             # concurrent ingress can refuse without starting project/workspace
             # side effects while workers are being joined.
@@ -1237,9 +1245,9 @@ def kill_workers(
                 fence_persisted = False
                 log.warning("Failed to persist worker-pool disable fence", exc_info=True)
             if not fence_persisted:
-                # No worker or queue mutation happened yet.  Re-open the local
-                # pool admission so an aborted managed update can recover it.
-                _WORKER_POOL_DISABLED_REASON = ""
+                # No worker or queue mutation happened yet: restore the prior fence (an aborted
+                # update reopens an enabled pool; a crash-storm latch keeps its membership frozen).
+                _WORKER_POOL_DISABLED_REASON = previous_disable_reason
                 log.error("Worker shutdown blocked: disable fence was not durable")
                 return False
         cleared_running = len(RUNNING)
@@ -1834,7 +1842,7 @@ def _drop_cancelled_pending() -> bool:
     if not PENDING:
         return True
     try:
-        from ouroboros.project_admission import hold_unreadable_result
+        from supervisor.restart_retention import conserve_unreadable_pending
         from ouroboros.task_results import (
             STATUS_CANCEL_REQUESTED, STATUS_CANCELLED, _TRULY_TERMINAL_STATUSES,
             load_task_result, write_task_result,
@@ -1909,9 +1917,9 @@ def _drop_cancelled_pending() -> bool:
                 )
                 survivors.extend(pending_rows[index:])
                 break
-            if marker is not None or not tid or hold_unreadable_result(t):
-                # Accepted Project work first losing its result keeps the same row;
-                # this pass's hold revalidation persists it (restore's rule).
+            if marker is not None or not tid or conserve_unreadable_pending(t):
+                # Saved pauses and accepted Project work keep their same row;
+                # each continuation's existing hold remains its authority.
                 survivors.append(t)
             else:
                 survivors.append(_make_terminalization_retry_task(
@@ -2138,11 +2146,11 @@ def _drop_assignable_evolution_tasks(deferred_ids: set[str]) -> list[str]:
     return blocked_ids
 
 
-def _running_subagent_count(root_task_id: str) -> int:
+def _running_subagent_count(root_task_id: str, running=None) -> int:
     if not root_task_id:
         return 0
     count = 0
-    for meta in RUNNING.values():
+    for meta in RUNNING.values() if running is None else running:
         task = meta.get("task") if isinstance(meta, dict) else None
         if (
             isinstance(task, dict)
@@ -2153,7 +2161,8 @@ def _running_subagent_count(root_task_id: str) -> int:
     return count
 
 
-def _assignment_depth_reservation_admits(candidate: dict) -> bool:
+def _assignment_depth_reservation_admits(candidate: dict, running=None) -> bool:
+    running = list(RUNNING.values() if running is None else running)
     root_task_id = str(candidate.get("root_task_id") or "")
     parent_id = str(candidate.get("parent_task_id") or "").strip()
     if not root_task_id or not parent_id:
@@ -2162,12 +2171,12 @@ def _assignment_depth_reservation_admits(candidate: dict) -> bool:
         str((meta.get("task") if isinstance(meta, dict) else {}).get("id") or "") == parent_id
         and str((meta.get("task") if isinstance(meta, dict) else {}).get("root_task_id") or "") == root_task_id
         and str((meta.get("task") if isinstance(meta, dict) else {}).get("delegation_role") or "") == "subagent"
-        for meta in RUNNING.values()
+        for meta in running
     )
     if not parent_running:
         return False
     direct_running_children = sum(
-        1 for meta in RUNNING.values()
+        1 for meta in running
         if isinstance(meta, dict)
         and isinstance(meta.get("task"), dict)
         and str(meta["task"].get("root_task_id") or "") == root_task_id

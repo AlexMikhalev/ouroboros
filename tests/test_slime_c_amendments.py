@@ -8,10 +8,13 @@ died with it — while the post-task reflection, written from the error trace,
 declared the delivered 52-page PDF missing.
 """
 
+from tests import _dialogue as dialogue_test
+
 import json
 import pathlib
 import queue
 import time
+from types import SimpleNamespace
 from tests._store_shared import read_result
 
 
@@ -326,7 +329,7 @@ class TestLiveFinalAnswerDelivery:
 
 
 class TestSealedFinalPackage:
-    """Summary/reflection receive host-attested final ground truth (Q4A)."""
+    """The post-task readers receive host-attested final ground truth (Q4A)."""
 
     def test_sealed_package_built_from_stored_result_artifacts(self, tmp_path):
         """The manifest reuses the durable result's own artifact records —
@@ -351,7 +354,7 @@ class TestSealedFinalPackage:
 
     def test_facts_row_retells_nothing_of_the_sealed_final(self, tmp_path, monkeypatch):
         """No paid narrative: the host facts row neither prompts a model nor
-        copies the delivered answer; reflection alone reads the sealed package."""
+        copies the delivered answer; the evolution chooser reads the sealed package."""
         import pytest
 
         import ouroboros.agent_task_pipeline as atp
@@ -368,17 +371,15 @@ class TestSealedFinalPackage:
             logs,
         )
 
-        [row] = [json.loads(line) for line in (logs / "chat.jsonl").read_text(encoding="utf-8").splitlines()]
+        [row] = dialogue_test.log_rows(logs / "chat.jsonl")
         assert row["summary_kind"] == "host_task_facts" and row["text"] == ""
         assert row["tool_calls"] == 1 and row["rounds"] == 3
         assert "Delivered" not in json.dumps(row) and "make a pdf" not in json.dumps(row)
 
-    def test_sealed_package_reaches_reflection_prompt(self, tmp_path, monkeypatch):
+    def test_sealed_package_reaches_the_evolution_chooser_prompt(self, tmp_path, monkeypatch):
         import ouroboros.llm_observability as obs
-        from ouroboros.reflection import generate_reflection
-        from ouroboros.task_finalization import (
-            build_sealed_final_package, sealed_final_prompt_section,
-        )
+        from ouroboros import post_task_evolution
+        from ouroboros.task_finalization import build_sealed_final_package
 
         drive_root, logs = _make_drive(tmp_path)
         art = drive_root / "task_results" / "artifacts" / "refl1"
@@ -389,10 +390,10 @@ class TestSealedFinalPackage:
 
         def fake_chat_observed(llm, **kwargs):
             captured["prompt"] = kwargs["messages"][0]["content"]
-            return {"content": "reflection\nMEMORY_ACTIONS_JSON: []\n"
-                               "BACKLOG_CANDIDATES_JSON: []"}, {"cost": 0}
+            return {"content": '{"promote": false, "objective": ""}'}, {"cost": 0}
 
         monkeypatch.setattr(obs, "chat_observed", fake_chat_observed)
+        monkeypatch.setattr(post_task_evolution, "_active_campaign_objective", lambda: "")
 
         sealed = build_sealed_final_package(
             {"artifacts": [{"name": "report.pdf", "path": str(art / "report.pdf"),
@@ -400,18 +401,14 @@ class TestSealedFinalPackage:
             "Delivered the 52-page PDF.")
         task = {"id": "refl1", "type": "task", "chat_id": 1, "text": "make a pdf",
                 "drive_root": str(drive_root)}
-        entry = generate_reflection(
-            task,
-            {"tool_calls": [{"tool": "shell", "error": "boom"}], "reasoning_notes": []},
-            "trace summary", object(), {},
-            usage_snapshot_text="",
-            sealed_final_text=sealed_final_prompt_section(sealed),
-        )
+        decision = post_task_evolution._decide_promotion(
+            SimpleNamespace(drive_root=drive_root), task, sealed, object(), force=False)
 
-        assert entry
+        assert decision == {"promote": False, "objective": "", "requires_plan_review": True, "backlog_id": ""}
         assert "Sealed final outcome (host-attested ground truth)" in captured["prompt"]
         assert "Delivered the 52-page PDF." in captured["prompt"]
         assert "report.pdf (123 bytes)" in captured["prompt"]
+        assert "Initial text of the run (exact):\nmake a pdf" in captured["prompt"]
 
     def test_emit_task_results_passes_sealed_package_to_post_task(
         self, tmp_path, monkeypatch,
@@ -597,6 +594,7 @@ class TestProjectReflectionsReadBack:
 
         from ouroboros.context import build_recent_sections
         from ouroboros.memory import Memory
+        from ouroboros.plan_review_facts import LATE_SETTLEMENT_TASK_TYPE
         from ouroboros.project_facts import project_reflections_path
         from ouroboros.utils import append_jsonl
 
@@ -605,7 +603,11 @@ class TestProjectReflectionsReadBack:
         append_jsonl(path, {
             "ts": "2026-08-10T12:00:00Z", "task_id": "ref42", "task_type": "task",
             "goal": "PROJECT_LESSON_MARKER remember the slime physics fix",
-            "key_markers": [],
+            "key_markers": [], "reflection": "An automatic lesson an earlier version wrote.",
+        })
+        append_jsonl(path, {
+            "ts": "2026-08-11T12:00:00Z", "task_id": "ref43", "type": LATE_SETTLEMENT_TASK_TYPE,
+            "task_type": LATE_SETTLEMENT_TASK_TYPE, "reflection": "LATE_HOST_ROW_MARKER reviewers passed it.",
         })
 
         drive_root = tmp_path / "drive"
@@ -616,7 +618,11 @@ class TestProjectReflectionsReadBack:
 
         combined = "\n\n".join(sections)
         assert "Project execution reflections (this project's own: slimeproj)" in combined
-        assert "PROJECT_LESSON_MARKER" in combined
+        # The host row stays whole; the old automatic body is one dated pointer to its source.
+        assert "LATE_HOST_ROW_MARKER reviewers passed it." in combined
+        assert "PROJECT_LESSON_MARKER" not in combined and "An automatic lesson" not in combined
+        assert "Historical automatic reflections: 1 row(s) in the newest 20, dated 2026-08-10T12:00:00" in combined
+        assert "journal_read(project_id='slimeproj', source='reflections')" in combined
 
     def test_non_project_context_has_no_project_section(self, tmp_path):
         from ouroboros.context import build_recent_sections

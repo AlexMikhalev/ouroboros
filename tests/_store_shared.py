@@ -7,6 +7,7 @@ Plain callables (many callers need them at module import time), never fixtures.
 from __future__ import annotations
 
 import pathlib
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
@@ -52,7 +53,7 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
     row readable again ("after access recovers") without undoing its other patches."""
     from ouroboros import store
 
-    real_load, real_row = store.Txn.load, store.Txn.row
+    real_body, real_row = store.Txn.body_text, store.Txn.row
     switch = {"on": True}
     wanted_root = None if root is None else pathlib.Path(root).resolve()
 
@@ -61,18 +62,41 @@ def unreadable_result(monkeypatch, task_id: str, *, root=None) -> dict:
             return False
         return wanted_root is None or (self.root is not None and self.root.resolve() == wanted_root)
 
-    def load(self, tid):
+    def body_text(self, tid):
         if broken(self, tid):
             raise store.StoreError(f"simulated unreadable row: {tid}")
-        return real_load(self, tid)
+        return real_body(self, tid)
 
     def row(self, tid, *columns):
         if broken(self, tid):
             raise store.StoreError(f"simulated unreadable row: {tid}")
         return real_row(self, tid, *columns)
 
-    monkeypatch.setattr(store.Txn, "load", load)
+    from ouroboros import task_store
+
+    real_views = task_store.display_documents
+
+    def display_documents(root, task_ids, versions=None):  # a batch holding the row fails like a single read of it
+        ids = [str(tid) for tid in task_ids]
+        if switch["on"] and str(task_id) in ids and (
+                wanted_root is None or pathlib.Path(root).resolve() == wanted_root):
+            raise store.StoreError(f"simulated unreadable row: {task_id}")
+        return real_views(root, ids, versions)
+
+    from ouroboros import store_hot_facts
+
+    real_hot_rows = store_hot_facts._read_rows
+
+    def hot_rows(txn, ids):  # the typed control columns of the row are unreadable too
+        rows = real_hot_rows(txn, ids)
+        if str(task_id) in rows and broken(txn, task_id):
+            rows[str(task_id)] = store.StoreError(f"simulated unreadable row: {task_id}")
+        return rows
+
+    monkeypatch.setattr(store.Txn, "body_text", body_text)
     monkeypatch.setattr(store.Txn, "row", row)
+    monkeypatch.setattr(task_store, "display_documents", display_documents)
+    monkeypatch.setattr(store_hot_facts, "_read_rows", hot_rows)
     return switch
 
 
@@ -85,3 +109,43 @@ def unavailable_store(monkeypatch) -> None:
 
     monkeypatch.setattr(store, "open_store", busy)
     monkeypatch.setattr(task_store, "open_store", busy)
+
+
+def release_store_handles(tree: Any, *, wait_sec: float = 30.0) -> None:
+    """Close this process's cached connections to every store database at or below ``tree``.
+
+    The store keeps each thread's idle connection open (#1982). Windows refuses to delete or
+    rename a file an open handle holds (WinError 32) and a folder with an open file below it
+    (WinError 5), so a test that removes, renames or replaces store files it used releases them
+    first, as the product does before it moves a drive (``store.close_connections_under``, one
+    file: ``store.close_connections``); the next use opens a fresh connection. Any active lease
+    refuses with ``StoreBusy``: another thread's lease is waited out, up to ``wait_sec``, then
+    the refusal is raised.
+    """
+    from ouroboros import store
+
+    tree = pathlib.Path(tree)
+    if tree.is_dir():
+        releases = [lambda: store.close_connections_under(tree)]
+    else:
+        releases = [lambda spelling=spelling: store.close_connections(spelling)
+                    for spelling in dict.fromkeys((tree.absolute(), tree.resolve()))]
+    attempts = max(1, int(wait_sec / 0.05))  # counted, not clocked: a test may freeze time.monotonic
+    for release in releases:
+        for attempt in range(attempts):
+            try:
+                release()
+                break
+            except store.StoreBusy:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(0.05)
+
+
+def remove_store_tree(tree: Any) -> None:
+    """``shutil.rmtree`` of a drive or data root this process used, its store handles released first
+    (``release_store_handles``) so the removal works on Windows too."""
+    import shutil
+
+    release_store_handles(tree)
+    shutil.rmtree(tree)

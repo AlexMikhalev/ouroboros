@@ -115,9 +115,16 @@ def test_an_explicit_route_without_access_stays_unavailable_not_rerouted(install
         assert model_has_credentials("google/gemini-3.8-flash") is False
 
 
-def test_spelling_migration_onto_the_exclusive_provider_is_not_a_generation_replacement(install):
-    _write(install, {"ANTHROPIC_API_KEY": "k", "OUROBOROS_MODEL": "anthropic/claude-opus-4.6"})
-    assert _task_start().settings["OUROBOROS_MODEL"] == "anthropic::claude-opus-4-6"
+@pytest.mark.parametrize("dotted, direct", [("4.6", "4-6"), ("5.5", "5-5")])
+def test_spelling_migration_onto_the_exclusive_provider_is_not_a_generation_replacement(install, dotted, direct):
+    from ouroboros.llm import LLMClient
+
+    _write(install, {"ANTHROPIC_API_KEY": "k", "OUROBOROS_MODEL": f"anthropic/claude-opus-{dotted}"})
+    assert _task_start().settings["OUROBOROS_MODEL"] == f"anthropic::claude-opus-{direct}"
+    assert LLMClient()._resolve_remote_target(f"anthropic::claude-opus-{dotted}")["resolved_model"] == (
+        f"claude-opus-{direct}")
+    assert LLMClient()._resolve_remote_target(f"anthropic/claude-opus-{dotted}")["resolved_model"] == (
+        f"anthropic/claude-opus-{dotted}"), "the router keeps its own slug"
 
 
 def test_saved_blank_light_and_fallbacks_keep_their_meaning_end_to_end(install, monkeypatch):
@@ -236,7 +243,7 @@ def test_an_owner_endpoint_write_does_not_materialize_unauthored_slots_or_the_fa
     assert not stored.get("OPENAI_API_KEY"), "the environment's credential is not written into the document"
     settings = cfg.load_settings()
     assert _slots(_task_start()) == OPENAI
-    assert _pool_targets(settings) == [OPENAI[0]] * 3
+    assert _pool_targets(settings) == [OPENAI[0]]
 
 
 # D: an unrelated Settings save leaves a never-configured catalog to the read; an Agents edit or the wizard's
@@ -276,8 +283,8 @@ def test_an_unrelated_settings_save_leaves_a_never_configured_catalog_to_the_rea
         assert response.status_code == 200, response.text
         assert SUBAGENTS not in json.loads(install.read_text(encoding="utf-8"))
         assert client.get("/api/settings").json()["_meta"]["available_subagents"]["automatic"] is True
-    assert _pool_targets(dict(os.environ)) == [OPENAI[0]] * 3 and checked == []
-    assert _pool_targets(_task_start().settings) == [OPENAI[0]] * 3
+    assert _pool_targets(dict(os.environ)) == [OPENAI[0]] and checked == []
+    assert _pool_targets(_task_start().settings) == [OPENAI[0]]
 
 
 WIZARD = {"ANTHROPIC_API_KEY": "sk-ant-present-key", "OUROBOROS_MODEL": ANTHROPIC[0], "TOTAL_BUDGET": 25.0,
@@ -295,11 +302,19 @@ AGENTS_EDITS = {  # the owner's edit of the shown factory catalog in Settings â†
 @pytest.mark.parametrize("origin", [*AGENTS_EDITS, "saved-equal-to-factory", "wizard-finish"])
 def test_an_authored_catalog_stays_the_owners_through_a_main_and_access_change(install, monkeypatch, origin):
     from ouroboros.configured_subagents import canonical_subagents
+    from ouroboros.gateway import onboarding
+    from ouroboros import skill_starter
 
     client = _settings_client(monkeypatch)
     if origin == "wizard-finish":  # Finish saves the catalog the wizard displayed
+        starters, scheduled = [], []
+        # This settings test never launches background work (including a real hub fetch).
+        monkeypatch.setattr(skill_starter, "schedule_starter", lambda *a, **kw: scheduled.append((a, kw)))
+        monkeypatch.setattr(onboarding, "after_onboarding", lambda root, ids: starters.append((root, ids)))
         catalog = client.post("/api/onboarding/subagents/preview", json=WIZARD).json()["available_subagents"]
         response = client.post("/api/onboarding/complete", json={**WIZARD, SUBAGENTS: catalog})
+        assert len(starters) == 1 and starters[0][1] is None
+        assert scheduled == []
     else:
         _write(install, {"ANTHROPIC_API_KEY": "sk-ant-present-key"})
         catalog = json.loads(client.get("/api/settings").json()[SUBAGENTS])
@@ -378,7 +393,7 @@ def test_an_incidental_writer_lands_its_key_not_the_reads_proposals(install, mon
 
     _running_in(monkeypatch, "advanced")
     _write(install, SAVED_CHOICES)
-    assert _pool_targets(cfg.load_settings()) == [ANTHROPIC[0]] * 3, "the read mints the factory panel"
+    assert _pool_targets(cfg.load_settings()) == [ANTHROPIC[0]], "the read mints the factory panel"
     read, landed = owner_settings._owner_read_settings_raw, threading.Event()
 
     def read_beside_a_concurrent_owner_write(*args, **kwargs):
@@ -432,7 +447,7 @@ def test_environment_credentials_reach_the_factory_catalog_with_or_without_a_doc
         _write(install, document)
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     settings = cfg.load_settings()
-    assert _pool_targets(settings) == [OPENAI[0]] * 3
+    assert _pool_targets(settings) == [OPENAI[0]]
     assert not install.exists() or json.loads(install.read_text()) == document, "a read writes nothing"
 
 
@@ -447,19 +462,24 @@ def test_a_never_configured_install_gets_the_wizards_auto_helpers_beside_unchang
             for row in actors] == [
         ("primary-builder", ANTHROPIC[0], "", PRIMARY_RECOMMENDATION),
         ("fast-scout", ANTHROPIC[1], "", SCOUT_RECOMMENDATION)]
-    assert [(row["route"]["target_id"], row["effort"]) for row in reviewers] == [(ANTHROPIC[0], "high")] * 3
-    # A Light that is Main adds no second helper; the reviewer seats stay three.
+    # A direct provider without a mixed panel reviews on its Main once (owner Q5=A).
+    assert [(row["route"]["target_id"], row["effort"]) for row in reviewers] == [(ANTHROPIC[0], "high")]
+    # A Light that is Main adds no second helper; the reviewer seat stays one.
     _write(install, {"OUROBOROS_MODEL_LIGHT": ""})
     items = _items(cfg.load_settings())
     assert [row["subagent_id"] for row in items if not row.get("review_eligible")] == ["primary-builder"]
-    assert sum(1 for row in items if row.get("review_eligible")) == 3
+    assert sum(1 for row in items if row.get("review_eligible")) == 1
 
 
 @pytest.mark.parametrize("stored", [
     {"enabled": True, "items": []},
     {"enabled": False, "items": [{"subagent_id": "mine", "recommended_use": "Owner row.",
                                   "route": {"kind": "api_model", "target_id": "anthropic::claude-opus-5"}}]},
-], ids=["explicit-empty", "delegation-off"])
+    # The three Main rows the former factory saved stay three (owner Q5=A: saved rows untouched).
+    {"enabled": True, "items": [{"subagent_id": f"review-{n}", "recommended_use": "Reviews.", "effort": "high",
+                                 "route": {"kind": "api_model", "target_id": "anthropic::claude-opus-5"},
+                                 "review_eligible": True, "minted_from": "factory_default"} for n in (1, 2, 3)]},
+], ids=["explicit-empty", "delegation-off", "saved-former-three-main-rows"])
 def test_an_owner_catalog_is_never_repopulated(install, monkeypatch, stored):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     _write(install, {SUBAGENTS: json.dumps(stored)})
@@ -478,9 +498,9 @@ def test_several_direct_providers_without_a_main_get_no_imaginary_router_panel(i
 
 @pytest.mark.parametrize("env, main, pool", [
     ({"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k", "OUROBOROS_MODEL": "anthropic::claude-opus-5"},
-     "anthropic::claude-opus-5", ["anthropic::claude-opus-5"] * 3),
+     "anthropic::claude-opus-5", ["anthropic::claude-opus-5"]),
     ({"OUROBOROS_MODEL": "claudexor::codex=gpt-5.6-sol"}, "claudexor::codex=gpt-5.6-sol",
-     ["claudexor::codex=gpt-5.6-sol"] * 3),
+     ["claudexor::codex=gpt-5.6-sol"]),  # no provider panel: Main once, never copies of it (owner Q5=A)
     ({"OPENROUTER_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}, SETTINGS_DEFAULTS["OUROBOROS_MODEL"],
      list(OPENROUTER_REVIEW_DEFAULTS["triad"])),
 ], ids=["mixed-direct-chosen-main", "managed-main", "router-plus-direct"])
@@ -501,7 +521,7 @@ def test_a_local_factory_row_runs_locally_for_review_and_delegation(install):
     snapshot = _task_start()
     with task_settings_scope(snapshot):
         settings = dict(snapshot.settings)
-        assert _pool_targets(settings) == ["qwen-local (local)"] * 3
+        assert _pool_targets(settings) == ["qwen-local (local)"]
         assert all(slot.use_local for slot in review_pool_slots(settings))
         row = select_subagent_snapshot(settings, subagent_id="review-1")[0]
         dispatch = resolve_configured_actor_dispatch(
@@ -548,8 +568,8 @@ def test_the_legacy_openai_compatible_pair_still_routes(monkeypatch):
 
 # --- 1A / A: subscription presets ------------------------------------------------------
 #
-# A partial session refresh: Claude sessions take Opus 5.5, Codex sessions keep gpt-5.6-sol â€” the
-# installed engine's Codex catalog lists no gpt-6.1-sol, and a preset names exact discovery ids only.
+# A partial session refresh: Claude sessions take Opus 5.5, Codex sessions gpt-6.1-sol when discovered,
+# else gpt-5.6-sol (the installed engine's catalog); a preset names exact discovery ids only.
 
 INSTALLED_CODEX = ("gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
 
@@ -561,8 +581,9 @@ def test_an_unused_advisory_model_never_refuses_the_preset():
         preset = compile_install_preset([HarnessDiscovery(harness, (model,))])
         assert preset.ok, preset.refusal
         assert preset.receipt["version"] == "4" and "advisory" not in preset.receipt["surfaces"]
+        # A sole harness takes one triad seat (owner Q5=A), never three copies of one model.
         assert [(row["target_id"], row["effort"]) for row in preset.receipt["surfaces"]["triad"]] == [
-            (f"{harness}={model}", "medium")] * 3
+            (f"{harness}={model}", "medium")]
 
 
 def test_a_codex_catalog_without_the_newer_sol_still_gets_its_fresh_preset():
@@ -600,7 +621,7 @@ def test_the_colab_document_proposes_for_unauthored_slots_and_keeps_saved_blanks
     assert tuple(settings[key] for key in SLOTS) == OPENAI
     assert [row["subagent_id"] for row in _items(settings) if not row.get("review_eligible")] == [
         "primary-builder", "fast-scout"]
-    assert _pool_targets(settings) == [OPENAI[0]] * 3
+    assert _pool_targets(settings) == [OPENAI[0]]
     kept = build_colab_settings({"OPENAI_API_KEY": "k"}, existing={"OUROBOROS_MODEL_LIGHT": ""})
     assert kept["OUROBOROS_MODEL_LIGHT"] == ""
 
@@ -692,7 +713,7 @@ def test_a_router_key_beside_a_chosen_direct_main_keeps_the_mains_provider_panel
     panel = compute_direct_review_models_fallback("anthropic", "anthropic::claude-opus-5",
                                                   settings["OUROBOROS_MODEL_LIGHT"])
     assert _pool_targets(settings) == panel and {provider_for_model(model) for model in panel} == {"anthropic"}
-    assert [row["effort"] for row in _review_rows(settings)] == ["high"] * 3
+    assert [row["effort"] for row in _review_rows(settings)] == ["high"]
     assert _task_start().settings["OUROBOROS_MODEL"] == "anthropic::claude-opus-5"
 
 
@@ -706,7 +727,7 @@ def test_a_router_key_beside_a_local_main_keeps_the_local_rows_local_for_review_
     snapshot = _task_start()
     with task_settings_scope(snapshot):
         settings = dict(snapshot.settings)
-        assert _pool_targets(settings) == ["qwen-local (local)"] * 3
+        assert _pool_targets(settings) == ["qwen-local (local)"]
         assert all(slot.use_local for slot in review_pool_slots(settings))
         row = select_subagent_snapshot(settings, subagent_id="review-1")[0]
         dispatch = resolve_configured_actor_dispatch(
@@ -720,8 +741,8 @@ def test_a_router_key_beside_a_managed_main_keeps_its_account_pin(install, monke
                      "OUROBOROS_MODEL_ACCOUNTS": {"main": "account-a"}})
     rows = _review_rows(cfg.load_settings())
     assert [row["route"] for row in rows] == [{"kind": "api_model", "target_id": "claudexor::codex=gpt-5.6-sol",
-                                               "credential_profile_id": "account-a"}] * 3
-    assert [row["effort"] for row in rows] == ["high"] * 3
+                                               "credential_profile_id": "account-a"}]
+    assert [row["effort"] for row in rows] == ["high"]
 
 
 def test_a_router_main_keeps_the_diverse_router_panel(install, monkeypatch):
@@ -887,7 +908,7 @@ def test_a_projected_factory_catalog_follows_an_access_change_and_an_operator_ca
     from ouroboros.gateway.owner_settings import _owner_update_settings, fields_on_saved_document
 
     _write(install, {"ANTHROPIC_API_KEY": "sk-ant-present-key"})
-    assert _pool_targets(_task_start().settings) == [ANTHROPIC[0]] * 3
+    assert _pool_targets(_task_start().settings) == [ANTHROPIC[0]]
     assert os.environ.get(SUBAGENTS), "projected (conftest restores the environment)"
     _owner_update_settings(fields_on_saved_document({"OPENROUTER_API_KEY": "sk-or-present-key"}))
     assert _pool_targets(_task_start().settings) == list(OPENROUTER_REVIEW_DEFAULTS["triad"])

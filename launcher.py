@@ -53,16 +53,19 @@ from ouroboros.launcher_bootstrap import (
     automatic_launch_allowed,
     sync_existing_repo_from_bundle as _sync_existing_repo_from_bundle_impl,
 )
+from ouroboros.desktop_media import attach_media_permissions, display_ready as _display_ready
 from ouroboros.runtime_venv import PREPARATION_DEPS_TIMEOUT_SEC, RuntimeVenvRefused, mark_ready, prepare_runtime_venv
 from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
+    setup_recovery_menu,
 )
 from ouroboros.launcher_background import (Background, DesktopApi, activate_running_instance, background_env,
                                            request_tray_cleanup, stop_tray_before_exit)
 from ouroboros.launcher_server_reaper import (
     reap_same_install_strays as _reap_same_install_strays_impl,
 )
+from ouroboros.launcher_readiness import wait_for_server as _wait_for_server
 from ouroboros.launcher_windows_runtime import (  # noqa: F401  (re-exported: same objects, prior launcher surface)
     _prepare_windows_webview_runtime,
     _show_windows_message,
@@ -221,6 +224,7 @@ _shutdown_event = threading.Event()
 # (first-run configuration adopted), not a crash — same shape as the exit-code-42
 # branch, for the case where the launcher, not the agent, decided the restart.
 _agent_restart_requested = threading.Event()
+_agent_exit_before_ready = threading.Event()  # the child exited before it served: the UI wait ends now
 _webview_window = None
 # Linux-only browser-fallback flag (#56): set by _detect_headless() when no
 # pywebview GUI backend can initialize. Stays False on macOS/Windows — the
@@ -615,14 +619,15 @@ def _clear_port_file() -> bool:
     return not PORT_FILE.exists()
 
 
-def _await_generation_endpoint(proc, *, port_file_cleared: bool, timeout: float, abort_event=None) -> Optional[int]:
-    """The port THIS child published, or None when it exited, stopped or never published. The main
-    binding counts only with the child's PID and measured birth identity (a stale row of an earlier
-    server that held the same PID fails); the plain port file only after its pre-start removal was confirmed."""
+def _await_generation_endpoint(proc, *, port_file_cleared: bool, abort_event=None) -> Optional[int]:
+    """The port THIS child published, or None when it exited or the launcher stopped. The wait lasts
+    as long as the child lives: no clock decides that a live server failed (its boot is long on a
+    cold disk; the server answers ``/api/health`` as soon as its socket serves). The main binding
+    counts only with the child's PID and measured birth identity (a stale row of an earlier server
+    that held the same PID fails); the plain port file only after its pre-start removal was confirmed."""
     from ouroboros.server_process import read_service_bindings, service_binding_is_live
 
-    deadline = time.time() + timeout
-    while time.time() < deadline and not (abort_event is not None and abort_event.is_set()):
+    while not (abort_event is not None and abort_event.is_set()):
         if proc.poll() is not None:
             return None
         try:
@@ -635,29 +640,6 @@ def _await_generation_endpoint(proc, *, port_file_cleared: bool, timeout: float,
             return published
         time.sleep(0.25)
     return None
-
-
-def _wait_for_server(port: int, timeout: float = 30.0, abort_event=None, proc=None) -> bool:
-    """Wait for the agent HTTP server to respond.
-
-    ``abort_event`` (headless mode) lets a shutdown signal cut the wait short:
-    the handlers only set the event, so without this check a SIGTERM during
-    startup would still sit out the full readiness timeout. ``proc``'s exit ends it too."""
-    url = f"http://127.0.0.1:{port}/api/health"
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if abort_event is not None and abort_event.is_set():
-            return False
-        if proc is not None and proc.poll() is not None:
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=2) as response:
-                if response.status == 200:
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
 
 
 def _kill_orphaned_children(reason: str = "window_close") -> None:
@@ -716,6 +698,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             _shutdown_event.set()
             break
         port_file_cleared = _clear_port_file()
+        _agent_exit_before_ready.clear()  # this generation proves itself
 
         _external_host_result = update_external_host(_external_host_update, EMBEDDED_PYTHON, log, _shutdown_event)
         if _shutdown_event.is_set():
@@ -726,21 +709,23 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             stop_agent()
             break
 
-        actual_port = _await_generation_endpoint(proc, port_file_cleared=port_file_cleared, timeout=45,
-                                                  abort_event=_shutdown_event)
+        actual_port = _await_generation_endpoint(proc, port_file_cleared=port_file_cleared, abort_event=_shutdown_event)
         if actual_port is None:
-            log.warning("Agent server published no endpoint of its own within 45s")
+            log.warning("Agent server exited (or the launcher stopped) before it published an endpoint")
         else:
             _update_server_process_record_port(proc.pid, actual_port)
-            if _wait_for_server(actual_port, timeout=45, abort_event=_shutdown_event, proc=proc):
+            if _wait_for_server(actual_port, abort_event=_shutdown_event, proc=proc):
                 _generation_port = actual_port
             else:
-                log.warning("Agent server did not become responsive within 45s (port %d)", actual_port)
+                log.warning("Agent server exited before it answered /api/health on port %d", actual_port)
 
         proc.wait()
+        proved = _generation_port is not None
         _generation_port = None
         exit_code = proc.returncode
         log.info("Agent exited with code %d", exit_code)
+        if not proved and exit_code not in (RESTART_EXIT_CODE, PANIC_EXIT_CODE) and not _agent_restart_requested.is_set():
+            _agent_exit_before_ready.set()  # a child that died before serving: the UI wait fails now, not at a deadline
         if exit_code == RESTART_EXIT_CODE:
             try:
                 from ouroboros.delegate_recovery import acknowledge_observed_restart_exit
@@ -771,6 +756,16 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             # supervisor thread cannot end the main-thread Cocoa webview loop on
             # macOS (it leaves a black frozen window), so exit with parity to the
             # window-close path: kill orphans, release the pid lock, os._exit(0).
+            try:  # the server's census may not have finished before its hard exit: finish it by identity, bounded
+                from ouroboros.process_scope import complete_pending_panic_sweep
+
+                completion = threading.Thread(
+                    target=complete_pending_panic_sweep, args=(DATA_DIR,),
+                    kwargs={"exclude": {os.getpid(), os.getppid(), 1}, "installation": True}, name="panic-scope-completion", daemon=True)
+                completion.start()
+                completion.join(timeout=3.0)  # later starts retry saved identities only; the exit never waits longer
+            except Exception:
+                log.warning("Pending Panic scope sweep failed; later starts retry saved identities only", exc_info=True)
             _kill_orphaned_children(reason="panic_stop")
             stop_tray_before_exit(release_pid_lock, wait=0)
             os._exit(0)
@@ -841,10 +836,13 @@ def _request_agent_restart() -> None:
 
 
 def _await_server_ready(port: int, abort_event=None, lifecycle_thread=None) -> tuple[bool, int]:
-    """Wait until the lifecycle thread proves the current generation healthy; its port.
+    """Wait until the lifecycle thread proves the current generation serving; its port.
 
-    The server may rebind on conflict; every later consumer (UI URL, onboarding window)
-    uses the endpoint that generation published, never the requested port or a stale file.
+    No clock: the wait lasts while the generation lives and the lifecycle thread runs. It ends
+    False at once when the child exits before it served (``_agent_exit_before_ready``), when the
+    lifecycle thread ended (the crash fuse) or on abort. The server may rebind on conflict; every
+    later consumer (UI URL, onboarding window) uses the endpoint that generation published, never
+    the requested port or a stale file.
     """
     if _external_host_update is not None and lifecycle_thread is not None:
         # Native preparation has its own bounded operation before server.py exists.
@@ -857,11 +855,12 @@ def _await_server_ready(port: int, abort_event=None, lifecycle_thread=None) -> t
             lifecycle_thread.join(timeout=0.1)
         else:
             return False, port
-    deadline = time.time() + 60
-    while time.time() < deadline and not (abort_event is not None and abort_event.is_set()):
+    while not (abort_event is not None and abort_event.is_set()):
         if _generation_port:
             return True, _generation_port
         if lifecycle_thread is not None and not lifecycle_thread.is_alive():
+            break
+        if _agent_exit_before_ready.is_set():
             break
         time.sleep(0.1)
     return False, _generation_port or port
@@ -971,28 +970,6 @@ def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
         ctx, loaded.name, "grant", expected_content_hash=preview["content_hash"], items=items,
         repo_path=repo_path, _owner_actor="owner_launcher", _reconcile_grant=reconcile_on_server,
     )
-
-
-def _display_ready(backend) -> tuple[bool, str]:
-    """Linux: does a usable DISPLAY actually exist for the chosen backend?
-
-    `initialize()` only proves the backend MODULE imports (the first real
-    display access is `BrowserView.__init__` → `Gdk.Display.get_default()`
-    inside webview.start()), so a box WITH gi bindings but WITHOUT a display
-    passed the import probe and crashed. The session-env check runs BEFORE
-    initialize() in _webview_ready; here the chosen backend is refined: GTK's
-    display handle answers None on a dead display, never a raise. DISCLOSED
-    RESIDUAL: Qt is judged on the env alone (probing Qt constructs a
-    QGuiApplication, which ABORTS). Full rationale: ARCHITECTURE.
-    """
-    if str(getattr(backend, "__name__", "")).endswith(".gtk"):
-        try:
-            from gi.repository import Gdk
-        except Exception as exc:  # gi vanished between import and probe
-            return False, f"GTK backend without gi.repository.Gdk: {type(exc).__name__}: {exc}"
-        if Gdk.Display.get_default() is None:
-            return False, "GTK backend has no default display (DISPLAY/WAYLAND_DISPLAY is unusable)"
-    return True, ""
 
 
 def _webview_ready() -> tuple[bool, str]:
@@ -1333,7 +1310,7 @@ def main(argv=()):
     port = _requested_server_port()  # the lifecycle loop clears the previous generation first
 
     # Headless: handlers BEFORE the lifecycle thread spawns server.py — a
-    # SIGTERM in the ~60s readiness window must reach our teardown.
+    # SIGTERM while the server still boots must reach our teardown.
     _abort = None
     if _headless:
         install_shutdown_signal_handlers(_headless_signal_handler)
@@ -1349,7 +1326,7 @@ def main(argv=()):
         # supervisor — the supported state that lets the wizard reach /api/*.
         onboarding = _present_first_run_onboarding(
             onboarding_settings, actual_port, headless=_headless,
-            open_external_url=_open_external_url,
+            open_external_url=_open_external_url, read_port=lambda: _generation_port,
         )
         if not onboarding["saved"]:
             log.info(
@@ -1563,8 +1540,9 @@ def main(argv=()):
         background_color="#0d0b0f",
         text_select=True, hidden=background.start_hidden(options.launch_intent),
     )
-    _webview_window = background.attach(window)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
-    webview.start(func=background.run, debug=False, private_mode=False)
+    _webview_window = attach_media_permissions(background.attach(window), url)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
+    webview.start(func=background.run, debug=False, private_mode=False,
+                  menu=setup_recovery_menu(window, lambda: _generation_port))
 
 
 if __name__ == "__main__":

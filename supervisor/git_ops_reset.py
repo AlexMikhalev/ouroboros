@@ -104,11 +104,42 @@ def _preserve_branch_for_official_reset(
     return True, branch_or_error
 
 
+class IndexLockRefusal(subprocess.CalledProcessError):
+    """Every attempt of a ``git reset``/``git checkout`` died taking this checkout's ``index.lock``.
+
+    Both take that lock before writing the index, the tree or a ref, so the command
+    itself changed nothing. ``before_tree_effects`` is its raiser's fact that no earlier
+    tree step of the same call ran (``checkout_and_reset``; Restore's single reset).
+    """
+    before_tree_effects = False
+
+
+_LOCK_REFUSAL = re.compile(r"fatal: Unable to create '(.+)': File exists\.")
+
+
+def _index_lock_refused(cmd, result) -> bool:
+    """This attempt died acquiring this checkout's index lock (C-locale Git, first stderr line)."""
+    if result.returncode != 128 or [str(part) for part in cmd[:2]] not in (["git", "reset"], ["git", "checkout"]):
+        return False
+    stderr = result.stderr.decode("utf-8", "replace") if isinstance(result.stderr, bytes) else str(result.stderr or "")
+    match = _LOCK_REFUSAL.fullmatch((stderr.splitlines() or [""])[0].strip())
+    try:
+        return bool(match) and pathlib.Path(match.group(1)).resolve() == (_go()._git_dir() / "index.lock").resolve()
+    except OSError:
+        return False
+
+
 def _run_git_resilient(cmd, **kwargs):
-    """Run a destructive-checkout git command with index-repair retries."""
+    """Run a destructive-checkout git command with index-repair retries.
+
+    The raise is an ``IndexLockRefusal`` only when every attempt died acquiring the
+    index lock and no repair ran between them; anything else is a plain refusal.
+    """
     import time
     check = bool(kwargs.pop("check", False))
+    kwargs.setdefault("env", {**os.environ, "LC_ALL": "C", "LANG": "C"})  # stderr is parsed below
     _go()._guard_live_repo_destructive_git(list(cmd))
+    lock_refused = True
     for attempt in range(5):
         run_kwargs = dict(kwargs)
         run_kwargs.setdefault("capture_output", True)
@@ -116,17 +147,28 @@ def _run_git_resilient(cmd, **kwargs):
         result = subprocess.run(cmd, **run_kwargs)
         if result.returncode == 0:
             return result
+        lock_refused = lock_refused and _index_lock_refused(cmd, result)
         if _go()._maybe_repair_git_index(result.stderr):
+            lock_refused = False
             time.sleep(0.2)
             continue
         if not check:
             return result
         if attempt == 4:
-            raise subprocess.CalledProcessError(
-                result.returncode, cmd, output=result.stdout, stderr=result.stderr,
-            )
+            refusal = IndexLockRefusal if lock_refused else subprocess.CalledProcessError
+            raise refusal(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
         time.sleep(1)
     return subprocess.run(cmd, check=check, **kwargs)
+
+
+def _tree_step(done: List[str], cmd: List[str]) -> None:
+    """One tree-mutating ``checkout_and_reset`` command; ``done`` lists those already applied."""
+    try:
+        _go()._run_git_resilient(cmd, cwd=str(_go().REPO_DIR), check=True)
+    except IndexLockRefusal as exc:
+        exc.before_tree_effects = not done
+        raise
+    done.append(" ".join(cmd))
 
 
 def _admission_gate_for_unsynced_tree(
@@ -307,8 +349,22 @@ def _admission_gate_for_unsynced_tree(
     return None
 
 
+def _target_lacks_store(sha: str) -> bool:
+    """Whether ``sha`` is a tree the store switch must reach (``store_switch.switch_needs``)."""
+    from ouroboros.store_switch import switch_needs
+
+    return switch_needs(_go().REPO_DIR, sha)["facts"]
+
+
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
+    receipt = _bootstrap_receipt()
+    if reason == "bootstrap" and receipt and receipt.get("branch") == branch:
+        if receipt == _bootstrap_snapshot():
+            _record_checkout_facts({"current_branch": branch, "current_sha": receipt["head"]},
+                                   invalidate_bootstrap=False)
+            return True, "unchanged bootstrap"
+    _forget_bootstrap_receipt()
     before_head = _go().git_capture(["git", "rev-parse", "HEAD"])[1].strip()
     managed_meta = _go()._read_managed_repo_meta()
     fetch_remote = ""
@@ -345,9 +401,12 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                 )
             )
             if constitution_ok:
-                update_intent_target = intent_sha
-                target_ref = intent_sha
-                intent_keep_branch = str(update_intent.get("keep_branch") or "").strip()
+                # Only the authority switch's own door checkout reaches a store-less target, after its
+                # export; a bootstrap or restart replay leaves the armed intent to the boot finalizer.
+                if str(reason or "") == "ui_update_apply" or not _target_lacks_store(intent_sha):
+                    update_intent_target = intent_sha
+                    target_ref = intent_sha
+                    intent_keep_branch = str(update_intent.get("keep_branch") or "").strip()
             else:
                 cleared = _go()._clear_update_intent()
                 _go().append_jsonl(
@@ -405,6 +464,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
             capture_output=True,
         ).returncode == 0
 
+    done: List[str] = []  # tree-mutating commands completed by this call (`_tree_step`)
     if remote_ref_exists:
         if update_intent_target:
             preserve_ok, preserve_msg = _go()._preserve_branch_for_official_reset(
@@ -424,12 +484,12 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                         "keep_branch": preserve_msg,
                     },
                 )
-            _go()._run_git_resilient(["git", "reset", "--hard", "HEAD"], cwd=str(_go().REPO_DIR), check=True)
-            _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
-        _go()._run_git_resilient(["git", "checkout", "-B", branch, target_ref], cwd=str(_go().REPO_DIR), check=True)
+            _tree_step(done, ["git", "reset", "--hard", "HEAD"])
+            _tree_step(done, ["git", "clean", "-fd"])
+        _tree_step(done, ["git", "checkout", "-B", branch, target_ref])
         if update_intent_target:
-            _go()._run_git_resilient(["git", "reset", "--hard", target_ref], cwd=str(_go().REPO_DIR), check=True)
-        _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
+            _tree_step(done, ["git", "reset", "--hard", target_ref])
+        _tree_step(done, ["git", "clean", "-fd"])
     else:
         rc_local = subprocess.run(
             ["git", "rev-parse", "--verify", branch],
@@ -437,20 +497,20 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
         ).returncode
 
         if rc_local != 0:
-            _go()._run_git_resilient(["git", "reset", "--hard", "HEAD"], cwd=str(_go().REPO_DIR), check=True)
-            _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
+            _tree_step(done, ["git", "reset", "--hard", "HEAD"])
+            _tree_step(done, ["git", "clean", "-fd"])
             # §6 (same detached-HEAD class as BUG1): `-b` with check=False silently swallowed a
             # "branch already exists" error and proceeded with HEAD possibly detached/wrong;
             # `-B` force-creates the branch at HEAD and check=True raises a real failure.
-            _go()._run_git_resilient(["git", "checkout", "-B", branch], cwd=str(_go().REPO_DIR), check=True)
+            _tree_step(done, ["git", "checkout", "-B", branch])
         else:
             if policy == "rescue_and_reset":
-                _go()._run_git_resilient(["git", "reset", "--hard", "HEAD"], cwd=str(_go().REPO_DIR), check=True)
-                _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
-            _go()._run_git_resilient(["git", "checkout", branch], cwd=str(_go().REPO_DIR), check=True)
-            _go()._run_git_resilient(["git", "reset", "--hard", "HEAD"], cwd=str(_go().REPO_DIR), check=True)
+                _tree_step(done, ["git", "reset", "--hard", "HEAD"])
+                _tree_step(done, ["git", "clean", "-fd"])
+            _tree_step(done, ["git", "checkout", branch])
+            _tree_step(done, ["git", "reset", "--hard", "HEAD"])
             if policy == "rescue_and_reset":
-                _go()._run_git_resilient(["git", "clean", "-fd"], cwd=str(_go().REPO_DIR), check=True)
+                _tree_step(done, ["git", "clean", "-fd"])
 
     st = {"current_branch": branch, "current_sha": subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(_go().REPO_DIR),
@@ -569,6 +629,10 @@ def import_test() -> Dict[str, Any]:
         log.info("Skipping import_test in frozen (PyInstaller) mode — modules are bundled.")
         return {"ok": True, "skipped": "frozen"}
 
+    before = _bootstrap_snapshot()
+    if before and before == _bootstrap_receipt():
+        return {"ok": True, "skipped": "unchanged_bootstrap"}
+    _forget_bootstrap_receipt()
     r = subprocess.run(
         [sys.executable, "-c", "import ouroboros, ouroboros.agent; print('import_ok')"],
         cwd=str(_go().REPO_DIR),
@@ -576,6 +640,12 @@ def import_test() -> Dict[str, Any]:
     )
     if r.returncode != 0:
         _forget_dependency_fingerprint()  # a broken environment is re-synced next time, never skipped
+    elif before and before == _bootstrap_snapshot():
+        from ouroboros.utils import atomic_write_json
+        try:
+            atomic_write_json(_bootstrap_receipt_path(), before)
+        except OSError:
+            log.warning("Bootstrap receipt not recorded; the next boot verifies again", exc_info=True)
     return {"ok": (r.returncode == 0), "stdout": r.stdout, "stderr": r.stderr,
             "returncode": r.returncode}
 
@@ -586,6 +656,47 @@ def _forget_dependency_fingerprint() -> None:
         stamp(_go().DRIVE_ROOT, dependencies=None)
     except Exception:
         log.warning("Dependency fingerprint not cleared after a failed import test", exc_info=True)
+
+
+def _checkout_outcome(branch: str, reason: str, unsynced_policy: str) -> Tuple[bool, str]:
+    """``checkout_and_reset`` whose Git refusal is a failed outcome, never a raise.
+
+    Git explains the refusal (e.g. an ``index.lock`` another process holds or a
+    crash left); it is recorded once and returned in Git's own words (``refusal_text``).
+    """
+    try:
+        return _go().checkout_and_reset(branch, reason=reason, unsynced_policy=unsynced_policy)
+    except subprocess.CalledProcessError as exc:
+        cmd, detail = refusal_parts(exc)
+        _go().append_jsonl(
+            _go().current_drive_root() / "logs" / "supervisor.jsonl",
+            {"ts": _go().utc_now_iso(), "type": "checkout_step_failed", "reason": reason,
+             "target_branch": branch, "cmd": cmd, "returncode": exc.returncode, "stderr": detail},
+        )
+        return False, refusal_text(exc)
+
+
+def _git_said(exc: subprocess.CalledProcessError) -> str:
+    output = exc.stderr or exc.output or ""
+    return output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
+
+
+def refusal_parts(exc: subprocess.CalledProcessError) -> Tuple[str, str]:
+    """The refused command and Git's own stderr, each on one line."""
+    cmd = " ".join(map(str, exc.cmd)) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
+    return cmd, " ".join(_git_said(exc).split())
+
+
+def refusal_text(exc: BaseException) -> str:
+    """A checkout refusal: a headline line (the step, Git's own first line, what is known of the
+    tree), then Git's whole output on the next line. Owner notices show the headline only."""
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return str(exc)
+    cmd, detail = refusal_parts(exc)
+    first = next((" ".join(line.split()) for line in _git_said(exc).splitlines() if line.strip()), "no output")
+    scope = ("no checkout step had changed the working tree" if getattr(exc, "before_tree_effects", False)
+             else "earlier checkout steps may already have changed the working tree")
+    return f"`{cmd}` failed (exit {exc.returncode}): {first}; {scope}.\nGit: {detail or 'no output'}"
 
 
 def safe_restart(
@@ -616,7 +727,7 @@ def safe_restart(
             return True, "OK: managed checkout disabled — staying on the current checkout"
         return False, f"Import test failed with managed checkout disabled (rc={t.get('returncode', -1)})"
 
-    ok, err = _go().checkout_and_reset(_go().BRANCH_DEV, reason=reason, unsynced_policy=unsynced_policy)
+    ok, err = _checkout_outcome(_go().BRANCH_DEV, reason, unsynced_policy)
     if not ok:
         return False, f"Failed checkout {_go().BRANCH_DEV}: {err}"
 
@@ -641,11 +752,7 @@ def safe_restart(
         },
     )
 
-    ok_s, err_s = _go().checkout_and_reset(
-        _go().BRANCH_STABLE,
-        reason=f"{reason}_fallback_stable",
-        unsynced_policy="rescue_and_reset",
-    )
+    ok_s, err_s = _checkout_outcome(_go().BRANCH_STABLE, f"{reason}_fallback_stable", "rescue_and_reset")
     if not ok_s:
         return False, f"Failed checkout {_go().BRANCH_STABLE}: {err_s}"
 
@@ -660,10 +767,14 @@ def safe_restart(
     return False, "Both branches failed import (dev and stable)"
 
 
-def _record_checkout_facts(facts: dict) -> None:
+def _record_checkout_facts(facts: dict, *, invalidate_bootstrap: bool = True) -> None:
     """Field-update the checkout projection (#1307): never a stale whole-state write."""
     from supervisor.state import StateUnavailable
 
+    if invalidate_bootstrap:
+        # Restore and managed rollback also reach this seam, including a reset
+        # back to the same HEAD. They must never inherit an earlier smoke receipt.
+        _forget_bootstrap_receipt()
     try:
         _go().update_state(lambda live: live.update(facts))
     except StateUnavailable:
@@ -690,3 +801,68 @@ def _dependency_fingerprint(req_path, cmd):
              "environment": {key: os.environ.get(key, "") for key in
                              ("PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_CONFIG_FILE", "VIRTUAL_ENV")}}
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _bootstrap_receipt_path() -> pathlib.Path:
+    return _go().DRIVE_ROOT / "state" / "git_bootstrap.json"
+
+
+def _bootstrap_receipt() -> dict:
+    from ouroboros.utils import read_json_dict
+    return read_json_dict(_bootstrap_receipt_path()) or {}
+
+
+def _forget_bootstrap_receipt() -> None:
+    # Invalidation must finish before a tree mutation can reuse the same HEAD.
+    _bootstrap_receipt_path().unlink(missing_ok=True)
+
+
+def _bootstrap_snapshot() -> Optional[dict]:
+    """Current clean checkout and dependency identity; unknown/active work is no proof.
+
+    Transaction markers (including corrupt ones) force the ordinary bootstrap.
+    Reads are addressed; no history or remote fetch participates in the proof.
+    The receipt this snapshot is compared with is written only by a successful
+    import smoke; a failed or interrupted smoke certifies no later boot.
+    """
+    import json
+    from supervisor.update_merge import UPDATE_TX_MARKER_NAME
+    from ouroboros.body_adoption import holds_checkout
+
+    try:
+        repo, drive = _go().REPO_DIR, _go().DRIVE_ROOT
+        if (_go()._bootstrap_pin_marker_path().exists() or _go()._update_intent_marker_path().exists()
+                or holds_checkout(drive, repo)):
+            return None
+        git_dir = _go()._git_dir()
+        if git_dir.is_file():
+            rc, path, _ = _go().git_capture(["git", "rev-parse", "--absolute-git-dir"])
+            if rc or not path:
+                return None
+            git_dir = pathlib.Path(path.strip())
+        if any((git_dir / name).exists() for name in
+               (_go().BOOTSTRAP_PIN_MARKER_NAME, _go().UPDATE_INTENT_MARKER_NAME,
+                UPDATE_TX_MARKER_NAME, "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                "rebase-apply", "rebase-merge", "sequencer")):
+            return None
+        campaign_path = drive / "state" / "evolution_campaign.json"
+        if campaign_path.exists():
+            campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+            tx = campaign.get("active_transaction")
+            if campaign.get("status") in {"active", "paused"} and isinstance(tx, dict) and not tx.get("commit_sha"):
+                return None
+        rc, dirty, _ = _go().git_capture(["git", "status", "--porcelain"])
+        if rc or dirty:
+            return None
+        rc, head, _ = _go().git_capture(["git", "rev-parse", "HEAD"])
+        if rc or not head:
+            return None
+        rc, branch, _ = _go().git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        if rc or not branch:
+            return None
+        cmd, _, requirements = _dependency_install_plan(repo)
+        return {"schema_version": 1, "repo": str(repo.resolve()), "head": head.strip(),
+                "branch": branch.strip(), "dependencies": _dependency_fingerprint(requirements, cmd)}
+    except Exception:
+        log.debug("Bootstrap identity unavailable; running the ordinary checks", exc_info=True)
+        return None

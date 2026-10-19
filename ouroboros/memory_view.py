@@ -1,9 +1,9 @@
 """The resident memory view of the acting mind: one render for every role.
 
 The view replaces the old dialogue history and chat tail in a request. Block B carries my
-story (``## My story``); block C the live part (``## Marks I keep in view``,
-``## Live rooms`` and ``## This room (<label>) — head <n>``). Which parts a role sees is
-one ``ViewSpec``: ``ROLE_DEFAULTS`` by role (Main, a root and a Project task are the
+story (``## My story``); block C the live part (this room's ``## Late review feedback (host)``,
+``## Marks I keep in view``, ``## Live rooms`` and ``## This room (<label>) — head <n>``).
+Which parts a role sees is one ``ViewSpec``: ``ROLE_DEFAULTS`` by role (Main, a root and a Project task are the
 integrator; consciousness; Presence; a delegated child; a nanny), or an explicit spec a
 task carries under ``memory_view``. The current room is the task's own room
 (``dialogue_evidence.own_room_chat``); outside a Project and Main it is Main (a wake's too:
@@ -44,7 +44,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, LEGACY_ROOM_LABEL, legacy_frontier, row_lineage
-from ouroboros.chronicle_store import CHILD_DRAFT_RIGHT, ChronicleStore, draft_signer, source_time_span
+from ouroboros.chronicle_store import (CHILD_DRAFT_RIGHT, DELEGATED_FOCUS_ROLES, ChronicleStore, draft_signer,
+                                       is_late_review_mark, source_time_span)
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
@@ -60,9 +61,9 @@ LIVE_ROOMS = ("none", "lines", "lines_with_words")
 MARKS = ("all", "room_and_global", "none")
 LEGACY_FILE = "memory/dialogue_blocks.json"
 # A task's typed host facts its lane-2 line names by type and address, never by text or JSON:
-# the late review the owner did not see, a failed or uncertain send, a cancel receipt (it may
-# carry an unreviewed model draft), a custody notice and a terminal incident (the old passive
-# view showed each of them).
+# the late review the owner did not see (old task-acceptance rows only; nothing writes them
+# now), a failed or uncertain send, a cancel receipt (it may carry an unreviewed model draft),
+# a custody notice and a terminal incident (the old passive view showed each of them).
 TYPED_HOST_FACTS: Mapping[str, str] = MappingProxyType({
     "acceptance_late_settlement": "late review evidence", "presence_delivery": "delivery",
     "cancel_receipt": "cancel receipt", "custody_notice": "custody notice", "terminal_incident": "terminal incident"})
@@ -432,30 +433,13 @@ Entry = Tuple[Dict[str, Any], Dict[str, Any], int]
 
 
 def _row_texts(root: pathlib.Path, entries: List[Entry]) -> Dict[str, Dict[str, Any]]:
-    """``row_sha256 -> row`` read by address: each hinted generation once, a missed hint by search."""
-    wanted: Dict[str, Dict[int, str]] = {}
-    for address, _meta, _pos in entries:
-        hint = _mapping(address.get("hint"))
-        if type(hint.get("line")) is int:
-            wanted.setdefault(str(hint.get("gen") or ""), {})[hint["line"]] = address["row_sha256"]
-    paths = {sig: path for path, sig in chat_chain.generation_signatures(root)}
-    rows: Dict[str, Dict[str, Any]] = {}
-    for gen, lines, last in ((gen, lines, max(lines)) for gen, lines in wanted.items()):  # max once, not per line
-        if gen not in paths:
-            continue
-        with paths[gen].open("rb") as handle:
-            for number, raw in enumerate(handle, 1):
-                sha = lines.get(number)
-                row = chat_chain._decoded(raw) if sha else None
-                if row is not None and chat_chain.source_row_id(row) == sha:
-                    rows[sha] = row
-                if number >= last:
-                    break
+    """Read exactly the selected row identities from the dialogue store."""
+    rows = {}
     for address, _meta, _pos in entries:
         if address["row_sha256"] not in rows:
-            found, _status = chat_chain.resolve_row(root, address)
-            if found is not None:
-                rows[address["row_sha256"]] = found
+            row, _status = chat_chain.resolve_row(root, address)
+            if row is not None:
+                rows[address["row_sha256"]] = row
     return rows
 
 
@@ -509,6 +493,12 @@ def _task_line(root_id: str, group: List[Tuple[Entry, Dict[str, Any]]], texts: M
                     if entry[1].get("summary_kind") == "terminal_result_projection"
                     and str(entry[1].get("task_id") or "") in children)
     parts = [status]
+    for entry, _cls in group:
+        row = texts.get(entry[0]["row_sha256"]) or {}
+        if entry != chosen and isinstance(row.get("presence_recovery"), Mapping):
+            # A later canonical terminal owns status, but does not erase the earlier
+            # source-bound observation. This history is not a new current verdict.
+            parts.append(f"observation at {row.get('ts') or 'unknown time'}: " + _indented(render_row_text(row)).lstrip())
     if children:
         parts.append(f"children {len(children)}" + (" (" + ", ".join(f"{name} {n}" for name, n in sorted(tally.items()))
                                                     + ")" if tally else ""))
@@ -672,8 +662,26 @@ def _mark_target(target: Any) -> str:
     return f"source {target.get('path') or target.get('kind') or 'not recorded'}{location}"
 
 
+def _late_review_entry(mark: Mapping[str, Any], label: Callable[..., str]) -> Dict[str, Any]:
+    """A host-kept late review (``late_review_marks``): its words, when it settled, its full source and its release."""
+    review, target = _mapping(mark.get("review")), _mapping(mark.get("target_ref"))
+    read = review.get("source_read")
+    ref = {key: target[key] for key in ("kind", "root", "path", "size", "sha256", "task_id") if key in target}  # verified on read
+    reader = (f"{read.get('tool')}({json.dumps(read.get('arguments') or {}, ensure_ascii=False, sort_keys=True)})"
+              if isinstance(read, Mapping) else
+              f"memory_read(source_ref={json.dumps(ref, ensure_ascii=False, sort_keys=True)})")
+    return {"id": mark["id"], "scope": "room", "room": label(mark.get("room_id")), "text": str(mark.get("text") or ""),
+            "by": "host", "date": _minute(mark.get("ts")).split(" ")[0], "target": _mark_target(target), "quote": "",
+            "late_review": {"task_id": str(review.get("task_id") or ""), "source": reader,
+                            "sha256": str(target.get("sha256") or "")}}
+
+
 def _capture_marks(store: ChronicleStore, spec: ViewSpec, label: Callable[..., str]) -> List[Dict[str, Any]]:
-    """The acting marks a role keeps in view: every room's, or this room's and the global ones."""
+    """The acting marks a role keeps in view: every room's, or this room's and the global ones.
+
+    Late review feedback the host keeps in view belongs to the room of its work whatever the role's
+    mark scope: that room's view and consciousness hold it, another room's turn never does.
+    """
     if spec.marks == "none":
         return []
     marks = store.active_marks(None)
@@ -681,6 +689,10 @@ def _capture_marks(store: ChronicleStore, spec: ViewSpec, label: Callable[..., s
         marks = [mark for mark in marks if mark.get("scope") == "global" or str(mark.get("room_id")) == spec.room_id]
     entries = []
     for mark in marks:
+        if is_late_review_mark(mark):
+            if spec.role == "consciousness" or str(mark.get("room_id")) == spec.room_id:
+                entries.append(_late_review_entry(mark, label))
+            continue
         author = _mapping(mark.get("author"))
         by = _mapping(author.get("focus")).get("role") or (
             "the old dialogue writer" if author.get("kind") == "legacy_helper" else author.get("kind") or "not recorded")
@@ -924,7 +936,26 @@ def _note_lines(notes: List[Dict[str, Any]]) -> List[str]:
     return [f"note {note['id']} by {note['role']} on {note['date']}\n{_indented(note['text'])}" for note in notes]
 
 
-def _marks_text(marks: Tuple[Dict[str, Any], ...]) -> str:
+_LATE_REVIEW_INTRO = ("Reviewer feedback that settled after its work ended, kept here by the host for this room "
+                      "until {who}. It is advice, not a decision or a veto; releasing it says it was dealt with, "
+                      "not that it was agreed with.")
+
+
+def _late_reviews_text(marks: List[Dict[str, Any]], role: str) -> str:
+    """This room's late reviews; a delegated helper reads who releases them (``chronicle_store``), not a call it cannot make."""
+    helper = role in DELEGATED_FOCUS_ROLES
+    who = ("the integrating mind releases it; as a delegated helper I report what matters in it" if helper
+           else "I release it with my reason")
+    lines = ["## Late review feedback (host)", "", _LATE_REVIEW_INTRO.format(who=who)]
+    for mark in marks:
+        late = mark["late_review"]
+        release = "" if helper else f"; memory_mark(release_id='{mark['id']}', reason=…)"
+        lines += [f"- [{mark['room']}; kept since {mark['date']}] " + _indented(mark["text"]).lstrip(),
+                  f"{INDENT}full source (sha256 {late['sha256'][:12]}): {late['source']}{release}"]
+    return "\n".join(lines)
+
+
+def _marks_text(marks: List[Dict[str, Any]]) -> str:
     lines = ["## Marks I keep in view", ""]
     for mark in marks:
         lines.append(f"- [{mark['scope']}; {mark['room']}] " + _indented(mark["text"]).lstrip()
@@ -993,8 +1024,11 @@ def render_room(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW, *, 
                          f"room, newest first; this room is chat_id {room['room_id']}.")
         return "\n\n".join(part for part in parts if part)
     gone = dict(level.addressed)
-    if snapshot.marks:
-        parts.append(_marks_text(snapshot.marks))
+    late = [mark for mark in snapshot.marks if mark.get("late_review")]
+    if late:
+        parts.append(_late_reviews_text(late, snapshot.spec.role))
+    if len(late) < len(snapshot.marks):
+        parts.append(_marks_text([mark for mark in snapshot.marks if not mark.get("late_review")]))
     if snapshot.live_rooms:
         parts.append(_live_text(snapshot.live_rooms, gone))
     if room:

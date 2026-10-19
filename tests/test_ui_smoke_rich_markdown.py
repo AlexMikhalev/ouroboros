@@ -7,7 +7,10 @@ import textwrap
 
 import pytest
 
+from ouroboros.test_evidence import diagnostic_directory
+
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
+from tests.ui_console_errors import record_console_errors, record_failed_loads, unexpected_console_errors
 
 
 @pytest.mark.ui_browser
@@ -104,9 +107,8 @@ def test_ui_browser_marked_rich_markdown_and_security(direct_server_with_data): 
             browser = pw.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 1280, "height": 800})
             page = context.new_page()
-            console_errors: list[str] = []
-            page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
-            page.on("pageerror", lambda error: console_errors.append(str(error)))
+            console_errors = record_console_errors(page)
+            failed_loads = record_failed_loads(page)
             page.add_init_script(
                 """(() => {
                     window.__copiedCode = '';
@@ -274,10 +276,10 @@ def test_ui_browser_marked_rich_markdown_and_security(direct_server_with_data): 
                 assert "<mark>mark</mark>" in literal
                 assert "<sub>sub</sub>" in literal
                 rich.locator("h1.md-h1").scroll_into_view_if_needed()
-                page.screenshot(path=str(data_dir.parent / "rich-markdown-top.png"), full_page=True)
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "rich-markdown") / "rich-markdown-top.png"), full_page=True)
                 rich.locator(".md-chart").scroll_into_view_if_needed()
-                page.screenshot(path=str(data_dir.parent / "rich-markdown-bottom.png"), full_page=True)
-                assert console_errors == []
+                page.screenshot(path=str(diagnostic_directory(data_dir.parent, "rich-markdown") / "rich-markdown-bottom.png"), full_page=True)
+                assert unexpected_console_errors(console_errors, failed_loads) == []
             finally:
                 browser.close()
     except PlaywrightError as exc:

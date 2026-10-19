@@ -1,4 +1,7 @@
-"""The packaged app registers tools from an explicit module list, not package discovery."""
+"""A frozen interpreter registers tools from an explicit module list, not package discovery.
+
+Shipped builds freeze only the launcher and run ``server.py`` unfrozen, so their
+registry still discovers tool modules by package scan."""
 from __future__ import annotations
 
 import pathlib
@@ -35,3 +38,9 @@ def test_the_frozen_list_is_what_registers_it(tmp_path: pathlib.Path, monkeypatc
 def test_package_discovery_and_the_frozen_list_agree_on_review_change(tmp_path: pathlib.Path) -> None:
     names = {schema["function"]["name"] for schema in _registry(tmp_path).schemas()}
     assert "review_change" in names
+
+
+def test_a_frozen_build_registers_skill_source_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    names = {schema["function"]["name"] for schema in _registry(tmp_path).schemas()}
+    assert {"skill_sources", "skill_search", "skill_install", "skill_update"} <= names

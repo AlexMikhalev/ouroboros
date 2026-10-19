@@ -339,6 +339,121 @@ test('a settled gesture ends only the scrolls it owed, not those a newer gesture
     assert.equal(f.reading.stick, true, 'End\'s own settle still ends what it owed');
 });
 
+test('a resize while a downward key still animates neither writes under it nor ends it; it lays out once the scrolls rest', t => {
+    const f = fixture(t);
+    const body = f.feed.ownerDocument.body;
+    f.reading.bindGestures(() => {});
+    f.reading.cancel();
+    Object.assign(f.feed, { scrollHeight: 1000, scrollTop: 100, clientHeight: 400 });
+    f.gesture({ type: 'pointerdown', target: { inFeed: true } });
+    // End has only begun to move the feed when an image loads; the composer grows near its end.
+    f.gesture({ type: 'keydown', key: 'End', target: body }); f.feed.scrollTop = 150; f.frame();
+    const restored = f.restored();
+    f.reading.reflow();
+    for (const top of [400, 580]) { f.feed.scrollTop = top; f.reading.scroll(); f.frame(); }
+    f.reading.reflow();
+    assert.deepEqual([f.feed.scrollTop, f.restored()], [580, restored], 'nothing writes under the animated scroll: a write stops it short');
+    f.feed.scrollTop = 600; f.reading.scroll();
+    assert.equal(f.reading.stick, true, 'its own last scroll still reaches the live edge: follow');
+    f.feed.scrollHeight = 1040;
+    f.gesture({ type: 'scrollend' }); f.frame();
+    assert.equal(f.feed.scrollTop, 600, 'not before a frame passes without another scroll');
+    f.frame();
+    assert.equal(f.feed.scrollTop, 1040, 'once its scrolls rest, the resize lays out at the live edge it follows');
+    f.feed.scrollTop = 300; f.reading.scroll();
+    assert.equal(f.reading.stick, true, 'the resize is no part of the gesture: a later scroll decides nothing');
+    // An engine without scrollend: once the owed scrolls rest, the resize ends them.
+    f.gesture({ type: 'keydown', key: 'PageUp', target: body }); f.feed.scrollTop = 500; f.frame();
+    f.gesture({ type: 'keydown', key: 'PageDown', target: body }); f.feed.scrollTop = 520; f.frame();
+    f.feed.scrollTop = 560; f.reading.scroll();
+    f.reading.reflow(); f.frame(); f.frame();
+    assert.equal(f.restored(), restored + 1, 'resting short of the live edge, the place is kept');
+    f.feed.scrollTop = 640; f.reading.scroll();
+    assert.equal(f.reading.stick, false, 'a resize-driven scroll after it decides nothing');
+});
+
+test('a resize that waited on the owed scrolls keeps where they end; at rest it keeps the place read before it', t => {
+    const previous = globalThis.requestAnimationFrame, frames = [];
+    globalThis.requestAnimationFrame = callback => frames.push(callback);
+    t.after(() => { globalThis.requestAnimationFrame = previous; });
+    const frame = () => frames.splice(0).forEach(callback => callback());
+    const heard = new Map(), listen = (type, fn) => heard.set(type, fn);
+    const ownerDocument = { body: {}, documentElement: {}, addEventListener: listen, removeEventListener() {} };
+    const feed = { scrollTop: 100, scrollHeight: 1000, clientHeight: 400, clientWidth: 400, ownerDocument,
+        addEventListener() {}, removeEventListener() {}, contains: node => node === feed || Boolean(node?.inFeed) };
+    // The anchor is the place read: restoring it puts the feed back there.
+    const reading = createChatReadingPosition({ feed, visible: () => true, alive: () => true, ready: () => true,
+        anchors: { capture: () => ({ top: feed.scrollTop }), restore: anchor => { feed.scrollTop = anchor.top; return true; },
+            serialize: () => null }, changed() {}, afterWrite() {}, activity() {}, updateButton() {} });
+    reading.bindGestures(() => {});
+    reading.remember(true);
+    heard.get('pointerdown')({ type: 'pointerdown', target: { inFeed: true } });
+    heard.get('keydown')({ type: 'keydown', key: 'PageDown', target: ownerDocument.body }); feed.scrollTop = 150; frame();
+    feed.clientWidth = 380; reading.reflow(); // the window narrows while PageDown animates
+    for (const top of [300, 450]) { feed.scrollTop = top; reading.scroll(); frame(); }
+    frame(); frame();
+    assert.equal(feed.scrollTop, 450, 'not pulled back to where the resize found the reader');
+    feed.clientWidth = 360; feed.scrollTop = 470; reading.scroll(); // narrowed at rest: its rewrap moved the feed
+    reading.reflow();
+    assert.equal(feed.scrollTop, 450, 'at rest a resize keeps the place read before it');
+});
+
+test('rows are lazy only while the width keeps moving; once it holds, every row is laid out and the place re-applied', t => {
+    const previous = globalThis.requestAnimationFrame, frames = [];
+    globalThis.requestAnimationFrame = callback => frames.push(callback);
+    t.after(() => { globalThis.requestAnimationFrame = previous; });
+    const frame = () => frames.splice(0).forEach(callback => callback());
+    const marks = new Set(), settled = [];
+    const feed = { scrollTop: 100, scrollHeight: 1000, clientHeight: 400, clientWidth: 385, offsetWidth: 400,
+        ownerDocument: {}, addEventListener() {}, removeEventListener() {}, contains: node => node === feed,
+        toggleAttribute: (name, on) => { if (on) marks.add(name); else marks.delete(name); return on; },
+        dispatchEvent: event => { settled.push([event.type, event.bubbles, feed.scrollTop]); return true; } };
+    const width = value => Object.assign(feed, { offsetWidth: value, clientWidth: value ? value - 15 : 0 });
+    // Laying the rows out again at the held width moves the passage; restoring the place puts it back.
+    let restores = 0;
+    const reading = createChatReadingPosition({ feed, visible: () => true, alive: () => true, ready: () => true,
+        anchors: { capture: () => ({ top: 100 }), restore: anchor => { restores++; feed.scrollTop = anchor.top; return true; },
+            serialize: () => null }, changed() {}, afterWrite() {}, activity() {}, updateButton() {} });
+    reading.stick = false; reading.remember(true);
+    const lazy = () => marks.has('data-resizing');
+    feed.clientWidth = 400; reading.reflow();
+    assert.equal(lazy(), false, 'a scrollbar coming or going changes only the content width: no move');
+    width(380); reading.reflow(); frame();
+    assert.equal(lazy(), false, 'one move (a window jump, a layout switch) is laid out at once');
+    for (let i = 0; i < 3; i++) frame();
+    assert.equal(frames.length, 0, 'and nothing keeps counting after it');
+    assert.deepEqual(settled, [], 'nothing was skipped, so nothing waits to be measured');
+    width(360); reading.reflow(); frame();
+    width(340); reading.reflow();
+    assert.equal(lazy(), true, 'the width keeps moving: rows off the screen keep their size');
+    for (let i = 0; i < 6; i++) frame();
+    width(320); reading.reflow(); // the drag goes on: the hold starts again
+    for (let i = 0; i < 11; i++) frame();
+    assert.equal(lazy(), true, 'still within the hold after the last move');
+    feed.scrollTop = 140; // the rows above the passage were laid out at the new width
+    const before = restores;
+    frame();
+    assert.equal(lazy(), false, 'the width held: every row is laid out again');
+    assert.deepEqual([restores - before, feed.scrollTop], [1, 100], 'and the place is re-applied in that same frame');
+    assert.deepEqual(settled, [['ouro:feed-width-settled', true, 100]],
+        'then the rows are announced as laid out, once, for whatever measures them (the answer folds)');
+    for (let i = 0; i < 20; i++) frame();
+    assert.equal(frames.length, 0, 'nothing keeps counting at rest');
+    // A feed hidden and shown again at another width (another room was open) is not a move.
+    width(0); reading.reflow(); frame();
+    width(300); reading.reflow(); frame();
+    assert.equal(lazy(), false);
+    // Following the newest message, the held width lands at the new bottom.
+    reading.stick = true;
+    width(310); reading.reflow(); frame();
+    width(320); reading.reflow();
+    assert.equal(lazy(), true);
+    for (let i = 0; i < 11; i++) frame();
+    feed.scrollHeight = 1300;
+    frame();
+    assert.deepEqual([lazy(), feed.scrollTop], [false, 1300]);
+});
+
 test('reading inside a box ends what an earlier feed gesture still owes, not a scrollbar still held', t => {
     const f = fixture(t);
     f.feed.ownerDocument.defaultView = { getComputedStyle: node => ({ overflowY: node.overflowY || 'visible' }) };

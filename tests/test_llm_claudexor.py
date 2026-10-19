@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from copy import deepcopy
 import gzip
 import hashlib
@@ -83,7 +84,6 @@ def test_display_redacts_typed_details_without_mutating_custody():
     ("invalid_request", 400, True, "provider_outcome_unknown", False, "", "context_length_exceeded"),
 ])
 def test_vendor_facts_reach_shared_readers_without_changing_wrapper_custody(code, status, unknown, kind, retry, wait, vendor):
-    from ouroboros.context_compaction import _typed_context_overflow
     from ouroboros.llm_attempt import _is_structured_context_overflow_exception
     from ouroboros.loop_llm_call import classify_llm_exception
     from ouroboros.model_wait import model_wait_reason
@@ -95,7 +95,6 @@ def test_vendor_facts_reach_shared_readers_without_changing_wrapper_custody(code
     assert error.display_message and classify_llm_exception(error) == classified
     assert classified.kind == kind and classified.retry_same_request is retry
     assert model_wait_reason(error) == wait
-    assert _typed_context_overflow(error) is (kind == "context_overflow")
     assert _is_structured_context_overflow_exception(error) is (kind == "context_overflow")
     wrapper = "model_outcome_unknown" if unknown else code
     assert error.code == wrapper and error.problem == problem
@@ -106,7 +105,7 @@ def test_vendor_facts_reach_shared_readers_without_changing_wrapper_custody(code
     expected_type = vendor.strip() if not unknown and code in {"provider_failed", "invalid_request"} and isinstance(vendor, str) else ""
     assert facts[2] == (expected_type or "ClaudexorModelError")
     typed = transport.ClaudexorModelError({"code": "context_length_exceeded", "message": "Controlled refusal"})
-    assert _typed_context_overflow(typed) and classify_llm_exception(typed).kind == "context_overflow"
+    assert classify_llm_exception(typed).kind == "context_overflow"
 
 
 def result(*, outcome="completed", cash=None, knowledge="unknown", route=None, problem=None):
@@ -1105,38 +1104,40 @@ def test_caller_control_before_create_proves_no_dispatch(setup):
 @pytest.mark.parametrize("phase", ["upload", "ack"])
 def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     name = "upload_model_request" if phase == "upload" else "acknowledge_model_result"
     original = getattr(gateway, name)
     original_close = gateway.close
 
     def blocked(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
-        assert not closed.is_set()
+        entered.set_result(None)
+        release.wait()
+        assert not closed.done()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     setattr(gateway, name, blocked)
     gateway.close = close
 
     async def run():
         task = asyncio.create_task(client.chat_async([], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            # Witness the I/O owner directly, without another executor waiter or
+            # a two-second performance requirement on request preparation.
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()  # also unblock the owner if the scenario fails
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.closed == 1
     if phase == "upload":
         assert not gateway.creates and ledger(root)[-1]["state"] == "released"
@@ -1147,36 +1148,36 @@ def test_async_cancellation_preserves_io_ownership_outside_polling(setup, phase)
 
 def test_async_cancellation_leaves_io_owner_to_cancel_and_close(setup):
     root, gateway, client = setup
-    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    entered, release, closed = Future(), threading.Event(), Future()
     gateway.pending = True
     original = gateway.get_model_operation
     original_close = gateway.close
 
     def read(*args, **kwargs):
-        entered.set()
-        assert release.wait(2)
+        entered.set_result(None)
+        release.wait()
         return original(*args, **kwargs)
 
     def close():
         original_close()
-        closed.set()
+        closed.set_result(None)
 
     gateway.get_model_operation, gateway.close = read, close
 
     async def run():
         task = asyncio.create_task(client.chat_async([{"role": "user", "content": "hi"}], MODEL))
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not closed.is_set()
-        release.set()
-        assert await asyncio.to_thread(closed.wait, 2)
+        try:
+            await asyncio.wrap_future(entered)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not closed.done()
+        finally:
+            task.cancel()
+            release.set()
+        await asyncio.wrap_future(closed)
 
-    try:
-        asyncio.run(run())
-    finally:
-        release.set()
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
 

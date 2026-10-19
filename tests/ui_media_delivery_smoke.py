@@ -8,6 +8,7 @@ import pathlib
 import pytest
 
 from ouroboros.artifacts import store_chat_media_bytes
+from tests.ui_console_errors import record_console_errors, record_failed_loads, unexpected_console_errors
 
 
 def run_media_delivery_smoke(direct_server_with_data):
@@ -74,12 +75,8 @@ def run_media_delivery_smoke(direct_server_with_data):
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             try:
-                console_errors = []
-                page.on(
-                    "console",
-                    lambda message: console_errors.append(message.text)
-                    if message.type == "error" else None,
-                )
+                console_errors = record_console_errors(page, page_errors=False)
+                failed_loads = record_failed_loads(page)
                 page.add_init_script("""(() => {
                     const NativeWebSocket = window.WebSocket;
                     window.__mediaTestSockets = [];
@@ -149,12 +146,23 @@ def run_media_delivery_smoke(direct_server_with_data):
                 assert page.locator(
                     '[data-media-group="assistant:photos:live-ws-photo"] .chat-photo'
                 ).count() == 1
-                followed = page.evaluate("""() => {
+                # The photo's load reflows the feed a frame later, and the followed feed re-pins then.
+                page.wait_for_function("""() => {
                     const messages = document.querySelector('#chat-messages');
-                    return messages.scrollHeight - messages.scrollTop - messages.clientHeight;
-                }""")
-                assert followed <= 6, followed
+                    const photo = document.querySelector('[data-media-group="assistant:photos:live-ws-photo"] .chat-photo');
+                    return photo.complete && messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 6;
+                }""", timeout=10_000)
 
+                # Only a reader's gesture ends following (chat_reading_position.js); a programmatic
+                # scroll alone leaves a later layout free to re-pin the feed. The reader turns back
+                # with the wheel, then the test places them exactly 300 px above the newest message.
+                page.evaluate("""() => document.querySelector('#chat-messages').addEventListener(
+                    'wheel', () => { window.__turnedBack = true; }, {once: true, passive: true})""")
+                feed = page.locator('#chat-messages').bounding_box()
+                page.mouse.move(feed["x"] + feed["width"] / 2, feed["y"] + feed["height"] / 2)
+                page.mouse.wheel(0, -120)
+                page.wait_for_function("() => window.__turnedBack", timeout=10_000)
+                page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
                 away = page.evaluate("""() => {
                     const messages = document.querySelector('#chat-messages');
                     messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight - 300);
@@ -353,7 +361,7 @@ def run_media_delivery_smoke(direct_server_with_data):
                 }, computed
 
                 page.wait_for_timeout(100)
-                assert console_errors == []
+                assert unexpected_console_errors(console_errors, failed_loads) == []
             finally:
                 browser.close()
     except PlaywrightError as exc:

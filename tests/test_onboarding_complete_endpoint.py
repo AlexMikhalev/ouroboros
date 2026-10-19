@@ -135,8 +135,14 @@ def onboarding(monkeypatch, tmp_path):
         return payload
 
     monkeypatch.setattr(gw_onboarding, "_read_harness_snapshot", _snapshot)
-    monkeypatch.setattr(config, "apply_settings_to_env",
-                        lambda settings: calls["env"].append(dict(settings)))
+    original_apply_settings = config.apply_settings_to_env
+
+    def apply_settings(settings, *, environ=None):
+        if environ is not None:
+            return original_apply_settings(settings, environ=environ)
+        calls["env"].append(dict(settings))
+
+    monkeypatch.setattr(config, "apply_settings_to_env", apply_settings)
 
     def _supervisor(_request, _settings):
         calls["supervisor"] += 1
@@ -147,6 +153,9 @@ def onboarding(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gw_settings, "_start_supervisor_if_needed_for_request", _supervisor)
     monkeypatch.setattr(gw_settings, "_apply_settings_save_side_effects", _side_effects)
+    # The starter installer runs in the background after a completed save (tests below).
+    monkeypatch.setattr(gw_onboarding, "after_onboarding",
+                        lambda drive_root, ids: calls.setdefault("starter", []).append((drive_root, ids)))
 
     app = Starlette(routes=[
         Route("/api/onboarding/subagents/preview",
@@ -536,10 +545,10 @@ def test_local_only_preview_materializes_only_local_routes_without_daemon_read(o
     items = response.json()["available_subagents"]["items"]
     targets = [row["route"]["target_id"] for row in items if not row.get("review_eligible")]
     assert targets == ["owner-main (local)", "owner-light (local)"]
-    # The factory pool of a local-only install is its one reachable model, run three
-    # times (I3-1), never a remote panel.
+    # The factory pool of a local-only install is its one reachable model, run once
+    # (I3-1 after owner Q5=A: copies of it would only multiply the cost), never a remote panel.
     reviewers = [row for row in items if row.get("review_eligible") is True]
-    assert [row["minted_from"] for row in reviewers] == ["factory_default"] * 3
+    assert [row["minted_from"] for row in reviewers] == ["factory_default"]
     assert {row["route"]["target_id"] for row in reviewers} <= {"owner-main", "owner-main (local)"}
     assert onboarding.calls["snapshot"] == 0
     assert not onboarding.settings_path.exists()
@@ -1577,3 +1586,4 @@ def test_an_unavailable_harness_row_with_a_verified_named_profile_is_routable():
     routable, refused = subscription_routable_harnesses(snapshot)
     assert "agy" not in routable
     assert refused["agy"] == "the engine reports it unavailable"
+

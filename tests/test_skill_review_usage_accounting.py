@@ -88,6 +88,8 @@ def test_legacy_subscription_replay_treats_missing_review_attribution_as_empty(d
     # in a scratch root, its review keys removed), imported by this root's
     # one-time import.
     scratch = tmp_path / "scratch"
+    from ouroboros.task_results import write_task_result
+    write_task_result(scratch, "root-old", "running", root_task_id="root-old")  # the session's real root
     session_id = ua.record_subscription_session(
         "session-before-attribution", drive_root=scratch, route="claude",
         model="claude-fable-5", task_id="task-old", root_task_id="root-old",

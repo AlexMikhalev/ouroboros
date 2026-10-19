@@ -1,15 +1,20 @@
 """Real parent/child writes and concurrent runs stay on disposable roots."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
+from ouroboros.platform_layer import kill_process_tree
 from ouroboros.preflight_runner import _preflight_env
 from ouroboros.settings_defaults import settings_env_keys
 from ouroboros.test_environment import isolated_environment, settings_keys
+from tests.group_run import kill_survivors, run_in_group
 
 REPO = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.serial
@@ -181,7 +186,7 @@ def test_safe_test_refuses_a_disposable_root_inside_the_checkout(tmp_path):
 
 
 def test_safe_test_retains_its_new_root_and_keeps_the_command_status(tmp_path):
-    """Exit is no proof that descendants are gone: the launcher never deletes its tree."""
+    """Unknown command data remains even after reap; only declared scratch is released."""
     launcher = [sys.executable, "-I", "-S", str(REPO / "scripts" / "safe_test.py")]
     probe = [sys.executable, "-c", "import os, pathlib, sys; "
              "pathlib.Path(os.environ['HOME'], 'probe').write_text('kept'); "
@@ -197,6 +202,96 @@ def test_safe_test_retains_its_new_root_and_keeps_the_command_status(tmp_path):
     assert (root / "home" / "probe").read_text() == "kept"
     # Handed down so each pytest controller claims its own basetemp beneath it.
     assert Path(result.stdout.splitlines()[-1]) == root
+
+
+# The command keeps a child in a session of its own, as tests/group_run.py keeps node's runner.
+# It records the SIGTERM it gets; an "obedient" command then exits, a "stubborn" one keeps running,
+# so only the SIGKILL that follows can stop it.
+_TREE = """\
+import os, pathlib, signal, subprocess, sys, time
+own = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], **own)
+def term(*_):
+    pathlib.Path(sys.argv[1] + ".term").write_text("TERM")
+    if sys.argv[2] == "obedient":
+        os._exit(0)
+if os.name != "nt":
+    signal.signal(signal.SIGTERM, term)
+pathlib.Path(sys.argv[1]).write_text(f"{os.getpid()} {child.pid}")
+time.sleep(600)
+"""
+_LAUNCHER = [sys.executable, "-I", "-S", str(REPO / "scripts" / "safe_test.py")]
+
+
+def _final_root(stderr):
+    """Exactly one final line names the launcher's root, and it is the last one."""
+    lines = stderr.splitlines()
+    final = [line for line in lines if line.startswith(("SAFE_TEST_RETAINED ", "SAFE_TEST_RELEASED "))]
+    assert len(final) == 1 and lines[-1] == final[0], stderr
+    return final[0].split(" ", 1)
+
+
+def _recorded_tree(path, within=30.0):
+    deadline = time.monotonic() + within
+    while not (path.exists() and len(path.read_text(encoding="utf-8").split()) == 2):
+        assert time.monotonic() < deadline, "the command never recorded its tree"
+        time.sleep(0.05)
+    return [int(pid) for pid in path.read_text(encoding="utf-8").split()]
+
+
+def test_safe_test_timeout_stops_the_whole_tree_and_exits_124(tmp_path):
+    """The deadline reaches a child outside the command's group and a command deaf to SIGTERM."""
+    pids = tmp_path / "pids"
+    result = run_in_group(_LAUNCHER + ["--temp-parent", str(tmp_path), "--timeout", "3", "--",
+                                       sys.executable, "-c", _TREE, str(pids), "stubborn"], cwd=REPO, timeout=120)
+    survivors = kill_survivors(_recorded_tree(pids))
+    assert result.returncode == 124, result.stderr
+    assert "SAFE_TEST_TIMEOUT after 3s" in result.stderr
+    # Teardown was confirmed, so the declared scratch went even on this red outcome.
+    assert _final_root(result.stderr)[0] == "SAFE_TEST_RELEASED", result.stderr
+    if sys.platform != "win32":  # the graceful SIGTERM came before the SIGKILL that stopped it
+        assert (tmp_path / "pids.term").read_text(encoding="utf-8") == "TERM"
+    assert not survivors
+
+
+def test_safe_test_timeout_keeps_a_finished_command_status(tmp_path):
+    result = run_in_group(_LAUNCHER + ["--temp-parent", str(tmp_path), "--timeout", "60", "--",
+                                       sys.executable, "-c", "import sys; sys.exit(7)"], cwd=REPO, timeout=120)
+    assert result.returncode == 7, result.stderr
+    assert "SAFE_TEST_TIMEOUT" not in result.stderr and _final_root(result.stderr)
+    refused = run_in_group(_LAUNCHER + ["--timeout", "0", "--", sys.executable, "-c", "pass"],
+                           cwd=REPO, timeout=120)
+    assert refused.returncode == 2 and "positive number of seconds" in refused.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("stop", ["SIGTERM", "SIGINT"])
+def test_safe_test_forwards_interrupt_then_reaps_the_whole_tree(tmp_path, stop):
+    """INT lets the root finish; TERM requests tree stop; both reap detached children."""
+    stop = getattr(signal, stop)
+    pids = tmp_path / "pids"
+    launcher = subprocess.Popen(_LAUNCHER + ["--temp-parent", str(tmp_path), "--timeout", "600", "--",
+                                             sys.executable, "-c", _TREE, str(pids), "obedient"],
+                                cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+    tree = []
+    try:
+        tree = _recorded_tree(pids)
+        os.kill(launcher.pid, stop)
+        os.kill(launcher.pid, stop)  # a repeated signal cannot cut the teardown short
+        _, stderr = launcher.communicate(timeout=60)
+    finally:
+        if launcher.poll() is None:
+            kill_process_tree(launcher)
+            launcher.wait()
+        survivors = kill_survivors(tree)  # a launcher that failed to stop the tree must not leave it behind
+    assert launcher.returncode == 128 + stop, stderr
+    assert _final_root(stderr)[0] == "SAFE_TEST_RELEASED", stderr
+    if stop == signal.SIGTERM:
+        assert (tmp_path / "pids.term").read_text(encoding="utf-8") == "TERM"
+    else:
+        assert not (tmp_path / "pids.term").exists(), "Ctrl-C was incorrectly translated to TERM"
+    assert not survivors
 
 
 def _live_conftest():
@@ -323,7 +418,8 @@ def test_every_pytest_process_takes_a_short_sibling_session_root(tmp_path, mode)
     (probe / "session_probe.py").write_text(_SESSION_PROBE, encoding="utf-8")
     # Under the launcher its root is the parent; bare pytest keeps an explicitly chosen TMPDIR.
     selected = {"OUROBOROS_TEST_TEMP_ROOT": str(parent)} if mode == "launcher" else {"TMPDIR": str(parent)}
-    env = _nested_env(PYTHONPATH=str(probe), SESSION_PROBE_OUT=str(out), **selected)
+    # Two real workers are the scenario, so this child is explicitly allocated two slots.
+    env = _nested_env(PYTHONPATH=str(probe), SESSION_PROBE_OUT=str(out), OURO_TEST_WORKER_BUDGET="2", **selected)
     result = subprocess.run([sys.executable, "-m", "pytest", _NODE, "-o", "addopts=", "-q",
                              "-n", "2", "-p", "session_probe"],
                             cwd=REPO, env=env, text=True, capture_output=True, timeout=300)

@@ -25,7 +25,7 @@ the durable ``ended`` detail names the rail that expired — the bound's own
 window closed first. Interactive progress notes omit cancellation promises;
 direct-turn Stop uses its existing typed control and wakes the same sleep.
 An eligible unknown outcome (``new_generation_after_unknown``; its charge is disclosed)
-follows the same order on every turn except inline Presence: configured routes
+follows the same order on every turn, including inline Presence: configured routes
 first, then the upstream-observed continuation inside the same wait bounds.
 Recovery is an owner note for every episode; an
 error-kind change is a note for interactive turns only, because such a turn
@@ -146,13 +146,12 @@ def emit_network_wait_event(
 
 
 def managed_transport_continuation(ctx: Any) -> bool:
-    """Ordinary cognition rejoins its accepted operation under its existing controls."""
-    return bool(ctx is not None and getattr(ctx, "task_id", "")
-                and not inline_presence(ctx))
+    """A running turn rejoins its accepted operation under its existing controls."""
+    return bool(ctx is not None and getattr(ctx, "task_id", ""))
 
 
 def inline_presence(ctx: Any) -> bool:
-    """An inline Presence turn: its unknown outcome ends in its own typed retry refusal."""
+    """An inline Presence turn, which has no owner quota/auth question channel."""
     from ouroboros.dialogue_provenance import is_presence_task
 
     metadata = getattr(ctx, "task_metadata", None)
@@ -165,12 +164,13 @@ def new_generation_after_unknown(ctx: Any, accumulated_usage: Optional[Dict[str,
 
     Typed, never from prose or elapsed time: the receiving call has ended with no usable
     answer and no same-operation rejoin is viable. It is refused for an accepted operation
-    whose READ failed (it may still finish; only it is rejoined), for a round still holding
-    paid repeats, and for inline Presence. It proves nothing about remote computation.
+    whose READ failed (it may still finish; only it is rejoined), and for a round still
+    holding paid repeats. Completed tools stay in the transcript and do not prevent this
+    model call's recovery. It proves nothing about remote computation.
     """
     usage = accumulated_usage if accumulated_usage is not None else (getattr(ctx, "_accumulated_usage", None) or {})
     pending = usage.get("_pending_transport_outcome") or {}
-    return bool(ctx is not None and getattr(ctx, "task_id", "") and not inline_presence(ctx)
+    return bool(ctx is not None and getattr(ctx, "task_id", "")
                 and not isinstance(usage.get(TRANSPORT_DEATHS_KEY), dict)
                 and not pending.get("same_operation_recoverable"))
 
@@ -395,7 +395,8 @@ def reconcile_transport_wait(
         unknown = unknown_again
         if msg_present or (error_kind != "transport_unavailable" and not unknown and not refused):
             return None
-        interactive = bool(getattr(ctx, "is_direct_chat", False))
+        from ouroboros.task_carrier import inline_execution
+        interactive = inline_execution(ctx)
         episode = TransportWaitEpisode(
             wait_cause=error_kind,
             outcome_custody=dict((getattr(ctx, "_accumulated_usage", {}) or {}).get("_pending_transport_outcome") or {}),
@@ -729,18 +730,19 @@ def finalize_now_transport_terminal(
 
 def end_episode_budget(
     episode: TransportWaitEpisode, drive_logs: pathlib.Path, task_id: str, model: str,
+    *, detail: str = "budget_exhausted",
 ) -> None:
-    """Close an active episode when the budget rail fires mid-wait.
+    """Close an active episode when an admission rail fires mid-wait.
 
     A free redial spends $0 itself, but a concurrent consumer (a child, another
-    root) can exhaust the shared budget between redials; the budget terminal
-    then owns the exit and the episode must not be left without its durable
-    ``ended`` row.
+    root) can exhaust the shared budget between redials, or the billing authority
+    can stop reading; that rail then owns the exit and the episode must not be
+    left without its durable ``ended`` row, which names the rail.
     """
     emit_network_wait_event(
         drive_logs, task_id=task_id, phase="ended",
         elapsed_sec=time.monotonic() - episode.started_monotonic,
-        redials=episode.redials, model=model, detail="budget_exhausted",
+        redials=episode.redials, model=model, detail=detail,
     )
 
 
@@ -841,9 +843,16 @@ def provider_terminal_fallback_text(
                 f"after {waited_sec / 60.0:.1f} min. No new summary request was sent. "
                 "Completed work and the original attempt-cost records are preserved.")
     if is_context_overflow:
+        from ouroboros.context_anchor import REFUSED_INPUTS_KEY
+
+        refused = min((int(v) for v in (accumulated_usage.get(REFUSED_INPUTS_KEY) or {}).values() if v), default=0)
+        parts = ", ".join(f"{label} ~{int(tokens):,}" for label, tokens in accumulated_usage.get("_context_refusal_frame") or [])
+        facts = "; ".join(fact for fact in (f"smallest refused request ~{refused:,} tokens" if refused else "",
+                                             f"largest parts: {parts}" if parts else "") if fact)
         return (
             "⚠️ The context exceeded the selected model window; no further provider call was made. "
-            "Any files written so far are preserved in the workspace."
+            "The recovery passes, the configured fallback and a renewed view could not make it fit"
+            f"{f' ({facts})' if facts else ''}. The exact transcript and any files written so far are preserved."
         )
     if is_transport_wait:
         if unknown:

@@ -41,7 +41,7 @@ def late_skill(tmp_path, monkeypatch):
     rows[-1]["reason"] = "full source " * 4000 + "EOF-SKILL-VERDICT"
     result_text = json.dumps(rows)
     behavior = SimpleNamespace(before_wait=lambda: None, text=result_text,
-                               wait=lambda kwargs: release.wait(10), expected_completions=2)
+                               wait=lambda kwargs: release.wait(), expected_completions=2)
     class Slow:
         def chat(self, **kwargs):
             invoke_bound_api_review_paid_stamp()
@@ -58,6 +58,8 @@ def late_skill(tmp_path, monkeypatch):
             settled.set()
     monkeypatch.setattr(custody, "_settle_review_attempt", settle)
     monkeypatch.setattr(custody, "_logical_timeout", lambda *_: .05)
+    from ouroboros.task_results import write_task_result
+    write_task_result(tmp_path, "skill-root", "running", root_task_id="skill-root")  # the child's real root
     def ctx():
         value = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="skill-task")
         value.task_attempt = 1
@@ -112,6 +114,29 @@ def test_current_contract_change_does_not_replace_a_recoverable_api_wave(late_sk
     assert new["review_contract_fingerprint"] == old["review_contract_fingerprint"]
     assert load_review_state(h.root, "late").status == "clean"
     assert len(h.calls) == 2
+
+
+@pytest.mark.parametrize("pool_change", ["disabled_reviewer", "malformed_pool"])
+def test_pool_changes_cannot_rewrite_or_revoke_the_paid_panel(late_skill, monkeypatch, pool_change):
+    from ouroboros.reviewer_slot_config import reviewer_slot_config_error
+    from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
+    h = late_skill
+    set_review_pool(monkeypatch, pool_roster(pool_seat("seat-a", "fake/one"), pool_seat("seat-b", "fake/two")))
+    _handle_review_skill(h.ctx(), skill="late", reviewers=["seat-a"])
+    old = json.loads(h.history.read_bytes().splitlines()[-1])
+    h.release.set()
+    assert h.settled.wait(10)
+    if pool_change == "malformed_pool":
+        monkeypatch.setenv("OUROBOROS_SUBAGENTS", "{broken")
+        monkeypatch.setattr(skill_review, "reviewer_slot_config_error", reviewer_slot_config_error)
+    else:
+        set_review_pool(monkeypatch, pool_roster(pool_seat("seat-a", "fake/one", enabled=False), pool_seat("seat-b", "fake/two")))
+    second = _handle_review_skill(h.ctx(), skill="late", reviewers=["seat-a"])
+    new = json.loads(h.history.read_bytes().splitlines()[-1])
+    assert load_review_state(h.root, "late").status == "clean", second
+    assert new["review_resume_of"] == old["wave_id"] and len(h.calls) == 2
+    assert new["panel"]["pool"] == old["panel"]["pool"]
+    assert new["panel"]["assigned"] == old["panel"]["assigned"] == ["seat-a", "seat-b"]
 
 
 @pytest.mark.parametrize("defect", ["missing", "partial", "tampered", "operation"])
@@ -254,7 +279,7 @@ def test_all_completed_chunks_reaggregate_once_without_a_new_paid_stamp(late_ski
     monkeypatch.setattr(custody, "_logical_timeout",
                         lambda slot, request, meta: 2 if "chunk a" in str(request.messages) else .05)
     h.behavior.expected_completions = 4
-    h.behavior.wait = lambda kwargs: "chunk a" in str(kwargs["messages"]) or h.release.wait(10)
+    h.behavior.wait = lambda kwargs: "chunk a" in str(kwargs["messages"]) or h.release.wait()
     _handle_review_skill(h.ctx(), skill="late")
     old = h.history.read_bytes()
     h.release.set()
@@ -281,7 +306,7 @@ def _seat_a_fails_while_seat_b_is_in_flight(h, monkeypatch, seat_b_error=""):
     def wait(kwargs):
         if kwargs["model"] == "fake/one":
             raise RuntimeError("seat-a: provider HTTP 503")
-        assert h.release.wait(10)
+        assert h.release.wait()
         if seat_b_error:
             raise RuntimeError(seat_b_error)
         return True

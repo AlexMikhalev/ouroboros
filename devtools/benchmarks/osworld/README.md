@@ -6,6 +6,15 @@ still requires a runnable OSWorld checkout plus VM/desktop control
 infrastructure; public verified leaderboard claims require the official
 verification path (the OSWorld 2.0 maintainers run agent code on their side).
 
+Result review uses Required in the template. Both launchers check the executing
+server through `/api/settings`; a local setting cannot configure a remote server.
+The whole-task computer-use bridge produces GUI-input receipts during the task;
+those can qualify review without certifying goal success. `finish_task` stays
+available to select a result after feedback. The step agent predicts an action
+before the external runner executes it: its inner result review cannot judge
+that future GUI effect. Synthetic adapter tests do not establish live deployment
+or historical score parity.
+
 Aligned upstream (pinned; see `ALIGNED_UPSTREAM` in `run_step_agent.py` and
 `METHODOLOGY.md` §0): OSWorld 2.0,
 <https://github.com/xlang-ai/OSWorld-V2> @
@@ -123,8 +132,7 @@ Important step-loop details:
 Important cu_bridge details (`run_cu_bridge_agent.py`):
 
 - **Start the isolated Ouroboros server with `unix_computer_use` ALREADY
-  ENABLED.** The skill declares `net`, so it is NOT in the launcher's native
-  auto-enable class; the server loads enabled+reviewed extensions only at
+  ENABLED.** The server loads enabled+reviewed extensions only at
   startup (`reload_all`). The runner's `_enable_skill` writes `enabled.json`,
   which a server started BEFORE that write will not hot-reload — the skill's
   `ext_*` tools then come back "Not found" and the agent declares the task

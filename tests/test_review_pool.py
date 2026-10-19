@@ -1,14 +1,15 @@
 """The review pool (PR-3, contract §1.1–1.3, §2 F4/F5/F8): the catalog's marked rows ARE the panel.
 
 `OUROBOROS_REVIEWER_SLOTS` lanes are gone as a review surface: every surface — the
-commit gate, plan review, skill review, task acceptance, the author's own wave —
+commit gate, plan review, skill review, the result review, the author's own wave —
 reads ONE builder (``review_pool_slots``) over the enabled catalog rows the owner
 marked ``review_eligible``. A row rides its own identity (``slot_id`` is its
 stored ``subagent_id``), its own delivery (an api row's ``delivery`` field, a
 session always retrieves — F8: never inferred from an actor id) and its own
 effort (row, then a compound slug, then the pool default). A malformed catalog
 is a typed refusal on every reader; a catalog with no marked row is an EMPTY
-pool, a loud configured fact — never a shipped default panel (F4/F5).
+pool, a configured fact every surface reviews on the Main model alone — never a
+shipped default panel (F4/F5).
 """
 
 from __future__ import annotations
@@ -27,6 +28,10 @@ from ouroboros.configured_subagents import (
     roster_handles,
 )
 from ouroboros.review_execution import ReviewRouteKind
+from tests.test_defaults_provenance import _task_start, _write
+from tests.test_defaults_provenance import install as provenance_install
+
+install = provenance_install
 
 
 def _row(subagent_id: str, target: str, *, kind: str = "api_model", effort: str = "", marked: bool = True,
@@ -158,7 +163,196 @@ def test_a_malformed_catalog_raises_on_every_pool_reader_never_a_default_panel(c
             reader()
     assert "not valid JSON" in rsc.reviewer_slot_config_error()
     clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("x", "m/x", marked=False)))
-    assert rsc.review_pool_slots() == [] and rsc.reviewer_slot_config_error() == ""  # empty is not an error
+    # Empty is not an error: it reviews on the Main seat alone.
+    assert [s.slot_id for s in rsc.review_pool_slots()] == ["main"] and rsc.reviewer_slot_config_error() == ""
+
+
+# --- an empty pool: the Main model reviews alone (owner decision B) ------------------------
+
+
+@pytest.mark.parametrize("catalog", ["unmarked", "switched_off", "no_rows", "absent"])
+def test_an_empty_valid_pool_is_one_main_seat_that_reads_and_answers_both_parts(clean_env, catalog):
+    """No enabled marked row (rows unmarked, the marked row switched off, no rows, no
+    catalog) is ONE seat on every pool reader: ``main``, the direct Main row on Main's own
+    model, a native reading seat asked both parts and carrying the caller's slot properties.
+    The catalog's own facts stay: ``review_pool_state`` is ``empty``, ``review_pool_rows`` is
+    empty, and nothing is an error."""
+    from ouroboros.review_ledger import PARTS, seat_parts
+    from ouroboros.tools.review_admission import seat_vectors
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    raw = {"unmarked": _roster(_row("helper", "m/helper", marked=False)),
+           "switched_off": _roster(_row("off", "m/off", enabled=False)),
+           "no_rows": _roster(), "absent": None}[catalog]
+    if raw is not None:
+        clean_env.setenv(SUBAGENTS_SETTING, raw)
+
+    [seat] = rsc.review_pool_slots(role_hint="plan reviewer", timeout_sec=7)
+    assert (seat.slot_id, seat.subagent_id, seat.model) == ("main", "", "openai/gpt-5.6-sol")
+    assert (seat.route, seat.native_retrieval, seat.retrieves) == (ReviewRouteKind.API_CHAT, True, True)
+    assert (seat.role_hint, seat.timeout_sec) == ("plan reviewer", 7)
+    assert seat.effort == rsc.row_effort(rsc.main_review_row()) and seat_parts(seat) == PARTS
+    plan = seat_vectors(rsc.commit_triad_delivery())  # the commit gate's and skill review's reader
+    assert (plan["models"], plan["slot_ids"], plan["retrieves"], plan["parts"]) == (
+        ["openai/gpt-5.6-sol"], ["main"], [True], [PARTS])
+    assert rsc.review_pool_state(raw) == {"state": "empty", "error": ""}
+    assert rsc.review_pool_rows() == [] and rsc.reviewer_slot_config_error() == ""
+
+
+def provider_call(monkeypatch, kwargs: dict) -> tuple:
+    """A review seat's call as the stock client hands it to its transport (``model_waitable``
+    has captured processing by then): model, role, account, processing, local route."""
+    from ouroboros.llm import LLMClient
+
+    seen = {}
+
+    def remote(_client, target, *_args, **_kwargs):
+        seen.update(processing=target.get("processing_preference"), local=False)
+        return {"role": "assistant", "content": "ok"}, {}
+
+    def local(_client, *_args, **local_kwargs):
+        seen.update(processing=local_kwargs.get("processing_preference"), local=True)
+        return {"role": "assistant", "content": "ok"}, {}
+
+    monkeypatch.setattr(LLMClient, "_chat_remote", remote)
+    monkeypatch.setattr(LLMClient, "_chat_local", local)
+    LLMClient().chat(**kwargs)
+    return (kwargs["model"], kwargs["model_role"], kwargs["model_account_override"], seen["processing"], seen["local"])
+
+
+def _sent(monkeypatch, seat) -> tuple:
+    from ouroboros.review_execution import ReviewAssignment
+    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+    from ouroboros.review_substrate import ReviewRequest
+
+    executor = NativeToolRoundReviewExecutor(ReviewAssignment(ReviewRequest(surface="plan", goal="g"), seat))
+    return provider_call(monkeypatch, executor._chat_kwargs([], [], 8))
+
+
+@pytest.mark.parametrize("local", [False, True], ids=["remote", "local"])
+@pytest.mark.parametrize("catalog", [_roster(_row("helper", "m/helper", marked=False)), _roster()],
+                         ids=["unmarked", "no_rows"])
+def test_an_empty_pools_main_seat_sends_mains_binding_from_the_settings_the_pool_reads(install, clean_env,
+                                                                                         catalog, local):
+    """The Main seat is Main's whole binding — model, local flag, account pin, processing — in the settings the
+    pool is read from: the task's own (implicit) or the snapshot a caller hands in, never the process's Main
+    beside it; the provider call carries all of it."""
+    from ouroboros.settings_integrity import task_settings_scope
+
+    _write(install, {"OPENAI_API_KEY": "sk-present-key", SUBAGENTS_SETTING: catalog,
+                     "OUROBOROS_MODEL": "openai::gpt-5.6-sol", "USE_LOCAL_MAIN": local,
+                     "OUROBOROS_MODEL_ACCOUNTS": {"main": "pin-7"},
+                     "OUROBOROS_PROCESSING_PREFERENCE": "economy",
+                     "OUROBOROS_MODEL_PROCESSING_PREFERENCES": {"main": "fast", "light": "standard"}})
+    snapshot = _task_start()
+    with clean_env.context() as patch:
+        for key, value in {"OUROBOROS_MODEL": "openai::ambient-main", "USE_LOCAL_MAIN": str(not local),
+                           "OUROBOROS_MODEL_ACCOUNTS": "{}", "OUROBOROS_PROCESSING_PREFERENCE": "standard",
+                           "OUROBOROS_MODEL_PROCESSING_PREFERENCES": "{}"}.items():
+            patch.setenv(key, value)
+        with task_settings_scope(snapshot):
+            [implicit] = rsc.review_pool_slots()
+        [explicit] = rsc.review_pool_slots(dict(snapshot.settings))
+        expected = ("openai::gpt-5.6-sol", "reviewer:main", "pin-7", "fast", local)
+        assert _sent(patch, implicit) == _sent(patch, explicit) == expected
+        [ambient] = rsc.review_pool_slots()
+        assert _sent(patch, ambient) == ("openai::ambient-main", "reviewer:main", "", "standard", not local)
+
+
+def test_captured_empty_processing_and_unspecified_processing_have_distinct_recovery_identities():
+    """The executors send different preferences; recovery must not reuse the other seat's result."""
+    from dataclasses import replace
+    from ouroboros.review_custody import _attempt_key
+    from ouroboros.review_dispatch import review_reconciliation_identity
+    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+
+    request = ReviewRequest(surface="plan", goal="binding", retry_key="same")
+    bare = ReviewSlot(slot_id="main", model="openai::gpt-5.6-sol")
+    captured = replace(bare, processing_preference="")
+    assert _attempt_key(request, bare) != _attempt_key(request, captured)
+    identities = [review_reconciliation_identity(request, [seat], root_task_id="root")
+                  for seat in (bare, captured)]
+    assert identities[0]["roster_hash"] != identities[1]["roster_hash"]
+    assert _attempt_key(request, bare) == _attempt_key(request, replace(bare, processing_preference=None))
+
+
+def test_a_seat_captured_without_processing_never_takes_the_senders_but_an_unspecified_slot_does(install, clean_env):
+    """An explicit snapshot whose Main and global processing are both empty captures that empty: the
+    native and packet calls send no preference even where the sending process says Fast/Economy. A slot
+    built with no processing at all is unspecified and still inherits the sender's at the send."""
+    from ouroboros.review_execution import ApiChatReviewExecutor, ReviewAssignment
+    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+
+    _write(install, {"OPENAI_API_KEY": "sk-present-key", SUBAGENTS_SETTING: _roster(),
+                     "OUROBOROS_MODEL": "openai::gpt-5.6-sol"})
+    snapshot = dict(_task_start().settings)
+    with clean_env.context() as patch:
+        patch.setenv("OUROBOROS_PROCESSING_PREFERENCE", "economy")
+        patch.setenv("OUROBOROS_MODEL_PROCESSING_PREFERENCES", '{"main": "fast"}')
+        [seat] = rsc.review_pool_slots(snapshot)
+        packet = ApiChatReviewExecutor(ReviewAssignment(ReviewRequest(surface="plan", goal="g"), seat))._kwargs()
+        assert _sent(patch, seat)[3] == provider_call(patch, dict(packet))[3] == ""
+        bare = ReviewSlot(slot_id="manual", model="openai::gpt-5.6-sol")
+        assert _sent(patch, bare)[1:4] == ("reviewer:manual", "", "economy")
+
+
+def test_a_marked_pool_a_composed_wave_and_a_malformed_catalog_never_take_the_main_seat(clean_env):
+    """The other directions: one enabled marked row is the whole pool (Main does not join
+    it); a composed wave's seats replace the pool exactly, an empty one included; a malformed
+    catalog still refuses on every reader instead of falling back to Main."""
+    from ouroboros.review_substrate import ReviewSlot
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("critic", "openai/gpt-5.6-terra"),
+                                                _row("helper", "m/helper", marked=False)))
+    assert [s.slot_id for s in rsc.review_pool_slots()] == ["critic"]
+    assert rsc.commit_triad_delivery()["slot_ids"] == ["critic"]
+
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("helper", "m/helper", marked=False)))
+    named = ReviewSlot(slot_id="named-by-author", model="m/extra", route=ReviewRouteKind.API_CHAT,
+                       native_retrieval_override=True)
+    with rsc.composed_review_pool((rsc.PoolSeat(named, ("change", "coupling")),)):
+        assert [s.slot_id for s in rsc.review_pool_slots()] == ["named-by-author"]
+    with rsc.composed_review_pool(()):
+        assert rsc.review_pool_slots() == []
+
+    clean_env.setenv(SUBAGENTS_SETTING, "{broken")
+    for reader in (rsc.review_pool_slots, rsc.commit_triad_delivery):
+        with pytest.raises(ValueError, match="not valid JSON"):
+            reader()
+
+
+def test_the_surfaces_read_the_main_seat_from_the_one_builder(clean_env):
+    """Plan review and the author's ``review_change`` wave read that same one seat: the wave
+    seats it as the frozen whole pool (both parts, counted). Blocking adds Main to an
+    adviser-only request; Advisory/Cyber Pro require it to be named. The
+    ``/review`` row and the empty pool's seat are one function, re-exported where it lived."""
+    from ouroboros import deep_self_review
+    from ouroboros.tools import plan_review_runtime
+    from ouroboros.tools.review_change import ReviewChangeArgumentError, compose_panel, parse_request
+
+    clean_env.setenv("OUROBOROS_MODEL", "openai/gpt-5.6-sol")
+    clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("scout", "openai/scout-model", marked=False)))
+    [plan_seat] = plan_review_runtime.plan_review_slots()
+    assert (plan_seat.slot_id, plan_seat.max_tokens) == ("main", plan_review_runtime.PLAN_REVIEW_MAX_TOKENS)
+    for strictness in ("blocking", "advisory", "cyber_pro"):
+        panel = compose_panel(parse_request({"root": "system_repo", "subject": "index"}),
+                              body=True, strictness=strictness)
+        assert [(slot.slot_id, parts, extra) for slot, parts, extra in panel.seats] == [("main", ("change", "coupling"), False)]
+        assert panel.override is True and panel.facts["composition"] == "full_pool"
+        assert panel.facts["pool_empty"] is True and panel.facts["main_self_review"] is True
+        request = parse_request({"root": "system_repo", "subject": "index", "reviewers": ["scout"]})
+        if strictness == "blocking":
+            widened = compose_panel(request, body=True, strictness=strictness)
+            assert widened.facts["assigned"] == ["main"] and widened.additional == ("scout",)
+            assert widened.facts["widened_from"] == ["scout"]
+        else:
+            with pytest.raises(ReviewChangeArgumentError, match="name main"):
+                compose_panel(request, body=True, strictness=strictness)
+        named = compose_panel(parse_request({"root": "system_repo", "subject": "index", "reviewers": ["main", "scout"]}),
+                              body=True, strictness=strictness)
+        assert named.facts["assigned"] == ["main"] and named.additional == ("scout",)
+    assert deep_self_review.main_review_row is rsc.main_review_row
 
 
 def test_triad_delivery_slots_is_the_pool_under_its_historical_name(clean_env):
@@ -273,28 +467,6 @@ def test_compound_effort_stabilizes_replay_identity_against_global_drift(clean_e
 
 
 # --- the surfaces -------------------------------------------------------------------------
-
-
-def test_root_acceptance_runs_every_pool_row_in_order_and_a_child_takes_one(clean_env):
-    """A session row beside api rows: acceptance carries them ALL, in the owner's
-    order, each with its own delivery — no row is filtered out and no API
-    default is substituted. A child task names at most one, by id or handle."""
-    clean_env.setenv(SUBAGENTS_SETTING, _MIXED)
-    slots = rsc.triad_delivery_slots(role_hint="task acceptance")
-    assert [(s.slot_id, s.route.value, s.retrieves) for s in slots] == [
-        ("api-critic", "api_chat", True), ("packet-critic", "api_chat", False), ("session-critic", "agent_session", True),
-    ]
-    assert rsc.child_acceptance_slots(slots)[1]["reason"] == "reviewer_selection_required"
-    handles = _handles()
-    for slot in slots:
-        for selector in (slot.slot_id, handles[slot.slot_id]):
-            chosen, refusal = rsc.child_acceptance_slots(slots, selector)
-            assert not refusal and [s.slot_id for s in chosen] == [slot.slot_id]
-    _, refusal = rsc.child_acceptance_slots(slots, "ghost")
-    assert refusal["reason"] == "reviewer_slot_unknown"
-    assert [row["delivery"] for row in refusal["reviewer_rows"]] == ["native", "packet", "agent_session"]
-    only, none = rsc.child_acceptance_slots(slots[:1])
-    assert [s.slot_id for s in only] == ["api-critic"] and none == {}
 
 
 def test_plan_review_rows_are_the_pool_rows_and_duplicate_models_stay_distinct(tmp_path, clean_env):

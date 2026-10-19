@@ -1,7 +1,9 @@
 """Published local folds, surviving source lineage and historical group views.
 
-Only reviewer dispatch is stubbed. The tool boundary, source store, cold context,
-Continue and new plan packet are the product's real consumers.
+The plan-family histories are earlier-schema records the retired plan-review engine left,
+recorded from its real flows (``tests/fixtures/legacy_plan_dispute``); the commit/change
+family runs with only reviewer dispatch stubbed. The tool boundary, source store, cold
+context and Continue are the product's real consumers.
 """
 from copy import deepcopy
 import json
@@ -16,18 +18,20 @@ from ouroboros.loop_round_limits import _run_authored_context_view
 from ouroboros.loop_tool_execution import process_tool_results
 from ouroboros.task_results import load_task_result
 from ouroboros.tools.compact_context import _compact_context, record_context_view
+from tests import _legacy_plan_shared as legacy
 from tests.test_main_authored_context import call
 from tests.test_review_view_integration import _three, _capture, _index, harness as _harness, staged_body as _staged_body
-from tests.test_plan_review_engine import _call, _control, _finding, _state, CLEAN
-from tests.test_plan_dispute_history import DECK_SPEC, RATIONALE, OWNER_CHOICES
+from tests.test_plan_dispute_history import _state, RATIONALE, OWNER_CHOICES
 
 harness = _harness
 staged_body = _staged_body
 FIRST = "I retain the first argument and its original limited assumptions."
 SECOND = "I retain the second argument separately, including its different assumptions."
+# The open blocking finding of the recorded fourth round (``three_rounds_open_blocking``).
+OPEN_REQUIREMENT = "CURRENT OPEN REQUIREMENT"
 
 
-def apply_local(ctx, messages, note, *, remove=(), all_units=False, **options):
+def apply_local(ctx, messages, note, *, remove=(), all_units=False, fit_check=None, **options):
     messages = deepcopy(messages)
     ctx.messages, ctx.active_context_mode = messages, "max"
     record_context_view(ctx, messages, [])
@@ -42,7 +46,7 @@ def apply_local(ctx, messages, note, *, remove=(), all_units=False, **options):
 
     def fit(candidate, schemas):
         fits.append(deepcopy(candidate))
-        return {"accepted": True, "strict_bound_proven": False}
+        return {"accepted": True if fit_check is None else fit_check(candidate), "strict_bound_proven": False}
 
     process_tool_results([{"fn_name": "compact_context", "is_error": False,
         "tool_call_id": "compact-local", "result": response, "args_for_log": args, "trace_ref": {}}],
@@ -65,6 +69,14 @@ def review_units(messages):
             if view.REVIEW_HISTORY_MESSAGE_KEY in messages[u.start]]
 
 
+def open_blocking(harness):
+    """three_rounds, then the retired engine's round 4 with one open blocking s1 finding
+    (OPEN_REQUIREMENT, recommendation 'Keep the current format exact.'), as recorded.
+    Returns the context and s1's round-1 answer."""
+    meta = legacy.plant_recorded(harness.drive, "three_rounds_open_blocking", workspace=harness.workspace)
+    return harness.make_ctx(), meta["raw"]
+
+
 def two_folds(ctx):
     before = _capture(ctx)
     first_unit = review_units(before)[0]
@@ -76,11 +88,11 @@ def two_folds(ctx):
     return before, first, second, second_unit, receipt, fits
 
 
-def test_two_local_folds_keep_earlier_note_index_and_sources_through_cold_packet_continue(harness, monkeypatch):
+def test_two_local_folds_keep_earlier_note_index_and_sources_through_cold_capture_and_continue(harness):
     from ouroboros.context import _task_authority_projection
     from tests.test_review_view_continue import successor
 
-    ctx, sub, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     original_state = deepcopy(_state(harness))
     before, first, second, unit, receipt, fits = two_folds(ctx)
     index_at = next(i for i, row in enumerate(before) if view.REVIEW_CONTEXT_INDEX_KEY in row)
@@ -97,23 +109,18 @@ def test_two_local_folds_keep_earlier_note_index_and_sources_through_cold_packet
         assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, source["source_ref"])
     assert actor_notes(_capture(harness.make_ctx())) == notes
     assert _state(harness) == original_state
-    # Exact paid replay stays unchanged; a genuinely new packet reads both accounts.
-    _call(ctx, plan="Proofread captions and state chart units.")
-    assert len(sub.calls) == 3 and _state(harness) == original_state
-    _call(harness.make_ctx(), plan="Check the final accessible chart export.")
-    packet = str(sub.calls[-1]["request"].messages)
-    assert FIRST in packet and SECOND in packet and len(sub.calls) == 4
     env, task = successor(ctx)
+    from ouroboros.main_context_authority import predecessor_notes_message
+
     runtime = _task_authority_projection(env, task)
-    historical = runtime["predecessor_authority"]["historical_review_context"]
-    assert FIRST in historical["authored_account"]["text"] and SECOND in historical["authored_account"]["text"]
-    assert historical["authored_account"]["authorship"] == "predecessor_actor"
-    assert not historical["source_gaps"]
+    assert "historical_review_context" not in json.dumps(runtime), "no history walk in the frozen prefix"
+    note = predecessor_notes_message(task, drive_root=ctx.drive_root)["content"]
+    assert FIRST in note and SECOND in note and note.index(FIRST) < note.index(SECOND)
     assert view.SELECTED_VIEW_FIELD not in load_task_result(ctx.drive_root, task["id"])
 
 
-def test_multi_note_same_note_noop_transfer_targets_the_named_account_and_explicit_merge(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_multi_note_same_note_noop_transfer_targets_the_named_account_and_explicit_merge(harness):
+    ctx, _ = _three(harness)
     _, _, messages, _, _, _ = two_folds(ctx)
     notes = actor_notes(messages)
     repeated, receipt, _ = apply_local(ctx, messages, SECOND)
@@ -139,11 +146,10 @@ def test_multi_note_same_note_noop_transfer_targets_the_named_account_and_explic
 
 
 def test_bad_optional_transfer_keeps_its_attachment_while_valid_transfer_and_note_apply(harness):
-    harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    # One clean closed round over two attachments, one.txt ("FIRST ATTACHMENT") and
+    # two.txt ("SECOND ATTACHMENT"), as recorded.
+    legacy.plant_recorded(harness.drive, "two_attachments", workspace=harness.workspace)
     ctx = harness.make_ctx()
-    for name, text in (("one.txt", "FIRST ATTACHMENT"), ("two.txt", "SECOND ATTACHMENT")):
-        (harness.workspace / name).write_text(text, encoding="utf-8")
-    assert _control(_call(ctx, {**DECK_SPEC, "evidence": ["one.txt", "two.txt"]}))["closed"]
     options = view.attachment_transfer_options(ctx)
     assert len(options["sources"]) == 2
     transfers = [{"source": source, "operative_spec_sha256": options["operative_spec_sha256"] if i == 0 else "0" * 64,
@@ -152,12 +158,16 @@ def test_bad_optional_transfer_keeps_its_attachment_while_valid_transfer_and_not
     assert receipt["status"] == "applied" and FIRST in str(after)
     assert len(receipt["review_transfers"]["applied"]) == len(receipt["review_transfers"]["unapplied"]) == 1
     assert "stale" in receipt["review_transfers"]["unapplied"][0]["reason"]
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions"] == receipt["request_exceptions"]
+    assert notice["request_exceptions"][0]["field"] == "review_transfers"
+    assert notice["request_exceptions"][0]["index"] == 1
     current = _index(after)[-1]
     assert "FIRST ATTACHMENT" not in str(current) and "SECOND ATTACHMENT" in str(current)
 
 
-def test_changed_early_decision_changes_that_index_while_tail_note_stays_local(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_changed_early_decision_changes_that_index_while_tail_note_stays_local(harness):
+    ctx, _ = _three(harness)
     _, first, _, _, _, _ = two_folds(ctx)
     at = next(i for i, row in enumerate(first) if view.REVIEW_CONTEXT_INDEX_KEY in row)
     choice = view.review_note_options(ctx)["entries"][0]
@@ -169,11 +179,8 @@ def test_changed_early_decision_changes_that_index_while_tail_note_stays_local(h
     assert actor_notes(first)[0] in after
 
 
-def test_grouped_closed_history_keeps_current_open_fact_new_packet_and_exact_paid_artifacts(harness, monkeypatch):
-    ctx, sub, _ = _three(harness, monkeypatch)
-    sub.answers = {"s1": json.dumps([_finding("current", "blocking", breaks="claim_1", summary="CURRENT OPEN REQUIREMENT", rec="Keep the current format exact.")]),
-                   "s2": CLEAN, "s3": CLEAN}
-    assert not _control(_call(ctx, plan="The current unfinished revision."))["closed"]
+def test_grouped_closed_history_keeps_current_open_fact_and_exact_paid_artifacts(harness):
+    ctx, _ = open_blocking(harness)
     state = deepcopy(_state(harness))
     raw = {wave["wave_artifact"]["path"]: read_actor_source_bytes(ctx.drive_root, ctx.task_id, wave["wave_artifact"])
            for wave in state["waves"]}
@@ -191,7 +198,7 @@ def test_grouped_closed_history_keeps_current_open_fact_new_packet_and_exact_pai
     rows = _index(after)[-1]["decision_rows"]
     assert any(r["decision_kind"] == "actor_history_group" for r in rows)
     assert not any(r.get("history_role") == "historical" for r in rows)
-    assert "CURRENT OPEN REQUIREMENT" in str(after) and "Keep the current format exact." in str(after)
+    assert OPEN_REQUIREMENT in str(after) and "Keep the current format exact." in str(after)
     assert RATIONALE not in str(after)
     assert any(g["reason"] == "current_or_unresolved_decision_stays_explicit" for g in receipt["review_notes"]["unshortened"])
     assert _state(harness) == state
@@ -199,16 +206,11 @@ def test_grouped_closed_history_keeps_current_open_fact_new_packet_and_exact_pai
                for w in state["waves"])
     cold = _capture(harness.make_ctx())
     assert "actor_history_group" in str(cold) and RATIONALE not in str(cold)
-    assert "CURRENT OPEN REQUIREMENT" in str(cold)
-    sub.answers = {"s1": CLEAN, "s2": CLEAN, "s3": CLEAN}
-    _call(harness.make_ctx(), plan="Another current revision with a new source identity.")
-    packet = str(sub.calls[-1]["request"].messages)
-    assert "Earlier presentation alternatives." in packet and "CURRENT OPEN REQUIREMENT" in packet
-    assert RATIONALE not in packet
+    assert OPEN_REQUIREMENT in str(cold)
 
 
-def test_multiple_note_selection_loss_restores_sources_with_gap(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_multiple_note_selection_loss_restores_sources_with_gap(harness):
+    ctx, _ = _three(harness)
     before, _, _, _, receipt, _ = two_folds(ctx)
     ref = receipt["selected_review_history_view"]["source_ref"]
     (task_artifact_dir_path(ctx.drive_root, ctx.task_id, create=False) / ref["path"]).unlink()
@@ -218,18 +220,21 @@ def test_multiple_note_selection_loss_restores_sources_with_gap(harness, monkeyp
         row for row in before if view.REVIEW_HISTORY_MESSAGE_KEY in row]
 
 
-def test_standalone_restore_keeps_selected_review_group_and_indexes(harness, monkeypatch):
-    ctx, sub, _ = _three(harness, monkeypatch)
+def test_standalone_restore_keeps_selected_review_group_and_indexes(harness):
+    ctx, _ = _three(harness)
     group = [e["decision_ref"] for e in view.review_note_options(ctx)["entries"] if e["groupable"]]
     assert group
     messages, receipt, _ = apply_local(ctx, _capture(ctx), FIRST, all_units=True, review_notes=[{
         "bound_decisions": group, "remark": "Earlier presentation alternatives.",
         "reason": "I chose charts under the prior owner contract."}])
     assert receipt["status"] == "applied" and "actor_history_group" in str(_index(messages))
-    # An ordinary later review appends its new index while the earlier selected
-    # snapshot remains in the sent prefix. Restoration must retain both.
+    # An ordinary later review (the recorded closed fourth round, whose producer notifies the
+    # plan family) appends its new index while the earlier selected snapshot remains in the
+    # sent prefix. Restoration must retain both.
     ctx.messages = messages
-    result = _call(ctx, plan="Check the final chart labels.")
+    result = legacy.advance_recorded(ctx.drive_root, "three_rounds_then_late_note", workspace=harness.workspace)["round4_result"]
+    view.queue_review_history_context(ctx, family="plan")
+    sub = harness.install({})
     messages.append(call("plan_task", {}, "later-plan"))
     tools = SimpleNamespace(_ctx=ctx)
     process_tool_results([{"fn_name": "plan_task", "is_error": False,
@@ -262,13 +267,13 @@ def test_standalone_restore_keeps_selected_review_group_and_indexes(harness, mon
     assert actor_notes(after) == notes and _index(after) == indexes
     assert load_task_result(ctx.drive_root, ctx.task_id, strict=True) == saved
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, pointer["source_ref"]) == selected_bytes
-    assert _capture(harness.make_ctx()) == cold and len(sub.calls) == 4
+    assert _capture(harness.make_ctx()) == cold and sub.calls == []
 
 
-def test_legacy_singleton_extends_to_two_surviving_accounts(harness, monkeypatch):
+def test_legacy_singleton_extends_to_two_surviving_accounts(harness):
     from ouroboros.artifacts import store_actor_source_bytes
     from ouroboros.task_results import write_task_result
-    ctx, _, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     before = _capture(ctx)
     first, receipt, _ = apply_local(ctx, before, FIRST, remove=[review_units(before)[0].unit_id])
     pointer = receipt["selected_review_history_view"]
@@ -283,15 +288,15 @@ def test_legacy_singleton_extends_to_two_surviving_accounts(harness, monkeypatch
     assert len(actor_notes(second)) == 2
 
 
-def test_compact_decision_ref_selects_only_observed_version_not_reused_position(harness, monkeypatch):
-    from ouroboros.tools.plan_review import _apply_disposition
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_compact_decision_ref_selects_only_observed_version_not_reused_position(harness):
+    ctx, _ = _three(harness)
     observed = _capture(ctx)
     entry = view.review_note_options(ctx)["entries"][-1]
-    wave = _state(harness)["waves"][-1]
     assert entry["finding_id"]
-    _apply_disposition(ctx, {"review_fingerprint": wave["request_fingerprint"], "items": [
-        {"finding_id": entry["finding_id"], "decision": "reject", "rationale": "NEW SOURCE-BOUND REASON"}]})
+    # Then the author's recorded rejection of that entry's finding (round 3), with
+    # "NEW SOURCE-BOUND REASON".
+    rejected = legacy.advance_recorded(ctx.drive_root, "three_rounds_units_rejected", workspace=harness.workspace)
+    assert rejected["finding_id"] == entry["finding_id"]
     after, receipt, _ = apply_local(ctx, observed, FIRST, all_units=True, review_notes=[
         {"bound_decision": entry["decision_ref"], "remark": "Stale source.", "reason": "Do not apply."},
         {"bound_decision": "decision_1", "remark": "Position alone.", "reason": "Do not apply."}])
@@ -299,6 +304,9 @@ def test_compact_decision_ref_selects_only_observed_version_not_reused_position(
     assert [n["bound_decision"] for n in receipt["review_notes"]["applied"]] == [entry["bound_decision"]]
     assert "NEW SOURCE-BOUND REASON" in str(_index(after)[-1])
     assert any(g["reason"] == "Invalid review body binding" for g in receipt["review_notes"]["unshortened"])
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions"] == [{"field": "review_notes", "index": 1,
+                                               "reason": "Invalid review body binding"}]
 
 
 def test_obsolete_index_helper_keeps_latest_and_unknown_rows():
@@ -363,14 +371,19 @@ def test_old_settled_fail_and_linked_open_obligation_survive_another_history_gro
     shown = _index(after)[-1]
     assert "OPEN CRITIC REASON" in str(shown) and "OPEN OBLIGATION STILL NEEDS REPAIR" in str(shown)
     assert any(r["decision_kind"] == "actor_history_group" for r in shown["decision_rows"])
-    prior = next(r for r in shown["rounds"] if r.get("review_record_id") == records[0])
-    assert prior["verdict"]["aggregate"] == "FAIL"
+    prior = next(e for e in shown["addresses"].values() if e["read"].get("arguments", {}).get("ids") == [records[0]])
+    assert "aggregate verdict FAIL" in prior["what"] and "rounds" not in shown
     assert [review_ledger.load_record(drive, rid) for rid in records] == canonical
     assert review_dispute_history(drive_root=drive, repo_root=root, task_id=ctx.task_id)["open_obligations"]
 
 
 def _groups(messages):
     return [row for row in _index(messages)[-1]["decision_rows"] if row["decision_kind"] == "actor_history_group"]
+
+
+def _anchor(messages, group):
+    """The immutable selected-view source a group row's address key resolves to."""
+    return _index(messages)[-1]["addresses"][group["source"]]["source_ref"]
 
 
 def _tail_fold(ctx, messages, note):
@@ -384,8 +397,8 @@ def _tail_fold(ctx, messages, note):
     return after, receipt
 
 
-def test_explicit_larger_group_retires_covered_groups_preserves_disjoint_and_exact_old_source(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_explicit_larger_group_retires_covered_groups_preserves_disjoint_and_exact_old_source(harness):
+    ctx, _ = _three(harness)
     bindings = [e["bound_decision"] for e in view.review_note_options(ctx)["entries"] if e["groupable"]]
     assert len(bindings) >= 3
     notes = [{"bound_decisions": [binding], "remark": f"Account {i}", "reason": f"Exact earlier reason {i}."}
@@ -399,7 +412,7 @@ def test_explicit_larger_group_retires_covered_groups_preserves_disjoint_and_exa
     assert len(groups) == 2 and {g["remark"] for g in groups} == {"Account 2", "Merged account"}
     assert not any(g["reason"] in {notes[0]["reason"], notes[1]["reason"]} for g in groups)
     disjoint = next(g for g in groups if g["remark"] == "Account 2")
-    assert disjoint["source"] == {"source_ref": source, "field": "review_notes[2]"}
+    assert _anchor(merged, disjoint) == view._immutable_ref(source)  # the unchanged group keeps its old exact source
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, source) == original
     assert _groups(_capture(ctx)) == groups
     saved = view.load_review_history_view(receipt["selected_review_history_view"],
@@ -407,8 +420,8 @@ def test_explicit_larger_group_retires_covered_groups_preserves_disjoint_and_exa
     assert len(saved["review_notes"]) == 2
 
 
-def test_unchanged_group_source_and_final_prefix_survive_two_unrelated_tail_folds(harness, monkeypatch):
-    ctx, _, _ = _three(harness, monkeypatch)
+def test_unchanged_group_source_and_final_prefix_survive_two_unrelated_tail_folds(harness):
+    ctx, _ = _three(harness)
     bindings = [e["bound_decision"] for e in view.review_note_options(ctx)["entries"] if e["groupable"]]
     grouped, first, _ = apply_local(ctx, _capture(ctx), FIRST, all_units=True, review_notes=[
         {"bound_decisions": bindings, "remark": "Closed history", "reason": "The accepted premise may be revisited when requirements change."}])
@@ -430,9 +443,9 @@ def test_unchanged_group_source_and_final_prefix_survive_two_unrelated_tail_fold
     assert original_source["sha256"] in reads, "The anchored source must be verified by the existing exact reader"
 
 
-def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(harness, monkeypatch):
+def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(harness):
     from ouroboros.artifacts import store_actor_source_bytes
-    ctx, _, _ = _three(harness, monkeypatch)
+    ctx, _ = _three(harness)
     bindings = [e["bound_decision"] for e in view.review_note_options(ctx)["entries"] if e["groupable"]]
     note = {"bound_decisions": bindings, "remark": "The same members", "reason": "My earlier understanding."}
     first, receipt, _ = apply_local(ctx, _capture(ctx), FIRST, all_units=True, review_notes=[note])
@@ -443,8 +456,8 @@ def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(
     revised, receipt, _ = apply_local(ctx, first, SECOND, all_units=True, review_notes=[changed])
     pointer = receipt["selected_review_history_view"]
     group = _groups(revised)[0]
-    assert group["reason"] == changed["reason"] and group["source"]["source_ref"] == pointer["source_ref"]
-    assert group["source"]["source_ref"] != old_source
+    assert group["reason"] == changed["reason"] and _anchor(revised, group) == view._immutable_ref(pointer["source_ref"])
+    assert _anchor(revised, group) != view._immutable_ref(old_source)
     assert _groups(_capture(ctx)) == [group]
     assert read_actor_source_bytes(ctx.drive_root, ctx.task_id, old_source) == old_bytes
     saved = view.load_review_history_view(pointer, lambda ref: read_actor_source_bytes(ctx.drive_root, ctx.task_id, ref))
@@ -456,3 +469,36 @@ def test_changed_group_prose_gets_new_source_and_model_cannot_supply_old_anchor(
     with pytest.raises(ValueError, match="exact authored payload"):
         view.load_review_history_view({**pointer, "source_ref": invalid_ref},
             lambda ref: read_actor_source_bytes(ctx.drive_root, ctx.task_id, ref))
+
+
+def test_exception_detail_fit_falls_back_to_count_without_undoing_valid_view(harness, monkeypatch):
+    ctx, _ = _three(harness)
+    source = _capture(ctx)
+    rows = [{"bound_decision": "decision_1", "remark": "Unavailable exact binding.", "reason": "No positional alias."}]
+    detailed, receipt, _ = apply_local(ctx, source, FIRST, all_units=True, review_notes=rows)
+    detailed_length = len(json.dumps(detailed, ensure_ascii=False))
+    assert receipt["request_exceptions"]
+    # Use a real length boundary one character below the complete detailed view,
+    # not a predicate that silently permits arbitrary smaller fake candidates.
+    after, compact, fits = apply_local(ctx, source, FIRST, all_units=True, review_notes=rows,
+        fit_check=lambda candidate: len(json.dumps(candidate, ensure_ascii=False)) < detailed_length)
+    assert compact["status"] == "applied"
+    notice = json.loads(after[-1]["content"].partition("\n")[2])
+    assert notice["request_exceptions_omitted"] == 1 and "request_exceptions" not in notice
+    retained = json.loads(read_actor_source_bytes(ctx.drive_root, ctx.task_id, notice["receipt_source"]))
+    assert retained["receipt"]["request_exceptions"] == compact["request_exceptions"]
+    assert actor_notes(after) and FIRST in str(after)
+
+
+def test_validation_origin_does_not_call_inherited_or_unselected_rows_current_failures(harness, monkeypatch):
+    ctx, _ = _three(harness)
+    entry = next(e for e in view.review_note_options(ctx)["entries"] if e["groupable"])
+    good = {"bound_decision": entry["bound_decision"], "remark": "Keep meaning.", "reason": "Closed historical branch."}
+    bad = {"bound_decision": "decision_1", "remark": "No binding.", "reason": "Invalid positional identifier."}
+    chosen, gaps, options = view._available_review_notes(ctx, [bad, good, bad], requested_from=2)
+    assert chosen == [good]
+    assert "request_index" not in gaps[0] and gaps[1]["request_index"] == 0
+    assert len(options["entries"]) > len(gaps)
+    history, operative = view.current_plan_history(ctx)
+    _, transfer_gaps = view.available_attachment_transfers(history, operative, [{}, {}], requested_from=1)
+    assert "request_index" not in transfer_gaps[0] and transfer_gaps[1]["request_index"] == 0

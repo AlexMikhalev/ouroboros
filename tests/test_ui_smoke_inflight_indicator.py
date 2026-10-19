@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from tests._work_projection_shared import with_work_fields
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
 from tests.ui_failure_evidence import FailureEvidence, exception_fact
 
@@ -44,6 +45,7 @@ def _observe_census(route, state, evidence):
         original_scope = {key: copy.deepcopy(payload.get(key)) for key in (
             "active_chat_activities_complete", "supervisor_ready", "chat_id", "project_id")}
         payload["active_chat_activities_complete"] = True
+        payload = with_work_fields(payload)  # and the server's work projection of those rows, which the page reads
         record("response_built", rows=payload["active_chat_activities"],
                original_scope=original_scope, active_chat_activities_complete=True)
         phase = "fulfill"
@@ -131,11 +133,12 @@ def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data, req
                 }""")
                 evidence.checkpoint("typing_emit_returned")
 
-                # In-flight state: reached through the receipt's own census read.
+                # In-flight state: reached through the receipt's own census read. The header
+                # names the census phase in the task-phase words (#1740: 'Thinking', no dots).
                 page.wait_for_function(
                     """() => {
                         const el = document.querySelector('#chat-status');
-                        return el && el.textContent.trim() === 'Thinking...';
+                        return el && el.textContent.trim() === 'Thinking';
                     }""",
                     timeout=5_000,
                 )

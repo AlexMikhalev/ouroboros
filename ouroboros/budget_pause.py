@@ -105,8 +105,12 @@ from ouroboros.owner_pause import RAIL_OWNER_PAUSE, REASON_OWNER  # noqa: E402
 # selected sources, through the supervisor's sleep-wake policy, wake it.
 RAIL_MODEL_SLEEP = "model_sleep"
 REASON_SLEEP = "sleep"
-RAILS = GRACEFUL_RAILS | {RAIL_GLOBAL_EXHAUSTED, RAIL_DISPATCH_REFUSED, RAIL_OWNER_PAUSE, RAIL_MODEL_SLEEP}
-_RAIL_REASONS = {RAIL_OWNER_PAUSE: REASON_OWNER, RAIL_MODEL_SLEEP: REASON_SLEEP}
+# Unreadable billing/control authority is no money fact (owner 2026-10-14, ab53/00a5 = A): a member park, runs observed.
+RAIL_BILLING_AUTHORITY, RAIL_CONTROL_AUTHORITY, REASON_AUTHORITY = "billing_authority_unreadable", "control_authority_unreadable", "authority"
+RAILS = GRACEFUL_RAILS | {RAIL_GLOBAL_EXHAUSTED, RAIL_DISPATCH_REFUSED, RAIL_OWNER_PAUSE, RAIL_MODEL_SLEEP,
+                          RAIL_BILLING_AUTHORITY, RAIL_CONTROL_AUTHORITY}
+_RAIL_REASONS = {RAIL_OWNER_PAUSE: REASON_OWNER, RAIL_MODEL_SLEEP: REASON_SLEEP,
+                 RAIL_BILLING_AUTHORITY: REASON_AUTHORITY, RAIL_CONTROL_AUTHORITY: REASON_AUTHORITY}
 
 STATE_PAUSING = "pausing"
 STATE_PAUSED = "paused"
@@ -115,9 +119,7 @@ STATE_RESUMED = "resumed"
 LIVE_PAUSE_STATES = frozenset({STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED})
 
 RESUME_POLICY = "owner_resume_same_id"
-REASON_CODE = "budget_paused"
-OWNER_REASON_CODE = "owner_paused"
-
+REASON_CODE, OWNER_REASON_CODE, AUTHORITY_REASON_CODE = "budget_paused", "owner_paused", "authority_paused"
 
 
 class BudgetPauseRequested(Exception):
@@ -161,125 +163,153 @@ def dispatch_fenced(task_id: str) -> bool:
         return tid in _FENCED
 
 
-# --- tool-future quiescence registry (task/attempt scoped) -------------------------
-
-# One row per REAL tool future, registered by ``loop_tool_execution`` right
-# after the submit and BEFORE that call's own timeout can fire — a future first
-# seen on the timeout path is invisible in exactly the window that matters.
-# ``future.done()`` is not the fact recorded here: a late settlement callback
-# may still be producing effects after it, so a row settles only when every
-# callback that claimed it has FINISHED. Settlement OWNERSHIP is pinned from
-# the registration until the registering caller releases it (its own result
-# arrived, or it claimed the late-callback hold): a future that completes
-# between the caller's timeout and its ``hold_tool_settlement`` claim would
-# otherwise read as settled-and-unheld for one instant, and a concurrent
-# registration could prune it — the late callback's effects then escape the
-# quiescence gate. Pruning is per SCOPE and only over rows nobody owns or
-# holds; rows of another attempt are never touched (``forget_tool_scope`` is
-# the only cross-scope drop, at that attempt's own end).
+# The real future and explicit callback holds own physical completion. Caller
+# release transfers a tail before returning; attempt cleanup only prunes joined rows.
 _TOOL_LOCK = threading.Lock()
 _TOOL_FUTURES: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
-def tool_scope_key(ctx: Any) -> str:
-    """The registry scope: one task ATTEMPT, never a whole task id."""
-    return f"{str(getattr(ctx, 'task_id', '') or '')}|{int(getattr(ctx, 'task_attempt', 1) or 1)}"
+def tool_scope_key(ctx: Any, *, attempt: Optional[int] = None) -> str:
+    """Canonical task ATTEMPT; an unbound call has no shared registry scope."""
+    from ouroboros.owner_pause import _member_coordinates
+    from ouroboros.model_wait import current_model_wait
+    root, _tree, task = _member_coordinates(ctx)
+    owner = current_model_wait()
+    if attempt is None:
+        attempt = owner.attempt if owner is not None and owner.task_id == task else getattr(ctx, "task_attempt", 1)
+    return f"{pathlib.Path(root).resolve() if root else ''}|{task}|{int(attempt or 1)}" if task else ""
 
 
 def _row_settled_locked(row: Dict[str, Any]) -> bool:
-    """Settled = the future finished and nobody holds it: neither a late
-    callback nor the registering owner's pin. Read with ``_TOOL_LOCK`` held."""
-    return bool(row.get("done")) and int(row.get("holds") or 0) <= 0
+    # Future.result can precede passive done callbacks. Actual future completion
+    # is sufficient only when every real callback/runner/caller hold is gone.
+    future = row.get("future")
+    done = row.get("done") or future is not None and future.done()
+    return bool(done) and int(row.get("holds") or 0) <= 0
 
 
-def register_tool_future(ctx: Any, operation_id: str, tool: str, future: Any) -> Callable[[], None]:
-    """Track one tool future until its settlement callbacks have finished.
-
-    Returns the OWNER release: the registering caller calls it once its own
-    handling of the call is over — after the result arrived, or after the
-    timeout path claimed the late-settlement hold — so the row cannot be
-    pruned in between. Calling it twice is harmless.
-    """
-    op = str(operation_id or "")
-    if future is None or not op or not str(getattr(ctx, "task_id", "") or ""):
-        return lambda: None
-    row: Dict[str, Any] = {"operation_id": op, "tool": str(tool or ""),
-                           "settled": threading.Event(), "holds": 0, "done": False}
-    scope = tool_scope_key(ctx)
+def _finish_tool_row(row: dict) -> None:
     with _TOOL_LOCK:
-        rows = _TOOL_FUTURES.setdefault(scope, {})
-        # Prune ONLY this scope's fully settled rows: done, unheld AND released.
-        for op_id in [i for i, r in rows.items() if _row_settled_locked(r)]:
-            rows.pop(op_id, None)
-        rows[op] = row
-    # The owner's pin is the FIRST hold on the row, taken before the done
-    # callback is attached: a future that has already finished cannot settle
-    # (and be pruned) before the registering caller has decided about a late hold.
-    owner_release = hold_tool_settlement(ctx, op)
-
-    def _done(_future: Any) -> None:
-        with _TOOL_LOCK:
-            row["done"] = True
-            settled = _row_settled_locked(row)
-        if settled:
-            row["settled"].set()
-
-    # Both producers register a ``concurrent.futures.Future`` (the stateful and
-    # the abandoned-on-timeout executors): attaching the callback never raises,
-    # and an already-finished future runs ``_done`` inline.
-    future.add_done_callback(_done)
-    return owner_release
-
-
-def hold_tool_settlement(ctx: Any, operation_id: str) -> Callable[[], None]:
-    """Claim a row (the registering owner's pin, or a late settlement callback's
-    hold); returns its single-use release.
-
-    A late caller attaches its callback AFTER claiming and calls the release as
-    the callback's last act, so the registry reports the tool as settled only
-    once that callback's own effects are over. The claim is taken while the
-    registering owner still pins the row (it releases only after this claim),
-    so a future that finished a moment earlier is still here to be claimed.
-    An unregistered row returns a no-op: this registry never invents an
-    observation it does not hold. Releasing twice is harmless.
-    """
-    op = str(operation_id or "")
+        if not _row_settled_locked(row):
+            return
+    outcome = row.get("outcome")
+    if outcome is not None:
+        from ouroboros.tool_custody import settle_invocation
+        settle_invocation(outcome)
     with _TOOL_LOCK:
-        row = _TOOL_FUTURES.get(tool_scope_key(ctx), {}).get(op)
-        if row is None:
-            return lambda: None
+        if row.get("forgotten"):
+            rows = _TOOL_FUTURES.get(row["scope"], {})
+            if rows.get(row["operation_id"]) is row:
+                rows.pop(row["operation_id"])
+            if not rows:
+                _TOOL_FUTURES.pop(row["scope"], None)
+        row["settled"].set()
+
+
+def _hold_tool_row(row: dict) -> Callable[[], None]:
+    with _TOOL_LOCK:
         row["holds"] += 1
         row["settled"].clear()
     released = False
-
-    def _release() -> None:
+    def release():
         nonlocal released
         with _TOOL_LOCK:
             if released:
                 return
             released = True
-            row["holds"] = max(0, int(row["holds"]) - 1)
-            settled = _row_settled_locked(row)
-        if settled:
-            row["settled"].set()
-
-    return _release
+            row["holds"] -= 1
+        _finish_tool_row(row)
+    return release
 
 
-def forget_tool_scope(ctx: Any) -> None:
-    """Drop one attempt's rows (that attempt's end, and test hygiene for this global)."""
+def _new_tool_row(ctx: Any, operation_id: str, tool: str, *, outcome=None) -> dict:
+    scope = tool_scope_key(ctx)
+    row = {"operation_id": operation_id, "tool": tool, "future": None,
+           "settled": threading.Event(), "holds": 0, "done": False,
+           "scope": scope, "outcome": outcome}
     with _TOOL_LOCK:
-        _TOOL_FUTURES.pop(tool_scope_key(ctx), None)
+        rows = _TOOL_FUTURES.setdefault(scope, {}) if scope else {}
+        for op in [op for op, prior in rows.items() if prior["settled"].is_set()]:
+            rows.pop(op, None)
+        rows[operation_id] = row
+    return row
+
+
+def _bind_tool_future(row: dict, future: Any) -> None:
+    with _TOOL_LOCK:
+        row["future"] = future
+    def done(_future):
+        with _TOOL_LOCK:
+            row["done"] = True
+        _finish_tool_row(row)
+    future.add_done_callback(done)
+
+
+def _tool_owner_release(row: dict) -> Callable[[], None]:
+    release = _hold_tool_row(row)
+    released = False
+    def finish():
+        nonlocal released
+        if released:
+            return
+        released = True
+        with _TOOL_LOCK:
+            future = row.get("future")
+            joined = (row.get("done") or future is not None and future.done()) and row["holds"] == 1
+        try:
+            if not joined and row.get("outcome") is not None:
+                from ouroboros.tool_custody import retain_invocation
+                retain_invocation(row["outcome"])
+        except Exception:
+            log.warning("Tool tail could not transfer; its caller remains live until physical join", exc_info=True)
+            release()
+            # No logical timeout/control wait here: it would abandon this tail
+            # again. Direct Stop remains cooperative; Panic/process exit is independent.
+            try:
+                future.exception()  # physical join, without adopting its result or exception
+            except Exception:  # a cancelled-before-entry Future has also finished
+                pass
+            _finish_tool_row(row)  # passive done callbacks need not have run
+            row["settled"].wait()  # only actual callback/runner holds may remain
+        finally:
+            release()
+    return finish
+
+
+def register_tool_future(ctx: Any, operation_id: str, tool: str, future: Any) -> Callable[[], None]:
+    """Observe a caller's real future, pinned until its handling/late hold ends."""
+    if future is None or not operation_id or not str(getattr(ctx, "task_id", "") or ""):
+        return lambda: None
+    row = _new_tool_row(ctx, str(operation_id), str(tool))
+    release = _tool_owner_release(row)
+    _bind_tool_future(row, future)
+    return release
+
+
+def hold_tool_settlement(ctx: Any, operation_id: str) -> Callable[[], None]:
+    """Pin real callback effects before attaching, while the caller still owns them."""
+    with _TOOL_LOCK:
+        row = _TOOL_FUTURES.get(tool_scope_key(ctx), {}).get(str(operation_id or ""))
+    return _hold_tool_row(row) if row is not None else lambda: None
+
+
+def forget_tool_scope(ctx: Any, *, attempt: Optional[int] = None) -> None:
+    """Prune settled observations; a logical exit never erases a physical tail."""
+    with _TOOL_LOCK:
+        scope = tool_scope_key(ctx, attempt=attempt)
+        rows = _TOOL_FUTURES.get(scope, {})
+        for row in rows.values():
+            row["forgotten"] = True
+        for op in [op for op, row in rows.items() if row["settled"].is_set()]:
+            rows.pop(op, None)
+        if not rows:
+            _TOOL_FUTURES.pop(scope, None)
 
 
 def drain_local_tool_futures(ctx: Any, *, timeout_sec: float) -> Dict[str, Any]:
-    """Bounded observation of THIS attempt's tool futures; settles nothing.
+    """Observe this attempt's real futures and callback holds without settling them.
 
-    A call abandoned at its logical timeout keeps running, and its late
-    settlement callback keeps producing effects after the worker returns.
-    Releasing the native process while either is outstanding is exactly the
-    escape this gate exists to refuse. A row its owner has not released yet is
-    unsettled too: the owner is still deciding whether a late callback claims it.
+    A retained caller pin also stays unsettled until late ownership is decided.
     """
     with _TOOL_LOCK:
         rows = list(_TOOL_FUTURES.get(tool_scope_key(ctx), {}).values())
@@ -375,14 +405,10 @@ def drain_local_review_attempts(task_id: str, *, timeout_sec: float) -> Dict[str
 def local_producer_observation(ctx: Any, *, timeout_sec: float) -> Dict[str, Any]:
     """Fence, then OBSERVE every local producer this task still owns.
 
-    TWO families, not one: review attempts already sent (drained through their
-    own ``review_custody`` events) and tool futures still running after their
-    logical timeout, including their late settlement callbacks. No new send, no
-    re-POST, no Light extraction; nothing is settled, passed, failed or
-    refunded here. The paid acceptance identity travels in the checkpoint's
-    ``acceptance`` block, so a resume continues that panel instead of opening a
-    duplicate one. ``quiescent`` is the RELEASE gate: while it is false the
-    task holds, fenced and nonterminal, and keeps its native worker.
+    Review attempts retain their ``review_custody`` owners; tool futures retain
+    their callback holds. This sends or settles nothing. Paid acceptance identity
+    stays in the checkpoint, so Resume continues the same panel. While not
+    ``quiescent`` the task stays fenced/nonterminal and keeps its native worker.
     """
     review = drain_local_review_attempts(str(ctx.task_id), timeout_sec=timeout_sec)
     tool_futures = drain_local_tool_futures(ctx, timeout_sec=timeout_sec)
@@ -449,10 +475,12 @@ def set_budget_pause(root: Any, task_id: str, row: Dict[str, Any],
         retained_wait = ({"owner_wait": {**expected_owner_wait, "state": "retained"}}
                          if expected_owner_wait is not None else {})
         from ouroboros.pause_notices import notice_fields
-        notice = (notice_fields(current, root, task_id, str(row.get("pause_id") or ""), "budget")
-                  if row.get("state") == STATE_PAUSED and row.get("reason") == "budget"
+        notice = (notice_fields(current, root, task_id, str(row.get("pause_id") or ""), str(row.get("reason")))
+                  if row.get("state") == STATE_PAUSED and row.get("reason") in {"budget", REASON_AUTHORITY}
                   and (old.get("state") != STATE_PAUSED or old.get("pause_id") != row.get("pause_id")) else {})
-        return stamp_task_result_schema({**current, **retained_wait, **notice, "budget_pause": dict(row)})
+        from ouroboros.model_detach import detached_fields
+        return stamp_task_result_schema({**current, **retained_wait, **notice,
+                                         **detached_fields(current, row), "budget_pause": dict(row)})
 
     from ouroboros.task_store import patch_document
     patch_document(root, task_id, update)
@@ -460,9 +488,9 @@ def set_budget_pause(root: Any, task_id: str, row: Dict[str, Any],
 
 
 def budget_pause_row(root: Any, task_id: str) -> Dict[str, Any]:
-    from ouroboros.task_results import load_task_result
+    from ouroboros.store_hot_facts import controls
 
-    row = load_task_result(pathlib.Path(root), str(task_id), strict=True) or {}
+    row = controls(root, str(task_id))
     pause = row.get("budget_pause")
     return dict(pause) if isinstance(pause, dict) else {}
 
@@ -509,9 +537,12 @@ class ColdSleepDependencyBlocked(ValueError):
 def _hold_row(reason: str, *, exc: Optional[BaseException] = None,
               detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One typed hold fact: WHY this task is still fenced and nonterminal."""
+    from ouroboros.store import StoreBusy
     row: Dict[str, Any] = {"hold_reason": reason, "observed_at": time.time()}
     if exc is not None:
         row["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        row["retryable_contention"] = (isinstance(exc, StoreBusy) and exc.reason == "contention"
+                                       and getattr(exc, "rollback_confirmed", False) is True)
     if detail is not None:
         row["unsettled"] = {
             "review_attempts": (detail.get("review_attempts") or {}).get("unsettled") or [],
@@ -597,11 +628,12 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
         from ouroboros.model_sleep import cold_blockers
 
         blockers = cold_blockers(ctx, allow_transfer=True)
-        if any(blocker.get("kind") == "queued_member" for blocker in blockers):
+        from ouroboros.model_detach import is_detach
+        if blockers and (is_detach(getattr(ctx, "_model_sleep", None))
+                         or any(blocker.get("kind") == "queued_member" for blocker in blockers)):
             raise ColdSleepDependencyBlocked(f"selected queued dependency: {blockers}")
         if blockers:
             raise ColdSleepWritersUnsettled(f"{HOLD_COLD_WRITERS_UNSETTLED}: {blockers}")
-    usage = limit_ctx.accumulated_usage
     # Owner Q8, loop side: resolve THIS context's custody root, then share the
     # one observer body with the grant. A root that cannot be resolved is the
     # same typed ``custody_read=failed`` fact as an unreadable store.
@@ -617,14 +649,13 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
     reason = _RAIL_REASONS.get(rail, "budget")
     # Owner 2026-10-07 fork 1 = A: the owner's Pause stops the task's own runs at
     # once (work retained by the engine) and lets its started critics finish; the
-    # budget rail stops every run; a cold sleep observes only.
+    # budget rail stops every run; a cold sleep and an authority pause observe only.
     policy = (STOP_POLICY_TASK_OWNED if owner else STOP_POLICY_ALL if reason == "budget"
               else STOP_POLICY_OBSERVE)
     external = observe_task_runs(root, str(ctx.task_id), reason="budget_pause_uncovered_cost",
                                  read_error=read_error, stop_policy=policy)
     messages = limit_ctx.messages
     trace = limit_ctx.llm_trace if isinstance(limit_ctx.llm_trace, dict) else {}
-    seen = set(limit_ctx.owner_msg_seen or ())
     pending = pending_tool_call_ids(messages)
     point = {"round_idx": int(limit_ctx.round_idx),
              "phase": "partial_tool_batch_unknown" if pending else "boundary",
@@ -637,12 +668,12 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
     # The rail already stamped its terminal projection on the live usage, a hold leaves its
     # own transient row there, and the round's started stamp is a monotonic reading the pause
     # would stretch into the round's duration; none may travel into the resumed loop.
-    usage_for_state = {key: value for key, value in usage.items()
+    usage_for_state = {key: value for key, value in limit_ctx.accumulated_usage.items()
                        if key not in ("execution_status", "reason_code",
                                       "_best_effort_extracted", "budget_pause_hold", "_llm_round_started")}
     state = {
         **continuation_state(ctx, messages, trace, usage_for_state, limit_ctx.round_idx,
-                             list(limit_ctx.tool_schemas or []), seen),
+                             list(limit_ctx.tool_schemas or []), set(limit_ctx.owner_msg_seen or ())),
         "pause_id": pause_id, "reason": reason, "rail": rail, "scope": scope,
         "resume_point": point, "external_runs": external, "local_producers": local,
     }
@@ -697,68 +728,58 @@ def _exact_continuation_row(limit_ctx: Any, ctx: Any, *, pause_id: str, rail: st
         "resume_policy": RESUME_POLICY,
         "model_wait_quota_clock": (state.get("model_wait") or {}).get("quota_clock", {}),
     }
-    if reason == REASON_SLEEP:
-        from ouroboros.sleep_custody import request_fields
+    if reason in (REASON_SLEEP, REASON_AUTHORITY):  # sent ordinary runs pass to the body's exact custody
+        from ouroboros.sleep_custody import request_fields, seen_interactions
         row["project_id"] = str(getattr(ctx, "project_id", "") or (getattr(ctx, "task_metadata", None) or {}).get("project_id") or "")
-        transfer = request_fields(ctx, row)
+        try:
+            transfer = request_fields(ctx, row)
+        except ValueError as exc:  # an unbound or unknown sent run: ambiguous custody holds, never releases
+            raise ColdSleepWritersUnsettled(f"{HOLD_COLD_WRITERS_UNSETTLED}: {exc}") from exc
         if transfer:
             row["external_custody"] = transfer
-            from ouroboros.sleep_custody import seen_interactions
-            row["sleep"] = {**row["sleep"], "interaction_seen": seen_interactions(ctx, transfer["runs"])}
+            if reason == REASON_SLEEP:  # what the sleep's notifications already exposed, never consumption
+                row["sleep"] = {**row["sleep"], "interaction_seen": seen_interactions(ctx, transfer["runs"])}
     return row
 
 
 def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                   root_task_id: str = "") -> None:
-    """Enter the durable pause and unwind the loop; returns only when INELIGIBLE.
+    """Fence, save and unwind only after producer quiescence and a stored source.
 
-    Once the fence closes, the task is committed: it stays fenced and
-    NONTERMINAL until BOTH its local producers are quiescent AND the exact
-    continuation source is stored. Neither an unsettled producer nor a failed
-    write returns it to the old paid terminal rail — the task HOLDS instead,
-    keeping its native worker and its durable ``pausing`` state, publishing a
-    typed ``hold_reason`` to the owner, and buying no wrap-up call. A failed
-    write is a visible retained hold, never a claimed durable pause. The task's
-    existing Stop/Panic/deadline/cancel controls stay responsive throughout and
-    end a hold without a pause. A cold sleep discovered to block its selected
-    queued dependency instead withdraws its exact sleep seed and stays awake.
+    Unsettled producers/ambiguous transfer retain the worker and typed pausing hold;
+    no paid wrap-up or durable pause is invented. Stop/Panic/deadline/cancel end it.
+    Ineligibility or a definite authority-rail save failure returns unavailable;
+    other save failures hold. A cold sleep blocking its selected queued dependency
+    withdraws its exact seed and stays awake instead.
     """
-    tools = getattr(limit_ctx, "tools", None)
-    ctx = getattr(tools, "_ctx", None)
+    ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
     if ctx is None or rail not in RAILS:
         return None
-    # A context without a continuation owner, a task id or a durable root is
-    # excluded LOUDLY: the typed reason lands on the terminal ``resource_limit``.
-    # A direct owner-chat actor IS eligible — its continuation owner is the queue
-    # carrier the supervisor parks its record in (the direct lane binds
-    # ``direct_owner_wait`` to the same wait seam a pooled worker binds
-    # ``worker_owner_wait`` to).
+    # Missing owner/id/root is reported, not parked. Direct chat is eligible:
+    # its queue carrier binds direct_owner_wait at the pooled worker_owner_wait seam.
     ineligible = ("no_continuation_owner" if not callable(getattr(ctx, "owner_wait_callback", None))
                   else "no_task_id" if not str(getattr(ctx, "task_id", "") or "")
                   else "no_durable_root" if not (getattr(ctx, "budget_drive_root", None)
                                                  or getattr(ctx, "drive_root", None))
                   else "")
-    usage = limit_ctx.accumulated_usage
+    usage, authority = limit_ctx.accumulated_usage, _RAIL_REASONS.get(rail) == REASON_AUTHORITY
     if ineligible:
         usage["exact_pause_unavailable"] = ineligible
         return None
     task_id = str(ctx.task_id)
     # ONE tree for the seed's launch lock and the durable row: an explicit root (a refused
     # dispatch's group) verbatim, else ``member_fence``'s (a ToolContext has no root field).
-    from ouroboros.owner_pause import _member_coordinates
+    from ouroboros.owner_pause import LaunchBusy, _member_coordinates
 
     root_task_id = str(root_task_id or _member_coordinates(ctx)[1] or task_id)
     begin_dispatch_fence(task_id)
     setattr(ctx, "_budget_pausing", True)
     pause_id = uuid.uuid4().hex
     root = pathlib.Path(ctx.budget_drive_root or ctx.drive_root)
-    # A direct owner-chat turn has no admission-written RUNNING row (the pool
-    # mirrors one at dispatch; the direct lane writes a stub only for a turn
-    # with an origin ref). The pause row is a projection ON the task result, so
-    # an absent row is written as a plain RUNNING row first — merge-write, never
-    # a replacement of an existing one. A failed write is not swallowed into a
-    # fake pause, and an unreadable row is not ours to guess: the seed write
-    # below meets the same fault and HOLDS.
+    # Pool dispatch writes RUNNING; direct chat has a stub only with an origin ref.
+    # Pause projects onto that row: merge-write an absent stub, never replace one.
+    # Unknown is not absent. The seed below meets any remaining write/read fault;
+    # it holds, or reports the authority rail unavailable, never inventing a pause.
     from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
 
     try:
@@ -772,15 +793,13 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                 root, task_id, STATUS_RUNNING,
                 **({"chat_id": int(chat_id)} if chat_id not in (None, "") else {}),
                 _is_direct_chat=bool(getattr(ctx, "is_direct_chat", False)),
-                result="Task is pausing on its budget rail; its exact continuation is being stored.",
+                result="Task is pausing; its exact continuation is being stored.",
             )
         except Exception:
             log.debug("Pausable result row for %s could not be written ahead of the seed", task_id, exc_info=True)
-    # One monotonic generation per pause of this task (pauseA=1, pauseB=2, ...):
-    # every grant, handoff and revocation names the generation beside the pause
-    # id, so a carrier from an earlier pause can never read as the current one.
-    # An unreadable row yields generation 1 with no claim about the past: the
-    # seed write below meets the same fault and HOLDS.
+    # Grants/handoffs/revocations bind pause id AND monotonic generation, not an old pause.
+    # An unreadable row yields provisional generation 1, not past-state evidence;
+    # the seed write below still encounters that fault.
     try:
         generation = int(budget_pause_row(root, task_id).get("pause_generation") or 0) + 1
     except Exception:
@@ -795,13 +814,12 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
             "source_ref": None, "started_at": getattr(ctx, "task_started_at", None),
             "pausing_since": time.time(), "exact_continuation": True,
             "replay_safe": False, "auto_resume": False}
-    row: Dict[str, Any] = {}
     hold: Dict[str, Any] = {}
     prepared: Optional[Dict[str, Any]] = None
-    published = ""
-    opened = False
+    published, opened, interrupted = "", False, None
+    from ouroboros.model_wait import ModelWaitInterrupted  # a typed transfer control ends the hold as itself, at once
     while True:
-        control = _hold_control_reason(ctx)
+        control = interrupted.control_reason if interrupted is not None else _hold_control_reason(ctx)
         if control:
             # The owner's own control, not a monetary decision. No durable pause
             # was reached, so the opened row is closed as abandoned (typed, never
@@ -822,9 +840,7 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
             _publish_hold(ctx, {"pause_id": pause_id, "rail": rail, "state": "hold_ended",
                                 "hold_reason": str(hold.get("hold_reason") or ""),
                                 "ended_by": control})
-            from ouroboros.model_wait import ModelWaitInterrupted
-
-            raise ModelWaitInterrupted(control)
+            raise interrupted or ModelWaitInterrupted(control)
         if not opened:
             try:
                 from ouroboros.owner_pause import launch_lock
@@ -836,6 +852,7 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                 opened = True
             except Exception as exc:
                 hold = _hold_row(HOLD_PAUSE_RECORD_UNWRITABLE, exc=exc)
+                hold["retryable_contention"] |= isinstance(exc, LaunchBusy) and exc.reason == "contention"
         if opened:
             try:
                 local = local_producer_observation(ctx, timeout_sec=_HOLD_POLL_SEC)
@@ -861,6 +878,8 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                         row = confirm_release(ctx, prepared, seed, control=_hold_control_reason)
                         if row is None:
                             usage.pop("budget_pause_hold", None)
+                            if authority:  # withdrawn: no pause stands; the caller ends the work truthfully
+                                return usage.update(exact_pause_unavailable="external_custody_unconfirmed")
                             limit_ctx.messages.append({"role": "user", "content": (
                                 "[SYSTEM NOTICE]\nCold sleep was not taken: transfer was not confirmed or an owner Pause won. "
                                 "The exact sleep request was withdrawn; your external work remains yours.")})
@@ -886,8 +905,24 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                         return
                 except ColdSleepWritersUnsettled as exc:
                     hold = _hold_row(HOLD_COLD_WRITERS_UNSETTLED, exc=exc)
-                except Exception as exc:
-                    hold = _hold_row(HOLD_CHECKPOINT_UNWRITABLE, exc=exc)
+                except ModelWaitInterrupted as exc:  # the task's own control, raised during the transfer
+                    interrupted = exc
+                    continue
+                except Exception as exc:  # a transfer already in flight is ambiguous custody: it holds
+                    hold = _hold_row(HOLD_COLD_WRITERS_UNSETTLED if (prepared or {}).get("external_custody")
+                                     else HOLD_CHECKPOINT_UNWRITABLE, exc=exc)
+        if (authority and hold.get("hold_reason") in {HOLD_PAUSE_RECORD_UNWRITABLE, HOLD_CHECKPOINT_UNWRITABLE}
+                and not (hold.get("retryable_contention") and (not opened or prepared is not None))):
+            # Only confirmed save contention retries the same seed/prepared row; other save failures end as infrastructure.
+            try:
+                if opened:  # the seed is closed typed, keeping any captured source; a broken store may refuse even that
+                    set_budget_pause(root, task_id, {**seed, **({"source_ref": prepared.get("source_ref")} if prepared else {}),
+                                     "state": STATE_ABANDONED, "abandoned_at": time.time(), "abandon_reason": hold["hold_reason"]}, expected_pause_id=pause_id)
+            except Exception:
+                log.warning("Abandoned authority pause row for %s could not be closed", task_id, exc_info=True)
+            end_dispatch_fence(task_id)
+            ctx._budget_pausing, usage["exact_pause_unavailable"] = False, str(hold["hold_reason"])
+            return None
         usage["budget_pause_hold"] = dict(hold)
         if str(hold.get("hold_reason") or "") != published:
             # On CHANGE only: a poll interval is neither a log nor a ledger cadence.
@@ -898,8 +933,8 @@ def request_pause(limit_ctx: Any, *, rail: str, scope: str, reason_text: str,
                                 "state": STATE_PAUSING, **hold})
         time.sleep(_HOLD_POLL_SEC)
     usage.pop("budget_pause_hold", None)
-    usage["reason_code"] = {RAIL_OWNER_PAUSE: OWNER_REASON_CODE, RAIL_MODEL_SLEEP: "model_sleeping"}.get(
-        rail, REASON_CODE)
+    usage["reason_code"] = AUTHORITY_REASON_CODE if authority else {
+        RAIL_OWNER_PAUSE: OWNER_REASON_CODE, RAIL_MODEL_SLEEP: "model_sleeping"}.get(rail, REASON_CODE)
     usage["execution_status"] = "paused"
     usage["budget_pause"] = {key: row[key] for key in ("pause_id", "rail", "scope", "paused_at", "resume_point")}
     from ouroboros.working_checkpoint import flush_content_acks
@@ -926,11 +961,11 @@ def enter_owner_pause(limit_ctx: Any) -> None:
     hold. Returns only when the fence is open.
     """
     from ouroboros.model_wait import ModelWaitInterrupted
-    from ouroboros.owner_pause import member_fence
+    from ouroboros.owner_pause import wait_member_fence
 
     ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
     while True:
-        fence = member_fence(ctx) if ctx is not None else {}
+        fence = wait_member_fence(ctx) if ctx is not None else {}
         if not fence:
             return
         if fence.get("state") == "unknown":
@@ -957,7 +992,7 @@ def enter_owner_pause(limit_ctx: Any) -> None:
                   reason_text="The owner paused this task tree.")
     usage = limit_ctx.accumulated_usage
     published = False
-    while member_fence(ctx):
+    while wait_member_fence(ctx):
         control = _hold_control_reason(ctx)
         if control:
             raise ModelWaitInterrupted(control)
@@ -995,31 +1030,7 @@ def _hold_until(ctx: Any, usage: Dict[str, Any], reason: str, attempt: Callable[
             time.sleep(_HOLD_POLL_SEC)
 
 
-def enter_cold_sleep(limit_ctx: Any) -> None:
-    """The round boundary after a COLD sleep was armed (``model_sleep``).
-
-    The loop's own continuation is saved and the process parks under the same
-    exact-pause carrier; nothing wakes it but its selected sources through the
-    supervisor's sleep-wake policy. Bound external work needs the body's exact
-    acceptance before release. Other writers and local services refuse the park:
-    the model is told the blockers and stays awake — never a killed helper.
-    """
-    ctx = getattr(getattr(limit_ctx, "tools", None), "_ctx", None)
-    sleep = getattr(ctx, "_model_sleep", None) if ctx is not None else None
-    if not isinstance(sleep, dict) or sleep.get("mode") != "cold":
-        return
-    from ouroboros.model_sleep import cold_blockers
-
-    blockers = cold_blockers(ctx, allow_transfer=True)
-    if blockers:
-        ctx._model_sleep = None
-        limit_ctx.messages.append({"role": "user", "content": (
-            "[SYSTEM NOTICE]\nYour cold sleep was not taken: this task still runs "
-            + "; ".join(f"{b['kind']} {b.get('run_id') or b.get('name') or ''}" for b in blockers)
-            + ". Sleep warm, wait for it, or stop it first.")})
-        return
-    request_pause(limit_ctx, rail=RAIL_MODEL_SLEEP, scope="task", reason_text="The model chose a cold sleep.")
-    ctx._model_sleep = None  # no continuation owner: the ordinary loop continues awake
+from ouroboros.model_sleep import enter_cold_sleep  # noqa: E402, F401 -- existing public seam
 
 
 # Fields of a direct turn's task record that never travel in its pause event:
@@ -1053,6 +1064,8 @@ def pause_event(task: Dict[str, Any], pause: Dict[str, Any]) -> Dict[str, Any]:
     from ouroboros.utils import utc_now_iso
 
     task_id = str(task.get("id") or "")
+    from ouroboros.model_detach import detached_fields
+    task = {**task, **detached_fields(task, pause)}
     direct = bool(task.get("_is_direct_chat"))
     return {
         "type": "budget_pause",
@@ -1196,25 +1209,16 @@ def load_budget_pause(ctx: Any, handoff: Optional[Dict[str, Any]] = None) -> Dic
 
 def _refresh_planning_threshold(ctx: Any, budget_remaining_usd: Optional[float],
                                 usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Owner Q10: after an explicit Resume of a GRACEFUL stop, an explicit
-    ``cost_hard_stop_pct`` profile's planning threshold moves forward within
-    the money still authorized, so the task is not paused again on the very
-    number that paused it. The hard tree cap and the global ledger fence are
-    untouched; the planning margin is what the owner's explicit act spends.
-    Only that explicit authority moves: a producer allowance (a wake's daily
-    remainder) is never widened because a cap or the wallet is larger, and a
-    disabled or unknown ceiling is never re-armed. Returns the disclosure row.
+    """Refresh an explicitly configured graceful-stop margin on explicit Resume.
 
-    Every number is read from the AUTHORITATIVE ledger NOW: the global wallet
-    from the usage projection, the tree's cumulative spend and its ACTUAL
-    root cap from a fresh root-accounting read (an owner may have raised the
-    cap while the task was paused), the task's own cumulative cost from the
-    restored usage. A wallet the ledger cannot answer, a degraded tree read
-    or one the ledger could not answer NOW (the strict read never answers
-    from the display cache, so a snapshot cached before a failed read is not
-    room), or unknown spend REFUSES the refresh (the dispatch-time
-    ``budget_remaining_usd`` is disclosed, never used as room): unknown money
-    is not room.
+    Only ``cost_hard_stop_pct`` advances, within authorized room, avoiding another
+    pause at the same threshold. Hard tree/global caps stay; producer allowances
+    never expand, and disabled/unknown ceilings never re-arm (owner Q10).
+    Read the current wallet, cumulative tree spend and actual root cap strictly
+    from the ledger (the owner may have raised it), own cost from restored usage.
+    Unavailable wallet, degraded/stale tree or unknown spend refuses refresh:
+    neither display cache nor dispatch-time budget_remaining_usd proves room.
+    Return the disclosure, including the latter as observation only.
     """
     from ouroboros import task_pacing
     from ouroboros.loop_budget import _loop_tree_accounting, _wrapup_global_remaining
@@ -1316,15 +1320,11 @@ def _reopen_owner_fence(ctx: Any, usage: Dict[str, Any], *, fence_id: str = "", 
 def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], grant: Dict[str, Any],
                        refresh: Dict[str, Any], messages: list) -> None:
     """The resumed model's first facts: UNKNOWN host rows and how it continued, or its wake."""
-    # The grant re-observed custody at Resume time and wrote that observation
-    # on the row; the checkpoint's copy is the pause-time reading. Disclose the
-    # freshest one the durable rows carry.
+    # Prefer the grant-time re-observation over the checkpoint's pause-time copy;
+    # label its age so fresh evidence never appears stale (or vice versa).
     fresh_observation = row.get("external_runs") if isinstance(row.get("external_runs"), dict) else None
     external_observation = fresh_observation if fresh_observation is not None else (
         state.get("external_runs") or {})
-    # Name WHICH reading this is: the grant's re-observation and the checkpoint's
-    # pause-time copy license different amounts of trust, and a list labelled as
-    # pause-time history reads as stale even when it is the fresh one.
     external_basis = ("re-observed at this Resume" if fresh_observation is not None
                       else "as recorded at the pause, NOT re-observed")
     external = external_observation.get("runs") or []
@@ -1335,10 +1335,10 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
     pending = pending_tool_call_ids(messages)
     abandoned = [str(item) for item in ((row.get("resume_point") or {}).get("abandoned_model_attempts") or [])]
     if str(row.get("reason") or "") == REASON_SLEEP and not pending:
-        from ouroboros.model_sleep import wake_notice
+        from ouroboros import model_sleep
 
         slept = max(0.0, float(grant["consumed_at"]) - float(row.get("paused_at") or grant["consumed_at"]))
-        messages.append(wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
+        messages.append(model_sleep.wake_notice({**(row.get("sleep") or {}), "mode": "cold"},
                                     str((row.get("sleep_ready") or {}).get("reason") or ""), slept))
         if row.get("external_custody"):
             messages.append({"role": "user", "content": (
@@ -1346,10 +1346,11 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
                 "You remain their author and may inspect, answer, message or cancel them. "
                 "Retained output is not consumed or accepted. Current observations: "
                 + json.dumps(external, ensure_ascii=False))})
-            from ouroboros.sleep_custody import record_question_notice
-            record_question_notice(ctx, row, external)
+        model_sleep.append_question_notice(ctx, str((row.get("sleep_ready") or {}).get("reason") or ""), messages,
+                                           shown=external if row.get("external_custody") else ())
         return
-    kind = "owner Pause" if str(row.get("reason") or "") == REASON_OWNER else "budget pause"
+    kind = {REASON_OWNER: "owner Pause", REASON_AUTHORITY: f"technical pause ({str(row.get('rail')).replace('_', ' ')})"}.get(
+        str(row.get("reason") or ""), "budget pause")
     held = ""
     if refresh.get("reason") == "producer_allowance_not_expanded" and refresh.get("ceiling_usd") is not None:
         # Said, not implied: Resume keeps the allowance the task was launched with.
@@ -1359,6 +1360,9 @@ def _resume_disclosure(ctx: Any, row: Dict[str, Any], state: Dict[str, Any], gra
     from ouroboros.working_checkpoint import close_unanswered_calls
 
     close_unanswered_calls(messages, kind)
+    from ouroboros.owner_wait import owner_pause_resume_notice
+    if row.get("retained_owner_wait_id") and state.get("owner_pause"):
+        messages.append(owner_pause_resume_notice(ctx, state, "owner_input", cold=True))
     messages.append({"role": "user", "content": (
         f"[SYSTEM NOTICE]\nThis task continued from its {kind} after an explicit owner Resume "
         f"(paused {ctx._budget_paused_sec:.0f}s; rail: {row.get('rail')}; planning threshold "
@@ -1407,12 +1411,12 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
     grant = dict(row.get("grant") or {})
     # The start's own authority, never the saved number alone (#1128).
     ctx._cost_ceiling = restore_cost_ceiling(ctx, state.get("cost_ceiling"))
-    refresh: Dict[str, Any] = {"refreshed": False, "reason": "hard_rail"}
+    refresh: Dict[str, Any] = {"refreshed": False, "reason": "not_a_money_rail" if row.get("reason") == REASON_AUTHORITY else "hard_rail"}
     graceful = str(row.get("rail") or "") in GRACEFUL_RAILS
     if graceful:
         refresh = _refresh_planning_threshold(ctx, budget_remaining_usd, usage)
     waiter = getattr(ctx, "model_wait_context", None)
-    restored, published = len(messages), ""
+    restored, published, exposure = len(messages), "", getattr(ctx, "_sleep_interaction_seen", None)
     # Grant to consumption is still the sleep, or the bounded task's Pause (the grant's
     # live exclusion, #939): folded once below. Otherwise the legacy clock runs on.
     excluded = row.get("reason") == REASON_SLEEP or bool((getattr(ctx, "budget_pause_resume", None) or {})
@@ -1452,7 +1456,7 @@ def resume_paused_loop(tools: Any, state: Dict[str, Any], messages: list, trace:
                              expected_grant_id=str(grant.get("grant_id") or ""))
             break
         except Exception as exc:
-            ctx._budget_paused_sec = live[0]
+            ctx._budget_paused_sec, ctx._sleep_interaction_seen = live[0], exposure  # unshown with its disclosure
             if waiter is not None:
                 with waiter.lock:
                     waiter.budget_paused_sec, waiter.sleep_started_monotonic = live[1:]

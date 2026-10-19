@@ -35,7 +35,7 @@ def _write(repo, files):
     for name, value in files.items():
         path = repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(value, encoding="utf-8")
+        path.write_text(value, encoding="utf-8", newline="")
 
 
 @pytest.fixture
@@ -65,6 +65,7 @@ def candidate(tmp_path, monkeypatch):
         for name, value in attrs.items():
             monkeypatch.setattr(module, name, value, raising=False)
     _git(repo, "init")
+    _git(repo, "config", "core.autocrlf", "false")
     _git(repo, "config", "user.name", "Fixture")
     _git(repo, "config", "user.email", "fixture@example.invalid")
     _write(repo, {**_release(), "change.py": "value = 1\n"})
@@ -229,7 +230,7 @@ def test_free_tool_json_reports_cumulative_books_with_an_explicit_byte_source(ca
     assert result["source"] == source and result["book_balance"]["source"] == "worktree"
     note = result["book_balance"]["note"]
     assert "+18 B vs HEAD" in note and "+36 B vs refs/remotes/official-renamed/ouroboros" in note
-    assert "Local commits are not blocked" in note
+    assert "local commits are not blocked" in note
     assert _diagnose(ctx, source, paths=["change.py"])["book_balance"]["note"] == ""
 
 

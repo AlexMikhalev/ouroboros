@@ -229,6 +229,7 @@ def test_discard_is_engine_disposition_not_fake_apply(tmp_path, monkeypatch):
 def test_lost_apply_leaves_existing_intent_pending(tmp_path, monkeypatch):
     ctx, target = context(tmp_path, monkeypatch)
     engine, held = DirectoryEngine(target, lost_apply=True), entry(ctx, target, "copy")
+    capture_directory_result(ctx.drive_root, held, engine)  # the body's capture, before the decision (#1969)
     with pytest.raises(OSError, match="response lost"):
         integrate_directory_result(ctx, held, "apply", "accepted", engine)
     assert held.patch_apply_pending and not held.patch_disposed
@@ -243,6 +244,7 @@ def test_lost_apply_leaves_existing_intent_pending(tmp_path, monkeypatch):
 def test_selected_apply_keeps_remaining_results_undisposed(tmp_path, monkeypatch):
     ctx, target = context(tmp_path, monkeypatch)
     engine, held = DirectoryEngine(target), entry(ctx, target, "copy")
+    capture_directory_result(ctx.drive_root, held, engine)  # the body's capture, before the decision (#1969)
     get_run = engine.get_run
 
     def partially_delivered(run_id):
@@ -354,3 +356,54 @@ def test_research_folder_cannot_select_direct_writes(tmp_path, monkeypatch):
     assert refused['status'] == 'refused' and refused['definitely_unrun']
     assert refused['reason'] == 'directory_execution_unavailable'
     assert not engine.posts
+
+
+class _NoProductEngine(DirectoryEngine):
+    """A finished run whose engine answer carries no file work product."""
+
+    state = "succeeded"
+
+    def get_run(self, rid):
+        return {"summary": {"state": self.state, "result": {"applyState": "not_applied"}}}
+
+
+@pytest.mark.parametrize("strategy", ["direct", "copy"])
+@pytest.mark.parametrize("decision", ["apply", "reject"])
+def test_a_finished_run_without_file_work_product_is_finished_with_no_changes(tmp_path, monkeypatch, strategy, decision):
+    """VERIFY_SWEEPS S3: such a run stayed collection-pending, re-collected every sweep pass
+    (a daemon read, a capture attempt, a money read) because the engine's final answer was
+    kept as a retryable capture failure."""
+    from ouroboros.delegate_custody_current import collection_pending
+
+    ctx, target = context(tmp_path, monkeypatch)
+    engine, held = _NoProductEngine(target, strategy), entry(ctx, target, strategy)
+    captured = capture_directory_result(ctx.drive_root, held, engine)
+    assert captured["status"] == "ready" and captured["no_changes"] is True and captured["file_outputs"] == []
+    assert held.patch_captured and capture_directory_result(ctx.drive_root, held, engine) == captured
+    held.terminal_source = {"sha256": "t"}  # every other collection duty done: only the capture was open
+    held.ledger_recorded = held.output_complete = True
+    held.output_source, held.output_terminal_sha = "final/answer.md", "t"
+    assert not collection_pending(held)
+    response = json.loads(integrate_directory_result(ctx, held, decision, "nothing to take", engine))
+    assert response["status"] == ("applied" if decision == "apply" else "rejected")
+    assert held.patch_disposed == response["status"] and not engine.applies
+    assert engine.decisions == ([] if strategy == "direct" else [({"action": "discard"}, engine.decisions[0][1])])
+
+
+@pytest.mark.parametrize("strategy", ["direct", "copy"])
+def test_an_unsuccessful_run_without_file_work_product_is_never_reported_as_no_changes(tmp_path, monkeypatch, strategy):
+    """Absence after a failed run proves nothing: its capture is closed (no sweep redo), Apply applies
+    nothing and keeps the engine copy, and only Reject releases it."""
+    ctx, target = context(tmp_path, monkeypatch)
+    engine, held = _NoProductEngine(target, strategy), entry(ctx, target, strategy)
+    engine.state = "failed"
+    captured = capture_directory_result(ctx.drive_root, held, engine)
+    assert captured["status"] == "ready" and captured["no_changes"] is False and captured["work_product"] == "absent"
+    assert "changes, if any, were not captured" in captured["note"]
+    assert ("already in the folder" in captured["note"]) is (strategy == "direct")
+    refused = integrate_directory_result(ctx, held, "apply", "take it", engine)
+    assert refused.startswith("⚠️ INTEGRATE_DELEGATED_NOTHING_CAPTURED") and not engine.decisions and not engine.applies
+    assert not held.patch_disposed
+    response = json.loads(integrate_directory_result(ctx, held, "reject", "nothing to take", engine))
+    assert response["status"] == "rejected" and held.patch_disposed == "rejected" and not engine.applies
+    assert engine.decisions == ([] if strategy == "direct" else [({"action": "discard"}, engine.decisions[0][1])])

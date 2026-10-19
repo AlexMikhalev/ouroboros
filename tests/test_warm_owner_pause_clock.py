@@ -149,9 +149,15 @@ def test_failed_pool_snapshot_never_leaks_or_double_counts_pause(pool, monkeypat
     worker_owner_wait.handle_owner_wait(event, workers)
     if failure_phase == "park":
         assert pool.original.in_q.get_nowait()["phase"] == "refused"
-        assert "sleep_parked_at" not in pool.meta
+        # Refusal grants no capacity or retry, but this live worker's known
+        # sleep remains sleep until the physical wait ends, not execution.
+        assert pool.original.active_capacity and pool.meta["sleep_parked_at"] == clock[0]
+        assert worker_owner_wait.has_owner_wait_checkpoint(pool.meta, 3)
+        assert not worker_owner_wait.waiting_on_owner(pool.meta, 3)
+        worker_owner_wait.retry_pending_owner_waits(workers)
+        assert pool.original.in_q.empty()
         clock[0] += 200
-        assert execution_elapsed_seconds(pool.meta, clock[0]) == 280
+        assert execution_elapsed_seconds(pool.meta, clock[0]) == 80
         return
     assert pool.original.in_q.get_nowait()["phase"] == "parked"
     clock[0] += 200
@@ -162,9 +168,9 @@ def test_failed_pool_snapshot_never_leaks_or_double_counts_pause(pool, monkeypat
     assert pool.original.in_q.empty()
     assert pool.meta["budget_paused_sec"] == 20
     assert execution_elapsed_seconds(pool.meta, clock[0]) == 80
-    # The failed grant's maintenance tick replenished capacity. Its replacement
-    # must finish the normal startup handshake before it can lend that slot back.
-    workers.WORKERS[1].reaping = False
+    # The failed grant minted nothing: its lent capacity is still free (demand
+    # growth belongs to assignment), so the next tick grants the same stack.
+    assert set(workers.WORKERS) == {0}
     worker_owner_wait.maintain_owner_wait_capacity()
     assert pool.original.in_q.get_nowait()["phase"] == "resume_granted"
     assert pool.meta["budget_paused_sec"] == 220

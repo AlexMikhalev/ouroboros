@@ -1,18 +1,19 @@
 // Pure chat-activity helpers shared by chat.js and dependency-free node tests:
 // live-card presentation projections (moved verbatim from chat.js) plus the
-// in-flight direct/ephemeral turn status reducer and snapshot hydration.
-import { executorIdentityMarkup, joinMetaParts } from './harness_presentation.js';
+// census snapshot hydration. The room's status word is the server's (work_status.js).
+import { META_PART_SEPARATOR, executorIdentityMarkup } from './harness_presentation.js';
 import { effortChipMarkup } from './effort_chip.js';
 import { resultFilesItemHtml } from './result_files.js';
 import { taskSourceDownloadUrl, apiFetch } from './api_client.js';
 import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
-import { createSystemMessageActions } from './ui_helpers.js';
-import { projectReference } from './project_reference.js';
+import { fitText, fullText } from './text_fit.js';
 import { delegatedActivityBodyHtml, delegatedHeadline, delegatedLineView } from './delegated_activity.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
-import { activityWaitPhase, pausePhaseLabel, modelActivityPresentation, taskActivityPresentation } from './task_phase_chip.js';
-import { currentLanguage, fmt, isEnglish, tr, tx } from './i18n.js';
+import { paintLiveDetail } from './task_phase_chip.js';
+import { fmt, tr, tx } from './i18n.js';
+import { formatMsgTime } from './utils.js';
 import { hostRowDisplayText } from './host_notice_text.js';
+export { bootPhase, startingStatus, supervisorReady } from './host_starting_status.js';
 import {
     joinMarkdownHeadings, MARKDOWN_FENCED_CODE, accountedUpperBound,
     accountedUpperBoundWithChildren,
@@ -373,7 +374,7 @@ export function isNonTerminalMediaHistoryRow(msg) {
  * distinction for the replay passes and the pager's page-row count.
  */
 export function isReplayEvidenceRow(row) {
-    return ['quiz_answer', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
+    return ['quiz_answer', 'quiz_closed', 'task_evidence'].includes(row?.system_type) || Boolean(row?.summary_kind && row?.historical_terminal);
 }
 
 export function isForegroundLiveCard(record) {
@@ -396,6 +397,8 @@ export async function confirmAndSendPanic(deps) {
     });
     if (shouldFirePanic(decision)) {
         deps.ws.send({ type: 'command', cmd: '/panic' });
+        // Only after the stop is on its way: the page's own work (skills' page modules) stops with it.
+        globalThis.dispatchEvent?.(new CustomEvent('ouro:panic'));
         return true;
     }
     return false;
@@ -648,11 +651,8 @@ export function headerBudgetPresentation(data) {
 }
 
 /**
- * Render task money without conflating unknown/non-final values with a final
- * zero.  The returned strings are card metadata, not another cost authority.
- */
-/**
- * Project the producer's scoped carrier (#498) into card meta. The carrier
+ * Project the producer's scoped carrier (#498) into card meta: strings, not another cost
+ * authority, never conflating unknown/non-final values with a final zero. The carrier
  * answers the whole question in one fact — which scope the number describes,
  * whether a zero is EVIDENCED, whether anything in that scope is unpriced — so
  * a frame that has one never re-derives it from two half-matching fields.
@@ -670,14 +670,13 @@ export function costPresentationMeta(presentation) {
         return ['Cost unknown'];
     }
     const money = `$${Number(amount).toFixed(2)}`;
-    if (presentation.has_unpriced) {
-        // Mixed: this is only the tracked subtotal. The reason is stated in WORDS
-        // beside it — a title attribute is invisible on touch, to assistive
-        // technology, and in a copied line.
-        return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`, 'some steps have no price'];
-    }
+    if (presentation.has_unpriced) return [`Tracked: ${presentation.tracked_final ? money : `up to ${money}`}`];
     return [presentation.tracked_final ? money : `up to ${money}`];
 }
+
+/** Why a mixed subtotal reads `Tracked:`: said in the card's details, never a hover-only title. */
+export const costPresentationDetail = (presentation) => (costPresentationMeta(presentation)?.[0]?.startsWith('Tracked: ')
+    ? 'Cost: some steps have no price, so Tracked counts only the priced steps.' : '');
 
 export function taskCostMeta(payload = {}) {
     // Presence means a VALUE, exactly as in `resolveCostPair`: a browser
@@ -750,12 +749,14 @@ export function taskCostMeta(payload = {}) {
 export function taskCostProjection(payload = {}, rawTs = '') {
     const meta = taskCostMeta(payload);
     if (!meta.length) return null;
+    const detail = costPresentationDetail(payload.cost_presentation);
     const unavailable = payload.cost_accounting_status === 'unavailable' || payload.cost_presentation === null;
     const presentation = payload.cost_presentation;
     const legacyRollup = payload.cost_presentation === null && (
         payload.accounted_upper_bound_usd_with_children !== undefined || payload.cost_usd_with_children !== undefined);
     return {
         meta,
+        ...(detail ? { detail } : {}),
         ts: rawTimestampEpoch(rawTs),
         ...(presentation?.scope ? { scope: presentation.scope } : legacyRollup ? { scope: 'rollup' } : {}),
         // Only a SETTLED ledger value is final. "unavailable" is an honest
@@ -820,12 +821,14 @@ export function clearStickyCardState(record) {
     // A recycled slot must not inherit the previous cycle's finalizing hold —
     // nor the outcome observed under it (#1110), which would otherwise paint the
     // new cycle's chip with the old cycle's Failed.
-    Object.assign(record, { finalizingHold: false, censusPhase: '', observedOutcome: '' });
+    Object.assign(record, { finalizingHold: false, censusPhase: '', observedOutcome: '', workView: null });
     // The activity clock is cycle state too: a recycled slot ('active') would
     // otherwise open showing the previous cycle's "updated" time.
     record.latestActivityTs = '';
+    record.latestActivityRaw = '';
+    record.startedAt = 0;
     if (record.activityEl) {
-        record.activityEl.textContent = '';
+        fitText(record.activityEl, '', 0);  // also drops a portal line's word-cut fit
         record.activityEl.removeAttribute('title');
     }
     record.modelExecution = null;
@@ -922,13 +925,13 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
  * caller that lands mid-flight is coalesced with every other forced caller
  * into ONE follow-up read that starts when the in-flight read settles — the
  * first forced caller receives that request, the others resolve to null once
- * the follow-up has applied or failed. `begin()` stays the ungated clock for
- * synthetic generation bumps. A gated request settles through `apply`/`fail`.
+ * the follow-up has applied or failed. Gated requests settle via `apply`/`fail` even if a callback throws.
+ * Only `fail` fans out `onUnavailable`; socket changes and confirmed mutations `retire()` older bodies.
  */
 export function createStateSnapshotSequencer(onApply, now = () => Date.now(), onUnavailable = () => {}) {
     let requestedGeneration = 0;
     let appliedGeneration = 0;
-    // Newest applied body until an unavailable read retires it (late-mount seed).
+    // Newest applied body until a failed read or retire() clears it (late-mount seed).
     let latest = null;
     let inflight = null;
     let settled = null;
@@ -946,6 +949,7 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
     };
     return {
         begin,
+        retire() { appliedGeneration = begin().generation; latest = null; },
         gate(force = false) {
             if (!inflight) return Promise.resolve(open());
             if (!force) return settled.promise.then(() => null);
@@ -971,18 +975,12 @@ export function createStateSnapshotSequencer(onApply, now = () => Date.now(), on
                 if (!generation || generation <= appliedGeneration) return false;
                 appliedGeneration = generation;
                 latest = null;
-                onUnavailable();
+                onUnavailable(request.requestedAt, generation);
                 return true;
             } finally { settle(request); }
         },
         latest: () => latest,
     };
-}
-
-// В9: one /api/state body's `supervisor_ready`, null when it states nothing. Only
-// true ends Starting…; a `supervisor_error` is not readiness and is not read here.
-export function supervisorReady(data) {
-    return typeof data?.supervisor_ready === 'boolean' ? data.supervisor_ready : null;
 }
 
 /**
@@ -1065,98 +1063,12 @@ export function positiveTaskTerminalFact(row) {
 }
 
 /**
- * Whether an unkeyed live row ends the unscoped Main turn, by its typed kind. An
- * incident report, a note Ouroboros left for this moment and a skill's notice arrive
- * in the middle of a conversation and conclude nothing.
+ * Whether an unkeyed live row ends the unscoped Main turn: only a legacy model final does.
+ * Voice confers no finality (DESIGN), so a System row concludes nothing; one answering a
+ * submission names its `client_message_id`, and only that `Sending` settles.
  */
 export function unkeyedFrameEndsTurn(row) {
-    return !['terminal_incident', 'reminder', 'skill_notice'].includes(String(row?.system_type || ''));
-}
-
-/**
- * One header reducer: offline > active managed work > pausing > direct turns > pending submissions
- * > finalizing wrap-up (ended work, any kind, writing its reflection) > access wait > queued work > answer
- * wait > unknown > paused > Project hold > idle. A queued task ranks below an unacknowledged submission; neither
- * admission nor a connected socket proves execution or readiness. Idle says Starting until the supervisor confirms
- * readiness. Tasks are counted independently, so one paused task never hides another working.
- */
-export function computeDerivedChatStatus({
-    isConnected = true,
-    hasActiveLiveCard = false,
-    activeDirectCount = 0, activeManagedCount = 0,
-    queuedManagedCount = 0, pausingManagedCount = 0,
-    pausedManagedCount = 0, finalizingCount = 0, hasFinalizingLiveCard = false,
-    pausedCause = '',
-    waitingOwnerCount = 0, unknownActivityCount = 0,
-    waitingModelCount = 0,
-    projectWaitLabel = '',
-    pendingSubmissionsCount = 0,
-    supervisorStarting = false,
-    modelActivity = null,
-} = {}) {
-    if (!isConnected) return { kind: 'offline', text: 'Reconnecting...', showDots: false };
-    const observed = modelActivity && { kind: modelActivity.waiting ? 'online' : 'thinking', text: modelActivity.text, showDots: modelActivity.motion };
-    if (hasActiveLiveCard || activeManagedCount > 0) return (activeManagedCount > 0 && observed) || { kind: 'thinking', text: 'Working...', showDots: !hasActiveLiveCard };
-    // Sent work still finishing under the owner's Pause: settling, not working.
-    if (pausingManagedCount > 0) return { kind: 'thinking', text: 'Pausing…', showDots: true };
-    if (activeDirectCount > 0) return observed || { kind: 'thinking', text: taskActivityPresentation({ phase: 'working' }).text, showDots: true };
-    if (pendingSubmissionsCount > 0) return { kind: 'thinking', text: 'Sending...', showDots: true };
-    if (finalizingCount > 0 || hasFinalizingLiveCard) return { kind: 'thinking', text: taskActivityPresentation({ phase: 'finalizing' }).text, showDots: true };
-    if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
-    if (queuedManagedCount > 0) return { kind: 'thinking', text: 'Queued...', showDots: true };
-    if (waitingOwnerCount > 0) return { kind: 'online', text: tr('task.chip.waiting_for_answer', 'Waiting for your answer'), showDots: false };
-    if (unknownActivityCount > 0) return { kind: 'online', text: 'Activity unconfirmed', showDots: false };
-    // Mixed or unknown causes stay generic; paused work never claims Running.
-    if (pausedManagedCount > 0) return { kind: 'online', text: pausePhaseLabel('budget_paused', pausedCause), showDots: false };
-    if (projectWaitLabel) return { kind: 'online', text: projectWaitLabel, showDots: false };
-    if (supervisorStarting) return { kind: 'starting', text: 'Starting…', showDots: false };
-    return { kind: 'online', text: 'Online', showDots: false };
-}
-
-// Count census activity and unfinished cards; parked/waiting rows retain their own state.
-export function chatStatusCounts(activities, records, isWaiting = () => false) {
-    const counts = { activeDirectCount: 0, activeManagedCount: 0, queuedManagedCount: 0, pausingManagedCount: 0,
-        pausedManagedCount: 0, unknownActivityCount: 0, hasActiveLiveCard: false, waitingModelCount: 0, finalizingCount: 0, hasFinalizingLiveCard: false,
-        projectWaitLabel: '', waitingOwnerCount: 0, pausedCause: '' };
-    const pauseCauses = new Set(), calls = new Map();
-    for (const [id, entry] of activities) {
-        // A Project verification hold is a static wait: never queued or working,
-        // while its pause/pausing/unknown census phase still counts as itself.
-        const projectHold = entry?.project_admission_hold?.label;
-        if (projectHold) counts.projectWaitLabel = projectHold;
-        else if (isWaiting(id)) continue;
-        const waitPhase = activityWaitPhase(entry);
-        if (entry?._activityUnconfirmed || entry?.phase === 'unknown') counts.unknownActivityCount += 1;
-        else if (entry?.phase === 'budget_pausing') counts.pausingManagedCount += 1;
-        else if (entry?.phase === 'budget_paused') { counts.pausedManagedCount += 1; pauseCauses.add(entry.pause_cause || ''); }
-        else if (waitPhase === 'unknown') counts.unknownActivityCount += 1;
-        else if (waitPhase === 'owner_wait') counts.waitingOwnerCount += 1;
-        else if (projectHold) continue;
-        else if (String(entry?.kind || '') !== 'managed_task' && entry?.phase !== 'finalizing') counts.activeDirectCount += 1;
-        else if (String(entry?.phase || '') === 'queued') counts.queuedManagedCount += 1;
-        else counts[String(entry?.phase || '') === 'finalizing' ? 'finalizingCount' : 'activeManagedCount'] += 1;
-        if (!entry?._activityUnconfirmed && ['preparing', 'thinking', 'working'].includes(entry?.phase)
-            && !waitPhase && !projectHold) calls.set(id, modelActivityPresentation(
-                entry.phase === 'preparing' ? { phase: 'preparing' } : entry.model_activity)
-                || (entry.kind !== 'managed_task' ? taskActivityPresentation({ phase: entry.phase }) : null));
-    }
-    if (pauseCauses.size === 1) counts.pausedCause = [...pauseCauses][0];
-    for (const record of records) {
-        if (!isForegroundLiveCard(record)) continue;
-        if (record.projectHold) {
-            counts.projectWaitLabel ||= record.projectHold;
-            continue;
-        }
-        if (activities.get(record.groupId)?.project_admission_hold) continue;
-        if (record.cancelPendingPolicy && calls.has(record.groupId)) calls.set(record.groupId,
-            taskActivityPresentation({ phase: 'working', stopPolicy: record.cancelPendingPolicy }));
-        if (record.modelWaiting) counts.waitingModelCount += 1;
-        else if ((record.finalizingHold || !record.direct) && !record.parkedPhase) counts[record.finalizingHold ? 'hasFinalizingLiveCard' : 'hasActiveLiveCard'] = true;
-    }
-    const views = [...calls.values()];
-    if (views.length && views.length === counts.activeDirectCount + counts.activeManagedCount
-        && views.every(view => view && view.text === views[0]?.text)) counts.modelActivity = views[0];
-    return counts;
+    return String(row?.role || '') !== 'system';
 }
 
 /**
@@ -1219,89 +1131,8 @@ export function reconnectBannerText(reason = '') {
     return '';
 }
 
-/** {short, full} presentation of a message timestamp, or null when unreadable. */
-export function formatMsgTime(isoStr) {
-    if (!isoStr) return null;
-    try {
-        const d = new Date(isoStr);
-        if (isNaN(d)) return null;
-        const now = new Date();
-        const pad = n => String(n).padStart(2, '0');
-        const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        // English keeps this hand format byte for byte; an install language takes its month
-        // names from Intl and its two words from the catalog (web/modules/i18n.js).
-        const monthName = (date) => {
-            if (!isEnglish()) {
-                try { return new Intl.DateTimeFormat(currentLanguage(), { month: 'short' }).format(date); } catch { /* hand list below */ }
-            }
-            return months[date.getMonth()];
-        };
-        const todayStr = now.toDateString();
-        const yesterday = new Date(now);
-        yesterday.setDate(now.getDate() - 1);
-        let short;
-        if (d.toDateString() === todayStr) short = hhmm;
-        else if (d.toDateString() === yesterday.toDateString()) short = `${tr('time.yesterday', 'Yesterday')}, ${hhmm}`;
-        else short = `${monthName(d)} ${d.getDate()}, ${hhmm}`;
-        const full = `${monthName(d)} ${d.getDate()}, ${d.getFullYear()} ${tr('time.at', 'at')} ${hhmm}`;
-        return { short, full };
-    } catch {
-        return null;
-    }
-}
-
-/** Human label for ONE manual-routing option row (shared with the picker card). */
-export function routingOptionLabel(option) {
-    if (!option || typeof option !== 'object') return '';
-    if (option.label) return String(option.label);
-    if (option.action === 'new_task_in_project') {
-        return fmt('New task in {name}', { name: String(option.project_name || tr('routing.generic_project', 'Project')) });
-    }
-    if (option.title || option.project_name) {
-        return String(option.title || option.project_name);
-    }
-    return option.project_id && !option.task_id ? tr('routing.generic_project', 'Project') : tr('routing.generic_task', 'Task');
-}
-
-/** Human text for a typed routing annotation ('' hides the line). */
-export function routingAnnotationText(annotation) {
-    if (!annotation || typeof annotation !== 'object') return '';
-    // A refused act carries the host's own owner-facing sentence (`cause`);
-    // it outranks the status matrix below. Absent on scheduled/delivered/
-    // pending rows and on the picker frame, so those labels are unchanged.
-    const cause = String(annotation.cause || '').trim();
-    if (cause) return tx(cause);
-    const action = String(annotation.action || '');
-    const status = String(annotation.status || '');
-    const target = String(annotation.target || '');
-    const targetLabel = String(annotation.target_label || '')
-        || (target ? (action === 'project_route' ? tr('routing.generic_project', 'Project') : tr('routing.generic_task', 'Task')) : '');
-    if (status === 'pending') return tr('routing.pending', 'Choosing the right destination…');
-    if (status === 'needs_manual_target') {
-        const optionLabels = (Array.isArray(annotation.options) ? annotation.options : [])
-            .map(routingOptionLabel)
-            .filter(Boolean);
-        if (optionLabels.length) return `${tr('routing.choose_target', 'Choose a target')} · ${optionLabels.join(' / ')}`;
-        // No options and (by the guard above) no cause: a receipt written
-        // before the host sentence existed, or by a producer that bypasses
-        // `_emit_routing_receipt`. Nothing can be chosen on such a row, so it
-        // must not invite a choice.
-        const notRouted = tr('routing.not_routed', 'Not routed');
-        return targetLabel ? `${notRouted} · ${targetLabel}` : notRouted;
-    }
-    if (status === 'project_unavailable') return tr('routing.project_unavailable', 'Project is unavailable');
-    const labels = {
-        mailbox_delivery: 'Delivered to task',
-        steer_task: 'Steered task',
-        promote_chat_to_task: 'Started task',
-        route_to_project: 'Routed to project',
-        project_route: 'Project routing',
-    };
-    const label = labels[action] ? tr(`routing.action.${action}`, labels[action])
-        : (status.replaceAll('_', ' ') || action.replaceAll('_', ' '));
-    return targetLabel && label ? `${label} · ${targetLabel}` : label;
-}
+// The message clock is the chat's one compact time format, shared with the terminal time line (utils.js).
+export { formatMsgTime };
 
 /**
  * Project one /api/state activity census onto the client's active-activity map.
@@ -1403,13 +1234,13 @@ export function reconcileHydratedDirectActivities(
 }
 
 /**
- * Card-set durable-truth reconcile (stuck "Working..." pill class). The header
- * reducer reads hasActiveLiveCard — a pure DOM scan of mounted unfinished
- * foreground cards — so a card minted by a replayed frame whose own terminal
- * row never reached this client (lost task_done, lineage-only subagent final
- * re-minting a finished parent) kept the pill on "Working..." forever: every
- * existing terminal path keys on the card's OWN id reaching a snapshot or
- * frame first. This selector closes the gap from the card side: given the
+ * Card-set durable-truth reconcile (stuck "Working..." card class). A card
+ * minted by a replayed frame whose own terminal row never reached this client
+ * (lost task_done, lineage-only subagent final re-minting a finished parent)
+ * kept its chip on "Working..." forever: every existing terminal path keys on
+ * the card's OWN id reaching a snapshot or frame first, and such a card never
+ * sets the room's status (the server's work projection does). This selector
+ * closes the gap from the card side: given the
  * compact card projection `{id, finished, isSubagent, connected}` and the set
  * of ids the GLOBAL /api/state snapshot confirms live, it returns the mounted
  * unfinished foreground card ids the snapshot does NOT vouch for. Each one is
@@ -1435,93 +1266,49 @@ export function unconfirmedForegroundCardIds(cards, activeIds) {
     return out;
 }
 
-// Extracted from chat.js (byte-ratchet payment): the DOM half of the routing
-// acknowledgement, kept beside its text builder above.
-export function clearTransientRoutingAnnotations(messagesDiv = globalThis.document?.querySelector?.('#chat-messages')) {
-    if (!messagesDiv) return false;
-    let changed = false;
-    for (const note of messagesDiv.querySelectorAll(
-        '.msg-routing-annotation[data-annotation-status="pending"]',
-    )) {
-        const bubble = note.closest('.chat-bubble');
-        if (bubble) delete bubble.dataset.chatAnnotationStatus;
-        note.remove();
-        changed = true;
-    }
-    return changed;
-}
-
 // В9: the host stamps a typed `ingress_accepted: true` on an owner echo only after the durable chat write, so that
-// client_message_id's bubble says `Input saved` — never that work began; `ingress_undispatched` (proven never dispatched) says
-// `Saved, not delivered.` and `ingress_pending` (the running host has not said yet) `Input saved`, each until the next fact.
+// client_message_id's bubble says `Input saved` — never that work began. `ingress_pending` keeps that note
+// provisional until dispatch is confirmed or the ended host's delivery becomes unknown.
 export function markIngressSaved(root, row) {
-    const cmid = String(row?.client_message_id || ''), state = row?.ingress_undispatched === true ? 'undispatched' : row?.ingress_pending === true ? 'pending' : '';
+    const cmid = String(row?.client_message_id || ''), state = row?.ingress_pending === true ? 'pending' : '';
     if (row?.role !== 'user' || row.ingress_accepted !== true || !cmid) return false;
     const bubble = [...root.querySelectorAll('.chat-bubble.user[data-client-message-id]')]
         .find((node) => node.dataset.clientMessageId === cmid), prior = bubble?.querySelector('[data-ingress-saved]');
-    if (!bubble || (prior && (!['undispatched', 'pending'].includes(prior.dataset.ingressSaved) || prior.dataset.ingressSaved === state))) return false;  // `Input saved` and a kept send's delivery doubt are final
-    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: state === 'undispatched' ? tr('chat.saved_undispatched', 'Saved, not delivered.') : 'Input saved' });
+    if (!bubble || (prior && (prior.dataset.ingressSaved !== 'pending' || prior.dataset.ingressSaved === state))) return false;  // `Input saved` and a kept send's delivery doubt are final
+    const note = Object.assign(document.createElement('div'), { className: 'msg-pending', textContent: 'Input saved' });
     note.dataset.ingressSaved = state;
     for (const doubt of [prior, bubble.querySelector('[data-ingress-unconfirmed]')]) doubt?.remove();  // the saved row settles a "Send again" doubt
     bubble.insertBefore(note, bubble.querySelector('.msg-time'));
     return true;
 }
 
-export function renderRoutingAnnotation(bubble, annotation, chatId = 1) {
-    if (!bubble) return false;
-    const text = routingAnnotationText(annotation);
-    let note = bubble.querySelector('.msg-routing-annotation');
-    if (!text) {
-        const hasStatus = bubble.dataset.chatAnnotationStatus !== undefined;
-        if (!note && !hasStatus) return false;
-        note?.remove();
-        bubble.querySelector('.msg-routing-actions')?.remove();
-        if (hasStatus) delete bubble.dataset.chatAnnotationStatus;
-        return true;
-    }
-    const status = String(annotation.status || '');
-    const destinationKey = `${annotation.project_id || ''}|${annotation.project_chat_id || ''}|${annotation.target || ''}`;
-    const changed = !note || note.dataset.annotationText !== text
-        || note.dataset.destinationKey !== destinationKey
-        || note.dataset.annotationStatus !== status
-        || bubble.dataset.chatAnnotationStatus !== status;
-    if (!note) {
-        note = document.createElement('div');
-        note.className = 'msg-routing-annotation';
-        const time = bubble.querySelector('.msg-time');
-        if (time) time.before(note);
-        else bubble.append(note);
-    }
-    if (!changed) return false;
-    bubble.querySelector('.msg-routing-actions')?.remove();
-    note.textContent = text;
-    note.dataset.annotationText = text;
-    note.dataset.destinationKey = destinationKey;
-    if (note.dataset.annotationStatus !== status) note.dataset.annotationStatus = status;
-    if (bubble.dataset.chatAnnotationStatus !== status) bubble.dataset.chatAnnotationStatus = status;
-    const destination = annotation.project_id && Number(annotation.project_chat_id) > 0
-        && Number(annotation.project_chat_id) !== Number(chatId)
-        && ['scheduled', 'delivered'].includes(status);
-    if (destination) {
-        const actions = createSystemMessageActions(projectReference(
-            { id: annotation.project_id, chat_id: Number(annotation.project_chat_id) }, { taskId: annotation.target || '' },
-        ));
-        actions.classList.add('msg-routing-actions');
-        const time = bubble.querySelector('.msg-time');
-        if (time) time.before(actions);
-        else bubble.append(actions);
-    }
-    return changed;
+// Full narration stays in the timeline, not a mouse-only title.
+// How many lines a COLLAPSED card's activity line shows (the CSS clamps say the same: a child 1, a Main portal
+// 2, a root card 3); an expanded card shows the whole line.
+export function collapsedActivityLines(record) {
+    const root = record?.root;
+    if (!root || root.dataset?.expanded === '1') return 0;
+    if (record.isSubagent || root.dataset?.subagent === '1') return 1;
+    return root.dataset?.portal === '1' ? 2 : 3;
 }
 
-// Full narration stays in the timeline, not a mouse-only title.
+/** Re-fit the activity line after the card's form changed (expanded, collapsed, bound as a portal). */
+export function refitCollapsedActivity(record) {
+    const el = record?.activityEl;
+    if (!el) return false;
+    fitText(el, fullText(el), collapsedActivityLines(record));
+    return true;
+}
+
 export function renderCollapsedActivity(record, text) {
     if (!record?.activityEl) return false;
-    const changed = record.activityEl.textContent !== text
-        || Boolean(record.activityEl.hasAttribute?.('title'));
-    if (record.activityEl.textContent !== text) record.activityEl.textContent = text;
-    if (record.activityEl.hasAttribute?.('title')) record.activityEl.removeAttribute('title');
-    return Boolean(changed && record.activityEl.isConnected);
+    const el = record.activityEl;
+    // A collapsed card's line is cut on a word with a clean ending (never `.…`; text_fit.js).
+    const shown = fullText(el);
+    const changed = shown !== text || Boolean(el.hasAttribute?.('title'));
+    if (shown !== text) fitText(el, text, collapsedActivityLines(record));
+    if (el.hasAttribute?.('title')) el.removeAttribute('title');
+    return Boolean(changed && el.isConnected);
 }
 
 // The 13 cost-meta keys shared by both subagent whitelists (the delegation
@@ -1547,13 +1334,64 @@ export function cardMetaKeys(src) {
 
 // the ONE meta-line renderer, fed entirely from record state,
 // so a replay batch renders it exactly once per card.
+// "updated" names the turn's own last narration in the chat's one time format (formatMsgTime: the
+// same words as a bubble's clock), never the host locale's long date.
+function updatedLabel(record) {
+    const time = record.latestActivityRaw ? formatMsgTime(record.latestActivityRaw) : null;
+    const text = time?.short || record.latestActivityTs || '';
+    return text ? `updated ${text}` : '';
+}
+
+// An unfinished card always carries a time on its meta line: its last narration's, else when the work
+// started (the census start, else the card's first row). The line is never empty beside a control.
+function clockLabel(record) {
+    const updated = updatedLabel(record);
+    if (updated || record.finished) return updated;
+    const started = Number(record.startedAt) || Number(record.root?.dataset?.ts) || 0;
+    const time = started > 0 ? formatMsgTime(new Date(started).toISOString()) : null;
+    return time?.short ? `started ${time.short}` : '';
+}
+
+// The meta line keeps its real ` · ` text separators (a copied line reads as it looks), but each
+// separator rides inside the part before it and holds on to that part's last word (a no-break space
+// before the dot): a wrapped line may end with a dot, never start with one or keep a dot alone.
+const META_SEP_HTML = `<span class="chat-live-meta-sep">${META_PART_SEPARATOR.replace(/^ /, '&nbsp;')}</span>`;
+// The dot goes inside the part's last fact when that fact is a plain meta span, so the fact (kept
+// whole, as today) carries its dot with it; otherwise it follows the part.
+function withTrailingSeparator(part) {
+    const lastFact = part.lastIndexOf('<span class="chat-live-meta-text');
+    const tail = lastFact >= 0 ? part.slice(lastFact + 1) : '';
+    if (lastFact >= 0 && /<\/span>\s*$/.test(part) && !tail.includes('<span') && (tail.match(/<\/span>/g) || []).length === 1) {
+        return part.replace(/<\/span>\s*$/, `${META_SEP_HTML}</span>`);
+    }
+    return part + META_SEP_HTML;
+}
+
+function metaLineHtml(parts) {
+    const kept = parts.filter(Boolean);
+    return kept.map((part, index) => `<span class="chat-live-meta-part">${index < kept.length - 1
+        ? withTrailingSeparator(part) : part}</span>`).join('');
+}
+
 export function renderLiveCardMeta(record, { agentModel = record?.agentModel || '' } = {}) {
     if (!record?.metaEl) return false;
+    const toolCalls = Number.isInteger(record.toolCalls) ? `${record.toolCalls} tool ${record.toolCalls === 1 ? "call" : "calls"}` : '';
+    const cost = (record.costMeta && Array.isArray(record.costMeta.meta)) ? record.costMeta.meta : [];
+    // A Main portal is the collapsed form of a work that lives in its Project room: tool calls ·
+    // cost · updated, plus the facts that change what the owner may trust. Executor, model and
+    // effort details stay on the room's card.
+    const portal = record.root?.dataset?.portal === '1';
     // The executor block is ONE part of this line, joined by the same text
     // separator as the rest: concatenating it left the chip and the first fact
     // touching in a copied line and running together for a screen reader,
     // because only the flex gap separated them.
-    const html = joinMetaParts([
+    const html = portal ? metaLineHtml([
+        record.historicalUnavailable ? 'Outcome unavailable' : (record.historicalUnconfirmed ? 'Activity unconfirmed' : ''),
+        !record.finished && record.projectHoldDetail || '',
+        // A settled portal needs no activity clock: its chip states how the work ended and the author's
+        // final (with its own end time) arrives as a message.
+        toolCalls, ...cost, record.finished ? '' : clockLabel(record),
+    ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`)) : metaLineHtml([
         executorIdentityMarkup(record.executorChip, { agentModel: compactModel(agentModel) }),
         effortChipMarkup(record.effort),
         ...[
@@ -1562,15 +1400,16 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
             !record.finished && record.projectHoldDetail || '',
             record.historyRetentionProblem || '',
             modelExecutionLabel(record.modelExecution),
-            Number.isInteger(record.toolCalls) ? `${record.toolCalls} tool ${record.toolCalls === 1 ? "call" : "calls"}` : '',
+            toolCalls,
             record.toolErrors > 0 ? `${record.toolErrors} error${record.toolErrors === 1 ? '' : 's'}` : '',
             Number.isFinite(record.durationSec) ? formatLogDuration(record.durationSec) : '',
             ...(Array.isArray(record._lastFrameMeta) ? record._lastFrameMeta : []),
-            ...((record.costMeta && Array.isArray(record.costMeta.meta)) ? record.costMeta.meta : []),
-            record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',
+            ...cost,
+            clockLabel(record),
         ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`),
     ]);
-    if (record.metaEl.innerHTML === html) return false;
+    const detailChanged = paintLiveDetail(record, 'liveCostDetail', String(record.costMeta?.detail || ''));
+    if (record.metaEl.innerHTML === html) return detailChanged && Boolean(record.metaEl.isConnected);
     record.metaEl.innerHTML = html;
     return Boolean(record.metaEl.isConnected);
 }
@@ -1578,8 +1417,18 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
 // Only host-attested cancelable queue roots receive this control.
 // A card's OWN actions row: a nested child card carries a row of its own, and a
 // descendant lookup would hand a root without one its child's.
+// The row lives at the end of the card's own foot, beside its meta line (right-docked, after the quiet
+// Reviews count): a single control never floats on an empty row of its own, and the summary above it
+// keeps its own inset. A nested child's foot is its own, so a descendant lookup is never used.
+function ownFootEnd(record) {
+    const foot = record?.footEl;
+    const end = record?.footEndEl;
+    return foot && end && foot.parentElement === record.root && end.parentElement === foot ? end : null;
+}
+
 export function ownLiveActionsEl(record) {
-    return [...(record?.root?.children || [])]
+    const holder = ownFootEnd(record) || record?.root;
+    return [...(holder?.children || [])]
         .find((node) => node.classList?.contains('chat-live-actions')) || null;
 }
 
@@ -1591,10 +1440,15 @@ export function ensureLiveActionsEl(record) {
     if (!actions) {
         actions = document.createElement('div');
         actions.className = 'chat-live-actions';
-        const timeline = record.timelineEl && record.timelineEl.parentElement === record.root
-            ? record.timelineEl
-            : null;
-        record.root.insertBefore(actions, timeline);
+        const end = ownFootEnd(record);
+        if (end) {
+            end.appendChild(actions);
+        } else {
+            const timeline = record.timelineEl && record.timelineEl.parentElement === record.root
+                ? record.timelineEl
+                : null;
+            record.root.insertBefore(actions, timeline);
+        }
     }
     return actions;
 }

@@ -215,11 +215,9 @@ def request_native_attention(
 
 
 def scrub_repo_from_pythonpath(env: dict[str, str], repo_dir: "str | pathlib.Path | None") -> dict[str, str]:
-    """Copy of *env* without ``PYTHONPATH`` entries resolving to the system repo.
-
-    An EXTERNAL-workspace command inheriting that entry resolves its own
-    ``import web``/``server``/``ouroboros`` to OUROBOROS's modules; dropping
-    ONLY the repo entry isolates the target (no-op without one)."""
+    """Copy of *env* without ``PYTHONPATH`` entries resolving to the system repo. An EXTERNAL-workspace command
+    inheriting that entry resolves its own ``import web``/``server``/``ouroboros`` to OUROBOROS's modules;
+    dropping ONLY the repo entry isolates the target (no-op without one)."""
     out = dict(env)
     raw = out.get("PYTHONPATH", "")
     if not raw or not repo_dir:
@@ -263,13 +261,13 @@ _KERNEL_LOCK_TIER: dict = {}  # lock directory -> (kernel locks enforced there, 
 _KERNEL_LOCK_TIER_LOCK = threading.Lock()  # one probe per directory, one verdict for every thread
 
 
-def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
-    """Probe and cache kernel-lock capability per directory, never on a live refusal.
-
-    Unprobeable directories stay enforced and retry later; unsupported/ENOLCK
-    select the recorded name-only tier. See ARCHITECTURE §1 "Platform substrate"."""
+def kernel_file_locks_enforced(lock_path: pathlib.Path, *, known: Optional[tuple] = None) -> bool:
+    """Probe/cache per directory; restore ``known=(tier, errno)`` after mount validation,
+    or ``(None, None)`` to recheck. Unprobeable paths retry; unsupported/ENOLCK use name locking."""
     directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
     with _KERNEL_LOCK_TIER_LOCK:
+        if known is not None:
+            _KERNEL_LOCK_TIER[directory] = known
         tier, refused = _KERNEL_LOCK_TIER.get(directory, (None, None))
         if tier is None:
             probe = os.path.join(directory, f".kernel-lock-probe.{os.getpid()}.{time.time_ns()}")
@@ -291,7 +289,7 @@ def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
                 except OSError:
                     log.debug("Kernel-lock probe %s left behind", probe, exc_info=True)
             if not tier:
-                log.warning("No kernel file locks under %s (errno %s): locks there use the name protocol only", directory, refused)
+                log.warning("Name-only locks under %s (errno %s)", directory, refused)
             _KERNEL_LOCK_TIER[directory] = (tier, refused)
     return tier
 
@@ -437,10 +435,8 @@ def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
 
 
 def _unlink_lock_path(lock_path: pathlib.Path, held: Optional[tuple]) -> None:
-    """Unlink only the held identity (None means unconditional path-only cleanup).
-
-    Retry transient Windows sharing refusal within the bounded release window;
-    leave a replaced path alone. See ARCHITECTURE §1 "Platform substrate"."""
+    """Unlink only the held identity (None means unconditional path-only cleanup). Retry transient Windows sharing
+    refusal within the bounded release window; leave a replaced path alone. See ARCHITECTURE §1 "Platform substrate"."""
     deadline = time.monotonic() + 2.0
     while True:
         try:
@@ -460,10 +456,8 @@ def _unlink_lock_path(lock_path: pathlib.Path, held: Optional[tuple]) -> None:
 
 
 def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> None:
-    """Release only this descriptor's lock path, never a successor's.
-
-    POSIX unlinks under the hold; Windows unlocks/closes before identity-checked
-    unlink. See ARCHITECTURE §1 "Platform substrate" for the sharing gap."""
+    """Release only this descriptor's lock path, never a successor's. POSIX unlinks under the hold; Windows
+    unlocks/closes before identity-checked unlink. See ARCHITECTURE §1 "Platform substrate" for the sharing gap."""
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
@@ -618,11 +612,9 @@ def file_unlock(fd: int) -> None:
 
 
 def pid_is_alive(pid: int) -> bool:
-    """Observe process presence; access denial remains alive, not signal authority.
-
-    Windows probes OpenProcess/GetExitCodeProcess, never os.kill(pid, 0): there
-    signal 0 is CTRL_C_EVENT, delivered to the pid's whole console group. An
-    unexplained Windows open failure reads as dead here, never as provably gone."""
+    """Observe process presence; access denial remains alive, not signal authority. Windows probes
+    OpenProcess/GetExitCodeProcess, never os.kill(pid, 0): there signal 0 is CTRL_C_EVENT, delivered to the pid's
+    whole console group. An unexplained Windows open failure reads as dead here, never as provably gone."""
     if pid <= 0:
         return False
     if IS_WINDOWS:
@@ -644,10 +636,30 @@ def pid_is_signalable(pid: int) -> bool:
     return pid > 0 and (pid_is_alive(pid) if IS_WINDOWS else signal_pid(pid))
 
 
+# Typed ``deliver_signal`` outcomes: delivery proves no identity and no exit; only ``absent`` (ESRCH) means gone.
+SIGNAL_SENT, SIGNAL_ABSENT, SIGNAL_DENIED = "sent", "absent", "denied"
+SIGNAL_FAILED, SIGNAL_UNSUPPORTED = "failed", "unsupported"
+
+
+def deliver_signal(pid: int, *, graceful: bool) -> str:
+    """Send TERM (``graceful``) or KILL to ONE POSIX pid, never to a group; the typed outcome is evidence about
+    the SIGNAL alone: ``denied`` (EPERM: it exists and refuses us) and ``failed`` (any other OSError) are unknowns
+    the scope reaper discloses, never counts as ended; it re-measures the pid's birth before calling. Windows:
+    ``unsupported`` — its Job/TerminateProcess paths stay the truth."""
+    if IS_WINDOWS:
+        return SIGNAL_UNSUPPORTED
+    if pid <= 1 or pid == os.getpid():
+        return SIGNAL_FAILED
+    try:
+        os.kill(int(pid), signal.SIGTERM if graceful else signal.SIGKILL)
+    except OSError as exc:
+        return {errno.ESRCH: SIGNAL_ABSENT, errno.EPERM: SIGNAL_DENIED}.get(exc.errno, SIGNAL_FAILED)
+    return SIGNAL_SENT
+
+
 def pid_provably_gone(pid: int) -> bool:
-    """Positive absence only (#1554): POSIX ESRCH; Windows no such pid
-    (ERROR_INVALID_PARAMETER) or a readable exit code. Access denial, EPERM and
-    every unexplained error are not death; a zombie is the caller's question."""
+    """Positive absence only (#1554): POSIX ESRCH; Windows no such pid (ERROR_INVALID_PARAMETER) or a readable
+    exit code. Access denial, EPERM and every unexplained error are not death; a zombie is the caller's question."""
     if pid <= 0:
         return True
     if IS_WINDOWS:
@@ -712,12 +724,9 @@ def _win32_unlock(fd: int) -> None:
 # Process management.
 
 def capture_process_stop_target(pid: int) -> dict:
-    """Pin an already authorized process for a later wait-free stop request.
-
-    The caller proves custody before AND after capture; a PID is not authority.
-    Handles own their lifetime; Darwin's exit watch rejects a departed target.
-    No attached-daemon Job is created: ordinary client close must preserve it.
-    """
+    """Pin an already authorized process for a later wait-free stop request. The caller proves custody before
+    AND after capture; a PID is not authority. Handles own their lifetime; Darwin's exit watch rejects a departed
+    target. No attached-daemon Job is created: ordinary client close must preserve it."""
     if pid <= 0 or pid == os.getpid():
         raise ValueError("invalid stop target")
     if IS_WINDOWS:
@@ -736,12 +745,9 @@ def capture_process_stop_target(pid: int) -> dict:
 
 
 def request_process_tree_kill(proc, *, job_handle=None) -> dict:
-    """Issue native termination now; never wait, scan descendants or touch disk.
-
-    Accept a live owner Popen or a previously custody-validated OS target. The
-    receipt proves a request only. A Job/group covers its members; escaped
-    descendants and a process-only Windows request still require settlement.
-    """
+    """Issue native termination now; never wait, scan descendants or touch disk. Accept a live owner Popen or
+    a previously custody-validated OS target; the receipt proves a request only. A Job/group covers its
+    members; escaped descendants and a process-only Windows request still require settlement."""
     pinned = isinstance(proc, dict)
     pid = int(proc["pid"] if pinned else proc.pid)
     result = {"pid": pid, "requested": False, "scope": "process"}
@@ -853,10 +859,8 @@ _BOOT_ID = ""  # full hex of the /proc boot id; empty until a successful read, t
 
 
 def process_start_time(pid: int) -> str:
-    """Stable birth token: Linux boot-qualified ticks, legacy fallback, or Windows FILETIME.
-
-    Mint order, cross-boot limits and downgrade-compatible ledger fields:
-    ARCHITECTURE §1 "Platform substrate"."""
+    """Stable birth token: Linux boot-qualified ticks, legacy fallback, or Windows FILETIME. Mint order,
+    cross-boot limits and downgrade-compatible ledger fields: ARCHITECTURE §1 "Platform substrate"."""
     global _BOOT_ID
     if pid <= 0:
         return ""
@@ -1120,11 +1124,8 @@ def pip_install_target_args(interpreter: str) -> List[str]:
 
 
 def project_venv_python(project_root: pathlib.Path) -> str:
-    """Return the executable for a valid project ``.venv`` on this platform.
-
-    Keep the lexical venv path (rather than resolving its symlink) so Python
-    discovers the adjacent ``pyvenv.cfg`` and activates the environment.
-    """
+    """Return the executable for a valid project ``.venv`` on this platform. Keep the lexical venv path (rather
+    than resolving its symlink) so Python discovers the adjacent ``pyvenv.cfg`` and activates the environment."""
     env_root = pathlib.Path(project_root) / ".venv"
     if not (env_root / "pyvenv.cfg").is_file():
         return ""

@@ -4,11 +4,14 @@ owner decisions 2026-07-10 and 2026-10-05)."""
 import json
 import pytest
 
+from ouroboros import dialogue_store
+from tests._shared import producer_evidence_dir
+
 from tests.test_history_continuity_browser import (
     _bookmark_place, _deep_gesture_history, _nested_full_output_history, _open_nested_full_output, _OFFSET,
 )
 from tests.test_chat_history_paging_browser import (
-    _assert_at_newest, _open, _open_project, _step, _idle, _screenshot, _FRAMES, _write, _result,
+    _append, _assert_at_newest, _open, _open_project, _step, _idle, _screenshot, _FRAMES, _result,
 )
 from tests.test_chat_history_recovery_browser import _click_project
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
@@ -24,13 +27,7 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
     from playwright.sync_api import sync_playwright
 
     root = direct_server_with_data['data_dir']
-    project, _ = _deep_gesture_history(root)
-    progress = root / 'logs/progress.jsonl'
-    rows = [json.loads(line) for line in progress.read_text().splitlines()]
-    for row in rows:
-        if row['task_id'] == 'deep-review':
-            row['content'] += ' Full retained long narration.' * 6
-    progress.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    project, _ = _deep_gesture_history(root, narration=' Full retained long narration.' * 6)
     with sync_playwright() as pw:
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
@@ -45,7 +42,7 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
             card.wait_for(state='attached')
             _step(page, feed, automatic=True)  # read on past the card's page while it stays mounted
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             card.locator('[data-review-section-toggle]').click()
             card.locator('[data-review-group-toggle]').click()
             card.locator('[data-review-attempt-toggle]').first.click()
@@ -71,14 +68,105 @@ def test_a_deep_place_with_an_open_review_and_line_reopens_at_the_newest_message
             browser.close()
 
 
+# Main's history note is header chrome on the header's own reading backing (DESIGN "History
+# edges", §5 "Floating chrome stays readable"): page ink under the whole header, so the messages
+# moving under the note never show through its words. Judged by what is painted, not by a CSS
+# spelling: with the note's words hidden, its box must paint the same while the messages beneath it
+# move by half a row; the words themselves keep the contrast floor on that backing.
+# Every layer the header paints itself with: its reading backing, and the light theme's own fill.
+# Main's history note floats in its own strip under the bar (.chat-page-note, page_header lane L1), with the
+# bar's reading backing; the falsifier strips the backing of both the bar and the strip.
+_NO_HEADER_BACKING = """#page-chat .chat-page-header, #page-chat .chat-page-header::before,
+    #page-chat .chat-page-note, #page-chat .chat-page-note::before {
+    background: transparent !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }"""
+_NOTE_GEOMETRY = """note => {
+    const feed = document.querySelector('#chat-messages'), header = note.closest('.chat-page-note, .chat-page-header');
+    const box = r => ({x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom});
+    const n = note.getBoundingClientRect(), h = header.getBoundingClientRect();
+    const middle = n.top + n.height / 2;
+    // A message's middle is moved under the note's middle; the feed scrolls, nothing else moves.
+    const bubbles = [...feed.querySelectorAll('[data-history-id]')].filter(m => m.getClientRects().length);
+    const target = bubbles.map(m => ({m, r: m.getBoundingClientRect()}))
+        .sort((a, b) => Math.abs(a.r.top + a.r.height / 2 - middle) - Math.abs(b.r.top + b.r.height / 2 - middle))[0];
+    if (target) feed.scrollTop += target.r.top + target.r.height / 2 - middle;
+    const before = getComputedStyle(header, '::before');
+    return {note: box(n), header: box(h), color: getComputedStyle(note).color, backing: before.backgroundColor,
+        headerFill: getComputedStyle(header).backgroundColor, backingContent: before.content,
+        shift: Math.round((target?.r.height || 80) / 2)};
+}"""
+# How many messages lie under the note right now.
+_UNDER_NOTE = """note => { const n = note.getBoundingClientRect();
+    return [...document.querySelectorAll('#chat-messages [data-history-id]')].filter(m => { const r = m.getBoundingClientRect();
+        return m.getClientRects().length && r.bottom > n.top && r.top < n.bottom && r.right > n.left && r.left < n.right; }).length; }"""
+
+
+def _rgb(color):
+    import re
+    parts = [float(v) for v in re.findall(r'[\d.]+', color)]
+    if color.startswith('color(srgb'):
+        return [v * 255 for v in parts[:3]], (parts[3] if len(parts) > 3 else 1.0)
+    assert color.startswith('rgb') and len(parts) in (3, 4), ('an sRGB computed colour', color)
+    return parts[:3], (parts[3] if len(parts) > 3 else 1.0)
+
+
+def _contrast(a, b):
+    def luminance(rgb):
+        lin = [(c / 255 / 12.92) if c / 255 <= 0.03928 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _note_backing_facts(page, note):
+    import io
+
+    from PIL import Image, ImageChops
+
+    facts = note.evaluate(_NOTE_GEOMETRY)
+    clip = {'x': facts['note']['x'], 'y': facts['note']['y'], 'width': facts['note']['w'], 'height': facts['note']['h']}
+    feed = page.locator('#chat-messages')
+    note.evaluate("n => { n.dataset.testWords = n.style.visibility; n.style.visibility = 'hidden'; }")
+    shots, under = [], []
+    try:
+        for move in (0, facts['shift']):
+            feed.evaluate('(n, d) => { n.scrollTop += d; }', move)
+            page.evaluate(_FRAMES)
+            under.append(note.evaluate(_UNDER_NOTE))
+            shots.append(Image.open(io.BytesIO(page.screenshot(clip=clip, animations='disabled'))).convert('RGB'))
+        feed.evaluate('(n, d) => { n.scrollTop -= d; }', facts['shift'])
+    finally:
+        note.evaluate("n => { n.style.visibility = n.dataset.testWords; delete n.dataset.testWords; }")
+    raw = ImageChops.difference(*shots).tobytes()
+    changed = sum(1 for i in range(0, len(raw), 3) if raw[i] + raw[i + 1] + raw[i + 2] > 24)
+    backing, alpha = _rgb(facts['backing'])
+    ink, ink_alpha = _rgb(facts['color'])  # meta ink may be translucent: judge it as painted on the backing
+    ink = [ink_alpha * c + (1 - ink_alpha) * b for c, b in zip(ink, backing)]
+    facts.update(under=under, backingAlpha=alpha, pixels=len(raw) // 3, showThrough=changed / max(1, len(raw) // 3),
+                 contrast=round(_contrast(ink, backing), 2))
+    return facts
+
+
+def _assert_note_readable(facts):
+    note, header = facts['note'], facts['header']
+    assert min(facts['under']) >= 1, ('messages move under the note, or nothing is proved', facts)
+    assert facts['backingContent'] not in ('none', 'normal') and facts['backingAlpha'] == 1, (
+        'history note reading backing: the header paints opaque page ink', facts)
+    assert header['y'] - 0.5 <= note['y'] and note['bottom'] <= header['bottom'] + 0.5, (
+        'history note reading backing: the note lies inside its backed strip', facts)
+    assert facts['showThrough'] <= 0.002, ('history note reading backing: moving messages show through the note', facts)
+    assert facts['contrast'] >= 4.5, ('history note words keep the contrast floor on their backing', facts)
+
+
 @pytest.mark.parametrize('browser_engine', ['chromium', 'webkit'])
 @pytest.mark.parametrize('theme', ['light', 'dark'])
 def test_main_coverage_status_remains_readable_away_from_history_control(direct_server_with_data, browser_engine, theme, tmp_path):
     from playwright.sync_api import sync_playwright
 
-    _write(direct_server_with_data['data_dir'] / 'logs/chat.jsonl', [
+    # Long enough that an owner's bubble (right-aligned since #1998) reaches under the note on the left.
+    words = ' '.join(['and the history keeps every message the owner sent across the whole column'] * 3)
+    _append(direct_server_with_data['data_dir'], 'chat', [
         {'direction': 'in', 'chat_id': 1, 'ts': '2026-09-01T10:00:00Z',
-         'client_message_id': f'main-{index}', 'text': f'Main saved message {index:04d}'} for index in range(1400)])
+         'client_message_id': f'main-{index}', 'text': f'Main saved message {index:04d} {words}'} for index in range(1400)])
     with sync_playwright() as pw:
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
@@ -91,16 +179,29 @@ def test_main_coverage_status_remains_readable_away_from_history_control(direct_
                 page.set_viewport_size({'width':width, 'height':850})
                 page.locator('#chat-messages').evaluate('n => { n.scrollTop = n.scrollHeight / 2; }')
                 page.evaluate(_FRAMES)
-                note = page.locator('#page-chat .chat-page-header .chat-history-status')
+                note = page.locator('#page-chat .chat-page-note .chat-history-status')  # the note floats under the bar
                 assert note.is_visible()
                 assert 'Shown messages may have gaps' in note.inner_text()
                 box = note.bounding_box()
                 assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
                 assert box['y'] >= 0 and box['y'] + box['height'] < 850
                 assert page.locator('#page-chat .chat-load-older-note').count() == 1
-                style = note.evaluate('e => { const s = getComputedStyle(e); return {bg:s.backgroundColor, radius:s.borderRadius, padding:s.paddingLeft}; }')
-                assert style['bg'] != 'rgba(0, 0, 0, 0)' and style['radius'] != '0px' and style['padding'] != '0px', style
+                facts = _note_backing_facts(page, note)
+                _assert_note_readable(facts)
                 _screenshot(page, tmp_path, f'main-history-status-{theme}-{width}-{browser_engine}')
+                # Falsify the same consumer oracle: without the header's backing, the messages
+                # under the note show through it, and the oracle must say so.
+                bare_style = page.add_style_tag(content=_NO_HEADER_BACKING)
+                try:
+                    bare = _note_backing_facts(page, note)
+                    with pytest.raises(AssertionError, match='history note reading backing'):
+                        _assert_note_readable(bare)
+                    assert bare['showThrough'] > 0.002 >= facts['showThrough'], ('the painted oracle alone tells them apart', facts, bare)
+                finally:
+                    bare_style.evaluate('n => n.remove()')
+                _assert_note_readable(_note_backing_facts(page, note))
+                (tmp_path / f'main-history-status-{theme}-{width}-{browser_engine}.json').write_text(
+                    json.dumps({'backed': facts, 'bare': bare}, indent=2))
         finally:
             browser.close()
 
@@ -119,15 +220,12 @@ def test_late_latest_cannot_erase_newer_physical_coverage(direct_server_with_dat
 
     root = direct_server_with_data['data_dir']
     project = create_project(root, 'latest-race', name='Latest response race')
-    log = root / 'logs/chat.jsonl'
     start = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
     def append(first, last):
-        with log.open('a') as stream:
-            for index in range(first, last):
-                stream.write(json.dumps({'direction': 'in', 'chat_id': project['chat_id'],
-                    'ts': (start + timedelta(minutes=index)).isoformat(),
-                    'client_message_id': f'race-{index}', 'text': f'Race retained message {index:04d}'}) + '\n')
+        _append(root, 'chat', [{'direction': 'in', 'chat_id': project['chat_id'],
+            'ts': (start + timedelta(minutes=index)).isoformat(),
+            'client_message_id': f'race-{index}', 'text': f'Race retained message {index:04d}'} for index in range(first, last)])
 
     append(0, 150)
     with sync_playwright() as pw:
@@ -234,7 +332,7 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
     when the saved row adopts it. Closed and opened again, the room reads only its newest page and
     is at its newest message (owner decisions 2026-10-05)."""
     from datetime import datetime, timedelta, timezone
-    from ouroboros.merge_receipts import card_row_text
+    from ouroboros.merge_receipts import card_row_text, review_coverage
     from ouroboros.projects_registry import create_project
     from tests.ui_chat_viewport_smoke import _emit_ws_frame
     from playwright.sync_api import sync_playwright
@@ -244,9 +342,12 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
     cid = project['chat_id']
     start = datetime(2026, 9, 1, 10, tzinfo=timezone.utc)
     stamp = lambda minute: (start + timedelta(minutes=minute)).isoformat()
+    # A declared review with no host-observed record: the receipt honestly warns, never reads green.
+    declared = {'reviewed_head_sha': 'b' * 40, 'reviewed_base_sha': 'c' * 40, 'scope': 'full', 'verdict': 'PASS'}
     receipt = {'receipt_id': 'source', 'number': 1347, 'revision': 3,
                'outcome': {'status': 'merged', 'merge_sha': 'a' * 40},
-               'coverage': {'status': 'covers_head', 'gaps': []}}
+               'review': {'declared': declared, 'record': None, 'declared_only': True},
+               'coverage': review_coverage(declared, [], 'b' * 40)}
     marker = 'PR #1347 merge:' if line_kind == 'receipt' else 'SOURCE_PAGE_NARRATION'
     text = card_row_text(receipt) if line_kind == 'receipt' else (
         'SOURCE_PAGE_NARRATION. ' + 'The original expanded activity remains readable. ' * 12)
@@ -254,11 +355,11 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
     if line_kind == 'receipt':
         old.update(role='system', system_type='host_progress', narration=False,
                    card_row='reviews', card_row_id='merge-receipt:source', card_row_revision=3)
-    _write(root / 'logs/progress.jsonl', [old, *[
+    _append(root, 'progress', [old, *[
         {'chat_id': cid, 'task_id': 'source-filler', 'ts': stamp(index + 2),
          'content': f'Archive activity {index:03d}'} for index in range(80)],
         {'chat_id': cid, 'task_id': 'source-owner', 'ts': stamp(83), 'content': 'RECENT_OWNER_PROGRESS'}])
-    _write(root / 'logs/chat.jsonl', [
+    _append(root, 'chat', [
         {'chat_id': cid, 'direction': 'in', 'ts': stamp(index),
          'client_message_id': f'source-{index}', 'text': f'Reading context {index:03d}'} for index in range(300)])
     for task in ('source-owner', 'source-filler'):
@@ -275,7 +376,7 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
             assert not any(marker in row.get('text', '') for row in recent['messages'])
             card = page.locator(f'{feed} .chat-live-card[data-task-id="source-owner"]')
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             line = card.locator(':scope > [data-live-timeline] > .chat-live-line').filter(has_text=marker)
             if line_kind == 'receipt':
                 # A late live receipt already has the same revision as its archive row.
@@ -307,8 +408,8 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
                 _emit_ws_frame(page, {**old, 'type': 'chat', 'is_progress': True,
                                      'card_row_revision': 2, 'ts': stamp(99), 'content': 'Stale queued receipt'})
                 # The retained source above is exact; the known host prefix is display-only.
-                assert text.startswith('✅ PR #1347 merge:')
-                assert all(part in line.inner_text() for part in text.removeprefix('✅ ').splitlines())
+                assert text.startswith('⚠️ PR #1347 merge:') and 'no_host_observed_review_record' in text
+                assert all(part in line.inner_text() for part in text.removeprefix('⚠️ ').splitlines())
             else:
                 line.locator('[data-live-line-toggle]').click()
                 assert line.get_attribute('data-expanded') == '1'
@@ -342,16 +443,12 @@ def test_a_moved_newest_window_leaves_a_reader_in_history_in_place_and_reopen_la
 
     root = direct_server_with_data['data_dir']
     project = create_project(root, 'retained-rebase', name='Retained reading page')
-    log = root / 'logs/chat.jsonl'
     start = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
     def append(first, last):
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open('a') as stream:
-            for index in range(first, last):
-                stream.write(json.dumps({'direction': 'in', 'chat_id': project['chat_id'],
-                    'ts': (start + timedelta(minutes=index)).isoformat(),
-                    'client_message_id': f'rebase-{index}', 'text': f'Rebase retained message {index:04d}'}) + '\n')
+        _append(root, 'chat', [{'direction': 'in', 'chat_id': project['chat_id'],
+            'ts': (start + timedelta(minutes=index)).isoformat(),
+            'client_message_id': f'rebase-{index}', 'text': f'Rebase retained message {index:04d}'} for index in range(first, last)])
 
     append(0, 150)
     with sync_playwright() as pw:
@@ -408,12 +505,11 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
     full = 'Retained full result. ' * 320 + 'COMPOSED_FULL_RESULT_TAIL'
     lineage = {'subagent_task_id': 'adopt-child', 'parent_task_id': 'adopt-parent',
                'root_task_id': 'adopt-parent', 'delegation_role': 'subagent', 'subagent_role': 'History reader'}
-    _write(root / 'logs/chat.jsonl', [
+    _append(root, 'chat', [
         {'direction': 'in', 'chat_id': cid, 'ts': f'2026-09-01T10:{index:02d}:00Z',
          'client_message_id': f'adopt-{index}', 'text': f'Live line context {index:02d}'} for index in range(60)])
-    progress = root / 'logs/progress.jsonl'
-    _write(progress, [{'chat_id': cid, 'ts': '2026-09-01T10:30:01Z', 'task_id': 'adopt-parent', 'content': 'Parent narration'}]
-           if line_kind == 'full-result' else [])
+    _append(root, 'progress', [{'chat_id': cid, 'ts': '2026-09-01T10:30:01Z', 'task_id': 'adopt-parent', 'content': 'Parent narration'}]
+            if line_kind == 'full-result' else [])
     row = {'chat_id': cid, 'ts': '2026-09-01T10:30:02Z', 'task_id': 'adopt-child', **lineage,
            'subagent_event': 'completed', 'status': 'completed', 'content': 'Child finished',
            'result': full[:4000], 'result_truncated': True} if line_kind == 'full-result' else {
@@ -430,10 +526,10 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             _emit_ws_frame(page, {**row, 'type': 'chat', 'role': 'assistant', 'is_progress': True})
             parent = page.locator(f'{feed} .chat-live-card[data-task-id="adopt-parent"]')
             if parent.get_attribute('data-expanded') != '1':
-                parent.locator(':scope > [data-live-summary-button]').click()
+                parent.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             owner = page.locator(f'{feed} .chat-live-card[data-task-id="{row["task_id"]}"]')
             if owner.get_attribute('data-expanded') != '1':
-                owner.locator(':scope > [data-live-summary-button]').click()
+                owner.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             line = owner.locator(':scope > [data-live-timeline] > .chat-live-line.expandable').last
             line.locator('[data-live-line-toggle]').click()
             if line_kind == 'full-result':
@@ -442,8 +538,7 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             assert not live_key.startswith(('history-', 'terminal-')), live_key
             line.evaluate('n => { window.__adoptedLine = n; }')
             _bookmark_place(page, line)
-            with progress.open('a') as stream:
-                stream.write(json.dumps(row) + '\n')
+            dialogue_store.append(root, 'progress', row)
             before = page.evaluate('() => window.__historyReads.length')
             _bookmark_reconnect(page)
             page.wait_for_function('n => window.__historyReads.length > n && window.__historyReads.slice(n).every(r => r.done)', arg=before)
@@ -465,7 +560,7 @@ def test_a_live_line_keeps_its_node_through_history_adoption_and_reopens_from_it
             assert 'could not be restored exactly' not in page.locator(feed).locator('..').inner_text()
             for card in (parent, owner):
                 if card.get_attribute('data-expanded') != '1':
-                    card.locator(':scope > [data-live-summary-button]').click()
+                    card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             assert line.get_attribute('data-live-line-key') != live_key, 'cold replay has its source-owned key'
             line.locator('[data-live-line-toggle]').click()
             assert line.get_attribute('data-expanded') == '1'
@@ -485,8 +580,6 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
     """Live receipts of one revision keep their nodes and keys through a saved replay of the same
     revision. Closed and opened again, the room is at its newest message; its receipts come from
     the saved rows, and live frames update them in place only with a newer revision."""
-    import os
-    from pathlib import Path
     from ouroboros.merge_receipts import card_row_text
     from ouroboros.projects_registry import create_project
     from tests.ui_chat_viewport_smoke import _emit_ws_frame
@@ -495,12 +588,11 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
     root = direct_server_with_data['data_dir']
     project = create_project(root, 'receipt-bookmark', name='Receipt reading place')
     cid, task_id = project['chat_id'], 'receipt-owner'
-    _write(root / 'logs/chat.jsonl', [
+    _append(root, 'chat', [
         {'direction': 'in', 'chat_id': cid, 'ts': f'2026-09-01T10:{index:02d}:00Z',
          'client_message_id': f'receipt-context-{index}', 'text': f'Receipt context {index:02d}'} for index in range(60)])
-    progress = root / 'logs/progress.jsonl'
-    _write(progress, [{'chat_id': cid, 'task_id': task_id, 'ts': '2026-09-01T10:30:00Z',
-                      'content': 'Reading the retained pull request.'}])
+    _append(root, 'progress', [{'chat_id': cid, 'task_id': task_id, 'ts': '2026-09-01T10:30:00Z',
+                                'content': 'Reading the retained pull request.'}])
     receipts = [{'receipt_id': name, 'number': 7, 'revision': 3,
                  'outcome': {'status': 'merged', 'merge_sha': 'c' * 40},
                  'coverage': {'status': 'covers_head', 'gaps': ['Retained receipt detail ' * 14]}}
@@ -520,7 +612,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
                 _emit_ws_frame(page, {**row, 'type': 'chat', 'role': 'system', 'is_progress': True, 'content': row['text']})
             card = page.locator(f'{feed} .chat-live-card[data-task-id="{task_id}"]')
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             lines = card.locator(':scope > [data-live-timeline] > .chat-live-line.result')
             assert lines.count() == 2, 'same text and time must not merge different receipts'
             line = lines.nth(1)
@@ -530,9 +622,7 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
             assert not live_key.startswith('history-')
             line.evaluate('n => { window.__readingReceipt = n; }')
             _bookmark_place(page, line, 1)
-            with progress.open('a') as stream:
-                for row in rows:
-                    stream.write(json.dumps(row) + '\n')
+            _append(root, 'progress', rows)
             before = page.evaluate('() => window.__historyReads.length')
             _bookmark_reconnect(page)
             page.wait_for_function('n => window.__historyReads.length > n && window.__historyReads.slice(n).every(r => r.done)', arg=before)
@@ -550,11 +640,11 @@ def test_a_live_receipt_survives_equal_replay_and_a_reopened_one_takes_only_newe
             _assert_at_newest(page, feed, 'Receipt context 59')
             assert 'could not be restored exactly' not in page.locator(feed).locator('..').inner_text()
             if card.get_attribute('data-expanded') != '1':
-                card.locator(':scope > [data-live-summary-button]').click()
+                card.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
             assert lines.count() == 2
             assert line.get_attribute('data-live-line-key') != live_key
             _screenshot(page, tmp_path, f'receipt-bookmark-after-{browser_engine}')
-            evidence = Path(os.environ.get('HISTORY_UI_EVIDENCE_DIR') or tmp_path)
+            evidence = producer_evidence_dir(tmp_path, "history-bookmark", env='HISTORY_UI_EVIDENCE_DIR')
             (evidence / f'receipt-bookmark-{browser_engine}.json').write_text(json.dumps({
                 'live_key': live_key, 'cold_key': line.get_attribute('data-live-line-key'),
                 'card_expanded': card.get_attribute('data-expanded'),
@@ -631,7 +721,7 @@ def _retained_room(root, slug, count, **quiz):
 
     project = create_project(root, slug, name=slug.replace('-', ' ').title())
     start = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    _write(root / 'logs/chat.jsonl', [{'direction': 'in', 'chat_id': project['chat_id'], 'client_message_id': f'{slug}-{index}',
+    _append(root, 'chat', [{'direction': 'in', 'chat_id': project['chat_id'], 'client_message_id': f'{slug}-{index}',
         'ts': (start + timedelta(minutes=index)).isoformat(), 'text': f'{slug} message {index:04d}. Reading an older discussion.'}
         for index in range(count)])
     if quiz:

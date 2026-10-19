@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import copy
 import hashlib
 import json
@@ -679,7 +681,6 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
     import supervisor.events as supervisor_events
     import supervisor.message_bus as message_bus
     import supervisor.state as supervisor_state
-    from ouroboros.review_substrate import ReviewRunResult
     from ouroboros.tools.registry import ToolRegistry
     from supervisor.terminal_delivery import already_delivered, pending_deliveries
 
@@ -691,9 +692,8 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
         stale_envelope, _finish_response(decoded),
     ])
     model_calls = []
-    acceptance_inputs = []
-    acceptance_candidates = []
-    acceptance_bindings = []
+    reviewed = []
+    reviewed_candidates = []
     lineage_flags = []
     nudge_calls = 0
 
@@ -712,58 +712,29 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
         nudge_calls += 1
         return nudge_calls == 1
 
-    def fake_panel(review_ctx):
-        content = review_ctx.content
-        acceptance_inputs.append(content)
-        acceptance_candidates.append(review_ctx.tools._ctx._delivery_candidate)
-        acceptance_bindings.append(copy.deepcopy(review_ctx.review_binding))
-        lineage_flags.append(acceptance_candidates[-1].control_episode_seen)
-        if len(acceptance_inputs) < 4:
-            return ReviewRunResult(
-                request={"surface": "task_acceptance"},
-                actors=[{
-                    "slot_id": "host-issue-449",
-                    "signal": "FAIL",
-                    "parsed": {
-                        "outcome_tier": "best_effort",
-                        "completion_coach": "Revise the complete answer.",
-                    },
-                }],
-                parsed_findings=[{
-                    "severity": "major",
-                    "item": "complete_answer_revision",
-                    "recommendation": "Revise the complete answer.",
-                }],
-                aggregate_signal="FAIL",
-            )
-        return ReviewRunResult(
-            request={"surface": "task_acceptance"},
-            actors=[{
-                "slot_id": "host-issue-449",
-                "signal": "PASS",
-                "parsed": {
-                    "outcome_tier": "solved",
-                    "completion_coach": "Ship the decoded answer.",
-                    "criteria_used": [{
-                        "criterion": "complete answer",
-                        "status": "supported",
-                        "evidence_refs": ["final_answer_marker"],
-                    }],
-                },
-            }],
-            parsed_findings=[],
-            aggregate_signal="PASS",
-        )
+    def review_at_delivery(ctx, content, _llm_trace, hold):
+        # Blocking holds a failed result until a review passes it: three reviews ask for a
+        # revised complete answer and show their findings; the fourth passes the decoded one.
+        reviewed.append(content)
+        reviewed_candidates.append(ctx._delivery_candidate)
+        lineage_flags.append(reviewed_candidates[-1].control_episode_seen)
+        if len(reviewed) < 4:
+            hold("[Result review] FAIL — complete_answer_revision: Revise the complete answer.")
+            return True
+        return False
 
     monkeypatch.setattr(loop, "call_llm_with_retry", fake_call)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", first_nudge_only)
-    monkeypatch.setattr(loop, "_execute_task_acceptance_panel", fake_panel)
-    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "auto")
+    monkeypatch.setattr("ouroboros.tools.review_result.result_review_at_delivery", review_at_delivery)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "4")
     monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "10")
     from tests.test_loop_acceptance_gate import _seed_acceptance_root
     _seed_acceptance_root(tmp_path, "issue-449", SimpleNamespace())
+    # Required reviews retained produced material, never the expected_output (#1731).
+    from ouroboros.artifacts import store_task_artifact_bytes
+    store_task_artifact_bytes(tmp_path, "issue-449", "deliverable.md", b"Produced deliverable.")
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.is_direct_chat = False
     registry._ctx.task_contract = {
@@ -786,7 +757,6 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
     )
 
     decoded_sha = hashlib.sha256(decoded.encode("utf-8")).hexdigest()
-    raw_sha = hashlib.sha256(stale_envelope.encode("utf-8")).hexdigest()
     prompt_counts = [
         sum(
             "[DELIVERY_FINALIZATION_CONTROL]" in str(row.get("content") or "")
@@ -794,6 +764,7 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
         )
         for call in model_calls
     ]
+    # Six authored rounds: the review that passes the decoded answer delivers it in its own round.
     assert len(model_calls) == 6
     assert prompt_counts[0] == 0 and all(count >= 1 for count in prompt_counts[1:])
     assert all(
@@ -801,7 +772,7 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
         for call in model_calls
         for row in call
     )
-    assert acceptance_inputs == [
+    assert reviewed == [
         "Controlled answer v1.",
         "Free-form improvement v2.",
         "Free-form improvement v3.",
@@ -810,17 +781,11 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
     assert lineage_flags == [True, True, True, True]
     assert result == decoded
     assert result != stale_envelope
-    assert acceptance_candidates[-1].full_text == decoded
-    assert acceptance_candidates[-1].revision == 5
+    assert reviewed_candidates[-1].full_text == decoded
+    assert reviewed_candidates[-1].revision == 5
     assert trace["delivery_candidate"]["content_sha256"] == decoded_sha
     binding = trace["delivery_candidate"]["acceptance_binding"]
     assert binding["candidate_sha256"] == decoded_sha
-    assert binding["binding_hash"] == trace["review_decision"]["binding_hash"]
-    assert acceptance_bindings[-1]["candidate_hash"] == decoded_sha
-    assert acceptance_bindings[-1]["binding_hash"] == binding["binding_hash"]
-    assert trace["review_runs"][-1]["candidate_hash"] == decoded_sha
-    assert trace["review_runs"][-1]["candidate_hash"] != raw_sha
-    assert trace["review_runs"][-1]["authority"] == "host_root"
 
     drive_logs = tmp_path / "pipeline-logs"
     drive_logs.mkdir()
@@ -891,10 +856,7 @@ def test_multi_improvement_explicit_selection_binds_exact_answer_before_single_d
 
     assert transported == [(7, decoded)]
     assert pending_deliveries(tmp_path) == []
-    chat_rows = [
-        json.loads(line)
-        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    chat_rows = dialogue_test.log_rows(tmp_path / "logs" / "chat.jsonl")
     delivered_rows = [row for row in chat_rows if row.get("task_id") == "issue-449"]
     assert [row["text"] for row in delivered_rows] == [decoded]
     assert delivered_rows[0]["format"] == "markdown"

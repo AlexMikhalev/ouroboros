@@ -1,12 +1,16 @@
 """Regressions for the dispositioned S5 pack and reader findings."""
 from __future__ import annotations
 
+import builtins
+import errno
 import gzip
 import hashlib
 import json
+import lzma
 import os
 import pathlib
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -160,26 +164,6 @@ def test_host_acceptance_distinguishes_verified_and_corrupt_retained_source(root
         host_acceptance_source(root, "author", ref["sha256"])
 
 
-@pytest.mark.parametrize("blocker", ["delivery", "obligation"])
-def test_outbox_and_owner_changes_wake_skipped_tasks(root, blocker):
-    from ouroboros import obligations
-    from supervisor import terminal_delivery
-
-    refs, _ = _task(root, "wake", blobs=1)
-    if blocker == "delivery":
-        assert terminal_delivery.register_pending_delivery(root, {"delivery_id": "owed", "task_id": "wake", "chat_id": 1})
-    else:
-        obligations.add(root, "pending_drives", "wake")
-    assert packer.run_pass(root)["packed"] == 0
-    assert packer.changed_tasks(root) == [] and _loose(refs[0])
-    if blocker == "delivery":
-        assert terminal_delivery.register_delivery(root, "owed")
-    else:
-        obligations.remove(root, "pending_drives", "wake")
-    assert packer.changed_tasks(root) == ["wake"]
-    assert packer.run_pass(root)["packed"] == 1 and not _loose(refs[0])
-
-
 def test_kept_shared_blob_rests_until_the_last_live_sharer_settles(root):
     raw = b'{"shared":true}'
     refs, _ = _task(root, "settled", blobs=1, payloads=[raw])
@@ -219,7 +203,7 @@ def test_old_index_schema_rebuilds_without_rewriting_sidecars(root):
     packer.run_pass(root)
     directory = packs.packs_dir(root)
     sidecar = (directory / "indexed.members.json").read_bytes()
-    with sqlite3.connect(directory / packs.INDEX_NAME) as conn:
+    with closing(sqlite3.connect(directory / packs.INDEX_NAME)) as conn, conn:
         conn.execute("DROP TABLE members")
         conn.execute("CREATE TABLE members (sha256 TEXT, task_id TEXT, generation INTEGER, offset INTEGER, "
                      "size INTEGER, kind TEXT, PRIMARY KEY (sha256, task_id, generation))")
@@ -301,71 +285,6 @@ def test_corrupt_loose_handle_falls_back_to_verified_pack(root, reader):
     assert read() == raw
 
 
-@pytest.mark.parametrize("name,entry", [
-    ("pending_drives", {}), ("synthesis", {}), ("unknowns", {"task_id": "owed"}),
-    ("custody_open", {"custody": {"task_id": "owed"}}),
-    ("custody_open", {"request": {"task_id": "owed"}}),
-    ("local_custody_witnesses", {"task_id": "owed"}),
-])
-def test_settlement_waits_for_owner_held_obligation(root, name, entry):
-    from ouroboros import obligations
-
-    refs, handle = _task(root, "owed", blobs=1)
-    identity = "run:child" if entry else "owed"
-    obligations.add(root, name, identity, entry)
-    assert not packs.task_settled(root, "owed")
-    assert name in packs.task_settlement_facts(root, "owed")["obligations"]
-    assert packer.run_pass(root)["packed"] == 0
-    assert _loose(refs[0]) and _handle_path(root, "owed", handle).exists()
-    obligations.remove(root, name, identity)
-    assert packs.task_settled(root, "owed")
-
-
-def test_acceptance_debt_blocks_without_delivery_and_late_notice_requires_receipt(root):
-    from supervisor import terminal_delivery
-
-    _task(root, "debt", blobs=1, acceptance_debt={"debt_id": "debt"})
-    assert not packs.task_settled(root, "debt")
-    wanted = "task_acceptance:" + hashlib.sha256(b"debt").hexdigest()
-    panel = {"panel_id": "p", "late_settlement": {"settled_at": "revision-1", "reviewed_subject": {"retry_key": wanted}}}
-    projection = {"panels": [panel], "late_notice_receipts": {"acceptance-late:" + wanted: {
-        "panel_id": "p", "settled_at": "revision-1", "custody": "publication"}}}
-    _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
-    assert not packs.task_settled(root, "debt")
-    receipt = projection["late_notice_receipts"]["acceptance-late:" + wanted]
-    receipt["custody"] = "terminal_outbox"
-    _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
-    event = {"delivery_id": "acceptance-late:" + wanted, "task_id": "debt", "chat_id": 1}
-    assert terminal_delivery.register_pending_delivery(root, event)
-    assert not packs.task_settled(root, "debt")
-    assert terminal_delivery.register_delivery(root, event["delivery_id"])
-    assert packs.task_settled(root, "debt")
-    panel["actors"] = [{"operation_state": "in_flight"}]
-    _result(root, "debt", acceptance_debt={"debt_id": "debt"}, review_projection=projection)
-    assert not packs.task_settled(root, "debt")
-
-
-@pytest.mark.parametrize("source", ["obligations", "terminal_deliveries"])
-def test_unknown_settlement_sources_block_until_repaired(root, source, monkeypatch):
-    from ouroboros import obligations, store
-
-    _task(root, "unknown", blobs=1)
-    if source == "obligations":
-        with monkeypatch.context() as patch:
-            def unavailable(*args):
-                raise store.StoreBusy("simulated unreadable obligations")
-            patch.setattr(obligations, "members_in", unavailable)
-            assert not packs.task_settled(root, "unknown")
-        assert packs.task_settled(root, "unknown")
-        return
-    path = root / "state" / "terminal_deliveries.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{", encoding="utf-8")
-    assert not packs.task_settled(root, "unknown")
-    path.write_text("{}", encoding="utf-8")
-    assert packs.task_settled(root, "unknown")
-
-
 @pytest.mark.parametrize("change", ["resume", "new_reference"])
 def test_unlink_rereads_facts_and_references_after_compression(root, monkeypatch, change):
     refs, handle = _task(root, "packing", blobs=1)
@@ -412,30 +331,30 @@ def test_compression_is_outside_result_and_publication_locks(root, monkeypatch):
     assert packer.run_pass(root)["faults"] == 0
 
 
-def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monkeypatch):
+def test_stop_latches_and_signals_without_waiting_for_the_job_facts_read(root, monkeypatch):
     import threading
     from tests.test_evidence_packs import REPO, _FakeChild
-    from ouroboros import process_custody
+    from ouroboros import maintenance, process_custody
 
     entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
-    unit, child = packer.EvidencePacker(), _FakeChild(b"")
+    unit, child = maintenance.MaintenanceChild(), _FakeChild(b"")
     unit._process = child
-    unit.tick(root, REPO)
 
-    def walk(_):
+    def facts(_root):
         entered.set()
         assert release.wait(5)
-        return ["candidate"]
+        return ["evidence_packing"]
 
-    monkeypatch.setattr(packer, "changed_tasks", walk)
-    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: pytest.fail("spawned after Stop"))
+    monkeypatch.setattr(maintenance, "due", facts)
+    spawns = []
+    monkeypatch.setattr(process_custody, "spawn_supervised", lambda *a, **k: spawns.append(a) or _FakeChild(b""))
     tick = threading.Thread(target=unit.tick, args=(root, REPO))
     stop = threading.Thread(target=lambda: (unit.stop(), stopped.set()))
     tick.start()
     try:
         assert entered.wait(2)
         stop.start()
-        assert stopped.wait(0.3), "Stop waited for the mutex held by the disk walk"
+        assert stopped.wait(0.3), "Stop waited for the mutex held by the facts read"
         assert child.killed.is_set() and unit._stopped.is_set()
     finally:
         release.set()
@@ -444,6 +363,7 @@ def test_stop_latches_and_signals_without_waiting_for_candidate_walk(root, monke
         if unit._thread is not None:
             unit._thread.join(3)
     assert not tick.is_alive() and not stop.is_alive()
+    assert spawns == [], "spawned after Stop"
 
 
 def test_restore_and_preflight_cover_all_descendants_but_not_symlink_drives(root):
@@ -524,6 +444,37 @@ def test_unpacker_is_published_before_unlink_and_write_failure_keeps_loose(root,
     assert not any(path.exists() for path in loose)
 
 
+def test_archive_fsync_uses_a_writable_handle(root, monkeypatch):
+    source = root / "archive/usage_ledger/segment_ep1.jsonl"
+    source.parent.mkdir(parents=True)
+    raw = b'{"attempt_id":"example"}\r\n'
+    source.write_bytes(raw)
+    opened, synced = {}, []
+    original_fsync = os.fsync
+
+    def tracked_open(*args, **kwargs):
+        handle = builtins.open(*args, **kwargs)
+        opened[handle.fileno()] = handle
+        return handle
+
+    def windows_fsync(fd):
+        handle = opened.get(fd)
+        if handle is not None and not handle.closed:
+            # Windows FlushFileBuffers requires GENERIC_WRITE; POSIX accepts rb.
+            if not handle.writable():
+                raise OSError(errno.EBADF, "fsync requires a writable handle")
+            synced.append(pathlib.Path(handle.name))
+        return original_fsync(fd)
+
+    monkeypatch.setattr(packs, "open", tracked_open, raising=False)
+    monkeypatch.setattr(os, "fsync", windows_fsync)
+    assert packs.archive_usage_segments(root)["archived"] == 1
+    assert synced and not source.exists()
+    assert lzma.decompress(source.with_suffix(".jsonl.xz").read_bytes()) == raw
+    meta = json.loads(source.with_suffix(".jsonl.xz.json").read_text(encoding="utf-8"))
+    assert (meta["size"], meta["sha256"]) == (len(raw), hashlib.sha256(raw).hexdigest())
+
+
 def test_exporting_phase_keeps_loose_evidence_until_published_again(root):
     from ouroboros import store, store_import
 
@@ -560,10 +511,10 @@ def test_switch_preflight_refuses_corrupt_sidecar_before_export_or_owner(root, m
 
 
 @pytest.mark.parametrize("leader", [True, False])
-def test_packer_child_is_custody_blocker_until_exit_is_confirmed(root, monkeypatch, leader):
+def test_maintenance_child_is_custody_blocker_until_exit_is_confirmed(root, monkeypatch, leader):
     from ouroboros import process_custody
 
-    entry = {"pid": 4242, "pgid": 4242, "purpose": "evidence_packer", "scope": "session"}
+    entry = {"pid": 4242, "pgid": 4242, "purpose": "maintenance", "scope": "session"}
     alive, signals = [True], []
     monkeypatch.setattr(process_custody, "_read_ledger_records", lambda *a, **k: (True, [entry], b""))
     monkeypatch.setattr(process_custody, "_fingerprint_matches", lambda e: alive[0] and leader)

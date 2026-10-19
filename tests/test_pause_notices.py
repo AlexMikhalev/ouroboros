@@ -5,6 +5,8 @@ it never enumerates results and never reads chat history (invariant 10).
 """
 from __future__ import annotations
 
+from tests import _dialogue as dialogue_test
+
 import json
 from types import SimpleNamespace
 
@@ -28,7 +30,6 @@ def notices(tmp_path, monkeypatch):
     monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 1})
     bridge = SimpleNamespace(send_message=lambda chat, text, **kw: sent.append((chat, text, kw)))
     monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
-    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda *_: None)
     prepare_startup_state(root)  # the lifecycle import creates the sets, as boot does
     write_task_result(root, "task", "running", chat_id=1)
     return root, sent
@@ -40,7 +41,7 @@ def _pause(root, episode="one", reason="budget", state="paused"):
 
 def _rows(root):
     path = root / "logs" / "chat.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return dialogue_test.log_rows(path)
 
 
 def _owing(root):
@@ -248,3 +249,14 @@ def test_the_lifecycle_import_seeds_pauses_owed_by_an_older_body(tmp_path, monke
     (root / "task_results" / "old.json").write_text(json.dumps(row), encoding="utf-8")  # as a body without the store wrote it
     prepare_startup_state(root)
     assert set(obligations.members(root, "pause_notices")) == {"old"}
+
+
+def test_an_authority_pause_says_it_is_technical_and_never_a_budget_limit(notices):
+    root, sent = notices
+    _pause(root, reason="authority")
+    pause_notices.reconcile_pause_notices(root)
+    assert len(sent) == 1
+    text = sent[0][1]
+    assert "billing or control authority could not be read" in text and "says nothing about money left" in text
+    assert "budget limit" not in text and "Fix the cause, then use Resume on the task when available" in text
+    assert "Resume rechecks that authority" not in text

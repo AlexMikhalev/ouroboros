@@ -38,7 +38,6 @@ from __future__ import annotations
 import logging
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar, copy_context
-import os
 import pathlib
 import threading
 import time
@@ -89,7 +88,7 @@ class LaunchBusy(OwnerPauseRefused):
 # --- the durable fence --------------------------------------------------------------
 
 _CACHE_LOCK = threading.Lock()
-_CACHE: Dict[str, Tuple[Tuple[int, int, int], Dict[str, Any]]] = {}
+_CACHE: Dict[str, bool] = {}  # observed authority only, never cached control values
 
 
 def _lock_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
@@ -98,26 +97,21 @@ def _lock_path(root_drive: Any, root_task_id: str) -> pathlib.Path:
     return task_results_dir(pathlib.Path(root_drive), create=True) / f"{root_task_id}.launch.lock"
 
 
-def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
-    """The root's current ``owner_pause`` projection (``{}`` when none).
-
-    Cached on the row's write signature: an unchanged signature is an unchanged
-    projection and the launch gate costs one indexed read on the hot path. An
-    unreadable root result raises: an unknown fence is never read as an open one.
-    """
-    from ouroboros.task_store import signature
+def _control_projection(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
+    """One addressed control read; an unknown fence is never an open one."""
+    from ouroboros.store_hot_facts import controls
 
     root_task_id = str(root_task_id or "").strip()
     if not root_task_id or root_drive in (None, ""):
         return {}
     key = f"{root_drive}:{root_task_id}"
     try:
-        stamp = signature(root_drive, root_task_id)
+        projection = controls(root_drive, root_task_id)
     except StoreBusy:
         raise
     except StoreError as exc:
         raise ValueError("owner_pause_authority_unreadable") from exc  # the store could not answer: unknown, never open
-    if stamp is None:
+    if not projection:
         from ouroboros.task_result_schema import TASK_RESULT_QUARANTINE_DIR
         from ouroboros.task_results import task_results_dir
 
@@ -127,24 +121,25 @@ def read_fence(root_drive: Any, root_task_id: str) -> Dict[str, Any]:
         if prior or (quarantine / f"{root_task_id}.json").exists() or any(quarantine.glob(f"{root_task_id}.*.json")):
             raise ValueError("owner_pause_authority_missing")  # a row that was, or was refused: never an open fence
         return {}
+    # Remember only that this process saw authority, preserving the missing-row
+    # refusal. Current controls always come from the store or the request snapshot.
     with _CACHE_LOCK:
-        cached = _CACHE.get(key)
-        if cached is not None and cached[0] == stamp:
-            return dict(cached[1])
-    from ouroboros.task_results import load_task_result
+        _CACHE[key] = True
+    return projection
 
-    try:
-        row = load_task_result(pathlib.Path(root_drive), root_task_id, strict=True) or {}
-    except StoreBusy:
-        raise
-    except StoreError as exc:
-        raise ValueError("owner_pause_authority_unreadable") from exc
-    fence = row.get("owner_pause") or {}
+
+def read_fence(root_drive: Any, root_task_id: str, *, _observations=None) -> Dict[str, Any]:
+    """Current owner Pause; the same memo also carries admission's small sleep projection."""
+    if _observations is None:
+        projection = _control_projection(root_drive, root_task_id)
+    else:
+        if root_task_id not in _observations:
+            _observations[root_task_id] = _control_projection(root_drive, root_task_id)
+        projection = _observations[root_task_id]
+    fence = projection.get("owner_pause") or {}
     if not isinstance(fence, dict) or (fence and fence.get("state") not in
                                        {FENCE_REQUESTED, FENCE_PAUSED, FENCE_RELEASED}):
         raise ValueError("owner_pause_authority_unreadable")
-    with _CACHE_LOCK:
-        _CACHE[key] = (stamp, dict(fence))
     return dict(fence)
 
 
@@ -152,26 +147,53 @@ def fence_closed(fence: Dict[str, Any]) -> bool:
     return str((fence or {}).get("state") or "") in CLOSED_FENCE_STATES
 
 
+def root_actor(root_drive: Any, root_task_id: str, task_id: str, *, strict: bool = False) -> bool:
+    """Whether ``task_id`` acts for ``root_task_id``'s whole tree (#1730).
+
+    The root itself, or the CURRENT physical attempt its reciprocal timeout-retry
+    chain ends at (``cancel_intents._validated_single_cancel_target``: typed root
+    attempts, host-written forward links). A descendant, a superseded attempt or
+    an unreadable chain is not; lineage ids alone grant nothing. The tree's
+    fence and latch stay on the logical root; grants stay on physical rows.
+    A grant issuer uses ``strict``: unreadable identity must refuse the action,
+    never select member authority instead of root authority.
+    """
+    task_id, root_task_id = str(task_id or ""), str(root_task_id or "")
+    if not task_id or not root_task_id or task_id == root_task_id:
+        return bool(task_id) and task_id == root_task_id
+    from ouroboros.cancel_intents import _validated_single_cancel_target
+    from ouroboros.store_hot_facts import read
+
+    try:
+        row = read(root_drive, root_task_id) or {}
+        if not row.get("superseded_by") and not row.get("retry_task_id"):
+            return False
+        return _validated_single_cancel_target(root_drive, root_task_id) == task_id
+    except Exception:
+        if strict:
+            raise
+        log.warning("Retry lineage of %s is unreadable; %s is not its root actor", root_task_id, task_id,
+                    exc_info=True)
+        return False
+
+
 def _resume_outstanding(current: Dict[str, Any], fence: Dict[str, Any]) -> bool:
-    """The root's unrevoked Resume grant names this closed fence.
+    """The physical root's unrevoked Resume grant names this logical fence.
 
     The fence stays closed from the grant until the resumed worker consumes it
     (``reopen_for_resume``); that grant would release whatever shares its fence.
     """
     from ouroboros.budget_pause import STATE_RESUME_GRANTED, STATE_RESUMED
-    from ouroboros.post_task_checkpoint import late_phase_pause_record
 
     row = current.get("budget_pause") if isinstance(current.get("budget_pause"), dict) else {}
     grant = row.get("grant") if isinstance(row.get("grant"), dict) else {}
-    late = late_phase_pause_record(current).get("grant") or {}
-    return bool(fence.get("fence_id") and (
-        grant.get("owner_pause_fence_id") == fence["fence_id"]
-        and not grant.get("revoked_at") and row.get("state") in {STATE_RESUME_GRANTED, STATE_RESUMED}
-        or late.get("fence_id") == fence["fence_id"] and not late.get("revoked_at")))
+    return bool(fence.get("fence_id") and grant.get("owner_pause_fence_id") == fence["fence_id"]
+                and not grant.get("revoked_at") and row.get("state") in {STATE_RESUME_GRANTED, STATE_RESUMED})
 
 
 def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
-                  late_work: bool = False, requested_by: str = "owner") -> Tuple[Dict[str, Any], bool]:
+                  late_work: bool = False, requested_by: str = "owner",
+                  actor_id: str = "") -> Tuple[Dict[str, Any], bool]:
     """Close the root's fence durably; ``(fence, created)``.
 
     Idempotent by ``request_id`` across Resume and later Pause generations;
@@ -179,20 +201,24 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     second press while closed names that fence, never an additional Pause,
     unless outstanding Resume authority names it: then this fresh Pause gets
     its own fence identity, which that grant cannot release. A
+    retry's ``actor_id`` is revalidated under the logical launch lock; its
+    physical row carries the grant, while the fence stays on the logical root. A
     terminal root refuses: a finished tree has nothing to pause — unless its
-    answered task still owns late work (D10): an open post-task checkpoint
-    read under this lock, or a live review operation the caller attests
-    (``late_work``). Raises ``OwnerPauseRefused`` without any write on
-    refusal; any write failure propagates, so the caller never acknowledges
-    an undurable Pause.
+    answered task still owns late work: an open post-task checkpoint read
+    under this lock (the Pause ends that upkeep at once), or a live review
+    operation the caller attests (``late_work``). Raises
+    ``OwnerPauseRefused`` without any write on refusal; any write failure
+    propagates, so the caller never acknowledges an undurable Pause.
     """
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from ouroboros.task_results import (
-        _TRULY_TERMINAL_STATUSES, require_writable_task_result_schema, stamp_task_result_schema,
+        _TRULY_TERMINAL_STATUSES, load_task_result, require_writable_task_result_schema, stamp_task_result_schema,
     )
     from ouroboros.task_store import patch_document
     from ouroboros.utils import utc_now_iso
 
+    from ouroboros.control_actor import control_actor
+    attribution = control_actor()
     outcome: Dict[str, Any] = {}
 
     def update(current: dict) -> Optional[dict]:
@@ -215,13 +241,13 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
         late_open = isinstance(checkpoint, dict) and post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
         if current.get("status") in _TRULY_TERMINAL_STATUSES and not (late_work or late_open):
             raise OwnerPauseRefused("task_terminal")
-        if fence_closed(old) and not _resume_outstanding(current, old):
-            requests[request_id] = {"fence_id": old["fence_id"], "generation": old.get("generation")}
+        if fence_closed(old) and not _resume_outstanding(actor_current if actor_current is not None else current, old):
+            requests[request_id] = {**attribution, "fence_id": old["fence_id"], "generation": old.get("generation")}
             fence = {**old, "requests": requests}
             outcome.update(fence=fence, created=False)
             return stamp_task_result_schema({**current, "owner_pause": fence})
         fence = {
-            "fence_id": uuid.uuid4().hex, "request_id": str(request_id or ""),
+            **attribution, "fence_id": uuid.uuid4().hex, "request_id": str(request_id or ""),
             # ``owner`` for the owner's own press; a stop door names itself
             # (``server_shutdown``, ``owner_restart``): the next start reads it.
             "state": FENCE_REQUESTED, "requested_by": str(requested_by or "owner"), "requested_at": utc_now_iso(),
@@ -230,7 +256,7 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
             # Still closed here only under outstanding Resume authority: name it.
             **({"supersedes_fence_id": old["fence_id"]} if fence_closed(old) else {}),
         }
-        requests[request_id] = {"fence_id": fence["fence_id"], "generation": fence["generation"]}
+        requests[request_id] = {**attribution, "fence_id": fence["fence_id"], "generation": fence["generation"]}
         fence["requests"] = requests
         outcome.update(fence=fence, created=True)
         return stamp_task_result_schema({**current, "owner_pause": fence})
@@ -242,6 +268,13 @@ def install_fence(root_drive: Any, root_task_id: str, *, request_id: str,
     while True:
         try:
             with launch_lock(root_drive, root_task_id, wait=False), acquisition_budget(0):
+                actor_current = None
+                if actor_id and actor_id != root_task_id:
+                    if not root_actor(root_drive, root_task_id, actor_id):
+                        raise OwnerPauseRefused("retry_lineage_unverified")
+                    actor_current = load_task_result(pathlib.Path(root_drive), actor_id, strict=True)
+                    if not actor_current:
+                        raise OwnerPauseRefused("retry_lineage_unverified")
                 patch_document(pathlib.Path(root_drive), str(root_task_id), update)
             break
         except (StoreBusy, LaunchBusy) as exc:
@@ -309,8 +342,9 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
                       fence_id: str, grant_id: str) -> None:
     """Consume one explicit Resume's fence authority where its work starts.
 
-    A root reopens its tree; an owner-selected child of a terminal root opens
-    only its own member. A closed fence that ``install_fence`` minted over this
+    A root (or the current attempt of its retry, ``root_actor``) reopens its
+    tree; an owner-selected child of a terminal root opens only its own member.
+    A closed fence that ``install_fence`` minted over this
     outstanding Resume (``supersedes_fence_id``) is a newer owner Pause: the
     Resume is superseded, releases nothing, and the member parks at its next
     safe boundary. Any other identity change refuses.
@@ -321,12 +355,7 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
         if fence_id and current.get("fence_id") != fence_id:
             if not fence_closed(current) or current.get("supersedes_fence_id") != fence_id:
                 raise ValueError("owner_pause_fence_changed")
-        elif root_task_id == task_id:
-            if fence_closed(current):
-                # One root Resume restores every saved unsent owner before opening
-                # their shared fence, including acceptance beside post-task work.
-                from ouroboros.acceptance_late import resume_paused_acceptance_preparations
-                resume_paused_acceptance_preparations(root_drive, root_task_id, current)
+        elif root_actor(root_drive, root_task_id, task_id):
             try:
                 release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
             except StoreBusy as exc:
@@ -334,22 +363,21 @@ def reopen_for_resume(root_drive: Any, root_task_id: str, task_id: str, *,
         else:
             select_member_resume(root_drive, root_task_id, task_id, fence_id=fence_id, grant_id=grant_id)
     if publication_gap is not None:
-        _finish_resume_publication(root_drive, root_task_id, fence_id, grant_id, publication_gap)
+        _finish_resume_publication(root_drive, root_task_id, task_id, fence_id, grant_id, publication_gap)
 
 
-def _finish_resume_publication(root_drive: Any, task_id: str, fence_id: str, grant_id: str,
+def _finish_resume_publication(root_drive: Any, root_task_id: str, task_id: str, fence_id: str, grant_id: str,
                                error: StoreBusy | LaunchBusy) -> None:
-    """Retry only the root fence write after preparation handoff, outside its lock.
+    """Retry only the root fence write, outside its lock.
 
-    The preparation is already owned and must never restart here. Each try
-    rechecks this same explicit grant and current Stop/Pause authority; unknown
+    Nothing the Resume already started restarts here. Each try
+    rechecks the physical actor's grant under its logical root lock; unknown
     rollback or the existing STORE_WAIT_SEC physical acquisition bound leaves
     the caller's hold intact; no task/review lifetime is extended.
     """
     from ouroboros.store import STORE_WAIT_SEC
     from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
-    from ouroboros.cancel_intents import cancel_pending
-    from ouroboros.post_task_checkpoint import late_phase_pause_record
+    from ouroboros.cancel_intents import _validated_single_cancel_target, cancel_pending
     from ouroboros.task_results import load_task_result
 
     started = time.monotonic()
@@ -362,22 +390,24 @@ def _finish_resume_publication(root_drive: Any, task_id: str, fence_id: str, gra
         time.sleep(min(ACQUISITION_SLICE_SEC, remaining))
         needs_rollback = False  # Lock/authority probes below have not attempted a write.
         try:
-            with launch_lock(root_drive, task_id, wait=False), acquisition_budget(0):
-                current = read_fence(root_drive, task_id)
+            with launch_lock(root_drive, root_task_id, wait=False), acquisition_budget(0):
+                current = read_fence(root_drive, root_task_id)
                 if current.get("fence_id") != fence_id:
                     if fence_closed(current) and current.get("supersedes_fence_id") == fence_id:
                         return  # The newer Pause keeps the original resumed work held.
                     raise OwnerPauseRefused("owner_pause_fence_changed")
-                row = load_task_result(root_drive, task_id, strict=True) or {}
-                grants = (((row.get("budget_pause") or {}).get("grant") or {}, "owner_pause_fence_id"),
-                          (late_phase_pause_record(row).get("grant") or {}, "fence_id"))
-                if not grant_id or not any(grant.get("grant_id") == grant_id and grant.get(key) == fence_id
-                                            and not grant.get("revoked_at") for grant, key in grants):
+                if task_id != root_task_id and _validated_single_cancel_target(root_drive, root_task_id) != task_id:
                     raise OwnerPauseRefused("root_resume_authority_changed")
-                if cancel_pending(root_drive, task_id, strict=True) or row.get("status") == "cancelled":
+                row = load_task_result(root_drive, task_id, strict=True) or {}
+                grant = (row.get("budget_pause") or {}).get("grant") or {}
+                if (not grant_id or grant.get("grant_id") != grant_id
+                        or grant.get("owner_pause_fence_id") != fence_id or grant.get("revoked_at")):
+                    raise OwnerPauseRefused("root_resume_authority_changed")
+                if (any(cancel_pending(root_drive, member, strict=True) for member in {root_task_id, task_id})
+                        or row.get("status") == "cancelled"):
                     raise OwnerPauseRefused("cancelled")
                 needs_rollback = True
-                release_fence(root_drive, task_id, reason="owner_resume_consumed")
+                release_fence(root_drive, root_task_id, reason="owner_resume_consumed")
                 return
         except (StoreBusy, LaunchBusy) as exc:
             error = exc
@@ -434,12 +464,51 @@ def consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, 
     except Exception:
         return {}
     fence_id = str(grant.get("owner_pause_fence_id") or "")
-    if (task_id == root_task_id or row.get("state") != STATE_RESUMED or not grant.get("consumed_at")
+    if (root_actor(root_drive, root_task_id, task_id) or row.get("state") != STATE_RESUMED
+            or not grant.get("consumed_at")
             or grant.get("revoked_at") or int(row.get("task_attempt") or 0) != int(attempt)
             or not fence_id or fence.get("fence_id") != fence_id or not fence_closed(fence)
             or task_id in (fence.get("selected_members") or {})):
         return {}
     return {"fence_id": fence_id, "grant_id": str(grant.get("grant_id") or "")}
+
+
+def interrupted_member_resume(root_drive: Any, root_task_id: str, task_id: str, *, attempt: int) -> Optional[bool]:
+    """Whether the owner's own Resume of this member was consumed, then interrupted (read only).
+
+    Not the owner's deliberate Pause, so Main offers the member's existing Resume
+    (#1660): its consumed, unrevoked, owner-selected explicit grant from ``attempt``
+    names the still-closed fence of its terminal root, which has not selected it yet
+    (``consumed_member_resume``) or selected it on that same grant. A newer Pause
+    (another fence), another attempt, a revoked or model grant or a live root answers
+    False; ``None`` when a fact it needs cannot be read, which the census keeps as
+    unknown. A current root retry is a root actor, never this member exception.
+    The Resume itself rechecks all of it.
+    """
+    from ouroboros.budget_pause import STATE_RESUMED, budget_pause_row
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES
+
+    try:
+        if root_actor(root_drive, root_task_id, task_id, strict=True):
+            return False
+        row = budget_pause_row(pathlib.Path(root_drive), task_id)
+        grant = row.get("grant") or {}
+        own = bool(row.get("state") == STATE_RESUMED and int(row.get("task_attempt") or 0) == int(attempt)
+                   and grant.get("grant_id") and grant.get("consumed_at") and not grant.get("revoked_at")
+                   and grant.get("authority") == "explicit_resume" and grant.get("selected_by") == "owner")
+    except Exception:
+        return None
+    if not own:  # the member's own facts already say no: its root is never read
+        return False
+    try:
+        fence = read_fence(root_drive, root_task_id)
+        root = _control_projection(root_drive, root_task_id)
+    except Exception:
+        return None
+    selected = (fence.get("selected_members") or {}).get(task_id)
+    return bool(root.get("status") in _TRULY_TERMINAL_STATUSES
+                and fence_closed(fence) and grant.get("owner_pause_fence_id") == fence.get("fence_id")
+                and (selected is None or isinstance(selected, dict) and selected.get("grant_id") == grant["grant_id"]))
 
 
 def complete_consumed_member_resume(root_drive: Any, root_task_id: str, task_id: str, consumed: Dict[str, str],
@@ -487,7 +556,18 @@ def admit_delegated_start(drive_root: Any, payload: Dict[str, Any]) -> bool:
 
     source = SimpleNamespace(drive_root=drive_root, task_id=str(payload.get("task_id") or ""),
                              root_task_id=str(payload.get("root_task_id") or payload.get("task_id") or ""))
-    binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
+    # START custody is this session's paid admission and its late receipt's bucket: an
+    # unestablished authority raises typed here, before any row or POST (owner 2026-10-14).
+    # A host operation its caller bound explicitly as non-task (no task lineage) is its own
+    # uncapped group on the global axis, exactly as its reservations are; never a prefix guess.
+    from ouroboros.usage_accounting import current_usage_scope
+    bound = current_usage_scope()
+    if not source.root_task_id:  # no task identity at all: an unattributed host start, no group to guess
+        binding = {}
+    elif bound is not None and bound.non_task_operation is True and str(bound.root_task_id or "") == source.root_task_id:
+        binding = {"billing_group_id": source.root_task_id, "billing_group_limit_usd": None}
+    else:
+        binding = task_billing_fields({"id": source.task_id}, source.root_task_id, None, drive_root)
     payload = {"ts": utc_now_iso(), "event_id": uuid.uuid4().hex, **payload}
     payload["billing_group"] = {k: v for k, v in binding.items() if k.startswith("billing_group_")}
     retrying = False
@@ -520,7 +600,7 @@ def _member_coordinates(source: Any) -> Tuple[str, str, str]:
     return str(root_drive or ""), root_task_id, task_id
 
 
-def member_fence(source: Any) -> Dict[str, Any]:
+def member_fence(source: Any, *, _observations=None) -> Dict[str, Any]:
     """Read the shared fence strictly: unreadable authority refuses new effects."""
     root_drive, root_task_id, _task_id = _member_coordinates(source)
     if not root_drive or not root_task_id:
@@ -536,10 +616,10 @@ def member_fence(source: Any) -> Dict[str, Any]:
         owner = current_model_wait()
         required = getattr(source, "task_lifecycle_bound", False) or (
             owner is not None and owner.task_id == _task_id)
-        from ouroboros.task_store import exists
-        if required and not exists(root_drive, root_task_id):
+        observations = _observations if _observations is not None else {}
+        fence = read_fence(root_drive, root_task_id, _observations=observations)
+        if required and not observations[root_task_id].get("present"):
             raise ValueError("owner_pause_authority_missing")
-        fence = read_fence(root_drive, root_task_id)
     except StoreBusy:
         raise
     except Exception:
@@ -550,6 +630,48 @@ def member_fence(source: Any) -> Dict[str, Any]:
     if fence_closed(fence) and _episode_dispatched_before(fence, root_task_id):
         return {}  # The already-started review episode finishes its own check.
     return fence if fence_closed(fence) else {}
+
+
+def wait_member_fence(source: Any) -> Dict[str, Any]:
+    """Read at the member's safe boundary, retaining its stack through contention.
+
+    Only this pure observation repeats, outside queue, launch and money locks.
+    A busy store proves neither an open fence nor an accepted Pause. The usual
+    reader still owns unknown authority; supervisor/launch callers do not wait.
+    """
+    from ouroboros._usage_wait import ACQUISITION_SLICE_SEC
+    from ouroboros.budget_pause import _HOLD_POLL_SEC, _hold_control_reason, _publish_hold
+    from ouroboros.model_wait import ModelWaitInterrupted
+
+    started, episode_id, entered = time.monotonic(), uuid.uuid4().hex, False
+
+    def publish(phase):
+        detail = "Waiting for control storage" if phase == "entered" else "Control storage wait ended"
+        _publish_hold(source, {
+            "checkpoint_kind": "control_store_wait", "state": "waiting" if phase == "entered" else "ended",
+            "hold_reason": "control_store_contention", "phase": phase, "episode_id": episode_id,
+            "elapsed_sec": time.monotonic() - started, "detail": detail, "content": detail,
+            "text": detail, "role": "system", "system_type": "task_checkpoint",
+        })
+
+    try:
+        while True:
+            try:
+                with acquisition_budget(ACQUISITION_SLICE_SEC):
+                    return member_fence(source)
+            except StoreBusy as exc:
+                if exc.reason != "contention" or getattr(exc, "rollback_confirmed", None) is False:
+                    raise
+                control = _hold_control_reason(source)
+                if control:
+                    raise ModelWaitInterrupted(control) from exc
+                if not entered:
+                    entered = True
+                    publish("entered")
+                time.sleep(_HOLD_POLL_SEC)
+    finally:
+        if entered:
+            publish("ended")
 
 
 @contextmanager
@@ -648,19 +770,24 @@ def launch_lock(root_drive: Any, root_task_id: str, *, wait: bool = True):
 
 def _validate_launch(source: Any, root_resume=None):
     root_drive, root_id, task_id = _member_coordinates(source)
-    fence = member_fence(source)
-    selected_resume_start = False
+    observations = {}
+    fence = member_fence(source, _observations=observations)
+    def controls(member_id):
+        if member_id not in observations:
+            observations[member_id] = _control_projection(root_drive, member_id)
+        return observations[member_id]
+    selected_resume_start = actor = False
     if fence:
-        from ouroboros.budget_pause import budget_pause_row, STATE_RESUME_GRANTED
+        from ouroboros.budget_pause import STATE_RESUME_GRANTED
 
         allowed = False
         if root_resume and fence_closed(fence):
-            row = budget_pause_row(pathlib.Path(root_drive), task_id)
+            row = controls(task_id).get("budget_pause") or {}
             grant = row.get("grant") or {}
-            root_allowed = task_id == root_id
+            actor = root_allowed = root_actor(root_drive, root_id, task_id)
             if not root_allowed and grant.get("selected_by") == "owner":
-                from ouroboros.task_results import load_task_result, _TRULY_TERMINAL_STATUSES
-                root_allowed = (load_task_result(root_drive, root_id, strict=True) or {}).get("status") in _TRULY_TERMINAL_STATUSES
+                from ouroboros.task_results import _TRULY_TERMINAL_STATUSES
+                root_allowed = controls(root_id).get("status") in _TRULY_TERMINAL_STATUSES
             allowed = bool(row.get("state") == STATE_RESUME_GRANTED
                 and root_allowed
                 and (grant.get("owner_pause_fence_id") or row.get("owner_fence_id")) == fence.get("fence_id")
@@ -670,13 +797,13 @@ def _validate_launch(source: Any, root_resume=None):
                 and not grant.get("revoked_at") and not grant.get("consumed_at"))
         if not allowed:
             raise OwnerPauseRefused(str(fence.get("reason") or "owner_pause"))
-        selected_resume_start = task_id != root_id
-    from ouroboros.budget_pause import budget_pause_row, STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED
+        selected_resume_start = not actor
+    from ouroboros.budget_pause import STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED
 
     if root_drive and task_id:
         for member_id in {root_id, task_id}:
             try:
-                row = budget_pause_row(pathlib.Path(root_drive), member_id)
+                row = controls(member_id).get("budget_pause") or {}
             except StoreBusy:
                 raise
             except Exception as exc:
@@ -685,7 +812,7 @@ def _validate_launch(source: Any, root_resume=None):
                     STATE_PAUSING, STATE_PAUSED, STATE_RESUME_GRANTED}:
                 continue
             if member_id == root_id and task_id != root_id:
-                selected = read_fence(root_drive, root_id).get("selected_members") or {}
+                selected = read_fence(root_drive, root_id, _observations=observations).get("selected_members") or {}
                 if selected_resume_start or task_id in selected:
                     # Explicit member Resume outlives its terminal root's
                     # saved sleep. It does not release any sibling or root.
@@ -698,6 +825,8 @@ def _validate_launch(source: Any, root_resume=None):
                 and not grant.get("revoked_at") and not grant.get("consumed_at"))
             if not resume_start:
                 raise OwnerPauseRefused("model_sleep")
+
+    return observations.get(root_id, {})
 
 
 @contextmanager
@@ -720,12 +849,12 @@ def launch_admission(source: Any, *, root_resume: Optional[Dict[str, Any]] = Non
         try:
             stack.enter_context(launch_lock(root_drive, root_id, wait=False))
             with admission_acquisition():
-                _validate_launch(source, root_resume)
+                controls = _validate_launch(source, root_resume)
                 marker = _REVIEW_EPISODE.get()
                 if (isinstance(marker, dict) and not episode_armed(marker)
                         and marker.get("root_task_id") == root_id):
                     review_admission = {"root_drive": root_drive, "root_task_id": root_id,
-                        "generation": int(read_fence(root_drive, root_id).get("generation") or 0)}
+                        "generation": int((controls.get("owner_pause") or {}).get("generation") or 0)}
         except BaseException:
             stack.close()
             raise
@@ -747,10 +876,10 @@ def tree_member_results(root_drive: Any, root_task_id: str) -> Dict[str, Dict[st
     store refuses the census. Selection never supplies live status or custody.
     """
     from ouroboros.task_results import load_task_result
-    from ouroboros.task_store import task_facts
+    from ouroboros.task_store import tree_facts
 
     try:
-        facts = task_facts(root_drive, where="root_task_id=? OR root_task_id IS NULL", params=(root_task_id,))
+        facts = tree_facts(root_drive, root_task_id)
     except StoreBusy:
         raise
     except StoreError as exc:
@@ -768,101 +897,50 @@ def tree_member_results(root_drive: Any, root_task_id: str) -> Dict[str, Dict[st
 
 @contextmanager
 def tool_handoff(source: Any, name: str):
-    """Track the local invocation separately from its owned physical operations.
+    """Bind one actual invocation; its existing future owns local completion.
 
-    Actual handler unwind closes this invocation regardless of business outcome.
-    Pending host receipts and independently owned executors remain custody;
-    neither a result code nor metadata can certify their completion.
+    A directly called registry without that owner keeps the durable fallback.
+    Merely entering registry preparation is never an ordinary handler handoff.
     """
-    from ouroboros.task_store import DELETE_ROW, exists, patch_handoff
-    from ouroboros.utils import utc_now_iso
+    from ouroboros.tool_custody import invocation_outcome, retain_invocation, settle_invocation
+    from ouroboros._usage_wait import retry_presend
 
-    outcome: Dict[str, Any] = {"not_started": True}
-    root_drive, root_id, task_id = _member_coordinates(source)
-    if not root_drive or not task_id:
-        yield outcome
-        return
-    holder = task_id
-    op_id = uuid.uuid4().hex
-    outcome["operation_id"] = op_id
-    outcome["claim_root"], outcome["claim_task"] = root_drive, holder
+    inherited = _TOOL_OPERATION.get()
+    outcome = (inherited[2] if inherited and inherited[0] is source and inherited[1] == name
+               and not inherited[2].get("registry_entered") else invocation_outcome(source, name))
+    outcome["registry_entered"] = True
     token = _TOOL_OPERATION.set((source, name, outcome))
-    def claim(_current):  # the claim is one `launch_handoffs` row of the holder, never a body write
-        return {"tool": name, "task_id": task_id, "root_task_id": root_id, "state": "claimed",
-                "claimed_at": utc_now_iso(), **({"local_owner": local_owner} if local_owner else {})}
-    from ouroboros.model_wait import current_model_wait
-    owner = current_model_wait()
-    local_owner = ({"pid": os.getpid(), "process_birth": owner.answer_owner_birth,
-                    "task_attempt": owner.attempt}
-                   if owner is not None and owner.task_id == task_id else {})
-    claimed = False
+    root_drive, root_id, task_id = _member_coordinates(source)
+    refusal = None
     try:
-        # Stateful tools were submitted to their sticky executor by the loop.
-        # This ticket belongs only to that invocation, not its nested launches.
         handed = _HANDED_TOOL.get()
         with _CACHE_LOCK:
             outcome["handed"] = bool(handed and handed["invocation"] == (id(source), name) and not handed["claimed"])
             if outcome["handed"]:
-                handed["claimed"] = True  # Shared by copied contexts: exactly one consumer.
-        from ouroboros._usage_wait import retry_presend
-        retrying = False
-
-        def claim_once():
-            nonlocal holder, claimed, retrying
-            # A contended child read must not pin a previous root fallback.
-            # The invocation/ticket/local owner are frozen outside this retry.
-            holder = task_id
-            outcome["claim_task"] = holder
-            owner = current_model_wait()
-            if owner is not None and owner.task_id == task_id and owner.closed:
-                raise OwnerPauseRefused("operation_already_returned")
-            if retrying and owner is not None:
-                # A control may arrive during the outside wait. This is the
-                # same reader as retry_presend; handed work still survives Pause.
-                reason = owner.control_reason()
-                if reason:
-                    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
-                    raise PhysicalDispatchInterrupted(reason)
-            retrying = True
-            with (launch_lock(root_drive, root_id, wait=False) if outcome["handed"]
-                  else launch_admission(source, wait=False)):
-                # A standalone tool context is not a lifecycle producer. Never
-                # manufacture a status-less result; use its existing root owner
-                # only while the member still has no published lifecycle row.
-                if not exists(root_drive, holder):
-                    holder = root_id
-                    outcome["claim_task"] = holder
-                if exists(root_drive, holder):
-                    try:
-                        patch_handoff(root_drive, holder, "launch_handoffs", op_id, claim)
-                    except LookupError as exc:
-                        raise OwnerPauseRefused("owner_pause_authority_unreadable") from exc
-                    claimed = True
-                elif getattr(source, "task_lifecycle_bound", None) is not False:
-                    raise OwnerPauseRefused("owner_pause_authority_unreadable")
-
-        # Only this unsent claim retries, after both the launch hold and store
-        # transaction unwind. The handler and its settlement are never replayed.
-        retry_presend(claim_once, check=False)
+                handed["claimed"] = True
+        if not outcome.get("memory_owned") and root_drive and task_id:
+            def claim_once():
+                from ouroboros.model_wait import current_model_wait
+                owner = current_model_wait()
+                if owner is not None and owner.task_id == task_id and owner.closed:
+                    raise OwnerPauseRefused("operation_already_returned")
+                with (launch_lock(root_drive, root_id, wait=False) if outcome["handed"]
+                      else launch_admission(source, wait=False)):
+                    retain_invocation(outcome)
+            retry_presend(claim_once, check=False)
         yield outcome
+    except (OwnerPauseRefused, StoreError) as exc:
+        refusal = exc
+        raise
     finally:
+        with outcome["phase_lock"]:
+            outcome["closed"] = True
+            if refusal is not None:
+                # Snapshot with closure, not before a competing admitted start.
+                refusal.invocation_not_started = outcome.get("not_started") is True
         _TOOL_OPERATION.reset(token)
-        def settle(claim):
-            if claim is None:
-                return None
-            claim = {**claim, "state": "returned", "returned_at": utc_now_iso()}
-            from ouroboros.tool_custody import claim_still_owns_effect
-            return claim if claim_still_owns_effect(root_drive, claim) else DELETE_ROW
-        # Close local admission even if durable cleanup cannot acquire its lock.
-        # Failure retains custody; it must not replace an executed result with
-        # a false NOT STARTED answer. Settlement still serializes with starts.
-        outcome["closed"] = True
-        try:
-            with launch_lock(root_drive, root_id):
-                if claimed and (outcome.get("settled") is True or outcome.get("not_started") is True):
-                    patch_handoff(root_drive, holder, "launch_handoffs", op_id, settle)
-        except Exception:
-            log.warning("Tool %s custody could not settle (%s)", name, op_id, exc_info=True)
+        if outcome.get("future_row") is None:
+            settle_invocation(outcome)
 
 
 def current_tool_operation(source: Any, name: str) -> str:
@@ -893,11 +971,21 @@ def operation_start(source: Any = None):
     source = source if source is not None else (active[0] if active else None)
     with launch_admission(source):
         if active and active[0] is source:
-            if active[2].get("closed"):
-                raise OwnerPauseRefused("operation_already_returned")
-            active[2]["not_started"] = False
+            _mark_tool_start(active[2])
         yield
         arm_review_episode(source)  # the submission inside succeeded under this same lock
+
+
+def _mark_tool_start(outcome: dict) -> None:
+    """Order admission against closure; never hold this lock across I/O.
+
+    Called after root admission. The durable RLock remains independent: taking
+    it here could make Pause wait for another thread's custody write.
+    """
+    with outcome["phase_lock"]:
+        if outcome.get("closed"):
+            raise OwnerPauseRefused("operation_already_returned")
+        outcome["not_started"] = False
 
 
 def submit_tool(source: Any, name: str, submit: Any, function: Any, *args: Any):
@@ -931,24 +1019,45 @@ def run_operation(source: Any, function: Any, /, *args: Any, **kwargs: Any):
 
 
 def run_tool_handler(source: Any, function: Any, /, *args: Any, **kwargs: Any):
-    """The host joins the actual body, including its exception unwind.
+    """The prepared callable passes directly to its already-running worker.
 
-    A caller's outer timeout cannot reach this finally while the body still runs.
-    This closes local launch capability, not processes, receipts or remote effects.
+    Taking this exact invocation under the launch lock is the handoff, not a
+    queued preparation or a row write. The next action outside is the body;
+    every nested operation still has its own fresh operation_start gate.
     """
+    from ouroboros.model_wait import current_model_wait, dispatch_deadline_remaining_sec
+    from ouroboros.llm_attempt import PhysicalDispatchInterrupted
+    from ouroboros.tools.process_facts import process_facts_handoff
+    from ouroboros._usage_wait import retry_presend
+
     active = _TOOL_OPERATION.get()
+    outcome = active[2] if active and active[0] is source else None
     try:
-        if active and active[0] is source and active[2].get("handed"):
-            if active[2].get("closed"):
-                raise OwnerPauseRefused("operation_already_returned")
-            active[2]["not_started"] = False
-            return function(*args, **kwargs)  # Keep browser/greenlet thread affinity.
-        from ouroboros.tools.process_facts import process_facts_handoff
         with process_facts_handoff(function) as invoke:
-            return run_operation(source, invoke, *args, **kwargs)
+            def take():
+                root, tree, _task = _member_coordinates(source)
+                with (launch_lock(root, tree, wait=False) if outcome and outcome.get("handed")
+                      else launch_admission(source, wait=False)):
+                    owner = current_model_wait()
+                    reason = owner.control_reason(strict_current=True) if owner is not None else None
+                    remaining = dispatch_deadline_remaining_sec()
+                    if reason or remaining is not None and remaining <= 0:
+                        raise PhysicalDispatchInterrupted(reason or "deadline")
+                    if outcome is not None:
+                        _mark_tool_start(outcome)
+                    arm_review_episode(source)
+            # Validate the inherited caller controls, not this tool's soft wait
+            # envelope. Its retry owner must use that same context. The body
+            # keeps the worker envelope for inner waits after admission returns.
+            admission = outcome.get("admission_context") if outcome is not None else None
+            if admission is None:
+                retry_presend(take, check=False)
+            else:
+                admission.run(retry_presend, take, check=False)
+            return invoke(*args, **kwargs)
     finally:
-        if active and active[0] is source:
-            active[2]["settled"] = True
+        if outcome is not None:
+            outcome["settled"] = True
 
 
 def submit_async_operation(source: Any, function: Any, /, *args: Any, **kwargs: Any):
@@ -980,9 +1089,13 @@ def submit_async_preparation(function: Any, *args: Any, source: Any = None, **kw
     async def invoke():
         return await function(*args, **kwargs)
 
-    with launch_admission(source if source is not None else active[0] if active else None):
+    source = source if source is not None else active[0] if active else None
+    with launch_admission(source):
+        if active and active[0] is source:
+            _mark_tool_start(active[2])  # preparation can open a process/socket
         with physical_acquisition():
-            return asyncio.create_task(invoke())
+            task = asyncio.create_task(invoke())
+        return task
 
 
 def model_handed_off(attempt_id: str = "") -> bool:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import signal
 import subprocess
 import time
 import uuid
@@ -269,7 +270,7 @@ class ProcessContainer:
     teardown — but only when the API confirms it). Prefer ``spawn`` over ``Popen`` + ``adopt``:
     POSIX ``adopt`` can neither plant the token nor vouch for a pid or group."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, lifeline: bool = False, overload: bool = False) -> None:
         self._job = None
         # The pid `spawn` started and the group it leads: known WITHOUT having to be read.
         self._root = 0
@@ -281,6 +282,11 @@ class ProcessContainer:
         self._setup_error = ""
         # Unique per instance: a nested preflight and its outer run never claim each other's.
         self._token = f"{CONTAINMENT_ENV_PREFIX}{uuid.uuid4().hex}"
+        self._protect_owner = lifeline
+        self._watch_overload = overload
+        self._lifeline = self._watch = None
+        self._birth = ""
+        self._protection_error = ""
 
     def containment_env(self) -> "dict[str, str]":
         """Environment entries that make a process and its descendants members. ``spawn`` applies
@@ -298,6 +304,9 @@ class ProcessContainer:
         kwargs.update(group_kwargs)
         env = kwargs.get("env")
         env = dict(os.environ if env is None else env)
+        # Explicit child environments must not sever an enclosing run's custody.
+        env.update({key: value for key, value in os.environ.items()
+                    if key.startswith(CONTAINMENT_ENV_PREFIX)})
         env.pop(_LAUNCHER_AUTHORITY_ENV, None)
         env.pop(_LAUNCHER_REPO_AUTHORITY_ENV, None)
         kwargs["env"] = {**env, **self.containment_env()}
@@ -306,7 +315,18 @@ class ProcessContainer:
             self._suspended = True
         if flags:
             kwargs["creationflags"] = flags
-        proc = subprocess.Popen(argv, **kwargs)
+        if self._protect_owner and not _pl.IS_WINDOWS:
+            from ouroboros.process_lifeline import ProcessLifeline
+            self._lifeline = ProcessLifeline(self._token)
+        try:
+            if self._watch_overload:
+                from ouroboros.process_overload import OverloadWatch
+                from ouroboros.test_parallelism import nested_workers
+                self._watch = OverloadWatch(self, nested_workers(kwargs["env"]))
+            proc = subprocess.Popen(argv, **kwargs)
+        except BaseException:
+            self.reap()
+            raise
         # Knowledge no scan can re-derive: enumeration claims members by READING them, so a root
         # turning nondumpable before the first scan is in no list. `start_new_session` makes it its
         # own group LEADER (pgid == pid); enumerating any OTHER pgid would report bystanders.
@@ -315,6 +335,17 @@ class ProcessContainer:
         self._pgid = pgid if pgid and pgid == self._root else 0
         self._start_ticks = _pl._proc_start_ticks(self._root)
         self.adopt(proc)
+        try:
+            if self._protect_owner or self._watch_overload:
+                self._birth = _pl.process_start_time(self._root)
+            if self._lifeline is not None:
+                self._lifeline.attach(self._root, self._birth, self._pgid, self._start_ticks)
+            if self._watch is not None:
+                self._watch.start()
+        except BaseException:
+            self.reap()
+            proc.wait(timeout=5)
+            raise
         return proc
 
     def adopt(self, proc: subprocess.Popen) -> None:
@@ -388,7 +419,80 @@ class ProcessContainer:
                 undetermined.append(pid)
         return alive, undetermined, ""
 
+    def stop_tree(self) -> None:
+        """Stop this invocation, keeping attribution alive for the final scan."""
+        if _pl.IS_WINDOWS:
+            if self._job is not None:
+                error = _pl.terminate_job(self._job)
+                if error:
+                    self._protection_error = "; ".join(part for part in (self._protection_error, error) if part)
+        elif self._token:
+            from ouroboros.process_lifeline import kill_attributed_tree
+            kill_attributed_tree(self._token, self._root, self._birth)
+
+    def interrupt_root(self) -> bool:
+        """Let a POSIX command export its KeyboardInterrupt result before tree teardown.
+
+        Only the spawned root is interrupted: signalling its workers too can
+        interrupt their cleanup. Birth AND token must still match; Windows keeps
+        its Job path. A sent signal proves no exit, so the owner still reaps.
+        """
+        if _pl.IS_WINDOWS or not self._birth or not self._token or self._root <= 1:
+            return False
+        if _pl.process_start_time(self._root) != self._birth:
+            return False
+        if pid_marker_state(self._root, self._token) != MARKER_MEMBER:
+            return False
+        return _pl.signal_pid(self._root, signal.SIGINT)
+
+    def terminate_tree(self, grace: float) -> None:
+        """Ask the attributed tree to stop (SIGTERM), waiting up to ``grace`` seconds for it to go.
+
+        A delivered signal is not an exit: ``reap`` still forces and verifies whatever remains.
+        Windows has no tree-wide TERM, so its kill-on-close Job in ``reap`` stays the stop there."""
+        if _pl.IS_WINDOWS or not self._token:
+            return
+        from ouroboros.process_lifeline import kill_attributed_tree
+        try:
+            kill_attributed_tree(self._token, self._root, self._birth, graceful=True)
+        except RuntimeError:
+            return  # An unenumerable table is reap's failure to report, not a reason to wait.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            members = pids_with_env_marker(self._token, self._pgid, self._start_ticks)
+            if members is not None and all(pid == os.getpid() or pid_is_zombie(pid) for pid in members):
+                return
+            time.sleep(0.1)
+
     def reap(self) -> str:
+        """Stop protection, reap, and only then release the independent guardian."""
+        if self._watch is not None:
+            watch, self._watch = self._watch, None
+            try:
+                self._protection_error = watch.stop() or self._protection_error
+            except Exception as exc:
+                self._protection_error = f"overload watch stop unconfirmed: {exc}"
+        error = ""
+        try:
+            if self._protect_owner or self._watch_overload:
+                try:
+                    self.stop_tree()
+                except Exception as exc:
+                    error = f"contained tree stop unconfirmed: {exc}"
+            try:
+                error = "; ".join(part for part in (error, self._reap()) if part)
+            except Exception as exc:
+                error = "; ".join(part for part in (error, f"container reap unconfirmed: {exc}") if part)
+        finally:
+            if self._lifeline is not None:
+                lifeline, self._lifeline = self._lifeline, None
+                try:
+                    error = lifeline.finish(released=not error) or error
+                except Exception as exc:
+                    error = "; ".join(part for part in (error, f"lifeline release unconfirmed: {exc}") if part)
+        return "; ".join(part for part in (self._protection_error, error) if part)
+
+    def _reap(self) -> str:
         """SCAN the container; return "" only when nothing of it is left, else why not. Detection,
         not guaranteed teardown. ONE bounded best-effort kill sweep runs first; after it nothing is
         ever signalled again, so a member is targeted at most once and the unavoidable
@@ -433,6 +537,8 @@ class ProcessContainer:
 
     def close(self) -> None:
         """Release the container handle. Inert after ``reap``, which closes it itself."""
+        if self._lifeline is not None or self._watch is not None:
+            self.reap()
         if _pl.IS_WINDOWS and self._job is not None:
             _pl.close_job(self._job)
             self._job = None

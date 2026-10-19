@@ -35,12 +35,23 @@ from tests.tool_classification_corpus import (
     GOLDEN_SOURCE_SHA,
     _MARKER_RE,
     build_corpus,
-    harvested_identifiers,
-    harvested_native_codes,
+    harvest_producers,
     typed_result,
 )
+from tests.test_skill_install_checks import registry_release  # noqa: F401  (fixtures)
 
 GOLDEN_PATH = pathlib.Path(__file__).resolve().parent / "fixtures" / "legacy_tool_classification_0f715831.json"
+
+
+@pytest.fixture(scope="session")
+def producer_harvest():
+    # Rebuilt from this candidate in each pytest process; no persisted index.
+    return harvest_producers()
+
+
+@pytest.fixture(scope="session")
+def classification_corpus(producer_harvest):
+    return build_corpus(producers=producer_harvest)
 
 
 class Delta(NamedTuple):
@@ -55,6 +66,23 @@ class Delta(NamedTuple):
 # Every entry traces to a numbered item of the delta list the owner approved
 # (batch #3 answer 1=A, batch #4 answers 1-3). Nothing else may differ.
 APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
+    # G2 lane C / owner issue #1657: source-backed effective-outcome repairs.
+    # Historical golden answers stay intact; only these live answers move.
+    "SEND_LINKS_NO_CHAT": Delta(False, "ok", True, "unavailable", "A.1657", "no active chat exists for the requested delivery"),
+    "ESCALATE_PARENT_SETTLED": Delta(False, "ok", True, "unavailable", "A.1657", "no live ancestor can receive the escalation"),
+    "ESCALATE_UNWRITTEN": Delta(False, "ok", True, "error", "A.1657", "the attempted parent mailbox write did not persist"),
+    "FILE_TOO_LARGE": Delta(False, "ok", True, "argument_error", "A.1657", "media input exceeds the admitted file limit before extraction"),
+    "SKILL_EXEC_EXTENSION": Delta(False, "ok", True, "argument_error", "A.1657", "an extension cannot run through the skill subprocess interface"),
+    "SKILL_EXEC_GRANT_REQUIRED": Delta(False, "ok", True, "blocked", "A.1657", "required skill grants are absent before process submission"),
+    "SKILL_EXEC_ARGV_TOO_LARGE": Delta(False, "ok", True, "argument_error", "A.1657", "oversized argv is refused before process submission"),
+    "SKILL_EXEC_OVERFLOW": Delta(False, "ok", True, "error", "A.1657", "the process exceeded output limits and was killed; earlier effects remain"),
+    "SKILL_REPAIR_STALE": Delta(False, "ok", True, "blocked", "A.1657", "the repair admission no longer authorizes writes to these bytes"),
+    "SERVICE_ALREADY_RUNNING": Delta(False, "ok", True, "blocked", "A.1657", "the requested start is refused; the existing process keeps its custody"),
+    "CHERRY_PICK_CONFLICT": Delta(False, "ok", True, "error", "A.1657", "a requested cherry-pick failed; earlier applied commits remain"),
+    "RESTORE_PARTIAL": Delta(False, "ok", True, "error", "A.1657", "checkout succeeded but cleanup failed; tracked changes remain discarded"),
+    "EVOLUTION_AUTHORITY_REVOKED": Delta(False, "ok", True, "blocked", "A.1657", "campaign authority no longer permits the next commit stage"),
+    "EVOLUTION_COMMIT_ORPHANED": Delta(False, "ok", True, "error", "A.1657", "the local commit exists but its authority receipt could not be recorded"),
+    "EVOLUTION_PUBLICATION_STOPPED": Delta(False, "ok", True, "blocked", "A.1657", "authority revoked publication after a retained local commit; containment failure is separately typed"),
     # v7next F3.1 note: the reference table also carried rows for producers this
     # lane did NOT cut over (the in-place core.py rows 2083-2086 — room writes,
     # forward_to_worker, memory REJECTED — and the control_routing/control_runtime
@@ -68,10 +96,9 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "CHILD_RESULT_LINEAGE_FORBIDDEN": Delta(False, "ok", True, "blocked", "A.4", "a refused child-result lineage is a denial"),
     "COGNITIVE_TOOL_REQUIRED": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4: the cognitive redirect is a hint, the error flag is removed"),
     "EXECUTOR_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
-    # This tree's post-cutoff producers emit five more *_UNAVAILABLE identifiers
+    # This tree's post-cutoff producers emit four more *_UNAVAILABLE identifiers
     # the reference corpus never saw; each is the same A.18 move (the generic
     # `_UNAVAILABLE` marker keeps its own status instead of the coarse error).
-    "AUTHORITY_SOURCE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "REVIEW_BINDING_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "REVIEW_STATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "SAFETY_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
@@ -219,14 +246,6 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:promote_unconfirmed": Delta(False, "ok", True, "tool_reported_failure", "A.21", "an unconfirmed admission must not be reported as a created task"),
     "shape:route_rejected": Delta(False, "ok", True, "tool_reported_failure", "A.21", "a project route the supervisor refused scheduled nothing"),
     "shape:route_unconfirmed": Delta(False, "ok", True, "tool_reported_failure", "A.21", "an unconfirmed project route must not be reported as routed"),
-    # The same family through its IDENTIFIERS: `ROUTE_*`/`ROUTING_UNCONFIRMED`/
-    # `NEEDS_MANUAL_TARGET` end in none of the suffixes the generic marker chain
-    # reads, so a route that dispatched nothing and a picker card that replaced the
-    # route both reported an ordinary warning on a successful call.
-    "ROUTE_REJECTED": Delta(False, "ok", True, "tool_reported_failure", "A.21", "a route the supervisor refused is a refusal the agent must see, not a routed task"),
-    "ROUTE_UNCONFIRMED": Delta(False, "ok", True, "tool_reported_failure", "A.21", "a route with no confirmed receipt did not provably schedule anything"),
-    "ROUTING_UNCONFIRMED": Delta(False, "ok", True, "tool_reported_failure", "A.21", "an unconfirmed manual-target delivery dispatched no route and offered no options"),
-    "NEEDS_MANUAL_TARGET": Delta(False, "ok", True, "tool_reported_failure", "A.21", "a routing act that ended in a picker card dispatched no route"),
     # A.21 across the remaining control leaves. Same blindness as above: a
     # markerless sentence, or one that reaches its result through a helper the
     # publication wraps, has no (code, first line) pair to harvest.
@@ -252,7 +271,6 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:followup_objective_required": Delta(False, "ok", True, "argument_error", "A.22", "an empty objective scheduled nothing"),
     "shape:followup_text_too_long": Delta(False, "ok", True, "argument_error", "A.22", "an over-limit objective or context is refused whole — never truncated, never scheduled"),
     "shape:followup_data_root_unresolved": Delta(False, "ok", True, "error", "A.22", "a drive root that could not be resolved wrote no record"),
-    "shape:followup_cap_reached": Delta(False, "ok", True, "resource_constraint_blocked", "A.22", "a follow-up beyond the per-task cap was never registered; the cap is the constraint"),
     "shape:followup_persist_failed": Delta(False, "ok", True, "error", "A.22", "a follow-up the table refused to store does not exist"),
     # A.23 — F6 rolling upstream sync (drift b9f7597f..8d13373b). Upstream's #440
     # fix-forward added both browser markers to its failure-prefix table; the
@@ -304,9 +322,13 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     # SEES the refusal (is_error, and the policy-denial bucket tool_reported_failure
     # already routes to), while the execution health axis stays undegraded because
     # the refusal is not the agent's failure. Nothing new is declared: that status
-    # has been a non-failure for the ledger since v6.83.0.
-    "STEER_REJECTED": Delta(False, "ok", True, "tool_reported_failure", "A.I23", "a steer the host refused is a refusal the agent must see, not a delivered message"),
-    "STEER_UNCONFIRMED": Delta(False, "ok", True, "tool_reported_failure", "A.I23", "a steer with no confirmed receipt did not provably arrive, so it is not a success"),
+    # has been a non-failure for the ledger since v6.83.0. The one-bubble change
+    # deleted the text producers behind STEER_*, ROUTE_*, ROUTING_UNCONFIRMED,
+    # NEEDS_MANUAL_TARGET and the routing AUTHORITY_SOURCE_UNAVAILABLE (route_to_project,
+    # the manual-target picker, predecessor selection); their rows went with them per
+    # the unfired-rows rule. tell_task publishes its refusals natively
+    # (tests/test_control_native_results.py), and tool_result.py keeps the identifier
+    # register for stored traces.
     "native:TOOL_ARG_ERROR:ERROR": Delta(False, "ok", True, "argument_error", "A.B7", "both commit entry points reject an empty commit message before attempting a commit"),
     "native:TOOL_ARG_ERROR:REJECTED": Delta(False, "ok", True, "argument_error", "A.B7", "scratchpad and identity writers reject empty or malformed content before writing"),
     "native:TOOL_ERROR:TASK_MESSAGE_UNWRITTEN": Delta(False, "ok", True, "error", "A.B7", "forward_to_worker failed to persist the requested message"),
@@ -340,6 +362,15 @@ def _golden() -> dict[str, dict]:
 # unavailable. Keep the historical corpus intact and assert the new observed
 # outcome explicitly rather than manufacture old evidence (04-AGENCY S1/S3).
 CURRENT_PRODUCER_CONTRACTS = {
+    # #1657: only missing logs are unavailable; status/stop retain warnings.
+    "SERVICE_NOT_FOUND": (False, "ok"),
+    "native:LEGACY_UNAVAILABLE:SERVICE_NOT_FOUND": (True, "unavailable"),
+    # #1657: containment failure is already an error through the legacy adapter
+    # (LEGACY_TOOL_ERROR). Its new native TOOL_ERROR publication preserves that
+    # outcome when wrapped by an authority-refusal message after a local commit.
+    # Only the native producer is new; retain the historical text golden intact.
+    "EVOLUTION_ORPHAN_CONTAINMENT_FAILED": (True, "error"),
+    "native:TOOL_ERROR:EVOLUTION_ORPHAN_CONTAINMENT_FAILED": (True, "error"),
     # Body-candidate admission adds these two markers after the retired golden
     # source. Pin what the live classifier actually answers; do not backfill a
     # historical answer from a checkout that never emitted these strings.
@@ -373,6 +404,9 @@ CURRENT_PRODUCER_CONTRACTS = {
     "MANAGED_UPDATE_POSTCOMMIT_CHANGED": (False, "ok"),
     "native:LEGACY_TOOL_ERROR:MANAGED_UPDATE_POSTCOMMIT_CHANGED": (True, "error"),
     "OWNER_LAUNCH_AUTHORITY_UNAVAILABLE": (True, "unavailable"),
+    # Direction06 adds producer-owned whole-invocation phase, not a rewritten historical golden.
+    "OWNER_OPERATION_REFUSED": (True, "blocked"),
+    "TOOL_ADMISSION_UNAVAILABLE": (True, "unavailable"),
     "STOP_ACTION_CONFLICT": (True, "blocked"),
     "SAFETY_ADVICE": (False, "ok"),
     "LIGHT_MODE_REPO_CHANGED": (False, "ok"),
@@ -405,10 +439,16 @@ CURRENT_PRODUCER_CONTRACTS = {
     # An evidence-only investigation's capture is never integrated (#1609): its
     # refusal changes nothing and is its peers' answer, asserted live.
     "INTEGRATE_DELEGATED_INVESTIGATION_EVIDENCE": (True, "integration_blocked"),
+    # #1969: an apply that had to prepare the capture returns it for inspection;
+    # nothing is applied, recorded or released, so it is its peers' answer.
+    "INTEGRATE_DELEGATED_INSPECT_CAPTURE": (True, "integration_blocked"),
     # A reject request cannot undo direct effects already in the folder.
     # The refusal belongs to this disposition, not to the earlier write.
     "INTEGRATE_DIRECTORY_ALREADY_APPLIED": (True, "integration_blocked"),
     "INTEGRATE_DIRECTORY_UNCONFIRMED": (True, "integration_blocked"),
+    # An unsuccessful directory run published no file work product: nothing was
+    # captured, so Apply applies nothing and keeps the engine copy; its peers' answer.
+    "INTEGRATE_DELEGATED_NOTHING_CAPTURED": (True, "integration_blocked"),
     # subagent_integration refuses to accept mismatched or unavailable file
     # evidence, or to integrate direct folder results through another surface.
     "INTEGRATE_DIRECTORY_OUTPUT_MISMATCH": (True, "integration_blocked"),
@@ -469,6 +509,25 @@ CURRENT_PRODUCER_CONTRACTS = {
     "SEARCH_NOT_FOUND": (False, "ok"),
     "FILE_NOT_FOUND": (False, "ok"),
     "native:LEGACY_WARNING:FILE_NOT_FOUND": (False, "ok"),
+    # Skills v4 sources are new producers, absent from the retired oracle. Plain
+    # *_ERROR markers are legacy errors; *_REFUSED markers are legacy warnings.
+    # The live tools publish argument errors or host failures explicitly, including
+    # bad-check arguments returned by the installer. Keep the old golden intact.
+    "SKILL_INSTALL_ERROR": (True, "error"),
+    "SKILL_INSTALL_REFUSED": (False, "ok"),
+    "SKILL_SOURCES_ERROR": (True, "error"),
+    "SKILL_SOURCES_REFUSED": (False, "ok"),
+    "SKILL_UPDATE_ERROR": (True, "error"),
+    "SKILL_UPDATE_REFUSED": (False, "ok"),
+    "native:TOOL_ARG_ERROR:SKILL_INSTALL_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_INSTALL_REFUSED": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_SOURCES_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_UPDATE_ERROR": (True, "argument_error"),
+    "native:TOOL_ARG_ERROR:SKILL_UPDATE_REFUSED": (True, "argument_error"),
+    "native:TOOL_ERROR:SKILL_INSTALL_REFUSED": (True, "error"),
+    "native:TOOL_ERROR:SKILL_SOURCES_ERROR": (True, "error"),
+    "native:TOOL_ERROR:SKILL_SOURCES_REFUSED": (True, "error"),
+    "native:TOOL_ERROR:SKILL_UPDATE_REFUSED": (True, "error"),
     # Owner decision (PR #1636): an exact edit that leaves .py/.json unparsable is
     # applied and reported, never refused; the warning is a successful call.
     "SYNTAX_WARNING": (False, "ok"),
@@ -489,6 +548,44 @@ def test_current_producer_contracts_have_explicit_live_answers(subject, detail):
     identifier = subject.rsplit(":", 1)[-1]
     case = Case("current:" + subject, subject, "read_file", "⚠️ " + identifier + detail, code)
     assert _live_answer(case) == CURRENT_PRODUCER_CONTRACTS[subject]
+
+
+@pytest.mark.parametrize("tool", ["skill_install", "skill_update"])
+@pytest.mark.parametrize("failure", ["staged_hash", "landing", "bad_check", "empty_notes"])
+def test_registry_failures_keep_the_current_producer_contract(registry_release, monkeypatch, tool, failure):  # noqa: F811
+    from ouroboros.skill_install_record import read_install_record
+    from ouroboros.tools.registry import ToolContext
+    from tests.test_skill_source_tools import _typed_call
+
+    drive, storage, registry = registry_release
+    registry["latest"] = "2.0.0"
+    if tool == "skill_install":
+        drive = drive.parent / "fresh-install"
+    previous = read_install_record(drive, "demo")
+
+    def fail(*args, **kwargs):
+        raise OSError("injected registry disk failure")
+
+    arguments = {"id": "clawhub/demo", "reason": "r"} if tool == "skill_install" else {
+        "name": "demo", "mode": "replace"}
+    bad_arguments = failure in {"bad_check", "empty_notes"}
+    if bad_arguments:
+        arguments.update(check="unknown" if failure == "bad_check" else "self", check_notes="")
+    else:
+        monkeypatch.setattr(storage, "_registry_install_record" if failure == "staged_hash"
+                            else "_land_staged_into_data_plane", fail)
+    result = _typed_call(tool, ToolContext(repo_dir=drive.parent, drive_root=drive), **arguments)
+    expected_code = "TOOL_ARG_ERROR" if bad_arguments else "TOOL_ERROR"
+    assert (result.status, result.code) == ("error", expected_code)
+    if bad_arguments:
+        assert '"code": "bad_check"' in result.text
+    else:
+        assert "injected registry disk failure" in result.text
+    is_error = _typed_execution_failure(True, result)
+    actual = (is_error, _typed_result_metadata(tool, result.text, is_error, result)["status"])
+    assert actual == CURRENT_PRODUCER_CONTRACTS[f"native:{expected_code}:{tool.upper()}_REFUSED"]
+    current = read_install_record(drive, "demo")
+    assert (current or {}).get("release") == (previous or {}).get("release")
 
 
 def test_spent_execution_budget_publishes_the_actual_scheduling_refusal(tmp_path, monkeypatch):
@@ -542,9 +639,9 @@ def test_syntax_warning_suffix_keeps_the_applied_edit_successful(tool):
     assert _live_answer(Case("current:syntax-suffix:" + tool, "SYNTAX_WARNING", tool, text)) == (False, "ok")
 
 
-def test_single_classifier_matches_the_retired_pair_except_approved_deltas() -> None:
+def test_single_classifier_matches_the_retired_pair_except_approved_deltas(classification_corpus) -> None:
     golden = _golden()
-    corpus = build_corpus()
+    corpus = classification_corpus
     assert len(corpus) >= 600, "the corpus collapsed; a harvest regression would hide every delta"
 
     unexpected: list[tuple[str, dict, tuple[bool, str]]] = []
@@ -581,9 +678,9 @@ def test_every_approved_delta_names_an_owner_item() -> None:
         assert (delta.old_is_error, delta.old_status) != (delta.new_is_error, delta.new_status), subject
 
 
-def test_native_golden_answers_have_identical_retired_text_inputs() -> None:
+def test_native_golden_answers_have_identical_retired_text_inputs(classification_corpus) -> None:
     """The old pair ignores native codes; aliases must retain its exact input."""
-    corpus = {case.key: case for case in build_corpus()}
+    corpus = {case.key: case for case in classification_corpus}
     golden = _golden()
     for key, native in corpus.items():
         if not key.startswith("native:"):
@@ -600,7 +697,7 @@ def test_native_golden_answers_have_identical_retired_text_inputs() -> None:
             assert _live_answer(plain) == CURRENT_PRODUCER_CONTRACTS[identifier]
 
 
-def test_shape_golden_answers_match_their_own_identifier_line() -> None:
+def test_shape_golden_answers_match_their_own_identifier_line(classification_corpus) -> None:
     """A hand-added shape answer is derived from the golden, never invented.
 
     The retired pair is a pure text chain over the result's first marker line,
@@ -617,7 +714,7 @@ def test_shape_golden_answers_match_their_own_identifier_line() -> None:
     """
     golden = _golden()
     checked = []
-    for case in build_corpus():
+    for case in classification_corpus:
         if not case.key.startswith("shape:"):
             continue
         marker = _MARKER_RE.match(case.text.strip())
@@ -631,16 +728,16 @@ def test_shape_golden_answers_match_their_own_identifier_line() -> None:
     assert len(checked) >= 20, "the marker-led shape rows collapsed; the rule lost its witnesses"
 
 
-def test_every_delta_without_a_producer_is_named_with_its_reason() -> None:
+def test_every_delta_without_a_producer_is_named_with_its_reason(producer_harvest) -> None:
     """The two unreachable deltas stay documented, never approved: an approved row
     that cannot fire would fail the table's own staleness direction."""
     assert set(_DELTAS_WITHOUT_A_PRODUCER).isdisjoint(APPROVED_DELTAS)
     for subject, reason in _DELTAS_WITHOUT_A_PRODUCER.items():
         assert reason.strip(), subject
-    assert "SKILL_PAYLOAD_CONTROL_BLOCKED" not in harvested_identifiers()
+    assert "SKILL_PAYLOAD_CONTROL_BLOCKED" not in producer_harvest.identifiers
 
 
-def test_every_native_code_is_covered_by_the_corpus() -> None:
+def test_every_native_code_is_covered_by_the_corpus(classification_corpus, producer_harvest) -> None:
     """A producer cannot publish a code the differential has never classified.
 
     The text corpus is blind to a producer that assembles its text at runtime, and
@@ -648,8 +745,8 @@ def test_every_native_code_is_covered_by_the_corpus() -> None:
     That blind spot let four extension terminals, both MCP unavailable terminals and
     the registry's unknown-tool publish change status with no test able to notice.
     Any new native code now fails here until a corpus case exercises it."""
-    covered = {case.code for case in build_corpus() if case.code}
-    uncovered = sorted(set(harvested_native_codes()) - covered)
+    covered = {case.code for case in classification_corpus if case.code}
+    uncovered = sorted(set(producer_harvest.native_codes) - covered)
     assert not uncovered, (
         "native producer codes no corpus case classifies (add a _PRODUCER_SHAPES "
         f"entry transcribed from the producer): {uncovered}"
@@ -723,15 +820,32 @@ def test_a_control_refusal_typed_unavailable_is_the_substrates_answer() -> None:
     assert [row["tool"] for row in mistake["unresolved"]] == ["get_task_result"]
 
 
-def test_golden_covers_every_harvested_producer() -> None:
+def test_golden_covers_every_harvested_producer(producer_harvest) -> None:
     """A producer added after the cutover has no golden answer, so it fails here
     instead of silently entering the tree with an unverified classification."""
     golden = _golden()
     missing = [
-        identifier for identifier in harvested_identifiers()
+        identifier for identifier in producer_harvest.identifiers
         if f"ident:{identifier}:plain" not in golden and identifier not in CURRENT_PRODUCER_CONTRACTS
     ]
     assert not missing, f"new warning identifiers without a golden answer: {missing}"
+
+
+def test_harvest_reads_changed_and_new_producers(tmp_path):
+    """An explicit harvest is current even after the same root was read before."""
+    source = tmp_path / "ouroboros" / "producer.py"
+    source.parent.mkdir()
+    source.write_text('ToolResult(code="BEFORE", text="⚠️ BEFORE: detail")\n', encoding="utf-8")
+    before = harvest_producers(tmp_path)
+    source.write_text('ToolResult(code="AFTER", text="⚠️ AFTER: detail")\n', encoding="utf-8")
+    (source.parent / "new.py").write_text(
+        'ToolResult(code="ADDED", text=message)\n', encoding="utf-8")
+    after = harvest_producers(tmp_path)
+    assert "BEFORE" in before.identifiers and "BEFORE" not in after.identifiers
+    assert before.native_codes == ("BEFORE",)
+    assert after.native_codes == ("ADDED", "AFTER")
+    assert before.native_pairs == (("BEFORE", "BEFORE"),)
+    assert after.native_pairs == (("AFTER", "AFTER"),)
 
 
 def test_specific_identifiers_beat_their_family_and_families_beat_generic_markers() -> None:
@@ -843,9 +957,9 @@ def test_residual_text_inspection_inventory_does_not_grow() -> None:
 
 
 @pytest.mark.parametrize("case_key", ["shape:shell_no_match_autocorrected", "shape:shell_ok"])
-def test_process_facts_stay_typed_not_parsed(case_key: str) -> None:
+def test_process_facts_stay_typed_not_parsed(case_key: str, classification_corpus) -> None:
     """The three post-rules that are NOT text classification keep working off meta."""
-    case = next(item for item in build_corpus() if item.key == case_key)
+    case = next(item for item in classification_corpus if item.key == case_key)
     typed = typed_result(case)
     meta = _typed_result_metadata(case.tool, case.text, False, typed)
 

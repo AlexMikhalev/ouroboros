@@ -315,7 +315,7 @@ class ToolRegistry:
         "project_journal", "presence",
         "recent_tasks",
         "query_code", "query_data", "review", "review_change", "search", "services", "shell", "skill_exec", "skill_publish",
-        "skill_preflight", "subagent_integration", "task_tree", "tool_discovery", "verify", "vision",
+        "skill_preflight", "skill_source_tools", "subagent_integration", "task_tree", "tool_discovery", "verify", "vision",
     ]
 
     def _load_modules(self) -> _ToolCatalog:
@@ -555,6 +555,22 @@ class ToolRegistry:
                   or entry.name in _GENERIC_VCS_TARGET_TOOLS
                   or entry.name in {"read_file", "list_files", "search_code", "query_code", "query_data"}):
                 schema = self._schema_with_matrix_roots(entry)
+            if entry.name == "review_change":
+                schema = copy.deepcopy(schema)
+                props = schema["parameters"]["properties"]
+                props["subject"]["enum"] = ["index", "worktree", "base..head", "result"]
+                props["subject"]["description"] = ("The assigned repository's staged index, worktree or base..head "
+                                                   "change, or result: your own task's result (reply and produced work).")
+                props["surface"]["enum"] = ["change", "preflight"]
+                props["surface"]["description"] = "change = the panel review; preflight = one named reviewer's early look."
+                props["workspace_root"]["description"] = "An optional repository inside your assigned write root."
+                schema["description"] = (
+                    "Ask independent reviewers about a change in your assigned write root, or about your own result. "
+                    "This never approves, commits or integrates your work; the parent retains integration and recheck. "
+                    "Use subject=index, worktree or base..head for a change and subject=result for your result; "
+                    "surface=change uses the review pool, preflight uses one named reviewer. The same unchanged call "
+                    "collects an existing paid operation."
+                )
         return {"type": "function", "function": schema}
 
     def _schema_with_matrix_roots(self, entry: ToolEntry) -> Dict[str, Any]:
@@ -689,11 +705,12 @@ class ToolRegistry:
         # Rebuild from the load-time facts, never from empty: a rebuilt schema
         # list must not erase module_load_failed omissions (H3, capinv-447).
         self._capability_omissions = [dict(item) for item in self._module_load_omissions]
+        # Every locally unavailable built-in is withheld under its own cause, not only a missing key.
         unavailable_tools = {
-            entry.name: detail
+            entry.name: (reason, detail)
             for entry in self._entries.values()
             for available, reason, detail in [_builtin_tool_availability(entry.name, self._ctx)]
-            if not available and reason == "missing_credential" and entry.name not in disabled_tools
+            if not available and entry.name not in disabled_tools
         }
         built_in = [
             schema
@@ -708,12 +725,13 @@ class ToolRegistry:
         ]
         if disabled_tools:
             self._capability_omissions.append({"surface": "tools", "reason": "disabled_by_contract", "tools": sorted(disabled_tools)})
-        if unavailable_tools:
+        for cause in dict.fromkeys(reason for reason, _detail in unavailable_tools.values()):
+            names = sorted(name for name, (reason, _detail) in unavailable_tools.items() if reason == cause)
             self._capability_omissions.append({
                 "surface": "tools",
-                "reason": "missing_credential",
-                "tools": sorted(unavailable_tools),
-                "details": {name: unavailable_tools[name] for name in sorted(unavailable_tools)},
+                "reason": cause,
+                "tools": names,
+                "details": {name: unavailable_tools[name][1] for name in names},
             })
         # Live (enabled, granted, reviewed) extension tool schemas join normal tool
         # discovery: liveness, acting-child grants and the network resource
@@ -834,7 +852,7 @@ class ToolRegistry:
         if entry:
             available, reason, detail = _builtin_tool_availability(requested, self._ctx)
             if not available:
-                if reason == "missing_credential":
+                if reason:
                     self._capability_omissions.append({
                         "surface": "tools",
                         "reason": reason,
@@ -1082,10 +1100,12 @@ class ToolRegistry:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
                 except Exception as e:
                     from ouroboros.body_candidate import CandidateRefused
+                    from ouroboros.store import StoreError
 
+                    if isinstance(e, StoreError) and handoff and handoff.get("not_started") is True:
+                        raise  # the invocation owner retains its actual entry phase
                     if isinstance(e, CandidateRefused):  # e.g. a process inside the candidate without its isolation
-                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}",
-                                          meta={"operation_outcome": "completed_no_effect"}), None
+                        return ToolResult(status="blocked", code=e.code, text=f"⚠️ {e.code}: {e.text}"), None
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
             if observed_skill is not None:
@@ -1112,6 +1132,7 @@ class ToolRegistry:
 
     def _execute_legacy_text(self, name: str, args: Dict[str, Any]) -> str | ToolResult:
         from ouroboros.owner_pause import OwnerPauseRefused, tool_handoff
+        from ouroboros.store import StoreError
 
         try:
             with tool_handoff(self._ctx, str(name or "")) as handoff:
@@ -1126,12 +1147,15 @@ class ToolRegistry:
         except OwnerPauseRefused as exc:
             from ouroboros.tools.tool_result import launch_refusal_result
 
-            return launch_refusal_result(str(exc))
+            return launch_refusal_result(exc)
+        except StoreError as exc:
+            from ouroboros.tools.tool_result import launch_refusal_result
+            if getattr(exc, "invocation_not_started", None) is True:
+                return launch_refusal_result(exc)
+            raise  # preserve the outer executor's post-entry error handling
 
     def _execute_admitted_text(self, name: str, args: Dict[str, Any],
                                handoff: Optional[Dict[str, Any]] = None) -> str | ToolResult:
-        if handoff is not None:
-            handoff["not_started"] = True
         name = str(name or "").strip()
         args, presence_arg_error = _presence_bound_args(self._ctx, name, args)
         if presence_arg_error:
@@ -1349,7 +1373,7 @@ class ToolRegistry:
             if block_result is not None:
                 return block_result
 
-        # LLM safety supervisor.
+        # LLM safety supervisor; only this first-party path carries a declaration.
         from ouroboros.safety import check_safety
         is_safe, safety_msg = check_safety(
             name,
@@ -1358,6 +1382,7 @@ class ToolRegistry:
             ctx=self._ctx,
             python_resolution=interpreter_resolution,
             resolved_binding=resolved_binding,
+            declared_policy=entry.safety_policy,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)

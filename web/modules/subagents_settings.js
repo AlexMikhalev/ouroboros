@@ -228,6 +228,32 @@ export function reviewPoolRows(setting) {
     return (setting?.items || []).filter((row) => row?.review_eligible === true && row?.enabled !== false);
 }
 
+/** Pool rows running an earlier pool row's engine (`sameEngineAs`), grouped under the row they copy. */
+export function reviewPoolCopies(setting, inherited = '') {
+    const items = setting?.items || [];
+    const pool = reviewPoolRows(setting);
+    const groups = new Map();
+    pool.forEach((row, index) => {
+        const first = pool[sameEngineAs(pool, index, inherited)];
+        if (first) groups.set(first, [...(groups.get(first) || []), row]);
+    });
+    return [...groups].map(([kept, copies]) => ({ keep: items.indexOf(kept), copies: copies.map((row) => items.indexOf(row)) }));
+}
+
+const subagentList = (indices) => `Subagents ${indices.slice(0, -1).map((index) => index + 1).join(', ')} and ${indices.at(-1) + 1}`;
+
+/** The offer under a pool of copies: what they cost when a review asks every copy, and how many
+ * independent seats the pool has. How many seats a review asks follows the strictness, never this line. */
+export function reviewCopiesText(groups, poolSize) {
+    if (!groups.length) return '';
+    const independent = poolSize - groups.reduce((sum, group) => sum + group.copies.length, 0);
+    const named = groups.map((group) => subagentList([group.keep, ...group.copies])).join('; ');
+    const cost = groups.length === 1
+        ? `are copies of one model: a review that asks all of them pays for ${groups[0].copies.length + 1} runs of it`
+        : 'are copies of one model per group: a review that asks every copy pays for each one';
+    return `${named} ${cost} and gets no second opinion. The pool has ${independent} independent seat${independent === 1 ? '' : 's'}, with or without the copies.`;
+}
+
 /** `subagent_runtime.PACKET_ONLY_POOL_WARNING`, the save warning of a pool no row of which reads the repository. */
 export const PACKET_ONLY_POOL_WARNING = 'Every reviewer is a Packet row, so none reads the repository and the coupling question (how the change fits the rest of the code) goes unanswered: with Blocking review, every commit to Ouroboros itself stops as “not performed”. Mark a reviewer that reads the work itself, or choose Advisory.';
 
@@ -246,16 +272,20 @@ export function reviewPoolErrors(setting, { judged = false, allowEmpty = false }
         : 'No row is marked Reviewer. Mark at least one row, or tick “Save without reviewers”.'];
 }
 
-/** The price of one full call of this row (the words `## Review` prints), or its non-money equivalent;
- * a reading reviewer makes several calls; unknown is never zero. */
+/** What one review by this row actually cost — the median of its measured reviews with their count
+ * and range (the words `## Review` prints) — or its non-money equivalent; unknown is never zero. */
 export function reviewCostText(row, cost = null) {
     if (routeSupportsAccount(row?.route || {})) return 'uses a session seat and time';
     if (!cost) return 'price appears after saving';
+    if (cost.basis === 'local_route') return 'no API cost per review';
     const usd = cost.usd_per_review;
-    if (cost.basis !== 'route_tariff' || typeof usd !== 'number' || !Number.isFinite(usd)) return 'cost unknown';
-    if (usd === 0) return 'no API cost per review';
-    const text = `≈$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)} per full call (route tariff)`;
-    return row?.delivery === 'packet' ? text : `${text}; a reading reviewer makes several`;
+    if (cost.basis !== 'observed_reviews' || typeof usd !== 'number' || !Number.isFinite(usd)) return 'cost unknown';
+    const high = Number(cost.high);
+    if (usd === 0 && !(high > 0)) return 'no API cost per review';
+    const money = (value) => `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+    const reviews = Number(cost.reviews) || 0;
+    return reviews < 2 ? `≈${money(usd)} per review (1 measured)`
+        : `≈${money(usd)} per review (median of ${reviews} measured, ${money(Number(cost.low))}–${money(high)})`;
 }
 
 /** What actually ran the last time this row reviewed, with its review record (the card's "Last review"). */
@@ -348,9 +378,10 @@ function reviewPoolSummary(state) {
     const items = state.setting?.items || [];
     const pool = reviewPoolRows(state.setting).length;
     const marked = items.filter((row) => row?.review_eligible === true).length;
-    let empty = '';
-    if (items.length && !marked) empty = 'No row is marked Reviewer, so reviews will not run and will report “not performed”.';
-    else if (marked && !pool) empty = 'Every row marked Reviewer is switched off, so reviews will not run and will report “not performed”.';
+    // An empty pool, no rows at all included, reviews on the main model alone (`review_pool_slots`).
+    const why = marked ? 'Every row marked Reviewer is switched off' : 'No row is marked Reviewer';
+    const empty = state.loaded && !pool ? `${why}, so the main model reviews alone: one model, no second opinion.` : '';
+    const groups = state.loaded ? reviewPoolCopies(state.setting, state.processingPreference) : [];
     const payload = state.reviewPool || {};
     const migration = migrationNote(payload.migration);
     let note = payload.load_error || '';
@@ -361,6 +392,7 @@ function reviewPoolSummary(state) {
         // Said when it matters: Delegation off leaves review on for the marked rows.
         stays: marked && !state.setting?.enabled ? 'Delegation is off; rows marked Reviewer still review.' : '',
         empty, confirm: Boolean(items.length && !pool), note, history: migration.history,
+        copies: reviewCopiesText(groups, pool),
     };
 }
 
@@ -734,6 +766,10 @@ export function createAvailableSubagentsEditor({
         if (emptyText) emptyText.textContent = summary.empty;
         const confirm = container.querySelector('[data-review-pool-confirm]');
         if (confirm) confirm.hidden = !summary.confirm;
+        const copies = container.querySelector('[data-review-pool-copies]');
+        if (copies) copies.hidden = !summary.copies;
+        const copiesText = container.querySelector('[data-review-pool-copies-text]');
+        if (copiesText) copiesText.textContent = summary.copies;
         const note = container.querySelector('[data-review-pool-note]');
         if (note) Object.assign(note, { textContent: summary.note, hidden: !summary.note });
         const history = container.querySelector('[data-review-pool-history]');
@@ -958,6 +994,10 @@ export function createAvailableSubagentsEditor({
                 if (index >= 0) state.setting.items.splice(index, 1);
                 markDirty({ structural: true });
                 paint();
+                // The caret moves to the entry now in this place, else to Add (DESIGN "List editors").
+                const next = state.setting.items[Math.min(index, state.setting.items.length - 1)];
+                if (next) revealRow(next._uiKey || next.subagent_id);
+                else host()?.querySelector('[data-subagent-add]')?.focus();
             });
         });
     }
@@ -1014,12 +1054,16 @@ export function createAvailableSubagentsEditor({
             <div class="available-subagents-list">
                 ${state.loaded
                     ? state.setting.items.map((row, index) => availableSubagentRowMarkup(row, state, index)).join('')
-                        || '<div class="available-subagents-empty">No subagents configured. Add one, or leave the list empty to make no actors available.</div>'
+                        || '<div class="available-subagents-empty">No subagents configured, so the main model is the one agent. Add one to choose others.</div>'
                     : '<div class="available-subagents-empty">The saved configuration could not be loaded, so this editor will not replace it.</div>'}
             </div>
             <div class="available-subagents-review-empty" data-review-pool-empty data-tone="warn" ${pool.empty ? '' : 'hidden'}>
                 <span data-review-pool-empty-text>${escapeHtml(pool.empty)}</span>
                 <label class="local-toggle ui-field-inline" data-review-pool-confirm ${pool.confirm ? '' : 'hidden'}><input class="ui-checkbox" type="checkbox" data-review-pool-allow-empty ${state.allowEmptyReviewPool ? 'checked' : ''}> Save without reviewers</label>
+            </div>
+            <div class="available-subagents-review-copies" data-review-pool-copies data-tone="warn" ${pool.copies ? '' : 'hidden'}>
+                <span data-review-pool-copies-text>${escapeHtml(pool.copies)}</span>
+                <button type="button" class="btn btn-default" data-review-pool-keep-one>Keep one per model</button>
             </div>
             <div data-subagents-validation class="available-subagents-diagnostics" data-tone="error" ${errors.length ? '' : 'hidden'}>${escapeHtml(errors[0] || '')}</div>`;
         container.querySelector('[data-subagents-enabled]')?.addEventListener('change', (event) => {
@@ -1031,6 +1075,14 @@ export function createAvailableSubagentsEditor({
             state.signature = availableSubagentsRenderSignature(state);
             renderValidation();
             onChange(buildAvailableSubagentsSetting(state.setting));
+        });
+        // The owner's click edits the draft only: the copies leave it, the first row of each model stays.
+        container.querySelector('[data-review-pool-keep-one]')?.addEventListener('click', () => {
+            const copies = new Set(reviewPoolCopies(state.setting, state.processingPreference).flatMap((group) => group.copies));
+            if (!copies.size) return;
+            state.setting.items = state.setting.items.filter((_row, index) => !copies.has(index));
+            markDirty({ structural: true });
+            paint();
         });
         container.querySelector('[data-subagent-add]')?.addEventListener('click', () => {
             if (state.setting.items.length >= MAX_AVAILABLE_SUBAGENTS) return;
@@ -1264,19 +1316,29 @@ export function availableSubagentsEditorHost(hostId = 'available-subagents-edito
     </div>`;
 }
 
+// What the Reviewer tick means under the SAVED strictness, one line each (IMPL_SPEC §5). Cyber Pro
+// Access outranks the enforcement it keeps but never enforces (review_helpers.review_enforcement_blocks).
+export const REVIEWER_TICK_CAPTIONS = Object.freeze({
+    blocking: 'Counts toward review: every ticked reviewer checks each change Ouroboros makes to itself, each skill and each required result; a critical finding stops it.',
+    advisory: 'Counts when chosen: for each check Ouroboros asks one, several or all ticked reviewers and writes why; it never skips a check that is owed.',
+    cyber_pro: 'Trusted to judge: Ouroboros decides whom to ask, if anyone; reviews inform and never block.',
+});
+export const reviewerTickCaption = (enforcement, access) => REVIEWER_TICK_CAPTIONS[String(access || '').trim().toLowerCase() === 'cyber_pro'
+    ? 'cyber_pro' : String(enforcement || '').trim().toLowerCase() === 'blocking' ? 'blocking' : 'advisory'];
+
 export function renderSubagentsSection() {
     return `
         <div class="form-section" id="subagents-section">
             <h3>Available subagents</h3>
             <div class="settings-section-copy">
                 Describe when Ouroboros should choose each numbered subagent, then select how it runs.
-                Rows marked Reviewer form the review pool: outside Cyber Pro each of them reviews every change
-                to Ouroboros itself; in Cyber Pro the agent composes the panel from the pool and records why.
                 Clearing a subagent's checkbox keeps its configuration and stops new tasks and reviews
                 from choosing it. Internal references stay stable automatically. A route that is unavailable stays saved
                 and returns an explicit refusal instead of silently changing actor or model. An unpinned
                 session row may rotate among compatible healthy accounts for that same route.
+                Rows marked Reviewer form the review pool; an unmarked row Ouroboros asks is an adviser, heard but never counted.
             </div>
+            <div class="settings-inline-note" data-reviewer-tick-caption hidden></div>
             <div class="settings-inline-note">
                 Saved reviewer changes apply from the next task: a task that is already running keeps the
                 reviewers it started with. A reviewer on a subscription waits for capacity rather than
@@ -1382,7 +1444,10 @@ export function initSubagentsSection({
     settingsEditor.mount();
 }
 
-export function applySubagentsSettings(settings) {
+export function applySubagentsSettings(settings, doc = globalThis.document) {
+    // The caption follows the saved document Settings loads after every save, never the draft selects.
+    const caption = doc?.querySelector?.('#subagents-section [data-reviewer-tick-caption]');
+    if (caption) Object.assign(caption, { textContent: reviewerTickCaption(settings?.OUROBOROS_REVIEW_ENFORCEMENT, settings?.OUROBOROS_RUNTIME_MODE), hidden: false });
     if (!settingsEditor) return;
     const meta = settings?._meta?.available_subagents || {};
     settingsEditor.setProcessingPreference(settings?.[PROCESSING_PREFERENCE_KEY]);

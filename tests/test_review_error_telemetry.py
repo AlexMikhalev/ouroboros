@@ -1,7 +1,7 @@
 """#1578 B3: one reviewer failure is one durable, canonical ``review_model_error`` and one live frame.
 
-Driven through the real coordinator, the manual collector, the late acceptance
-collection, the parser path and the system (deep) review's direct executor. The
+Driven through the real coordinator, the manual collector, a replay or recovery of
+a keyed cycle, the parser path and the system (deep) review's direct executor. The
 owner (``triad_review._append_review_model_error``) writes the CANONICAL owner
 root's ``logs/events.jsonl``; only a successful append is acknowledged on the
 actor (``error_event_logged``), so a failed append is written by a later
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import queue
-from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -56,7 +55,7 @@ def _run(root, monkeypatch, actor, *, surface="multi_model_review", ctx=None):
 
 
 @pytest.mark.parametrize("surface", [
-    "multi_model_review", "skill_review", "task_acceptance", "plan_review", "scope_review", "advisory_review",
+    "multi_model_review", "skill_review", "plan_review", "scope_review", "advisory_review",
 ])
 def test_a_run_failure_has_cause_identity_and_one_live_frame(tmp_path, monkeypatch, surface):
     from supervisor.events_worker_reports import _handle_log_event
@@ -83,6 +82,44 @@ def test_a_run_failure_has_cause_identity_and_one_live_frame(tmp_path, monkeypat
     assert len(frames) == 1 and frames[0]["error"] == row["error"]
     assert ctx.event_queue.empty() and len(_rows(tmp_path)) == 1
     assert run.actors[0]["error_event_logged"] is True
+
+
+def test_preflight_control_timeout_survives_the_existing_review_error_record(tmp_path, monkeypatch):
+    import httpx
+
+    from ouroboros import claudexor_daemon
+    from ouroboros.gateways import claudexor as cx
+    from ouroboros.observability import read_call_payload
+    from ouroboros.review_substrate import ReviewCoordinator
+    from tests._review_session_route_shared import _agent_request, _agent_slot
+
+    calls = []
+
+    def fail(request):
+        calls.append((request.method, request.url.path))
+        raise httpx.ReadTimeout("private provider details", request=request)
+
+    gateway = cx.ClaudexorGateway(cx.DaemonEndpoint("127.0.0.1", 1, "fixture"))
+    gateway.close()
+    gateway._client = httpx.Client(base_url="http://127.0.0.1:1", transport=httpx.MockTransport(fail))
+    clock = iter((10.0, 70.125))
+    monkeypatch.setattr(cx, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway", lambda: gateway)
+    monkeypatch.setattr(utils, "_log_sink", None)
+    request = _agent_request(task_id="child", session_root=str(tmp_path))
+    slot = _agent_slot(session_target="codex=gpt-6-astra", session_access="full")
+    actor = ReviewCoordinator(llm=object(), drive_root=tmp_path)._run_slot(request, slot)
+    expected = "Claudexor control GET /v2/agent-capabilities failed after 60.125s: ReadTimeout"
+    assert calls == [("GET", "/v2/agent-capabilities")], "no reviewer POST follows failed preparation"
+    assert actor.error == expected and actor.failure_code == "daemon_unreachable"
+    assert actor.operation_state == "not_dispatched" and actor.http_status is None
+    assert actor.reported_cause == "" and actor.usage["delegated_start_unrequested"] is True
+    manifest, payload, _ = read_call_payload(tmp_path, task_id="child", call_id=actor.operation_id + "_error")
+    assert manifest["producer_complete"] is True
+    assert payload["error"] == payload["producer_outcome"]["error"] == expected
+    assert payload["producer_outcome"]["operation_state"] == "not_dispatched"
+    projected = _run(tmp_path, monkeypatch, actor, ctx=_ctx(tmp_path))
+    assert projected.actors[0]["error"] == _rows(tmp_path)[0]["error"] == expected
 
 
 def test_a_child_drive_failure_lands_in_the_canonical_owner_root(tmp_path, monkeypatch):
@@ -122,7 +159,7 @@ def test_the_manual_collector_reuses_the_logged_run_failure(tmp_path, monkeypatc
 def test_a_failed_append_is_not_acknowledged_and_a_later_collection_writes_it_once(tmp_path, monkeypatch):
     ctx, frames = _ctx(tmp_path), []
     actor = _failed_actor()
-    request = ReviewRequest(surface="task_acceptance", goal="review test", task_id="child", resolved_wave_id="wave")
+    request = ReviewRequest(surface="multi_model_review", goal="review test", task_id="child", resolved_wave_id="wave")
     monkeypatch.setattr(utils, "_log_sink", frames.append)
     append = triad_review.append_jsonl
     monkeypatch.setattr(triad_review, "append_jsonl", lambda *a, **kw: False)
@@ -256,29 +293,14 @@ def test_a_receipt_marks_only_its_own_settled_operation(tmp_path, monkeypatch):
     assert (older.error_event_logged, same.error_event_logged) == (False, True)
 
 
-def test_late_acceptance_collection_logs_the_failure_once(tmp_path, monkeypatch):
-    from ouroboros import review_operation
-
-    ctx, frames = _ctx(tmp_path), []
-    monkeypatch.setattr(utils, "_log_sink", frames.append)
-    pending = ReviewActorRecord(slot_id="slot-stable", model="m", status="error", operation_state="pending_dispatch")
-    first = _run(tmp_path, monkeypatch, pending, surface="task_acceptance", ctx=ctx)
-    assert _rows(tmp_path) == []  # an awaited slot is not a failure
-    monkeypatch.setattr(review_operation, "_collect_pending_row", lambda *a: (_failed_actor(), review_operation.COLLECTED))
-    completed = review_operation.collect_recorded_acceptance_run(asdict(first), drive_root=tmp_path, usage_ctx=ctx)
-    review_operation.collect_recorded_acceptance_run(asdict(completed), drive_root=tmp_path, usage_ctx=ctx)
-    assert len(_rows(tmp_path)) == len(frames) == 1
-    assert completed.actors[0]["error_event_logged"] is True
-    assert completed.collection["facts"]["slot-stable"] == review_operation.COLLECTED
-
-
 def test_awaited_valid_and_report_answers_write_no_error(tmp_path, monkeypatch):
     monkeypatch.setattr(utils, "_log_sink", None)
     for actor, surface in (
         (ReviewActorRecord(slot_id="slot-stable", model="m", status="error", operation_state="pending_dispatch"),
-         "task_acceptance"),
-        (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text='{"verdict":"PASS"}'),
-         "task_acceptance"),
+         "multi_model_review"),
+        (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text=json.dumps([
+            {"item": "coupling", "verdict": "PASS", "severity": "advisory", "reason": "checked"}])),
+         "scope_review"),
         (ReviewActorRecord(slot_id="slot-stable", model="m", status="ok", raw_text="# Review\nAll checks passed."),
          "deep_self_review"),
     ):
@@ -403,6 +425,9 @@ def test_the_system_reviews_direct_failure_reaches_the_canonical_log(
     assert result["usage"]["reason_code"] == "deep_self_review_error"
     assert result["usage"]["execution_status"] == "infra_failed"
     assert result["report_delivered"] is False
+    [seat] = result["rows"]  # the failed seat keeps its reason on the record row itself
+    assert seat["status"] == "error" and seat["failure_code"] == "deep_self_review_error"
+    assert seat["reported_cause"].strip(), seat
     assert _rows(drive) == []  # a child's task drive is not the owner's canonical log
     [row] = _rows(canonical)
     assert row["type"] == "review_model_error" and row["source"] == "deep_self_review"

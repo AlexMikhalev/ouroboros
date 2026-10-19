@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from ouroboros.model_sleep import in_slot_wait
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.runtime_limits import NESTED_SETTLEMENT_MARGIN_SEC
 from ouroboros.task_results import (
@@ -28,7 +29,7 @@ from ouroboros.task_status import (
     wait_for_effective_tasks,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.utils import truncate_review_artifact, utc_now_iso
+from ouroboros.utils import truncate_review_artifact
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read
 
 
@@ -300,26 +301,11 @@ def _get_task_result(
             status="unavailable", code="LEGACY_UNAVAILABLE",
             text=f"Task {task_id}: unknown or not yet registered",
         ))
-    from ouroboros.project_sources import CLONE_TIMEOUT_SEC
-    from ouroboros.routing_wait import is_emitted_admission_stub
+    from ouroboros.promotion_intent import promotion_intent_notice
 
-    if is_emitted_admission_stub(data):
-        # #1160: a promote whose admission the supervisor has not confirmed yet is
-        # PENDING, not unknown. Answering "unknown or not yet registered" read as
-        # "your promote never happened" and invited the second promote that mints a
-        # duplicate root; the id stays reserved and this read is the reconciliation.
-        since = str((data.get("promotion_admission") or {}).get("emitted_at") or "")
-        return _publish_tool_result(ctx, ToolResult(
-            status="unavailable", code="LEGACY_UNAVAILABLE",
-            text=(
-                f"Task {task_id}: admission pending since {since} (now {utc_now_iso()}) - the promote "
-                "was emitted and this row carries no supervisor receipt yet, neither scheduled nor "
-                f"refused. Read get_task_result({task_id}) again before promoting the same work: a "
-                f"promote that prepares a source can stay pending for up to {CLONE_TIMEOUT_SEC // 60} "
-                "minutes. A new promote is a NEW task id; this row does not forbid one, and whether "
-                "this one is lost is yours to judge from the two times above."
-            ),
-        ))
+    notice = promotion_intent_notice(task_id, data)
+    if notice:
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=notice))
     if presence_reentry_sha256:
         from ouroboros.presence_continuation import reentry_source_projection
 
@@ -429,16 +415,6 @@ def _get_task_result(
     except Exception:
         receipts = []
     outcome_summary = _subtask_outcome_summary(data, receipts=receipts)
-    debt = data.get("acceptance_debt")
-    if isinstance(debt, dict) and debt.get("source_ref"):
-        from ouroboros.acceptance_history import historical_source_reference
-
-        summary = json.loads(outcome_summary)
-        summary["acceptance_debt"] = {key: debt.get(key) for key in (
-            "debt_id", "task_id", "accounting_root_task_id", "delivery_status")}
-        summary["acceptance_debt"]["source_ref"] = historical_source_reference(
-            status_drive_root, str(data.get("task_id") or task_id), debt["source_ref"], subject=True)
-        outcome_summary = json.dumps(summary, ensure_ascii=False, indent=2)
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     child_result_sha256 = _child_result_sha256(data)
@@ -670,10 +646,11 @@ def _wait_for_task(
                                   margin=NESTED_SETTLEMENT_MARGIN_SEC)
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
-    waited = wait_for_effective_tasks(
-        status_drive_root, [tid], timeout_sec=timeout,
-        on_poll=_wait_attention_poll(ctx, "", [tid]), poll_interval_sec=2.0,
-    )
+    with in_slot_wait(ctx, timeout, "tasks"):
+        waited = wait_for_effective_tasks(
+            status_drive_root, [tid], timeout_sec=timeout,
+            on_poll=_wait_attention_poll(ctx, "", [tid]), poll_interval_sec=2.0,
+        )
     early = waited.get("early_return")
     if early and early.get("reason") == "owner_mailbox_pending":
         header = "Task wait interrupted by an unread message for this task"
@@ -863,9 +840,9 @@ def _await_messages(ctx: ToolContext, timeout_sec: int = 0, mode: str = "in_slot
     close of that lease is the progress stamp the next model round starts from —
     a full idle window even after a wait that spent the whole ceiling, so the
     supervisor tick between the finished wait and the next model call never
-    reaps the turn the wait was for. This tool therefore emits no lease of its
-    own and lends no slot; tests/test_await_messages.py drives the enforcer
-    through that lifecycle.
+    reaps the turn the wait was for. Its separate in_slot_wait mark identifies
+    the wait for reply-preparation readers, adds no idle exemption and lends no
+    slot; tests/test_await_messages.py drives that lifecycle.
     """
     from ouroboros.loop_transport import _owner_signal_pending
     from ouroboros.owner_mailbox import OwnerMailboxPeek
@@ -890,14 +867,15 @@ def _await_messages(ctx: ToolContext, timeout_sec: int = 0, mode: str = "in_slot
     seen = getattr(ctx, "_loop_mailbox_seen_ids", None)
     attempt = getattr(ctx, "task_attempt", None) or 1
     start = time.monotonic()
-    while True:
-        # The transport wait's non-destructive peek over a COPY of the seen
-        # set; the mailbox and its acknowledgements are untouched.
-        pending = bool(_owner_signal_pending(None, drive_root, task_id, seen, attempt, peek))
-        elapsed = time.monotonic() - start
-        if pending or elapsed >= window:
-            break
-        time.sleep(min(_AWAIT_MESSAGES_POLL_SEC, max(0.0, window - elapsed)))
+    with in_slot_wait(ctx, window):
+        while True:
+            # The transport wait's non-destructive peek over a COPY of the seen
+            # set; the mailbox and its acknowledgements are untouched.
+            pending = bool(_owner_signal_pending(None, drive_root, task_id, seen, attempt, peek))
+            elapsed = time.monotonic() - start
+            if pending or elapsed >= window:
+                break
+            time.sleep(min(_AWAIT_MESSAGES_POLL_SEC, max(0.0, window - elapsed)))
     if pending:
         reason = "owner_mailbox_pending"
     else:
@@ -934,7 +912,8 @@ def _await_as_sleep(ctx: ToolContext, mode: str, **chosen: Any) -> str:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR", text=f"⚠️ TOOL_ARG_ERROR (await_messages): {exc}",
             meta={"operation_outcome": "completed_no_effect"}))
-    return json.dumps(outcome, ensure_ascii=False)
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK",
+        text=json.dumps(outcome, ensure_ascii=False), meta={"sleep_question_notice": bool(outcome.get("questions"))}))
 
 
 def await_messages_entry() -> ToolEntry:
@@ -962,11 +941,12 @@ def await_messages_entry() -> ToolEntry:
             "own, the exit of your own `services` (warm only: the start each has now; a replaced, stopped "
             "or lost one wakes you as unknown, never as success), and/or `wake_at`/`wake_after_sec`; with "
             "nothing selected any addressed mail wakes you. The "
-            "owner's messages and controls always wake you; unselected mail waits unread. Warm keeps your "
+            "owner's messages, controls and typed descendant escalations always wake you; other unselected mail waits unread. Warm keeps your "
             "process and browser (a pooled slot is lent meanwhile). Cold saves your continuation and releases "
             "the process only after the body accepts custody of your bound external runs; local services "
-            "still need warm sleep. A new question from body-held work also wakes you, without answering "
-            "it. Retaining an external writer retains its project lane. You choose which fits. A source that is "
+            "still need warm sleep. A new question from any ordinary run you own also wakes you, even "
+            "if not selected; reviewer runs stay with their panel. Question sources are delivered, not answered. "
+            "Retaining an external writer retains its project lane. A source that is "
             "already ready answers at once. Sleep does not count as execution time; an explicit deadline "
             "still applies. A settled task is not a successful one: read its result when you wake."
         ),
@@ -977,7 +957,7 @@ def await_messages_entry() -> ToolEntry:
             "mode": {"type": "string", "enum": ["in_slot", "warm", "cold"],
                      "description": "in_slot (default) holds your slot for timeout_sec; warm/cold is a sleep."},
             "senders": {"type": "array", "items": {"type": "string"},
-                        "description": "Sleep: task ids whose mail wakes you (others' mail stays unread)."},
+                        "description": "Sleep: task ids whose ordinary mail wakes you; owner input and descendant escalations bypass this filter."},
             "tasks": {"type": "array", "items": {"type": "string"},
                       "description": "Sleep: task ids whose terminal (any settled status) wakes you."},
             "runs": {"type": "array", "items": {"type": "string"},
@@ -1277,19 +1257,21 @@ def _wait_for_tasks(
     # wait and gets the rest of the requested window.
     _phantom_only = bool(entry_unknown_ids) and len(entry_unknown_ids) == len(normalized_ids)
     first_window = min(float(timeout), _UNMINTED_WAIT_GRACE_SEC) if _phantom_only else float(timeout)
-    waited = wait_for_effective_tasks(
-        status_drive_root, normalized_ids, timeout_sec=first_window, mode=normalized_mode,
-        on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
-    )
+    with in_slot_wait(ctx, first_window, "tasks"):
+        waited = wait_for_effective_tasks(
+            status_drive_root, normalized_ids, timeout_sec=first_window, mode=normalized_mode,
+            on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
+        )
     if _phantom_only and first_window < float(timeout) and waited.get("early_return") is None:
         entry_unknown_ids = _unminted_wait_ids(ctx, status_drive_root, normalized_ids)
         if len(entry_unknown_ids) < len(normalized_ids):
             elapsed = float(waited.get("elapsed_sec") or 0.0)
-            resumed = wait_for_effective_tasks(
-                status_drive_root, normalized_ids,
-                timeout_sec=max(0.0, float(timeout) - elapsed), mode=normalized_mode,
-                on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
-            )
+            with in_slot_wait(ctx, max(0.0, float(timeout) - elapsed), "tasks"):
+                resumed = wait_for_effective_tasks(
+                    status_drive_root, normalized_ids,
+                    timeout_sec=max(0.0, float(timeout) - elapsed), mode=normalized_mode,
+                    on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
+                )
             resumed["elapsed_sec"] = float(resumed.get("elapsed_sec") or 0.0) + elapsed
             resumed["timeout_sec"] = float(timeout)
             waited = resumed

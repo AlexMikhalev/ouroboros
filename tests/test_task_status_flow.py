@@ -5,6 +5,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+from tests.worker_pool_support import affirm_ready
+
 import pytest
 from tests._store_shared import read_result, result_exists
 
@@ -224,7 +226,9 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": None)
     monkeypatch.setattr(queue_module, "_emit_cancel_task_done", lambda *_args, **_kwargs: None)
 
-    assert queue_module.cancel_task_by_id("fast-child") is True
+    # No intent was ever minted (the tool saw a settled child), so custody is the
+    # typed no-op already_settled (A2): nothing captured, nothing written.
+    assert task_lifecycle.cancel_task_custody("fast-child") == task_lifecycle.CANCEL_ALREADY_SETTLED
     stored = load_task_result(tmp_path, "fast-child")
     assert stored["status"] == STATUS_COMPLETED
     assert stored["accounted_upper_bound_usd"] == 0.75
@@ -234,12 +238,9 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
     # Completion wins WITHOUT a parent_decision stamp: discarding a kept result
     # stays a separate explicit action (discard_child_result).
     assert "parent_decision" not in stored
-    # The durable intent settled (already_settled) — nothing left pending.
     assert active_intent(tmp_path, "fast-child") is None
     public = public_task_result(stored)
     assert public["outcome_axes"]["execution"]["status"] == "ok"
-    # The typed custody outcome (not the boolean facade) reports already_settled.
-    assert task_lifecycle.cancel_task_custody("fast-child") == task_lifecycle.CANCEL_ALREADY_SETTLED
 
 
 def test_cancel_workspace_task_records_terminal_artifact_state(tmp_path, monkeypatch):
@@ -277,7 +278,10 @@ def test_cancel_workspace_task_records_terminal_artifact_state(tmp_path, monkeyp
         result="queued",
     )
 
-    assert queue_module.cancel_task_by_id("workspacecancel") is True
+    from ouroboros.cancel_intents import request_cancel
+
+    request_cancel(tmp_path, "workspacecancel")
+    assert queue_module.drive_cancel_intent_scope("workspacecancel") == queue_module.CANCEL_CANCELLED
 
     stored = load_task_result(tmp_path, "workspacecancel")
     assert stored["status"] == STATUS_CANCELLED
@@ -692,9 +696,9 @@ def test_child_finalization_publishes_receipts_to_canonical_root(tmp_path):
 
     # Durability: the receipts survive child-drive pruning (retention GC / the
     # cancel path delete the drive; the canonical copy is the durable record).
-    import shutil as _shutil
+    from tests._store_shared import remove_store_tree
 
-    _shutil.rmtree(child_drive)
+    remove_store_tree(child_drive)
     rows = _receipt_rows_of(_get_task_result(SimpleNamespace(drive_root=tmp_path), tid))
     assert rows is not None and len(rows) == 3
     assert rows[0]["criterion_id"] == "claim_red"
@@ -2253,6 +2257,8 @@ def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, mon
     assert data["status"] == STATUS_FAILED
     assert "depth limit" in data["result"]
     assert sent and "depth limit" in sent[0][1]
+    # The owner's sentence, complete on its own (a later addendum appends after its period).
+    assert sent[0][1].startswith("⚠️ Task rejected: subtask depth limit (") and sent[0][1].endswith(") exceeded.")
     assert sent[0][2]["is_progress"] is True
     assert sent[0][2]["progress_meta"]["delegation_role"] == "subagent"
     assert sent[0][2]["progress_meta"]["status"] == STATUS_FAILED
@@ -2632,6 +2638,31 @@ def test_handle_schedule_task_fails_fast_when_worker_pool_unavailable(tmp_path, 
     data = read_result(tmp_path, "ghost1")
     assert data["status"] == STATUS_FAILED
     assert data.get("reason_code") == "workers_unavailable"
+    # Two readers, two texts (#1403): the parent model's stored result keeps its full
+    # instruction; the owner's card row (text and the error the web card body reads)
+    # carries the producer's owner sentence, with one warning mark.
+    assert "do the work inline yourself, or retry after /restart" in data["result"]
+    assert len(sent) == 1
+    _chat, text, kwargs = sent[0]
+    assert text == "⚠️ Task ghost1 not scheduled: worker pool unavailable."
+    meta = kwargs["progress_meta"]
+    assert meta["error"] == "Task ghost1 not scheduled: worker pool unavailable."
+    assert meta["subagent_event"] == "rejected" and meta["subagent_task_id"] == "ghost1"
+    assert kwargs["system_type"] == "subagent_admission_notice"
+
+
+def test_subagent_rejection_without_owner_sentence_keeps_its_factual_detail(tmp_path):
+    """No producer sentence: the factual detail is shown as written, never filtered."""
+    from supervisor.events_schedule_task import _reject_schedule_task
+
+    sent = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, send_with_budget=lambda *a, **k: sent.append((a, k)))
+    detail = "Subagent rejected: schedule_subagent requires objective and expected_output."
+    _reject_schedule_task(ctx, tid="kid1", chat_id=1, delegation_role="subagent", parent_id="root1",
+                          root_task_id="root1", role="", result_fields={}, detail=detail)
+    (_chat, text), kwargs = sent[0]
+    assert text == "⚠️ " + detail and kwargs["progress_meta"]["error"] == detail
+    assert read_result(tmp_path, "kid1")["result"] == detail
 
 
 def test_handle_task_done_skips_workspace_readonly_subagent_artifacts(tmp_path, monkeypatch):
@@ -2806,7 +2837,7 @@ def test_assign_tasks_mirrors_running_subagent_status_to_parent_drive(tmp_path, 
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", [task])
     monkeypatch.setattr(workers_module, "RUNNING", {})
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": True)
@@ -2853,7 +2884,7 @@ def test_assign_tasks_leaves_subagent_pending_when_running_cap_full(tmp_path, mo
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", pending)
     monkeypatch.setattr(workers_module, "RUNNING", running)
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": None)
@@ -2898,7 +2929,7 @@ def test_assign_tasks_honors_depth_reservation_for_first_grandchild(tmp_path, mo
     monkeypatch.setattr(workers_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(workers_module, "PENDING", pending)
     monkeypatch.setattr(workers_module, "RUNNING", running)
-    monkeypatch.setattr(workers_module, "WORKERS", {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())})
+    monkeypatch.setattr(workers_module, "WORKERS", {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))})
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)
     monkeypatch.setattr(queue_module, "persist_queue_snapshot", lambda reason="": True)
@@ -2957,7 +2988,7 @@ def test_assignment_depth_fact_reaches_worker_and_survives_child_copyback(tmp_pa
     monkeypatch.setattr(
         workers_module,
         "WORKERS",
-        {1: SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue())},
+        {1: affirm_ready(SimpleNamespace(wid=1, busy_task_id=None, in_q=FakeWorkerQueue()))},
     )
     monkeypatch.setattr(workers_module, "load_state", lambda: {})
     monkeypatch.setattr(state_module, "budget_remaining", lambda _state, **_kwargs: 100.0)

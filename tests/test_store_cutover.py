@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
@@ -144,6 +145,7 @@ _TABLES = re.compile(r"\bFROM\s+(tasks|task_bodies|obligations|custody_runs|hand
 
 def captured_statements(monkeypatch, call) -> list:
     """``(sql, params)`` of every read over the store's tables that ``call`` made."""
+    store.close_connections()  # install the recorder before opening the persistent connection
     real = sqlite3.connect
 
     def recording(*args, factory=sqlite3.Connection, **kwargs):  # over the store's own connection class
@@ -220,13 +222,6 @@ def test_the_plan_guard_catches_a_table_scan(populated):
     assert _scans(plan)
 
 
-def test_the_body_marker_sweep_is_the_one_declared_scan(populated):
-    """``ids_with_fields`` (the acceptance settlement sweep) reads every body once with LIKE;
-    it replaced a directory listing plus a full read of every file and stays a declared scan."""
-    plan = _plan(populated, "SELECT task_id FROM task_bodies WHERE body LIKE ? ORDER BY task_id", ('%"x":%',))
-    assert _scans(plan)
-
-
 def test_select_lineage_matches_the_python_prefilter(populated):
     """Without retry lineage the closure selects exactly the retired Python prefilter's rows; with it,
     ``test_child_lineage_closure`` holds the full-projection oracle (unrelated lineage is never read)."""
@@ -250,6 +245,9 @@ def test_the_store_opens_in_a_fresh_interpreter_without_the_runtime(tmp_path):
     """``task_store`` depends on ``store`` alone (an importer/exporter and the P8 lane run it bare)."""
     code = ("import pathlib, sys; from ouroboros import task_store; "
             "print(task_store.exists(pathlib.Path(sys.argv[1]), 'none'))")
+    child_env = {"PYTHONPATH": str(REPO), "PATH": os.defpath, "OUROBOROS_DATA_DIR": str(tmp_path)}
+    if os.environ.get("SystemRoot"):  # Windows Python needs this even before importing the store.
+        child_env["SystemRoot"] = os.environ["SystemRoot"]
     out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, cwd=REPO,
-                         env={"PYTHONPATH": str(REPO), "PATH": "/usr/bin:/bin", "OUROBOROS_DATA_DIR": str(tmp_path)})
+                         env=child_env)
     assert out.returncode == 0 and out.stdout.strip() == "False", out.stderr

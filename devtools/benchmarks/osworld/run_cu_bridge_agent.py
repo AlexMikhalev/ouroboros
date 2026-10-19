@@ -133,6 +133,8 @@ def _cu_actor_preflight(settings_path: Path, server: str) -> dict[str, Any]:
         measured_model = str(loaded.get("OUROBOROS_MODEL") or "").strip()
         if not measured_model:
             raise ValueError("settings must declare measured OUROBOROS_MODEL")
+        if loaded.get("OUROBOROS_TASK_REVIEW_MODE") != "required":
+            failures.append("declared task review mode must be required")
         declared = runtime_actor_snapshot(loaded, expected_model=measured_model)
         failures.extend(f"declared settings {item}" for item in declared["mismatches"])
     except Exception as exc:
@@ -141,6 +143,8 @@ def _cu_actor_preflight(settings_path: Path, server: str) -> dict[str, Any]:
 
     try:
         target_settings = _api(server, "GET", "/api/settings", timeout=10)
+        if target_settings.get("OUROBOROS_TASK_REVIEW_MODE") != "required":
+            failures.append("executing server task review mode must be required")
         target = runtime_actor_snapshot(target_settings, expected_model=measured_model)
         failures.extend(f"target server {item}" for item in target["mismatches"])
     except Exception as exc:
@@ -193,38 +197,35 @@ def _ensure_vmrun_on_path() -> None:
 
 
 def _enable_skill(repo_dir: Path, data_dir: Path) -> str:
-    """Controlled-seed + native-trust + enable unix_computer_use.
+    """Controlled built-in install + enable of unix_computer_use.
 
-    Launcher auto-seeding won't pick up a brand-new bundled skill on an already
-    bootstrapped data dir, and an existing native seed may be stale for this
-    worktree. Re-copy the repo skill into THIS isolated bench data dir and stamp
-    native trust against the current hash. Idempotent: re-copies each run so repo
-    edits are reflected. The ``net`` permission needs no owner grant, but it does
-    remove the skill from the launcher's native auto-enable class — this runner
-    therefore enables it explicitly via ``save_enabled``.
+    A new install gets built-ins only from its starter selection, and an existing
+    native copy may be stale for this worktree. Re-install the repo skill into THIS
+    isolated bench data dir as an ordinary built-in (trusted install record for the
+    current bytes). Idempotent: re-copies each run so repo edits are reflected. The
+    ``net`` permission needs no owner grant; this runner enables it explicitly via
+    ``save_enabled``.
     """
-    import logging
     import shutil
-    from ouroboros.launcher_bootstrap import _stamp_native_seed_trust
+    from ouroboros.skill_builtin import install_builtin_skill
     from ouroboros.skill_loader import find_skill, save_enabled
 
     src = repo_dir / "skills" / SKILL_NAME
     if not src.is_dir():
         raise RuntimeError(f"{SKILL_NAME} not found in repo skills: {src}")
     dest = data_dir / "skills" / "native" / SKILL_NAME
-    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(src, dest)
-    (dest / ".seed-origin").write_text("seeded_from=bench_cu_bridge\n", encoding="utf-8")
-    shutil.rmtree(dest / "__pycache__", ignore_errors=True)
-    _stamp_native_seed_trust(data_dir, dest, logging.getLogger("osworld_bridge"))
+    result = install_builtin_skill(SKILL_NAME, drive_root=data_dir, seed_dir=repo_dir / "skills",
+                                   installed_by="ouroboros", reason="osworld bench seed")
+    if not result.get("ok"):
+        raise RuntimeError(f"{SKILL_NAME} built-in install failed: {result.get('error')}")
     skill = find_skill(data_dir, SKILL_NAME)
     if skill is None or getattr(skill, "load_error", None):
         raise RuntimeError(f"{SKILL_NAME} unavailable after seed: {getattr(skill, 'load_error', None)}")
     save_enabled(data_dir, SKILL_NAME, True)
     review = getattr(getattr(skill, "review", None), "status", "?")
-    return f"{skill.name} ({skill.source}) review={review} enabled=True"
+    return f"{skill.name} ({skill.source}) review={review} basis={result.get('basis')} enabled=True"
 
 
 def _publish_target(data_dir: Path, target: str) -> Path:
@@ -1097,7 +1098,7 @@ def _run_cu_bridge(args: argparse.Namespace, final: dict[str, Any], run: CuBridg
             created = _api(args.ouroboros_url, "POST", "/api/tasks", {
                 "description": prompt, "memory_mode": "empty",
                 "disabled_tools": _effective_disabled_tools(args.allow_a11y),
-                # The task-acceptance panel already runs on every OSWorld task and was, until now,
+                # Required mode runs a result review on every OSWorld task, and its panel was once
                 # given no criteria at all (acceptance_claims was [] on all 361 tasks of the
                 # v6.81.0 run while the panel returned clean_pass on 324 of them). These four
                 # claims cost no extra model call: they tell the reviewer that already runs what

@@ -338,6 +338,33 @@ def test_one_unanswered_reader_does_not_hide_another_selected_run(tmp_path, monk
         runtime.close(wait=True)
 
 
+def test_observation_reuses_one_client_and_rebuilds_it_after_a_failed_read(tmp_path):
+    """A handshake and an HTTP client per poll of every held run kept the server busy: the
+    generation keeps one client, drops it on a failed read and closes it when it ends."""
+    a, b = started(tmp_path, "run-a"), started(tmp_path, "run-b")
+    made, closed, fail = [], [], {"once": True}
+    class Gateway:
+        def __init__(self):
+            made.append(self)
+        def get_run(self, rid, **kwargs):
+            if rid == a.run_id and fail.pop("once", False):
+                raise ConnectionError("the daemon moved")
+            return {"summary": {"runId": rid, "state": "running"}, "lastSeq": 1, "pendingInteractions": []}
+        def close(self):
+            closed.append(self)
+    stop = threading.Event()
+    stop.set()  # no background ticks: the observations below are the only ones
+    runtime = body.BodyRuntime(tmp_path, stop_event=stop, gateway_factory=Gateway, max_workers=2)
+    runtime.thread.join(10)
+    with pytest.raises(ConnectionError):
+        runtime._observe(a)
+    for entry in (a, b, b, a):
+        runtime._observe(entry)
+    assert len(made) == 2 and closed == [made[0]]
+    runtime._drop_observer_gateway()
+    assert closed == made
+
+
 def test_automatic_availability_is_not_an_owner_omission(tmp_path, money):
     from ouroboros.context_health import _unread_output_line
     entry = started(tmp_path)
@@ -395,3 +422,20 @@ def test_directory_capture_keeps_complete_files_while_money_is_pending(tmp_path,
     assert not fresh.patch_disposed and not engine.applies and not engine.decisions
     assert held.run_id in current.runs(ctx.drive_root, "state=?", (current.HELD,))
     assert not (target / ".git").exists() and not (target / "out.bin").exists()
+
+
+def test_a_typed_capture_failure_stays_owed(tmp_path, monkeypatch, money):
+    """A capture that reports ``status: failed`` (its exception was caught inside) is a failure
+    the collector keeps owing, not a success that erases it; a later good capture clears it."""
+    from ouroboros.tools import delegate_integration
+
+    entry = started(tmp_path)
+    outcomes = iter([{"status": "failed", "note": "patch capture failed (RuntimeError: Symlink loop)"},
+                     {"status": "ready_with_changes"}])
+    monkeypatch.setattr(delegate_integration, "capture_terminal_patch_for_drive", lambda *a, **kw: next(outcomes))
+    failures = {}
+    first = body.collect_terminal(tmp_path, entry.run_id, detail=terminal(), failures=failures)
+    assert "capture:RuntimeError" in first["errors"] and "capture" in failures
+    assert first["workspace_capture"]["status"] == "failed"
+    second = body.collect_terminal(tmp_path, entry.run_id, detail=terminal(), failures=failures)
+    assert not any(error.startswith("capture:") for error in second["errors"]) and "capture" not in failures

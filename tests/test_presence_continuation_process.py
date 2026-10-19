@@ -1,9 +1,15 @@
 """Real child Host death/exec, manual follow-up and controls with production agent bootstrap.
 
 This is a TCP Host consumer, not a Slack provider or full server/supervisor boot.
-Inference and reviewer transports are local scripts; lifecycle owners are real.
+Inference and reviewer transports are local scripts; lifecycle owners are real. The
+author parks through the kept trigger (``tests/presence_lifecycle_host.py``): it
+reviews its own result, leaves that review for an addressed message and parks, so
+two model calls precede every park. Blocking and Advisory enforcement park alike:
+nothing is released early.
 """
 from __future__ import annotations
+
+from tests import _dialogue as dialogue_test
 
 import json
 import os
@@ -42,10 +48,44 @@ def tmp_path(tmp_path):
     Retain this test's separate root and leave its address in pytest's tree,
     just like the other isolated session trees; never discard failure evidence.
     """
-    root = Path(tempfile.mkdtemp(prefix="ob-pres-", dir="/tmp"))
-    (tmp_path / "presence-root.txt").write_text(str(root), encoding="utf-8")
-    yield root
-    print(f"Presence fixture tree retained: {root}")
+    # Probe the real AF_UNIX bind with the multiprocessing name shape rather
+    # than assuming character count equals the platform's encoded byte limit.
+    probe_dir = tmp_path / "tmp" / "pymp-12345678"
+    probe_dir.mkdir(parents=True)
+    address = probe_dir / "listener-12345678"
+    with socket.socket(socket.AF_UNIX) as probe:
+        try:
+            probe.bind(str(address))
+        except OSError:
+            fits = False
+        else:
+            fits = True
+    address.unlink(missing_ok=True)
+    probe_dir.rmdir()
+    boundary = os.environ.get("OUROBOROS_TEST_TEMP_ROOT")
+    root = tmp_path if fits else Path(tempfile.mkdtemp(prefix="h", dir=boundary or "/tmp"))
+    if boundary and not fits:
+        from ouroboros.test_environment import declare_scratch
+        declare_scratch(root, "pytest-session")
+    if not fits:
+        (tmp_path / "presence-root.txt").write_text(str(root), encoding="utf-8")
+    try:
+        yield root
+    finally:
+        from ouroboros.test_evidence import diagnostic_directory, diagnostics_incomplete
+        import shutil
+        try:
+            evidence = diagnostic_directory(root / "evidence", "presence-" + root.name)
+            # These are this producer's diagnostic originals, not its DB/cache.
+            named = list(root.glob("*.log")) + list(root.glob("*.json")) + list(root.glob("*.jsonl"))
+            named += list((root / "data" / "logs").glob("*.jsonl"))
+            for path in named:
+                target = evidence / path.relative_to(root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+        except OSError as exc:
+            diagnostics_incomplete(str(exc))
+    print(f"Presence fixture tree {'owned by outer test run' if boundary else 'retained (no outer owner)'}: {root}")
 
 
 def eventually(read, *, seconds=45):
@@ -256,15 +296,17 @@ def test_direct_exec_restart_interrupts_same_pid_author_without_replaying_effect
                  "model_calls_after_exec": len(host.inputs()), "foreign_observer_state": controller_state(original)}
         (tmp_path / "exec-facts.json").write_text(json.dumps(facts, indent=2))
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "failed"  # ended: its controller is positively gone
+        assert interrupted.json()["code"] == "presence_attempt_outcome_unknown"
+        assert (interrupted.json()["text"], interrupted.json()["output_ref"]) == ("", "")
         assert interrupted.json()["outputs"] == before["presence_continuation"].get("outputs", [])
         for _ in range(2):
             assert host.turn().json() == initial
             assert host.work(ref).json() == interrupted.json()
         assert len(host.inputs()) == 2
         after = read_result(tmp_path / "data", ref)
-        assert after["status"] == before["status"] == "running"
+        # The restarted Host's boot reconcile settled the dead author from the same fact.
+        assert (after["status"], after["status_reconciled_from"]) == ("failed", "running")
         assert after["presence_continuation"] == before["presence_continuation"]
 
         manual = host.turn("manual-followup", MANUAL).json()
@@ -286,10 +328,7 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
     try:
         first = first_host.turn().json()
         assert first.get("status") == "continuing", first
-        if mode == "advisory":
-            assert first["outcome"] == "message" and first["text"] == ANSWER and first["output_ref"]
-        else:
-            assert (first["outcome"], first["text"], first["output_ref"]) == ("deferred", "", "")
+        assert (first["outcome"], first["text"], first["output_ref"]) == ("deferred", "", "")
         ref = first["continuation_ref"]
         assert first_host.work(ref).status_code == 202
         assert len(first_host.inputs()) == 2
@@ -321,12 +360,13 @@ def test_killed_author_stays_interrupted_and_explicit_new_event_can_continue(tmp
     second_host = Host(tmp_path, 2, mode)
     try:
         assert second_host.info["pid"] != first_host.info["pid"]
-        assert second_host.info["reconciled"] == 0  # inline owners are not falsely pooled orphans
+        assert second_host.info["reconciled"] == 1  # the dead author's witness, never a pooled-orphan guess
         assert second_host.turn().json() == first
         interrupted = second_host.work(ref)
         assert interrupted.status_code == 200, interrupted.text
-        assert interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.json()["status"] == "failed"
+        assert interrupted.json()["status_reconciled_from"] == "running"
+        assert (interrupted.json()["text"], interrupted.json()["output_ref"]) == ("", "")
         assert interrupted.json()["outputs"] == continuation["outputs"]
         assert len(second_host.inputs()) == 2  # no automatic author and no original event regeneration
         legacy = second_host.turn(version=0)
@@ -429,7 +469,10 @@ def test_second_park_exposes_late_child_without_changing_initial_replay(tmp_path
             assert host.client.post("/fixture/release-review").status_code == 200
         final = eventually(lambda: (reply if (reply := host.work(ref)).status_code == 200 else None))
         assert final.json()["child_work_ref"] == child_ref, final.text
-        assert final.json()["status"] in {"completed", "cancelled"}
+        # A Stop while parked ends on the zero-call control rail: the direct turn's owner Stop settles failed
+        # (owner_requested_finalization) and speaks nothing; a released review lets the author complete.
+        assert final.json()["status"] == ("failed" if ending == "stop" else "completed")
+        assert ending != "stop" or (final.json()["text"], final.json()["output_ref"]) == ("", "")
         assert len(host.inputs()) == (4 if ending == "stop" else 5)
         # Polling reads the durable terminal before handle_task's finally closes
         # its model receiver. Require actual closure too; terminal is not its ACK.
@@ -463,9 +506,11 @@ def test_terminal_poll_precedes_author_teardown_but_cleanup_must_finish(tmp_path
         marker = tmp_path / "before-author-close.json"
         blocked = eventually(lambda: json.loads(marker.read_text()) if marker.exists() else None)
         assert blocked["task_id"] == ref and blocked["closed"] is False
-        assert blocked["status"] in {"completed", "cancelled"}
+        assert blocked["status"] == "failed"  # the owner's Stop of a parked direct turn settles failed, silently
         final = host.work(ref)
-        assert final.status_code == 200 and final.json()["status"] == blocked["status"]
+        # A recorded failed is final the moment it is recorded (``presence_recovery.retained_work_view``: only
+        # an unanswered terminal, cancelled or reconciled, of a still-live author stays observed as 202).
+        assert (final.status_code, final.json()["status"], final.json()["text"]) == (200, "failed", "")
         assert final.json()["child_work_ref"] == LATE_CHILD
         assert host.client.get("/fixture/live").json() == [ref]
         assert len(host.inputs()) == 4
@@ -500,10 +545,10 @@ def test_killed_second_park_author_preserves_late_child_for_tcp_consumer(tmp_pat
     second_host = Host(tmp_path, 2, mode, "late_child")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "failed"
         child_ref = interrupted.json().get("child_work_ref")
         assert child_ref == LATE_CHILD, interrupted.text
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert (interrupted.json()["text"], interrupted.json()["output_ref"]) == ("", "")
         assert interrupted.json()["outputs"] == record["presence_continuation"]["outputs"]
         assert record["presence_continuation"]["child_work_ref"] == child_ref
         child = second_host.work(child_ref)
@@ -555,14 +600,8 @@ def test_v1_tcp_disconnect_before_first_park_keeps_one_author(tmp_path, mode):
         assert host.client.post("/fixture/release-review").status_code == 200
         final = eventually(lambda: (reply if (reply := host.work(ref)).status_code == 200 else None)).json()
         assert final["status"] == "completed" and len(host.inputs()) == 3
-        if mode == "advisory":
-            assert initial["text"] == ANSWER and initial["output_ref"]
-            assert final["text"] == "" and final["output_ref"] == ""
-            assert final["outputs"] == [{"outcome": "message", "text": ANSWER,
-                                          "output_ref": initial["output_ref"]}]
-        else:
-            assert initial["text"] == "" and initial["output_ref"] == ""
-            assert final["text"] == ANSWER and final["output_ref"]
+        assert initial["text"] == "" and initial["output_ref"] == ""
+        assert final["text"] == ANSWER and final["output_ref"] and final["outputs"] == []
         assert host.turn().json() == initial and len(host.inputs()) == 3
         assert host.client.get("/fixture/live").json() == []
         (tmp_path / "consumer-facts.json").write_text(json.dumps({
@@ -594,8 +633,8 @@ def test_proactive_caller_process_death_and_recycle_preserve_interrupted_work(tm
     second_host = Host(tmp_path, 2, mode, "proactive")
     try:
         interrupted = second_host.work(ref)
-        assert interrupted.status_code == 200 and interrupted.json()["status"] == "interrupted"
-        assert interrupted.json()["text"] == "" and interrupted.json()["output_ref"] == ""
+        assert interrupted.status_code == 200 and interrupted.json()["status"] == "failed"
+        assert (interrupted.json()["text"], interrupted.json()["output_ref"]) == ("", "")
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert second_host.client.post("/fixture/proactive").json() == initial
         assert len(second_host.inputs()) == 2
@@ -634,7 +673,7 @@ def test_tool_delivered_host_replay_and_poll_never_offer_duplicate_speech(tmp_pa
         assert final["status"] == "completed" and final["outcome"] == "tool_delivered"
         assert final["text"] == "" and final["output_ref"] == "" and final["outputs"] == []
         assert host.turn().json() == initial and host.work(ref).json() == final
-        rows = [json.loads(line) for line in (tmp_path / "data" / "logs" / "chat.jsonl").read_text().splitlines()]
+        rows = dialogue_test.log_rows(tmp_path / "data" / "logs" / "chat.jsonl")
         deliveries = [row for row in rows if row.get("type") == "presence_delivery"]
         assert len(deliveries) == 1 and deliveries[0]["text"] == ANSWER
         assert len(host.inputs()) == 3

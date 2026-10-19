@@ -5,7 +5,7 @@ episode) reads the repository with its own tools, so the commit gate asks it
 BOTH questions in one brief: ``## Part 1 — The change`` (the same preamble,
 calibration, anti-pattern guard, checklist, governance tiers, intent, history
 and staged change every packet seat is given) and ``## Part 2 — Coupling
-questions`` (the whole-repository reviewer's role frame, the eight coupling
+questions`` (the whole-repository reviewer's role frame, the coupling
 questions, the required-source manifest the seat is OWED, the repository index
 it navigates with, and the coupling history of this subject), closed by
 ``## Answer format`` — contract B (``triad_review.REVIEW_TWO_PART_OBJECT_CONTRACT``).
@@ -99,7 +99,9 @@ class BriefIntent:
     object instead of parallel arguments a caller can silently mis-order.
     ``owner_words`` is the host-attested section of the owner's words that
     caused the work (``owner_words_text``); ``coupling_history`` is this
-    subject's prior ``per_question.coupling`` rounds.
+    subject's prior ``per_question.coupling`` rounds; ``preflight_execution`` the
+    wave's frozen test execution exhibit text (``preflight_receipts``) and
+    ``diff_pulse`` the subject's growth since its contribution base.
     """
 
     goal: str = ""
@@ -108,6 +110,8 @@ class BriefIntent:
     review_history: Optional[list | dict] = None
     coupling_history: Optional[list] = None
     owner_words: str = ""
+    preflight_execution: str = ""
+    diff_pulse: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,13 +188,15 @@ def first_send_bound(brief: BriefInputs) -> int:
     return review_native_transcript_bound(brief.model, output_reserve=output_reserve, **binding)
 
 
-def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str) -> int:
+def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: str,
+                      required_ref: Optional[Dict[str, Any]] = None) -> int:
     """The wire size of this seat's first send, measured the way it is priced.
 
     A native row is measured by the same builder the paid ledger reserves
-    against (``native_first_send_chars``: work order, message objects and the
-    inspection schemas that ride every call). This canonical serialization is
-    a layout measure, not physical token usage. A route whose schemas cannot be projected here is
+    against (``native_first_send_chars``: work order, message objects with the
+    declared manifest reference ``required_ref``, and the inspection schemas that
+    ride every call). This canonical serialization is a layout measure, not
+    physical token usage. A route whose schemas cannot be projected here is
     measured as the brief plus this build's send overhead rather than left
     unmeasured.
     """
@@ -204,7 +210,8 @@ def _first_send_chars(repo_dir: pathlib.Path, brief: BriefInputs, brief_text: st
         return native_first_send_chars(
             str(repo_dir), surface="multi_model_review", role_hint=TRIAD_ROLE_HINT,
             slot_id=brief.slot_id, session_task=brief_text,
-            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id)
+            output_contract=REVIEW_TWO_PART_OBJECT_CONTRACT, task_id=brief.task_id,
+            required_sources_ref=required_ref)
     except (OSError, ValueError, RuntimeError):
         return len(brief_text) + _NATIVE_SEND_OVERHEAD_ESTIMATE_CHARS
 
@@ -252,8 +259,9 @@ def _store_review_source(
     existing actor-readable artifact store — the store a native episode's
     ``read_file(root="artifact_store", …)`` resolves under its data root. A
     delegated harness has no artifact store, only the project, so its brief
-    additionally materializes the byte-exact copy inside the review's already
-    git-ignored ``.review-drive`` view. A store the host cannot write is not a
+    additionally materializes the byte-exact copy inside the review's
+    git-ignored ``.review-drive`` view (locally excluded in an external project).
+    A store the host cannot write is not a
     refusal: the caller keeps the inline diff or the unavailable-preimage
     diagnostic, with the reason stated in either case.
     """
@@ -276,6 +284,31 @@ def _store_review_source(
 
         view = materialize_commit_review_session_view(
             {"source_ref": ref, "task_id": task_id, "data_root": root}, repo_dir)
+        if view.get("session_source_status") != "ready" and (repo_dir / ".git").exists():
+            # External projects need not carry Ouroboros's .gitignore. Keep the
+            # generated input out of their candidate without editing tracked files.
+            from ouroboros.utils import run_cmd
+
+            try:
+                exclude = repo_dir / run_cmd(["git", "rev-parse", "--git-path", "info/exclude"], cwd=repo_dir).strip()
+                exclude.parent.mkdir(parents=True, exist_ok=True)
+                with exclude.open("a", encoding="utf-8") as stream:
+                    stream.write("\n/.review-drive/\n")
+                view = materialize_commit_review_session_view(
+                    {"source_ref": ref, "task_id": task_id, "data_root": root}, repo_dir)
+            except (OSError, RuntimeError) as exc:
+                return {"error": f"{type(exc).__name__}: {exc}"}
+        if view.get("session_source_status") != "ready" and not (repo_dir / ".git").exists():
+            # Project-scoped review also supports ordinary non-Git workspaces;
+            # no Git ignore check is meaningful there.
+            from ouroboros.utils import write_bytes_atomic
+
+            relative = pathlib.Path(".review-drive") / task_id / (ref["sha256"] + ".txt")
+            try:
+                write_bytes_atomic(repo_dir / relative, raw)
+                view.update(session_source_status="ready", session_relative_path=relative.as_posix())
+            except OSError as exc:
+                return {"error": f"{type(exc).__name__}: {exc}"}
         if view.get("session_source_status") != "ready":
             return {"error": str(view.get("session_source_error") or "session_view_unavailable")}
         source["session_relative_path"] = view["session_relative_path"]
@@ -313,6 +346,18 @@ def _paged_diff_pointer(brief: BriefInputs, body: str, source: Dict[str, Any]) -
         "commit is in it. Read it before you judge the change, and read the touched "
         "files themselves for the context around it."
     )
+
+
+def paged_review_text(text: str, source: dict, *, label: str, delegated: bool) -> str:
+    """Disclose an exact, readable source in place of an oversized inline part."""
+    path = source.get("session_relative_path") if delegated else source["path"]
+    reader = (f"Read project-relative file `{path}` with your file tools" if delegated else
+              f'Read with read_file(root="artifact_store", path="{path}")')
+    return (f"The complete {label} is not inlined because of the initial delivery size. "
+            f"Nothing was truncated: {len(text)} characters, sha256 `{source['sha256']}`.\n"
+            f"{reader}, in ranges (start_line/max_lines or start_char for long lines), "
+            "until you have read the complete source. It contains the review assignment and "
+            "evidence; follow its instructions and output contract before judging.\n")
 
 
 # The managed subject keeps its authority wording on both deliveries: a reviewer
@@ -527,7 +572,8 @@ def build_retrieving_brief(
 
         checklist_section = _load_checklist_section(layer)
     intent = brief.intent
-    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words)
+    goal_section = build_goal_section(intent.goal, intent.scope, brief.commit_message, intent.owner_words,
+                                      intent.preflight_execution, intent.diff_pulse)
     scope_section = build_scope_section(intent.scope)
     rebuttal_section = build_rebuttal_section(intent.review_rebuttal)
     history_section = review_history_with_obligations(intent.review_history, drive_root=brief.drive_root,
@@ -603,7 +649,8 @@ def build_retrieving_brief(
         delivery.update(diff_delivery="retrieved_by_reviewer", diff_reason=unavailable)
     else:
         diff_slot = _diff_slot(brief, header, body, "")
-        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0])
+        measured = _first_send_chars(repo_dir, brief, _assemble(diff_slot)[0],
+                                     required_ref if required_rows is not None else None)
         # Choose inline versus paged delivery using the initial layout hint;
         # a delegated session keeps its own conservative inline ceiling.
         from ouroboros.review_native_episode import native_landing_at
@@ -627,8 +674,26 @@ def build_retrieving_brief(
                 delivery.update(diff_paging="unavailable",
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text, part1, part2 = _assemble(diff_slot)
-    if delivery.get("diff_delivery") == "paged":
-        delivery["first_send_chars"] = _first_send_chars(repo_dir, brief, task_text)
+    measured = _first_send_chars(repo_dir, brief, task_text, required_ref if required_rows is not None else None)
+    from ouroboros.review_native_episode import native_landing_at
+
+    ceiling = SESSION_INLINE_DIFF_CEILING_CHARS if brief.delegated else native_landing_at(bound)
+    if measured >= ceiling:
+        # History, manifests and task evidence can exceed the layout even after
+        # the diff was paged. Keep the complete assembled brief as another source.
+        source = _store_review_source(repo_dir, brief, task_text.encode("utf-8"), "review-complete-brief")
+        if source.get("path"):
+            required_rows = [{**row, "coverage_basis": "candidate_blob"}
+                             if row.get("coverage_basis") == "delivered_inline" else row
+                             for row in (required_rows or [])]
+            required_rows = [*(required_rows or []), {**source["required_row"], "disposition": "review_subject"}]
+            required_ref = required_sources_ref(required_rows, staged_tree_sha=tree_sha)
+            task_text = paged_review_text(task_text, source, label="review brief", delegated=brief.delegated) + answer_format
+            delivery.update(brief_delivery="paged", brief_source=source)
+            measured = _first_send_chars(repo_dir, brief, task_text, required_ref)
+        else:
+            delivery.update(brief_paging="unavailable", brief_paging_reason=source.get("error") or "no_source_root")
+    delivery["first_send_chars"] = measured
 
     manifest: Dict[str, Any] = {
         "delivery": AGENTIC_RETRIEVAL_DELIVERY,
@@ -652,7 +717,7 @@ def build_retrieving_brief(
         "governance_tokens_estimate": governance.tokens_estimate,
         "preimage_sources": preimage_sources,
         "native_data_root": (str(brief.source_root or "") if preimage_sources
-                             or delivery.get("diff_delivery") == "paged" else ""),
+                             or delivery.get("diff_delivery") == "paged" or delivery.get("brief_delivery") == "paged" else ""),
         "first_send_bound": bound,
         "brief_chars": len(task_text),
         "sha": {"brief": hashlib.sha256(task_text.encode("utf-8")).hexdigest(),

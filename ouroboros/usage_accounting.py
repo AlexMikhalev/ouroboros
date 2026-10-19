@@ -31,8 +31,8 @@ from ouroboros._usage_response import (
 from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp
 from ouroboros.transport_custody import release_pre_dispatch_attempt
 from ouroboros.usage_ledger import (  # noqa: F401 — re-exported substrate
-    QUARANTINE_REL, UsageAccountingError, UsageLedgerCorrupt, UsageLockUnavailable,
-    _drive_root, _named_lock, _number, _TERMINAL,
+    QUARANTINE_REL, BillingAuthorityUnavailable, ControlAuthorityUnavailable, UsageAccountingError,
+    UsageLedgerCorrupt, UsageLockUnavailable, _drive_root, _named_lock, _number, _TERMINAL,
 )
 from ouroboros import usage_store
 from ouroboros.usage_store import hold as _locked  # noqa: F401 — the money acquisition primitive
@@ -49,7 +49,7 @@ from ouroboros._usage_rows import (  # noqa: F401  (re-exported substrate vocabu
 from ouroboros.skill_review_usage import skill_review_usage
 log = logging.getLogger(__name__)
 __all__ = (
-    "AttemptRequest", "AttemptReservation", "BudgetExceeded", "PhysicalAttemptCapture",
+    "AttemptRequest", "AttemptReservation", "BillingAuthorityUnavailable", "BudgetExceeded", "ControlAuthorityUnavailable", "PhysicalAttemptCapture",
     "PhysicalAttemptContext", "PhysicalAttemptLimitExceeded", "PhysicalAttemptPreconditionFailed",
     "PhysicalAttemptPreparationFailed",
     "PhysicalAttemptState", "PHYSICAL_ATTEMPT_STATES", "POSITIVE_PHYSICAL_ATTEMPT_STATES",
@@ -211,11 +211,11 @@ class BudgetExceeded(UsageAccountingError):
 
 
 class DispatchFenced(BudgetExceeded):
-    """Raised before dispatch while the task is entering an exact budget pause.
+    """Raised before a send while an exact-pause checkpoint is being written.
 
-    A ``BudgetExceeded`` so every existing catcher treats it as the monetary
-    stop it is; ``limit_scope="pausing"`` names the fence. Nothing sent after
-    the fence closed can outrun the pause checkpoint (#1196).
+    The legacy subclass routes existing catchers; ``limit_scope="pausing"``
+    names a dispatch fence, never evidence of budget exhaustion. No new send
+    may outrun that checkpoint (#1196).
     """
 
 
@@ -442,7 +442,7 @@ def capture_attempt_ids() -> Iterator[list[str]]:
         _ATTEMPT_COLLECTOR.reset(token)
 @contextlib.contextmanager
 def physical_attempt_limit(maximum: int) -> Iterator[None]:
-    """Bound physical provider sends in this actor context (acceptance uses 2)."""
+    """Bound physical provider sends in this actor context (a P3 packet reviewer's rail uses 2)."""
     state = _AttemptLimit(maximum=max(0, int(maximum)))
     token = _PHYSICAL_LIMIT.set(state)
     try:
@@ -504,12 +504,6 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
 
         scope = replace(scope, **task_billing_fields({"id": scope.task_id}, scope.root_task_id,
                                                     scope.root_limit_usd, scope.drive_root))
-    if scope.billing_group_id and scope.drive_root:
-        from ouroboros.usage_admission import effective_billing_fields
-        scope = replace(scope, **effective_billing_fields(scope.drive_root, scope.root_task_id, {
-            key: getattr(scope, key) for key in ("root_limit_usd", "root_limit_source", "root_limit_revision", "billing_group_id",
-                "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")},
-            non_task_operation=scope.non_task_operation))
     if request.root_limit_usd is not None and (scope.root_limit_usd is None or request.root_limit_usd < scope.root_limit_usd):
         scope = replace(scope, root_limit_usd=request.root_limit_usd, root_limit_source="attempt_request", root_limit_revision=None)
     if request.global_limit_usd is None and scope.global_limit_usd is not None:
@@ -672,7 +666,7 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool
         # Process-local pause fence: no NEW send (loop, tool, reviewer, verdict
         # extraction) under a task that is writing its exact pause checkpoint.
         raise DispatchFenced(
-            f"model dispatch fenced: task {scope.task_id} is entering an exact budget pause",
+            f"model dispatch fenced: task {scope.task_id} is entering an exact pause",
             limit_scope="pausing", root_task_id=scope.root_task_id)
     from ouroboros.queue_observation import dispatch_probe
     from ouroboros._usage_wait import retry_presend
@@ -682,13 +676,13 @@ def _check_dispatch_fences(scope: UsageScope, root: pathlib.Path, *, retry: bool
     if root_task_id and any((root / "state" / name).exists() for name in ("queue_dispatch.json", "queue_snapshot.json", "queue.alive")):
         snapshot = retry_presend(lambda: dispatch_probe(root), check=False) if retry else dispatch_probe(root)
         if snapshot is None:
-            raise UsageAccountingError(f"root budget fence authority unavailable: {snapshot_path}")
+            raise ControlAuthorityUnavailable(f"root budget fence authority unavailable: {snapshot_path}", cause="dispatch_fence_unreadable")
         rows = snapshot.get("budget_root_fences")
         if not isinstance(rows, list):
-            raise UsageAccountingError(f"invalid root budget fence authority: {snapshot_path}")
+            raise ControlAuthorityUnavailable(f"invalid root budget fence authority: {snapshot_path}", cause="dispatch_fence_invalid")
         for row in rows:
             if not isinstance(row, dict):
-                raise UsageAccountingError(f"invalid root budget fence row: {snapshot_path}")
+                raise ControlAuthorityUnavailable(f"invalid root budget fence row: {snapshot_path}", cause="dispatch_fence_invalid")
             if (str(row.get("root_task_id") or "") != root_task_id or row.get("cause") == "owner_pause"
                     or str(row.get("status") or "") not in {"active", "paused"}):
                 continue  # an owner Pause gates launches itself (owner_pause.py): never a money stop
@@ -710,7 +704,7 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     root = _drive_root(scope.drive_root)
 
     _check_dispatch_fences(scope, root)
-    acquire = send_acquisition(lambda: _check_dispatch_fences(scope, root))
+    acquire = send_acquisition(lambda: _check_dispatch_fences(scope, root, retry=False))
     # Pricing I/O stays outside the monetary transaction.
     bound = _reservation_cost(request)
     pricing_known, attempt_id = bound is not None, uuid.uuid4().hex
@@ -829,10 +823,10 @@ def record_unmetered_external_dispatch(
     parent_task_id: str = "",
     category: str = "external",
     source: str = "external_skill",
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
+    prompt_tokens: int = 0, completion_tokens: int = 0,
+    non_task_operation: bool = False,
 ) -> str:
-    """Idempotently record a dispatch whose transport bypasses core metering."""
+    """Idempotently record a dispatch bypassing core metering; a host call site binds ``non_task_operation``."""
     stable_id = str(dispatch_id or "").strip()
     if not stable_id:
         raise UsageAccountingError("external unmetered dispatch requires a stable dispatch_id")
@@ -844,7 +838,7 @@ def record_unmetered_external_dispatch(
 
     real_task = str(task_id or bound.task_id or "")
     real_root = str(root_task_id or (bound.root_task_id if not task_id else "") or real_task)
-    billing = settlement_billing_fields(root, real_task, real_root)
+    billing = {"billing_group_id": real_root} if non_task_operation else settlement_billing_fields(root, real_task, real_root)
     row = {
         "kind": "external_unmetered",
         "attempt_id": attempt_id,
@@ -980,7 +974,7 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
     from ouroboros.usage_ledger import is_abandoned_settlement
 
     def check_fences():
-        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root)
+        _check_dispatch_fences(reservation.scope or current_usage_scope() or UsageScope(), reservation.drive_root, retry=False)
     if state == "dispatched":
         check_fences()
     acquire = transition_acquisition(state, check_fences)
@@ -1030,11 +1024,8 @@ def _transition_once(reservation: AttemptReservation, state: str, **fields: Any)
             if fence := member_fence(scope):
                 from ouroboros.llm_attempt import _PhysicalSendNotStarted
                 raise _PhysicalSendNotStarted(str(fence.get("reason") or "owner_pause"))
-            from ouroboros.usage_admission import effective_billing_fields
-            effective = effective_billing_fields(reservation.drive_root, scope.root_task_id, {
-                key: getattr(scope, key) for key in ("root_limit_usd", "root_limit_source", "root_limit_revision",
-                    "billing_group_id", "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")},
-                non_task_operation=scope.non_task_operation)
+            effective = {key: getattr(scope, key) for key in ("root_limit_usd", "root_limit_source", "root_limit_revision",
+                "billing_group_id", "billing_group_limit_usd", "billing_group_limit_source", "billing_group_limit_revision")}
             if scope.root_limit_source == "attempt_request":
                 effective.update(root_limit_usd=scope.root_limit_usd, root_limit_source=scope.root_limit_source,
                                  root_limit_revision=scope.root_limit_revision)
@@ -1446,8 +1437,7 @@ def _pre_dispatch_failure(
 
     manifest_ref = getattr(exc, "candidate_manifest_ref", None) or candidate_manifest_ref
     capture_state = "reserved"
-    # This function is called only before send(): returning the local claim is
-    # justified even if the ledger cannot record release. The bound stays held.
+    # Only before send(): the local claim returns even when the ledger cannot record release (the bound stays held).
     _return_physical_claim(reservation.attempt_id)
     try:
         with bounded_cleanup():
@@ -1456,7 +1446,8 @@ def _pre_dispatch_failure(
         capture_state = "released"
     except Exception:
         log.exception("Failed to release pre-dispatch attempt: %s", reservation.attempt_id)
-    failure = exc if isinstance(exc, (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded, BudgetExceeded, asyncio.CancelledError)) else PhysicalAttemptPreparationFailed(
+    failure = exc if isinstance(exc, (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded, BudgetExceeded,
+                                      BillingAuthorityUnavailable, ControlAuthorityUnavailable, asyncio.CancelledError)) else PhysicalAttemptPreparationFailed(
         f"physical candidate preparation failed: {type(exc).__name__}: {exc}",
         attempt_id=reservation.attempt_id,
     )

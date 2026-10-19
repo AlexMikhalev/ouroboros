@@ -1,3 +1,5 @@
+
+from tests import _dialogue as dialogue_test
 import json
 from types import SimpleNamespace
 
@@ -109,38 +111,9 @@ def test_presence_task_facts_row_persists_normalized_provenance(tmp_path):
         {"tool_calls": []},
         logs,
     )
-    row = json.loads((logs / "chat.jsonl").read_text(encoding="utf-8"))
+    row = json.loads(dialogue_test.log_text(logs / "chat.jsonl"))
     assert row["type"] == "task_summary"
     assert row["presence_provenance"] == presence_provenance_from_task(_presence_task())
-
-
-def test_presence_reflection_entry_is_stamped_before_append(tmp_path, monkeypatch):
-    import ouroboros.reflection as reflection
-    from ouroboros.agent_task_pipeline import _run_reflection
-
-    captured = []
-    monkeypatch.setattr(reflection, "should_generate_reflection", lambda *args, **kwargs: True)
-    monkeypatch.setattr(
-        reflection,
-        "generate_reflection",
-        lambda *args, **kwargs: {"reflection": "useful", "memory_actions": []},
-    )
-    monkeypatch.setattr(
-        reflection,
-        "append_reflection_routed",
-        lambda env, task, entry: captured.append(dict(entry)),
-    )
-    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
-    entry = _run_reflection(
-        env,
-        object(),
-        _presence_task(),
-        {"rounds": 2, "cost": 0.0},
-        {"tool_calls": []},
-        {},
-    )
-    assert entry == captured[0]
-    assert captured[0]["presence_provenance"] == presence_provenance_from_task(_presence_task())
 
 
 def test_one_row_grammar_serves_memory_read_and_the_view_and_only_indents_later_lines():

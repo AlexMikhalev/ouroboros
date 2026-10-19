@@ -13,6 +13,7 @@ import time
 import pytest
 
 from ouroboros.platform_layer import force_kill_pid, pid_is_alive
+from ouroboros.test_parallelism import WORKERS_ENV
 from ouroboros.settings_defaults import settings_env_keys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -121,10 +122,10 @@ def two_pass_env(monkeypatch, preflight_timeout_diagnostics):
     """Deterministic env for the real-spawn two-pass tests."""
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
-    # Operator lever (scrubbed before the candidate ever sees it), clamped at the
-    # >=2 floor: the fixture repos below hold 1-3 probe tests, so a full `-n auto`
-    # fan-out would spend minutes on worker startup for nothing.
+    # These tiny fixture repos explicitly need two workers to prove concurrency;
+    # they must not inherit the surrounding battery's full fan-out.
     monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")  # These scenarios prove real xdist concurrency.
     # The operator-environment downgrade the scrub must defeat. Every real-spawn
     # test below therefore ALSO proves the parallel lane stayed parallel: if
     # PYTEST_XDIST_AUTO_NUM_WORKERS were inherited, `-n auto` would resolve to one
@@ -241,10 +242,11 @@ def _ci_pytest_suite_commands(job: str) -> list[tuple[str, str]]:
     )
     assert block, f"ci.yml has no `{job}:` job"
     # `tests/` only — the per-file guard steps run one file and are not the split.
-    return re.findall(r'run: python -m pytest tests/ -m "([^"]+)"(.*)', block.group(1))
+    # Each pass runs under the owned runner, which forwards its pytest arguments unchanged.
+    return re.findall(r'run: python (?:-m pytest|scripts/run_tests\.py) tests/ -m "([^"]+)"(.*)', block.group(1))
 
 
-@pytest.mark.parametrize("job", ["quick-test", "full-test"])
+@pytest.mark.parametrize("job", ["quick-test", "full-test-runs"])
 def test_each_ci_job_runs_the_same_split_the_gate_runs(job, monkeypatch):
     """The gate's whole promise is "what CI will do, before you push". Both jobs
     must carry BOTH passes with the gate's own markexprs and the gate's own
@@ -426,7 +428,7 @@ def test_the_real_spawn_lane_declares_which_tests_go_dark_when_it_skips():
     # ...and CI, which provisions the plugins, declares the flag — otherwise no
     # shipped environment ever executes the lane and the pins stay inert.
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for job in ("quick-test", "full-test"):
+    for job in ("quick-test", "full-test-runs"):
         block = re.search(
             rf"^  {re.escape(job)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:$|\Z)", ci, re.MULTILINE | re.DOTALL
         )
@@ -464,24 +466,22 @@ def test_plugin_verification_ignores_the_candidate_working_directory(tmp_path):
 # ── Parallelism is real, not nominal (unit) ───────────────────────────
 
 
-def test_worker_count_can_never_fall_below_two(monkeypatch):
-    """A "parallel" pass on ONE worker exercises no concurrency at all, yet the
-    argv still says `-n` and the green return is accepted as proof. The count is
-    therefore clamped: the operator lever may only lower it TO the floor."""
+def test_worker_count_respects_physical_room_and_the_parent_allocation(monkeypatch):
+    """CPU defaults and operator requests cannot spend unavailable worker slots."""
     from ouroboros import preflight_runner as pr
+    from ouroboros import config, test_parallelism as budget
 
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "1")
-    assert pr._preflight_worker_count() == 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "0")
-    assert pr._preflight_worker_count() == 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "-4")
-    assert pr._preflight_worker_count() == 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "not-a-number")
-    assert pr._preflight_worker_count() >= 2
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "3")
+    monkeypatch.delenv(budget.NESTED_WORKERS_ENV, raising=False)
+    peak = config.TEST_WORKER_PEAK_RSS_BYTES
+    monkeypatch.setattr(budget, "physical_memory", lambda: budget.MemorySnapshot(10 * peak, 4 * peak))
+    monkeypatch.setenv(WORKERS_ENV, "1")
+    assert pr._preflight_worker_count() == 1
+    monkeypatch.setenv(WORKERS_ENV, "0")
+    assert pr._preflight_worker_count() == 1
+    monkeypatch.setenv(WORKERS_ENV, "16")
     assert pr._preflight_worker_count() == 3
-    monkeypatch.delenv(pr._PREFLIGHT_WORKERS_ENV, raising=False)
-    assert pr._preflight_worker_count() >= 2
+    monkeypatch.setenv(budget.NESTED_WORKERS_ENV, "2")
+    assert pr._preflight_worker_count() == 2
 
 
 @pytest.mark.parametrize("hostile", [
@@ -507,6 +507,7 @@ def test_external_pytest_controls_never_reach_the_candidate_suite(tmp_path, monk
     from ouroboros.preflight_runner import _preflight_env
 
     key, value = hostile
+    monkeypatch.setenv("OURO_TEST_WORKER_BUDGET", "2")
     monkeypatch.setenv(key, value)
     env = _preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
 
@@ -534,20 +535,6 @@ def test_projected_settings_keys_never_reach_the_candidate_suite(tmp_path, monke
     monkeypatch.setenv(key, "owner-runtime-state")
     env = _preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
     assert env.get(key) != "owner-runtime-state", f"{key} leaked into the candidate suite"
-
-
-def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch):
-    """The injected count is the clamped one, not whatever `os.cpu_count()` or
-    the operator environment happened to say."""
-    from ouroboros import preflight_runner as pr
-
-    monkeypatch.setenv(pr._PREFLIGHT_WORKERS_ENV, "3")
-    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
-    env = pr._preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
-    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
-    # ...and the seam itself is OUROBOROS_*, so the scrub removes it first: a
-    # candidate test can neither read nor re-lower it.
-    assert pr._PREFLIGHT_WORKERS_ENV not in env
 
 
 def test_the_worker_probe_is_prepended_to_pythonpath(tmp_path, monkeypatch):
@@ -931,7 +918,7 @@ def test_pass_header_reports_that_pass_s_own_duration():
     assert "parallel pass, exit 1, 140s" in preflight_runner._classify_pass_result(
         "parallel", 1, "boom", 8000, parallel=False, elapsed=140.0
     )
-    src = inspect.getsource(preflight_runner.run_hermetic_pytest)
+    src = inspect.getsource(preflight_runner._run_hermetic_pytest)
     assert "pass_started = time.monotonic()" in src
     assert "elapsed = time.monotonic() - pass_started" in src
 
@@ -950,6 +937,13 @@ def test_classify_green_and_empty_pass():
 # diff/env plumbing — with `_execute_pytest_pass` stubbed, so the budget and
 # pass contracts are pinned WITHOUT depending on pytest-xdist being installed
 # in the interpreter running this file.
+
+
+def _pin_preflight_root(monkeypatch, temp_root):
+    """Pin only the gate's scratch root; its evidence and lane logs keep their own directories."""
+    real = tempfile.mkdtemp
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(temp_root)
+                        if k.get("prefix") == "ouroboros-preflight-" else real(*a, **k))
 
 
 @pytest.fixture
@@ -1277,7 +1271,7 @@ def test_the_hermetic_tree_is_deleted_only_after_every_lane_proved_its_teardown(
 
     temp_root = (tmp_path / "preflight-root").resolve()
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(temp_root))
+    _pin_preflight_root(monkeypatch, temp_root)
     worktree = temp_root / "repo"
     unproven = "pid 4242 was still alive after the reap"
 
@@ -1313,11 +1307,18 @@ def test_the_hermetic_tree_is_deleted_only_after_every_lane_proved_its_teardown(
         assert worktree.is_dir(), "the worktree was deleted under processes not proven gone"
         assert f"worktree {worktree.as_posix()}\n" in registered, registered
         marker = (temp_root / RETENTION_MARKER).read_text(encoding="utf-8")
-        assert marker.startswith("hermetic preflight: "), marker
+        # The gate records its reason first; the hermetic release owner adds its own line.
+        assert any(line.startswith("hermetic preflight: ") for line in marker.splitlines()), marker
         assert (unproven in marker) == lane.endswith("_reported"), marker
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", str(worktree)],
                        cwd=str(repo), capture_output=True)
+        # Every lane here is a stub: retire only the reason it was told to report.
+        from tests._shared import retire_synthetic_retention
+        reason = unproven if lane.endswith("_reported") else (
+            "the node lane did not return, so its teardown is unconfirmed" if lane == "node_raised"
+            else "the parallel pass did not return, so its teardown is unconfirmed")
+        retire_synthetic_retention(temp_root, reason, "hermetic preflight: " + reason)
 
 
 def test_the_retention_notice_precedes_the_body_and_stays_inside_the_budget():
@@ -2595,20 +2596,11 @@ def test_a_timed_out_pass_reports_what_the_killed_child_had_already_flushed(tmp_
     assert "test_hangs_here" in result, "the killed pass's own output was collected then thrown away"
 
 
-def test_a_second_timeout_keeps_the_excerpt_the_first_one_already_carried(tmp_path, monkeypatch):
-    """The retry `communicate` is a bonus source of evidence, not the only one.
+def test_timeout_keeps_flushed_file_output_without_waiting_for_stdio_eof(tmp_path, monkeypatch):
+    """Timeout still preserves the last test; file-backed output needs no pipe retry.
 
-    On timeout the pass kills the tree and calls `communicate(timeout=10)` again
-    to collect what pytest flushed. That retry can itself time out — an escaped
-    grandchild holding the inherited pipe open is the exact case the code
-    anticipates — and seeding the excerpt as `""` meant the diagnosis then carried
-    nothing at all, losing the last-test evidence it exists to preserve. The FIRST
-    `TimeoutExpired` already carries that output (as raw bytes, since
-    `communicate` joins the partial reads before applying text-mode decoding), so
-    it is the seed and the retry may only enrich it.
-
-    The container is also reaped BEFORE the retry, not only after: the descendant
-    that would make the retry hang is precisely the one the container can kill.
+    Replaces the old communicate-timeout simulation. A real detached child that
+    holds inherited stdio is covered by test_test_storage's direct-exit witness.
     """
     from ouroboros import preflight_runner as pr, process_containment
 
@@ -2621,21 +2613,18 @@ def test_a_second_timeout_keeps_the_excerpt_the_first_one_already_carried(tmp_pa
         stderr = None
 
         def communicate(self, timeout=None):
-            order.append("communicate")
-            raise subprocess.TimeoutExpired(
-                "pytest", timeout,
-                output=b"tests/test_a.py .\ntests/test_hangs_here.py ",
-                stderr=b"",
-            )
+            pytest.fail("stdio EOF must not be awaited")
 
         def poll(self):
             return 1
 
         def wait(self, timeout=None):
-            return 1
+            order.append("wait")
+            raise subprocess.TimeoutExpired("pytest", timeout)
 
     class _FakeContainer:
         def spawn(self, argv, **kwargs):
+            kwargs["stdout"].write(b"tests/test_a.py .\ntests/test_hangs_here.py ")
             return _StuckProc()
 
         def reap(self):
@@ -2645,8 +2634,8 @@ def test_a_second_timeout_keeps_the_excerpt_the_first_one_already_carried(tmp_pa
         def close(self):
             order.append("close")
 
-    monkeypatch.setattr(process_containment, "ProcessContainer", _FakeContainer)
-    monkeypatch.setattr(pr, "_terminate_preflight_tree", lambda proc, temp_root: None)
+    monkeypatch.setattr(process_containment, "ProcessContainer", lambda **options: _FakeContainer())
+    monkeypatch.setattr(pr, "_terminate_preflight_tree", lambda proc, temp_root: order.append("terminate"))
 
     returncode, output, reap_error = pr._execute_pytest_pass(
         sys.executable, tmp_path, tmp_path, ["tests/"], 0.01
@@ -2657,8 +2646,8 @@ def test_a_second_timeout_keeps_the_excerpt_the_first_one_already_carried(tmp_pa
     assert "test_hangs_here" in output, (
         "both collections timed out and the excerpt was thrown away with them"
     )
-    assert order[:3] == ["communicate", "reap", "communicate"], (
-        f"the container was not reaped before the retry that it unblocks: {order}"
+    assert order[:3] == ["wait", "terminate", "reap"], (
+        f"the container was not reaped before reading the logs: {order}"
     )
 
 
@@ -3071,7 +3060,7 @@ def test_hermetic_pytest_reaps_owned_children_and_preserves_unrelated_process(
 
     temp_root = (tmp_path / "preflight-root").resolve()
     temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(temp_root))
+    _pin_preflight_root(monkeypatch, temp_root)
     marker = tmp_path / "owned.pid"
     repo = _make_repo(tmp_path, {
         "tests/test_leaks_a_child.py": f"""
@@ -3277,7 +3266,8 @@ def test_hermetic_pytest_timeout_invokes_full_tree_reaper():
     assert "reap_error = container.reap()" in returning, (
         "the reap result cannot reach the caller, so containment fails open"
     )
-    assert "return returncode, output, reap_error" in returning
+    # The tuple's spelling may change; test_pass_returns_observed_reap_and_export_status
+    # exercises the three-value caller contract, including a failed reap.
     assert "container.reap()" in teardown
     assert "container.close()" in teardown
 
@@ -3290,6 +3280,47 @@ def test_hermetic_pytest_timeout_invokes_full_tree_reaper():
     assert "kill_process_group_id" in reaper_src
     # Platform-specific process discovery stays behind platform_layer helpers.
     assert "collect_descendant_pids" in reaper_src
+
+
+@pytest.mark.parametrize("export_error", [False, True])
+def test_pass_returns_observed_reap_and_export_status(tmp_path, monkeypatch, export_error):
+    """Even a green child must return its first reap failure; export status is separate."""
+    from types import SimpleNamespace
+    from ouroboros import preflight_runner, process_containment
+    from ouroboros.test_environment import RETENTION_MARKER
+
+    calls = []
+
+    class Container:
+        def spawn(self, *_args, **kwargs):
+            calls.append("spawn")
+            kwargs["stdout"].write(b"observed output\n")
+            return SimpleNamespace(wait=lambda **_kw: 0, poll=lambda: 0)
+
+        def reap(self):
+            calls.append("reap")
+            return "child could not be proven gone" if calls.count("reap") == 1 else ""
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(process_containment, "ProcessContainer", lambda **options: Container())
+    if export_error:
+        def unreadable(_root):
+            raise OSError("diagnostic probe unavailable")
+        monkeypatch.setattr(preflight_runner, "_controller_diagnostics", unreadable)
+    try:
+        result = preflight_runner._execute_pytest_pass(sys.executable, tmp_path, tmp_path, [], 1)
+        code, output, containment = result
+        assert code == 0 and output == "observed output\n"
+        assert containment == "child could not be proven gone"
+        assert bool(result.evidence_errors) is export_error
+        if export_error:
+            assert "diagnostic probe unavailable" in result.evidence_errors[0]
+        assert calls == ["spawn", "reap", "reap", "close"]
+    finally:
+        # No process was spawned: retire this test's synthetic export-failure marker.
+        (tmp_path / RETENTION_MARKER).unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX marker-membership reaping")
@@ -3801,7 +3832,7 @@ def test_resolve_preflight_timeout_env_override(monkeypatch):
 def test_hermetic_pytest_prefers_agent_python_env():
     from ouroboros import preflight_runner
 
-    runner_src = inspect.getsource(preflight_runner.run_hermetic_pytest)
+    runner_src = inspect.getsource(preflight_runner._run_hermetic_pytest)
     assert 'os.environ.get("OUROBOROS_AGENT_PYTHON") or sys.executable' in runner_src
     # ...and every pass is actually spawned with that resolved interpreter.
     pass_src = inspect.getsource(preflight_runner._execute_pytest_pass)

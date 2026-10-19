@@ -182,7 +182,12 @@ def _download(gateway, run_id, source, destination, expected=None):
 
 
 def capture_directory_result(drive, entry, gateway):
-    """Capture observed terminal work independently of its pending money record."""
+    """Capture observed terminal work independently of its pending money record.
+
+    A finished run whose engine reports no file work product is captured ready, never retried
+    on later sweeps: as ``no_changes`` after success, otherwise as an absent work product whose
+    changes, if any, were not captured (Apply applies nothing; Reject releases the copy).
+    """
     if not entry.settled and entry.terminal_state not in custody.TERMINAL_STATES:
         raise ValueError("the directory run has not completed")
     cap_dir = custody.delegated_capture_dir(drive, entry.task_id, entry.run_id)
@@ -195,7 +200,26 @@ def capture_directory_result(drive, entry, gateway):
     detail = gateway.get_run(entry.run_id)
     product = detail.get("workProduct") or {}
     if product.get("kind") != "files":
-        raise ValueError("the completed run has no file work product")
+        # The engine's answer for a finished run is final, never a capture to retry every
+        # sweep pass. Only a successful run without a file work product made no changes;
+        # after any other end the absence proves nothing, and the note says so.
+        state = str((detail.get("summary") or {}).get("state") or entry.terminal_state or "")
+        succeeded = state in custody.SUCCEEDED_STATES
+        note = ("The finished run produced no file work product: it made no changes to capture." if succeeded else
+                f"The run ended {state or 'without success'} and published no file work product: "
+                "changes, if any, were not captured."
+                + (" In-place effects, if any, are already in the folder." if entry.resource_ref["strategy"] == "direct" else ""))
+        manifest = {
+            "schema_version": 1, "capture_kind": "engine_directory", "status": "ready", "no_changes": succeeded,
+            "work_product": "absent", "workspace_root": "", "authority_target_root": entry.target_root,
+            "engine_manifest": None, "engine_manifest_sha256": "", "complete": succeeded, "scope_paths": None,
+            "strategy": entry.resource_ref["strategy"], "file_outputs": [], "apply_state": None, "note": note,
+        }
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(manifest_path, manifest, trailing_newline=True)
+        custody.record_patch_captured(drive, entry, status="ready", sha256="", capture_dir=str(cap_dir),
+                                     execution_root="", no_changes=succeeded)
+        return manifest
     source = (product.get("files") or {}).get("manifest")
     digest = str((product.get("meta") or {}).get("manifest_sha256") or "").removeprefix("sha256:")
     if not source or len(digest) != 64:
@@ -243,6 +267,8 @@ def capture_directory_result(drive, entry, gateway):
 
 
 def directory_capture_block(drive, entry, manifest):
+    from ouroboros.delegate_registration_policy import INVESTIGATION_NOTE, evidence_only
+
     cap_dir = custody.delegated_capture_dir(drive, entry.task_id, entry.run_id)
     return {"status": manifest["status"], "capture_kind": "engine_directory",
             "execution_root": manifest["workspace_root"], "authority_target_root": entry.target_root,
@@ -250,13 +276,15 @@ def directory_capture_block(drive, entry, manifest):
             "manifest_read": {"root": "artifact_store", "path": f"delegated_runs/{cap_dir.name}/workspace_patch.json"},
             "file_outputs": manifest["file_outputs"], "patch_artifact": None,
             "complete": manifest["complete"], "scope_paths": manifest["scope_paths"],
-            "strategy": manifest["strategy"], "note": manifest["note"]}
+            "strategy": manifest["strategy"],
+            "note": INVESTIGATION_NOTE if evidence_only(entry) else manifest["note"]}
 
 
 def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowledge_ambiguous=False,
-                               paths=None, orphan=False, admission_check=None):
+                               paths=None, orphan=False, admission_check=None, prepared=None):
     """Use engine CAS/disposition, retaining unknown effects under the same host intent."""
     drive = custody.custody_root(ctx)
+    prepared = not entry.patch_captured if prepared is None else prepared
     manifest = capture_directory_result(drive, entry, gateway)
     from ouroboros.delegate_shared import orphan_apply_target_ok
     active, target = Path(ctx.active_repo_dir()).resolve(), Path(entry.target_root).resolve()
@@ -266,7 +294,30 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
         return "⚠️ TOOL_ARG_ERROR (integrate_delegated_patch): paths must be a nonempty list of captured file paths."
     if admission_check and (refusal := admission_check()):
         return refusal
-    if decision == "reject":
+    from ouroboros.tools.subagent_integration_delegated import prepared_capture_inspection
+    from ouroboros.delegate_collection import capture_projection
+
+    copies = not manifest.get("no_changes") and manifest.get("work_product") != "absent" and manifest["strategy"] != "direct"
+    if inspection := prepared_capture_inspection(entry.run_id, decision, copies,
+                                                 lambda: capture_projection(drive, entry, reader_task_id=ctx.task_id),
+                                                 prepared=prepared):
+        return inspection
+    receipt: dict = {}
+    absent = manifest.get("work_product") == "absent" and not manifest.get("no_changes")
+    if absent and decision == "apply":
+        # An unsuccessful run's missing work product is not "no changes": nothing is applied
+        # and the engine copy is kept; Reject is the disposition that releases it.
+        return ("⚠️ INTEGRATE_DELEGATED_NOTHING_CAPTURED: " + manifest["note"]
+                + " Nothing was applied and the engine copy is kept; reject the run to release it.")
+    if manifest.get("no_changes") or absent:
+        # Nothing to apply or undo; an envelope copy is still discarded so the engine releases it.
+        if manifest["strategy"] != "direct":
+            key = sha256(f"discard:{entry.run_id}:no_changes".encode()).hexdigest()
+            receipt = gateway.decide_run(entry.run_id, {"action": "discard"}, idempotency_key=key) or {}
+            if receipt.get("accepted") is not True or receipt.get("status") != "discarded":
+                return "⚠️ INTEGRATE_DELEGATED_DISCARD_UNCONFIRMED: engine disposition was not confirmed; all results remain retained."
+        disposition = "applied" if decision == "apply" else "rejected"
+    elif decision == "reject":
         if manifest["strategy"] == "direct":
             return "⚠️ INTEGRATE_DIRECTORY_ALREADY_APPLIED: direct effects remain in the folder; rejecting a report cannot undo them."
         key = sha256(f"discard:{entry.run_id}:{manifest['engine_manifest_sha256']}".encode()).hexdigest()
@@ -318,5 +369,6 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
         return "⚠️ INTEGRATE_DISPOSITION_UNWRITTEN: the engine completed the operation but its host receipt could not be saved."
     return json.dumps({"status": disposition, "run_id": entry.run_id, "target": entry.target_root,
                        "engine_receipt": receipt,
-                       "note": "Original effects are unchanged." if disposition == "rejected" else
+                       "note": manifest["note"] if manifest.get("no_changes") else
+                       "Original effects are unchanged." if disposition == "rejected" else
                        "Results are already in the target folder; this disposition does not commit or publish."}, ensure_ascii=False)

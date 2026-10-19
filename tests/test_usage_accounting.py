@@ -1334,58 +1334,63 @@ def test_cache_bearing_sends_are_measured_on_every_cache_inclusive_route(tmp_pat
         "cache_write_tokens": 100_000,
     }
 
-    for provider, model in (
-        ("anthropic", "anthropic/claude-sonnet-5"),
-        ("openrouter", "openrouter/some-model"),
-        ("openai", "openai/gpt-5.5"),
-        ("openai-compatible", "compat/some-model"),
-        ("cloudru", "cloudru/some-model"),
-        ("local", "local/some-model"),
-    ):
+    try:
+        for provider, model in (
+            ("anthropic", "anthropic/claude-sonnet-5"),
+            ("openrouter", "openrouter/some-model"),
+            ("openai", "openai/gpt-5.5"),
+            ("openai-compatible", "compat/some-model"),
+            ("cloudru", "cloudru/some-model"),
+            ("local", "local/some-model"),
+        ):
+            _DENSITY_MEMO.clear()
+            root = tmp_path / provider
+            ua._observe_token_density(
+                ua.AttemptRequest(
+                    model=model,
+                    provider=provider,
+                    prompt_tokens_estimate=1_000_000,
+                    drive_root=root,
+                ),
+                dict(cached_usage),
+            )
+            measured = get_token_density(root, normalize_model_identity(model))
+            assert abs(measured - 1.5) < 1e-6, f"{provider} must be measured, got {measured}"
+
+        # The other direction: a route whose cache-token semantics are undocumented is still
+        # skipped, because there an under-measured density loosens the cap.
         _DENSITY_MEMO.clear()
-        root = tmp_path / provider
+        root = tmp_path / "gigachat"
         ua._observe_token_density(
             ua.AttemptRequest(
-                model=model,
-                provider=provider,
+                model="gigachat/some-model",
+                provider="gigachat",
                 prompt_tokens_estimate=1_000_000,
                 drive_root=root,
             ),
             dict(cached_usage),
         )
-        measured = get_token_density(root, normalize_model_identity(model))
-        assert abs(measured - 1.5) < 1e-6, f"{provider} must be measured, got {measured}"
+        assert get_token_density(root, normalize_model_identity("gigachat/some-model")) == 0.0
 
-    # The other direction: a route whose cache-token semantics are undocumented is still
-    # skipped, because there an under-measured density loosens the cap.
-    _DENSITY_MEMO.clear()
-    root = tmp_path / "gigachat"
-    ua._observe_token_density(
-        ua.AttemptRequest(
-            model="gigachat/some-model",
-            provider="gigachat",
-            prompt_tokens_estimate=1_000_000,
-            drive_root=root,
-        ),
-        dict(cached_usage),
-    )
-    assert get_token_density(root, normalize_model_identity("gigachat/some-model")) == 0.0
-
-    # And an UNCACHED send on that same route is measured normally — the skip is about
-    # cache accounting, not about distrusting the provider.
-    _DENSITY_MEMO.clear()
-    root = tmp_path / "gigachat_uncached"
-    ua._observe_token_density(
-        ua.AttemptRequest(
-            model="gigachat/some-model",
-            provider="gigachat",
-            prompt_tokens_estimate=1_000_000,
-            drive_root=root,
-        ),
-        {"prompt_tokens": 1_500_000},
-    )
-    measured = get_token_density(root, normalize_model_identity("gigachat/some-model"))
-    assert abs(measured - 1.5) < 1e-6
+        # And an UNCACHED send on that same route is measured normally — the skip is about
+        # cache accounting, not about distrusting the provider.
+        _DENSITY_MEMO.clear()
+        root = tmp_path / "gigachat_uncached"
+        ua._observe_token_density(
+            ua.AttemptRequest(
+                model="gigachat/some-model",
+                provider="gigachat",
+                prompt_tokens_estimate=1_000_000,
+                drive_root=root,
+            ),
+            {"prompt_tokens": 1_500_000},
+        )
+        measured = get_token_density(root, normalize_model_identity("gigachat/some-model"))
+        assert abs(measured - 1.5) < 1e-6
+    finally:
+        # Process-global and keyed WITHOUT drive_root: the last measurement left
+        # here would throttle a co-located test's witness for the same model id.
+        _DENSITY_MEMO.clear()
 
 
 def test_an_open_row_is_not_final_however_little_it_costs(data_root):
@@ -1429,6 +1434,8 @@ def test_a_non_final_projection_names_its_cause(data_root):
     dashboard it feeds — that could explain it. The count that DECIDES finality is the
     same number that discloses it, so the two cannot disagree.
     """
+    from ouroboros.task_results import write_task_result
+    write_task_result(data_root, "root", "running", root_task_id="root")  # the child's real root
     ua.record_subscription_session(
         "s-est", drive_root=data_root, route="r", task_id="t", root_task_id="root",
         spend_usd=0.0, spend_estimated=True)
@@ -1448,6 +1455,7 @@ def test_a_non_final_projection_names_its_cause(data_root):
     assert second["non_final_rows"] == 2 and second["cost_final"] is False
 
     # A fully settled ledger says so with the same field.
+    write_task_result(data_root / "free", "root", "running", root_task_id="root")
     ua.record_subscription_session(
         "s-free", drive_root=data_root / "free", route="r", task_id="t",
         root_task_id="root", spend_usd=0.0)

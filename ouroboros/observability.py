@@ -331,16 +331,18 @@ def read_blob_ref(
     expected_kind: str = "json",
     max_bytes: int | None = None,
     raw_bytes: bool = False,
+    admit: Callable[[pathlib.Path], None] | None = None,
 ) -> Any:
     """Read and verify one content-addressed blob below this drive root (loose, else its
     evidence pack; retained child roots the ref names are tried the same way). Only a bounded
-    read (``max_bytes``) accepts a ref without a recorded size; ``raw_bytes`` returns the bytes."""
+    read (``max_bytes``) accepts a ref without a recorded size; ``raw_bytes`` returns the bytes.
+    ``admit`` sees every physical file before it is opened (``evidence_packs.blob_bytes``)."""
     from ouroboros.evidence_packs import blob_bytes, blob_ref_fields
 
     _sha256, kind, size = blob_ref_fields(ref)
     if size < 0 and max_bytes is None:
         raise ValueError("observability blob ref has no valid size")
-    raw = blob_bytes(drive_root, ref, expected_kind=expected_kind, max_bytes=max_bytes)
+    raw = blob_bytes(drive_root, ref, expected_kind=expected_kind, max_bytes=max_bytes, admit=admit)
     if raw_bytes:
         return raw
     return json.loads(raw.decode("utf-8")) if kind == "json" else raw.decode("utf-8", errors="replace")
@@ -491,11 +493,11 @@ _PUBLISHED_CHILD_REF_FIELDS = (
     "review_evidence",
     "review_projection",
     "completion_observations",
-    "acceptance_debt",
     "owner_wait",
     "verification_ledger",
     "root_phase_checkpoint",
     "plan_review_state",
+    "plan_record",
     "artifacts",
     "artifact_bundle",
     "task_contract", "attachment_manifest", "attachment_manifest_ref",
@@ -888,27 +890,26 @@ def _retry_pending_child_ref_promotion(parent: pathlib.Path, child: pathlib.Path
     return settled
 
 
-def retry_pending_child_ref_promotions(
-    parent_drive_root: pathlib.Path,
-    *, stop: Any = None, generation: Any = None,
-) -> Dict[str, Any]:
-    """Retry only newly ledgered pending refs, never the stale child result. ``stop()`` is
-    the maintenance generation's close, asked before every item and again at each
-    publication's commit: a closed generation leaves the rest ``deferred``."""
+def retry_pending_child_ref_promotions(parent_drive_root: pathlib.Path, *, stop: Any = None) -> Dict[str, Any]:
+    """Retry only newly ledgered pending refs, never the stale child result. A member whose
+    deterministic refusal was observed with unchanged inputs is left without reading its result
+    (``source_retention.RetentionMemo``, durable in the ``child_ref_promotion`` job row: a
+    restart neither forgets nor rewalks it). ``stop()`` closes the run, asked before every item
+    and again at each publication's commit: a closed run leaves the rest ``deferred``."""
 
     from ouroboros.obligations import members
     from ouroboros.task_custody import own_child_drives
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.task_results import load_task_result, validate_task_id
     from ouroboros.source_retention import (
-        begin_retention_retries, forget_retention_retry, unchanged_unavailable_retry,
-        remember_unavailable_retry, log_retention_change,
+        forget_retention_retry, log_retention_change, remember_unavailable_retry, retention_logged,
+        retention_memo, unchanged_unavailable_retry,
     )
 
     parent = pathlib.Path(parent_drive_root)
     report: Dict[str, Any] = {"scanned": 0, "retried": [], "completed": [], "pending": [], "errors": [], "deferred": [], "unchanged": []}
     candidates = members(parent, "promotions")
-    begin_retention_retries(parent, set(candidates), generation)
+    memo = retention_memo(parent, candidates)
     for task_id, facts in candidates.items():
         child_root = next((pathlib.Path(facts[key]) for key in ("headless_child_drive_root", "child_drive_root")
                            if facts.get(key)), None)
@@ -923,17 +924,18 @@ def retry_pending_child_ref_promotions(
             if stop is not None and stop():
                 report["deferred"].append(task_id)
                 continue
-            result = load_task_result(parent, task_id) or {}
-            if str(result.get("status") or "").lower() not in SETTLED_STATUSES:
-                forget_retention_retry(parent, child_root, task_id)
-                continue
-            if not _has_pending_ref_promotion(result.get("child_ref_promotion")):
-                forget_retention_retry(parent, child_root, task_id)
-                continue
-            if unchanged_unavailable_retry(parent, child_root, task_id, result, generation=generation):
+            if unchanged_unavailable_retry(memo, child_root, task_id):
                 report["unchanged"].append(task_id)
                 report["pending"].append(task_id)
-                log_retention_change(parent, task_id, result, stop=stop)
+                if not retention_logged(memo, task_id):  # a failed diagnostic append is attempted again
+                    log_retention_change(parent, task_id, load_task_result(parent, task_id) or {}, memo=memo, stop=stop)
+                continue
+            result = load_task_result(parent, task_id) or {}
+            if str(result.get("status") or "").lower() not in SETTLED_STATUSES:
+                forget_retention_retry(memo, task_id)
+                continue
+            if not _has_pending_ref_promotion(result.get("child_ref_promotion")):
+                forget_retention_retry(memo, task_id)
                 continue
             settled = _retry_pending_child_ref_promotion(
                 parent, child_root, task_id, result, stop=stop,
@@ -948,8 +950,8 @@ def retry_pending_child_ref_promotions(
             report[destination].append(task_id)
             if stop is not None and stop():
                 continue  # An attempted publication is not permission to log/cache after close.
-            remember_unavailable_retry(parent, child_root, task_id, settled, generation=generation)
-            log_retention_change(parent, task_id, settled, stop=stop)
+            remember_unavailable_retry(memo, child_root, task_id, settled)
+            log_retention_change(parent, task_id, settled, memo=memo, stop=stop)
         except Exception as exc:
             from ouroboros.task_custody import PublicationClosed
 

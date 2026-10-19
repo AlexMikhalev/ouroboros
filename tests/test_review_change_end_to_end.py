@@ -2,12 +2,13 @@
 
 ``review_change(root="system_repo", subject="index")`` and the commit gate's
 review-only cycle review the same staged index through the same seats, the same
-body-layer rules and the same prompt text. The ONLY difference the two doors
-may leave in a brief is the narrative line that names the wave: the gate hands
+body-layer rules and the same prompt text. The ONLY differences the two doors
+may leave in a brief are the narrative line that names the wave (the gate hands
 the reviewers the intended commit message, the operation its own wave label
-(``review_change: staged index of <root> ...``), both inside the
-``## Informational context — commit message`` block the goal section renders.
-This test pins that difference to exactly that block and nothing else.
+``review_change: staged index of <root> ...``, both inside the
+``## Informational context — commit message`` block the goal section renders)
+and the gate's own test execution exhibit, which a standalone operation has no
+fact for. This test pins the differences to exactly those blocks.
 """
 
 import hashlib
@@ -114,7 +115,13 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
     assert operation_record["verdict"]["aggregate"] == gate_record["verdict"]["aggregate"] == "PASS"
     assert (operation_record["surface"], gate_record["surface"]) == ("change", "commit_gate")
 
-    # Same brief per seat: the texts differ in the narrative wave line alone.
+    # Same brief per seat: the texts differ in the narrative wave line and in the
+    # execution exhibit of the tests the gate ran (the operation was handed none).
+    from ouroboros.preflight_receipts import execution_section
+
+    exhibit = execution_section(gate_record["preflight_execution"])
+    assert gate_record["preflight_execution"]["status"] == "passed" and exhibit
+    assert operation_record["preflight_execution"] == {"status": "unobserved"}
     by_seat = lambda briefs: {brief["slot_id"]: brief for brief in briefs}  # noqa: E731
     gate, operation = by_seat(gate_briefs), by_seat(operation_briefs)
     assert sorted(gate) == sorted(operation) == ["s1", "t1", "t2"]
@@ -123,6 +130,8 @@ def test_review_change_on_the_system_index_is_the_commit_gates_brief(staged_body
     for slot_id in ("t1", "t2", "s1"):
         assert gate[slot_id]["model"] == operation[slot_id]["model"]
         gate_text, operation_text = _brief_text(gate[slot_id]), _brief_text(operation[slot_id])
+        assert gate_text.count(exhibit) == 1 and exhibit not in operation_text, slot_id
+        gate_text = gate_text.replace("\n\n\n" + exhibit, "", 1)
         assert gate_text != operation_text, slot_id
         assert operation_text.count(label) == gate_text.count(COMMIT_MESSAGE) == 1, slot_id
         aligned = operation_text.replace(label, COMMIT_MESSAGE)
@@ -238,7 +247,7 @@ def _golden_with_critic(briefs: list, critic: str):
     return run_review_request
 
 
-def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, **args):
+def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, expected_status="passed", **args):
     """The gate's review-only cycle with an unmarked enabled row ``scout`` beside the golden pool."""
     from tests.review_pool_rosters import pool_seat
 
@@ -248,8 +257,9 @@ def _gate_with_critic(staged_body, tmp_path, monkeypatch, *, mode: str, **args):
     monkeypatch.setattr(substrate, "run_review_request", _golden_with_critic(briefs, "scout"))
     ctx = ToolContext(repo_dir=Path(staged_body["repo"]), drive_root=tmp_path / "gate-drive")
     outcome = _run_non_committing_review_cycle(ctx, COMMIT_MESSAGE, skip_advisory_review=True, goal=GOAL, scope=SCOPE, **args)
-    assert outcome["status"] == "passed", outcome
-    record = review_ledger.load_record(ctx.drive_root, outcome["review_record_id"])
+    assert outcome["status"] == expected_status, outcome
+    reference = outcome["review_reference"] if expected_status == "reviewed" else outcome
+    record = review_ledger.load_record(ctx.drive_root, reference["review_record_id"])
     return record, sorted(brief["slot_id"] for brief in briefs)
 
 
@@ -262,19 +272,21 @@ def test_in_cyber_pro_commit_reviewed_composes_its_panel_from_the_pool_and_recor
     assert sent == ["s1", "scout"]  # the rest of the pool was not paid
     panel = record["panel"]
     assert (panel["composition"], panel["chosen_by"], panel["reason"], panel["reason_missing"]) == (
-        "composed", "author", REASON, False)
+        "composed", "ouroboros", REASON, False)
     assert (panel["assigned"], panel["additional"], panel["seats"], panel["additional_seats"]) == (["s1"], ["scout"], 1, 1)
     assert panel["reviewers_requested"] == ["s1", "scout"]
     assert {row["seat_id"]: row["additional"] for row in record["rows"]} == {"s1": False, "scout": True}
     assert record["verdict"]["aggregate"] == "PASS" and record["mode"] == "cyber_pro"
 
 
-def test_below_cyber_pro_the_whole_pool_judges_the_commit_and_named_rows_only_add(staged_body, tmp_path, monkeypatch):
+def test_blocking_widens_the_commit_panel_and_records_the_request(staged_body, tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     record, sent = _gate_with_critic(staged_body, tmp_path, monkeypatch, mode="pro", reviewers=["t1", "scout"])
     assert sent == ["s1", "scout", "t1", "t2"]
     panel = record["panel"]
     assert (panel["composition"], panel["chosen_by"], panel["reason_missing"], panel["reviewers_subset_ignored"]) == (
-        "full_pool", "owner", False, True)
+        "full_pool", "ouroboros", False, True)
+    assert panel["widened_from"] == ["t1", "scout"]
     assert (sorted(panel["assigned"]), panel["additional"], panel["seats"]) == (["s1", "t1", "t2"], ["scout"], 3)
     assert record["verdict"]["aggregate"] == "PASS"
 

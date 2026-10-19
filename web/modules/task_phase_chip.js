@@ -20,23 +20,46 @@ const CHIP = {
     cancelling: () => tr('task.chip.cancelling', 'Cancelling…'),
     paused: () => tr('task.chip.paused', 'Paused'),
     pausing: () => tr('task.chip.pausing', 'Pausing…'),
+    waiting: () => tr('task.chip.waiting', 'Waiting'),
     unconfirmed: () => tr('task.chip.activity_unconfirmed', 'Activity unconfirmed'),
     waitingAccess: () => tr('task.chip.waiting_for_access', 'Waiting for access'),
     working: () => tr('task.chip.working', 'Working'),
+    preparing: () => tr('task.chip.preparing', 'Preparing'),
+    sending: () => tr('task.chip.sending', 'Sending'),
+    rejoining: () => tr('task.chip.rejoining', 'Rejoining'),
     thinking: () => tr('task.chip.thinking', 'Thinking'),
     queued: () => tr('task.chip.queued', 'Queued'),
     ownerWait: () => tr('task.chip.waiting_for_answer', 'Waiting for your answer'),
     reviewWorkFinishing: () => tr('task.chip.review_work_finishing', 'review work finishing'),
     ownerHurry: () => tr('task.chip.owner_hurry_applied', 'Owner hurry applied'),
+    background: () => tr('task.fact.in_background', 'in background'),
 };
 
+/** One chip word by its name (the room and the work rows say the cards' own words). */
+export const chipWord = (name) => CHIP[name]?.() || '';
+
+// The short reasons beside Paused or Waiting: who or what holds the work, keyed by the server's reason code
+// (gateway/work_status.py). A code without one is said in its sentence.
+const APP_STOPPED = () => tr('work.short.app_stopped', 'app stopped');
+const SHORT_REASON = {
+    paused_by_owner: () => tr('work.short.by_you', 'by you'),
+    paused_by_mind: () => tr('work.short.by_ouroboros', 'by Ouroboros'),
+    paused_by_host: APP_STOPPED, saved_on_stop: APP_STOPPED, after_restart: APP_STOPPED,
+    spending_limit: () => tr('work.short.spending_limit', 'spending limit'),
+    technical_pause: () => tr('work.short.technical_problem', 'technical problem'),
+    sleeping: () => tr('work.short.sleeping', 'sleeping'),
+};
+export const shortReason = (code) => SHORT_REASON[code]?.() || '';
+
+// A census pause cause read in the same words. The census's `owner` cause also covers Ouroboros's own Pause,
+// so only the work projection may say who paused: its reason code (paused_by_owner, …) may stand as the cause.
+const CAUSE_REASON = { budget: 'spending_limit', restart: 'after_restart', authority: 'technical_pause', sleep: 'sleeping' };
+
 export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
-    const label = phase === 'budget_pausing' ? CHIP.pausing() : CHIP.paused();
-    const reasons = { budget: ['budget', 'budget limit'], owner: ['owner', 'owner pause'],
-        restart: ['restart', 'after restart'], sleep: ['sleep', 'sleep'] };
-    const reason = reasons[cause];
-    const text = reason ? fmt('{state} · {reason}', { state: label,
-        reason: tr(`task.pause_cause.${reason[0]}`, reason[1]) }) : label;
+    // A cold sleep continues by itself when it is woken: it waits, it is not paused.
+    const label = phase === 'budget_pausing' ? CHIP.pausing() : cause === 'sleep' ? CHIP.waiting() : CHIP.paused();
+    const reason = shortReason(CAUSE_REASON[cause] || cause);
+    const text = reason ? fmt('{state} · {reason}', { state: label, reason }) : label;
     // Owner 2026-10-08: reviewers already launched finish separately and visibly.
     // The census names tasks and model sends alike, so the chip names no count.
     return finishingReviews ? fmt('{state} · {finishing}', { state: text,
@@ -46,7 +69,7 @@ export function pausePhaseLabel(phase, cause = '', finishingReviews = false) {
 export function activityWaitPhase(activity = {}) {
     const question = activity.owner_wait ?? activity.required_question;
     if (question?.owner_wait_state === 'resumed' || question?.wait_ended_at
-        || ['answered', 'expired_terminal', 'superseded'].includes(question?.quiz_state || question?.state)) return '';
+        || ['answered', 'expired_terminal', 'superseded', 'closed'].includes(question?.quiz_state || question?.state)) return '';
     if (waitFacts(question || {}).waiting) return 'owner_wait';
     if (activity.required_question_unavailable || question) return 'unknown';
     return '';
@@ -63,12 +86,15 @@ function outcomeView(outcome) {
 
 // Facts from the active call, not provider reasoning or task lifecycle. The
 // transport sends no prompt, model/account details or inferred queue position.
+// The chip names the call's state in one short word that keeps its meaning (Sending is
+// not Working); ``detail`` keeps the exact phase and admission blockers for the card's details.
 export function modelActivityPresentation(activity) {
     const labels = {
-        preparing: 'Preparing request', queued: 'Request accepted · waiting for admission',
-        dispatching: 'Preparing request dispatch', awaiting_response: 'Sending request / waiting for response',
-        response_ready: 'Response available', response_received: 'Response received · processing',
-        rejoining: 'Rejoining the same model operation', unknown: 'Model operation unconfirmed',
+        preparing: [CHIP.preparing, 'Preparing request'], queued: [CHIP.queued, 'Request accepted · waiting for admission'],
+        dispatching: [CHIP.sending, 'Preparing request dispatch'],
+        awaiting_response: [CHIP.sending, 'Sending request / waiting for response'],
+        response_ready: [CHIP.working, 'Response available'], response_received: [CHIP.working, 'Response received · processing'],
+        rejoining: [CHIP.rejoining, 'Rejoining the same model operation'], unknown: [CHIP.unconfirmed, 'Model operation unconfirmed'],
     };
     const phase = activity?.phase;
     if (!Object.hasOwn(labels, phase)) return null;
@@ -76,10 +102,10 @@ export function modelActivityPresentation(activity) {
     const reasons = { global_limit: 'shared capacity limit', class_limit: 'model capacity limit',
         thread_busy: 'conversation busy', stopping: 'engine stopping' };
     const blockers = phase === 'queued' && Array.isArray(activity.blockers) ? activity.blockers : [];
-    const text = [tr(`task.model_activity.${phase}`, labels[phase]), ...blockers
+    const detail = [tr(`task.model_activity.${phase}`, labels[phase][1]), ...blockers
         .filter(row => Object.hasOwn(reasons, row?.kind))
         .map(row => tr(`task.model_activity.${row.kind}`, reasons[row.kind]))].join(' · ');
-    return phaseView('working', text, waiting ? 'working waiting' : 'working', !waiting, waiting);
+    return { ...phaseView('working', labels[phase][0](), waiting ? 'working waiting' : 'working', !waiting, waiting), detail, operation: phase };
 }
 
 // One pure presentation over task facts, shared by cards, receipts and project
@@ -87,7 +113,7 @@ export function modelActivityPresentation(activity) {
 // never animates merely because the task still has post-task work.
 export function taskActivityPresentation({ phase = 'working', outcome = '', ended = false,
     finalizing = false, ownerWait = '', modelWaiting = false, hold = '', pauseCause = '', stopPolicy = '',
-    finishingReviews = false, modelActivity = null } = {}) {
+    finishingReviews = false, modelActivity = null, workView = null } = {}) {
     if (ended) return outcomeView(outcome);
     if (stopPolicy) {
         const motion = ['working', 'thinking', 'finalizing'].includes(phase) && !modelWaiting && !ownerWait && !hold;
@@ -97,6 +123,9 @@ export function taskActivityPresentation({ phase = 'working', outcome = '', ende
     let current;
     const modelPhase = modelActivityPresentation(modelActivity);
     if (phase === 'unknown') current = phaseView('unknown', CHIP.unconfirmed(), 'warn');
+    // The card of a work's current episode says the work's word and reason (work_status.cardWorkView).
+    else if (workView) current = { ...phaseView(workView.phase, workView.text, workView.classes, workView.motion,
+        workView.waiting), ...(workView.secondary ? { secondary: workView.secondary } : {}) };
     else if (['budget_paused', 'budget_pausing'].includes(phase)) {
         // Only a settled Pause names the reviews it lets finish (owner 2026-10-08).
         const finishing = phase === 'budget_paused' && Boolean(finishingReviews);
@@ -161,15 +190,19 @@ function recordPhase(record = {}, terminalPhase = 'done') {
         modelWaiting: Boolean(record.modelWaiting), hold: record.projectHold,
         pauseCause: record.pauseCause, stopPolicy: record.cancelPendingPolicy,
         finishingReviews: Boolean(record.finishingReviews),
-        modelActivity: record.modelActivity,
+        modelActivity: record.modelActivity, workView: record.workView,
     });
 }
 
 // The private chat record is an adapter, never the shared task-fact contract.
 export function desiredLiveCardPhase(record = {}, terminalPhase = 'done') {
     const view = recordPhase(record, terminalPhase);
+    // A detached work (FINAL_DESIGN D4) that is plainly running says so beside the chip: a fact the
+    // chip's own words do not carry. Every other state keeps the chip's established wording.
+    const secondary = view.secondary || (record.detached && !record.finished && view.text === CHIP.working()
+        ? CHIP.background() : '');
     return { phase: view.phase, text: view.text, className: view.className,
-        ...(view.secondary ? { secondary: view.secondary } : {}) };
+        ...(secondary ? { secondary } : {}), ...(view.detail ? { detail: view.detail } : {}) };
 }
 
 /**
@@ -193,6 +226,7 @@ export function syncParkedPhase(record, phase = '', activity = {}) {
     record.censusPhase = phase;
     record.modelActivity = activity.model_activity || null;
     record.finishingReviews = parked === 'budget_paused' && Boolean(activity.finishing_reviews);
+    record.detached = activity.detached === true;  // a detached work's census row (CONTRACTS K7/K8), in any room
     const desired = desiredLiveCardPhase(record);
     return setLiveCardPhase(record, desired.phase, desired.text, desired.className, desired.secondary);
 }
@@ -278,7 +312,34 @@ export function setLiveCardPhase(record, phase = 'working', text = '', className
         motion: active && view.phase === phase && view.motion,
         secondaryMotion: active && view.secondaryMotion,
     }, phaseSecondaryElement(record), record.isSubagent);
-    return setLiveCardTypingVisible(record, !record.finished) || changed;
+    // The exact phase rides with the chip word it explains, never beside another one.
+    const detail = view.detail && view.text === text ? fmt('Model call: {detail}', { detail: view.detail }) : '';
+    const detailChanged = paintLiveDetail(record, 'livePhaseDetail', detail);
+    return setLiveCardTypingVisible(record, !record.finished) || changed || detailChanged;
+}
+
+// One line of a card's OWN details block (a nested child card carries its own): what the
+// expanded card says about its chip or amount.
+function ownLiveDetail(record, key) {
+    const own = node => Boolean(node?.dataset && key in node.dataset);
+    for (const node of record?.root?.children || []) {
+        if (own(node)) return node;
+        if (node.classList?.contains('chat-live-details')) {
+            const line = [...(node.children || [])].find(own);
+            if (line) return line;
+        }
+    }
+    return null;
+}
+
+// Paint one details line (shown with the expanded card, which its summary toggles by pointer,
+// touch and keyboard); compact rows and the sidebar keep the chip word or amount alone.
+export function paintLiveDetail(record, key, text = '') {
+    const el = ownLiveDetail(record, key);
+    if (!el || (el.textContent === text && el.hidden === !text)) return false;
+    el.textContent = text;
+    el.hidden = !text;
+    return true;
 }
 
 function phaseSecondaryElement(record) {
