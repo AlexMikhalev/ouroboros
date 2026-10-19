@@ -218,3 +218,18 @@ test('the click that ends a swipe is not a tap; dispose releases every listener 
         assert.equal(f.bubble.dataset.rowSwipe, undefined);
     } finally { f.restore(); delete globalThis.window?.Telegram; }
 });
+
+test('the element the touch started on keeps the finger after a re-render removes it from the feed', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    try {
+        f.start(f.words, 300, 220);
+        f.bubble.remove();  // a live update redraws the row under the still finger
+        const lock = f.move(f.words, 288, 221);
+        assert.equal(lock.defaultPrevented, true, 'its own listener cancels: the move no longer reaches the feed');
+        const drag = f.move(f.words, 200, 230);
+        assert.equal(drag.defaultPrevented, true);
+        f.lift(f.words, 200, 230);
+        assert.deepEqual(f.replied, ['row:1@t#a'], 'the reply still names the row the finger took');
+    } finally { f.close(); }
+});
