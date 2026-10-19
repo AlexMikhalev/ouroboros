@@ -146,7 +146,7 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
     from supervisor import events_chat_delivery, message_bus
     from supervisor.events_runtime_controls import _drive_cancel_task_event
     from supervisor.events_schedule_task import _reject_schedule_task
-    from supervisor.terminal_delivery import build_unreviewed_salvage_event
+    from supervisor.terminal_delivery import build_unreviewed_salvage_event, deliver_miss_lane_outcome
 
     ui, out = subscription_ui, _evidence(tmp_path)
     page = ui["page"]
@@ -180,6 +180,15 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
     write_task_result(tmp_path, "t-cancel", "cancelled", chat_id=1, result="stopped")
     events_chat_delivery._handle_send_message(build_unreviewed_salvage_event(
         tmp_path, {"chat_id": 1}, "t-cancel", outcome="stopped", settled_status="cancelled"), sender)
+    # A restore-fenced cancellation names the host cause, not an apparent owner Stop.
+    from supervisor import terminal_delivery
+
+    restored = {"status": "cancelled", "chat_id": 1, "cancel_origin": {
+        "source": "snapshot_restore", "reason": "server_shutdown"}}
+    write_task_result(tmp_path, "t-restore", "cancelled", **{k: v for k, v in restored.items() if k != "status"})
+    monkeypatch.setattr(terminal_delivery, "enqueue_terminal_delivery",
+                        lambda _root, event, **_kw: events_chat_delivery._handle_send_message(event, sender))
+    deliver_miss_lane_outcome(tmp_path, tmp_path, restored, "t-restore", "cancelled")
     # 3. A helper the pool refused: the parent's card reads the owner sentence.
     _reject_schedule_task(sender, tid="kid12345", chat_id=1, delegation_role="subagent", parent_id="t-parent",
                           root_task_id="t-parent", role="researcher", result_fields={},
@@ -202,6 +211,7 @@ def test_reworded_host_rows_live_and_after_reload(subscription_ui, tmp_path, mon
     texts = {
         "custody": "Confirmed delegated terminal receipts: run-7c1: failed on leaf-model.",
         "cancel": "Task t-cancel was stopped.",
+        "restore": "Task t-restore was stopped. The server stopped while this task was still running.",
         "helper": "Task kid12345 not scheduled: worker pool unavailable.",
     }
     for text in texts.values():

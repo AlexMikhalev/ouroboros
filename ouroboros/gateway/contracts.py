@@ -24,8 +24,14 @@ from ouroboros.gateway.health_contracts import BootDocument, BootJob, BootStep, 
 from ouroboros.gateway.attachment_contracts import (  # noqa: F401 -- public re-exports
     AttachmentManifestEntry, ChatAttachmentInbound, ChatAttachmentView,
 )
+from ouroboros.gateway.contributions import UiContribution, UiContributionsResponse, UiPreferencesResponse
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
+from ouroboros.gateway.card_contracts import CardOutbound, CardStateOutbound  # noqa: F401 -- public re-exports
+from ouroboros.gateway.update_contracts import (  # noqa: F401 -- public re-exports
+    UpdateApplyErrorResponse, UpdateApplyRequest, UpdateApplySuccessResponse, UpdateMergePlan,
+    UpdatePreflightRequest, UpdatePreflightResponse, UpdateProgressChangedOutbound, UpdateStatusReadyOutbound,
+)
 from ouroboros.gateway.management_contracts import (  # noqa: F401 -- public re-exports
     ExtensionsIndexResponse, LocalModelStatusResponse, MarketplaceInstalledResponse, MarketplaceSearchResponse,
     McpStatusResponse, ModelCatalogResponse, SkillLifecycleQueueResponse,
@@ -528,86 +534,6 @@ class MessageAnnotationOutbound(TypedDict):
     ts: NotRequired[str]
 
 
-class UpdateMergePlan(TypedDict, total=False):
-    """Exact, channel-bound merge plan shared by preflight and apply responses."""
-
-    available: bool
-    auto_mergeable: bool
-    kind: Literal["clean", "conflicting", "current", "unavailable", "unknown"]
-    error: str
-    remote: str
-    remote_branch: str
-    target_ref: str
-    update_channel: str
-    current_branch: str
-    base_sha: str
-    target_sha: str
-    local_dirty_count: int
-    local_snapshot: str
-    merge_commit: str
-    code_conflict_paths: List[str]
-    doc_conflict_paths: List[str]
-    hot_code_paths: List[str]
-    recommended_strategy: Literal["auto_merge", "assisted"]
-
-
-class UpdatePreflightRequest(TypedDict, total=False):
-    """POST /api/update/preflight has an intentionally empty JSON body."""
-
-
-class UpdatePreflightResponse(TypedDict):
-    merge_plan: UpdateMergePlan
-
-
-class UpdateApplyRequest(TypedDict):
-    strategy: Literal["auto_merge", "assisted", "manual", "replace"]
-    expected_base_sha: NotRequired[str]
-    expected_target_sha: NotRequired[str]
-    confirm_recovery: NotRequired[bool]
-
-
-class UpdateApplySuccessResponse(TypedDict):
-    status: Literal["ok", "restart_required", "assisted_started", "manual"]
-    restarting: NotRequired[bool]
-    strategy: NotRequired[Literal["auto_merge", "assisted", "manual", "replace"]]
-    task_id: NotRequired[str]
-    merge_plan: NotRequired[UpdateMergePlan]
-    error: NotRequired[str]
-
-
-class UpdateApplyErrorResponse(TypedDict):
-    error: str
-    reason: NotRequired[str]
-    abandoned: NotRequired[bool]
-    status: NotRequired[Dict[str, Any]]  # preparation observations, not the success discriminator
-    update_intent: NotRequired[Dict[str, Any]]
-    rescue: NotRequired[Dict[str, Any]]
-    keep_branch: NotRequired[str]
-    blockers: NotRequired[List[str]]
-    rolled_back: NotRequired[bool]
-    rollback: NotRequired[str]
-    restart_required: NotRequired[bool]
-    merge_plan: NotRequired[UpdateMergePlan]
-    smoke: NotRequired[Dict[str, Any]]
-    # Stash-first prologue disclosures (additive): how the owner's stashed work
-    # was unwound on an aborted update. The wave numbers rode the retired
-    # wave-floor refusal (#1487 removed it); the optional keys stay in the shape.
-    stash_note: NotRequired[str]
-    estimated_wave_usd: NotRequired[Optional[float]]
-    remaining_usd: NotRequired[Optional[float]]
-
-
-class UpdateProgressChangedOutbound(TypedDict):
-    """Invalidation only; never proof that boot finalization completed."""
-    type: Literal["update_progress_changed"]
-
-
-class UpdateStatusReadyOutbound(TypedDict):
-    type: Literal["update_status_ready"]
-    available: bool
-    check_ok: Optional[bool]
-
-
 class ProjectCreateRequest(TypedDict, total=False):
     """POST /api/projects body (v6.59.0). ONE source: ``path`` (attach an existing
     owner folder; optional ``init_git`` attach-snapshot commit — never auto-init),
@@ -972,17 +898,6 @@ class SkillDeleteResponse(TypedDict, total=False):
     extension_reason: str
     error: str
 
-
-class UiPreferencesResponse(TypedDict):
-    ok: NotRequired[bool]
-    widget_order: list[str]
-    widget_start_mode: dict[str, Literal["auto", "manual", "retain"]]  # owner per-card launch-policy override
-    widget_size: dict[str, dict[str, int]]  # owner Widgets card width: {w: masonry columns the card spans, 12 = full width; h: 0}
-    nested_subagents_expanded: bool
-    sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
-    project_panel_width: int  # px; 0 = CSS default
-    project_seen_revision: dict[str, int]  # monotonic paint ACK per active Project
-    welcome: dict[str, str]  # install-wide empty-Main UI copy: mode default|hidden|custom and plain text
 
 
 class DesktopAutostartResponse(TypedDict):  # GET/POST /api/desktop/autostart (OS registration) and /api/desktop/background (unavailable|off|on)
@@ -1475,6 +1390,7 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "links",
     "quiz",
     "quiz_state",
+    "card", "card_state",  # gateway/card_contracts.py frames
     "typing",
     "log",
     "heartbeat",
@@ -1496,6 +1412,7 @@ __all__ = [
     "PhotoOutbound", "VideoOutbound", "DocumentOutbound",
     "LinkAction", "LinksOutbound",
     "QuizOption", "QuizOutbound", "QuizStateOutbound",
+    "CardOutbound", "CardStateOutbound",
     "DecisionRequest", "DecisionResponse",
     "TypingOutbound",
     "LogOutbound",
@@ -1528,7 +1445,7 @@ __all__ = [
     "OnboardingPresetProjection",
     "SettingsPostCommitFailureResponse",
     "SkillGrantResponse", "SkillDeleteResponse",
-    "UiPreferencesResponse", "DesktopAutostartResponse",
+    "UiContribution", "UiContributionsResponse", "UiPreferencesResponse", "DesktopAutostartResponse",
     "GitLogResponse",
     "EvolutionDataResponse",
     "ScheduledTasksResponse", "ScheduleUpsertResponse", "ScheduleDeleteResponse", "ScheduleActionResponse",

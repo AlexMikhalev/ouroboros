@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401 - pytest fixture import
-from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
+from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame, set_viewport
 
 pytestmark = pytest.mark.ui_browser
 
@@ -154,14 +154,14 @@ def test_ui_smoke_nested_cards_are_one_identity_row_and_text_selects(direct_serv
                 assert root["toggleShown"] and root["disclosureTag"] == "BUTTON", root
                 # The summary outranks the details: body-size activity line.
                 assert root["activityFont"] == "14px", root
-                # A long identity ellipsizes inside the row; the side controls stay inside the card.
-                page.set_viewport_size({"width": 700, "height": 800})
-                page.wait_for_timeout(300)
+                # A long identity ellipsizes inside a phone's row (below the 720px switch the room has no sidebar
+                # beside it since #1998, so a narrow window alone no longer squeezes it); the side controls stay
+                # inside the card.
+                set_viewport(page, 390, 800)
                 long = page.evaluate(FACTS, CHILD % "nest-long")
                 assert long["titleClipped"] and long["titleLines"] <= 1.2, long
                 assert long["sideRight"] <= long["cardRight"] + 1 and not long["cardHScroll"], long
-                page.set_viewport_size({"width": 1100, "height": 800})
-                page.wait_for_timeout(300)
+                set_viewport(page, 1100, 800)
                 # Live path: a twin's narration frame keeps its id, and a NEW sibling of the
                 # lone child turns both of them into tagged twins — the already-rendered,
                 # already-finished one included.
@@ -268,8 +268,10 @@ def test_ui_smoke_nested_cards_are_one_identity_row_and_text_selects(direct_serv
                 line_toggle.click()
                 page.wait_for_timeout(150)
                 assert line_toggle.locator(".chat-live-line-title").evaluate("el => getComputedStyle(el).fontSize") == "14px"
-                # Text is selectable, and a drag that selects text does not toggle the card.
-                assert root["titleSelect"] == "text", root
+                # Text is selectable, and a drag that selects text does not toggle the card. The summary is reading
+                # content, no control (#1998), so the title carries no selection rule of its own: nothing turns its
+                # selection off, and the drag below selects its words.
+                assert root["titleSelect"] != "none", root
                 title = page.locator(f"{ROOT} > .chat-live-summary-button [data-live-title]")
                 # The transcript followed the live edge as children arrived; bring the root back
                 # under the fixed page header (centre, not top) before dragging on it.

@@ -235,6 +235,15 @@ def shutdown_cancel_text(intent: Dict[str, Any]) -> str:
     return ""
 
 
+def stop_notice_outcome(origin: Any) -> str:
+    """The cancel receipt's outcome words: a restore fence names its cause.
+
+    The owner did not ask for this stop, so "was stopped" alone reads like one.
+    The sentence is the card's own phrase for the same stored ``cancel_origin``.
+    """
+    return f"stopped. {CANCEL_SOURCE_PHRASES['snapshot_restore']}" if shutdown_cancel_text(origin) else "stopped"
+
+
 def _miss_lane_cancel_text(intent: Dict[str, Any]) -> str:
     """The owner sentence for a cancel settled with nothing queued or running.
 
@@ -349,7 +358,7 @@ def _register_owed_terminal_delivery(
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                outcome="stopped",
+                outcome=stop_notice_outcome((stored or {}).get("cancel_origin")),
                 salvaged_text=salvage_text, preserved_path=salvage_path,
                 unreconciled_runs=list(unreconciled_runs or []),
                 settled_status=stored_status,
@@ -446,7 +455,7 @@ def _publish_cancelled_task(
             if settled_status == STATUS_CANCELLED:
                 deliver_unreviewed_salvage(
                     pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                    outcome="stopped",
+                    outcome=stop_notice_outcome((stored or {}).get("cancel_origin")),
                     salvaged_text=salvage_text, preserved_path=salvage_path,
                     unreconciled_runs=list(unreconciled_runs or []),
                     settled_status=settled_status,
@@ -646,6 +655,28 @@ def _reconcile_delegated_runs_on_kill(q: Any, task_id: str) -> List[str]:
     """Back-compat list view of ``_audit_delegated_runs_on_kill``: the still-open
     ids for callers that only thread the delivery-note disclosure."""
     return list(_audit_delegated_runs_on_kill(q, task_id).get("unreconciled") or [])
+
+
+def _stop_open_tree_runs(q: Any, task_id: str) -> None:
+    """The cascade's verdict over its tree's open delegated runs, before its postcondition.
+
+    A member killed by the sweep cancels its own runs behind the owner's verdict, but a member that
+    had already settled spared every run its own end was no verdict for (a provider death, a crash),
+    so a settled tree whose only live writer is such a run stays live. The owner's Stop of the tree
+    is that verdict: ``stop_tree_runs`` cancels them attach-only, and the settled owners' stored
+    custody disclosures are refreshed, as the kill path's fast lane does. A failure is logged and
+    judged by the postcondition, which counts every run still open as live.
+    """
+    root = pathlib.Path(q.DRIVE_ROOT)
+    try:
+        from ouroboros.delegate_custody_reconcile import stop_tree_runs
+        from ouroboros.delegate_terminal import refresh_terminal_reconciliation
+
+        outcomes = stop_tree_runs(root, task_id)
+        for owner in sorted({str(row.get("task_id") or "") for row in outcomes} - {""}):
+            refresh_terminal_reconciliation(root, owner, trigger="kill_path_clear")
+    except Exception:
+        log.warning("Cascade could not stop the open delegated runs of %s", task_id, exc_info=True)
 
 
 def _cascade_delivery_row_locked(q: Any, task_id: str) -> Dict[str, Any]:

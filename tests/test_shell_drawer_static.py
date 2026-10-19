@@ -35,7 +35,7 @@ def test_drawer_is_a_layer_with_one_close_control_where_the_menu_button_was():
     # A room's ☰ is its composer's first control; its header opts out; every other page keeps ☰ in its header.
     assert "body.project-panel-open .mobile-nav-toggle" not in css
     chat_js = _read("web/modules/chat.js")
-    row = chat_js.split('<div class="chat-toolbar-row">', 1)[1]
+    row = _read("web/modules/composer.js").split('<div class="chat-toolbar-row">', 1)[1]  # the room's composer markup
     assert row.lstrip().startswith("${renderMobileNavToggle({ inComposer: true })}"), "the composer row starts with ☰"
     assert "showMobileNav: false,  // a room's ☰ is its composer row's first control" in chat_js
     assert "showMobileNav: false," in app_js.split("projectPanel?.insertAdjacentHTML('afterbegin', renderPageHeader({", 1)[1].split("}));", 1)[0]

@@ -65,6 +65,9 @@ KIND_HURRY = "hurry"
 KIND_QUIZ_ANSWER = "quiz_answer"
 # Explicit owner closure carries no answer, selected option, or approval.
 KIND_QUIZ_CLOSED = "quiz_closed"
+# The owner's press on a host-drawn control of a living card (``gateway/card_decision.py``):
+# a host frame naming the pressed label and the form values, the owner's structured input.
+KIND_CARD_INPUT = "card_input"
 # The owner's Pause of a whole tree (``owner_pause.py``): a WAKE signal, never
 # dialogue and never the authority — the root's durable fence decides. It wakes
 # a warm owner wait so the member reaches its safe boundary without buying a

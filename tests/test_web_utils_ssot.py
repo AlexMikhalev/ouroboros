@@ -117,10 +117,11 @@ def test_skills_does_not_redeclare_shared_helpers():
 
 
 def test_widgets_uses_shared_render_markdown():
-    src = _read("widgets.js")
+    # The declarative renderer, split out of widgets.js, renders the markdown.
+    src = _read("widget_render.js")
     assert "renderMarkdownSafe" in src
     # Local declaration removed in v5.8.3-rc.5.
-    assert "function renderMarkdownSafe(" not in src
+    assert "function renderMarkdownSafe(" not in src + _read("widgets.js")
 
 
 def test_onboarding_wizard_is_loaded_as_an_es_module():

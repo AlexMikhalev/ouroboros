@@ -454,7 +454,9 @@ def real_core(root: Path, *, provider: bool = True, password: str = PASSWORD, se
             values.update(dict.fromkeys(("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT", "OUROBOROS_MODEL_FALLBACKS"),
                                         "openai-compatible::mock-model"))
             values.update(OPENAI_COMPATIBLE_API_KEY="separate-ui-key", OPENAI_COMPATIBLE_BASE_URL=model.base_url,
-                          OUROBOROS_MAX_WORKERS=1, OUROBOROS_RUNTIME_MODE="light")
+                          OUROBOROS_MAX_WORKERS=1, OUROBOROS_RUNTIME_MODE="light",
+                          # a fresh root with a ready provider would clone the skill hub at boot (#1995)
+                          OUROBOROS_STARTER_SKILLS="[]")
         if values:
             (data_dir / "settings.json").write_text(json.dumps(values), encoding="utf-8")
         port = free_port()

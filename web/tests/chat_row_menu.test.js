@@ -4,10 +4,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatRowMenu } from '../modules/chat_row_menu.js';
+import { createMessageActions } from '../modules/message_actions.js';
 import { cardMenuActions, emptyWorkState } from '../modules/work_status.js';
 import { installDomDouble } from './dom_double.js';
 
-function fixture() {
+function fixture({ actions = undefined } = {}) {
     const env = installDomDouble();
     const { doc, el } = env;
     const feed = el('div', { className: 'chat-messages' });
@@ -37,7 +38,7 @@ function fixture() {
     const cards = new Map();
     // chat.js's own wiring: the card's Stop… items come from its work, else from the card's own task controls.
     const menu = createChatRowMenu({ feed, replies, cardOf: (id) => cards.get(id),
-        actionsOf: (record) => cardMenuActions(works, record, activity) });
+        actionsOf: (record) => cardMenuActions(works, record, activity), actions });
     const openMenu = () => doc.body.children.find((node) => node.classList.contains('chat-row-menu')) || null;
     const items = () => (openMenu()?.children || []).map((node) => node.dataset.rowAction);
     return { ...env, feed, cards, bubble, plain, copy, link, words, menu, started, copied, opened, activity, works, openMenu, items,
@@ -273,4 +274,73 @@ test('destroy closes an open menu and leaves no listener on the feed or the docu
     assert.equal(f.doc.captures.get('click')?.size || 0, 0);
     assert.equal(f.doc.captures.get('pointerdown')?.size || 0, 0);
     f.restore();
+});
+
+test('a bubble\'s menu lists the registered actions after its own doors, in their present words; a work card none', () => {
+    const actions = createMessageActions();
+    const ran = [];
+    let speaking = false;
+    actions.register({ key: 'read_aloud', label: 'Read aloud', applies: (row) => row.role === 'assistant',
+        state: () => (speaking ? { label: 'Stop' } : null), run: (row, ctx) => ran.push([row.address, ctx.anchor]) });
+    actions.register({ key: 'mine', label: 'Mine only', applies: (row) => row.role === 'user', run() {} });
+    const f = fixture({ actions });
+    try {
+        f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.deepEqual(f.items(), ['reply', 'copy', 'project', 'read_aloud']);
+        assert.equal(f.openMenu().children[3].textContent, 'Read aloud');
+        f.openMenu().children[3].click();
+        assert.deepEqual(ran, [['row:1@t#a', f.bubble]], 'the action runs on this row');
+        assert.equal(f.openMenu(), null);
+        speaking = true;
+        f.words.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.equal(f.openMenu().children[3].textContent, 'Stop', 'the words follow the action\'s own state');
+        f.openMenu().emit('keydown', { key: 'Escape', target: f.openMenu().children[0] });
+        const { summary } = workCard(f);
+        summary.emit('contextmenu', { clientX: 1, clientY: 1 });
+        assert.equal(f.items().includes('read_aloud'), false, 'a work card is not a reply row');
+    } finally { f.close(); }
+});
+
+test('on touch the row sinks while the finger holds, lifts with a haptic while its menu is open, and settles back', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    const played = [];
+    globalThis.window.Telegram = { WebApp: { initData: 'q', isVersionAtLeast: () => true,
+        HapticFeedback: { impactOccurred: (style) => played.push(style) } } };
+    try {
+        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 1, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(149);
+        assert.equal(f.bubble.dataset.rowPress, undefined, 'a tap or the start of a scroll never shows it');
+        t.mock.timers.tick(1);
+        assert.equal(f.bubble.dataset.rowPress, 'hold', 'a still finger: the row sinks');
+        t.mock.timers.tick(300);
+        assert.ok(f.openMenu());
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'the menu opens over the lifted row');
+        assert.deepEqual(played, ['medium'], 'one haptic as the press is recognised');
+        f.words.emit('pointerup', { pointerType: 'touch', pointerId: 1 });
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'it stays lifted while the menu is open');
+        f.feed.parent.emit('pointerdown', { target: f.doc.body });
+        assert.equal(f.openMenu(), null);
+        assert.equal(f.bubble.dataset.rowPress, 'release', 'on its way back');
+        t.mock.timers.tick(260);
+        assert.equal(f.bubble.dataset.rowPress, undefined, 'at rest');
+        // A finger that moves (a scroll) puts the sinking row back at once, and nothing opens.
+        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 2, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(200);
+        assert.equal(f.bubble.dataset.rowPress, 'hold');
+        f.words.emit('pointermove', { pointerId: 2, clientX: 30, clientY: 80 });
+        assert.equal(f.bubble.dataset.rowPress, undefined);
+        t.mock.timers.tick(500);
+        assert.equal(f.openMenu(), null);
+        // A row with nothing to offer never sinks; a right-click opens the menu with no lift and no haptic.
+        f.plain.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 3, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(200);
+        assert.equal(f.plain.dataset.rowPress, undefined);
+        f.plain.emit('pointerup', { pointerType: 'touch', pointerId: 3 });
+        t.mock.timers.tick(1000);
+        f.words.emit('contextmenu', { clientX: 30, clientY: 60 });
+        assert.ok(f.openMenu());
+        assert.equal(f.bubble.dataset.rowPress, undefined);
+        assert.deepEqual(played, ['medium']);
+    } finally { delete globalThis.window.Telegram; f.close(); }
 });

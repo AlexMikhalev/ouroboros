@@ -8,6 +8,10 @@ import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
 import { IDLE_SUMMARY, buildProjectActivityIndex, reconcileProjectRooms } from './modules/project_activity.js';
 import { initFiles } from './modules/files.js';
+import { draftPort, getContributions } from './modules/contributions.js';
+import { bridgeContributedActions } from './modules/message_actions.js';
+import { startHostModules } from './modules/host_modules.js';
+import { startVoice } from './modules/voice_controls.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
 import { apiClient } from './modules/api_client.js';
@@ -31,6 +35,7 @@ import { isStackLayout, onLayoutChange } from './modules/layout.js';
 import { createLayerStack } from './modules/layers.js';
 import { createTelegramHost } from './modules/host_telegram.js';
 import { DRAG, DRAWER_DRAG, bindDrawerDrag } from './modules/drawer_drag.js';
+import { haptic } from './modules/haptics.js';
 
 import { fmt, markBootRead, pendingBootRead, refreshDictionary, setLanguage, storedLanguage, tr } from './modules/i18n.js';
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
@@ -313,7 +318,7 @@ const disposeDrawerDrag = DRAWER_DRAG ? bindDrawerDrag({
     sidebar: primarySidebar, scrim: navDrawerBackdrop,
     isOpen: () => navState.mobileDrawerOpen, setOpen: (open) => setMobileDrawerOpen(open),
     isStack: () => isStackLayout(), isCoarse: () => window.matchMedia('(pointer: coarse)').matches,
-    onGrab: releaseDrawerScrim, onLayout: (sync) => onLayoutChange(() => sync()),
+    onGrab: releaseDrawerScrim, onLayout: (sync) => onLayoutChange(() => sync()), onSnap: () => haptic('snap'),
 }) : () => {};
 const navDrawerClose = document.getElementById('nav-drawer-close');
 if (navDrawerClose) {
@@ -398,6 +403,15 @@ function closeNotificationReaders() {
 
 mainChat = initChat(ctx);
 initFiles(ctx);
+
+// Skills' contributions (CLIENT_CONTRACT §11): one store, read now and on every lifecycle change; their message
+// actions join the row registry, and their page modules mount unless this start skips them (host_modules.js). Voice
+// (voice_controls.js) reads their speech engines: the dictation mic, "+" → Add dictation… and Read aloud.
+const contributions = getContributions();
+contributions.attach({ ws });
+const visibleDraft = draftPort(() => projectInstances.get(navState.activeProjectId) || mainChat);
+bridgeContributedActions({ store: contributions, draft: visibleDraft });
+startVoice({ hosts: startHostModules({ store: contributions, draft: visibleDraft }) });
 
 function hydrateOpenChatsFromState(data, snapshotRequestedAt) {
     mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt);
@@ -1044,6 +1058,22 @@ window.addEventListener('ouro:open-project', (event) => {
     if (!project?.id) return;
     const resolved = lastProjectRows.find((item) => item.id === project.id) || project;
     openProjectPanel(resolved, { openOnly: true, taskId: event.detail.task_id || '', quizId: event.detail.quiz_id || '' });
+});
+
+// A contribution's `open.tab` (contributions.js): the Widgets page, at that skill's first card once it is drawn.
+window.addEventListener('ouro:open-widgets', async (event) => {
+    const skill = String(event?.detail?.skill || '');
+    const page = document.getElementById('page-widgets');
+    if (!skill || !page || !await showPage('widgets')) return;
+    const card = () => [...page.querySelectorAll('[data-widget-key]')].find((node) => node.dataset.widgetKey.startsWith(`${skill}:`));
+    if (card()) return card().scrollIntoView({ block: 'nearest' });
+    const observer = new MutationObserver(() => {
+        if (!card()) return;
+        observer.disconnect();
+        card().scrollIntoView({ block: 'nearest' });
+    });
+    observer.observe(page, { childList: true, subtree: true });
+    setTimeout(() => observer.disconnect(), 10000);  // a card that never comes leaves the page as it is
 });
 
 // Resizable side sections: edge drag-handles resize the sidebar and the Project panel, whose widths live in

@@ -181,6 +181,7 @@ def _chat_record(
     actions: Optional[List[Dict[str, str]]] = None,
     title: str = "",
     quiz: Optional[Dict[str, Any]] = None,
+    card: Optional[Dict[str, Any]] = None,
     size_bytes: Optional[int] = None,
     client_surface: Optional[Dict[str, Any]] = None,
     message_meta: Optional[Dict[str, Any]] = None,
@@ -303,6 +304,8 @@ def _chat_record(
             # Quiz rows persist the full card (no base64 anywhere) so history
             # replay rebuilds it with its lifecycle state.
             record["quiz"] = dict(quiz)
+        if card:  # the identity only; the body stays in the card store (supervisor/card_delivery.py)
+            record["card"] = dict(card)
         if size_bytes is not None:
             record["size_bytes"] = int(size_bytes)
         return root, record

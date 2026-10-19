@@ -39,6 +39,9 @@ class _ExtensionRegistrations:
     # registered; the module endpoint serves these bytes, never the mutable
     # skill directory. Not part of snapshot().
     module_sources: Dict[str, str] = field(default_factory=dict)
+    contributions: List[Dict[str, Any]] = field(default_factory=list)
+    contribution_problems: List[str] = field(default_factory=list)
+    host_sources: Dict[str, bytes] = field(default_factory=dict)
     content_hash: Optional[str] = None
     skill_dir: Optional[str] = None
     import_root: Optional[str] = None
@@ -133,6 +136,10 @@ class _StagedRegistrations:
     # It reaches ``_ExtensionRegistrations.module_sources`` only at the swap, so
     # a refused publication never leaves a half-populated bundle serving bytes.
     module_sources: Dict[str, str] = field(default_factory=dict)
+    # None preserves the live contribution capture on companion-only recovery.
+    contributions: Optional[List[Dict[str, Any]]] = None
+    contribution_problems: List[str] = field(default_factory=list)
+    host_sources: Dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass
@@ -274,24 +281,28 @@ def live_module_sources(skill_name: str) -> Optional[Dict[str, str]]:
         return None if bundle is None else dict(bundle.module_sources)
 
 
-def snapshot() -> Dict[str, Any]:
-    """Return a read-only snapshot of live extension surfaces."""
+def live_contribution_projection() -> List[Dict[str, Any]]:
+    """Entries and revisions from the same publication, detached under one lock."""
     with _lock:
-        return {
-            "extensions": sorted(_extensions.keys()),
-            "tools": sorted(_tools.keys()),
-            "routes": sorted(_routes.keys()),
-            "ws_handlers": sorted(_ws_handlers.keys()),
-            "ui_tabs": [
-                dict(copy.deepcopy(value), key=key)
-                for key, value in sorted(_ui_tabs.items())
-            ],
-            # Settings sections follow the same host-surfaced shape as UI tabs.
-            "settings_sections": [
-                dict(copy.deepcopy(value), key=key)
-                for key, value in sorted(_settings_sections.items())
-            ],
-        }
+        return copy.deepcopy([
+            entry for name, bundle in sorted(_extensions.items())
+            if name not in _unloading for entry in bundle.contributions
+        ])
+
+
+def live_host_asset(skill_name: str, revision: str, path: str) -> Optional[bytes]:
+    """A single lock authorizes the revision and reads its captured bytes."""
+    with _lock:
+        bundle = _extensions.get(skill_name)
+        if bundle is None or skill_name in _unloading or bundle.content_hash != revision:
+            return None
+        return bundle.host_sources.get(path)
+
+
+def live_contribution_problems() -> Dict[str, List[str]]:
+    with _lock:
+        return {name: list(bundle.contribution_problems) for name, bundle in _extensions.items()
+                if bundle.contribution_problems}
 
 
 def list_ws_handlers() -> Dict[str, Any]:
@@ -377,3 +388,25 @@ def extension_work_scope(spec: Dict[str, Any], work: Any):
             # Captured bundle identity: completing old work cannot detach a new
             # generation's resource after unload/reload replaced the registry row.
             bundle.supervised_futures[:] = [item for item in bundle.supervised_futures if item is not work]
+
+
+def snapshot() -> Dict[str, Any]:
+    """Return a read-only snapshot of live extension surfaces."""
+    with _lock:
+        return {
+            "contributions": [copy.deepcopy(entry) for name, bundle in sorted(_extensions.items())
+                              if name not in _unloading for entry in bundle.contributions],
+            "extensions": sorted(_extensions.keys()),
+            "tools": sorted(_tools.keys()),
+            "routes": sorted(_routes.keys()),
+            "ws_handlers": sorted(_ws_handlers.keys()),
+            "ui_tabs": [
+                dict(copy.deepcopy(value), key=key)
+                for key, value in sorted(_ui_tabs.items())
+            ],
+            # Settings sections follow the same host-surfaced shape as UI tabs.
+            "settings_sections": [
+                dict(copy.deepcopy(value), key=key)
+                for key, value in sorted(_settings_sections.items())
+            ],
+        }

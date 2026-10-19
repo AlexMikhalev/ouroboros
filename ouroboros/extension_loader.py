@@ -39,6 +39,7 @@ from ouroboros.contracts.plugin_api import (
     capability_available,  # noqa: F401
 )
 from ouroboros.event_bus import get_global_event_bus
+from ouroboros.extension_contributions import stage_contributions
 from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process  # noqa: F401
 from ouroboros.extension_ui_validation import (
     _assert_ws_message_type,  # noqa: F401
@@ -217,6 +218,8 @@ def _publish_out_of_process_registration(
     ))
     try:
         _stage_out_of_process_surfaces(api, skill, catalog)
+        if current_hash is not None:
+            stage_contributions(api, skill, current_hash)
         for name in names:
             if name not in declared:
                 raise ExtensionRegistrationError(
@@ -762,6 +765,7 @@ def load_extension(
             if current_execution_mode() is ExecutionMode.IN_PROCESS:
                 api._disclose_model_capable_dispatch("register", "register")
             register(api)
+            stage_contributions(api, skill, current_hash)
             # ABI-9: nothing register() staged is visible yet; publish the
             # whole snapshot atomically (validate -> swap -> attach; deferred
             # side effects attach only after the swap).

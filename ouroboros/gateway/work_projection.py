@@ -44,7 +44,6 @@ class _Observations:
         self.drive_root = drive_root
         self.results: Dict[str, Optional[dict]] = {}
         self.fences: Dict[str, dict] = {}
-        self.reviews: Dict[str, bool] = {}
         self.gaps: List[Dict[str, Any]] = []
 
     def result(self, task_id: str) -> Optional[dict]:
@@ -58,19 +57,6 @@ class _Observations:
                 log.debug("Work projection could not read %s", task_id, exc_info=True)
                 self.results[task_id] = None
         return self.results[task_id]
-
-    def review_live(self, task_id: str) -> bool:
-        """The task's own live review operation (an acceptance review after its answer), read from its result."""
-        if task_id not in self.reviews:
-            try:
-                from ouroboros.review_operation import task_has_live_review_operation
-
-                self.reviews[task_id] = task_has_live_review_operation(
-                    self.drive_root, task_id, result_loader=lambda tid: self.result(tid) or {})
-            except Exception:
-                log.debug("Work projection could not read the review operation of %s", task_id, exc_info=True)
-                self.reviews[task_id] = False
-        return self.reviews[task_id]
 
     def fence(self, root_id: str, drive_root: Any = None) -> dict:
         if root_id not in self.fences:
@@ -166,13 +152,14 @@ def _inflight_upkeep(drive_root: Any, known: set) -> List[Dict[str, Any]]:
 
 
 def _open_runs(drive_root: Any) -> Dict[str, List[str]]:
-    """Delegated runs with a durable start and no settlement, by root: live members of that root's work.
-    A settled run custody still holds (an undisposed patch) runs nothing and is not a member."""
-    from ouroboros.delegate_custody_reconcile import open_runs
+    """Delegated runs with a durable start and no settlement, by their tree's root: live members of that root's
+    work, which the cascade Stop of that root cancels. A settled run custody still holds (an undisposed patch)
+    runs nothing and is not a member."""
+    from ouroboros.delegate_custody_reconcile import open_runs, run_tree_id
 
     live: Dict[str, List[str]] = {}
     for entry in open_runs(drive_root):
-        root_id = str(entry.root_task_id or entry.task_id or "")
+        root_id = run_tree_id(entry)
         if root_id:
             live.setdefault(root_id, []).append(str(entry.run_id))
     return live
@@ -278,19 +265,15 @@ def _snapshot(drive_root: Any, owners: List[Mapping[str, Any]], raw: Dict[str, M
         # Working helpers say the reason and keep the call's word; the count of runs is still the work's fact.
         work["members"]["delegated"] = int(entry["delegated"])
         current_id = str(episode["task_id"])
-
-        def stoppable(root: str) -> bool:
-            # The Stop door's own test for a settled tree (queue_transitions.task_subtree_is_live): a live queue or
-            # direct row of the tree (every member is one) or the root's live review operation. A tree whose only
-            # writer is another delegated run, a handoff or a process answers 404, so no control is offered for it.
-            return bool(owners_by_root.get(root)) or obs.review_live(root)
-
-        # Every other episode root that still owns a live member is the earlier attempt; a retry attempt's own
-        # original stands for the same episode, never an earlier one.
-        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root} and stoppable(root))
+        # Every root grouped here owns a live queue or direct row of its tree (each member is one) or an open
+        # delegated run: exactly what the Stop door reaches (queue_transitions.task_subtree_is_live), so each root
+        # takes Stop. A writer the door cannot reach (an unbound start, a handoff, a process) is no member and adds
+        # no root, so no control is offered for it.
+        # Every other root is the earlier attempt; a retry attempt's own original stands for the same episode.
+        earlier = sorted(root for root in entry["roots"] if root not in {current_id, current_root})
         # Stop ends the whole work: a retry's logical original carries its tree too (never an earlier attempt).
-        logical = [current_root] if current_root and current_root != current_id and stoppable(current_root) else []
-        ended = [] if current_state is not None or not stoppable(current_id) else [current_id]
+        logical = [current_root] if current_root and current_root != current_id else []
+        ended = [] if current_state is not None else [current_id]
         controls = ws.controls_for(current_state, current_row, earlier_live=earlier, live_roots=ended + logical + earlier)
         work.update(kind="direct" if str(room_row.get("kind") or "") == "direct_chat" else "task",
                     project_id=str(room_row.get("project_id") or ""), since=_since(room_row), controls=controls)

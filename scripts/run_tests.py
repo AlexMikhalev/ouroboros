@@ -224,7 +224,7 @@ def _selected(args, evidence) -> int:
 
 
 def _defer_full(selection):
-    """A full escalation this leg cannot finish (Windows runs full in four landed shards).
+    """A full escalation this leg cannot finish (Windows runs full in eight landed shards).
 
     The leg still runs the PR minimum, the contract floor and the Node lane, and says
     what it left to the landed matrix.

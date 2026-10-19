@@ -11,6 +11,7 @@ import { stampHistoryNode } from './chat_history_replay.js';
 import { isFileDrag } from './chat_activity.js';
 import { buildAttachmentBlock } from './chat_attachments.js';
 import { createDocumentReader, documentReaderKind } from './document_reader.js';
+import { createChatCards } from './chat_cards.js';
 
 // Player controls draw the house stroke vectors; each button's aria-label names its
 // current action and is rewritten with the icon whenever the state flips.
@@ -99,7 +100,7 @@ export function showTaskIncidentToast(msg) {
     // No tone on the frame (older producers, cancellation_fault) keeps the
     // alarm tone; the text is never parsed for it.
     const text = String(msg?.content || msg?.text || incident);
-    return showToast(hostRowDisplayText({ ...msg, text }), normalizeTone(msg?.toast_tone || 'error', 'error'));
+    return showToast(hostRowDisplayText({ ...msg, text }), normalizeTone(msg?.toast_tone || 'error', 'error'), { haptic: false });
 }
 
 // Best-effort teardown of temporary uploads after a failed send; lives with
@@ -138,8 +139,8 @@ export function safeHttpUrl(value) {
 }
 
 export function bindComposerFileTargets({ page, inputArea, input, stagePendingFiles }) {
-    // The two implicit routes a file takes into the composer beside the
-    // paperclip: an image pasted into the textarea, and a file dropped
+    // The two implicit routes a file takes into the composer beside
+    // "+" → Attach file: an image pasted into the textarea, and a file dropped
     // anywhere on the page. Both end in the caller's local stager, so
     // nothing uploads before Send, and the drop target is the whole page
     // while only the input area shows the active state.
@@ -203,6 +204,8 @@ export function createChatMedia({
     senderLabel,
     stampNodeTimestamp,
     onDomWrite = (mutate) => mutate(),
+    replies = null,
+    composer = () => null,
 }) {
     const disposers = new Set();
     const resourceOwners = new Map();
@@ -217,6 +220,11 @@ export function createChatMedia({
     let dialogFile = null;
     let dialogOwner = null;  // the card's item (buildGallery may move it to an earlier group): releasing it or its holder closes the dialog
     let destroyed = false;
+    // Living cards are delivered rows too: Copy takes their fallback text, Reply their row address (chat_cards.js).
+    const cards = createChatCards({ frameNode: bubbleFrameNode, composer, onDomWrite, decorate(bubble, msg, text) {
+        attachCopyControl(bubble, () => bubble.dataset.rowWords ?? text);  // a replaced card's words are its new ones
+        replies?.decorate(bubble, msg);
+    } });
 
     // A disposer owned like a listener (a late answer's end too): its owner's release, reset or destroy runs it.
     function own(dispose, owner) { disposers.add(dispose); resourceOwners.set(dispose, owner); return dispose; }
@@ -857,7 +865,8 @@ export function createChatMedia({
         + '<path d="M10.5 2.5h-6a2 2 0 0 0-2 2v6"></path></svg>';
 
     function attachCopyControl(bubble, rawText) {
-        if (!bubble || !String(rawText || '')) return null;
+        const words = () => String((typeof rawText === 'function' ? rawText() : rawText) || '');
+        if (!bubble || !words()) return null;
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'chat-message-copy ui-hit-area';
@@ -869,7 +878,7 @@ export function createChatMedia({
             const owner = document.activeElement;
             const area = document.createElement('textarea');
             area.className = 'chat-copy-fallback';
-            area.value = String(rawText);
+            area.value = words();
             area.setAttribute('readonly', '');
             document.body.appendChild(area);
             try {
@@ -886,7 +895,7 @@ export function createChatMedia({
             let ok = true;
             try {
                 if (navigator.clipboard?.writeText) {
-                    try { await navigator.clipboard.writeText(String(rawText)); }
+                    try { await navigator.clipboard.writeText(words()); }
                     catch { writeFallback(); }
                 } else writeFallback();
             } catch {
@@ -951,6 +960,7 @@ export function createChatMedia({
     // keep their listeners, playback, focus and outstanding user actions.
     function release(root) {
         reader.release(root);
+        cards.release(root);
         const owns = (node) => node === root || root?.contains?.(node);
         if (dialogOwner && owns(dialogOwner)) closeFileDialog();  // no actions on a released message's file
         for (const [dispose, owner] of resourceOwners) if (owns(owner)) {
@@ -976,6 +986,7 @@ export function createChatMedia({
     function destroy() {
         if (destroyed) return;
         reset();
+        cards.destroy();
         reader.destroy();
         destroyed = true;
     }
@@ -1053,6 +1064,23 @@ export function createChatMedia({
             rememberBubble(bubble, keys);
             return insertMessageNode(bubble) !== false;
         }
+        function appendCardMessage(msg) {
+            const keys = keysFor(msg, `card:${msg.card?.card_id || ''}`);
+            if (alreadyRendered(msg, keys)) return false;
+            const bubble = cards.buildCard(msg);
+            if (!bubble) return false;
+            rememberBubble(bubble, keys);
+            return insertMessageNode(bubble) !== false;
+        }
+        // One replayed delivery row (a file, photo, video, link card, question or living card), drawn before final
+        // handling: a mid-task delivery cannot finish its task card. False for any other row.
+        const replayed = { document: appendDocumentBubble, links: appendLinksMessage, quiz: appendQuizMessage,
+            card: appendCardMessage, photo: appendMediaBubble, video: appendMediaBubble };
+        function appendDelivery(msg) {
+            const append = Object.hasOwn(replayed, msg?.msg_type || '') ? replayed[msg.msg_type] : null;
+            if (append) append(msg);
+            return Boolean(append);
+        }
         // Media frames carry no activity identity: hide the dots row but keep
         // the authoritative active set intact; sync derives the header from it.
         const deliver = (append) => (msg) => {
@@ -1066,6 +1094,12 @@ export function createChatMedia({
         onWs('links', deliver(appendLinksMessage));
         const question = deliver(appendQuizMessage);
         onWs('quiz', (msg) => { question(msg); if (isMyThread(msg)) onQuestionFrame(msg); });
+        onWs('card', deliver(appendCardMessage));
+        // A shown card changed (a new body or a recorded press): the existing row only, no unread bump.
+        onWs('card_state', (msg) => deliverContentMutation(() => cards.applyCardState(msg)));
+        onWs('extension_lifecycle', cards.lifecycle);
+        onWs('open', cards.reconnect);
+        onWs('message', cards.relay);
         if (applyQuizStateFrame && messagesRoot) {
             // Lifecycle updates address an EXISTING card by quiz_id — no
             // thread routing, no unread bump, never a new bubble.
@@ -1074,7 +1108,7 @@ export function createChatMedia({
                 onQuestionFrame(msg);
             });
         }
-        return { appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage };
+        return { appendDelivery, appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage, appendCardMessage };
     }
 
     return {

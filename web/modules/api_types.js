@@ -924,6 +924,7 @@
  * @property {number} span
  * @property {number} grid_span
  * @property {string} revision
+ * @property {boolean=} pinned_card  // a kept living card (skill "_cards"); presses use the card: decision family
  */
 
 /**
@@ -1451,6 +1452,8 @@
  */
 /**
  * @typedef {Object} UiPreferencesResponse
+ * @property {{stt:string,tts:string,tts_voice:string}} voice
+ * @property {{hidden:string[],order:string[]}} contributions
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
  * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width: w masonry columns the card spans (12 = full width), h 0 (reserved)
@@ -1579,3 +1582,6 @@ export const MAX_DECISION_COMMENT = 2000;
 export const GATEWAY_CONTRACT_VERSION = '7.7.0';
 /** @typedef {import('./client_contract_types.js').ChatHistoryPosition} ChatHistoryPosition */
 /** @typedef {import('./client_contract_types.js').ChatHistoryResponse} ChatHistoryResponse */
+
+/** @typedef {import('./management_contract_types.js').UiContribution} UiContribution */
+/** @typedef {import('./management_contract_types.js').UiContributionsResponse} UiContributionsResponse */

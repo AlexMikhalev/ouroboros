@@ -37,17 +37,17 @@ def _wait_status(page, expected, timeout=10_000):
 
 
 def _seed(data_dir: pathlib.Path) -> dict:
+    """The rows go into the dialogue store the running server reads (#1982): a log file written after it started
+    is never read."""
+    from ouroboros import dialogue_store
     from ouroboros.project_dialogue import _text_sha256
     from ouroboros.task_results import write_task_result
-    from ouroboros.utils import append_jsonl
 
-    logs = data_dir / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
     ref = {
         "chat_id": 1, "client_message_id": "msg-origin-1",
         "ts": "2026-09-14T12:15:20.535950+00:00", "text_sha256": _text_sha256(ORIGIN_TEXT),
     }
-    append_jsonl(logs / "chat.jsonl", {
+    dialogue_store.append(data_dir, "chat", {
         "ts": ref["ts"], "direction": "in", "chat_id": 1, "user_id": 1,
         "text": ORIGIN_TEXT, "client_message_id": ref["client_message_id"],
     })
@@ -58,12 +58,12 @@ def _seed(data_dir: pathlib.Path) -> dict:
             chat_id=1, title=title, origin_message_ref=dict(ref), origin_message_text=ORIGIN_TEXT,
             delegation_role="root", root_task_id=tid,
         )
-        append_jsonl(logs / "progress.jsonl", {
+        dialogue_store.append(data_dir, "progress", {
             "ts": "2026-09-14T12:30:00+00:00" if first else "2026-09-14T12:38:00+00:00",
             "type": "send_message", "direction": "out", "chat_id": 1, "user_id": 1,
             "task_id": tid, "is_progress": True, "content": f"Working on {title}", "text": f"Working on {title}",
         })
-        append_jsonl(logs / "chat.jsonl", {
+        dialogue_store.append(data_dir, "chat", {
             "ts": "2026-09-14T12:39:31+00:00" if first else "2026-09-14T12:41:00+00:00",
             "direction": "system", "chat_id": 1, "user_id": 1, "type": "task_summary",
             "summary_kind": "terminal_root_projection", "summary_id": f"task-terminal:{tid}",

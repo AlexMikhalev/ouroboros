@@ -232,12 +232,13 @@ test('Send again while offline keeps the doubt and says why', () => {
         const sends = [];
         let status = 'failed';
         const unconfirmed = createUnconfirmedSends({ send: (frame, options) => { sends.push([frame, options]); return { status }; },
-            root: () => root, onDomWrite: (fn) => fn(), showToast: (text, tone) => toasts.push([text, tone]) });
+            root: () => root, onDomWrite: (fn) => fn(), showToast: (text, tone, options) => toasts.push([text, tone, options?.haptic]) });
         unconfirmed.track({ type: 'chat', content: 'x', client_message_id: 'cm-9' });
         unconfirmed.unsettle();
         const note = bubble.children.find((node) => Object.hasOwn(node.dataset, 'ingressUnconfirmed'));
         note.children.find((node) => node.tagName === 'BUTTON').click();
-        assert.deepEqual(toasts, [['Still offline. Reconnect and send again.', 'error']]);
+        assert.deepEqual(toasts, [['Still offline. Reconnect and send again.', 'error', undefined]],
+            'the owner\'s Send again failed: its toast keeps the error haptic');
         assert.ok(bubble.children.includes(note), 'the doubt and its button stay');
         status = 'sent';
         note.children.find((node) => node.tagName === 'BUTTON').click();
@@ -486,11 +487,12 @@ test('a tab that cannot keep the copy says so, and Send again still works until 
         const sends = [];
         const storage = { getItem: () => 'not json', setItem() { throw new Error('QuotaExceededError'); }, removeItem() {} };
         const unconfirmed = createUnconfirmedSends({ send: (frame) => { sends.push(frame); return { status: 'sent' }; },
-            root: () => root, onDomWrite: (fn) => fn(), showToast: (text, tone) => toasts.push([text, tone]), storage, storageKey: 'k' });
+            root: () => root, onDomWrite: (fn) => fn(), showToast: (text, tone, options) => toasts.push([text, tone, options?.haptic]),
+            storage, storageKey: 'k' });
         assert.equal(unconfirmed.count, 0, 'an unreadable copy restores nothing');
-        assert.deepEqual(toasts, [[UNREAD, 'error']], 'and says so');
+        assert.deepEqual(toasts, [[UNREAD, 'error', false]], 'and says so, without the error haptic: no action of the owner failed');
         unconfirmed.track({ type: 'chat', content: 'x', client_message_id: 'cm-5' });
-        assert.deepEqual(toasts.map(([, tone]) => tone), ['error', 'error']);
+        assert.deepEqual(toasts.map(([, tone, haptic]) => [tone, haptic]), [['error', false], ['error', false]]);
         assert.ok(toasts[1][0].includes('could not keep'));
         unconfirmed.unsettle();
         bubble.children[0].children.find((node) => node.textContent === 'Send again').click();

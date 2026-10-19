@@ -3,10 +3,12 @@ set -euo pipefail
 
 # Downloads python-build-standalone for macOS (arm64 + x86_64) and Linux (x86_64)
 # Run from repo root: bash scripts/download_python_standalone.sh
+# CI test jobs take the same pinned interpreter without the packaged dependencies:
+# PYTHON_STANDALONE_DEST=<dir> PYTHON_STANDALONE_INTERPRETER_ONLY=1 bash scripts/download_python_standalone.sh
 
 RELEASE="20261009"
 PY_VERSION="3.10.22"
-DEST="python-standalone"
+DEST="${PYTHON_STANDALONE_DEST:-python-standalone}"
 
 OS=$(uname -s)
 ARCH=$(uname -m)
@@ -50,7 +52,7 @@ mkdir -p _python_tmp
 # Pinned SHA256 (from the release's SHA256SUMS): a swapped/truncated archive
 # fails here instead of becoming the packaged runtime. Update the pins when
 # bumping RELEASE/PY_VERSION.
-curl -L --fail --progress-bar "$URL" -o _python_tmp/"$FILENAME"
+curl -L --fail --retry 5 --retry-all-errors --retry-delay 5 --progress-bar "$URL" -o _python_tmp/"$FILENAME"
 if command -v shasum >/dev/null 2>&1; then
     ACTUAL="$(shasum -a 256 "_python_tmp/${FILENAME}" | awk '{print $1}')"
 else
@@ -66,6 +68,11 @@ rm -f _python_tmp/"$FILENAME"
 # Archive extracts to python/ — rename to python-standalone/
 mv _python_tmp/python "$DEST"
 rm -rf _python_tmp
+
+if [ "${PYTHON_STANDALONE_INTERPRETER_ONLY:-0}" = "1" ]; then
+    echo "Python: ${DEST}/bin/python3 (interpreter only)"
+    exit 0
+fi
 
 echo ""
 echo "=== Installing agent dependencies ==="

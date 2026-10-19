@@ -117,6 +117,11 @@ def write_workspace_patch_artifacts(
         root,
         errors,
     )
+    # A tracked WAL index (committed beside its database, or staged in a copy) is shared memory as an
+    # untracked one is: never diffed, and never named for an integration to stage over the target's own.
+    wal_indexes = {rel: reason for rel in changed_tracked if (reason := _wal_index_reason(root, rel))}
+    tracked_excluded.extend({"path": rel, "reason": reason} for rel, reason in wal_indexes.items())
+    changed_tracked = [rel for rel in changed_tracked if rel not in wal_indexes]
     diffstat = ""
     untracked = _git_path_list(["git", "ls-files", "-z", "--others", "--exclude-standard"], root, errors)
     # Copied inputs were deliberately never Git additions. Their exact baseline
@@ -137,7 +142,7 @@ def write_workspace_patch_artifacts(
         if sensitive_reason:
             sensitive.append({"path": rel, "reason": sensitive_reason})
             continue
-        reason = _patch_exclude_reason(rel)
+        reason = _patch_exclude_reason(rel) or _wal_index_reason(root, rel)
         if reason:
             excluded.append({"path": rel, "reason": reason})
             continue
@@ -223,8 +228,9 @@ def write_workspace_patch_artifacts(
         if not errors:
             tracked_lock_excludes = sorted(set(changed_tracked) & incidental_lock_excludes)
             tracked_pathspec = ["--"]
-            if tracked_lock_excludes or large_tracked or file_baseline:
-                tracked_pathspec += ["."] + [f":(exclude,literal){rel}" for rel in [*tracked_lock_excludes, *large_tracked, *file_baseline]]
+            if tracked_lock_excludes or large_tracked or file_baseline or wal_indexes:
+                tracked_pathspec += ["."] + [f":(exclude,literal){rel}" for rel in
+                                             [*tracked_lock_excludes, *large_tracked, *file_baseline, *wal_indexes]]
             for rel in tracked_lock_excludes:
                 tracked_excluded.append({"path": rel, "reason": "incidental lockfile without sibling manifest change"})
             diffstat = _git_stdout(
@@ -680,6 +686,15 @@ def pem_capture_refusal(root: pathlib.Path, rel: str, *, warnings=None) -> str:
     return reason
 
 
+def _wal_index_reason(root: pathlib.Path, rel: str) -> str:
+    """A SQLite WAL index never enters a capture: no raw reader opens it (``store.is_wal_index``:
+    its bytes are shared memory under the holders' locks), and a copy of its database rebuilds its
+    own from the log at the first open. It is excluded before any read, the PEM head included."""
+    from ouroboros.store import is_wal_index
+
+    return "SQLite WAL index (shared memory a database copy rebuilds from its log)" if is_wal_index(root / rel) else ""
+
+
 def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None,
                                    warnings=None, binary_verdicts: Optional[Dict[str, bool]] = None) -> str:
     """Reason to drop an untracked file from the workspace patch when it is a
@@ -734,7 +749,8 @@ def binary_verdict_candidates(root: pathlib.Path, rels: Sequence[str]) -> List[s
     unrestricted = mode_has_unrestricted_agency(get_runtime_mode())
     out: List[str] = []
     for rel in rels:
-        if not rel or _sensitive_untracked_reason(rel) or _patch_exclude_reason(rel):
+        if (not rel or _sensitive_untracked_reason(rel) or _patch_exclude_reason(rel)
+                or _wal_index_reason(root, rel)):
             continue
         try:
             info = os.lstat(root / rel)
@@ -843,7 +859,7 @@ def untracked_capture_veto_reason(root: pathlib.Path, rel: str, *, file_outputs:
     reason = _sensitive_untracked_reason(rel)
     if reason:
         return reason
-    reason = _patch_exclude_reason(rel)
+    reason = _patch_exclude_reason(rel) or _wal_index_reason(root, rel)
     if reason:
         return reason
     return _untracked_blob_exclude_reason(root, rel, file_outputs=file_outputs, warnings=warnings,

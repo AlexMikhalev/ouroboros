@@ -281,15 +281,29 @@ export function workMenuActions(grouped, { cancelPending = false, resume = false
 }
 
 /**
- * What a card offers from its work: `work` when the card is a confirmed work's live current episode, `resume` when
- * that work's Resume control targets the card's own task, `menu` when the work offers anything else.
+ * What a card offers from its work: `resume` when the work's Resume control targets the card's own task, `menu` when
+ * the work offers anything else, and `work` when the card is a confirmed work's current episode that is live or
+ * offers something. The server's controls decide, live episode or not: a parent that finished while its helper
+ * works keeps its tree's Stop. A finished card's Stop… is that offer, never its own pending Stop, so every sync of
+ * the card keeps it usable (chat.js syncCancelRunButtonMutation); its own request says a refusal itself.
  */
 export function cardControls(state, taskId) {
     const id = String(taskId || '');
     const work = state?.episodes?.get(id);
-    const grouped = work && work.confirmed !== false && work.episode?.live ? workControls(work) : null;
-    return { work: grouped ? work : null, resume: Boolean(grouped && grouped.resume === id),
-        menu: Boolean(grouped && workMenuActions(grouped).length) };
+    const grouped = work && work.confirmed !== false ? workControls(work) : null;
+    const resume = Boolean(grouped && grouped.resume === id);
+    const menu = Boolean(grouped && workMenuActions(grouped).length);
+    return { work: grouped && (work.episode?.live || resume || menu) ? work : null, resume, menu };
+}
+
+/**
+ * The cards whose work offer (`cardControls` menu or resume) differs between two bodies' states. Their Stop… and
+ * Resume are re-synced: a finished card whose work has left the body drops the Stop… an earlier body gave it.
+ */
+export function changedOffers(records, before, after) {
+    const offer = (state, id) => { const controls = cardControls(state, id); return `${controls.menu}|${controls.resume}`; };
+    return [...(records?.values?.() || [])].filter((record) => record?.root
+        && offer(before, record.groupId) !== offer(after, record.groupId));
 }
 
 /** The items a card's Stop… menu offers now: its work's controls, else the card's own task controls. */
@@ -302,13 +316,15 @@ export function cardMenuActions(state, record, activity = null) {
 
 /**
  * A card's Stop… menu: its work's controls when it is a work's current episode (the card's own target stops through
- * its card path, `stop`), else the card's own task controls, which never offer Resume.
+ * its card path, `stop`, while the card still runs; a finished card's tree stops through the door itself), else the
+ * card's own task controls, which never offer Resume.
  */
 export function openCardControls(anchor, record, work, { activity = null, stop, afterAction = null } = {}) {
     const cancelPending = Boolean(record?.cancelPendingPolicy);
     if (!work) return openTaskControls(anchor, record?.groupId, { activity, cancelPending, stop });
+    const own = (target) => target === String(record?.groupId || '') && !record?.finished;
     return openWorkControls(anchor, work, { cancelPending, afterAction,
-        stopOne: (target, action) => (target === String(record?.groupId || '') ? stop(action) : requestStop(target, action)) });
+        stopOne: (target, action) => (own(target) ? stop(action) : requestStop(target, action)) });
 }
 
 /**

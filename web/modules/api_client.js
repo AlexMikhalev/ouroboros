@@ -433,6 +433,8 @@ export const apiClient = {
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
     saveUiPreferences: (payload) => jsonPost('/api/ui/preferences', payload),
+    /** Live skill contributions (CLIENT_CONTRACT §11). @returns {Promise<import('./api_types.js').UiContributionsResponse>} */
+    uiContributions: (init = {}) => fetchJson('/api/ui/contributions', { cache: 'no-store', ...init }),
     /** @returns {Promise<import('./ui_i18n_types.js').UiI18nResponse>} */
     uiI18n: () => fetchJson('/api/ui/i18n', { cache: 'no-store' }),
     /** @param {string|import('./ui_i18n_types.js').UiI18nLanguageRequest} payload */

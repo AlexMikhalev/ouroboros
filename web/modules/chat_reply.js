@@ -1,16 +1,18 @@
 // Replies of one chat instance (docs/DESIGN.md "Replies"): the Reply control beside Copy in a bubble's
-// control row, the quote above the replying bubble's text, the strip above the composer while the owner
-// is replying, the jump from a quote to the message it quotes, and the owner's words a relay carries into a
-// work's room (one Ouroboros bubble: his words in a quote panel above the note). A reply is a reference the
-// host resolves: this module sends only the quoted row's address and never decides who reads the words.
+// control row (the registered message actions stand between them, message_actions.js), the quote above the
+// replying bubble's text, the strip above the composer while the owner is replying, the jump from a quote to the
+// message it quotes, and the owner's words a relay carries into a work's room (one Ouroboros bubble: his words in
+// a quote panel above the note). A reply is a reference the host resolves: this module sends only the quoted
+// row's address and never decides who reads the words.
 import { tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { isStoreMigrating } from './api_client.js';
 import { authorOf, createRelayQuote, createReplyQuote, normalizeReplyRef, replySnippet } from './chat_reply_quote.js';
 import { fullText } from './text_fit.js';
+import { bindBubbleActions } from './message_actions.js';
 import { revealTimelineNode } from './chat_render_batch.js';
 
-const REPLY_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"'
+export const REPLY_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"'
     + ' stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     + '<path d="M6 11.5 2.5 8 6 4.5"></path><path d="M13.5 12v-1A3 3 0 0 0 10.5 8h-8"></path></svg>';
 const TARGET_MS = 1600;
@@ -44,13 +46,14 @@ function failureText({ state, task_id: taskId, error }) {
 /**
  * `feed` holds the bubbles (each stamped `data-row-address`), `input` is the composer field (the strip goes before its
  * row), `key` names the sessionStorage slot of a staged reply. `reading()` is the room's reading-position owner,
- * resolved when a quote is pressed; `onDomWrite` is the instance's stable-viewport seam for a clamp's toggle.
+ * resolved when a quote is pressed; `onDomWrite` is the instance's stable-viewport seam for a clamp's toggle and the
+ * control rows' redraws; `actions` is the message-action registry (the page's own when omitted).
  * `history()` supplies exact-node revelation through this room's pager; `navigate(address, chatId, current)`
  * lets app switch to the host's destination only while this claim remains current. It returns a state or null
  * for cancellation. Neither the quote's stored chat label nor its task chooses the destination.
  */
 export function createChatReplies({ chatId, feed, input, key = '', reading, history = () => null,
-    navigate = null, present = () => true, onDomWrite = (write) => write() }) {
+    navigate = null, present = () => true, onDomWrite = (write) => write(), actions = undefined }) {
     // The strip stands right before the field's row (below the pills); a bare field (a test fixture) takes it itself.
     const textRow = input.closest('.chat-text-row') || input;
     let storage = null;
@@ -59,6 +62,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, hist
     let staged = null;
     let strip = null;
     let targetTimer = 0;
+    const bubbleActions = bindBubbleActions({ feed, registry: actions, onDomWrite });
     let destroyed = false;
     // `held`: the reader's own live-edge intent while a reveal is pending (a reveal sets stick false itself).
     let revealGeneration = 0, revealing = 0, held = null;
@@ -197,7 +201,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, hist
         if (!address) return null;
         const role = ROLE_NAMES.find((name) => bubble.classList.contains(name)) || '';
         const words = bubble.querySelector(':scope > .message')?.textContent
-            || bubble.querySelector('.chat-quiz-question')?.textContent || '';
+            || bubble.querySelector('.chat-quiz-question')?.textContent || bubble.dataset.rowWords || '';
         return { address, chat_id: chatId, role, author_label: bubble.querySelector(':scope > .sender')?.textContent || '',
             kind: bubble.querySelector('.chat-quiz-card') ? 'question' : 'message', snippet: replySnippet(words),
             ts: bubble.dataset.ts ? new Date(Number(bubble.dataset.ts)).toISOString() : '', task_id: bubble.dataset.taskId || '' };
@@ -221,6 +225,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, hist
         row.append(button);
         if (copy) row.append(copy);
         bubble.classList.add('has-reply');
+        bubbleActions.sync(bubble);
         return button;
     }
 
@@ -348,6 +353,7 @@ export function createChatReplies({ chatId, feed, input, key = '', reading, hist
         destroy() {
             destroyed = true;
             clearTimeout(targetTimer);
+            bubbleActions.destroy();
             keyHost?.removeEventListener('keydown', onKeydown);
             strip?.remove();
             strip = null;

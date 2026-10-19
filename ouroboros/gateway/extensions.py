@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from ouroboros.extension_loader import list_routes, snapshot
+from ouroboros.gateway.contributions import contribution_catalog
 from ouroboros.gateway._helpers import (
     coerce_bool,
     json_error,
@@ -415,7 +416,8 @@ def _build_extensions_index(drive_root, repo_path):
                         "registry_url": prov.get("registry_url", ""),
                     })
         catalog.append(entry)
-    return {"skills": catalog, "live": live_snapshot}
+    return {"skills": catalog, "live": live_snapshot,
+            **contribution_catalog(drive_root, repo_path, skills=skills, live=live_snapshot)}
 
 
 async def api_extension_manifest(request: Request) -> JSONResponse:
@@ -455,6 +457,7 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
                 "env_from_settings": list(loaded.manifest.env_from_settings or []),
                 "scheduled_tasks": list(getattr(loaded.manifest, "scheduled_tasks", []) or []),
                 "ui_tab": loaded.manifest.ui_tab,
+                "contributes": list(getattr(loaded.manifest, "contributes", []) or []),
             },
             "enabled": loaded.enabled,
             **review_fields,
@@ -700,7 +703,8 @@ async def _run_owner_skill_action(request: Request, skill_name: str, action: str
         repo_path=get_skills_repo_path(), _owner_actor="owner_ui",
         log_label=f"skill {action} lifecycle operation",
     )
-    _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action"), payload.get("extension_reason"))
+    if not payload.get("error"):
+        _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action") or action, payload.get("extension_reason"))
     return payload
 
 

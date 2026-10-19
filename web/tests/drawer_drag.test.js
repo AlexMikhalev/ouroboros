@@ -52,13 +52,13 @@ function world({ open = false, stack = true, coarse = true, enabled = DRAWER_DRA
     const sidebar = withStyle(fakeEl('sidebar'));
     const scrim = withStyle(fakeEl('scrim'));
     const room = fakeEl('room'); room.parentElement = doc.body;
-    const state = { open, set: [], grabs: 0 };
+    const state = { open, set: [], grabs: 0, snaps: [] };
     const flags = { field: new Set(), sideways: new Set(), blocked: false, selection: false };
     const env = { stack, coarse, layoutHandlers: new Set() };
     const dispose = bindDrawerDrag({
         sidebar, scrim, isOpen: () => state.open,
         setOpen: (v) => { state.set.push(v); state.open = v; scrim.hidden = !v; },
-        isStack: () => env.stack, isCoarse: () => env.coarse, onGrab: () => { state.grabs += 1; }, win, doc, enabled,
+        isStack: () => env.stack, isCoarse: () => env.coarse, onGrab: () => { state.grabs += 1; }, onSnap: (v) => state.snaps.push(v), win, doc, enabled,
         onLayout: (fn) => { env.layoutHandlers.add(fn); return () => env.layoutHandlers.delete(fn); },
         isField: (el) => flags.field.has(el), isSideways: (el) => flags.sideways.has(el),
         ...(blockers ? {} : { isBlocked: () => flags.blocked }), hasSelection: () => flags.selection,
@@ -420,4 +420,26 @@ test('a menu that a long press opened under the still finger keeps it: a sideway
     o.touch('touchend', { x: 286, y: 300 });
     assert.deepEqual(o.state.set, []);
     w.dispose(); o.dispose();
+});
+
+test('a finger that latches the drawer open or closed snaps once (the haptic); a spring back or the system does not', () => {
+    const w = world();
+    open(w, { from: 100, to: 100 + 12 + 150, steps: 5, dt: 200 });  // slow, under half: springs back
+    assert.deepEqual(w.state.snaps, [], 'it went back where it was: nothing latched');
+    w.runTimers();
+    open(w);
+    assert.deepEqual(w.state.snaps, [true], 'released, it latched open');
+    w.touch('touchstart', { x: 300, y: 300, target: w.sidebar });
+    w.touch('touchmove', { x: 288, y: 300, dt: 200 });
+    w.touch('touchmove', { x: 288 - 110, y: 300, dt: 200 });
+    w.touch('touchend', { x: 288 - 110, y: 300, dt: 200 });
+    assert.deepEqual(w.state.snaps, [true, false], 'and latched closed');
+    w.runTimers();
+    w.touch('touchstart', { x: 100, y: 300 });
+    w.touch('touchmove', { x: 112, y: 300 });
+    w.touch('touchmove', { x: 112 + 200, y: 300, dt: 200 });
+    w.touch('touchcancel', { x: 112 + 200, y: 300 });
+    assert.deepEqual(w.state.set.at(-1), true, 'the system took the touch and the drawer opened…');
+    assert.deepEqual(w.state.snaps, [true, false], '…but that was not the finger\'s latch');
+    w.dispose();
 });
