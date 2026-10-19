@@ -89,7 +89,7 @@ html[data-layout="stack"] .shell-icon-control {
     --nav-row-h: 44px;       /* a place: Main Chat, Files … */
     --nav-item-h: 32px;      /* a Project row */
     --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
-    --nav-kebab-w: var(--nav-control-h);  /* the column a Project row's ⋯ takes */
+    --nav-kebab-w: var(--nav-control-h);  /* the column a Project row's ⋯ takes (none on touch: a long press opens it) */
     --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
     width: var(--drag-width, var(--sidebar-width));
     height: var(--vvh);
@@ -7021,8 +7021,9 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     outline-offset: -2px;
 }
 
-/* A row's ⋯: visible at rest where there is no hover (a phone); under a mouse it appears with the row's hover or
-   focus, so actions never depend on hover (DESIGN "actions never depend on hover"). */
+/* A row's ⋯: under a mouse it appears with the row's hover or focus. On touch the row's menu opens by a long press
+   (owner 19.10, 5A; row_menu_gesture.js), so the ⋯ leaves the row's look and its column there, and stays the keyboard's
+   and assistive technology's door: it comes back with its column whenever the keyboard reaches it. */
 .nav-project-kebab {
     width: var(--nav-control-h);
     height: var(--nav-control-h);
@@ -7064,6 +7065,51 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 .nav-project-kebab:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: -2px;
+}
+
+/* Touch: a long press opens the row's menu, so the ⋯ takes no room and no finger, and the row's words are not a
+   selection or a callout under the held finger. The ⋯ stays in the tab order: focused (the keyboard, or assistive
+   technology moving focus), it is drawn again with its column. */
+@media (pointer: coarse) {
+    #primary-sidebar { --nav-kebab-w: 0px; }
+    .nav-project-item .nav-project-kebab:not(:focus) {
+        width: 0;
+        height: 0;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+    }
+    .nav-project-item:has(> .nav-project-kebab:focus) {
+        grid-template-columns: minmax(0, 1fr) var(--nav-control-h);
+    }
+    .nav-project-item {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+}
+
+/* A Project row menu's first line: the row's mark and its words (owner 19.10, 5A), the state word in the primary ink.
+   It is no item (no hover, no focus); space, not a rule, parts it from the items. */
+.project-row-menu-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: 280px;
+    margin-bottom: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-secondary);
+    font-size: var(--type-meta);
+    line-height: var(--line-meta);
+}
+.project-row-menu-status > .status-mark {
+    flex: 0 0 18px;
+}
+.project-row-menu-word {
+    color: var(--text-primary);
+    font-weight: 500;
 }
 
 /* New Project dialog */

@@ -218,6 +218,12 @@ def test_sidebar_is_three_zones_with_the_projects_list_as_the_one_scroller():
     assert "--nav-kebab-w: var(--nav-control-h);" in css
     assert "grid-template-columns: minmax(0, 1fr) var(--nav-kebab-w);" in css.split("\n.nav-project-item {", 1)[1].split("}", 1)[0]
     assert "padding-right: calc(var(--nav-kebab-w) + var(--space-1));" in css.split("\n.nav-row-main {", 1)[1].split("}", 1)[0]
+    # On touch a long press opens a row's menu: the ⋯ keeps no column and no finger, and stays the keyboard's door.
+    touch = css.split("/* Touch: a long press opens the row's menu", 1)[1].split("\n}\n", 1)[0]
+    assert "#primary-sidebar { --nav-kebab-w: 0px; }" in touch
+    assert ".nav-project-item .nav-project-kebab:not(:focus) {" in touch and "pointer-events: none" in touch
+    assert ".nav-project-item:has(> .nav-project-kebab:focus) {" in touch
+    assert "-webkit-touch-callout: none" in touch and "user-select: none" in touch
     # The row's ⋯ is the shell's one More glyph.
     app_js = _read("web/app.js")
     assert "kebab.innerHTML = SHELL_ICONS.more;" in app_js and "kebab.textContent = '⋯'" not in app_js

@@ -8,6 +8,7 @@ import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
 import { IDLE_SUMMARY, buildProjectActivityIndex, markWords, reconcileProjectRooms } from './modules/project_activity.js';
 import { createStatusMark, markView, paintStatusMark } from './modules/status_mark.js';
+import { bindRowMenuGesture } from './modules/row_menu_gesture.js';
 import { initFiles } from './modules/files.js';
 import { createNotificationActivation, getNotifier } from './modules/notifications.js';
 import { showToast } from './modules/toast.js';
@@ -886,20 +887,7 @@ function paintProjectsNav() {
                 kebab.title = tr('project.kebab_title', 'Project actions');
                 kebab.addEventListener('click', (event) => {
                     event.stopPropagation();
-                    openProjectRowMenu(item.project, {
-                        apiClient, anchorEl: kebab, fallbackFocus: navProjectsToggle,
-                        isPinPending: () => pendingProjectPins.has(item.project.id),
-                        onPin: (pinned) => setProjectPin(item.project, pinned),
-                        onChanged: (change = {}) => {
-                            if (change.optimistic && change.projectId) {
-                                const row = lastProjectRows.find(p => p.id === change.projectId);
-                                if (row) { row.lifecycle = 'deleting'; row._unread = false; }
-                                if (navState.activeProjectId === change.projectId) closeProjectPanel();
-                                paintProjectsNav();
-                            } else refreshProjectsNav();
-                            knownProjectsJson = '';
-                        },
-                    });
+                    openProjectMenu(item, { anchor: kebab });
                 });
                 item.appendChild(kebab);
             }
@@ -920,6 +908,41 @@ function paintProjectsNav() {
     if (focused?.isConnected && navProjectsList.contains(focused) && focused !== document.activeElement) focused.focus({ preventScroll: true });
     patchProjectActivityMarkers(projectActivityIndex);
 }
+
+// A Project row's one menu (project_create.js), from its ⋯ or by the row gesture bound once on the list below (a
+// right-click, a long press, Shift+F10 or the ContextMenu key). It reads the row's Project as the menu opens, never a
+// copy a closure kept, and opens with the row's mark and its words. Only the ⋯ says it has a popup. Says whether it opened.
+function openProjectMenu(item, { anchor = null, point = null } = {}) {
+    const project = lastProjectRows.find((row) => row.id === item?.dataset.navProjectId);
+    if (!project || String(project.lifecycle || 'active') !== 'active') return false;
+    const summary = projectActivityIndex.byChat.get(String(project.chat_id)) || IDLE_SUMMARY;
+    const kebab = item.querySelector('.nav-project-kebab');
+    return openProjectRowMenu(project, {
+        apiClient, anchorEl: anchor || item.querySelector('.nav-project-row'), point,
+        menuButton: anchor === kebab ? kebab : null, fallbackFocus: navProjectsToggle,
+        status: { view: markView({ mark: summary.mark, owner: summary.owner, unread: project._unread }),
+            word: summary.word, text: markWords(summary, project._unread) },
+        isPinPending: () => pendingProjectPins.has(project.id),
+        onPin: (pinned) => setProjectPin(project, pinned),
+        onChanged: (change = {}) => {
+            if (change.optimistic && change.projectId) {
+                const row = lastProjectRows.find(p => p.id === change.projectId);
+                if (row) { row.lifecycle = 'deleting'; row._unread = false; }
+                if (navState.activeProjectId === change.projectId) closeProjectPanel();
+                paintProjectsNav();
+            } else refreshProjectsNav();
+            knownProjectsJson = '';
+        },
+    });
+}
+const disposeProjectRowGesture = navProjectsList ? bindRowMenuGesture({
+    root: navProjectsList,
+    rowOf: (node) => {
+        const item = node?.closest?.('.nav-project-item');
+        return item && navProjectsList.contains(item) && !item.classList.contains('is-deleting') ? item : null;
+    },
+    open: openProjectMenu,
+}) : () => {};
 
 // The ⋯ menu's Pin or Unpin asks for the state its label named, so a menu opened before
 // another window changed the pin never flips it back. The row moves only once saved.
@@ -1155,6 +1178,7 @@ window.addEventListener('pagehide', (event) => {
     disposeScrollFades.forEach((dispose) => dispose());
     telegramHost.dispose();
     disposeDrawerDrag();
+    disposeProjectRowGesture();
 });
 loadVersion();
 syncNavigationState();
