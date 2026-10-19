@@ -269,6 +269,19 @@ test('the common DOM writer neither rewrites nor re-announces an unchanged statu
     assert.equal(primary.getAttribute('aria-label'), 'Task status: Failed, Paused');
 });
 
+// The mark is decorative, so the owner's move it shows is said in the chip's accessible name too, unless the word
+// already says it.
+test('the owner\'s move a chip shows is in its accessible name, once', () => {
+    const chip = element();
+    paintTaskPhase(chip, taskActivityPresentation({ phase: 'working', work: { mark: 'moving', owner: true } }));
+    assert.equal(markOf(chip), 'dot/owner');
+    assert.equal(chip.getAttribute('aria-label'), 'Task status: Working · Something here waits for you');
+    paintTaskPhase(chip, taskActivityPresentation({ phase: 'working', ownerWait: 'owner_wait' }));
+    assert.equal(chip.getAttribute('aria-label'), 'Task status: Waiting for your answer');
+    paintTaskPhase(chip, taskActivityPresentation({ phase: 'working' }));
+    assert.equal(chip.getAttribute('aria-label'), 'Task status: Working');
+});
+
 test('making a finished card inert never replaces its recorded outcome with the default Done', () => {
     const full = { finished: true, phaseEl: element(), phaseSecondaryEl: element(true) };
     setLiveCardPhase(full, 'error', 'Failed');

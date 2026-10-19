@@ -338,8 +338,11 @@ export function paintTaskPhase(phaseEl, view, secondaryEl = null, isSubagent = f
     const activeClassName = view.className || `chat-live-phase ${activePhase}`;
     const tone = CHIP_TONES.includes(view.tone) ? view.tone : 'neutral';
     const secondaryText = String(view.secondary || '');
+    // The owner's move is said in words too, unless the word already says it: the mark is decorative.
+    const said = `${activeText} ${secondaryText}`.includes(CHIP.ownerWait());
+    const ownerNote = view.owner && !said ? tr('work.amber.action', 'Something here waits for you') : '';
     const activeLabel = `${isSubagent ? 'Subagent' : 'Task'} status: ${activeText}`
-        + (secondaryText ? `, ${secondaryText}` : '');
+        + (secondaryText ? `, ${secondaryText}` : '') + (ownerNote ? ` · ${ownerNote}` : '');
     const secondaryChanged = paintPhaseSecondary(secondaryEl, secondaryText, phaseEl.hidden);
     const { mark, words } = chipParts(phaseEl);
     const markChanged = paintStatusMark(mark, markView({ mark: view.mark, owner: view.owner, outcome: view.outcome }));
