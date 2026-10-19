@@ -13,6 +13,7 @@ import pytest
 from ouroboros import openrouter_cost as cost, usage_accounting as usage, usage_store
 from ouroboros.task_results import load_task_result, write_task_result
 from scripts import reconcile_openrouter_cost as command
+from tests._store_shared import release_store_handles
 
 pytestmark = pytest.mark.serial  # Shared queue/capture globals and subprocess export consumers.
 TARGET = {"provider": "openrouter", "base_url": "https://router.example/api/v1", "api_key": "test-original-key"}
@@ -94,6 +95,7 @@ def test_default_does_not_reimport_store_removed_during_inspection(env, capsys, 
     store_path = env / usage_store.STORE_REL
     held = usage_store.hold
     def removed_before_open(root, **kwargs):
+        release_store_handles(store_path)  # another remover; this process's idle handle blocks it on Windows
         store_path.rename(store_path.with_suffix(".gone"))
         return held(root, **kwargs)
     monkeypatch.setattr(usage_store, "hold", removed_before_open)
@@ -108,6 +110,7 @@ def test_apply_does_not_reimport_store_removed_after_inspection(env, capsys, mon
     store_path = env / usage_store.STORE_REL
     locked = usage._locked
     def removed_before_apply(root, **kwargs):
+        release_store_handles(store_path)  # another remover; this process's idle handle blocks it on Windows
         store_path.rename(store_path.with_suffix(".gone"))
         return locked(root, **kwargs)
     monkeypatch.setattr(usage, "_locked", removed_before_apply)

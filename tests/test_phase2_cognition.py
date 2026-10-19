@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests import _dialogue as dialogue_test
+from tests._store_shared import remove_store_tree
 
 import json
 import pathlib
@@ -343,8 +344,6 @@ def test_facts_row_never_suppresses_final_artifact_failure_truth(tmp_path):
 
 
 def test_split_facts_row_keeps_only_canonical_result_ref_after_child_gc(tmp_path):
-    import shutil
-
     from ouroboros import agent_task_pipeline as pipeline
     from ouroboros.headless import copy_child_task_result
     from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
@@ -372,7 +371,7 @@ def test_split_facts_row_keeps_only_canonical_result_ref_after_child_gc(tmp_path
     )
     copied = copy_child_task_result(canonical, task)
     assert copied and load_task_result(canonical, "split-root")
-    shutil.rmtree(child)
+    remove_store_tree(child)
 
     row = next(row for row in _chat_rows(canonical) if row.get("task_id") == "split-root")
     assert row["result_ref"] == {

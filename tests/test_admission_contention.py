@@ -52,7 +52,7 @@ def database_reader(root, *, exclusive=False, money=False, acquire_wait_sec=0.0)
             entered.set()
     thread = threading.Thread(target=run)
     thread.start()
-    assert entered.wait(3) and not errors
+    assert entered.wait(3 + acquire_wait_sec) and not errors  # the lock may first wait out a reader
     try:
         yield lambda: (release.set(), thread.join(3))
     finally:

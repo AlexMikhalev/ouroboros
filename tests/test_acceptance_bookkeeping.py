@@ -9,8 +9,6 @@ the task-acceptance checkpoint publisher, which is gone; old stored panels that
 carry an applied source still render through the review projection's readers.
 """
 
-import shutil
-
 import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -22,6 +20,7 @@ from ouroboros.gateway.tasks import api_task_artifact
 from ouroboros.headless import copy_child_task_result
 from ouroboros.task_results import load_task_result, write_task_result
 from ouroboros.task_status import load_effective_task_result
+from tests._store_shared import remove_store_tree
 
 pytestmark = pytest.mark.serial
 
@@ -98,7 +97,7 @@ def test_child_copyback_keeps_the_review_projection_and_only_user_deliverables(t
     write_task_result(canonical, "applied", "running", child_drive_root=str(child))
     _, child_result, _ = _finish(child, canonical=canonical, user_file=user_file)
     copied = copy_child_task_result(canonical, {"id": "applied", "drive_root": str(child)})
-    shutil.rmtree(child)
+    remove_store_tree(child)  # the child drive's store stays open in this process
 
     expected = "ready" if user_file else "not_applicable"
     assert copied["artifact_bundle"]["status"] == expected

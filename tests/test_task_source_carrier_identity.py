@@ -27,6 +27,7 @@ import pytest
 
 from ouroboros import artifacts, context_compaction as cc, headless, observability
 from ouroboros.task_results import load_task_result, write_task_result
+from tests._store_shared import remove_store_tree
 from tests.test_context_reclaim_materializer import _request, _unit
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -123,7 +124,7 @@ def test_every_task_source_carrier_keeps_its_reference_in_either_registration_or
     # Byte-identical, key order and the producer's marker spacing included.
     assert {key: json.dumps(copied[key], ensure_ascii=False) for key in SOURCE_FIELDS} == before
     assert copied["completion_observations"]["messages"][0]["content"] == body["completion_observations"]["messages"][0]["content"]
-    shutil.rmtree(child)
+    remove_store_tree(child)
     for ref, raw in zip(full, originals):  # verified and copied, whatever shape reached the file first
         assert artifacts.read_actor_source_bytes(parent, task_id, ref) == raw
         assert artifacts.read_actor_source_bytes(parent, task_id, _compact(ref)) == raw
@@ -263,7 +264,7 @@ def test_a_pending_legacy_row_heals_on_one_retry_and_leaves_the_ledger(tmp_path)
     assert wave["wave_artifact"] == _compact(original["wave_artifact"])
     assert wave["spec_source_ref"] == _compact(original["spec_source_ref"])
     assert (row["child_ref_promotion"]["status"], row["child_ref_promotion"]["unavailable_refs"]) == ("complete", [])
-    shutil.rmtree(child)
+    remove_store_tree(child)
     assert load_plan_review_state(parent, task_id)["waves"][-1]["spec"] == spec  # verified canonical bytes
     assert observability.retry_pending_child_ref_promotions(parent)["scanned"] == 0
 
