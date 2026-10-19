@@ -2183,13 +2183,19 @@ whole column scroll with Main pinned; a tool never becomes an unlabelled icon. O
 place is chosen at a time, and pressing a place opens it, never closes it.
 
 **The drawer.** In the stack layout the same column slides over the room from the
-left and leaves a strip of the room visible. ☰ sits in the leading slot of every
-header, an open Project's included, and the drawer's × takes its place. The scrim,
+left and leaves a strip of the room visible. In a room (Main, an open Project) ☰
+is the first control of the composer's row, beside Swarm and under the thumb, and
+steps aside with the others while an open capsule has the line alone; on a page
+without a composer it sits in the leading slot of the header. The
+drawer's × sits in its head, where a page's ☰ is. The scrim,
 ×, Escape, Back and choosing a place close it. A drag only speeds this up: a
-horizontal drag across the room, never from the screen's edge and never on a
-field, a control, selected text or anything that scrolls sideways, pulls the
-drawer with the finger, and dragging it back closes it (`web/modules/drawer_drag.js`,
-switched off by one constant). Every gesture has a visible control.
+sideways finger anywhere on the room, from the screen's very edge and over its
+buttons, links, header and composer, pulls the drawer with the finger, and holds
+it while the row under the finger is redrawn or a browser bar changes the
+window's height; only a field, a slider, media, selected text and anything that
+scrolls sideways keep their own finger. Dragging it back closes it
+(`web/modules/drawer_drag.js`, switched off by one constant). Every gesture has
+a visible control.
 
 **Layers and dismissal.** The drawer and the Project panel are layers in one
 stack (`web/modules/layers.js`); dialogs, menus and the Shade keep their own
