@@ -242,17 +242,16 @@ export function reviewPoolCopies(setting, inherited = '') {
 
 const subagentList = (indices) => `Subagents ${indices.slice(0, -1).map((index) => index + 1).join(', ')} and ${indices.at(-1) + 1}`;
 
-/** The offer under a pool of copies: what they cost, and what keeping one per model changes. */
+/** The offer under a pool of copies: what they cost when a review asks every copy, and how many
+ * independent seats the pool has. How many seats a review asks follows the strictness, never this line. */
 export function reviewCopiesText(groups, poolSize) {
     if (!groups.length) return '';
-    const after = poolSize - groups.reduce((sum, group) => sum + group.copies.length, 0);
+    const independent = poolSize - groups.reduce((sum, group) => sum + group.copies.length, 0);
     const named = groups.map((group) => subagentList([group.keep, ...group.copies])).join('; ');
     const cost = groups.length === 1
-        ? `are copies of one model: each review pays for ${groups[0].copies.length + 1} runs of it`
-        : 'are copies of one model per group: each review pays for every copy';
-    const kept = after === 1 ? 'a single answer decides each review, so one flaky answer can block or pass it'
-        : `${after} answers decide each review instead of ${poolSize}`;
-    return `${named} ${cost} and gets no second opinion. With one ${groups.length === 1 ? '' : 'of each '}kept, ${kept}.`;
+        ? `are copies of one model: a review that asks all of them pays for ${groups[0].copies.length + 1} runs of it`
+        : 'are copies of one model per group: a review that asks every copy pays for each one';
+    return `${named} ${cost} and gets no second opinion. The pool has ${independent} independent seat${independent === 1 ? '' : 's'}, with or without the copies.`;
 }
 
 /** `subagent_runtime.PACKET_ONLY_POOL_WARNING`, the save warning of a pool no row of which reads the repository. */
