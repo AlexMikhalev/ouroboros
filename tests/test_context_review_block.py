@@ -107,11 +107,11 @@ def test_the_pool_is_the_marked_rows_named_by_their_catalog_handle(tmp_path, mon
     # seat_id is the stored row id (the identity the records carry); subagent_id
     # is the roster handle ``## Available subagents`` shows.
     assert first == {"seat_id": "critic-key", "subagent_id": handles["critic-key"], "model": "openai/gpt-5.6-terra",
-                     "effort": "medium", "delivery": "native", "cost_hint": first["cost_hint"]}
+                     "effort": "medium", "delivery": "native", "cost_hint": first["cost_hint"], "cost_usd": None, "cost_kind": "unknown", "last_review": "unknown"}
     assert second == {"seat_id": "packet-key", "subagent_id": handles["packet-key"], "model": "openai/gpt-5.6-sol",
-                      "effort": "high", "delivery": "packet", "cost_hint": second["cost_hint"]}
+                      "effort": "high", "delivery": "packet", "cost_hint": second["cost_hint"], "cost_usd": None, "cost_kind": "unknown", "last_review": "unknown"}
     assert third == {"seat_id": "session-key", "subagent_id": handles["session-key"], "model": "codex=gpt-5.6-sol",
-                     "effort": "high", "delivery": "session", "cost_hint": SESSION_SEAT_COST_HINT}
+                     "effort": "high", "delivery": "session", "cost_hint": SESSION_SEAT_COST_HINT, "cost_usd": None, "cost_kind": "subscription", "last_review": "unknown"}
     assert "helper-key" not in text and "gpt-5.6-luna" not in text, "an unmarked row is not a reviewer"
     # An api seat's hint is the wave's own estimate or an honest unknown — never a price table.
     for row in (first, second):
@@ -169,7 +169,7 @@ def test_a_catalog_with_no_marked_row_is_an_empty_pool_reviewed_by_the_main_mode
     assert [(row["seat_id"], row["subagent_id"], row["model"], row["delivery"]) for row in block["pool"]] == [
         ("main", "main", "openai/gpt-5.6-sol", "native")]
     assert "default" not in (block["source"], text.split('"rule"')[0]), "no shipped panel is implied"
-    assert block["rule"] and block["surfaces"]["commit_gate"].startswith("every pool row")
+    assert block["rule"] and "every ticked reviewer" in block["surfaces"]["commit_gate"]["blocking"]
     # No catalog at all is a never-configured install: the read seam mints the factory
     # rows (`factory_review_rows`), so the block shows that pool — not an empty one.
     monkeypatch.delenv(SUBAGENTS_SETTING)
@@ -219,20 +219,20 @@ def test_an_invalid_catalog_is_an_error_with_an_empty_pool_not_an_absent_one(mon
     assert block["error"] == review_pool_state(os.environ[SUBAGENTS_SETTING])["error"] and block["error"]
     assert (block["pool"], block["pool_empty"]) == ([], False)
     assert "main_self_review" not in block, "a malformed catalog refuses; it never falls back to Main"
-    assert block["rule"] and block["surfaces"]["plan_review"] == "ask='council' = every pool row; ask=[ids] = those rows"
+    assert block["rule"] and "Advisory requires a ticked reviewer" in block["surfaces"]["plan_review"]
 
 
-def test_the_block_never_reads_the_last_execution(monkeypatch):
+def test_recent_execution_is_a_fact_without_replacing_the_configured_seat(monkeypatch):
     from ouroboros import reviewer_slot_config
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("## Review must not read reviewer_slots_last")
-
-    monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", forbidden)
-    monkeypatch.setattr(reviewer_slot_config, "_last_execution_path", forbidden)
+    monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {
+        "critic-key": {"status": "ok", "ts": "2026-10-19", "cost_usd": 0.023,
+                       "requested": {"model": "old-model"}, "effective": {"model": "old-model"}}})
     monkeypatch.setenv(SUBAGENTS_SETTING, _POOL)
-    block, text = _block()
-    assert block["source"] == "structured" and "reviewer_slots_last" not in text
+    block, _text = _block()
+    row = block["pool"][0]
+    assert row["model"] == "openai/gpt-5.6-terra"
+    assert row["cost_usd"] == 0.023 and row["cost_kind"] == "measured"
+    assert row["last_review"] == {"status": "ok", "ts": "2026-10-19", "cost_usd": 0.023}
 
 
 def test_the_block_reads_the_task_snapshot_not_settings_saved_after_the_task_started(tmp_path, monkeypatch):
@@ -313,7 +313,8 @@ def test_one_rule_sentence_per_effective_authority(monkeypatch, enforcement, mod
         assert "commit proceeds" not in block["rule"]
 
 
-def test_a_fourteen_seat_pool_shrinks_its_rows_and_stays_within_four_kilobytes(tmp_path, monkeypatch):
+def test_a_fourteen_seat_pool_keeps_every_seats_delivery_cost_and_reliability(tmp_path, monkeypatch):
+    from ouroboros import reviewer_slot_config
     keys = [f"{'k' * 60}{index:04d}" for index in range(14)]
     monkeypatch.setenv(SUBAGENTS_SETTING, _roster(*[
         _row(key, f"openai/{'m' * 53}{index:04d}") for index, key in enumerate(keys)]))
@@ -321,15 +322,20 @@ def test_a_fourteen_seat_pool_shrinks_its_rows_and_stays_within_four_kilobytes(t
         {"record_id": f"rv-{'r' * 40}-{index:02d}", "surface": "commit_gate",
          "ts": f"2026-10-07T12:{index:02d}:00.000000+00:00", "verdict": {"aggregate": "QUORUM_FAILED"}}
         for index in range(7)][:int(limit)])
+    last = {"ts": "2026-10-19", "status": "error", "failure_code": "provider_error", "cost_kind": "measured", "cost_usd": 0.02}
+    monkeypatch.setattr(reviewer_slot_config, "reviewer_slot_last_executions", lambda: {
+        key: {**last, "requested": {"model": "old-model", "profile": "p" * 500},
+              "effective": {"model": "old-model", "profile": "p" * 500}} for key in keys})
     block, text = _block()
     rows = block["pool"]
 
-    assert len(text.encode("utf-8")) <= 4096
-    assert block["omitted"] == {"rows": 14} and "recent_records" not in block
+    assert block["omitted"] == {"rows": 0} and "recent_records" not in block
     records = _records(tmp_path)
     assert records["omitted"]["records"] == "1+" and len(records["recent_records"]) == 5
-    assert len(rows) == 14 and all(set(row) == {"seat_id", "model"} and len(row["seat_id"]) == 64 for row in rows)
+    assert len(rows) == 14 and all({"seat_id", "model", "delivery", "cost_usd", "cost_kind", "last_review"} <= row.keys() and len(row["seat_id"]) == 64 for row in rows)
     assert block["full_source"]["pool"] == "GET /api/review-pool"
+    assert all(row["last_review"] == last for row in rows)
+    assert len(text.encode("utf-8")) < 12_000, "full large roster must not copy execution projections"
 
 
 _LANES_KEY = "OUROBOROS_REVIEWER_SLOTS"

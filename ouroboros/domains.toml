@@ -299,6 +299,9 @@ D20 = "Presence"
 "ouroboros/gateway/reply_preparation.py" = "D11"
 "ouroboros/gateway/storage.py" = "D11"
 "ouroboros/gateway/main_decisions.py" = "D11"  # addressed canonical Main questions and human recovery controls
+"ouroboros/gateway/work_status.py" = "D11"  # one work, one status: pure classification read by every surface and the mind
+"ouroboros/gateway/work_projection.py" = "D11"  # server observations for the work projection
+"ouroboros/gateway/work_contracts.py" = "D11"
 "ouroboros/gateway/task_events.py" = "D11"
 "ouroboros/gateway/task_archive.py" = "D11"
 "ouroboros/gateway/task_hurry.py" = "D11"
@@ -1145,6 +1148,7 @@ lazy_only = [
   "D12->D01",
   "D12->D05",
   "D12->D06",
+  "D12->D09",
   "D12->D10",
   "D12->D15",
   "D12->D16",

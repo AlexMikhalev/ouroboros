@@ -152,7 +152,7 @@ def test_terminal_child_projection_is_idempotent_and_honest_for_all_outcomes(tmp
     cases = [
         ("ok", "completed", {"execution": {"status": "ok"}}, "Done"),
         ("failed", "failed", {"execution": {"status": "failed"}}, "Failed"),
-        ("cancelled", "cancelled", {"execution": {"status": "ok"}}, "Cancelled"),
+        ("cancelled", "cancelled", {"execution": {"status": "ok"}}, "Stopped"),
         ("degraded", "completed", {"execution": {"status": "best_effort"}}, "Done with warnings"),
     ]
     for suffix, status, axes, label in cases:
@@ -251,7 +251,7 @@ def test_terminal_root_fallback_covers_cancel_without_preempting_open_synthesis(
     )
     row = next(row for row in _chat_rows(tmp_path) if row.get("task_id") == "cancelled-root")
     assert row["summary_kind"] == "terminal_root_projection"
-    assert row["outcome"] == "Cancelled"
+    assert row["outcome"] == "Stopped"
 
     pending = write_task_result(
         tmp_path, "normal-root", STATUS_COMPLETED,

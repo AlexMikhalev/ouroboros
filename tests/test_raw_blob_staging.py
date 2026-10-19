@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -144,6 +145,31 @@ def test_raw_staging_ignores_hostile_attributes_filters_and_config(tmp_path):
         assert shown == raw, rel
     assert not marker.exists()  # no clean/smudge/process filter ran
 
+
+
+def test_a_payload_capture_leaves_no_control_folder_where_read_only_files_refuse_deletion(tmp_path, monkeypatch):
+    """Windows refuses to delete a read-only file, and the blobs a capture stages into its
+    host-managed control object database are read-only: the control folder still goes instead
+    of staying in the temp folder forever."""
+    from ouroboros.subagent_worktrees import payload_capture_git_env
+
+    root, _env = _repo(tmp_path)
+    (root / "new.txt").write_bytes(b"staged into the control object database")
+    real_unlink = os.unlink
+
+    def windows_unlink(path, *, dir_fd=None):
+        if not os.lstat(path, dir_fd=dir_fd).st_mode & stat.S_IWRITE:
+            raise PermissionError(13, "Access is denied", path)
+        return real_unlink(path, dir_fd=dir_fd)
+
+    with payload_capture_git_env(root) as env:
+        control = pathlib.Path(env["GIT_DIR"]).parent
+        subprocess.run(["git", "hash-object", "-w", "new.txt"], cwd=root, env=env, check=True, capture_output=True)
+        objects = [p for p in (control / ".git" / "objects").rglob("*") if p.is_file()]
+        assert any(not p.stat().st_mode & stat.S_IWRITE for p in objects), "git staged read-only objects"
+        monkeypatch.setattr(os, "unlink", windows_unlink)
+        monkeypatch.setattr(os, "remove", windows_unlink)
+    assert not control.exists()
 
 @pytest.mark.skipif(not POSIX, reason="Windows has no POSIX executable bit to diverge")
 def test_baseline_modes_pin_regular_files_and_report_divergence(tmp_path):
