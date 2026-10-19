@@ -155,6 +155,12 @@ html[data-layout="stack"] .shell-icon-control {
     padding: var(--space-2) var(--space-2) 0 var(--space-3);
 }
 
+/* A retained pre-three-zone shell still wraps the zones in .sidebar-scroll.
+   Let its full-height list hand the wheel to the sidebar instead of trapping
+   overscroll in a list that cannot scroll itself. Fresh documents are unchanged. */
+#primary-sidebar > .sidebar-scroll { flex: 0 0 auto; }
+#primary-sidebar > .sidebar-scroll .nav-projects-list { overscroll-behavior-y: auto; }
+
 /* macOS desktop window (launcher_window_chrome.py): while its transparent title bar covers the page,
    the shell writes the band's height and the traffic lights' far edge here, measured, in CSS px.
    The sidebar starts below the band; content reaching the left edge (drawer layout, a project panel
