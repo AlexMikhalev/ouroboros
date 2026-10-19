@@ -22,7 +22,7 @@ test('every census phase draws the census table\'s shape, a settled cold sleep w
     assert.equal(censusTaskPhase({ activity_id: 't', phase: 'future_phase' }).mark, 'ring');
 });
 
-test('a Resume only the owner can give is his move; his own Pause and a self-releasing hold are not', () => {
+test("a Resume only the owner can give is the owner's move; their own Pause and a self-releasing hold are not", () => {
     const paused = (patch) => censusTaskPhase({ activity_id: 't', phase: 'budget_paused', ...patch });
     assert.deepEqual(look(paused({ pause_cause: 'budget', can_resume: true })), ['Paused · spending limit', 'pause', 'owner', true]);
     assert.deepEqual(look(paused({ pause_cause: 'restart', can_resume: true })), ['Paused · app stopped', 'pause', 'owner', true]);
@@ -36,7 +36,7 @@ test('a Resume only the owner can give is his move; his own Pause and a self-rel
     assert.deepEqual(look(desiredLiveCardPhase(record)), ['Paused · app stopped', 'pause', 'neutral', false]);
 });
 
-test('a wait that needs the owner is his move, and a parked task ignores its old waits as the server does', () => {
+test("a wait that needs the owner is the owner's move; a parked task ignores its old waits as the server does", () => {
     const working = { activity_id: 't', phase: 'working', model_waits: { w: humanWait } };
     assert.deepEqual(look(censusTaskPhase(working, null, true, waitingModel(working))), ['Waiting for access', 'still', 'owner', true]);
     const parked = { ...working, phase: 'budget_paused', pause_cause: 'owner' };
@@ -46,7 +46,7 @@ test('a wait that needs the owner is his move, and a parked task ignores its old
     assert.deepEqual(look(desiredLiveCardPhase(record)), ['Pausing…', 'moving', 'neutral', false]);
 });
 
-test('the owner\'s own question is his move; unconfirmed work proves nobody\'s', () => {
+test("the owner's own question is the owner's move; unconfirmed work proves nobody's", () => {
     const asked = { activity_id: 't', phase: 'working', owner_wait: { owner_wait_state: 'waiting', quiz_state: 'open' } };
     assert.deepEqual(look(censusTaskPhase(asked)), ['Waiting for your answer', 'still', 'owner', true]);
     // A System message's own task is the owner's move, but a closed socket leaves only a ring.
@@ -77,7 +77,8 @@ test('a chip\'s colour is its tone attribute, and amber is the owner\'s move alo
     assert.deepEqual(chipRules.filter(([, body]) => amber.test(body)).map(([head]) => head),
         ['.chat-live-phase[data-chip-tone="owner"]']);
     assert.doesNotMatch(style, /live-dot-breathe|chat-live-line-phase|\.chat-live-phase-secondary\[data-motion/);
-    // A settled Logs headline leaves the amber warning rule; a warn-level event keeps it.
-    assert.match(style, /\.log-entry \.log-phase:is\(\.warn, \.alive, \.empty\):not\(\[data-chip-tone\]\)\s*\{[^}]*--status-warn-fg/);
-    assert.doesNotMatch(style, /\.log-phase:is\([^)]*\.cancelled/);
+    // A settled Logs headline leaves the amber warning rule; a warn-level event (and an empty model answer) keeps it,
+    // while a heartbeat (Still working) is work in flight, never amber.
+    assert.match(style, /\.log-entry \.log-phase:is\(\.warn, \.empty\):not\(\[data-chip-tone\]\)\s*\{[^}]*--status-warn-fg/);
+    assert.doesNotMatch(style, /\.log-phase:is\([^)]*\.(?:cancelled|alive)/);
 });

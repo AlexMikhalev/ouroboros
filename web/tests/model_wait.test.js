@@ -135,7 +135,7 @@ test('waiting has no computation animation and yields to real work and terminal 
 });
 
 // A wait that resumes by itself is a neutral chip with still dots; one only the owner can end (sign-in, automatic
-// continuation off, unobservable access, an unproven account: the host's `requires_owner_action`) is his move, amber.
+// continuation off, unobservable access, an unproven account: the host's `requires_owner_action`) is the owner's move, amber.
 // A parked task runs no wait loop, so its old waits ask nothing of the owner (gateway/main_decisions.owner_actions).
 test('only a wait that needs the owner turns the card amber, and a parked card ignores its old waits', () => {
     const look = (record) => { const view = desiredLiveCardPhase(record); return [view.text, view.tone, view.owner, view.mark]; };

@@ -40,7 +40,7 @@ test('one head: the name opens the detail sheet, marks stay beside it, the who l
 test('the run state is one status chip: On, Off, Needs access, Reviewing…, Review found problems, Not reviewed yet', () => {
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('telegram'))).slice(1), ['ok', 'On']);
     assert.deepEqual(chipOf(renderInstalledSkillCard(skill())).slice(1), ['neutral', 'Off']);
-    // Amber is the owner's move: a grant, a review, a review to try again (each offers his own action).
+    // Amber is the owner's move: a grant, a review, a review to try again (each offers the owner's own action).
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('zoom_meeting'))).slice(1), ['warn', 'Needs access']);
     assert.deepEqual(chipOf(renderInstalledSkillCard(row('claudexor_quotas'))).slice(1), ['warn', 'Not reviewed yet']);
     const unfinished = skill({ review_status: 'pending', review_gate: { executable_review: false }, executable_review: false,

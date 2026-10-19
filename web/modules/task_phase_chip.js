@@ -237,7 +237,7 @@ function recordPhase(record = {}, terminalPhase = 'done') {
         ended: Boolean(record.finished), finalizing: Boolean(record.finalizingHold),
         ownerWait,
         modelWaiting: Boolean(record.modelWaiting), modelOwnerAction: Boolean(record.modelWaiting && record.modelOwnerAction),
-        // The census's explicit Resume (main_waiting's rule): the owner's own Pause is not his move.
+        // The census's explicit Resume (main_waiting's rule): the owner's own Pause is not the owner's move.
         resumeAction: record.canResume === true && record.pauseCause !== 'owner',
         ownerMove: Boolean(record.ownerMove), hold: record.projectHold,
         pauseCause: record.pauseCause, stopPolicy: record.cancelPendingPolicy,
@@ -281,7 +281,7 @@ export function syncParkedPhase(record, phase = '', activity = {}) {
     record.parkedPhase = parked;
     record.pauseCause = cause;
     record.censusPhase = phase;
-    record.canResume = activity.can_resume === true;  // a Resume only the owner gives, unless his own Pause holds it
+    record.canResume = activity.can_resume === true;  // a Resume only the owner gives, unless their own Pause holds it
     record.modelActivity = activity.model_activity || null;
     record.finishingReviews = parked === 'budget_paused' && Boolean(activity.finishing_reviews);
     record.detached = activity.detached === true;  // a detached work's census row (CONTRACTS K7/K8), in any room

@@ -36,9 +36,9 @@ test('header accepts the legacy numeric state shape without fabricating null as 
     });
 });
 
-// The budget is a neutral fact; it is the owner's move only while a task the spending limit stopped waits for him
+// The budget is a neutral fact; it is the owner's move only while a task the spending limit stopped waits for the owner
 // (gateway/main_decisions.py: a Main attention row whose reason is the budget), even at the limit itself.
-test('the budget pill asks for the owner only while a spending-limit stop waits for him', () => {
+test('the budget pill asks for the owner only while a spending-limit stop waits for the owner', () => {
     const atLimit = { spent_usd: 10, budget_limit: 10 };
     assert.deepEqual([headerBudgetPresentation(atLimit).fillPct, headerBudgetPresentation(atLimit).attention], [100, false]);
     const resume = { task_id: 'r', attention_reason: 'restart' };

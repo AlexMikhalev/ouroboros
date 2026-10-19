@@ -46,7 +46,7 @@ test('enabled consciousness keeps historical pause and unknown wake outcomes vis
     } finally { dispose?.(); applyPayload({ language: 'en', english: true }); Object.assign(globalThis, saved); }
 });
 
-test('a runtime pill is amber only for the owner\'s move: a first conversation, his chat, a spending-limit stop', () => {
+test("a runtime pill is amber only for the owner's move: a first conversation, the owner's chat, a spending stop", () => {
     const tones = {
         online: ['running', 'queued', 'idle_ready', 'thinking', 'sleeping'],
         owner: ['waiting_for_first_conversation', 'waiting_for_owner_chat', 'budget_blocked', 'budget_stopped'],

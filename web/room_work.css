@@ -11,7 +11,7 @@
      done / stopped / failed   a known outcome in its status foreground
    The mark is the shared one (status_mark.js, drawn by the recipe at the end of ui.css): the work's shape in
    its word's ink, a known outcome's dot in that outcome's hue, and the amber dot in its place while something
-   waits for the owner (a question or an action only he takes), beside any word. This file only places it.
+   waits for the owner (a question or an action only the owner takes), beside any word. This file only places it.
    Names stay --text-primary at 400; local dimensions are variables on .rw-surface, never a type size. */
 
 /* ---- the status control ---------------------------------------------------------------------------

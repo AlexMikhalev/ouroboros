@@ -150,7 +150,7 @@ for (const kind of ['direct_chat', 'managed_task']) {
                 const phase = () => fx.card().querySelector('[data-live-phase]').textContent;
                 assert.equal(phase(), 'Paused · by you · review work finishing');
                 assert.ok(findDescendant(fx.card(), '[data-resume-run]'), 'Resume is available while reviews finish');
-                // The owner's own Pause is his decision, not his move: its bars in neutral ink.
+                // The owner's own Pause is their decision, not a move waiting for them: its bars in neutral ink.
                 assert.deepEqual([markOf(fx.card().querySelector('[data-live-phase]')),
                     fx.card().querySelector('[data-live-phase]').dataset.chipTone], ['pause/ink', 'neutral']);
                 for (const finishing of [true, false, true, undefined]) {

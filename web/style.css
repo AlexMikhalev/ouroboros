@@ -4874,7 +4874,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-size: 12px;
 }
 
-/* Evolution's amber is the owner's move only: a first conversation, his chat, a spending limit that stopped it
+/* Evolution's amber is the owner's move only: a first conversation, the owner's chat, a spending limit that stopped it
    (evolution.js runtimePillTone). What goes on by itself keeps the plain pill above. */
 .evo-runtime-pill.owner {
     color: var(--status-warn-fg);

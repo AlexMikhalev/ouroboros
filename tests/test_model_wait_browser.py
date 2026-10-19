@@ -382,7 +382,7 @@ def test_wait_reconnect_preserves_unsubmitted_form_without_context_or_animation(
     row = page.locator('[data-wait-id="main-wait"]')
     page.evaluate("() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
     waiting_card = page.locator('.chat-live-card[data-model-waiting="1"]')
-    # An automatic wait is neutral and still; the same wait once only the owner can end it is his move, amber.
+    # An automatic wait is neutral and still; the same wait once only the owner can end it is the owner's move, amber.
     assert _chip_look(waiting_card) == {'tone': 'neutral', 'shape': 'still', 'hue': 'ink', 'animation': 'none'}
     ui['rows']['main-wait'].update(revision=2, auto_continue=False, requires_owner_action=True)
     ui['emit'](ui['rows']['main-wait'])

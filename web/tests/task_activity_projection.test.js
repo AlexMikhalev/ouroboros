@@ -124,7 +124,7 @@ test('a known failed outcome keeps its dot beside the actual late phase, and the
         [{ phase: 'budget_paused' }, true, false, 'Paused', 'dot/failed'],
         [{ phase: 'budget_pausing' }, true, false, 'Pausing…', 'dot/failed'],
         [{}, true, true, 'Waiting for access', 'dot/failed'],
-        // The owner's question in the late phase is his move: its amber dot outranks the outcome's.
+        // The owner's question in the late phase is the owner's move: its amber dot outranks the outcome's.
         [{ owner_wait: { owner_wait_state: 'waiting', quiz_state: 'open' } }, true, false, 'Waiting for your answer', 'dot/owner'],
         [{}, false, false, 'Activity unconfirmed', 'dot/failed'],
     ]) {
@@ -199,7 +199,7 @@ test('the validated model wait affects only its task attempt and independent sib
     row.model_waits.w.task_attempt = 2;
     const waiting = censusTaskPhase(row, null, true, waitingModel(row));
     assert.equal(waiting.text, 'Waiting for access');
-    // A wait that resumes by itself is neutral and still; one only the owner can end is his move.
+    // A wait that resumes by itself is neutral and still; one only the owner can end is the owner's move.
     assert.deepEqual([waiting.mark, waiting.tone, waiting.owner], ['still', 'neutral', false]);
     row.model_waits.w.requires_owner_action = true;
     const owner = censusTaskPhase(row, null, true, waitingModel(row));

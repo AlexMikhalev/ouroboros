@@ -622,7 +622,7 @@ function optionalFiniteNumber(value) {
 }
 
 /** Pure presentation projection used by the header and dependency-free tests. `attention` is the owner's move: a
- *  task the spending limit stopped waits for him (a Main attention row, gateway/main_decisions.py), else the pill is
+ *  task the spending limit stopped waits for the owner (a Main attention row, main_decisions.py), else the pill is
  *  a neutral fact. */
 export function headerBudgetPresentation(data) {
     const attention = Array.isArray(data?.main_attention)
