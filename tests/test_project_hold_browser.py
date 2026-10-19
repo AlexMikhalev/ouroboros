@@ -20,6 +20,10 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 TASK = "same-id-project-wait"
 WAIT = "Waiting for Project verification"
+# The room's status control says the word: a bar too short for it drops the word whole and the control's name keeps
+# it (DESIGN "Page header", #1998), so the name always carries it and the bar shows it wherever it fits.
+_ROOM_SAYS = """text => { const control = document.querySelector('#project-panel .rw-trigger');
+    return Boolean(control?.title.includes(text)) && (control.dataset.word === 'off' || control.innerText.includes(text)); }"""
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
@@ -117,8 +121,7 @@ def test_project_hold_reload_reconnect_and_automatic_same_id_recovery(
                     _open_project(page)
                     panel = page.locator(f"#panel-pchat-{PROJECT}")
                     # The room's status word sits in the panel bar (host), right after its title.
-                    page.wait_for_function("([id, text]) => document.getElementById(id)?.innerText.includes(text)",
-                                           arg=["project-panel", WAIT], timeout=30_000)
+                    page.wait_for_function(_ROOM_SAYS, arg=WAIT, timeout=30_000)
                     detail = page.request.get(url + f"/api/tasks/{TASK}").json()
                     census = page.request.get(url + "/api/state").json()["active_chat_activities"]
                     row = next(a for a in census if a["activity_id"] == TASK)
@@ -153,8 +156,7 @@ def test_project_hold_reload_reconnect_and_automatic_same_id_recovery(
                     "result": load_task_result(root, TASK, strict=True)})
                 page.locator('[data-nav-page="chat"]').click()
                 _open_project(page)
-                page.wait_for_function("([id, text]) => !document.getElementById(id)?.innerText.includes(text)",
-                                       arg=["project-panel", WAIT], timeout=30_000)
+                page.wait_for_function(f"text => !({_ROOM_SAYS})(text)", arg=WAIT, timeout=30_000)
                 page.screenshot(path=str(evidence / "recovered.png"))
             except Exception:
                 page.screenshot(path=str(evidence / "zz-failure.png"))

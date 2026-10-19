@@ -133,7 +133,7 @@ def test_current_attempt_snapshot_never_reopens_old_wait_after_reload(waiting_ui
     monkeypatch.setattr(queue, "RUNNING", {TASK: meta})
     monkeypatch.setattr(queue, "PENDING", [])
     monkeypatch.setattr(queue, "BUDGET_ROOT_FENCES", {})
-    monkeypatch.setattr(state, "_direct_turns_snapshot_safe", lambda: [])
+    monkeypatch.setattr(state, "_direct_turns_snapshot_safe", lambda **_kwargs: [])
 
     def current_state(route):
         activities = state._chat_activities_snapshot_safe(tmp_path)
