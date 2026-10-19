@@ -288,6 +288,8 @@ def direct_server_with_data(tmp_path):
             # Single-task cases and deterministic replay need only one worker;
             # extra workers churn processes and make shared-host history flaky.
             OUROBOROS_MAX_WORKERS=1, OUROBOROS_RUNTIME_MODE="light",
+            # A fresh root with a ready provider would clone the skill hub at boot (#1995).
+            OUROBOROS_STARTER_SKILLS="[]",
         )
         (data_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
         env = isolated_environment(tmp_path, checkout)
