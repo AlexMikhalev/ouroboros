@@ -111,7 +111,7 @@ test('Main: Starting… until supervisor_ready is true, error or not, then Onlin
     try {
         chat.snapshot({ supervisor_ready: false, supervisor_error: null });
         assert.equal(chat.status(), 'Starting…');
-        assert.equal(chat.kind(), 'status-badge starting', 'the existing amber starting tone, not the green one');
+        assert.equal(chat.kind(), 'status-badge starting', 'the starting tone, not the green one');
         chat.snapshot({ supervisor_ready: true });
         assert.equal(chat.status(), 'Online');
         assert.equal(chat.kind(), 'status-badge online');
@@ -274,7 +274,7 @@ test('Main: the header paints the phase from the snapshot and forgets it on disc
         assert.equal(chat.status(), 'Starting…');
         chat.snapshot({ supervisor_ready: false, boot: CHAT_READY });
         assert.equal(chat.status(), 'Chat ready, restoring background tasks');
-        assert.equal(chat.kind(), 'status-badge starting', 'still the amber starting tone: tasks are not admitted yet');
+        assert.equal(chat.kind(), 'status-badge starting', 'still the starting tone: tasks are not admitted yet');
         chat.instance.hydrateStateSnapshot({ supervisor_ready: false }, Infinity, 50);
         assert.equal(chat.status(), 'Chat ready, restoring background tasks', 'a body without the phase changes nothing');
         chat.snapshot({ supervisor_ready: false, boot: FAILED });

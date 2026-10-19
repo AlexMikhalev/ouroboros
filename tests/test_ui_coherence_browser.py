@@ -963,8 +963,8 @@ def test_quiz_dot_and_evolution_facts_keep_their_shape_in_narrow_columns(subscri
         column.append(decision.buildQuizCard({ type: 'quiz', task_id: 'dot', quiz_id: 'expired', state: 'expired_terminal',
             question: 'How broadly should the next step change the interface?', options: ['Keep scope', 'Broaden scope'] }));
     }""")
-    dot = page.locator('.chat-quiz-dot').bounding_box()
-    assert dot['width'] == pytest.approx(8, abs=0.5) and dot['height'] == pytest.approx(8, abs=0.5), dot
+    dot = page.locator('.chat-quiz-mark').bounding_box()  # the shared status mark's 7px fact dot
+    assert dot['width'] == pytest.approx(7, abs=0.5) and dot['height'] == pytest.approx(7, abs=0.5), dot
     page.locator('#page-chat [data-mobile-nav-toggle]').click()  # a phone keeps navigation behind its menu
     page.click('[data-nav-page="dashboard"]')
     page.locator('[data-dashboard-tab="evolution"]').click()

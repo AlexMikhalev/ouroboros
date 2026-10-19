@@ -541,20 +541,29 @@
 .settings-inline-status[data-tone="neutral"],
 .settings-inline-status[data-tone="muted"] { color: var(--status-neutral-fg); }
 
-/* Status sentences share one dot anatomy in every consumer. */
+/* A status sentence's own dot, one anatomy in every consumer (docs/DESIGN.md "Status marks"). CSS draws it, not
+   status_mark.js, because ui.css and ui_primitives.js reach skill authors on their own; it takes the marks' fact
+   size and the saturated hues (ok green, warn amber, error red, any other tone the neutral meta ink) while the
+   sentence keeps its word tone. */
 .ui-status[data-tone]:not(:empty)::before,
-.settings-inline-status[data-tone]:not(:empty)::before {
+.settings-inline-status[data-tone]:not(:empty)::before,
+.wizard-runtime-status[data-tone]:not(:empty)::before {
     content: "";
     display: inline-block;
     flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
+    width: var(--mark-fact);
+    height: var(--mark-fact);
     margin-right: 7px;
     border-radius: 999px;
-    background: currentColor;
+    background: var(--text-meta);
     vertical-align: middle;
     position: relative;
     top: -1px;
+}
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status)[data-tone="ok"]:not(:empty)::before { background: var(--green); }
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status)[data-tone="warn"]:not(:empty)::before { background: var(--amber); }
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status):is([data-tone="danger"], [data-tone="error"]):not(:empty)::before {
+    background: var(--red);
 }
 
 
