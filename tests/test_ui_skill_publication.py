@@ -57,7 +57,7 @@ def test_skills_card_geometry_tracks_card_width_and_keeps_grant_on_card(direct_s
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
-            page = browser.new_page(viewport={'width': 719, 'height': 900})
+            page = browser.new_page(viewport={'width': 720, 'height': 900})  # docked: the sidebar's Skills row is shown
             page.goto(url, wait_until='domcontentloaded')
             page.click('[data-nav-page="skills"]')
             page.wait_for_selector(f'.skills-card[data-skill="{names[1]}"]')
