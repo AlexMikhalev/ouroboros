@@ -940,7 +940,7 @@
 /* Startup & background: a row's note starts where its checkbox label's text starts, and a
    status dot hangs under the checkbox, so wrapped lines and both rows share one text edge. */
 [data-autostart-settings] {
-    --autostart-dot: 6px;   /* the status dot, ui.css */
+    --autostart-dot: var(--mark-fact);   /* the status sentence's dot, ui.css */
 }
 [data-autostart-settings] .settings-inline-status,
 [data-autostart-settings] .settings-inline-note {

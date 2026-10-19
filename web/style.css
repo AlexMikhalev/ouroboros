@@ -6232,15 +6232,9 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     overflow-wrap: anywhere;
 }
 
+/* The sentence's own dot is ui.css's; the card's controls only tighten its spacing. */
 .widgets-card-controls .ui-status[data-tone]::before {
-    content: "";
-    display: inline-block;
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
     margin-right: 6px;
-    border-radius: 999px;
-    background: currentColor;
 }
 
 .widgets-menu-heading {
@@ -7578,14 +7572,7 @@ body.keyboard-open .project-panel {
 }
 .agent-family-id .ui-status[data-tone]::before,
 .harness-account-main .ui-status[data-tone]::before {
-    content: "";
-    display: inline-block;
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
     margin-right: 6px;
-    border-radius: 999px;
-    background: currentColor;
 }
 /* Narrow viewports: the actions column would squeeze the account name to a
    couple of characters, so the row becomes one column and the buttons drop
