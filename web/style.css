@@ -1483,10 +1483,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
    its own height. */
 .typing-bubble { opacity: 0.7; color: var(--text-secondary); }
 .typing-bubble > .typing-mark { height: 20px; }
-@keyframes typing-bounce {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-6px); opacity: 1; }
-}
 
 /* === design-system:migrated-end === */
 
@@ -2241,25 +2237,6 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     border-color: var(--status-error-border);
     background: var(--status-error-bg);
 }
-
-/* Live-card typing dots. */
-.chat-live-typing {
-    display: inline-flex;
-    gap: 3px;
-    align-items: center;
-    flex-shrink: 0;
-}
-
-.chat-live-typing span {
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--accent-55);
-    animation: typing-bounce 1.4s ease-in-out infinite;
-}
-
-.chat-live-typing span:nth-child(2) { animation-delay: 0.2s; }
-.chat-live-typing span:nth-child(3) { animation-delay: 0.4s; }
 
 .chat-live-title {
     font-size: var(--type-body);

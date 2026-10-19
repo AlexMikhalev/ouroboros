@@ -1,6 +1,8 @@
 // Status marks (docs/DESIGN.md "Status marks"): one mapping from facts to a mark, one painter.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import * as acorn from './vendor/acorn.mjs';
 
 import { MARK_HUES, MARK_SHAPES, markView, paintStatusMark, statusMarkHtml } from '../modules/status_mark.js';
 import { summarizeRoom } from '../modules/project_activity.js';
@@ -78,4 +80,84 @@ test('the owner move a server room lists reads the same on the bar and the sideb
         assert.equal(roomStatusView({ room: quiet, works: [] }).owner, false, activity);
         assert.equal(summarizeRoom(quiet).owner, false, activity);
     }
+});
+
+// One owner: only status_mark.js builds a mark's anatomy and writes its shape and hue; a stylesheet other than the
+// recipe in ui.css may place a mark and set --mark-ink, never paint it; and the painters it replaced stay gone.
+const WEB = new URL('../', import.meta.url);
+const RETIRED = [
+    /\bnav-unread-dot\b/, /\bnav-activity-marker\b/, /\brw-(?:mark|dots|lead|row-dots)\b/, /\bchat-live-typing\b/,
+    /\btyping-dots\b/, /\bskills-dots\b/, /\blive-dot-breathe\b/, /\bchat-quiz-dot\b/, /\bsetLiveCardTypingVisible\b/,
+    /\[data-(?:amber|wait)(?![-\w])/,
+];
+const PAINTS = [
+    /\bdataset\.(?:shape|hue)\s*=(?!=)/, /setAttribute\(\s*['"`]data-(?:shape|hue)['"`]/,
+    /class=\\?["']status-mark\b/, /className\s*=\s*['"`]status-mark\b/, /classList\.add\(\s*['"`]status-mark['"`]/,
+];
+const MARK_PAINT = /(?:^|;|\{)\s*(color|background(?:-color|-image)?|border-color|fill|stroke|opacity|animation(?:-name)?|box-shadow)\s*:/;
+
+/** The source without its comments, which may name what was retired and why. */
+function code(source) {
+    let text = source;
+    acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module', onComment: (_block, value, start, end) => {
+        text = text.slice(0, start) + ' '.repeat(end - start) + text.slice(end);
+    } });
+    return text;
+}
+const css = (source) => source.replace(/\/\*[\s\S]*?\*\//g, (comment) => ' '.repeat(comment.length));
+
+function sources() {
+    const scripts = ['app.js', 'theme.js', ...readdirSync(new URL('modules/', WEB)).filter((name) => name.endsWith('.js'))
+        .map((name) => `modules/${name}`)];
+    const sheets = readdirSync(WEB).filter((name) => name.endsWith('.css'));
+    return {
+        scripts: scripts.map((name) => [name, code(readFileSync(new URL(name, WEB), 'utf8'))]),
+        sheets: sheets.map((name) => [name, css(readFileSync(new URL(name, WEB), 'utf8'))]),
+        pages: ['index.html', 'onboarding_template.html'].map((name) => [name, readFileSync(new URL(name, WEB), 'utf8')]),
+    };
+}
+
+function violations({ scripts, sheets, pages }) {
+    const found = [];
+    for (const [name, text] of [...scripts, ...sheets, ...pages]) {
+        for (const pattern of RETIRED) if (pattern.test(text)) found.push(`${name}: retired ${pattern}`);
+    }
+    for (const [name, text] of scripts) {
+        if (name === 'modules/status_mark.js') continue;
+        for (const pattern of PAINTS) if (pattern.test(text)) found.push(`${name}: paints a mark ${pattern}`);
+    }
+    for (const [name, text] of sheets) {
+        if (name === 'ui.css') continue;
+        for (const rule of text.matchAll(/([^{}]*\.status-mark[^{}]*)\{([^{}]*)\}/g)) {
+            const property = rule[2].match(MARK_PAINT);
+            if (property) found.push(`${name}: "${rule[1].trim()}" sets ${property[1]} on a mark`);
+        }
+    }
+    return found;
+}
+
+test('only status_mark.js builds and paints a mark, sheets only place it, and the old painters stay gone', () => {
+    assert.deepEqual(violations(sources()), []);
+});
+
+test('the ownership check sees a second painter, a painted mark and a retired name, and lets placement and reads be', () => {
+    const fixture = {
+        scripts: [
+            ['modules/rogue.js', code("node.dataset.shape = 'moving'; // dataset.hue = 'x' in a comment is fine\n"
+                + "const html = '<span class=\"status-mark\"></span>';")],
+            ['modules/reader.js', code("if (mark.dataset.shape === 'moving') row.querySelector('.status-mark');")],
+            ['modules/status_mark.js', code("node.dataset.hue = hue;")],
+        ],
+        sheets: [
+            ['room.css', css('.rw-trigger .status-mark { margin-left: 4px; --mark-ink: red; }\n.x .status-mark i { background: red }')],
+            ['old.css', css('/* .chat-live-typing was here */ .nav-unread-dot { color: red }')],
+        ],
+        pages: [],
+    };
+    assert.deepEqual(violations(fixture), [
+        'old.css: retired /\\bnav-unread-dot\\b/',
+        'modules/rogue.js: paints a mark /\\bdataset\\.(?:shape|hue)\\s*=(?!=)/',
+        'modules/rogue.js: paints a mark /class=\\\\?["\']status-mark\\b/',
+        'room.css: ".x .status-mark i" sets background on a mark',
+    ]);
 });
