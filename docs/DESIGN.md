@@ -1194,7 +1194,9 @@ not child-task cards and never prove execution by themselves.
   total over the priced seats, naming those on a subscription or of unknown
   cost. Each reviewer line leads with `counted` or `adviser, not counted` and
   its own cost (an amount, `subscription` or `cost unknown`, never $0 for a
-  gap). A record written before these facts reads as it always did.
+  gap). A seat still owed an answer reads `awaiting an answer`, never `not
+  reached`; a preflight record keeps its own one-row line. A record written
+  before these facts reads as it always did.
 - A panel that settled after its task ended stays one attempt row of its group,
   labelled as settled after the task ended; its note (which verdict, which
   revision, whether a reviewer's outcome is still unknown) is host-composed and
