@@ -2121,6 +2121,15 @@ the Project panel lies beside Main at its own width over the dimmed room; its
 handle resizes it apart from the sidebar's, and it is never wider than the
 content area.
 
+**Resizing.** A handle drag writes only the dragged box's width, once per
+displayed frame; the sidebar's column, the dimmed room and the panel's edge
+follow that box by layout, and the width is stored once, when the drag ends.
+While a feed's width keeps moving (a drag, a live window resize), the rows far
+from the screen keep the size they were last laid out at and only the rows near
+it are laid out again; once the width holds, every row is laid out at the new
+width and the passage being read stays where it was. A single change of width (a
+window jump, a layout switch) is laid out at once.
+
 **Navigation.** Places come from one registry (`web/modules/pages.js`): it renders
 the navigation rows, names the titles and feeds the shell gate, so a new page is
 a registry row and its module, checked at phone widths with no further work. The column

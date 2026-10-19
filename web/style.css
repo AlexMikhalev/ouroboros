@@ -20,11 +20,24 @@ body {
     overflow: hidden;
 }
 
+/* The sidebar's column is as wide as the sidebar's own box (its width below), and the dimmed room and the Project
+   panel are placed in the columns after it: everything that lines up with the sidebar follows its box by layout.
+   So a drag of a handle writes the width it measures into the dragged box's own --drag-width, which no element
+   inherits, and a frame restyles that one box; the stored width on :root (--sidebar-width, --project-panel-width),
+   which every element inherits, is written once, when the drag ends (app.js). */
+@property --drag-width {
+    syntax: '*';
+    inherits: false;
+}
+
 #app {
     display: grid;
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
     height: var(--vvh);
     position: relative;
+    /* The docked Project panel slides in from 18px past the window's edge; clipped here, that offset never widens
+       the page, so a scrollIntoView during the slide cannot scroll the whole window sideways. */
+    overflow-x: clip;
 }
 
 /* An older desktop page can survive a source update with its old #divider in the DOM.
@@ -77,6 +90,7 @@ html[data-layout="stack"] .shell-icon-control {
     --nav-item-h: 32px;      /* a Project row */
     --nav-control-h: 28px;   /* a row's ⋯ and the header's + */
     --nav-label-x: calc(var(--space-3) + 18px + var(--space-3));  /* the one text column every label starts on */
+    width: var(--drag-width, var(--sidebar-width));
     height: var(--vvh);
     display: flex;
     flex-direction: column;
@@ -169,8 +183,8 @@ html[data-layout="stack"] .shell-icon-control {
 }
 :root[data-window-chrome="integrated"][data-layout="stack"] .app-page-header { padding-left: max(12px, var(--window-chrome-clearance)); }
 
-/* Resizable side-section drag handles (v6.33.0). Thin edge strips that set
-   --sidebar-width / --project-panel-width; absent in the stack layout (layout.js). */
+/* Resizable side-section drag handles (v6.33.0). Thin edge strips that resize the sidebar and the Project panel
+   (app.js: --drag-width while dragged, the stored width when the drag ends); absent in the stack layout (layout.js). */
 /* CW10 (v6.34.0): suppress text selection while dragging via a class, not a JS
    inline style (DEVELOPMENT.md: no element.style.* property mutations in UI JS). */
 body.resizing-panels { user-select: none; }
@@ -1611,6 +1625,18 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 #chat-messages > *,
 .chat-messages > * {
     flex-shrink: 0;
+    contain-intrinsic-size: auto 160px;
+}
+
+/* Lazy rows while the column's width keeps moving (a live window resize, the sidebar's or a Project panel's handle):
+   chat_reading_position.js marks the feed [data-resizing], and the browser lays out only the rows near the screen;
+   every other row keeps the size it was last laid out at (the `auto` above remembers it; 160px stands in only for a
+   row never laid out). Once the width holds, the mark goes, every row is laid out at the final width and the
+   reading place is re-applied in that same frame. Never lazy at rest: a row that takes its real size only as it
+   nears the screen moves the passage being read in WebKit, and landings, history pages and the bottom are measured
+   against exact rows (tests/test_chat_lazy_rows_browser.py). */
+:is(#chat-messages, .chat-messages)[data-resizing] > * {
+    content-visibility: auto;
 }
 
 /* An actual flex item keeps the overlay reserve inside scrollable overflow in
@@ -7174,7 +7200,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
     top: 0;
     right: 0;
     bottom: 0;
-    width: var(--project-panel-width);
+    width: var(--drag-width, var(--project-panel-width));
     z-index: var(--z-project-panel);
     border-left: 1px solid var(--divider);
     /* A reading surface keeps its own backing even where native backdrop blur is not composited.
@@ -7222,10 +7248,7 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 
 .project-panel-backdrop {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: var(--sidebar-width);
+    inset: 0;
     z-index: var(--z-project-scrim);
     cursor: default;
     background: rgba(0, 0, 0, 0.18);
@@ -7303,9 +7326,16 @@ body.keyboard-open .chat-instance-panel .chat-input-area {
 }
 
 /* Docked, the panel lies beside Main at its own width (its handle resizes it apart from the sidebar's), over the
-   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). */
+   dimmed room, and never wider than the content area, so it never covers the sidebar (owner 18.10, 4A). Both are
+   placed in the columns after the sidebar's (#app), so the room's dimmed edge and the panel's cap follow the
+   sidebar's box by layout, frame by frame while it is dragged. */
+html[data-layout="docked"] .project-panel-backdrop,
 html[data-layout="docked"] .project-panel {
-    max-width: calc(100vw - var(--sidebar-width));
+    position: absolute;
+    grid-column: 2 / -1;
+}
+html[data-layout="docked"] .project-panel {
+    max-width: 100%;
 }
 
 /* The stack layout: the project thread is a full-width layer over the room. */
@@ -7318,10 +7348,6 @@ html[data-layout="stack"] .project-panel {
     /* A full-screen room must occlude Main, not show its text through glass. */
     background: var(--bg-primary);
     transform: translateY(14px);
-}
-
-html[data-layout="stack"] .project-panel-backdrop {
-    left: 0;
 }
 
 html[data-layout="stack"] .project-panel.open {
