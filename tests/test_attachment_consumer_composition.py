@@ -579,13 +579,21 @@ def host_service_server(monkeypatch, request):
 
 def _authorize_bundled_telegram(data: Path) -> Path:
     """The owner's grant of the bundled skill, written through the production helpers: the skill is
-    the real bundled package the server seeded, enabled with only ``inject_chat``, holding a token."""
+    the real bundled package the server's starter installed at its first start (the fixture's starter
+    list is ``builtin/telegram`` alone), enabled with only ``inject_chat``, holding a token."""
     from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
     from ouroboros.skill_loader import (
         find_skill, requested_core_setting_keys, requested_skill_permissions, save_enabled, save_skill_grants,
     )
+    from ouroboros.skill_starter import read_marker
     from ouroboros.utils import atomic_write_json
 
+    # The starter installs in the background after boot: wait for its run, not for a guessed time.
+    deadline = time.monotonic() + 60
+    while read_marker(data).get("state") not in {"done", "pending"} and time.monotonic() < deadline:
+        time.sleep(0.2)
+    marker = read_marker(data)
+    assert (marker.get("results") or {}).get("builtin/telegram", {}).get("status") == "installed", marker
     skill = find_skill(data, "telegram")
     assert skill is not None and skill.review.gate_for(skill.content_hash)["executable_review"], "bundled telegram skill is not seeded"
     save_enabled(data, "telegram", True)
