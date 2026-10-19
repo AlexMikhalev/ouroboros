@@ -2299,7 +2299,8 @@ name. In the stack layout the row is at most 56 px: ☰, the place's name, its
 status, then Panic and ⋯; the name wins over the status word, which a short row
 drops whole, keeping its mark. Whenever the bar itself is narrow, on a phone or in a narrow window,
 Restart and the budget move into ⋯ — the same controls, placed by the bar's
-width. Tabs sit under the row and a history note hangs under the bar, neither
+width. While a mode it holds is on (Evolve, Consciousness), ⋯ takes its tone,
+with no corner dot. Tabs sit under the row and a history note hangs under the bar, neither
 inside it; a page has no caption line, its sidebar row and its tabs name it.
 
 **Doors and containers.** An object whose only job is to take you somewhere is a
