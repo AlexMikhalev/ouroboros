@@ -1,6 +1,8 @@
 /** The drawer follows the finger (owner Q1=A; docs/DESIGN.md "Shell").
  *
- * A horizontal drag that starts on the room opens the drawer; a drag on the open drawer (or its scrim) closes it.
+ * A horizontal drag that starts anywhere on the room, the screen's edge and its controls included, opens the
+ * drawer; a drag on the open drawer (or its scrim) closes it. Only a field, a slider, media, selected text and
+ * anything that scrolls sideways keep their own touch (owner 19.10: from the edge, and from where the thumb is).
  * Pointer Events only, transform-only motion driven by one number (`--drawer-p`, 0 closed … 1 open) that the scrim's
  * opacity follows; the owner of the drawer's state commits the result (so history, focus and inert stay the
  * layer stack's), and a gesture that does not commit leaves no trace. The drag is a shortcut: every gesture has a
@@ -9,9 +11,8 @@
 export const DRAWER_DRAG = true;
 
 export const DRAG = Object.freeze({
-    edgeStart: 24,       // px: a start closer to the left edge belongs to the OS back-swipe
     slop: 10,            // px of movement before the axis is decided
-    axisRatio: 1.3,      // |dx| > ratio·|dy| locks the horizontal axis
+    axisRatio: 1,        // |dx| > ratio·|dy| locks the horizontal axis: a thumb's arc is a sideways drag
     minTravel: 24,       // px of travel before a fling may commit
     flingVelocity: 0.3,  // px/ms
     openPast: 0.5,       // a slow release opens past this progress
@@ -20,9 +21,11 @@ export const DRAG = Object.freeze({
     clickGuard: 400,     // ms after a drag during which the click that ends it is not a tap
 });
 
-// What a drag may not start on: controls, editable text, the Shade's and the cards' own sliders.
-export const INTERACTIVE_SELECTOR = 'input, textarea, select, button, a[href], summary, label, details, video, audio, '
-    + '[role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="slider"], [contenteditable]:not([contenteditable="false"])';
+// What a drag may not start on: a field (the finger moves its caret or picks), a slider, media (the finger scrubs).
+// A button, a link or a summary under the finger is fine: a drag is not a tap, and the click that ends it is
+// swallowed (onClick).
+export const FIELD_SELECTOR = 'input, textarea, select, video, audio, [role="slider"], '
+    + '[contenteditable]:not([contenteditable="false"])';
 // What scrolls sideways itself: code, tables, tab strips, anything that declares it.
 export const SIDEWAYS_SELECTOR = 'pre, code, table, .md-table-wrap, .app-tab-strip, [data-scroll-x]';
 // What lies over the room and owns the finger while it is open (shown, not merely mounted): a dialog, the reader,
@@ -36,7 +39,7 @@ export function bindDrawerDrag({
     sidebar, scrim, isOpen, setOpen, isStack, isCoarse,
     win = globalThis.window, doc = globalThis.document, enabled = DRAWER_DRAG,
     // The eligibility of a start, injectable for tests; the defaults read the real DOM.
-    isInteractive = (el) => Boolean(el?.closest?.(INTERACTIVE_SELECTOR)),
+    isField = (el) => Boolean(el?.closest?.(FIELD_SELECTOR)),
     isSideways = (el) => Boolean(el?.closest?.(SIDEWAYS_SELECTOR)),
     isBlocked = () => [...(doc?.querySelectorAll?.(BLOCKING_SELECTOR) || [])].some((el) => el.getClientRects?.().length),
     hasSelection = () => Boolean(String(win?.getSelection?.()?.toString?.() || '').length),
@@ -61,9 +64,8 @@ export function bindDrawerDrag({
 
     function eligibleOpenStart(event) {
         const target = event.target;
-        if (event.clientX < DRAG.edgeStart) return false;
         if (sidebar.contains?.(target) || scrim.contains?.(target)) return false;
-        if (isInteractive(target) || isSideways(target) || hasSelection()) return false;
+        if (isField(target) || isSideways(target) || hasSelection()) return false;
         if (isBlocked()) return false;
         if (chainKeepsGesture(target)) return false;
         return true;
@@ -94,7 +96,7 @@ export function bindDrawerDrag({
         const open = Boolean(isOpen());
         if (open ? !eligibleCloseStart(event) : !eligibleOpenStart(event)) return;
         g = { id: event.pointerId, startOpen: open, x0: event.clientX, y0: event.clientY, mode: 'wait', samples: [],
-            target: event.target, lockX: 0, width: 0, p: open ? 1 : 0 };
+            lockX: 0, width: 0, p: open ? 1 : 0, viewWidth: win?.innerWidth || 0 };
     }
 
     function onMove(event) {
@@ -108,7 +110,9 @@ export function bindDrawerDrag({
             g.mode = 'drag';
             g.lockX = event.clientX;
             g.width = sidebar.getBoundingClientRect?.().width || 320;
-            try { g.target?.setPointerCapture?.(g.id); } catch { /* a synthetic pointer */ }
+            // The drawer holds the finger itself: the row under it may be re-rendered (a live card, a new message)
+            // and would take the capture with it.
+            try { sidebar.setPointerCapture?.(g.id); } catch { /* a synthetic pointer */ }
             if (!g.startOpen) scrim.hidden = false;
             paint(true);
             setProgress(g.startOpen ? 1 : 0);
@@ -125,7 +129,7 @@ export function bindDrawerDrag({
         const gg = g;
         g = null;
         if (gg.mode !== 'drag') return;  // a tap, not a drag
-        try { gg.target?.releasePointerCapture?.(gg.id); } catch { /* released already */ }
+        try { sidebar.releasePointerCapture?.(gg.id); } catch { /* released already */ }
         const first = gg.samples[0];
         const last = gg.samples[gg.samples.length - 1];
         const velocity = first && last && last[0] > first[0] ? (last[1] - first[1]) / (last[0] - first[0]) : 0;
@@ -139,15 +143,25 @@ export function bindDrawerDrag({
         suppressUntil = now() + DRAG.clickGuard;
     }
 
-    /** Multitouch, pointercancel, lost capture, a resize: back to the starting state, no history change. */
+    /** Multitouch, pointercancel, the drawer losing the finger, a new width: back to the start, no history change. */
     function restore() {
         if (!g) return;
         const gg = g;
         g = null;
         if (gg.mode !== 'drag') return;
-        try { gg.target?.releasePointerCapture?.(gg.id); } catch { /* gone */ }
+        try { sidebar.releasePointerCapture?.(gg.id); } catch { /* gone */ }
         paint(false);
         if (!gg.startOpen) scrim.hidden = true;
+    }
+
+    // Only the drawer's own capture counts: the element first under the finger gives up its implicit capture when
+    // the drawer takes it, or when a re-render removes it.
+    function onLost(event) {
+        if (g && event.pointerId === g.id && event.target === sidebar) restore();
+    }
+    // A height-only change is a browser bar or the keyboard moving (Safari, Telegram); a new width is a new layout.
+    function onResize() {
+        if (g && (win?.innerWidth || 0) !== g.viewWidth) restore();
     }
 
     // The click that ends a drag is not a tap on whatever lies under the finger.
@@ -162,17 +176,17 @@ export function bindDrawerDrag({
     doc.addEventListener('pointermove', onMove, { passive: true });
     doc.addEventListener('pointerup', onUp);
     doc.addEventListener('pointercancel', restore);
-    doc.addEventListener('lostpointercapture', restore);
+    doc.addEventListener('lostpointercapture', onLost);
     doc.addEventListener('click', onClick, true);
-    win.addEventListener('resize', restore);
+    win.addEventListener('resize', onResize);
     return () => {
         restore();
         doc.removeEventListener('pointerdown', onDown);
         doc.removeEventListener('pointermove', onMove);
         doc.removeEventListener('pointerup', onUp);
         doc.removeEventListener('pointercancel', restore);
-        doc.removeEventListener('lostpointercapture', restore);
+        doc.removeEventListener('lostpointercapture', onLost);
         doc.removeEventListener('click', onClick, true);
-        win.removeEventListener('resize', restore);
+        win.removeEventListener('resize', onResize);
     };
 }

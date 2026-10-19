@@ -322,6 +322,82 @@ def test_the_drawer_follows_a_finger_on_a_phone_room(chromium_ui, tmp_path, room
     assert facts['scrim_close_drag'] == {'open': False, 'layers': under}, facts
 
 
+def swipe_with(page, start, end, steps=12, during=None):
+    """swipe(), with `during` run once a third of the way, while the finger is still down."""
+    cdp = page.context.new_cdp_session(page)
+    try:
+        for i in range(steps + 1):
+            point = {'x': start[0] + (end[0] - start[0]) * i / steps,
+                     'y': start[1] + (end[1] - start[1]) * i / steps, 'id': 1}
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart' if i == 0 else 'touchMove', 'touchPoints': [point]})
+            if during and i == steps // 3:
+                during()
+            page.wait_for_timeout(16)
+        cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        page.wait_for_timeout(450)
+    finally:
+        cdp.detach()
+
+
+@pytest.mark.parametrize('room', ['main', 'project'])
+def test_the_drawer_opens_from_the_edge_from_the_chrome_and_keeps_the_finger(chromium_ui, tmp_path, room):
+    """Owner 19.10: the drawer opened only from the middle of the room and slipped off the finger. A sideways
+    finger opens it from the screen's very edge, from the header and from the composer's controls (the page
+    itself only pans up and down), and it keeps following while the row under the finger is re-rendered or a
+    browser bar changes the window's height. A field still keeps its finger."""
+    page = seed_page(chromium_ui, 390, 844)
+    under = [] if room == 'main' else ['project']
+    facts = {'room': room}
+    scope = '#page-chat' if room == 'main' else '#project-panel'
+
+    def reset():
+        if page.evaluate(DRAWER)['open']:
+            page.evaluate('window.__ouroLayers.pop()')
+            page.wait_for_timeout(350)
+    try:
+        boot(page, chromium_ui)
+        if room == 'project':
+            open_project(page)
+        header = page.locator(f'{scope} .app-page-header').first.bounding_box()
+        feed = page.locator('#chat-messages' if room == 'main' else '#project-panel-body').bounding_box()
+        field = page.locator(f'{scope} textarea').first.bounding_box()
+        capsule = page.locator(f'{scope} .chat-toolbar-row button').first.bounding_box()
+        mid = feed['y'] + feed['height'] / 2
+        starts = {
+            'edge': (3, mid),
+            'header': (header['x'] + header['width'] / 2, header['y'] + header['height'] / 2),
+            'capsule': (capsule['x'] + capsule['width'] / 2, capsule['y'] + capsule['height'] / 2),
+        }
+        for name, (x, y) in starts.items():
+            facts[f'{name}_under'] = page.evaluate(UNDER, [x, y])
+            swipe_with(page, (x, y), (x + 240, y - 16))
+            facts[name] = page.evaluate(DRAWER)
+            reset()
+        swipe_with(page, (field['x'] + 30, field['y'] + field['height'] / 2), (field['x'] + 270, field['y'] + field['height'] / 2))
+        facts['field'] = page.evaluate(DRAWER)
+        reset()
+        # A browser bar (or the keyboard) changes only the height while the finger is down.
+        swipe_with(page, (40, mid), (300, mid), during=lambda: page.set_viewport_size({'width': 390, 'height': 790}))
+        facts['bar_moved'] = page.evaluate(DRAWER)
+        page.set_viewport_size({'width': 390, 'height': 844})
+        page.wait_for_timeout(300)
+        reset()
+        # The row under the finger is re-rendered mid-drag (a live card, a new message).
+        rerender = ("([x, y]) => { const row = document.elementFromPoint(x, y)?.closest('#chat-messages > *, .chat-messages > *');"
+                    " row?.replaceWith(row.cloneNode(true)); return Boolean(row); }")
+        facts['rerendered'] = None
+        swipe_with(page, (40, mid), (300, mid),
+                   during=lambda: facts.__setitem__('rerendered', page.evaluate(rerender, [120, mid])))
+        facts['row_rerendered'] = page.evaluate(DRAWER)
+    finally:
+        evidence(tmp_path, f'shell-drawer-edge-{room}', facts)
+        page.close()
+    opened = {'open': True, 'layers': under + ['drawer']}
+    for name in ('edge', 'header', 'capsule', 'bar_moved', 'row_rerendered'):
+        assert facts[name] == opened, (name, facts)
+    assert facts['field'] == {'open': False, 'layers': under}, ('a field keeps its finger', facts)
+
+
 WORD = """bar => {
     const t = document.querySelector(bar + ' .rw-trigger:not([hidden])');
     const b = t?.querySelector('.status-badge');
@@ -429,6 +505,7 @@ def saved_history(tmp_path):
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.testclient import TestClient
+
     from ouroboros import dialogue_store
     from ouroboros.gateway.history import make_chat_history_endpoint
     root = tmp_path / 'history'

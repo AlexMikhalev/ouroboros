@@ -3569,6 +3569,11 @@ html[data-layout="stack"] :is(#chat-messages, .chat-messages, .files-list, .file
     #log-entries, .updates-scroll) {
     touch-action: pan-y pinch-zoom;
 }
+/* Outside the scrollers too (a header, the composer's row of capsules, the attach button): the page itself only pans
+   up and down and zooms, so a sideways finger anywhere on the room is the drawer's, from the screen's edge on. */
+html[data-layout="stack"] body {
+    touch-action: pan-y pinch-zoom;
+}
 html[data-layout="stack"] .sidebar-head {
     padding-top: 0;
 }
