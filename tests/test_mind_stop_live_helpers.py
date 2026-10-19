@@ -65,7 +65,7 @@ def test_a_settled_roots_live_helper_is_stopped_by_the_supervisors_custody(qenv,
     # Worker-shaped: the supervisor maps hold nothing; only the durable snapshot is read.
     assert qenv.q.PENDING == [] and qenv.q.RUNNING == {}
     reply = _cancel_task(_caller(qenv.drive), ROOT, reason="the release is out")
-    assert reply.startswith(f"Cancel requested: {ROOT}") and "helpers stop with it" in reply, reply
+    assert reply.startswith(f"Cancel requested: {ROOT}") and "helpers and external runs stop with it" in reply, reply
     intent = ci.active_intent(qenv.drive, ROOT)
     assert (intent["task_id"], intent["scope"], intent["source"]) == (ROOT, ci.SCOPE_CASCADE, "agent_tool")
     assert [(event["type"], event["task_id"]) for event in events] == [("cancel_task", ROOT)]
@@ -127,7 +127,7 @@ def test_an_exact_retry_replays_the_stop_after_its_helpers_ended(tmp_path, monke
     _settled_root_with_a_live_helper(tmp_path)
     _emitted(monkeypatch)
     first = _cancel_task(_caller(tmp_path), ROOT, stop_action_id="stop-release-helpers")
-    assert first.startswith(f"Cancel requested: {ROOT}") and "helpers stop with it" in first
+    assert first.startswith(f"Cancel requested: {ROOT}") and "helpers and external runs stop with it" in first
     _snapshot(tmp_path)  # the helpers ended before the uncertain answer was retried
     again = _cancel_task(_caller(tmp_path), ROOT, stop_action_id="stop-release-helpers")
     assert "STOP_ACTION_CONFLICT" not in again and "(same Stop action replayed)" in again, again

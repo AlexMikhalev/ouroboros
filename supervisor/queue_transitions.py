@@ -911,10 +911,12 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
 
     True when the task itself is queued/running, when it still has live
     descendants in the queue, when THIS process still runs its paid post-task
-    synthesis (the direct-chat turn's in-flight key), or when it holds an
-    ACTIVE durable cancel intent (or the legacy ``cancel_requested`` status
-    latch of pre-redesign files) — the intent's settle still has honest work
-    to do. Everything else is inactive and must keep today's 404 contract.
+    synthesis (the direct-chat turn's in-flight key), when its live review
+    operation still owns paid work, when a delegated run of its tree is still
+    open in custody (the cascade cancels it: ``stop_tree_runs``), or when it
+    holds an ACTIVE durable cancel intent (or the legacy ``cancel_requested``
+    status latch of pre-redesign files) — the intent's settle still has honest
+    work to do. Everything else is inactive and must keep today's 404 contract.
 
     ``ignore_intents=True`` is the PHYSICAL variant for the cascade
     postcondition (GR2-1e): the root's own cascade intent now survives until
@@ -957,6 +959,12 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
     from ouroboros.review_operation import task_has_live_review_operation
 
     if task_has_live_review_operation(q.DRIVE_ROOT, task_id):
+        return True
+    from ouroboros.delegate_custody_reconcile import tree_open_runs
+
+    # A run open in custody is physical work until custody records it settled, so an unconfirmed
+    # cancel keeps the cascade's postcondition unmet; unreadable custody raises like the review read.
+    if tree_open_runs(q.DRIVE_ROOT, task_id):
         return True
     if ignore_intents:
         return False
