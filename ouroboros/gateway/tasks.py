@@ -1024,9 +1024,11 @@ def _record_cascade_incident(task_id: str, kind: str, detail: str = "") -> None:
 def _cascade_waits_only_on_runs(task_id: str) -> bool:
     """Whether a cascade that did not settle left only its tree's open delegated runs live.
 
-    Their cancel is in flight (an engine confirms a cancel asynchronously), so the Stop is pending and the
-    cancel-intent watchdog settles it once custody records them settled: not a cascade that cancelled
-    nothing. An unreadable answer is no proof of that, so the incident stays.
+    Their cancel is in flight (an engine confirms a cancel asynchronously), refused (a containment fault,
+    critical until a verified terminal) or not sent (the engine is unreachable: pending until it answers).
+    The Stop stays pending and the cancel-intent watchdog settles it once custody records them settled;
+    none of these is a cascade that cancelled nothing. An unreadable answer proves nothing, so the
+    incident stays.
     """
     try:
         from ouroboros.delegate_custody_reconcile import tree_open_runs
