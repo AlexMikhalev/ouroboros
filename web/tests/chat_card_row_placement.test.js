@@ -315,9 +315,10 @@ test('a second history sync redraws a child System row whose old bubble it relea
 
 // Optional stdin fixture comes from the real Python outbox/dedup/history test.
 // The standalone node lane uses the same adversarial revision/timestamp shape.
-test('canonical receipt revisions keep one merged row through live and history replay', async () => {
+test('canonical receipt revisions keep one current row through live and history replay', async () => {
     const supplied = process.env.MERGE_RECEIPT_PROJECTION
         ? JSON.parse((await import('node:fs')).readFileSync(process.env.MERGE_RECEIPT_PROJECTION, 'utf8')) : null;
+    const current = supplied?.expect || 'merge: merged';
     const base = { chat_id: 7, task_id: 'merge-task', role: 'system', system_type: 'host_progress',
         is_progress: true, narration: false, card_row: 'reviews', card_row_id: 'merge-receipt:r' };
     const merged = { ...base, card_row_revision: 3, content: 'PR #7 merge: merged', ts: '2026-09-16T00:01:00Z' };
@@ -333,7 +334,7 @@ test('canonical receipt revisions keep one merged row through live and history r
         // Older unversioned rows (e.g. an old outbox) cannot overwrite a revision either.
         opened.handlers.get('chat')({ ...live[0], card_row_revision: undefined, chat_id: 2,
             content: 'PR #7 merge: queued', ts: '2099-01-01T00:00:00Z' });
-        assert.match(markup().at(-1), /merge: merged/);
+        assert.ok(markup().at(-1).includes(current), markup().at(-1));
         assert.equal(phasedLines(walkCard(opened.messages(), 'merge-task'), 'result').length, 1);
     } finally { opened.instance.destroy(); restoreDom(opened.prior); }
     for (const rows of [history, [...history].reverse()]) {
@@ -342,7 +343,7 @@ test('canonical receipt revisions keep one merged row through live and history r
         try {
             const markup = captureRenderedLines();
             await replay.instance.refreshHistory({ revision: 1 });
-            assert.match(markup().at(-1), /merge: merged/);
+            assert.ok(markup().at(-1).includes(current), markup().at(-1));
             assert.equal(phasedLines(walkCard(replay.messages(), 'merge-task'), 'result').length, 1);
         } finally { replay.instance.destroy(); restoreDom(replay.prior); }
     }
