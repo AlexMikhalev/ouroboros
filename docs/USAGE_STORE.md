@@ -127,7 +127,8 @@ current-facts store; `usage_store` keeps the money error vocabulary over it.
 Ordinary transactions lease one lazy connection per process, file and thread.
 Durability pragmas run at connection open; acquisition and commit waits retain
 their existing per-operation budgets. Returning a lease leaves no transaction
-open. Thread exit, fork, file replacement and export release cached handles;
+open. Thread exit, fork, file replacement, export and a folder's move
+(`close_connections_under`, each process its own) release cached handles;
 the raw descriptor follows the last connection. Fork callers must be outside
 transactions. Export/retire closes all idle handles and leaves DELETE mode
 after checkpointing, before a rename; an active lease refuses handoff with the
