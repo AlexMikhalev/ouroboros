@@ -767,8 +767,8 @@ def _leave_chat_page(page) -> None:
 @pytest.mark.parametrize("engine", ENGINES)
 def test_owner_uploads_and_delivered_documents_keep_their_own_doors(direct_server_with_data, monkeypatch, engine):
     """The owner sends a photo, a Markdown file and a PDF; one task answers with a Markdown report and a
-    PDF. The photo stays a photo and the owner's files stay cards with the file dialog (Read takes only a
-    delivered copy, never an upload); the report reads and the PDF grouped under it opens the dialog.
+    PDF. The photo stays a photo; Markdown reads whoever sent it (#2007), so the owner's notes open in the
+    reader from their upload and the report from its delivered copy, while each PDF opens the file dialog.
     Each closes when its chat leaves the screen, and a room kept hidden by an unconfirmed send keeps that
     message's Send again, then is destroyed once it is saved."""
     from playwright.sync_api import sync_playwright
@@ -819,14 +819,21 @@ def test_owner_uploads_and_delivered_documents_keep_their_own_doors(direct_serve
             page.wait_for_function("b => [...b.querySelectorAll('img.chat-photo')].some(i => i.complete && i.naturalWidth > 0)",
                                    arg=own.element_handle(), timeout=30_000)
             assert own.evaluate("b => [...b.querySelectorAll('img.chat-photo')].map(i => i.alt)") == ["own-photo.png"]
-            assert page.evaluate(_MORE, f"#chat-messages {_BUBBLE} .chat-file-card") == {"own-notes.md": "•••", "own-plan.pdf": "•••"}
+            # Markdown and text read whoever sent them (#2007); a PDF, the owner's or delivered, keeps the dialog.
+            assert page.evaluate(_MORE, f"#chat-messages {_BUBBLE} .chat-file-card") == {"own-notes.md": "Read", "own-plan.pdf": "•••"}
             assert page.evaluate(_MORE, "#chat-messages .chat-bubble.assistant .chat-file-card") == {"report.md": "Read", "report.pdf": "•••"}
             assert page.evaluate(_SAME_GRID, ["report.md", "report.pdf"]), "one task's files group under its first bubble"
             _capture(page, own, evidence / f"owner-and-delivered-{engine}.png")
 
-            own.locator(".chat-file-card").filter(has_text="own-notes.md").click()
+            notes = _open(page, "own-notes.md", ready=".document-reader-markdown")
+            assert notes["title"] == "own-notes.md" and notes["meta"].startswith("MD · "), notes
+            assert notes["markdown"].strip() == "My notes", "the reader shows the owner's upload, not a delivered copy"
+            assert page.locator(".chat-file-dialog[open]").count() == 0
+            _close_with_escape(page)
+            assert page.evaluate("() => document.activeElement?.closest('.chat-file-card')?.textContent.includes('own-notes.md')")
+            own.locator(".chat-file-card").filter(has_text="own-plan.pdf").click()
             page.locator(".chat-file-dialog[open]").wait_for(state="visible")
-            assert page.evaluate(_DIALOG_TITLE) == "own-notes.md" and page.locator("dialog.document-reader").count() == 0
+            assert page.evaluate(_DIALOG_TITLE) == "own-plan.pdf" and page.locator("dialog.document-reader").count() == 0
             page.locator('.chat-file-dialog[open] [data-file-action="close"]').click()
             _check_brief(_open(page, "report.md", ready=".document-reader-markdown"), "report.md")
             _close_with_escape(page)
