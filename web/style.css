@@ -4006,6 +4006,9 @@ html[data-layout="stack"] .chat-page-note {
     .chat-composer-chips { overflow-x: clip; overflow-y: visible; }
 }
 .chat-composer-chips[data-folded] { max-width: none; }
+/* No room even for "+N" (composer_chips.js lists the chips in "+"): the empty slot keeps the row's height, so its
+   top stays with the capsules, and still takes the room they leave, so a wider row brings the chips back. */
+.chat-composer-chips[data-roomless] { align-self: stretch; }
 /* A contributed chip is one of the row's capsules: the pills' height, the skill's name in the secondary ink at 500,
    its value in the meta ink at 600, and a dot of the value's status tone when the skill names one. */
 .chat-composer-chip {
