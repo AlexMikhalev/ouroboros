@@ -1146,15 +1146,14 @@ def _plan_review_only_awaited(llm_trace: Dict[str, Any]) -> bool:
 
 @timed_phase("admission_seal")
 def _seal_admission_before_delivery(tools: ToolRegistry, limit_ctx: Any, llm_trace: Dict[str, Any]) -> bool:
-    """Seal root admission once more right before delivery; False arms the owner-revision round.
+    """Seal root admission once more right before delivery; False holds the answer.
 
-    The queue's typed answer decides. ``ok`` seals, and a generation mismatch (also one seen
-    locally while the transport was silent) is a real owner follow-up. A begin ``refused``
-    because the root is already ``sealed`` is the worker's own earlier seal whose ack was
-    lost. Any other refusal keeps the revision path. ``unknown`` is a gap — never a refusal,
-    a verdict or an owner message: the answer is delivered with ``admission_released=False``
-    (the durable ``supervisor_ack_unavailable`` row is the record) and a blocking install
-    whose reviewers approved this subject says so on the card (owner decision 2A).
+    Only owner facts revise: a generation mismatch (also one seen locally while the transport
+    was silent) or pending owner mail. A begin ``refused`` because the root is already ``sealed``
+    is the worker's own earlier seal whose ack was lost; ``stale_attempt`` is a pooled attempt
+    that lost its queue ownership and must not publish. Any other refusal, like ``unknown``,
+    is the host's own state: delivered with ``admission_released=False`` (the durable
+    ``supervisor_ack_unavailable`` row is the record), a blocking install noting it on the card.
     """
     tool_ctx = tools._ctx
     from ouroboros.loop_acceptance_review import _resolve_ctx_lineage
@@ -1171,7 +1170,8 @@ def _seal_admission_before_delivery(tools: ToolRegistry, limit_ctx: Any, llm_tra
 
     # The wait for a silent supervisor is long enough for the owner to write: their mail is durable
     # before any generation moves, so the local mailbox is read once more before a gap delivers.
-    gap = not answer and not own_seal and answer.status == "unknown" and not _pending_owner_input_kinds(tool_ctx)
+    gap = (not answer and not own_seal and answer.reason != "stale_attempt"  # a superseded attempt never publishes
+           and not _pending_owner_input_kinds(tool_ctx))  # only owner facts revise
     if getattr(tool_ctx, "_task_acceptance_fence_generation_mismatch", False) or not (answer or own_seal or gap):
         _loop()._supersede_task_acceptance_for_owner_followup(tool_ctx, llm_trace)
         admission_lock = getattr(tool_ctx, "owner_message_admission_lock", None)

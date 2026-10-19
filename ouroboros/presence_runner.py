@@ -1231,6 +1231,8 @@ def run_presence_turn(
         try:
             return _run_current()
         finally:
+            from supervisor.queue_transitions import release_turn_acceptance_fence  # no task_done ends a turn
+            release_turn_acceptance_fence(Path(drive_root), task_id)  # before "not live": no open row outlives it
             with _LIVE_LOCK:
                 _LIVE_PRESENCE_TASKS.discard(live_key)
 
