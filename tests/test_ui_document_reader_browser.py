@@ -159,6 +159,9 @@ def _wait_reader_footer(page, feed="#chat-messages"):
     card = page.locator(f"{feed} .chat-live-card").last
     card.locator('[data-phase="done"]').wait_for()
     card.locator('[data-live-meta]').filter(has_text="Last solve response:").wait_for()
+    # The work's Stop… stays until the state census stops listing it (its post-task tail),
+    # up to a few seconds after Done; its row leaving shrinks the card above the files.
+    card.locator('[data-cancel-run]').wait_for(state="detached", timeout=30_000)
     _feed_scroll(page, feed)
 
 
