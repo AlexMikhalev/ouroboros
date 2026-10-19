@@ -21,13 +21,12 @@
     })());
     return cache.get(url);
   };
-  const inlineUrls = async (css, base) => {
-    for (const m of [...new Set([...css.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)].map((x) => x[2]))]) {
-      if (m.startsWith('data:') || m.startsWith('#')) continue;
-      const data = await dataUrl(new URL(m, base).href);
-      if (data) css = css.split(m).join(data);
+  const inlineUrls = async (css, base) => {   // each url() token is replaced once, by its own match span
+    const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g, found = new Map();
+    for (const [, , ref] of css.matchAll(re)) {
+      if (!ref.startsWith('data:') && !ref.startsWith('#') && !found.has(ref)) found.set(ref, await dataUrl(new URL(ref, base).href));
     }
-    return css;
+    return css.replace(re, (token, q, ref) => (found.get(ref) ? `url(${q}${found.get(ref)}${q})` : token));
   };
   const sheetText = async (sheet) => {
     let rules;

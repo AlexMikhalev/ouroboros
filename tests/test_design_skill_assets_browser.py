@@ -246,7 +246,10 @@ def test_freeze_output_renders_alone_with_state_kept_and_scripts_gone(engine, tm
         assert page.locator("#list").get_attribute("data-freeze-scroll") == "120,0"
         assert page.locator("#pic").get_attribute("src").startswith("data:image/svg+xml")
         assert page.evaluate("document.getElementById('pic').naturalWidth") == 40
-        assert "data:image/svg+xml" in page.locator("#hero").evaluate("e => getComputedStyle(e).backgroundImage")
+        hero = page.locator("#hero").evaluate("e => getComputedStyle(e).backgroundImage")
+        mark = page.locator("#mark").evaluate("e => getComputedStyle(e).backgroundImage")
+        assert "data:image/svg+xml" in hero and "data:image/svg+xml" in mark
+        assert mark != hero and "marks/" not in frozen["html"], "dot.svg is never replaced inside marks/dot.svg"
         frozen_box = page.locator("#made").bounding_box()
         assert abs(frozen_box["x"] - box["x"]) <= 1 and abs(frozen_box["y"] - box["y"]) <= 1
         assert_nothing_fetched(page)
