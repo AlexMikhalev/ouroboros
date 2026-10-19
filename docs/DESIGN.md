@@ -491,8 +491,8 @@ simply not answered yet leave the task `Done`. For a plan review the task result
 keeps the host's typed disclosure that the review was still open (the
 `terminal_host_notice` field, read by the CLI and by parents), the card states
 the same fact as its cause sentence, and no second chat bubble carries it; a
-card amber or red for another reason keeps that reason, with the open review
-stated beside it when the result records it. For a result review the card's
+card that reads `Done with warnings` or `Failed` for another reason keeps that
+reason, with the open review stated beside it when the result records it. For a result review the card's
 cause sentence already says whether the reviewers signed the answer off or
 Ouroboros delivered it on its own judgement. A real
 outcome keeps its word: no reviewer quorum, a failed, refused or unresolved
@@ -609,8 +609,8 @@ Two shapes carry a tone, and they are not interchangeable:
 Surfaces whose tone is a class suffix rather than `data-tone`
 (`.toast-*`, `.log-phase`, `.evo-runtime-pill`, `.widget-table-status`,
 `.widget-metric` / `.widget-callout`) name the same tokens. A task card's chip
-(`.chat-live-phase`) keeps its phase classes as facts and takes its tone from the
-`data-chip-tone` attribute its painter writes. A surface that
+(`.chat-live-phase`) and a settled Logs task headline keep their phase classes as
+facts and take their tone from the `data-chip-tone` attribute their painters write. A surface that
 paints only its edge (a card tinted by its state, a callout's left rule) takes
 the border and leaves its own background alone; a toast keeps its glass
 background, because a translucent status fill over live page content costs the
@@ -1113,8 +1113,12 @@ tint on hover and while open, a caret when it opens. A work is one request with
 its Continue episodes and whatever of them still lives (helpers, delegated
 runs still working, post-answer upkeep); the server gives each work and each room
 one status, and every surface (bar, Shade, sidebar, cards, tray) words that
-one status without deciding its own; Activity's rows keep their queue words and
-take the work's controls. The room says its busiest work:
+one status without deciding its own; Activity's rows keep their queue words, said
+as the chip says them (never a raw phase code), and take the work's controls. A
+card without a projected work (a child, Main's owner-action message, a replayed
+card) takes its shape from its census phase through one table pinned to the
+server's `mark_of`, and the owner's move only from proved facts (`can_resume`,
+`requires_owner_action`, its own question). The room says its busiest work:
 working, then queued, waiting, paused, and its mark is the server's status mark
 (Status marks): moving dots while work runs, still dots while it queues or waits on
 something that ends by itself, two bars while paused, a faint ring when
