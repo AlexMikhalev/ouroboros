@@ -1186,6 +1186,15 @@ not child-task cards and never prove execution by themselves.
   local 24-hour clock, prefixed with the short date when the wait began on an
   earlier day, only where the host recorded the moment it sent that reviewer's
   request; a time is never inferred.
+- A review record whose wave recorded the review pool says it in words at the
+  top of its attempt detail: one panel line (the strictness, who chose the
+  panel — Ouroboros, the host or you — `k of n ticked reviewers` and any
+  advisers, `not counted`), the reason given or `widened to every ticked
+  reviewer (Blocking)`, each seat not reached with its cause, and the wave
+  total over the priced seats, naming those on a subscription or of unknown
+  cost. Each reviewer line leads with `counted` or `adviser, not counted` and
+  its own cost (an amount, `subscription` or `cost unknown`, never $0 for a
+  gap). A record written before these facts reads as it always did.
 - A panel that settled after its task ended stays one attempt row of its group,
   labelled as settled after the task ended; its note (which verdict, which
   revision, whether a reviewer's outcome is still unknown) is host-composed and
