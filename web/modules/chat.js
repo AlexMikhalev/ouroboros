@@ -16,6 +16,7 @@ import { attachmentCaption, attachmentViews, composerText, createComposerAttachm
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
 import { applyCardWorkViews, cardControls, cardMenuActions, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { statusMarkHtml } from './status_mark.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -519,13 +520,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
+    function setStatus({ kind, text, tone, mark, owner, amber, title = '' }) {
         // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
         statusBadge.title = title; // a failed boot step's cause; empty otherwise
-        Object.assign(statusBadge.dataset, { tone, dots, amber, mark });
+        Object.assign(statusBadge.dataset, { tone, mark, owner: owner ? '1' : '', amber });
         roomWork?.update();
     }
 
@@ -3106,12 +3107,11 @@ export function createChatInstance({
     refreshHeaderControlState(true);
 
     const typingEl = document.createElement('div');
-    // Per-instance id (main stays 'typing-indicator'; panels get a unique id) so
-    // multiple open chat columns never collide on a duplicate DOM id.
+    // A per-instance id (Main's stays 'typing-indicator'): open chat columns never share one.
     typingEl.id = idPrefix === 'chat' ? 'typing-indicator' : `${idPrefix}-typing-indicator`;
     typingEl.className = 'chat-bubble assistant typing-bubble';
     typingEl.style.display = 'none';
-    typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    typingEl.innerHTML = statusMarkHtml('typing-mark', { shape: 'moving', hue: 'ink' });
     messagesDiv.appendChild(typingEl);
 
     const pageHistoryIds = new Map();
@@ -3326,7 +3326,7 @@ export function createChatInstance({
     function syncChatStatus() {
         const derived = deriveChatStatus();
         setStatus(derived);
-        return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
+        return setTypingIndicatorVisible(derived.mark === 'moving' && foregroundCards().length === 0);
     }
 
     function setTypingIndicatorVisible(visible) {

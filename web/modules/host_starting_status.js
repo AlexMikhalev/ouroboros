@@ -20,11 +20,11 @@ export function bootPhase(data) {
 export function startingStatus(boot) {
     const failedStep = Array.isArray(boot?.steps) ? boot.steps.find((step) => step?.state === 'failed') : null;
     const title = String(boot?.error || (failedStep ? `${failedStep.name}: ${failedStep.error || ''}` : '') || '');
-    if (boot?.phase === 'failed') return { kind: 'starting', text: 'Start failed', title, showDots: false };
+    if (boot?.phase === 'failed') return { kind: 'starting', text: 'Start failed', title };
     if (boot?.dialogue_ready === true) {
-        return { kind: 'starting', text: 'Chat ready, restoring background tasks', title, showDots: false };
+        return { kind: 'starting', text: 'Chat ready, restoring background tasks', title };
     }
-    return { kind: 'starting', text: 'Starting…', title, showDots: false };
+    return { kind: 'starting', text: 'Starting…', title };
 }
 
 // One chat instance's view of the start: the readiness and phases the last snapshot that stated

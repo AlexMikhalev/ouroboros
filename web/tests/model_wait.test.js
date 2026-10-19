@@ -125,7 +125,7 @@ test('the typed history discriminator survives a chat transport wrapper', () => 
 test('waiting has no computation animation and yields to real work and terminal truth', () => {
     // The room waits for the model (the server's room); the card says the access wait itself.
     assert.deepEqual(roomStatusView({ ...emptyWorkState(), room: room('waiting') }), {
-        kind: 'online', text: 'Waiting', tone: 'held', showDots: false, dots: 'one', amber: '', mark: 'dot',
+        kind: 'online', text: 'Waiting', tone: 'held', mark: 'still', owner: false, amber: '',
     });
     assert.equal(roomStatusView({ ...emptyWorkState(), room: room('working') }).text, 'Working');
     assert.equal(desiredLiveCardPhase({ modelWaiting: true }).text, 'Waiting for access');

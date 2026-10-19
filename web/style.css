@@ -1510,22 +1510,10 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     text-align: left;
     overflow-wrap: anywhere;
 }
-.typing-bubble { opacity: 0.7; }
-.typing-dots {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    height: 20px;
-}
-.typing-dots span {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-secondary);
-    animation: typing-bounce 1.4s ease-in-out infinite;
-}
-.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+/* The transcript's typing bubble: the shared moving mark (status_mark.js) in the bubble's secondary ink, on a line of
+   its own height. */
+.typing-bubble { opacity: 0.7; color: var(--text-secondary); }
+.typing-bubble > .typing-mark { height: 20px; }
 @keyframes typing-bounce {
     0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
     30% { transform: translateY(-6px); opacity: 1; }

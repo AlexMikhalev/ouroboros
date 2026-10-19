@@ -264,12 +264,12 @@ test('Stop retains its existing active-operation movement without animating a pa
     }
 });
 
-// One producer for the header: the word, its tone and its dots come together from
+// One producer for the header: the word, its tone and its mark come together from
 // the server's room; the tone follows the room's activity, never an English word.
-test('the header producer pins word, tone and dots; an own Stop press passes its own word through', () => {
+test('the header producer pins word, tone and mark; an own Stop press passes its own word through', () => {
     const header = (state, overlay = {}) => {
-        const { text, tone, dots } = roomStatusView(state, overlay);
-        return [text, tone, dots];
+        const { text, tone, mark } = roomStatusView(state, overlay);
+        return [text, tone, mark];
     };
     for (const [call, word] of [['preparing', 'Preparing'], ['sending', 'Sending'], ['thinking', 'Thinking'], ['working', 'Working']]) {
         assert.deepEqual(header(inRoom('working', { call })), [word, 'live', 'moving'], call);
@@ -279,13 +279,13 @@ test('the header producer pins word, tone and dots; an own Stop press passes its
         assert.deepEqual(header(inRoom('working'), { stopping }), [word, 'live', 'moving']);
     }
     assert.deepEqual(header(inRoom('queued')), ['Queued', 'queued', 'still']);
-    assert.deepEqual(header(inRoom('waiting', { turn: [{ kind: 'question', task_id: 'q' }] })), ['Waiting for your answer', 'wait', 'one']);
+    assert.deepEqual(header(inRoom('waiting', { turn: [{ kind: 'question', task_id: 'q' }] })), ['Waiting for your answer', 'wait', 'still']);
     // Amber belongs to what waits for the owner; a pause, a wait on the model and a Project hold are neutral facts.
-    assert.deepEqual(header(inRoom('paused')), ['Paused', 'held', 'one']);
+    assert.deepEqual(header(inRoom('paused')), ['Paused', 'held', 'pause']);
     assert.deepEqual(header(inRoom('working', { transition: 'pausing' })), ['Pausing…', 'held', 'moving']);
-    assert.deepEqual(header(inRoom('waiting')), ['Waiting', 'held', 'one']);
-    assert.deepEqual(header(inRoom('unknown')), ['Activity unconfirmed', 'unknown', 'one']);
-    assert.deepEqual(header(emptyWorkState(), { ready: false }), ['Starting…', 'starting', 'one']);
-    assert.deepEqual(header(inRoom('working'), { connected: false }), ['Reconnecting…', 'offline', 'one']);
-    assert.deepEqual(header(emptyWorkState()), ['Online', 'online', 'one']);
+    assert.deepEqual(header(inRoom('waiting')), ['Waiting', 'held', 'still']);
+    assert.deepEqual(header(inRoom('unknown')), ['Activity unconfirmed', 'unknown', 'ring']);
+    assert.deepEqual(header(emptyWorkState(), { ready: false }), ['Starting…', 'starting', 'none']);
+    assert.deepEqual(header(inRoom('working'), { connected: false }), ['Reconnecting…', 'offline', 'ring']);
+    assert.deepEqual(header(emptyWorkState()), ['Online', 'online', 'none']);
 });

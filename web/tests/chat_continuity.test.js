@@ -200,7 +200,7 @@ const inRoom = (activity, extra = {}) => ({ ...emptyWorkState(), room: room(acti
 
 test('admitted managed work shows Working... without a live card (the room says it)', () => {
     assert.deepEqual(roomStatusView(inRoom('working')),
-        { kind: 'thinking', text: 'Working', tone: 'live', showDots: true, dots: 'moving', amber: '', mark: 'moving' });
+        { kind: 'thinking', text: 'Working', tone: 'live', mark: 'moving', owner: false, amber: '' });
 });
 
 test('room status order: the room\'s work > the owner\'s send > Online; queued work yields to a send', () => {
