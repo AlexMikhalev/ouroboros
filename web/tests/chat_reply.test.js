@@ -381,7 +381,7 @@ test('the registered message actions stand between Reply and Copy on the rows th
         f.replies.decorate(answer, { row_address: 'row:1@b#2', role: 'assistant' });
         f.replies.decorate(mine, owner('row:1@a#1'));
         const row = (node) => node.children.find((child) => child.classList.contains('chat-message-actions'))
-            .children.map((child) => child.className);
+            .children.map((child) => child.className.split(' ')[0]);
         assert.deepEqual(row(answer), ['chat-message-reply', 'chat-message-action', 'chat-message-copy'],
             'Copy keeps the corner; the registered action stands beside Reply');
         assert.deepEqual(row(mine), ['chat-message-reply', 'chat-message-copy'], 'an action draws only where it applies');

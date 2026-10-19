@@ -60,8 +60,8 @@ test('every room mounts the composer with the chat-* ids, namespaced in a Projec
 test('"+" stands where the paperclip stood; the voice and chips slots are empty, hidden and in their places', () => {
     const markup = composerMarkup();
     const tag = (pattern) => markup.match(pattern)?.[0] || '';
-    const plus = tag(/<button class="chat-plus-btn"[^>]*>/);
-    for (const attr of ['id="chat-plus"', 'type="button"', 'data-composer-plus', 'aria-label="More actions"',
+    const plus = tag(/<button class="chat-plus-btn[ "][^>]*>/);
+    for (const attr of ['ui-hit-area', 'id="chat-plus"', 'type="button"', 'data-composer-plus', 'aria-label="More actions"',
         'aria-haspopup="menu"', 'aria-expanded="false"']) assert.ok(plus.includes(attr), attr);
     assert.doesNotMatch(markup, /chat-attach-btn|id="chat-attach"/, 'no paperclip beside it');
     assert.match(markup, /<span class="chat-voice-slot" data-composer-voice hidden><\/span>/);

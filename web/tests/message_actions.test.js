@@ -68,7 +68,8 @@ function bubbleFixture() {
         return node;
     };
     const strip = (node) => node.children.find((child) => child.classList.contains('chat-message-actions'));
-    const classes = (node) => strip(node).children.map((child) => child.className);
+    // Each control's role (its first class); the shared finger target (ui-hit-area) is asserted on its own.
+    const classes = (node) => strip(node).children.map((child) => child.className.split(' ')[0]);
     return { ...env, feed, bubble, strip, classes };
 }
 
@@ -90,6 +91,8 @@ test('a bubble draws its actions between Reply and Copy, redraws them when the r
             run: (row, ctx) => ran.push([row.address, ctx.anchor.dataset.messageAction]) });
         assert.equal(writes.length, 1, 'a registry change redraws inside the room\'s viewport seam');
         assert.deepEqual(f.classes(answer), ['chat-message-reply', 'chat-message-action', 'chat-message-copy']);
+        assert.ok(f.strip(answer).children[1].className.split(' ').includes('ui-hit-area'),
+            'under a finger the action takes the same hit area as Reply and Copy');
         assert.deepEqual(f.classes(own), ['chat-message-reply', 'chat-message-copy'], 'an action draws only where it applies');
         const control = f.strip(answer).children[1];
         assert.equal(control.getAttribute('aria-label'), 'Read aloud', 'an icon control has its name');

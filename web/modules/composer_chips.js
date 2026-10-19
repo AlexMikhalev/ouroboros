@@ -198,7 +198,7 @@ export function bindComposerChips({ composer, menu, feed = getChipFeed(), notice
 
     const more = doc.createElement('button');
     more.type = 'button';
-    more.className = 'chat-composer-chip chat-chip-more';
+    more.className = 'chat-composer-chip chat-chip-more ui-hit-area';
     more.setAttribute('aria-haspopup', 'menu');
     more.setAttribute('aria-expanded', 'false');
     more.hidden = true;
@@ -209,7 +209,7 @@ export function bindComposerChips({ composer, menu, feed = getChipFeed(), notice
     function chip(key) {
         const button = doc.createElement('button');
         button.type = 'button';
-        button.className = 'chat-composer-chip';
+        button.className = 'chat-composer-chip ui-hit-area';
         button.dataset.chipKey = key;
         for (const part of ['name', 'dot', 'value']) {
             const span = doc.createElement('span');

@@ -124,7 +124,7 @@ export function bindBubbleActions({ feed, registry = getMessageActions(), notice
     function control(bubble, action, face) {
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'chat-message-action';
+        button.className = 'chat-message-action ui-hit-area';
         button.dataset.messageAction = action.key;
         button.innerHTML = controlIcon(face.icon);
         button.title = face.title;
