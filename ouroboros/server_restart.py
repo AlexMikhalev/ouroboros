@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import threading
 import time
 from typing import Any
 
@@ -23,6 +24,7 @@ from ouroboros.server_process import (
 _RESTARTABLE_UPDATE_PHASES = frozenset({"pending_boot_smoke", "applying_replace"})
 _LAST_RETURNING: set = set()  # this process's Restart: the ids its transaction returns
 _LAST_RETURN_TX: dict = {"id": ""}  # ...and the one transaction that names them
+_OWNER_STOP_BEGAN = threading.Event()  # ...and that its own owned stop began (the pin check keeps its stop)
 
 
 def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
@@ -81,6 +83,7 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
     except BaseException:
         from supervisor.queue import reopen_queue_returns
 
+        _OWNER_STOP_BEGAN.clear()
         reopen_queue_returns("owner_restart")  # no exit follows here: this generation keeps admitting
         raise
     try:
@@ -163,6 +166,7 @@ def _stop_owned_work(ctx: Any) -> list:
     from ouroboros.delegate_custody import reconcile_orphaned_runs
     from ouroboros.owned_shutdown import begin_owned_stop
 
+    _OWNER_STOP_BEGAN.set()  # owner Rollback/Apply Update also restart as the owner, but never get here
     begin_owned_stop(DATA_DIR)  # the grace starts here; every pending stop is recorded before any wait
     returning, owner_waits = _prepare_owner_restart_returns(ctx)
     _LAST_RETURNING.clear()
@@ -276,22 +280,27 @@ def _stop_owned_daemon(label: str) -> None:
 
 
 def _stop_owned_daemon_for_new_pin() -> None:
-    """A planned restart ends the owned daemon only when the landed checkout pins another engine.
+    """A planned restart replaces an off-pin daemon, but never downgrades a newer one.
 
     Runs in the server lifespan teardown of every requested restart (planned
     self-restart, managed update or rollback; the owner's manual Restart has
-    already stopped the daemon, so nothing answers). It compares the pin the
-    next generation selects — ``load_runtime_pin`` reads the checkout that
-    already landed, not this process's cached pin — with the serving engine's
-    handshake through the attach-only ``read_owned_gateway``. An unprovisioned
-    home, an unpublished or unreadable pin and an unreachable, foreign or
-    stopped daemon leave the existing handoff untouched: the next generation
-    attaches. A different version or build SHA makes the same attested stop the
+    already stopped the daemon, so nothing answers unless that stop was
+    unconfirmed). It compares the pin the next generation selects —
+    ``load_runtime_pin`` reads the checkout that already landed, not this
+    process's cached pin — with the serving engine's handshake through the
+    attach-only ``read_owned_gateway``. An unprovisioned home, an unpublished or
+    unreadable pin and an unreachable, foreign or stopped daemon leave the
+    existing handoff untouched: the next generation attaches. Except after the
+    owner's Restart, a lower release pin keeps the authenticated newer daemon:
+    its data root may already require that engine's serving floor. This
+    preserves live availability, not cold-start compatibility after that daemon
+    later exits. Other version or build changes make the same attested stop the
     manual Restart makes, so the next generation spawns the pinned engine; the
     delegated runs that daemon served end with it, and the next generation's
     startup sweep and resumed parents close them as absent (no invented spend).
     """
     from ouroboros.claudexor_daemon import owned_daemon_provisioned, read_owned_gateway
+    from ouroboros.claudexor_runtime import release_below
 
     if not owned_daemon_provisioned():
         return
@@ -306,6 +315,11 @@ def _stop_owned_daemon_for_new_pin() -> None:
                  "unavailable (%s)", exc)
         return
     if serving == (pin.version, pin.build_sha):
+        return
+    # The owner's Restart keeps this second attested stop after its own, which may be unconfirmed.
+    if not _OWNER_STOP_BEGAN.is_set() and release_below(pin.version, serving[0]):
+        log.warning("Planned restart keeps newer owned Claudexor %s: checkout pin %s would downgrade "
+                    "its data root; cold start still requires a compatible pin", serving[0], pin.version)
         return
     log.warning("Planned restart stops the owned Claudexor daemon: engine %s (%s) is serving while the "
                 "checkout pins %s (%s); the next generation starts the pinned engine and the runs "
