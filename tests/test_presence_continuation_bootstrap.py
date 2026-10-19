@@ -217,7 +217,11 @@ def test_full_agent_bootstrap_propagates_review_wait_and_reenters_same_author(tm
     try:
         initial = execution.initial.result(timeout=40)
         assert initial.status == "continuing" and initial.outcome == "deferred" and not initial.text
-        assert not execution.result.done() and h.entered.is_set()
+        # The parked author's initial envelope and the reviewer's start run on separate threads, in
+        # either order: wait for the held reviewer itself. It cannot answer before `h.release`, so
+        # the author's final result is still open once it is inside its call.
+        assert h.entered.wait(30), "the held reviewer never started"
+        assert not execution.result.done()
         ctx = h.agents[0].tools._ctx
         assert isinstance(h.agents[0], agent_module.OuroborosAgent)
         assert ctx.review_wait_callback is h.agents[0].review_wait_callback

@@ -1,7 +1,6 @@
 """Applied review sources retain download custody without becoming task deliverables."""
 
 import hashlib
-import shutil
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from supervisor.events_worker_reports import _handle_log_event
 from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES
 from tests.test_acceptance_publication import _run
 from tests._room_shared import RoomsFromBindings
+from tests._store_shared import remove_store_tree
 
 pytestmark = pytest.mark.serial
 
@@ -129,7 +129,7 @@ def test_canonical_source_survives_actual_child_copyback_and_cleanup(tmp_path, m
     source = _download(canonical, load_effective_task_result(canonical, "applied"))
     assert not (artifacts.task_artifact_dir_path(child, "applied") / source["path"]).exists()
     copied = copy_child_task_result(canonical, {"id": "applied", "drive_root": str(child)})
-    shutil.rmtree(child)
+    remove_store_tree(child)  # the child drive's store stays open in this process
 
     expected = "ready" if user_file else "not_applicable"
     assert copied["artifact_bundle"]["status"] == expected

@@ -94,8 +94,8 @@ def test_a_review_opening_after_the_task_was_packed_gets_its_packet_back_beside_
     packet.unlink()  # packed again between retention and the session's start: handed out loose anew
     assert prepare_session_source(delivery, task_id=again.task_id) == str(packet) and packet.exists()
     packet.unlink()
+    packs._READERS.clear()  # a cached reader keeps its pack open, which Windows refuses to delete
     shutil.rmtree(packs.packs_dir(canonical))  # neither loose nor packed: a typed refusal
-    packs._READERS.clear()
     with pytest.raises(ReviewRouteUnavailable, match="degraded_source_unreachable"):
         prepare_session_source(delivery, task_id=again.task_id)
     assert not packet.exists()
