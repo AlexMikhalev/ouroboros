@@ -253,10 +253,19 @@ function syncNavigationState() {
     // After the unhide, so focus can go into the panel when it opens.
     if (activeProjectId) {
         layers.push({ id: 'project', el: projectPanel, modal: isStackLayout(), live: [projectPanelBackdrop].filter(Boolean),
-            onClose: () => closeProjectPanel() });
+            onClose: () => closeProjectPanel(), focus: focusProjectRoom });
     } else layers.remove('project');
     // Last: the open Project's row is marked, and a closed Project's focus is back on its row, which then stays.
     syncProjectsCollapse();
+}
+
+// Keys scroll what is being read: an opened Project gives the focus to its room's feed (focusable, out of the tab
+// order), so End, PageDown and the arrows move the messages, and a press on their text keeps the focus there. With
+// the panel itself focused they moved nothing (#1998). The panel takes it only before its room has mounted.
+function focusProjectRoom() {
+    const feed = projectInstances.get(navState.activeProjectId)?.page?.querySelector('.chat-messages') || projectPanel;
+    if (!feed.hasAttribute('tabindex')) feed.tabIndex = -1;
+    try { feed.focus({ preventScroll: true }); } catch { /* detached */ }
 }
 
 // Crossing the switch: a drawer has no place in the docked layout; the Project layer changes its modality.
