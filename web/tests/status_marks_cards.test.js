@@ -77,4 +77,7 @@ test('a chip\'s colour is its tone attribute, and amber is the owner\'s move alo
     assert.deepEqual(chipRules.filter(([, body]) => amber.test(body)).map(([head]) => head),
         ['.chat-live-phase[data-chip-tone="owner"]']);
     assert.doesNotMatch(style, /live-dot-breathe|chat-live-line-phase|\.chat-live-phase-secondary\[data-motion/);
+    // A settled Logs headline leaves the amber warning rule; a warn-level event keeps it.
+    assert.match(style, /\.log-entry \.log-phase:is\(\.warn, \.alive, \.empty\):not\(\[data-chip-tone\]\)\s*\{[^}]*--status-warn-fg/);
+    assert.doesNotMatch(style, /\.log-phase:is\([^)]*\.cancelled/);
 });

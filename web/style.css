@@ -2249,16 +2249,18 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 /* Logs phase pills and Evolution pills name the status triples by class (DESIGN "The tone primitive"); the
-   saturated --green/--amber/--red are dot-and-indicator hues, not small-text hues. */
+   saturated --green/--amber/--red are dot-and-indicator hues, not small-text hues. A Logs task headline that settled
+   is its task's outcome and takes the cards' tone (logs.js writes data-chip-tone): Done with warnings green, Stopped
+   neutral. A warn-level log event stays amber: a warning worth reading. */
 .log-entry .log-phase:is(.done, .ready, .ok, .result, .usage, .metrics),
+.log-entry .log-phase[data-chip-tone="ok"],
 .evo-runtime-pill.online {
     color: var(--status-ok-fg);
     border-color: var(--status-ok-border);
     background: var(--status-ok-bg);
 }
 
-.log-entry .log-phase:is(.warn, .alive, .empty, .cancelled),
-.evo-runtime-pill.starting {
+.log-entry .log-phase:is(.warn, .alive, .empty):not([data-chip-tone]) {
     color: var(--status-warn-fg);
     border-color: var(--status-warn-border);
     background: var(--status-warn-bg);
@@ -4628,7 +4630,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .log-entry .log-phase:is(.start, .calling, .context, .progress, .thought, .boot, .working, .thinking) {
-    color: rgba(248, 130, 140, 0.95);
+    color: var(--accent-light);
     border-color: var(--accent-25);
     background: var(--accent-10);
 }
