@@ -757,6 +757,9 @@ def _collect_review_findings(ctx: ToolContext, model_results: list, row_plan: Op
     structured_critical: List[dict] = []
     structured_advisory: List[dict] = []
     triad_raw_results = [record.to_dict() for record in parsed.actor_records]
+    advisers = {sid for sid, extra in zip(plan.get("slot_ids") or [], plan.get("additional") or []) if extra}
+    for raw in triad_raw_results:
+        raw["additional"] = raw.get("slot_id") in advisers
     errored_models = [record.model_id for record in parsed.actor_records if record.status == "error"]
 
     for record in parsed.actor_records:
@@ -816,7 +819,7 @@ def _collect_review_findings(ctx: ToolContext, model_results: list, row_plan: Op
                 if str(item.get("verdict", "")).upper() != "FAIL":
                     continue
                 desc = f"[{record.model_id}] {item.get('item', '?')}: {item.get('reason', '')}"
-                target = structured_critical if item.get("severity") == "critical" else structured_advisory
+                target = structured_critical if item.get("severity") == "critical" and record.slot_id not in advisers else structured_advisory
                 target.append(_review_entry(
                     severity="critical" if target is structured_critical else "advisory",
                     item=str(item.get("item", "?")),
@@ -1402,7 +1405,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
 
     critical_fails, advisory_warns, errored_models, _triad_raw = _collect_review_findings(
         ctx, model_results, prepared.get("row_plan"))
-    models_total = len(model_results)
+    models_total = sum(not row.get("additional") for row in _triad_raw)
     triad_raw = getattr(ctx, "_last_triad_raw_results", []) or []
     # Every delivery records which rules were actually inlined for that row.
     _governance_manifest = list(prepared.get("governance_manifest") or [])
@@ -1415,7 +1418,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         elif slot_id in _retrieving:
             record["governance_manifest"] = list(_retrieving[slot_id].get("governance_manifest") or [])
             record["brief_sha"] = (_retrieving[slot_id].get("sha") or {}).get("brief", "")
-    pending_models = [_review_actor_label(r) for r in triad_raw if (
+    pending_models = [_review_actor_label(r) for r in triad_raw if not r.get("additional") and (
         r.get("late_result_pending") or str(r.get("operation_state") or "")
         in {"in_flight", "custody_lost"})]
     rows = rows_from_plan(prepared.get("row_plan") or {}, prepared.get("routes") or [], triad_raw)

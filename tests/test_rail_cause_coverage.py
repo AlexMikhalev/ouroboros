@@ -95,7 +95,7 @@ def test_the_timeout_rails_are_one_typed_tuple_in_priority_order():
 
 
 def test_c1_adds_no_status_word():
-    assert list(OUTCOME_PHASE_HEADLINE.values()) == ["Working", "Done", "Done with warnings", "Failed", "Cancelled"]
+    assert list(OUTCOME_PHASE_HEADLINE.values()) == ["Working", "Done", "Done with warnings", "Failed", "Stopped"]
 
 
 # ---------------------------------------------------------------- the card line

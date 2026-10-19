@@ -20,7 +20,7 @@ export const HOST_NOTICE_PREFIXES = new Map(Object.entries({
     consciousness_notice: ['🧠 Background consciousness '],
     evolution_notice: ['🧬⚠️ Evolution paused: ', '🧬 Evolution stayed OFF: ', '🧬 Evolution stayed off: ', '🧬 Evolution paused: ',
         '🧬 Evolution: ', '🧬 Evolution campaigns are self-modification work', '💸 Evolution stopped: ',
-        '🛑 Cancelled evolution task(s): ', '⚠️ Evolution stop INCOMPLETE — still live: '],
+        '🛑 Stopped evolution task(s): ', '⚠️ Evolution stop INCOMPLETE — still live: '],
     evolution_cycle_outcome: ['🧬 Evolution cycle absorbed ', '⚠️ Evolution cycle abandoned '],
     promotion_notice: ['❌ Evolution promotion refused: ', '❌ Failed to promote to stable: ', '✅ Promoted: '],
     managed_update_notice: ['📦 Managed update: ', '🔒 An update is using the repository.'],
@@ -63,6 +63,7 @@ export const RETIRED_HOST_NOTICE_PREFIXES = new Map(Object.entries({
     cancellation_notice: ['❌ cancel '],
     task_admission_notice: ['✅ Repair task '],
     task_started: ['🧬 Evolution task ', '🔎 Review task '],
+    evolution_notice: ['🛑 Cancelled evolution task(s): '],
     host_progress: ['🌐 Could not establish a provider connection ', '📐 Plan review:', '📐 Plan review so far:'],
 }));
 

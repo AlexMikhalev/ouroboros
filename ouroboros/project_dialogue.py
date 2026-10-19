@@ -757,7 +757,7 @@ def routing_option_label(option: Any) -> str:
 
 
 OUTCOME_PHASE_HEADLINE = {"working": "Working", "done": "Done", "warn": "Done with warnings",
-                          "error": "Failed", "cancelled": "Cancelled"}
+                          "error": "Failed", "cancelled": "Stopped"}
 
 # One owner sentence per typed cause, for BOTH lifecycle writers and the card.
 # Keyed on the CODE only — never on (status × reason): the status word already

@@ -1,23 +1,20 @@
 """An already-paid review owns its lifetime, controls and free collection.
 
-One model-wait owner spans the panel's drain/workers, union and slot quota clocks,
-and settlement publication, beyond the buying author's scope. Calendar deadlines,
-task money, lineage and Stop/Panic still bind; author execution scopes do not
-(``model_wait.operation_wait_scope``). Joining an entirely live panel reuses its
-operation; dispatch without a task wait owner creates none.
+One wait owner spans panel workers/drain, union/slot quota clocks and settlement,
+beyond the author execution scope (``model_wait.operation_wait_scope``); calendar,
+money, lineage and Stop/Panic still bind. Joining an entirely live panel reuses
+its operation; dispatch without a task wait owner creates none.
 
-Before task-acceptance sends, immutable artifacts retain the exact request, roster,
-operation ids and controller, with a read-back ``review_operations`` result pointer;
-a failed pointer refuses sends at $0. Decisions use the wait's ``pending_action``,
-not the author's mailbox. Only a proven controller may act: local registration, or
-another process in this server generation with exact pid birth, custody session and
-an open pointer matching panel/slot/attempt, with readable, clear Stop/Panic state
-(``review_operation_controller``). Existing maintenance discovers dead controllers.
+Before acceptance sends, immutable request/roster/operation/controller sources need
+a read-back ``review_operations`` pointer; failure refuses sends at $0. Decisions use
+``pending_action``, not author mail. Controllers need local registration or same-server
+pid-birth/custody-session proof, an open matching panel/slot/attempt pointer and clear,
+readable Stop/Panic state (``review_operation_controller``). Existing maintenance
+discovers dead controllers.
 
-Collection restores exact completed outcomes or provable delegated runs and parses
-locally: attach-only, never start, re-post, cancel, acknowledge, retire, ensure a
-daemon or call any model (including Light extraction). Missing records prove no
-absence of sends."""
+Collection parses exact completed outcomes or proven delegated runs locally: attach-only,
+never start/re-post/cancel/acknowledge/retire, ensure a daemon or call a model (Light included).
+Missing records prove no absence of sends."""
 
 from __future__ import annotations
 
@@ -905,20 +902,23 @@ def review_operation_event_admitted(root: Any, payload: Dict[str, Any]) -> bool:
 
 # --- pure collection -----------------------------------------------------------
 
-def recorded_review_assignment(root: Any, *, task_id: str, surface: str, row: dict,
-                               retry_key: str, root_task_id: str = "",
-                               review_contract: str = "") -> Tuple[Any, Any]:
-    """Read a paid seat's original inputs, proving them against its owning wave.
+def recorded_review_assignment(root: Any, *, task_id: str = "", surface: str = "", row: dict,
+                               retry_key: str = "", root_task_id: str = "",
+                               review_contract: str = "", assignment: Optional[Tuple[Any, Any]] = None) -> Tuple[Any, Any]:
+    """Read a paid seat's original inputs, proving its wave and any supplied assignment.
 
-    Current configuration is not an input to collection. The operation pointer,
-    original prompt and its full binding must agree; a missing source is a gap.
-    Old slots without session_access retain ReviewSlot's historical readonly
-    meaning. This is retained evidence, never a transport body for a new send.
+    No current config: pointer, prompt and full binding must agree; missing is a gap.
+    Absent session_access retains historical readonly. Old processing ``""`` meant
+    unspecified (sent as None, omitted from keys); only its exact recorded binding
+    restores that meaning. New captured-empty bindings stay ``""``. Evidence, never a new send.
     """
     from ouroboros.observability import read_call_payload
-    from ouroboros.review_dispatch import recorded_binding_conflicts, review_operation_binding
+    from ouroboros.review_dispatch import recorded_binding_conflicts, recorded_review_slot, review_operation_binding
     from ouroboros.review_records import ReviewRequest, ReviewSlot, ReviewRouteKind
 
+    if assignment is not None:
+        current_request, current_slot = assignment
+        task_id, surface, retry_key = current_request.task_id, current_request.surface, current_request.retry_key
     operation = str(row.get("operation_id") or "")
     if not operation:
         raise ValueError("recorded operation identity missing")
@@ -926,6 +926,7 @@ def recorded_review_assignment(root: Any, *, task_id: str, surface: str, row: di
         root, task_id=task_id or "review", call_id=f"{operation}_prompt")
     request = ReviewRequest(**prompt["request"])
     slot = ReviewSlot(**{**prompt["slot"], "route": ReviewRouteKind(prompt["slot"]["route"])})
+    slot = recorded_review_slot(request, slot, operation, manifest.get("review_operation_binding"))
     expected = review_operation_binding(request, slot, operation)
     if (manifest.get("review_operation_binding") != expected
             or not all(expected.get(key) for key in ("subject_hash", "review_contract", "roster_hash", "root_task_id"))):
@@ -939,6 +940,10 @@ def recorded_review_assignment(root: Any, *, task_id: str, surface: str, row: di
         raise ValueError("original request contract mismatch")
     if recorded_binding_conflicts(row.get("recovery_binding"), expected):
         raise ValueError("recorded wave binding mismatch")
+    if assignment is not None:
+        slot = recorded_review_slot(current_request, current_slot, operation, expected)
+        if review_operation_binding(current_request, slot, operation) != expected:
+            raise ValueError("operation/task/root/material/contract/roster binding mismatch")
     return request, slot
 
 
@@ -989,25 +994,15 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
         outcome = payload.get("producer_outcome") if isinstance(payload, dict) else None
         if not manifest.get("producer_complete") or not isinstance(outcome, dict):
             return None  # Historical/partial blobs carry no completed-producer receipt.
-        original_request, original_slot = recorded_review_assignment(
-            root, task_id=request.task_id, surface=request.surface, row=row,
-            retry_key=request.retry_key,
-            root_task_id=(request.reconciliation_identity or {}).get("root_task_id", ""))
+        original_request, original_slot = recorded_review_assignment(root, row=row, assignment=(request, slot))
         expected = review_operation_binding(original_request, original_slot, operation)
-        if review_operation_binding(request, slot, operation) != expected:
-            raise ValueError("operation/task/root/material/contract/roster binding mismatch")
         binding = outcome.get("recovery_binding")
         if not isinstance(binding, dict) or manifest.get("review_operation_binding") != binding:
             raise ValueError("producer binding missing or inconsistent")
         if {k: v for k, v in binding.items() if k != "pending_invocation_id"} != expected:
             raise ValueError("operation/task/root/material/contract/roster binding mismatch")
-        frozen = row.get("recovery_binding")
-        if frozen and {k: v for k, v in frozen.items() if k != "pending_invocation_id"} != expected:
-            raise ValueError("recorded wave binding mismatch")
-        prompt_manifest, prompt, prompt_ref = read_call_payload(
+        _prompt_manifest, _prompt, prompt_ref = read_call_payload(
             root, task_id=request.task_id or "review", call_id=f"{operation}_prompt")
-        if prompt_manifest.get("review_operation_binding") != expected:
-            raise ValueError("original prompt operation binding mismatch")
         token = str(binding.get("pending_invocation_id") or "")
         frozen_tokens = recorded_invocation_tokens(row)
         if frozen_tokens and frozen_tokens != {token}:
@@ -1225,17 +1220,25 @@ def _collect_pending_row(root: Any, request: Any, slot: Any, row: dict, usage_ct
     from ouroboros.review_custody import (
         _ACTIVE, _ACTIVE_LOCK, _attempt_key, _frozen_actor,
     )
+    from ouroboros.review_dispatch import recorded_review_slot
 
     operation_id = str(row.get("operation_id") or "")
+    slot = recorded_review_slot(request, slot, operation_id, row.get("recovery_binding"))
+    if not row.get("recovery_binding") and root and str(getattr(slot.route, "value", slot.route)) == "agent_session":
+        try:
+            _original_request, slot = recorded_review_assignment(root, row=row, assignment=(request, slot))
+        except FileNotFoundError:
+            pass  # Older invocation-only rows may have no retained prompt.
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return _row_actor(slot, operation_id, row, state="custody_lost",
+                              reason=f"Original review assignment unavailable: {exc}"), UNAVAILABLE
     key = _attempt_key(request, slot)
     with _ACTIVE_LOCK:
-        entry = _ACTIVE.get(key)
-        live = entry if entry is not None and entry.operation_id == operation_id else None
-        answered = copy.deepcopy(live.actor) if live is not None and live.event.is_set() and live.actor is not None else None
-    if answered is not None:
-        return answered, COLLECTED
-    if live is not None:
-        return _frozen_actor(row, slot), DEFERRED  # its own worker settles it
+        live = _ACTIVE.get(key)
+        if live is not None and live.operation_id == operation_id:
+            if live.event.is_set() and live.actor is not None:
+                return copy.deepcopy(live.actor), COLLECTED
+            return _frozen_actor(row, slot), DEFERRED  # its own worker settles it
     cached = (getattr(usage_ctx, "_review_settled_attempts", None) or {}).get(key)
     if cached is not None and str(getattr(cached, "operation_id", "") or "") == operation_id:
         return copy.deepcopy(cached), COLLECTED
@@ -1247,12 +1250,10 @@ def _collect_pending_row(root: Any, request: Any, slot: Any, row: dict, usage_ct
     # worker's custody is gone); a recorded controller that cannot be verified
     # is not presumed dead.
     state = controller_state(identity) if isinstance(identity, dict) and identity else "dead"
-    if state == "alive":
-        return _frozen_actor(row, slot), DEFERRED  # another live process owns this worker
-    if str(getattr(slot.route, "value", slot.route) or "") == "agent_session":
+    if state != "alive" and str(getattr(slot.route, "value", slot.route) or "") == "agent_session":
         return _observe_delegated_review(root, request, slot, row, operation_id, controller_known=state != "unknown")
-    if state == "unknown":
-        return _frozen_actor(row, slot), DEFERRED
+    if state in {"alive", "unknown"}:
+        return _frozen_actor(row, slot), DEFERRED  # another process owns or may own this worker
     return _row_actor(slot, operation_id, row, state="custody_lost", reason=(
         "The review worker ended without a retained producer outcome; its API outcome is unknown "
         "and is never re-sent.")), UNAVAILABLE
