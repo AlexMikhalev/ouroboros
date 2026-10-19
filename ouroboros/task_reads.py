@@ -8,8 +8,9 @@ replicas. A page therefore pays one short store read per data root and wave inst
 store open per task and per document it overlays (P13: facts relevant to the current
 operation). Within the read every loader receives its own copy, as from ``load_task_result``.
 An unchanged child store is not reopened by later reads of this process: its views are kept
-under the store file's stamp, and a stamp that moved reads again. The canonical documents' versions
-(``write_seq``, read with their views) say which truth a page showed (``after`` cursors).
+under the stamp of the store file and its WAL log, and a stamp that moved reads again. The
+canonical documents' versions (``write_seq``, read with their views) say which truth a page
+showed (``after`` cursors).
 """
 
 from __future__ import annotations
@@ -32,19 +33,21 @@ _STAMP_GRAIN_SEC = 2.0
 
 
 def _store_stamp(root: pathlib.Path) -> Optional[tuple]:
-    """The store file's identity, or None when it is absent or too fresh to stand for its content.
-    A commit rewrites the file (rollback journal), so an unchanged stamp is unchanged content; an
-    interrupted commit moves it too. A commit inside the file time's grain may keep size and time,
-    so a stamp younger than the grain is never trusted."""
-    from ouroboros.store import STORE_REL
+    """The store's identity, or None when it is absent or too fresh to stand for its content.
+    A commit rewrites the file (rollback journal) or appends to its WAL log, which keeps it until
+    a checkpoint moves it into the file (``store.log_identity``), so an unchanged pair is unchanged
+    content; an interrupted commit moves it too. A commit inside the file time's grain may keep
+    size and time, so a stamp younger than the grain is never trusted."""
+    from ouroboros.store import STORE_REL, log_identity
 
     try:
         info = (root / STORE_REL).stat()
     except OSError:
         return None
-    if time.time() - info.st_mtime < _STAMP_GRAIN_SEC:
+    log = log_identity(root / STORE_REL)
+    if time.time() - max(info.st_mtime_ns, log[2] if log else 0) / 1e9 < _STAMP_GRAIN_SEC:
         return None
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, tuple(log) if log else None)
 
 
 class TaskReads:

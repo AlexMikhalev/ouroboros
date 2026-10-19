@@ -142,11 +142,13 @@ def test_every_load_is_a_private_copy_and_absence_is_the_stores_answer(tmp_path)
 
 
 def _age(root, seconds=60):
-    """The store file as a commit that many seconds ago left it."""
+    """The store as a commit that many seconds ago left it: its file and its WAL log, if any."""
     from ouroboros.store import STORE_REL
 
     then = time.time() - seconds
-    os.utime(root / STORE_REL, (then, then))
+    for path in (root / STORE_REL, (root / STORE_REL).with_name(STORE_REL.name + "-wal")):
+        if path.exists():
+            os.utime(path, (then, then))
 
 
 def test_an_unchanged_child_store_is_not_reopened(tmp_path, monkeypatch):
@@ -166,6 +168,29 @@ def test_an_unchanged_child_store_is_not_reopened(tmp_path, monkeypatch):
     _seed(child, "task-a", "failed")  # a write moves the store's stamp: the next read sees it
     assert TaskReads(tmp_path).load(child, "task-a")["status"] == "failed"
     assert opened == [str(child), str(child)]
+
+
+def test_a_wal_commit_older_than_the_grain_still_moves_the_stamp(tmp_path, monkeypatch):
+    """Under WAL a commit lands in the log and leaves the store file as it was until a checkpoint
+    moves it there: the stamp holds the log's identity too, so a child's commit is seen however
+    long ago it happened, never served from the views cached before it."""
+    from ouroboros import store, task_reads
+    from ouroboros.store import STORE_REL
+    from tests._store_journal_shared import use_journal
+
+    use_journal(monkeypatch, "WAL")  # whatever this SQLite would choose
+    monkeypatch.setattr(task_reads, "_REPLICAS", task_reads.OrderedDict())
+    child = tmp_path / "child"
+    _seed(child, "task-a", "completed")
+    _age(child)
+    assert TaskReads(tmp_path).load(child, "task-a")["status"] == "completed"  # cached under the aged stamp
+    database = os.stat(child / STORE_REL)
+    _seed(child, "task-a", "failed")
+    log = store.log_identity(child / STORE_REL)
+    assert log is not None and os.stat(child / STORE_REL).st_mtime_ns == database.st_mtime_ns  # in the log only
+    then = time.time() - 60
+    os.utime((child / STORE_REL).with_name(STORE_REL.name + "-wal"), (then, then))  # the commit past the grain
+    assert TaskReads(tmp_path).load(child, "task-a")["status"] == "failed"
 
 
 def test_a_child_store_written_within_the_file_time_grain_is_read_again(tmp_path, monkeypatch):
