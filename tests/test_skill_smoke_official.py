@@ -61,6 +61,7 @@ from ouroboros.skill_review_history import load_history
 from ouroboros.skill_review_status import normalize_skill_review_status
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.skill_preflight import _handle_skill_preflight
+from tests.conftest import _THREAD_LEAK_GRACE_SEC
 from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
 
 pytestmark = pytest.mark.skill_smoke
@@ -659,9 +660,9 @@ def wait_for_review_workers(started_before, bound_sec: float, poll_sec: float = 
         time.sleep(poll_sec)
 
 
-# The session thread-leak check's own grace (tests/conftest.py _THREAD_LEAK_GRACE_SEC): all an
-# attempt that is not late may take to retire after its review returned.
-_SETTLED_ATTEMPT_GRACE_SEC = 2.0
+# The session thread-leak check's own grace: all an attempt that is not late may take to retire
+# after its review returned.
+_SETTLED_ATTEMPT_GRACE_SEC = _THREAD_LEAK_GRACE_SEC
 
 
 def settle_review_workers(started_before) -> str:
@@ -675,11 +676,12 @@ def settle_review_workers(started_before) -> str:
     """
     late = {key for key, row in active_review_attempts().items() if row["late"] and key not in started_before}
     lingering = wait_for_review_workers(set(started_before) | late, _SETTLED_ATTEMPT_GRACE_SEC, poll_sec=0.1)
-    if lingering:
-        return f"reviewer attempts still registered after the test, none of them late: {sorted(lingering.values())}"
     bound = _REVIEW_WINDOW_SEC + 60
-    still = wait_for_review_workers(started_before, bound) if late else {}
-    return f"late reviewer workers still active {bound:.0f}s after the test: {sorted(still.values())}" if still else ""
+    # A late worker is drained beside a leak too: the environment is never restored under it.
+    still = wait_for_review_workers(set(started_before) | set(lingering), bound) if late else {}
+    return "; ".join(filter(None, (
+        lingering and f"reviewer attempts still registered after the test, none of them late: {sorted(lingering.values())}",
+        still and f"late reviewer workers still active {bound:.0f}s after the test: {sorted(still.values())}")))
 
 
 @pytest.fixture()

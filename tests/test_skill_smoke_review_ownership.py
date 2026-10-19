@@ -100,6 +100,29 @@ def test_settling_waits_out_a_late_worker_but_names_a_settled_attempt_left_behin
             review_custody._ACTIVE.pop(lingering.key, None)
 
 
+def test_a_leak_beside_a_late_worker_is_named_after_the_late_worker_retires(tmp_path):
+    from ouroboros import review_custody
+
+    before = set(smoke.active_review_attempts())
+    release = threading.Event()
+    actor = _late_review(tmp_path, release, "smoke-settle-mixed")
+    lingering = review_custody.ActiveReviewAttempt(key="smoke-mixed-lingering", operation_id="op-mixed-lingering")
+    with review_custody._ACTIVE_LOCK:
+        review_custody._ACTIVE[lingering.key] = lingering
+    try:
+        threading.Timer(_HELD_SEC, release.set).start()  # past the leak's grace: the late worker outlives it
+        started = time.monotonic()
+        problem = smoke.settle_review_workers(before)
+        assert "none of them late" in problem and "op-mixed-lingering" in problem, problem
+        # The fixture restores the environment right after this report: never under a running late worker.
+        assert actor["operation_id"] not in smoke.wait_for_review_workers(before, 0, poll_sec=0).values()
+        assert time.monotonic() - started < 10, "the leak got the late worker's long wait"
+    finally:
+        release.set()
+        with review_custody._ACTIVE_LOCK:
+            review_custody._ACTIVE.pop(lingering.key, None)
+
+
 def test_owned_review_workers_holds_teardown_until_the_late_worker_retires(
         tmp_path, owned_review_workers):  # noqa: F811 -- pytest fixture injection
     """Without the fixture's wait this item fails the session's thread-leak check:
