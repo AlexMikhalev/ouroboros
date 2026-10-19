@@ -43,4 +43,3 @@ def test_feed_rows_remember_their_size_and_are_lazy_only_while_the_width_moves()
                 continue
             assert selector == ":is(#chat-messages, .chat-messages)[data-resizing] > *", (
                 f"{path.name} {selector}: a feed's rows are lazy only while its width moves")
-
