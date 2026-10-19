@@ -256,7 +256,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     try:
         from ouroboros.projects_registry import projects_summary
 
-        projects = projects_summary(request_drive_root(request))
+        projects = projects_summary(request_drive_root(request), include_pinned=True)
     except Exception:
         projects = []
     try:
