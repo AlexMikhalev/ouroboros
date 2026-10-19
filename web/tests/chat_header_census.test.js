@@ -857,12 +857,13 @@ for (const [chatId, asPanel, refused] of [[1, false, true], [7, true, true], [1,
     });
 }
 
-// Two races of the same Stop (astra's review of eedc75c55): the parent's end learned only from the detail read that
-// follows a refused or 404 answer; and a Stop… replaced while the request is out (a partial body takes it, the next
-// one mounts another) before the refusal arrives. Either way the card, as it is now, keeps a usable Stop… and says
-// a refusal once.
+// Races of the same Stop (astra's reviews of eedc75c55 and 6a311ccaf): the parent's end learned only from the detail
+// read that follows a refused or 404 answer; a Stop… replaced while the request is out (a partial body takes it, the
+// next one mounts another) before the refusal arrives; and the same with no Stop… mounted until after the answer
+// ('gone'). Every way, the card keeps a usable Stop… and the request says its refusal once.
 for (const [chatId, asPanel] of [[1, false], [7, true]]) {
-    for (const [race, answer] of [['learned', 503], ['learned', 404], ['replaced', 503], ['replaced', 0]]) {
+    for (const [race, answer] of [['learned', 503], ['learned', 404], ['replaced', 503], ['replaced', 0],
+        ['gone', 503], ['gone', 0]]) {
         test(`a Stop out across the parent's end settles the card as it is now (${race}, ${answer || 'network error'}, ${asPanel ? 'Project room' : 'Main'})`, async () => {
             let release = null;
             const cancels = [];
@@ -907,13 +908,15 @@ for (const [chatId, asPanel] of [[1, false], [7, true]]) {
                 await fx.settle();
                 assert.equal(cancels.length, 1, 'the Wrap up is out');
                 assert.equal(first.disabled, true, 'its Stop… waits for the answer');
-                if (race === 'replaced') {
+                if (race !== 'learned') {
                     fx.handlers.get('log')({ chat_id: chatId, data: { type: 'task_done', task_id: 'p', status: 'completed',
                         ts: '2026-10-19T09:00:05Z' } });
                     await fx.settle();
                     body([helper], [after]);
                     body([helper], [], false);
                     assert.equal(Boolean(stop()), false, 'a partial body takes the Stop… away');
+                }
+                if (race === 'replaced') {
                     body([helper], [after]);
                     assert.ok(stop() && stop() !== first, 'the next body mounts another Stop…');
                 }
@@ -922,6 +925,8 @@ for (const [chatId, asPanel] of [[1, false], [7, true]]) {
                 release();
                 for (let i = 0; i < 20 && reads() === before; i += 1) await fx.settle();
                 await fx.settle();
+                // A refusal is said by the request itself, even with no Stop… on the card when it arrives ('gone').
+                if (race === 'gone') assert.equal(Boolean(stop()), false, 'no Stop… is mounted at the answer');
                 // Once the parent's end is known, the census lists the work its helper keeps going.
                 body([helper], [after]);
                 assert.equal(fx.card('p').dataset.finished, '1');

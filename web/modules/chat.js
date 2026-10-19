@@ -15,7 +15,7 @@ import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, s
 import { attachmentCaption, attachmentViews, composerText, createComposerAttachments, createUnconfirmedSends } from './chat_attachments.js';
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
-import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView, settleKeptStop } from './work_status.js';
+import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -981,10 +981,11 @@ export function createChatInstance({
                 btn.disabled = false;
             }
         } catch (exc) {
+            // Said once, by the request; 404 is the task already gone.
+            if (exc?.status !== 404) showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
                 revokeManagedTaskCancelAuthority(taskId);
-                settleKeptStop(liveCardRecords.get(taskId), exc, showToast);
                 try {
                     reconcileCancelCardFromDetail(record, taskId, await fetchTaskDetail(taskId));
                 } catch {
@@ -992,7 +993,6 @@ export function createChatInstance({
                 }
                 return;
             }
-            showToast(`Cancel failed: ${exc?.message || exc}`, 'error');
             // Reconcile durable truth before restoring any optimistic UI.
             let stored = null;
             try {

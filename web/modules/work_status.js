@@ -284,7 +284,8 @@ export function workMenuActions(grouped, { cancelPending = false, resume = false
  * What a card offers from its work: `resume` when the work's Resume control targets the card's own task, `menu` when
  * the work offers anything else, and `work` when the card is a confirmed work's current episode that is live or
  * offers something. The server's controls decide, live episode or not: a parent that finished while its helper
- * works keeps its tree's Stop.
+ * works keeps its tree's Stop. A finished card's Stop… is that offer, never its own pending Stop, so every sync of
+ * the card keeps it usable (chat.js syncCancelRunButtonMutation); its own request says a refusal itself.
  */
 export function cardControls(state, taskId) {
     const id = String(taskId || '');
@@ -293,17 +294,6 @@ export function cardControls(state, taskId) {
     const resume = Boolean(grouped && grouped.resume === id);
     const menu = Boolean(grouped && workMenuActions(grouped).length);
     return { work: grouped && (work.episode?.live || resume || menu) ? work : null, resume, menu };
-}
-
-/**
- * A card that finished while its own Stop request was out, once that request is refused: the refusal is said once,
- * as a running card says it, while the card as it is now (its record by task id, the Stop… on its root, whatever
- * button the request began with) still offers its work's Stop…. A finished card's Stop… is never its own pending
- * Stop, so every sync keeps it usable (chat.js syncCancelRunButtonMutation); a running card keeps its own rules.
- */
-export function settleKeptStop(record, exc = null, toast = () => {}) {
-    if (!record?.finished || !exc || exc.status === 404 || !record.root?.querySelector?.('[data-cancel-run]')) return;
-    toast(`Cancel failed: ${exc.message || exc}`, 'error');
 }
 
 /**
