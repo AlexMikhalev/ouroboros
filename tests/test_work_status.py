@@ -184,7 +184,17 @@ def test_room_takes_the_most_active_work_and_amber_follows_the_turn():
                             _work("working", work_id="b")])
     assert (room["activity"], room["mark"], room["amber"]) == ("working", "moving", True)
     assert ws.roll_up_room([_work("queued")])["mark"] == "still"
-    assert ws.roll_up_room([_work("paused")])["mark"] == "dot" and not ws.roll_up_room([_work("paused")])["amber"]
+    # A wait that ends by itself reads like the queue; a pause stands until Resume (docs/DESIGN.md "Status marks").
+    assert ws.roll_up_room([_work("waiting")])["mark"] == "still"
+    assert ws.roll_up_room([_work("paused")])["mark"] == "pause" and not ws.roll_up_room([_work("paused")])["amber"]
+
+
+def test_mark_of_names_what_the_work_does_and_never_whose_move_it_is():
+    assert [ws.mark_of(activity, True) for activity in ("working", "queued", "waiting", "paused", "idle", "unknown")] \
+        == ["moving", "still", "still", "pause", "none", "ring"]
+    # Observed work keeps moving in an incomplete read; anything else unconfirmed is the ring.
+    assert ws.mark_of("working", False) == "moving"
+    assert {ws.mark_of(activity, False) for activity in ("queued", "waiting", "paused", "unknown")} == {"ring"}
 
 
 def test_room_finalizing_only_says_finalizing_and_empty_rooms_are_idle_or_unknown():

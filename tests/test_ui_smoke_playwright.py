@@ -182,7 +182,7 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
                 assert add.is_visible()
                 assert add.get_attribute("aria-label") == "New project"
                 assert page.locator("#nav-projects-count").inner_text() == "1"
-                assert row.locator(".nav-unread-dot").count() == 1
+                assert row.get_attribute("data-unread") == ""
 
                 row.click()
                 page.wait_for_selector('#project-panel:not([hidden])', timeout=30_000)
@@ -3622,7 +3622,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     """v6.82 P5 / S3 Q2: the stop control renders ONLY on live marker-attested
     root cards (never marker-less direct-turn cards, subagent children, or the
     reusable background slot), opens the dropdown, and a cancelled root
-    replays as an honest warn-toned "Stopped" — never a generic "Done"."""
+    replays as an honest neutral "Stopped" — never a generic "Done"."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright

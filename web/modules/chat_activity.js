@@ -623,20 +623,24 @@ function optionalFiniteNumber(value) {
     return Number.isFinite(number) ? number : null;
 }
 
-/** Pure presentation projection used by the header and dependency-free tests. */
+/** Pure presentation projection used by the header and dependency-free tests. `attention` is the owner's move: a
+ *  task the spending limit stopped waits for the owner (a Main attention row, main_decisions.py), else the pill is
+ *  a neutral fact. */
 export function headerBudgetPresentation(data) {
+    const attention = Array.isArray(data?.main_attention)
+        && data.main_attention.some((row) => row?.attention_reason === 'budget');
     if (!data || data.accounting_loading === true) {
-        return { state: 'loading', label: 'Loading…', fillPct: 0 };
+        return { state: 'loading', label: 'Loading…', fillPct: 0, attention };
     }
     if (data?.accounting?.available === false) {
-        return { state: 'unavailable', label: 'Unavailable', fillPct: 0 };
+        return { state: 'unavailable', label: 'Unavailable', fillPct: 0, attention };
     }
     // Older state shapes did not carry accounting.available.  Keep accepting
     // them when they contain a real numeric projection, but never coerce null
     // (ledger failure in the new shape) into a convincing $0.
     const spent = optionalFiniteNumber(data.spent_usd);
     if (spent === null) {
-        return { state: 'unavailable', label: 'Unavailable', fillPct: 0 };
+        return { state: 'unavailable', label: 'Unavailable', fillPct: 0, attention };
     }
     const rawLimit = optionalFiniteNumber(data.budget_limit);
     const limit = rawLimit !== null && rawLimit > 0 ? rawLimit : 0;
@@ -647,6 +651,7 @@ export function headerBudgetPresentation(data) {
         state: 'available',
         label,
         fillPct: limit > 0 ? Math.min(100, Math.max(0, (spent / limit) * 100)) : 0,
+        attention,
     };
 }
 

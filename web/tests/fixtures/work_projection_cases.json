@@ -41,6 +41,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -117,6 +118,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -206,6 +208,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "direct",
      "project_id": "",
      "since": 100.0,
@@ -237,7 +240,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "d"
@@ -290,6 +293,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -313,7 +317,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "o"
@@ -366,6 +370,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -389,7 +394,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "m"
@@ -448,6 +453,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "pause",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -478,7 +484,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "pause",
      "confirmed": true,
      "works": [
       "s"
@@ -540,6 +546,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -571,7 +578,7 @@
       }
      ],
      "amber": true,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "a"
@@ -624,6 +631,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -668,6 +676,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 90.0,
@@ -739,6 +748,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "failed",
      "kind": "task",
      "project_id": "",
@@ -824,6 +834,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "still",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -843,7 +854,7 @@
      "call": "",
      "turn": [],
      "amber": false,
-     "mark": "dot",
+     "mark": "still",
      "confirmed": true,
      "works": [
       "sl"
@@ -890,6 +901,7 @@
       ]
      },
      "confirmed": false,
+     "mark": "ring",
      "kind": "task",
      "project_id": "",
      "since": 100.0,
@@ -960,6 +972,7 @@
       "ids": []
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "done",
      "kind": "task",
      "project_id": "",
@@ -1036,6 +1049,7 @@
       ]
      },
      "confirmed": true,
+     "mark": "moving",
      "outcome": "completed",
      "kind": "task",
      "project_id": "",

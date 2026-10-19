@@ -891,17 +891,6 @@
     transform: none;
 }
 
-
-/* The warn foreground, not the raw --amber: #f59e0b over the 12% amber wash is
-   ~2:1 on the light surface and unreadable when selected. --status-warn-fg is
-   the token that already carries a legible warn tint per theme. */
-[data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"].active,
-[data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"]:hover {
-    color: var(--status-warn-fg);
-    border-color: var(--status-warn-border);
-    background: var(--status-warn-bg);
-}
-
 [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"].active,
 [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"]:hover {
     color: var(--text-primary);
@@ -940,7 +929,7 @@
 /* Startup & background: a row's note starts where its checkbox label's text starts, and a
    status dot hangs under the checkbox, so wrapped lines and both rows share one text edge. */
 [data-autostart-settings] {
-    --autostart-dot: 6px;   /* the status dot, ui.css */
+    --autostart-dot: var(--mark-fact);   /* the status sentence's dot, ui.css */
 }
 [data-autostart-settings] .settings-inline-status,
 [data-autostart-settings] .settings-inline-note {
@@ -1337,7 +1326,8 @@
 
 /* ---- Airy dopamine (DESIGN.md design bible) -------------------------------------------------------------------
    A segmented choice is the one capsule control: neutral options standing on the rest shadow, the chosen one in its
-   tone (crimson; Advisory's warn tint) and still standing, no outline. Hover and press change colour, never height. */
+   tone (crimson) and still standing, no outline. Hover and press change colour, never height. A setting's value is
+   never amber: Advisory reads like every other value. */
 :root[data-theme] .ui-segment {
     border-color: transparent;
     border-radius: var(--pill-radius);
@@ -1352,9 +1342,6 @@
 :root[data-theme] .settings-effort-btn.active,
 :root[data-theme] [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"].active {
     border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink);
-}
-:root[data-theme] [data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"].active {
-    border-color: transparent; background: var(--tone-amber); color: var(--status-warn-fg);
 }
 :root[data-theme] .ui-segment:disabled { box-shadow: none; }
 :root[data-theme] .settings-effort-btn:disabled:hover { border-color: transparent; background: var(--surface-capsule); }

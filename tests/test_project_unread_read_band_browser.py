@@ -1,4 +1,4 @@
-"""A Project room is read where the reader can see the newest message (DESIGN "Project unread dot").
+"""A Project room is read where the reader can see the newest message (DESIGN "Unread").
 
 Real server, real retained chat history, real history endpoint and read cursor:
 a late answer keeps the time it was written, so it sorts into the middle of the
@@ -100,7 +100,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
             row = page.locator('.nav-project-row[data-project-id="late-room"]')
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             row.evaluate("el => el.click()")
             messages = page.locator(PANEL)
             messages.locator(".chat-bubble").filter(has_text=LATE).wait_for(state="attached")
@@ -111,7 +111,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
             page.screenshot(path=str(evidence / f"read-band-{engine}-late-landing.png"))
             assert _wait_for(page, lambda: seen() == [revision]), ("the opening lands on the late answer", landed, acks)
             assert landed["top"] >= landed["feedTop"], ("it is on screen", landed)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             # Arrived last again, written at 10:15:30: it sorts between Reply 15 and Reply 16.
             dialogue_store.append(data, "chat", {"ts": "2026-09-28T10:15:30Z", "direction": "out", "chat_id": chat_id,
@@ -132,7 +132,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
             assert under["node"]["top"] >= under["composer"]["top"], under  # ...but only beneath the composer
             page.wait_for_timeout(300)
             assert seen() == [revision], ("an answer beneath the composer is not read", under)
-            assert row.locator(".nav-unread-dot").count() == 1
+            assert _unread(row).count() == 1
 
             clear = messages.evaluate(_PLACE, [LATER, -160])
             page.evaluate(_SETTLE_RESTORE_FRAMES)
@@ -143,7 +143,7 @@ def test_an_opened_room_lands_on_its_late_answer_and_a_later_one_is_read_only_cl
                 json.dumps({"landed": landed, "kept": kept, "under": under, "clear": clear, "acks": acks}, indent=2),
                 encoding="utf-8")
             assert read, ("the answer clear of the composer is read", clear, acks)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -189,7 +189,7 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
             row = page.locator('.nav-project-row[data-project-id="tail-room"]')
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             row.evaluate("el => el.click()")
             messages = page.locator(PANEL)
             messages.locator(".chat-bubble").filter(has_text="Owner follow-up 5").wait_for(state="attached")
@@ -201,7 +201,7 @@ def test_an_opened_room_lands_on_its_newest_reply_above_later_rows_and_a_read_ro
             assert _wait_for(page, lambda: seen() == [{"project_seen_revision": {"tail-room": revision}}]), \
                 ("the opening lands on the newest reply and reads it", landed, gap, acks)
             assert landed["top"] >= landed["feedTop"] and gap > 1, ("on screen, above the bottom", landed, gap)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             page.locator("#project-panel-close").evaluate("el => el.click()")
             row.evaluate("el => el.click()")
@@ -231,6 +231,11 @@ def _seed_room(data, project_id, name, rows, archives=()):
     return chat_id, advance_room_revision(data, chat_id=chat_id)["visible_revision"]
 
 
+def _unread(row):
+    """A Project row's unread fact: its own attribute, never its mark's colour, which the owner's amber outranks."""
+    return row.and_(row.page.locator("[data-unread]"))
+
+
 def _client(browser, url, project_id, acks, init=()):
     """One client showing the room's row unread; ``acks`` collects its read receipts."""
     page = browser.new_page(viewport={"width": 1187, "height": 734})
@@ -241,7 +246,7 @@ def _client(browser, url, project_id, acks, init=()):
     page.goto(url, wait_until="domcontentloaded")
     page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
     row = page.locator(f'.nav-project-row[data-project-id="{project_id}"]')
-    row.locator(".nav-unread-dot").wait_for(state="attached")
+    _unread(row).wait_for(state="attached")
     return page, row
 
 
@@ -281,7 +286,7 @@ def test_a_question_delivered_live_is_read_where_its_card_is_shown(direct_server
             messages.locator(".chat-bubble").filter(has_text="Reply 3").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             assert _wait_for(page, lambda: seen() == [first]), ("an ordinary room is read on landing", acks)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             # The bridge broadcasts the question, then persists it and advances the revision.
             ts = "2026-09-28T10:30:00Z"
@@ -316,7 +321,7 @@ def test_a_question_delivered_live_is_read_where_its_card_is_shown(direct_server
             assert messages.locator(".chat-quiz-card").filter(has_text=QUESTION).count() == 1
             assert card.evaluate("n => n.__liveCard === true"), "the read adopted the live card, not a copy"
             assert page.evaluate(_FOCUSED_DRAFT) == DRAFT, "the draft and its focus survive the adoption"
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -351,7 +356,7 @@ def test_an_opening_reads_the_older_page_holding_a_late_answer_below_the_recent_
                 json.dumps({"landed": landed, "composer": composer, "acks": acks}, indent=2), encoding="utf-8")
             assert read, ("the opening reaches the answer below the recent window and reads it", landed, acks)
             assert landed["feedTop"] <= landed["top"] < composer, ("on screen, no Load more history", landed)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -404,15 +409,15 @@ def test_a_room_read_on_one_client_clears_the_dot_on_another_at_its_next_state_r
             reader.evaluate(_SETTLE_RESTORE_FRAMES)
             assert _wait_for(reader, lambda: [ack.get("project_seen_revision") for ack in reader_acks]
                              == [{"shared-room": revision}]), reader_acks
-            row.locator(".nav-unread-dot").wait_for(state="detached")
-            assert other_row.locator(".nav-unread-dot").count() == 1, "the other client has not refreshed yet"
+            _unread(row).wait_for(state="detached")
+            assert _unread(other_row).count() == 1, "the other client has not refreshed yet"
             _emit_ws_frame(other, {"type": "projects_changed"})
             other.wait_for_function("() => window.__pendingPreferences.length > 0")
             other.evaluate("""() => {
                 window.__holdPreferences = false;
                 window.__pendingPreferences.splice(0).forEach(resolve => resolve());
             }""")
-            other_row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(other_row).wait_for(state="detached")
             other.screenshot(path=str(evidence / f"read-band-{engine}-other-client.png"))
             assert [ack for ack in other_acks if ack.get("project_seen_revision")] == [], \
                 "the other client never read the room and acknowledges nothing"
@@ -423,7 +428,7 @@ def test_a_room_read_on_one_client_clears_the_dot_on_another_at_its_next_state_r
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
 def test_a_question_revealed_from_main_is_not_reading_the_newer_messages_below_it(direct_server_with_data, engine):
     """Main's question mirror opens the room at the question; the newer replies below it are read only
-    once the reader reaches them (DESIGN "Project unread dot")."""
+    once the reader reaches them (DESIGN "Unread")."""
     from playwright.sync_api import sync_playwright
 
     from ouroboros.projects_registry import bind_task_to_project, get_project
@@ -463,13 +468,13 @@ def test_a_question_revealed_from_main_is_not_reading_the_newer_messages_below_i
             page.screenshot(path=str(evidence / f"read-band-{engine}-mirror-question.png"))
             assert newest["top"] > messages.evaluate("n => n.getBoundingClientRect().bottom"), newest
             assert seen() == [], "landing on the question is not reading the newer replies below it"
-            assert row.locator(".nav-unread-dot").count() == 1
+            assert _unread(row).count() == 1
 
             messages.evaluate(_AT_BOTTOM)
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             assert _wait_for(page, lambda: seen() == [revision]), acks
             page.screenshot(path=str(evidence / f"read-band-{engine}-mirror-latest.png"))
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -493,14 +498,14 @@ def test_a_reply_arriving_while_the_window_is_hidden_is_read_when_it_is_shown_ag
             messages = page.locator(PANEL)
             messages.locator(".chat-bubble").filter(has_text="Reply 3").wait_for(state="attached")
             assert _wait_for(page, lambda: seen() == [first]), acks
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             page.evaluate(_SET_HIDDEN, True)
             dialogue_store.append(data, "chat", {"ts": "2026-09-28T10:30:00Z", "direction": "out", "chat_id": chat_id,
                                                  "text": "Reply while away"})
             second = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             messages.locator(".chat-bubble").filter(has_text="Reply while away").wait_for(state="attached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.wait_for_timeout(500)
@@ -508,7 +513,7 @@ def test_a_reply_arriving_while_the_window_is_hidden_is_read_when_it_is_shown_ag
 
             page.evaluate(_SET_HIDDEN, False)
             assert _wait_for(page, lambda: seen() == [first, second]), acks
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.screenshot(path=str(evidence / f"read-band-{engine}-shown-again.png"))
         finally:
@@ -545,19 +550,19 @@ def test_a_failed_read_receipt_is_retried_at_the_next_state_refresh(direct_serve
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
             row = page.locator('.nav-project-row[data-project-id="retry-room"]')
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             row.evaluate("el => el.click()")
             page.locator(PANEL).locator(".chat-bubble").filter(has_text="Reply 3").wait_for(state="attached")
             assert _wait_for(page, lambda: len(attempts) >= 1), attempts
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.wait_for_timeout(1500)  # the app's own start-up snapshots settle
-            assert row.locator(".nav-unread-dot").count() == 1, ("a failed POST keeps the dot", attempts)
+            assert _unread(row).count() == 1, ("a failed POST keeps the dot", attempts)
             page.screenshot(path=str(evidence / f"read-band-{engine}-ack-failed.png"))
 
             failed, failing[0] = len(attempts), False
             _emit_ws_frame(page, {"type": "projects_changed"})
             assert _wait_for(page, lambda: len(attempts) > failed), attempts
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
             cursors = page.evaluate("() => fetch('/api/ui/preferences').then(r => r.json())")["project_seen_revision"]
             assert {json.dumps(seen) for seen, _ in attempts} == {json.dumps({"retry-room": revision})}, attempts
             assert attempts[-1][1] is False and cursors["retry-room"] == revision, (attempts, cursors)
@@ -620,7 +625,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.some(s => s.readyState === 1)")
             row = page.locator(f'.nav-project-row[data-project-id="{slug}"]')
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             messages = page.locator(PANEL)
             if retained:
                 row.evaluate("el => el.click()")
@@ -636,7 +641,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
                                                      "text": "Reply while closed"})
                 revision = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
                 _emit_ws_frame(page, {"type": "projects_changed"})
-                row.locator(".nav-unread-dot").wait_for(state="attached")
+                _unread(row).wait_for(state="attached")
             before = seen()
             page.evaluate("() => { window.__holdQuestion = true; }")
             page.evaluate(ask, project)
@@ -652,7 +657,7 @@ def test_an_ordinary_reopen_reads_its_room_while_an_old_question_reveal_is_held(
             page.screenshot(path=str(evidence / f"read-band-{engine}-reopen-{slug}.png"))
             held = page.evaluate("() => typeof window.__releaseQuestion === 'function'")
             assert read and held, ("the reopened room is read while the old reveal is still held", acks, held)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             page.locator(_COMPOSER).focus()
             page.evaluate("() => { window.__holdQuestion = false; window.__releaseQuestion(); }")
@@ -713,7 +718,7 @@ def test_a_legacy_child_final_after_the_root_answer_does_not_hold_the_room_unrea
             assert read, ("the root's answer on screen is read", acks)
             assert messages.locator(".chat-bubble").filter(has_text="Legacy child final").count() == 0
             assert messages.locator(".chat-live-card").filter(has_text="Legacy child final").count() > 0
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -798,7 +803,7 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
                                                    encoding="utf-8")
             if interrupted:
                 assert not read and seen() == [], ("past an unreadable row the answer may not be the newest", acks)
-                assert row.locator(".nav-unread-dot").count() == 1
+                assert _unread(row).count() == 1
                 return
             assert read and clear["top"] >= clear["feedTop"], ("the opening lands on the answer and reads it", acks, clear)
             # A refresh reads what arrived since the newest read once the newest message is known
@@ -808,13 +813,13 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
                 and all(item["kind"] == "after" and not item["named"] for item in since) \
                 and since[0]["from"] == older[-1]["upper"], \
                 ("the uncovered revision was read again, and what arrived since the chain found nothing newer", reads)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             dialogue_store.append(data, "chat", {"ts": at(2000), "direction": "out", "chat_id": chat_id,
                                                  "text": "Newer answer"})
             newer = advance_room_revision(data, chat_id=chat_id)["visible_revision"]
             _emit_ws_frame(page, {"type": "projects_changed"})
-            row.locator(".nav-unread-dot").wait_for(state="attached")
+            _unread(row).wait_for(state="attached")
             messages.evaluate(_PLACE, [LATE, -160])
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.wait_for_timeout(800)
@@ -825,7 +830,7 @@ def test_a_newest_answer_past_the_bounded_search_is_reached_by_the_opening_throu
             assert _wait_for(page, lambda: seen() == [revision, newer]), acks
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             page.screenshot(path=str(evidence / f"{name}-newer-read.png"))
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -880,7 +885,7 @@ def test_a_photo_a_child_delivers_is_read_where_it_is_not_at_the_root_answer_abo
             page.evaluate(_SETTLE_RESTORE_FRAMES)
             assert answer["node"]["bottom"] <= answer["composer"]["top"], answer
             assert _wait_for(page, lambda: seen() == [first]), ("the root answer on screen is read", acks)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
 
             # The child's photo arrives while the reader stays at the answer (message_bus.send_photo's row).
             dialogue_store.append(data, "chat", {
@@ -902,7 +907,7 @@ def test_a_photo_a_child_delivers_is_read_where_it_is_not_at_the_root_answer_abo
             assert not below["card"], ("the child's photo is shown alone, not in a card", below)
             assert held["top"] >= held["feedTop"] and below["top"] >= below["feedBottom"], (held, below)
             assert seen() == [first], ("the answer on screen is not the photo that arrived after it", acks)
-            assert row.locator(".nav-unread-dot").count() == 1
+            assert _unread(row).count() == 1
 
             messages.evaluate(_AT_BOTTOM)
             page.evaluate(_SETTLE_RESTORE_FRAMES)
@@ -911,7 +916,7 @@ def test_a_photo_a_child_delivers_is_read_where_it_is_not_at_the_root_answer_abo
             (evidence / f"read-band-{engine}-child-photo.json").write_text(
                 json.dumps({"answer": answer, "held": held, "below": below, "acks": acks}, indent=2), encoding="utf-8")
             assert read, ("the photo on screen is read", acks)
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -987,6 +992,6 @@ def test_a_long_room_with_no_standalone_message_is_read_at_the_bottom_once_the_o
                     ("past the pages kept, the opening went on to read the newest page again", reads)
                 assert messages.locator(".chat-bubble").filter(has_text="Early note 0").count() == 0, \
                     "the pages walked past went with their chain"
-            row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(row).wait_for(state="detached")
         finally:
             browser.close()

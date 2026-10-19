@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
 REASON = "Continue starts when 3 helpers of the earlier attempt finish"
 NAME = "Ouroboros 7.7.0 — finish the saved release"
-MARKER = f".nav-project-row[data-project-id='{rw.PROJECT['id']}'] .nav-activity-marker"
+MARKER = f".nav-project-row[data-project-id='{rw.PROJECT['id']}'] .status-mark"
 
 
 def test_held_continue_with_three_helpers_is_one_working_row_with_stop_earlier_and_no_resume(room_ui):
@@ -33,12 +33,12 @@ def test_held_continue_with_three_helpers_is_one_working_row_with_stop_earlier_a
     rw.open_project(page, rw.PROJECT)
     transport.refresh()
 
-    # The room works: its word in the bar, never amber, and the sidebar's three dots move.
+    # The room works: its word in the bar beside its moving mark, never amber, and the sidebar's three dots move.
     closed = rw.wait_facts(page, "project", lambda f: f["badge"] == "Working" and not f["disabled"], "the room working")
-    assert closed["tone"] == "live" and not closed["amber"], closed
-    page.wait_for_function("(selector) => document.querySelector(selector)?.dataset.state === 'working'", arg=MARKER)
+    assert (closed["tone"], closed["mark"]) == ("live", "moving ink"), closed
+    page.wait_for_function("(selector) => document.querySelector(selector)?.dataset.shape === 'moving'", arg=MARKER)
     marker = page.locator(MARKER)
-    assert (marker.get_attribute("data-motion"), marker.get_attribute("data-amber")) == ("1", "0")
+    assert (marker.get_attribute("data-shape"), marker.get_attribute("data-hue")) == ("moving", "ink")
 
     # One work, one row: the Continue and its earlier attempt's helpers are one row, which says why it waits.
     rw.trigger(page, "project").click()

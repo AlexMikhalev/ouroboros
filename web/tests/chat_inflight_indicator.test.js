@@ -133,13 +133,14 @@ test('state snapshots and failure authority stay monotonic across reversed compl
 
 test('the header: offline beats every room, whatever the room or the owner\'s sends', () => {
     assert.deepEqual(roomStatusView(inRoom('working'), { connected: false, sending: true }), {
-        kind: 'offline', text: 'Reconnecting…', tone: 'offline', showDots: false, dots: 'one', amber: '', mark: '',
+        kind: 'offline', text: 'Reconnecting…', tone: 'offline', mark: 'ring', owner: false, amber: '',
     });
 });
 
 test('the header: a working room says Working with moving dots and the transcript typing row', () => {
+    // The transcript's typing row follows the moving mark (chat.js syncChatStatus).
     assert.deepEqual(roomStatusView(inRoom('working')), {
-        kind: 'thinking', text: 'Working', tone: 'live', showDots: true, dots: 'moving', amber: '', mark: 'moving',
+        kind: 'thinking', text: 'Working', tone: 'live', mark: 'moving', owner: false, amber: '',
     });
     assert.equal(roomStatusView(inRoom('working', { call: 'thinking' })).text, 'Thinking');
 });
@@ -160,13 +161,13 @@ test('the server room\'s words reuse the installed translation memory', async ()
 
 test('the header: the owner\'s own unconfirmed send says Sending with dots over a quiet room', () => {
     assert.deepEqual(roomStatusView(emptyWorkState(), { sending: true }), {
-        kind: 'thinking', text: 'Sending', tone: 'live', showDots: true, dots: 'moving', amber: '', mark: '',
+        kind: 'thinking', text: 'Sending', tone: 'live', mark: 'moving', owner: false, amber: '',
     });
 });
 
 test('the header: an idle ready room is Online', () => {
     assert.deepEqual(roomStatusView(emptyWorkState()), {
-        kind: 'online', text: 'Online', tone: 'online', showDots: false, dots: 'one', amber: '', mark: '',
+        kind: 'online', text: 'Online', tone: 'online', mark: 'none', owner: false, amber: '',
     });
 });
 
@@ -269,7 +270,7 @@ test('the header order: offline > the room\'s work > the owner\'s send > Online'
 test('a paused room is not Working or Queued (#322), and its reason stays on its row', () => {
     // A budget pause, the owner's Pause and a Restart hold share one word in the header; the row says who or what.
     assert.deepEqual(roomStatusView(inRoom('paused')),
-        { kind: 'online', text: 'Paused', tone: 'held', showDots: false, dots: 'one', amber: '', mark: 'dot' });
+        { kind: 'online', text: 'Paused', tone: 'held', mark: 'pause', owner: false, amber: '' });
     assert.equal(roomStatusView(inRoom('queued')).text, 'Queued');
     assert.equal(roomStatusView(inRoom('working')).text, 'Working');
 });
@@ -292,7 +293,7 @@ test('sequenced failures stop stale replies without replacing a newer accepted c
 test('Batch4: a paused or pausing room never drives a working header; a card never drives it at all', () => {
     assert.equal(roomStatusView(inRoom('working', { transition: 'pausing' })).text, 'Pausing…');
     const saved = roomStatusView(inRoom('paused'));
-    assert.deepEqual([saved.text, saved.showDots], ['Paused', false]);
+    assert.deepEqual([saved.text, saved.mark], ['Paused', 'pause'], 'a paused room stands: no moving mark, no typing row');
     // Resumed: the server's room says working again.
     assert.equal(roomStatusView(inRoom('working')).text, 'Working');
     // The producer reads no card: the same room with any card set says the same.

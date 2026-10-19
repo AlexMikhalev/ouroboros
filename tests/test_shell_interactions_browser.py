@@ -95,7 +95,7 @@ def open_reader(page):
 
 
 def sync_project_rows(page):
-    """The next /api/state snapshot changes one row (Project 5 has a new visible message). The 20 s poll would
+    """The next /api/state snapshot changes one row (Project 5 has three new messages). The 20 s poll would
     deliver it; the projects_changed frame (a backend-created project) asks for the same snapshot now."""
     rows = [dict(p) for p in PROJECTS]
     rows[5]['visible_revision'] = 3
@@ -103,7 +103,7 @@ def sync_project_rows(page):
              'project_chat_ids': [p['chat_id'] for p in rows]}
     page.route('**/api/state', lambda route: route.fulfill(json=state))
     page.evaluate("window.__ouroWs.emit('projects_changed', {})")
-    page.wait_for_function("() => document.querySelector('#nav-projects-count')?.textContent === '1'")
+    page.wait_for_function("() => document.querySelector('#nav-projects-count')?.textContent === '3'")
     page.wait_for_timeout(300)
 
 
@@ -329,7 +329,7 @@ WORD = """bar => {
     if (!t || !b) return null;
     const shown = getComputedStyle(b).display !== 'none';
     return {shown, cut: shown && b.scrollWidth > b.clientWidth + 1, word: t.dataset.word || '', title: t.title,
-            mark: [...t.querySelectorAll('.rw-mark, .rw-dots')].some((m) => getComputedStyle(m).display !== 'none')};
+            mark: [...t.querySelectorAll('.status-mark')].some((m) => getComputedStyle(m).display !== 'none')};
 }"""
 
 
@@ -517,79 +517,86 @@ def test_the_desktop_title_band_over_a_page_moves_the_window(shell_ui, tmp_path,
     assert facts['band']['firstTabTop'] is not None and facts['band']['firstTabTop'] >= 52, facts
 
 
-def live_state(project_ids):
+def live_state(project_ids, pins=()):
     """The /api/state snapshot with work running in these Projects: each census row in its Project's room and the
-    server's own work projection of the rows, which the sidebar's dots read."""
+    server's own work projection of the rows, which the sidebar's marks read; ``pins`` are pinned Projects."""
     chats = {p['id']: p['chat_id'] for p in PROJECTS}
     rows = [{'activity_id': f'work-{pid}', 'root_task_id': f'work-{pid}', 'project_id': pid, 'chat_id': chats[pid],
              'phase': 'working'} for pid in project_ids]
-    return {'supervisor_ready': True, 'projects': PROJECTS, 'project_chat_ids': [p['chat_id'] for p in PROJECTS],
+    return {'supervisor_ready': True, 'projects': [dict(p, pinned=p['id'] in pins) for p in PROJECTS],
+            'project_chat_ids': [p['chat_id'] for p in PROJECTS],
             'active_chat_activities_complete': True, 'active_chat_activities': rows, **work_fields(rows)}
 
 
+MOVING = "n => document.querySelectorAll('#nav-projects-list .status-mark[data-shape=\"moving\"]').length === n"
 SIDEBAR_FACTS = """() => {
     const side = document.getElementById('primary-sidebar');
     const rows = [...side.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden);
     const zone = document.getElementById('nav-projects').getBoundingClientRect();
     const files = side.querySelector('[data-nav-page="files"]').getBoundingClientRect();
-    const all = document.getElementById('nav-projects-show-all');
+    const mark = document.querySelector('.nav-projects-facts .status-mark');
     return {rows: rows.map((e) => e.querySelector('[data-project-id]').dataset.projectId),
             gapToTools: Math.round(files.top - zone.bottom), filesTop: Math.round(files.top),
             sidebarBottom: Math.round(side.getBoundingClientRect().bottom),
-            showAll: all && !all.hidden ? all.textContent.trim() : null,
+            showAll: Boolean(document.getElementById('nav-projects-show-all')),
+            header: {shape: mark.dataset.shape, hue: mark.dataset.hue, drawn: getComputedStyle(mark).display !== 'none'},
             expanded: document.getElementById('nav-projects-toggle').getAttribute('aria-expanded')};
 }"""
 
 
 @pytest.mark.parametrize('width,height', [(1108, 680), (390, 844)])
-def test_collapsed_projects_keep_the_live_ones_and_the_tools_follow(shell_ui, tmp_path, width, height):
+def test_collapsed_projects_keep_only_the_pinned_ones_and_the_tools_follow(shell_ui, tmp_path, width, height):
     page = seed_page(shell_ui, width, height)
     live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    pins = [PROJECTS[1]['id'], PROJECTS[7]['id']]
     facts = {'engine': shell_ui['engine'], 'size': [width, height]}
     try:
-        page.route('**/api/state', lambda route: route.fulfill(json=live_state(live)))
+        page.route('**/api/state', lambda route: route.fulfill(json=live_state(live, pins)))
         boot(page, shell_ui)
-        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
-                               timeout=20_000)
+        page.wait_for_function(MOVING, arg=2, timeout=20_000)
         if width < 720:
             open_drawer(page)
         facts['open'] = page.evaluate(SIDEBAR_FACTS)
         page.locator('#nav-projects-toggle').click()
         settle(page)
         facts['collapsed'] = page.evaluate(SIDEBAR_FACTS)
-        page.locator('#nav-projects-show-all').click()
+        page.locator('#nav-projects-toggle').click()
         settle(page)
-        facts['show_all'] = page.evaluate(SIDEBAR_FACTS)
+        facts['expanded'] = page.evaluate(SIDEBAR_FACTS)
     finally:
         evidence(tmp_path, f'shell-sidebar-collapse-{width}-{shell_ui["engine"]}', facts)
         page.close()
     collapsed = facts['collapsed']
-    assert collapsed['expanded'] == 'false' and sorted(collapsed['rows']) == sorted(live), facts
-    assert collapsed['showAll'] == f'Show all {len(PROJECTS)}', facts
+    # All or nothing (owner 19.10, 2A): only the pinned Projects stay, in their order; work elsewhere keeps no row and
+    # no "Show all" offers the rest. The header's one mark still speaks for them, in both states.
+    assert collapsed['expanded'] == 'false' and collapsed['rows'] == pins, facts
+    assert collapsed['showAll'] is False, facts
+    assert collapsed['header'] == facts['open']['header'] == {'shape': 'moving', 'hue': 'ink', 'drawn': True}, facts
     # The tools follow the Projects zone: no empty room between them (the free room is under the last row).
     assert collapsed['gapToTools'] <= 24 and collapsed['filesTop'] < collapsed['sidebarBottom'] - 200, facts
     assert facts['open']['expanded'] == 'true' and len(facts['open']['rows']) == len(PROJECTS), facts
-    assert facts['show_all']['expanded'] == 'true' and len(facts['show_all']['rows']) == len(PROJECTS), facts
-    assert facts['show_all']['showAll'] is None, facts
+    assert facts['expanded']['expanded'] == 'true' and len(facts['expanded']['rows']) == len(PROJECTS), facts
 
 
 DOT_FACTS = """() => {
-    const dot = document.querySelector('#nav-projects-list .nav-unread-dot');
-    const marker = document.querySelector('#nav-projects-list .nav-activity-marker[data-state="working"]');
-    const row = marker?.closest('.nav-project-row');
-    const ds = dot ? getComputedStyle(dot) : null;
-    const probe = document.createElement('span');
-    probe.style.color = 'var(--red)';
-    document.body.append(probe);
-    const red = getComputedStyle(probe).color;
-    probe.remove();
-    return {dot: ds && {background: ds.backgroundColor, ring: ds.boxShadow}, red,
-            working: marker ? getComputedStyle(marker.querySelector('span')).backgroundColor : null,
-            rowInk: row ? getComputedStyle(row).color : null};
+    const ink = (el) => el && getComputedStyle(el).color;
+    const fill = (mark) => mark && getComputedStyle(mark.querySelector('i')).backgroundColor;
+    const token = (name) => { const probe = document.createElement('span'); probe.style.color = `var(${name})`;
+        document.querySelector('#nav-projects-list').append(probe); const c = getComputedStyle(probe).color; probe.remove(); return c; };
+    const unread = document.querySelector('#nav-projects-list .nav-project-row[data-unread]');
+    const working = document.querySelector('#nav-projects-list .status-mark[data-shape="moving"]')?.closest('.nav-project-row');
+    const read = document.querySelector('#nav-projects-list .nav-project-row:not([data-unread]):not(.active)');
+    const mark = (row) => row?.querySelector('.status-mark');
+    return {unread: unread && {shape: mark(unread).dataset.shape, hue: mark(unread).dataset.hue, fill: fill(mark(unread)),
+                ring: getComputedStyle(mark(unread).querySelector('i')).boxShadow, size: mark(unread).querySelector('i').getBoundingClientRect().width,
+                ink: ink(unread), name: unread.getAttribute('aria-label')},
+            working: working && {hue: mark(working).dataset.hue, fill: fill(mark(working)), ink: ink(working)},
+            readInk: ink(read), crimson: token('--mark-unread'),
+            retired: document.querySelectorAll('#primary-sidebar :is(.nav-unread-dot, .nav-activity-marker)').length};
 }"""
 
 
-def test_sidebar_dots_are_a_red_unread_ring_and_working_dots_in_the_row_ink(shell_ui, tmp_path):
+def test_sidebar_marks_say_new_messages_in_crimson_and_work_in_the_row_ink(shell_ui, tmp_path):
     page = seed_page(shell_ui, 1108, 680)
     unread = [dict(p, visible_revision=3) if i == 2 else p for i, p in enumerate(PROJECTS)]
     state = dict(live_state([PROJECTS[5]['id']]), projects=unread)
@@ -598,16 +605,20 @@ def test_sidebar_dots_are_a_red_unread_ring_and_working_dots_in_the_row_ink(shel
         page.route('**/api/state', lambda route: route.fulfill(json=state))
         page.route('**/api/projects', lambda route: route.fulfill(json={'projects': unread}))
         boot(page, shell_ui)
-        page.wait_for_function("() => document.querySelector('#nav-projects-list .nav-unread-dot') && "
-                               "document.querySelector('#nav-projects-list .nav-activity-marker[data-state=\"working\"]')",
+        page.wait_for_function("() => document.querySelector('#nav-projects-list .nav-project-row[data-unread]') && "
+                               "document.querySelector('#nav-projects-list .status-mark[data-shape=\"moving\"]')",
                                timeout=20_000)
         facts.update(page.evaluate(DOT_FACTS))
     finally:
         evidence(tmp_path, f'shell-sidebar-dots-{shell_ui["engine"]}', facts)
         page.close()
-    assert facts['dot']['background'] == facts['red'], facts
-    assert facts['dot']['ring'] not in ('', 'none'), facts
-    assert facts['working'] == facts['rowInk'], facts
+    # A room at rest with new messages is one plain 7px crimson dot, no ring around it; its name keeps every row's ink.
+    assert facts['unread']['shape'] == 'dot' and facts['unread']['hue'] == 'unread', facts
+    assert facts['unread']['fill'] == facts['crimson'] and facts['unread']['ring'] == 'none', facts
+    assert facts['unread']['size'] == 7 and facts['unread']['ink'] == facts['readInk'], facts
+    assert facts['unread']['name'].endswith(' · new messages'), facts
+    assert facts['working']['hue'] == 'ink' and facts['working']['fill'] == facts['working']['ink'], facts
+    assert facts['retired'] == 0, facts
 
 
 PANEL_FACTS = """() => {
@@ -796,82 +807,84 @@ FOCUS = """() => { const a = document.activeElement;
         : a.dataset.navPage ? 'page:' + a.dataset.navPage : a.className); }"""
 
 
-def test_the_keyboard_stays_in_the_projects_when_a_collapse_hides_its_control(shell_ui, tmp_path):
+def test_a_row_that_hides_gives_the_keyboard_to_the_projects_toggle(shell_ui, tmp_path):
     page = seed_page(shell_ui, 1108, 680)
-    live = [PROJECTS[3]['id'], PROJECTS[7]['id']]
-    current = {'state': live_state(live)}
+    pins = [PROJECTS[3]['id'], PROJECTS[7]['id']]
+    current = {'state': live_state([], pins)}
     facts = {'engine': shell_ui['engine']}
     hidden = "id => document.querySelector(`[data-project-id=\"${id}\"]`).closest('[hidden]') !== null"
+
+    def unpin(still):  # another window unpins: the next snapshot says so
+        current['state'] = live_state([], still)
+        page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+
     try:
         page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
         boot(page, shell_ui)
-        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 2",
-                               timeout=20_000)
         page.locator('#nav-projects-toggle').click()
-        facts['show_all_name'] = page.locator('#nav-projects-show-all').get_attribute('aria-label')
-        page.locator('#nav-projects-show-all').focus()
+        settle(page)
+        facts['collapsed'] = page.evaluate(ROWS)
+        # The keyboard in a pinned row's menu, then that Project is unpinned: its row and its menu go, the keyboard
+        # lands on the Projects toggle instead of the page.
+        page.locator(f'[data-nav-project-id="{pins[0]}"] .nav-project-kebab').focus()
+        page.keyboard.press('Enter')
+        page.locator('body > .project-row-menu').wait_for()
+        facts['in_menu'] = page.evaluate("() => document.activeElement.dataset.prm || ''")
+        unpin(pins[1:])
+        page.wait_for_function(hidden, arg=pins[0], timeout=20_000)
+        settle(page)
+        facts['menus_after'] = page.locator('.project-row-menu').count()
+        facts['focus_after_menu'] = page.evaluate(FOCUS)
+        # The keyboard on the other pinned row, which is unpinned too: the list empties, the toggle keeps the keyboard.
+        page.locator(f'[data-project-id="{pins[1]}"]').focus()
+        unpin([])
+        page.wait_for_function(hidden, arg=pins[1], timeout=20_000)
+        settle(page)
+        facts['focus_after_row'] = page.evaluate(FOCUS)
+        facts['list_hidden'] = page.evaluate("() => document.getElementById('nav-projects-list').hidden")
         page.keyboard.press('Enter')
         settle(page)
-        facts['after_show_all'] = page.evaluate(FOCUS)
-        page.keyboard.press('Tab')
-        facts['next_tab'] = page.evaluate(FOCUS)
-        # Collapse again, put the keyboard on a live row, then its work ends in a complete census: the row stays
-        # under the keyboard and goes behind "Show all" once focus leaves the Projects.
-        page.locator('#nav-projects-toggle').click()
-        page.locator(f'[data-project-id="{live[0]}"]').focus()
-        current['state'] = live_state(live[1:])
-        page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-        page.wait_for_function(f"() => !document.querySelector('[data-project-id=\"{live[0]}\"]').closest('.nav-project-item').hasAttribute('data-live')",
-                               timeout=20_000)
-        settle(page)
-        facts['focused_row_hidden'] = page.evaluate(hidden, live[0])
-        facts['focus_while_quiet'] = page.evaluate(FOCUS)
-        page.locator('[data-nav-page="chat"]').focus()
-        settle(page)
-        facts['row_hidden_after_leave'] = page.evaluate(hidden, live[0])
+        facts['expanded_rows'] = len(page.evaluate(ROWS))
     finally:
         evidence(tmp_path, f'shell-sidebar-collapse-focus-{shell_ui["engine"]}', facts)
         page.close()
-    assert facts['show_all_name'] == f'Show all {len(PROJECTS)} Projects', facts
-    assert facts['after_show_all'].startswith('project:'), facts
-    assert facts['next_tab'] not in ('page:files', 'body'), facts
-    assert facts['focused_row_hidden'] is False and facts['focus_while_quiet'] == f'project:{live[0]}', facts
-    assert facts['row_hidden_after_leave'] is True, facts
+    assert facts['collapsed'] == pins and facts['in_menu'] == 'pin', facts
+    assert facts['menus_after'] == 0 and facts['focus_after_menu'] == 'nav-projects-toggle', facts
+    assert facts['focus_after_row'] == 'nav-projects-toggle' and facts['list_hidden'] is True, facts
+    assert facts['expanded_rows'] == len(PROJECTS), 'the keyboard expands the list again from where it was left'
 
 
-def test_collapsed_projects_follow_the_census_and_keep_the_open_one(shell_ui, tmp_path):
+ROWS = "() => [...document.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden).map((e) => e.querySelector('[data-project-id]').dataset.projectId)"
+
+
+def test_collapsed_projects_ignore_the_census_and_the_open_one(shell_ui, tmp_path):
     page = seed_page(shell_ui, 1108, 680)
     current = {'state': live_state([PROJECTS[3]['id']])}
     facts = {'engine': shell_ui['engine']}
-    rows = "() => [...document.querySelectorAll('#nav-projects-list > .nav-project-item')].filter((e) => !e.hidden).map((e) => e.querySelector('[data-project-id]').dataset.projectId)"
+    header = "() => document.querySelector('.nav-projects-facts .status-mark').dataset.shape"
     try:
         page.route('**/api/state', lambda route: route.fulfill(json=current['state']))
         boot(page, shell_ui)
-        page.wait_for_function("() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === 1",
-                               timeout=20_000)
+        page.wait_for_function(MOVING, arg=1, timeout=20_000)
         page.locator('#nav-projects-toggle').click()
-        facts['one'] = page.evaluate(rows)
+        facts['one'] = page.evaluate(ROWS)
+        facts['one_header'] = page.evaluate(header)
         for name, ids_now in (('three', [PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), ('none', [])):
             current['state'] = live_state(ids_now)
             page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
-            page.wait_for_function(f"() => document.querySelectorAll('#nav-projects-list > .nav-project-item[data-live]').length === {len(ids_now)}",
-                                   timeout=20_000)
+            page.wait_for_function(MOVING, arg=len(ids_now), timeout=20_000)
             settle(page)
-            facts[name] = page.evaluate(rows)
-        # The open Project stays in a collapsed list though nothing runs there; once it closes it goes.
+            facts[name] = page.evaluate(ROWS)
+            facts[f'{name}_header'] = page.evaluate(header)
+        # The open Project keeps no row in a collapsed list either: the room itself is open beside it.
         open_project(page, 12)
         settle(page)
-        facts['open'] = page.evaluate(rows)
-        page.keyboard.press('Escape')
-        page.wait_for_function("() => window.__ouroLayers.ids().length === 0")
-        page.locator('[data-nav-page="chat"]').focus()
-        settle(page)
-        facts['closed'] = page.evaluate(rows)
+        facts['open'] = page.evaluate(ROWS)
+        facts['list_hidden'] = page.evaluate("() => document.getElementById('nav-projects-list').hidden")
     finally:
         evidence(tmp_path, f'shell-sidebar-collapse-census-{shell_ui["engine"]}', facts)
         page.close()
-    assert facts['one'] == [PROJECTS[3]['id']], facts
-    assert sorted(facts['three']) == sorted([PROJECTS[3]['id'], PROJECTS[5]['id'], PROJECTS[9]['id']]), facts
-    assert facts['none'] == [], facts
-    assert facts['open'] == [PROJECTS[12]['id']], facts
-    assert facts['closed'] == [], facts
+    assert facts['one'] == facts['three'] == facts['none'] == facts['open'] == [], facts
+    assert facts['list_hidden'] is True, facts
+    # Work under the collapsed header shows as its one mark: moving while any works, nothing once none does.
+    assert (facts['one_header'], facts['three_header'], facts['none_header']) == ('moving', 'moving', 'none'), facts

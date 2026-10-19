@@ -16,6 +16,7 @@ import { attachmentCaption, attachmentViews, createUnconfirmedSends } from './ch
 import { createChatDecision } from './chat_decision.js';
 import { createRoomWork } from './room_work.js';
 import { applyCardWorkViews, cardControls, cardMenuActions, changedOffers, emptyWorkState, openCardControls, ownStopPress, reconcileWorkState, roomStatusView } from './work_status.js';
+import { statusMarkHtml } from './status_mark.js';
 import { createMainWaiting } from './main_waiting.js';
 import { createHostStart } from './host_starting_status.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -68,7 +69,6 @@ import {
     replayTerminalPhase,
     restoreLiveCardPhaseState,
     setLiveCardPhase,
-    setLiveCardTypingVisible,
     setHistoricalUnavailable,
     setHistoricalUnconfirmed,
     syncParkedPhase,
@@ -196,7 +196,7 @@ export function initChat(ctx) {
 const taskKey = (value) => String(value || '').trim();
 
 export function createChatInstance({
-    ws, state, updateUnreadBadge, openSettingsTab, openDashboardTab,
+    ws, state, openSettingsTab, openDashboardTab,
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
     asPanel = false, title = pageLabel('chat'),
@@ -475,13 +475,13 @@ export function createChatInstance({
         }
     }
 
-    function setStatus({ kind, text, tone = 'online', dots = 'one', amber = '', mark = '', title = '' }) {
+    function setStatus({ kind, text, tone, mark, owner, amber, title = '' }) {
         // Replay frames never touch the badge; syncChatStatus writes it once.
         if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
         statusBadge.title = title; // a failed boot step's cause; empty otherwise
-        Object.assign(statusBadge.dataset, { tone, dots, amber, mark });
+        Object.assign(statusBadge.dataset, { tone, mark, owner: owner ? '1' : '', amber });
         roomWork?.update();
     }
 
@@ -510,6 +510,7 @@ export function createChatInstance({
         const budgetFill = byId('budget-bar-fill');
         if (budgetText) budgetText.textContent = budget.label;
         if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
+        if (budgetPill) budgetPill.dataset.attention = budget.attention ? '1' : '0';
     }
 
     // Main: a moved work's card is its portal (work_portal.js); Continue episodes share one card (task_episodes.js).
@@ -1164,9 +1165,6 @@ export function createChatInstance({
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
                         <span class="chat-live-phase-secondary" data-live-phase-secondary hidden></span>
                         <span class="chat-live-hurry" data-live-hurry role="img" hidden></span>
-                        <div class="chat-live-typing" data-live-typing aria-hidden="true">
-                            <span></span><span></span><span></span>
-                        </div>
                     </div>
                     <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <button type="button" class="chat-live-summary-side ui-hit-area" data-live-disclosure aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
@@ -1199,7 +1197,6 @@ export function createChatInstance({
             root,
             summaryButtonEl: root.querySelector('[data-live-summary-button]'),
             phaseEl: root.querySelector('[data-live-phase]'),
-            inlineTypingEl: root.querySelector('[data-live-typing]'),
             titleEl: root.querySelector('[data-live-title]'),
             episodesEl: root.querySelector('[data-live-episodes]'),
             episodeHistoryEl: root.querySelector('[data-live-episode-history]'),
@@ -1425,7 +1422,6 @@ export function createChatInstance({
         record.metaEl.innerHTML = '';
         record.timelineEl.innerHTML = '';
         record.root.dataset.finished = '0';
-        setLiveCardTypingVisible(record, true);
         const expanded = explicitCardExpansion.has(record.groupId)
             ? explicitCardExpansion.get(record.groupId)
             : Boolean(record.isSubagent && nestedSubagentsExpanded);
@@ -1686,11 +1682,7 @@ export function createChatInstance({
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
         // Log task_done bypasses finishLiveCard; settle Cancel and its marker.
-        if (record.finished) {
-            settleLiveCard(record, wasFinished);
-        } else {
-            setLiveCardTypingVisible(record, true);
-        }
+        if (record.finished) settleLiveCard(record, wasFinished);
         syncChatStatus();
         return Boolean(timelineChanged
             || typingBefore !== typingEl.style.display
@@ -2872,12 +2864,11 @@ export function createChatInstance({
     refreshHeaderControlState(true);
 
     const typingEl = document.createElement('div');
-    // Per-instance id (main stays 'typing-indicator'; panels get a unique id) so
-    // multiple open chat columns never collide on a duplicate DOM id.
+    // A per-instance id (Main's stays 'typing-indicator'): open chat columns never share one.
     typingEl.id = idPrefix === 'chat' ? 'typing-indicator' : `${idPrefix}-typing-indicator`;
     typingEl.className = 'chat-bubble assistant typing-bubble';
     typingEl.style.display = 'none';
-    typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    typingEl.innerHTML = statusMarkHtml('typing-mark', { shape: 'moving', hue: 'ink' });
     messagesDiv.appendChild(typingEl);
 
     const pageHistoryIds = new Map();
@@ -3092,7 +3083,7 @@ export function createChatInstance({
     function syncChatStatus() {
         const derived = deriveChatStatus();
         setStatus(derived);
-        return setTypingIndicatorVisible(derived.showDots && foregroundCards().length === 0);
+        return setTypingIndicatorVisible(derived.mark === 'moving' && foregroundCards().length === 0);
     }
 
     function setTypingIndicatorVisible(visible) {
@@ -3230,21 +3221,6 @@ export function createChatInstance({
         }
     }
 
-    const isKnownProjectFrame = (msg) => {
-        const cid = Number(msg?.chat_id ?? 1);
-        return state.projectChatIds instanceof Set && state.projectChatIds.has(cid);
-    };
-
-    function incrementUnreadIfNeeded(msg) {
-        if (!isMain) return;  // the global unread badge tracks the main chat
-        // Project visible_revision is the sole unread authority for a Project.
-        // Project-owned frames never create a second Main unread.
-        if (isKnownProjectFrame(msg)) return;
-        if (state.activePage === 'chat') return;
-        state.unreadCount++;
-        updateUnreadBadge();
-    }
-
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
         // A typing frame is a submission receipt, never liveness: it re-reads the
@@ -3286,7 +3262,6 @@ export function createChatInstance({
                 textPlaceholder: msg.text_placeholder === true, reply: msg,
                 },
             ));
-            if (added) incrementUnreadIfNeeded(msg);
             withStableViewport(() => markIngressSaved(messagesDiv, msg) | replies.adopt(msg));
             unconfirmed.settle(msg);
             syncChatStatus();
@@ -3296,17 +3271,16 @@ export function createChatInstance({
         if (msg.role === 'assistant' || msg.role === 'system') {
             return withRemoteActivity(() => {
             const explicitTaskId = msg.task_id || '';
-            // Every path ends by syncing status; `unread` rows also count toward the badge.
-            const settled = (result, unread = result) => {
-                if (unread) incrementUnreadIfNeeded(msg);
+            // Every path ends by syncing status. Main's number is its room revision, as a Project's (DESIGN "Unread").
+            const settled = (result) => {
                 syncChatStatus();
                 return result;
             };
             if (isModelWaitReference(msg)) reread();
             const reference = admitCardMetadata(msg);
-            if (reference !== undefined) return settled(reference, false);
+            if (reference !== undefined) return settled(reference);
             const review = attachReviewFromRow(msg, msg.ts || '', true);
-            if (review !== undefined) return settled(review, false);
+            if (review !== undefined) return settled(review);
             const cardRow = attachCardRow(msg, msg.ts || '');
             if (cardRow !== undefined) return settled(cardRow);
             if (PROJECT_ROW_TYPES.has(msg.system_type)) {
@@ -3317,7 +3291,7 @@ export function createChatInstance({
                 showTaskIncidentToast(msg);
                 if (SUBAGENT_LIFECYCLE_EVENTS.has(String(msg.subagent_event || '').toLowerCase())) reread();  // members
                 const changed = updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });
-                return settled(changed, false);
+                return settled(changed);
             }
 
             // An early final (post-task still running) is NOT the turn's
@@ -3348,7 +3322,7 @@ export function createChatInstance({
             }
             // A placed host row is never a child's answer; with no card it stays a System row.
             const placed = explicitTaskId && !msg.card_row && subagentChildParents.has(explicitTaskId) && childRowPlacement(msg);
-            if (placed === 'line') return settled(Boolean(routeSubagentProgressToCard(explicitTaskId, msg, true)), false);
+            if (placed === 'line') return settled(Boolean(routeSubagentProgressToCard(explicitTaskId, msg, true)));
             if (placed) return settled(Boolean(routeSubagentFinalMessageToCard(explicitTaskId, msg)));
             let changed = false;
             if (finalizing) changed = markLiveCardFinalizing(explicitTaskId, msg) || changed;
@@ -3364,7 +3338,7 @@ export function createChatInstance({
                 // A placed row whose card is not in this chat keeps its record link.
                 evidenceRef: isPlacedCardRow(msg) ? cardRowEvidenceRef(msg) : null,
             });
-            return settled(Boolean(added || changed || routingCleared), added || changed);
+            return settled(Boolean(added || changed || routingCleared));
             });
         }
     });
@@ -3426,7 +3400,6 @@ export function createChatInstance({
         isMyThread,
         hideTypingIndicatorOnly,
         syncChatStatus,
-        incrementUnreadIfNeeded,
         seenMessageKeys,
         rememberMessageKey,
         chatMediaMessageKey,

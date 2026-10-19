@@ -745,6 +745,8 @@ class StateResponse(WorkStateFields):
     projects: list
     # COMPLETE (uncapped) registered project chat_ids — the live WS fan-out isolation SSOT, unlike `projects`.
     project_chat_ids: list
+    # Main's room revision (its standalone messages, the kind a Project's visible_revision counts); null while unreadable.
+    main_visible_revision: NotRequired[Optional[int]]
     # Task->project bindings ({task_id: {project_id, chat_id}}) so the frontend
     # can recognise a project-scoped task card: suppress the stray "turn into
     # project" button (v6.33.0 P2) and render a pointer that opens the bound

@@ -19,6 +19,11 @@ ElementStub.prototype.querySelector = function (selector) {
     for (const child of this.children) { const found = child.querySelector(selector); if (found) return found; }
     return null;
 };
+// A chip's status mark (docs/DESIGN.md "Status marks"): its shape and hue, or `none` while it is hidden.
+const markOf = (chip) => {
+    const mark = chip.firstElementChild;
+    return mark && !mark.hidden ? `${mark.dataset.shape}/${mark.dataset.hue}` : 'none';
+};
 
 function makeInstance({ details = {}, calls = [], state = { census: null }, chatId = 1, asPanel = false, hook = null } = {}) {
     const env = installDom(async (url) => {
@@ -100,8 +105,12 @@ function makeInstance({ details = {}, calls = [], state = { census: null }, chat
     function body(rows, serverRoom = null, complete = true) {
         const mine = rows.filter((row) => Number(row.chat_id ?? 1) === chatId);
         const paused = { budget_paused: 'paused', budget_pausing: 'working', unknown: 'unknown', queued: 'queued' };
-        return projection(chatId, mine.map((row) => work(row, { activity: paused[row.phase] || 'working',
-            transition: row.phase === 'budget_pausing' ? 'pausing' : 'none' })), serverRoom, complete);
+        // Each work's shape as the server names it (gateway/work_status.mark_of).
+        const marks = { working: 'moving', queued: 'still', paused: 'pause', unknown: 'ring' };
+        return projection(chatId, mine.map((row) => {
+            const activity = paused[row.phase] || 'working';
+            return work(row, { activity, transition: row.phase === 'budget_pausing' ? 'pausing' : 'none', mark: marks[activity] });
+        }), serverRoom, complete);
     }
 }
 
@@ -222,13 +231,12 @@ test('incident replay: a finished turn whose subagent typed with no kind returns
 for (const chatId of [1, 7]) {
     const progress = (fx, id) => fx.handlers.get('chat')({ chat_id: chatId, task_id: id,
         role: 'assistant', is_progress: true, content: 'Inspecting the work.', ts: '2026-10-08T10:00:00Z' });
+    // The chip's facts: its words, its status mark, the quieter late fact beside it and whether the card settled.
     const observed = fx => id => {
         const card = fx.card(id);
         return { text: card.querySelector('[data-live-phase]').textContent,
-            motion: card.querySelector('[data-live-phase]').dataset.motion,
-            secondary: card.querySelector('[data-live-phase-secondary]').textContent,
-            secondaryMotion: card.querySelector('[data-live-phase-secondary]').dataset.motion,
-            typing: card.querySelector('[data-live-typing]').style.display, finished: card.dataset.finished };
+            mark: markOf(card.querySelector('[data-live-phase]')),
+            secondary: card.querySelector('[data-live-phase-secondary]').textContent, finished: card.dataset.finished };
     };
     test(`R1 census-only outcome reaches the actual full card and updates at the same phase (chat ${chatId})`, () => {
         const fx = makeInstance({ chatId });
@@ -240,13 +248,13 @@ for (const chatId of [1, 7]) {
             const failed = { ...row, status: 'failed', root_phase_checkpoint: { post_task_synthesis: 'running' },
                 outcome_axes: { lifecycle: { status: 'failed' }, execution: { status: 'infra_failed' } } };
             fx.census([failed], true);
-            assert.deepEqual(observed(fx)(id), { text: 'Failed', motion: '0', secondary: 'Finalizing…',
-                secondaryMotion: '1', typing: '', finished: '0' });
+            assert.deepEqual(observed(fx)(id), { text: 'Failed', mark: 'dot/failed', secondary: 'Finalizing…',
+                finished: '0' });
             fx.census([row], true); // Missing optional metadata cannot erase already observed evidence.
             assert.equal(observed(fx)(id).text, 'Failed');
             fx.census([{ ...failed, status: 'cancelled', outcome_axes: { lifecycle: { status: 'cancelled' } } }], true);
-            assert.deepEqual(observed(fx)(id), { text: 'Stopped', motion: '0', secondary: '',
-                secondaryMotion: '0', typing: 'none', finished: '1' });
+            assert.deepEqual(observed(fx)(id), { text: 'Stopped', mark: 'dot/neutral', secondary: '',
+                finished: '1' });
             fx.census([failed], true); // The original in-flight snapshot cannot revive a concluded task.
             assert.equal(observed(fx)(id).text, 'Stopped');
             const later = `${id}-mounted-after-census`;
@@ -270,14 +278,13 @@ for (const chatId of [1, 7]) {
                 root_phase_checkpoint: { post_task_synthesis: 'running' } };
             const working = { activity_id: sibling, chat_id: chatId, kind: 'managed_task', phase: 'working' };
             fx.census([failed, working], true);
-            assert.equal(observed(fx)(id).secondaryMotion, '1');
+            assert.equal(observed(fx)(id).secondary, 'Finalizing…');
             fx.close();
-            const offline = { text: 'Failed', motion: '0', secondary: 'Activity unconfirmed',
-                secondaryMotion: '0', typing: 'none', finished: '0' };
+            const offline = { text: 'Failed', mark: 'dot/failed', secondary: 'Activity unconfirmed', finished: '0' };
             assert.deepEqual(observed(fx)(id), offline);
             fx.census([failed, working], true); // A REST answer while the socket is down cannot restore motion.
             assert.deepEqual(observed(fx)(id), offline);
-            assert.equal(observed(fx)(sibling).motion, '0');
+            assert.equal(observed(fx)(sibling).mark, 'ring/ink');
             assert.equal(observed(fx)(settled).text, 'Done');
             assert.equal(observed(fx)(settled).finished, '1');
             fx.state.fail = true; // Open is connectivity, not a successful new census/history read.
@@ -287,12 +294,12 @@ for (const chatId of [1, 7]) {
             fx.census([], false);
             assert.deepEqual(observed(fx)(id), offline);
             fx.census([working], false);
-            assert.equal(observed(fx)(sibling).motion, '1');
+            assert.equal(observed(fx)(sibling).mark, 'moving/ink');
             assert.deepEqual(observed(fx)(id), offline);
             fx.census([failed], false);
             assert.equal(observed(fx)(id).text, 'Failed');
-            assert.equal(observed(fx)(id).secondaryMotion, '1');
-            assert.equal(observed(fx)(sibling).motion, '0', 'an omitted row is retained as unknown, not reanimated');
+            assert.equal(observed(fx)(id).secondary, 'Finalizing…');
+            assert.equal(observed(fx)(sibling).mark, 'ring/ink', 'an omitted row is retained as unknown, not reanimated');
             assert.equal(observed(fx)(settled).text, 'Done');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
     });
@@ -325,7 +332,7 @@ for (const withdrawBeforeMount of [false, true]) {
             assert.ok(card);
             assert.equal(card.dataset.finished, '1');
             assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
-            assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '0');
+            assert.equal(markOf(card.querySelector('[data-live-phase]')), 'dot/neutral');
             fx.census([row], true);
             fx.census([], true);
             await fx.settle();
@@ -337,7 +344,7 @@ for (const withdrawBeforeMount of [false, true]) {
             fx.handlers.get('chat')({ chat_id: 1, task_id: 'independent', role: 'assistant', is_progress: true,
                 content: 'A different task is running.', ts: '2026-10-08T10:00:01Z' });
             assert.equal(fx.card('independent').dataset.finished, '0');
-            assert.equal(fx.card('independent').querySelector('[data-live-phase]').dataset.motion, '1');
+            assert.equal(markOf(fx.card('independent').querySelector('[data-live-phase]')), 'moving/ink');
         } finally { fx.instance.destroy(); restoreDom(fx.prior); }
     });
 }
@@ -353,7 +360,7 @@ for (const firstCarrier of ['narration', 'metrics', 'tool span']) {
                     ...(firstCarrier === 'metrics' ? { type: 'task_metrics_event', tool_calls: 1 }
                         : { type: 'tool_call_started', tool: 'read_file', tool_call_id: 'initial-span' }) } });
                 assert.equal(fx.card(id).querySelector('[data-live-phase]').textContent, 'Stopped');
-                assert.equal(fx.card(id).querySelector('[data-live-phase]').dataset.motion, '0');
+                assert.equal(markOf(fx.card(id).querySelector('[data-live-phase]')), 'dot/neutral');
             }
             const text = 'I found the relevant state transition.';
             fx.handlers.get('chat')({ chat_id: 1, task_id: id, role: 'assistant', system_type: 'model_narration',
@@ -362,7 +369,7 @@ for (const firstCarrier of ['narration', 'metrics', 'tool span']) {
             assert.equal(card.querySelector('[data-live-title]').textContent, text);
             assert.equal(card.querySelector('[data-live-phase]').textContent, 'Stopped');
             assert.equal(card.dataset.finished, '1');
-            assert.equal(card.querySelector('[data-live-phase]').dataset.motion, '0');
+            assert.equal(markOf(card.querySelector('[data-live-phase]')), 'dot/neutral');
             assert.ok(card.querySelector('[data-live-timeline]').children.length > 0, 'initial content reaches the timeline renderer');
             const count = card.querySelector('[data-live-count]').textContent;
             fx.handlers.get('chat')({ chat_id: 1, task_id: id, role: 'assistant', is_progress: true, narration: true,
@@ -374,7 +381,7 @@ for (const firstCarrier of ['narration', 'metrics', 'tool span']) {
     });
 }
 
-for (const [status, label] of [['completed', 'Done'], ['failed', 'Failed']]) {
+for (const [status, label, mark] of [['completed', 'Done', 'dot/ok'], ['failed', 'Failed', 'dot/failed']]) {
     test(`R3 off-screen ${status} card rematerializes with its retained narrative`, async () => {
         const id = 'evicted-root', text = 'Reading the repository before completion';
         const progress = { chat_id: 1, task_id: id, role: 'assistant', is_progress: true, narration: true,
@@ -421,7 +428,7 @@ for (const [status, label] of [['completed', 'Done'], ['failed', 'Failed']]) {
             assert.equal(restored.querySelector('[data-live-title]').textContent, text);
             assert.equal(restored.querySelector('[data-live-count]').textContent, '2 notes');
             assert.equal(restored.querySelector('[data-live-phase]').textContent, label);
-            assert.equal(restored.querySelector('[data-live-phase]').dataset.motion, '0');
+            assert.equal(markOf(restored.querySelector('[data-live-phase]')), mark);
             assert.equal(restored.dataset.finished, '1');
             assert.equal(restored.dataset.ts, String(Date.parse(progress.ts)));
             assert.ok(rendered.some(value => value.includes(text) && value.includes('chat-live-line')));
@@ -467,11 +474,11 @@ test('R2 only fresh connected child activity releases disconnect uncertainty; re
         fx.handlers.get('chat')(childFrame);
         fx.census([root], true);
         const phase = () => fx.card('child').querySelector('[data-live-phase]');
-        assert.equal(phase().dataset.motion, '1');
+        assert.equal(markOf(phase()), 'moving/ink');
         fx.close();
         assert.equal(phase().textContent, 'Activity unconfirmed');
         fx.handlers.get('chat')({ ...childFrame, content: 'Already buffered before the socket closed.' });
-        assert.equal(phase().dataset.motion, '0');
+        assert.equal(markOf(phase()), 'ring/ink');
         const historyText = 'Retained history-only child evidence';
         fx.state.history = [{ ...childFrame, subagent_event: 'progress', history_id: 'progress:r2-child', text: historyText, content: historyText,
             ts: '2026-10-08T10:00:00.500Z', is_progress: true }];
@@ -485,22 +492,23 @@ test('R2 only fresh connected child activity releases disconnect uncertainty; re
         assert.equal(phase().textContent, 'Activity unconfirmed', 'history replay and the fresh parent do not prove child activity');
         fx.handlers.get('chat')({ ...childFrame, content: 'Fresh child progress.', ts: '2026-10-08T10:00:01Z' });
         assert.equal(phase().textContent, 'Working');
-        assert.equal(phase().dataset.motion, '1');
+        assert.equal(markOf(phase()), 'moving/ink');
         const wait = { wait_id: 'child-wait', revision: 1, task_attempt: 1, state: 'waiting', reason: 'quota', role: 'main', model: 'test' };
         fx.handlers.get('log')({ chat_id: 1, data: { type: 'task_model_wait', chat_id: 1, task_id: 'child', ...wait } });
         fx.close(); fx.open(); await fx.settle();
         fx.handlers.get('chat')({ ...childFrame, content: 'Fresh progress with an unresolved model wait.', ts: '2026-10-08T10:00:02Z' });
         assert.equal(phase().textContent, 'Waiting for access');
-        assert.equal(phase().dataset.motion, '0');
+        // A quota wait resumes by itself: neutral and still, never the owner's amber.
+        assert.deepEqual([markOf(phase()), phase().dataset.chipTone], ['still/ink', 'neutral']);
         fx.handlers.get('log')({ chat_id: 1, data: { type: 'task_model_wait', chat_id: 1, task_id: 'child',
             ...wait, revision: 2, state: 'resolved' } });
-        assert.equal(phase().dataset.motion, '1');
+        assert.equal(markOf(phase()), 'moving/ink');
         fx.handlers.get('chat')({ ...childFrame, subagent_event: 'completed', status: 'completed', content: 'Child result.',
             ts: '2026-10-08T10:00:03Z' });
         assert.equal(fx.card('child').dataset.finished, '1');
         fx.handlers.get('chat')({ ...childFrame, content: 'Late old progress.', ts: '2026-10-08T10:00:04Z' });
         assert.equal(fx.card('child').dataset.finished, '1');
-        assert.equal(phase().dataset.motion, '0');
+        assert.equal(markOf(phase()), 'dot/ok');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
 
@@ -520,18 +528,18 @@ test('a direct owner Pause agrees between the actual card and header, then Resum
         assert.equal(fx.status(), 'Paused');
         assert.equal(fx.typingHidden(), true);
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.textContent, 'Paused');
-        assert.equal(fx.card(id).querySelector('[data-live-typing]')?.style.display, 'none');
+        assert.equal(markOf(fx.card(id).querySelector('[data-live-phase]')), 'pause/ink');
         fx.census([{ ...row, phase: 'unknown' }], false, Infinity, room('unknown'));
         assert.equal(fx.status(), 'Activity unconfirmed');
         assert.equal(fx.typingHidden(), true);
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.textContent, 'Activity unconfirmed');
-        assert.equal(fx.card(id).querySelector('[data-live-typing]')?.style.display, 'none');
+        assert.equal(markOf(fx.card(id).querySelector('[data-live-phase]')), 'ring/ink');
         fx.census([{ ...row, phase: 'budget_paused' }], true, Infinity, room('paused'));
         assert.equal(fx.status(), 'Paused');
         fx.census([{ ...row, phase: 'thinking' }], true, Infinity, room('working', { call: 'thinking' }));
         assert.equal(fx.status(), 'Thinking');
         assert.equal(fx.card(id).querySelector('[data-live-phase]')?.textContent, 'Thinking');
-        assert.equal(fx.card(id).querySelector('[data-live-phase]')?.dataset.motion, '1');
+        assert.equal(markOf(fx.card(id).querySelector('[data-live-phase]')), 'moving/ink');
     } finally { fx.instance.destroy(); restoreDom(fx.prior); }
 });
 

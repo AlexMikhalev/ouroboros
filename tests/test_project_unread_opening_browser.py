@@ -1,5 +1,5 @@
 """Opening an unread Project room shows the message that arrived last however far below the
-first history page it lies (owner decision 2026-10-11; DESIGN "Project unread dot").
+first history page it lies (owner decision 2026-10-11; DESIGN "Unread").
 
 Real server, real producer seam (``message_bus.send_with_budget``), real history endpoint and
 read cursor. A reply is buried by its children's words — card content, so the reply stays the
@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from ouroboros.gateway.history_paging import _ARRIVAL_SEARCH_ROWS, _RECENT_WINDOW_ROWS
-from tests.test_project_unread_read_band_browser import PANEL, _client, _wait_for
+from tests.test_project_unread_read_band_browser import PANEL, _client, _unread, _wait_for
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _SETTLE_RESTORE_FRAMES, _emit_ws_frame
 
@@ -177,7 +177,7 @@ def test_an_unread_room_opens_on_its_reply_however_deep_its_childrens_words_bury
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert read and _on_screen(landed), ("the opening lands on the reply and reads it", landed, room.acks)
             assert pages >= {160: 1, 900: 5, 1310: 8}[children], ("it read the older pages itself", room.older)
-            room.row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(room.row).wait_for(state="detached")
 
             _emit_ws_frame(room.page, {"type": "projects_changed"})
             room.settled(800)
@@ -260,7 +260,7 @@ def test_the_readers_own_move_ends_the_reach(direct_server_with_data, monkeypatc
             evidence = _evidence(data, name, landed=landed, older=room.older, acks=room.acks, before=before)
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert len(room.older) == 2, ("nothing more is asked once the reader moved", room.older)
-            assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+            assert room.seen() == [] and _unread(room.row).count() == 1, room.acks
             assert not _on_screen(landed), ("nothing lands over the reader's move", landed)
         finally:
             browser.close()
@@ -312,7 +312,7 @@ def test_a_question_opened_from_main_during_the_reach_owns_the_room(direct_serve
             assert len(room.older) == 2, ("nothing more is asked once the question owns the room", room.older)
             assert asked["focused"] and asked["feedTop"] <= asked["top"] < asked["feedBottom"], asked
             assert not _on_screen(landed), ("the reply is not landed on", landed)
-            assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+            assert room.seen() == [] and _unread(room.row).count() == 1, room.acks
         finally:
             browser.close()
 
@@ -342,7 +342,7 @@ def test_a_room_kept_hidden_during_the_reach_asks_for_nothing_until_it_is_opened
             room.settled()
             hidden = list(room.older)
             assert len(hidden) == 2 and room.seen() == [], ("a hidden room asks for nothing more", hidden, room.acks)
-            assert room.row.locator(".nav-unread-dot").count() == 1
+            assert _unread(room.row).count() == 1
             room.open()
             read = _wait_for(room.page, lambda: room.seen() == [revision], attempts=200)
             room.settled(300)
@@ -458,7 +458,7 @@ def test_a_reply_arriving_while_the_opening_proves_a_quiet_start_is_reached_afte
             assert newest and room.seen() == sorted(room.seen()) and set(room.seen()) <= {revision, newer}, \
                 ("the newer revision is read where the reader already is", room.acks)
             assert cursor.get("late-room") == newer, ("the shared cursor covers the reply's revision", cursor)
-            room.row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(room.row).wait_for(state="detached")
         finally:
             browser.close()
 
@@ -486,7 +486,7 @@ def test_a_failed_page_ends_the_reach_and_its_repair_moves_no_one(direct_server_
             room.page.screenshot(path=str(evidence / f"{name}.png"))
             assert len(room.older) == 2, ("no automatic retry and no later reach", room.older)
             assert room.messages.evaluate("n => n.scrollTop") == top, "the repair moves no one"
-            assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+            assert room.seen() == [] and _unread(room.row).count() == 1, room.acks
             assert room.page.locator(f"{PANEL} .chat-load-older button").count() == 1, "Retry stays the reader's"
         finally:
             browser.close()

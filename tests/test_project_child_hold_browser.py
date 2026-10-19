@@ -24,6 +24,14 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 WAIT = "Waiting for Project verification"
 CHILD = '.chat-live-card[data-task-id="held"]'
+# A held card waits for something that ends by itself: still dots on a neutral chip, nothing that moves, no amber.
+STILL = ["still", "ink", "neutral"]
+
+
+def _chip_mark(chip):
+    """A chip's status mark and body tone (docs/DESIGN.md "Status marks"): what it does and whose move it is."""
+    return chip.evaluate("el => { const mark = el.querySelector(':scope > .status-mark');"
+                         " return [mark.dataset.shape, mark.dataset.hue, el.dataset.chipTone]; }")
 
 
 @pytest.mark.parametrize("engine,ending", [("chromium", "recovery"), ("webkit", "recovery"), ("chromium", "cancel")])
@@ -106,8 +114,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             child_card.wait_for(state="visible")
             # The scheduled receipt precedes the authoritative pending queue read.
             page.wait_for_function("() => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === 'Queued'")
-            assert child_card.locator('[data-live-phase]').get_attribute('data-motion') == '0'
-            assert not child_card.locator('[data-live-typing]').is_visible()
+            assert _chip_mark(child_card.locator('[data-live-phase]')) == STILL
             page.evaluate("() => window.__heldCard = document.querySelector('.chat-live-card[data-task-id=held]')")
             shot(page, "scheduled")
             unreadable["on"] = True
@@ -115,8 +122,8 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             assert not sent
             page.wait_for_function("text => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === text", arg=WAIT)
             assert "unreadable" in child_card.locator('[data-live-meta]').inner_text()
-            assert not child_card.locator('[data-live-typing]').is_visible()
             assert child_card.locator('[data-live-phase]').get_attribute('class') == 'chat-live-phase warn'
+            assert _chip_mark(child_card.locator('[data-live-phase]')) == STILL
             assert [row["activity_id"] for row in _chat_activities_snapshot_safe(root)] == ["parent"]
             shot(page, "held-desktop")
             for episode in ("reload", "reconnect"):
@@ -131,7 +138,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
                 parent = page.locator('.chat-live-card[data-task-id="parent"]')
                 if parent.get_attribute("data-expanded") != "1":
                     parent.locator(':scope > [data-live-summary-button] [data-live-disclosure]').click()
-                assert not child_card.locator('[data-live-typing]').is_visible()
+                assert _chip_mark(child_card.locator('[data-live-phase]')) == STILL
                 shot(page, episode)
             page.evaluate("() => window.__heldCard = document.querySelector('.chat-live-card[data-task-id=held]')")
             page.set_viewport_size({"width": 390, "height": 844})
@@ -146,7 +153,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
             assert queue.persist_queue_snapshot()
             page.wait_for_function("() => document.querySelector('.chat-live-card[data-task-id=held] [data-live-phase]')?.textContent === 'Waiting: previous run unconfirmed'")
             assert "automatic recovery is not authorized" in child_card.locator('[data-live-meta]').inner_text()
-            assert not child_card.locator('[data-live-typing]').is_visible()
+            assert _chip_mark(child_card.locator('[data-live-phase]')) == STILL
             shot(page, "previous-run-unconfirmed-narrow")
             held["_project_admission_restore_hold"] = previous_hold
             unreadable["on"] = False
@@ -173,7 +180,7 @@ def test_nested_child_wait_and_same_id_recovery(direct_server_with_data, tmp_pat
                   status="cancelled")
             page.wait_for_function("() => document.querySelector('.chat-live-card[data-task-id=held]')?.dataset.finished === '1'")
             assert child_card.locator('[data-live-phase]').inner_text() == "Stopped"
-            assert not child_card.locator('[data-live-typing]').is_visible()
+            assert _chip_mark(child_card.locator('[data-live-phase]')) == ["dot", "neutral", "neutral"]
             shot(page, "cancelled-narrow")
             assert not errors, errors
         except Exception:
@@ -312,8 +319,8 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             assert page.locator('#chat-status').inner_text() == 'Waiting'
             assert parent.locator(':scope > [data-live-summary-button] [data-live-phase]').inner_text() == WAIT
             assert child_card.locator('[data-live-phase]').inner_text() == WAIT
-            assert not parent.locator(':scope > [data-live-summary-button] [data-live-typing]').is_visible()
-            assert not child_card.locator('[data-live-typing]').is_visible()
+            assert _chip_mark(parent.locator(':scope > [data-live-summary-button] [data-live-phase]')) == STILL
+            assert _chip_mark(child_card.locator('[data-live-phase]')) == STILL
             assert [row["activity_id"] for row in _chat_activities_snapshot_safe(root)] == ["parent"]
             shot(page, "both-held-header-waiting")
             page.set_viewport_size({"width": 390, "height": 844})
@@ -328,9 +335,9 @@ def test_held_tree_header_updates_on_child_reply_without_detail_polling(direct_s
             write_task_result(root, "held", "cancelled", result="Stopped by the owner.")
             frame(page, "held", content="Stopped by the owner.", delegation_role="subagent", subagent_event="cancelled",
                   subagent_task_id="held", parent_task_id="parent", root_task_id="parent", subagent_role="researcher",status="cancelled")
-            # Every member is confirmed again: the same word, one dot, and the parent's row says what it waits for.
+            # Every member is confirmed again: the same word, still dots, and the parent's row says what it waits for.
             page.wait_for_function("() => { const s = document.querySelector('#chat-status');"
-                                   " return s?.textContent === 'Waiting' && s.dataset.mark === 'dot'; }")
+                                   " return s?.textContent === 'Waiting' && s.dataset.mark === 'still'; }")
             page.locator("#page-chat .rw-trigger").click()
             page.wait_for_function("text => document.querySelector('#page-chat .rw-row[data-id=parent] .rw-secondary')?.textContent === text", arg=WAIT)
             shot(page, "held-parent-header-waiting")

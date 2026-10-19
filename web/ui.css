@@ -544,20 +544,29 @@
 .settings-inline-status[data-tone="neutral"],
 .settings-inline-status[data-tone="muted"] { color: var(--status-neutral-fg); }
 
-/* Status sentences share one dot anatomy in every consumer. */
+/* A status sentence's own dot, one anatomy in every consumer (docs/DESIGN.md "Status marks"). CSS draws it, not
+   status_mark.js, because ui.css and ui_primitives.js reach skill authors on their own; it takes the marks' fact
+   size and the saturated hues (ok green, warn amber, error red, any other tone the neutral meta ink) while the
+   sentence keeps its word tone. */
 .ui-status[data-tone]:not(:empty)::before,
-.settings-inline-status[data-tone]:not(:empty)::before {
+.settings-inline-status[data-tone]:not(:empty)::before,
+.wizard-runtime-status[data-tone]:not(:empty)::before {
     content: "";
     display: inline-block;
     flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
+    width: var(--mark-fact);
+    height: var(--mark-fact);
     margin-right: 7px;
     border-radius: 999px;
-    background: currentColor;
+    background: var(--text-meta);
     vertical-align: middle;
     position: relative;
     top: -1px;
+}
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status)[data-tone="ok"]:not(:empty)::before { background: var(--green); }
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status)[data-tone="warn"]:not(:empty)::before { background: var(--amber); }
+:is(.ui-status, .settings-inline-status, .wizard-runtime-status):is([data-tone="danger"], [data-tone="error"]):not(:empty)::before {
+    background: var(--red);
 }
 
 
@@ -804,3 +813,65 @@ textarea.ui-control { resize: vertical; }
 :root[data-theme]:where(.ouro-ui) .theme-choice:hover { border-color: transparent; background: var(--surface-capsule-hover); }
 :root[data-theme]:where(.ouro-ui) .theme-choice[aria-checked="true"] { border-color: transparent; background: var(--tone-crimson); color: var(--tone-crimson-ink); }
 :root[data-theme]:where(.ouro-ui) :is(.ui-chip, .status-badge) { border-color: transparent; }
+
+/* ---- Status marks (docs/DESIGN.md "Status marks") --------------------------------------------------------------
+   One small family for every surface, created and painted by web/modules/status_mark.js and drawn only here. The
+   shape says what the work does (three moving dots, the same dots still, the pause's two bars, a faint ring, one dot);
+   the hue says whether there is something for the owner. Dots are 4px, a single fact 7px; no halos, shadows or glyphs.
+   Only the moving dots animate. The ink hue is the surface's own ink (a chosen row's selection colour included);
+   --mark-ink is the one hook a surface sets to give its marks another ink. */
+:root {
+    --mark-dot: 4px;
+    --mark-gap: 3px;
+    --mark-fact: 7px;
+    --mark-ink: currentColor;
+    --mark-unread: #f05a6a;
+    --mark-owner: var(--amber);
+}
+:root[data-theme="light"] { --mark-unread: var(--accent); }
+.status-mark {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: var(--mark-gap);
+    min-height: var(--mark-fact);
+    color: var(--mark-ink);
+    line-height: 0;
+    pointer-events: none;
+}
+.status-mark[hidden] { display: none; }
+.status-mark > i {
+    display: block;
+    flex: none;
+    width: var(--mark-dot);
+    height: var(--mark-dot);
+    border-radius: 50%;
+    background: currentColor;
+}
+.status-mark[data-shape="moving"] > i { animation: status-mark-bounce 1.4s ease-in-out infinite; }
+.status-mark[data-shape="moving"] > i:nth-child(2) { animation-delay: 0.2s; }
+.status-mark[data-shape="moving"] > i:nth-child(3) { animation-delay: 0.4s; }
+.status-mark[data-shape="still"] { opacity: 0.4; }
+.status-mark[data-shape="still"][data-hue="unread"] { opacity: 0.6; }
+.status-mark[data-shape="pause"] { opacity: 0.7; }
+.status-mark[data-shape="pause"][data-hue="unread"] { opacity: 1; }
+.status-mark[data-shape="ring"] { opacity: 0.55; }
+.status-mark[data-shape="ring"][data-hue="unread"] { opacity: 0.6; }
+.status-mark[data-shape="pause"] > i { width: 2px; height: 8px; border-radius: 1px; }
+.status-mark:is([data-shape="pause"], [data-shape="ring"], [data-shape="dot"]) > i:nth-child(3),
+.status-mark:is([data-shape="ring"], [data-shape="dot"]) > i:nth-child(2) { display: none; }
+.status-mark:is([data-shape="ring"], [data-shape="dot"]) > i { width: var(--mark-fact); height: var(--mark-fact); }
+.status-mark[data-shape="ring"] > i { box-sizing: border-box; background: transparent; border: 1px solid currentColor; }
+.status-mark[data-hue="unread"] { color: var(--mark-unread); }
+.status-mark[data-hue="owner"] { color: var(--mark-owner); }
+.status-mark[data-hue="ok"] { color: var(--green); }
+.status-mark[data-hue="failed"] { color: var(--red); }
+.status-mark[data-hue="neutral"] { color: var(--text-meta); }
+@keyframes status-mark-bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-6px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .status-mark[data-shape="moving"] > i { animation: none; }
+}

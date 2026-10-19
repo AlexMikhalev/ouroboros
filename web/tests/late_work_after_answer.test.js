@@ -29,7 +29,8 @@ test('open upkeep keeps the answered card open; the Pause cutting it settles the
 test('the outcome owns the chip and the late work is its quieter second fact', () => {
     const card = { finalizingHold: true, observedOutcome: 'done' };
     assert.deepEqual(desiredLiveCardPhase(card), {
-        phase: 'done', text: 'Done', className: 'chat-live-phase done', secondary: 'Finalizing…' });
+        phase: 'done', text: 'Done', className: 'chat-live-phase done', secondary: 'Finalizing…',
+        mark: 'none', tone: 'ok', owner: false, outcome: 'done' });
     // While the Pause ends the upkeep.
     assert.equal(desiredLiveCardPhase({ ...card, parkedPhase: 'budget_pausing' }).secondary, 'Pausing…');
     // A late review the Pause deferred waits for Resume beside the delivered answer.
@@ -46,7 +47,9 @@ test('the census-only Activity row offers Resume only while deferred late work w
     const paused = liveActivityRowHtml({ activity_id: 'late-root', kind: 'managed_task', phase: 'budget_paused',
         started_at: 1_700_000_000 }, now);
     assert.match(paused, /data-act="task-control" data-id="late-root" data-root="1" data-budget-paused="1"/);
-    assert.match(paused, /budget_paused · 100s/);
+    // The row says its state in the chip's words, never the census code.
+    assert.match(paused, /<span data-i18n-skip>Paused<\/span> · 100s/);
+    assert.doesNotMatch(paused, /budget_paused ·/);
     const pausing = liveActivityRowHtml({ activity_id: 'late-root', kind: 'managed_task', phase: 'budget_pausing' }, now);
     assert.doesNotMatch(pausing, /data-budget-paused/, 'the Pause is still ending sent work: Stop only, no Resume');
     assert.match(pausing, /data-root="1"/);
@@ -65,9 +68,9 @@ test('an answered root names its work and that only the work after the answer re
     assert.match(deferred, /<span class="activity-name">Answered task<\/span>/);
     assert.match(deferred, /Remaining work paused · answer delivered/);
     assert.match(deferred, /data-budget-paused="1"/, 'a deferred late review keeps the shared Resume');
-    // Positive control: a live direct turn without late work keeps its plain census line.
+    // Positive control: a live direct turn without late work keeps its plain census line, in the chip's word.
     assert.match(liveActivityRowHtml({ activity_id: 'turn', kind: 'direct_chat', phase: 'working', started_at: 0 }),
-        /<span class="activity-name">Direct turn<\/span>\s*<span class="activity-sub">working<\/span>/);
+        /<span class="activity-name">Direct turn<\/span>\s*<span class="activity-sub"><span data-i18n-skip>Working<\/span><\/span>/);
 });
 
 test('Resume of deferred late work says it continues in place, never that it returns to the queue', async () => {

@@ -996,7 +996,6 @@ export function createChatMedia({
         isMyThread,
         hideTypingIndicatorOnly,
         syncChatStatus,
-        incrementUnreadIfNeeded,
         seenMessageKeys,
         rememberMessageKey,
         chatMediaMessageKey,
@@ -1087,7 +1086,7 @@ export function createChatMedia({
             if (!isMyThread(msg)) return;
             hideTypingIndicatorOnly();
             syncChatStatus();
-            if (deliverContentMutation(() => append(msg))) incrementUnreadIfNeeded(msg);
+            deliverContentMutation(() => append(msg));
         };
         for (const type of ['photo', 'video']) onWs(type, deliver(appendMediaBubble));
         onWs('document', deliver(appendDocumentBubble));

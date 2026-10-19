@@ -1,13 +1,13 @@
 /**
  * The room's work status in its bar (DESIGN "Room work status"). The bar's one status control, right after
- * the room's title, paints the word, tone, mark and amber the chat's producer gives it (the room in the server's
- * work projection, work_status.roomStatusView) and opens this room's work as one Shade under the bar, in Main and a
- * Project alike. Presentation only, over the chat instance's own owners; it keeps no task state, phase vocabulary,
- * poller, pager, question index or permission:
+ * the room's title, paints the word, tone and mark the chat's producer gives it (the room in the server's work
+ * projection, work_status.roomStatusView; status_mark.js draws the mark) and opens this room's work as one Shade under
+ * the bar, in Main and a Project alike. Presentation only, over the chat instance's own owners; it keeps no task
+ * state, phase vocabulary, poller, pager, question index or permission:
  *   membership  this room's works (`works()`, the instance's reconciled projection: one row per work, helpers and
  *               Continue episodes inside it), the owner's unconfirmed sends (`pendingSubmissions`); a Project with
  *               nothing else keeps its latest represented root card
- *   words       work_status.workRowView: the work's word and the reason beside it
+ *   words       work_status.workRowView: the work's word, the reason beside it and its mark
  *   controls    the work's own controls (work_status.openWorkControls), offered only while the current projection
  *               confirms them; a loaded card stops through its own card path
  *   question    the instance's revealQuestion (chat_decision.js); it navigates and never answers
@@ -21,6 +21,7 @@ import { createHistoryReveal } from './chat_history_reveal.js';
 import { fmt, tr } from './i18n.js';
 import { taskCancelPending } from './log_events.js';
 import { desiredLiveCardPhase, replayTerminalPhase } from './task_phase_chip.js';
+import { createStatusMark, markView, paintStatusMark } from './status_mark.js';
 import { closeTaskControlMenu, createTaskResumeButton, requestStop, taskControlBusy } from './task_control_menu.js';
 import {
     OUTCOME_TONES, amberNote, openWorkControls, workControls, workMenuActions, workQuestion, workRowView,
@@ -34,6 +35,8 @@ const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 const listOf = (value) => (Array.isArray(value) ? value : []);
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 let sequence = 0;
+// A status sentence's own dot speaks only at rest: the room at rest says Online beside its green dot.
+const AT_REST = Object.freeze({ shape: 'dot', hue: 'ok' });
 
 // An old parked turn must not read as today's: another day names its date.
 function clock(seconds) {
@@ -52,10 +55,13 @@ export function latestRepresentedRoot(records = []) {
     return roots.filter((record) => !record.finished).at(-1) || roots.at(-1) || null;
 }
 
-/** A card's own words as a row's view (a settled row, the Project's latest root): its outcome keeps its colour. */
+/** A card's own words as a row's view (a settled row, the Project's latest root): a known outcome keeps its tone and
+ *  its dot; any other state of a card is unconfirmed here (a ring). The owner's move is a work's turn, never a card's. */
 export function cardRowView(view = {}, { settled = false } = {}) {
+    const outcome = OUTCOME_TONES[view.phase] ? String(view.phase) : '';
     return { word: String(view.text || ''), secondary: String(view.secondary || ''),
-        tone: OUTCOME_TONES[view.phase] || (settled ? 'ended' : 'unknown'), amber: false, focus: '' };
+        tone: OUTCOME_TONES[outcome] || (settled ? 'ended' : 'unknown'), mark: outcome ? 'none' : 'ring', owner: false,
+        outcome, focus: '' };
 }
 
 /** The card a work's row goes to: its current episode's, else another of its episodes' root cards that is shown
@@ -95,11 +101,6 @@ export function createRoomWork({
         return node;
     };
     const decorative = (node) => { node.setAttribute('aria-hidden', 'true'); return node; };
-    const marker = (className) => {
-        const node = decorative(element('span', `nav-activity-marker chat-live-typing ${className}`));
-        for (let i = 0; i < 3; i += 1) node.appendChild(element('span'));
-        return node;
-    };
 
     // ---- the status control: the room's real status badge inside one disclosure button
     const trigger = element('button', 'rw-trigger ui-chrome-control');
@@ -108,11 +109,10 @@ export function createRoomWork({
     trigger.setAttribute('aria-haspopup', 'dialog');
     trigger.setAttribute('aria-expanded', 'false');
     trigger.setAttribute('aria-controls', `${uid}-surface`);
-    // The status's one mark follows its word, as on the sidebar's rows: three dots or one.
-    const dots = marker('rw-dots');
-    const dot = decorative(element('span', 'rw-mark'));
-    // Said as well as drawn: work with a question waiting names the wait in the control's name.
-    const waitNote = element('span', 'rw-sr', 'A question waits for your answer');
+    // The status's one mark follows its word, as on the sidebar's rows.
+    const mark = createStatusMark(doc);
+    // Said as well as drawn: what waits for the owner is named in the control's name where the word does not say it.
+    const waitNote = element('span', 'rw-sr');
     const caret = decorative(element('span', 'rw-caret'));
     const badgeParent = statusBadge.parentNode;
     const badgeNext = statusBadge.nextSibling || null;
@@ -120,7 +120,7 @@ export function createRoomWork({
     // One bar per room: the Project panel bar, or Main's header. The status follows the room's own title in the
     // bar's title row, so a changing word takes the title's room and never moves a neighbour.
     const bar = panel?.querySelector?.('.project-panel-bar') || (asPanel ? null : page.querySelector('.chat-page-header'));
-    trigger.append(statusBadge, dot, dots, waitNote, caret);
+    trigger.append(statusBadge, mark, waitNote, caret);
     const titleRow = bar?.querySelector('.app-page-title-row');
     if (titleRow) titleRow.appendChild(trigger);
     else badgeParent?.insertBefore(trigger, badgeNext);
@@ -232,8 +232,8 @@ export function createRoomWork({
     const workOf = (id) => listOf(works()?.works).find((work) => String(work.work_id) === id) || null;
 
     function collect() {
-        // A closed socket or a host that is not ready proves nothing current: each work stays, unconfirmed and
-        // without controls, as an incomplete body leaves it.
+        // A closed socket or a host that is not ready proves nothing current: each work stays, unconfirmed (a ring)
+        // and without controls, as an incomplete body leaves it.
         const current = connected() && hostReady();
         const state = works() || {};
         const items = [];
@@ -241,8 +241,8 @@ export function createRoomWork({
             const id = String(work.work_id || '');
             if (!id) continue;
             const episode = String(work.episode?.task_id || id);
-            const view = workRowView(current ? work : { ...work, activity: 'unknown', because: [], turn: [], confirmed: false },
-                { stopping: records.get(episode)?.cancelPendingPolicy || '' });
+            const shown = current ? work : { ...work, activity: 'unknown', because: [], turn: [], confirmed: false, mark: 'ring' };
+            const view = workRowView(shown, { stopping: records.get(episode)?.cancelPendingPolicy || '' });
             items.push({ id, kind: work.kind === 'task' ? 'task' : 'direct', work, record: workCard(work, records), view,
                 episode, attempt: state.attempts?.get?.(episode) ?? null, activity: current ? String(work.activity || '') : 'unknown',
                 online: current, confirmed: current && work.confirmed !== false,
@@ -252,7 +252,8 @@ export function createRoomWork({
         for (const [cmid, sent] of pending) {
             items.push({ id: `pending:${cmid}`, kind: 'pending', work: null, record: null, confirmed: true, cmid,
                 startedAt: Math.floor((Number(sent?.timestamp) || 0) / 1000), episode: '', attempt: null, activity: 'pending',
-                view: { word: tr('room_work.sending', 'Sending…'), secondary: '', tone: 'live', amber: false, focus: '' } });
+                view: { word: tr('room_work.sending', 'Sending…'), secondary: '', tone: 'live', mark: 'moving', owner: false,
+                    outcome: '', focus: '' } });
         }
         // A Project with nothing else keeps its way to the latest represented root card.
         if (asPanel && !items.length) {
@@ -272,7 +273,7 @@ export function createRoomWork({
         const finished = Boolean(item.latest && record?.finished);
         // The owner's turn first, then moving work, then work that waits; unconfirmed work last.
         const group = item.latest ? 'latest' : view.tone === 'unknown' ? 'unconfirmed'
-            : view.amber || view.tone === 'wait' ? 'needs' : view.tone === 'live' ? 'progress' : 'waiting';
+            : view.owner ? 'needs' : view.tone === 'live' ? 'progress' : 'waiting';
         const sub = { queued: 1, waiting: 2, paused: 3 }[item.activity] || 0;
         // The server's controls for a work it lists, even one it could not confirm (Stop stays offered); a work kept
         // from an incomplete body and every work over a closed socket has none.
@@ -285,7 +286,7 @@ export function createRoomWork({
             card: Boolean(card), target: card || bubble, loaded: Boolean(card || bubble),
             startedAt: item.startedAt, cmid: item.cmid, controls,
             canMenu: Boolean(controls && workMenuActions(controls).length), resume: controls?.resume || '',
-            question: item.confirmed ? workQuestion(work) : null, tone: view.tone, amber: view.amber,
+            question: item.confirmed ? workQuestion(work) : null, tone: view.tone,
         };
     }
 
@@ -306,14 +307,15 @@ export function createRoomWork({
         const card = record?.root?.isConnected ? record.root : null;
         const target = card || (row.cmid ? bubbleFor(row.cmid) : null);
         const view = outcome ? cardRowView(outcome, { settled: true })
-            : { word: tr('room_work.ended', 'No longer listed as active'), secondary: '', tone: 'ended', amber: false, focus: '' };
+            : { word: tr('room_work.ended', 'No longer listed as active'), secondary: '', tone: 'ended', mark: 'ring',
+                owner: false, outcome: '', focus: '' };
         const name = nameOf({ ...row, record }, target);
         const refreshedName = name.source === 'neutral' ? {} : {
             name: name.text, fullName: name.full, nameSource: name.source,
         };
         return { ...row, ...refreshedName, view, group: 'ended', settled: true, outcomeKnown: Boolean(outcome), canMenu: false,
             controls: null, resume: '', question: null, card: Boolean(card), target, loaded: Boolean(target),
-            tone: view.tone, amber: false };
+            tone: view.tone };
     }
 
     const sorter = (a, b) => (a.rank - b.rank) || (b.startedAt - a.startedAt) || a.key.localeCompare(b.key);
@@ -358,7 +360,7 @@ export function createRoomWork({
 
     // What a press on an unloaded row found out about where its message is (DESIGN "Room work status").
     function whereText(row) {
-        const ended = row.settled || ['done', 'caution', 'failed'].includes(row.tone);
+        const ended = row.settled || Boolean(row.view.outcome);
         return { loading: tr('room_work.lookup.loading', 'Loading its message…'),
             absent: ended ? tr('room_work.lookup.absent_ended', 'No message saved in this chat.') : tr('room_work.lookup.absent', 'No message yet.'),
             moved: tr('room_work.lookup.moved', 'This work is in another room.'),
@@ -395,14 +397,13 @@ export function createRoomWork({
         const main = element('div', 'rw-main');
         const nameEl = element('span', 'rw-name');
         const state = element('span', 'rw-state');
-        const rowDots = marker('rw-row-dots');
-        const rowLead = decorative(element('span', 'rw-lead'));
+        const mark = createStatusMark(doc);
         const word = element('span', 'rw-word');
         const secondary = element('span', 'rw-secondary');
         const where = element('span', 'rw-where');
         const chev = decorative(element('span', 'rw-chev'));
         where.append(chev);
-        state.append(rowDots, rowLead, word, secondary, where);
+        state.append(mark, word, secondary, where);
         // The episode's own focus line, quieter, under the state (work_status.workRowView's `focus`).
         const focus = element('span', 'rw-focus');
         focus.hidden = true;
@@ -413,7 +414,7 @@ export function createRoomWork({
         detail.id = `${uid}-detail-${(detailSequence += 1)}`;
         detail.hidden = true;
         el.append(main, verb, moreSlot, detail);
-        view = { el, main, nameEl, dots: rowDots, lead: rowLead, word, secondary, focus, where, chev, verb, moreSlot,
+        view = { el, main, nameEl, mark, word, secondary, focus, where, chev, verb, moreSlot,
             detail, question: null, resume: null, resumeTarget: '', more: null, row: null, full: null, detailKey: '',
             episode: undefined };
         // The name stays selectable text: a drag that selected it does not navigate.
@@ -464,8 +465,6 @@ export function createRoomWork({
         Object.assign(el.dataset, {
             id: row.id,
             slot: row.slot, kind: row.kind, tone: row.tone, settled: row.settled ? '1' : '0', open: isOpen ? '1' : '0',
-            // Something in this work waits for the owner: its one mark turns amber (a pause is not amber).
-            amber: row.amber ? '1' : '0',
         });
         const full = row.fullName || row.name;
         // Every row says its state under its name (5A); where an unloaded row's message is, its press finds out.
@@ -492,11 +491,9 @@ export function createRoomWork({
         main.dataset.target = navigable ? 'card' : lookable ? 'history' : detailable ? 'details' : 'none';
         // The whole name is in the DOM; CSS clamps it to two lines, focus and open details show it whole.
         if (view.full !== full) { view.full = full; view.nameEl.textContent = full; }
-        // Three dots are work (moving only for confirmed motion, still when queued); one dot is a single fact.
-        const dots = row.view.dots ?? (row.tone === 'live' ? 'moving' : row.tone === 'queued' ? 'still' : '');
-        view.dots.hidden = !dots;
-        view.dots.dataset.state = dots === 'moving' ? 'working' : 'queued';
-        view.lead.hidden = Boolean(dots);
+        // The work's shape in its word's ink; something in it that waits for the owner is the amber dot in its place
+        // (a pause is not the owner's move), and a known outcome is a dot in the outcome's tone beside its word.
+        paintStatusMark(view.mark, markView({ mark: row.view.mark, owner: row.view.owner, outcome: row.view.outcome }));
         if (view.word.textContent !== row.view.word) view.word.textContent = row.view.word;
         const secondary = String(row.view.secondary || '');
         if (view.secondary.textContent !== secondary) view.secondary.textContent = secondary;
@@ -698,32 +695,29 @@ export function createRoomWork({
     function paintTrigger() {
         const text = clean(statusBadge.textContent);
         const listed = rows.length > 0;
-        // Word, tone, mark and amber come together from the chat's producer (work_status.roomStatusView via
-        // setStatus); the control paints them and never ranks row tones or reads a class name for a second opinion.
-        // Before the producer's first answer the room is not online yet: an unknown tone paints as offline.
+        // Word, tone, mark and what waits for the owner come together from the chat's producer
+        // (work_status.roomStatusView via setStatus); the control paints them and never ranks row tones or reads a
+        // class name for a second opinion. Before the producer's first answer the room is not online yet: an unknown
+        // tone paints as offline.
         const tone = statusBadge.dataset.tone || 'offline';
-        const dotsMode = statusBadge.dataset.dots || 'one';
         trigger.disabled = !listed;
         trigger.dataset.tone = tone;
-        trigger.dataset.mark = statusBadge.dataset.mark || '';
         trigger.dataset.open = open ? '1' : '0';
         trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
         trigger.title = text;  // the whole status word, never clipped away (an extra, not the only path)
         caret.hidden = !listed;
-        // Owner 15.10 (3C): live work keeps three moving dots, queued work three still dots; a fact is one dot.
-        dots.hidden = dotsMode === 'one';
-        dots.dataset.state = dotsMode === 'moving' ? 'working' : 'queued';
-        dot.hidden = !dots.hidden;
-        // One mark, one more fact: the mark turns amber while something in the room waits for
-        // the owner (a question, or an action only the owner takes) and the word does not already say so — beside
-        // Working, Queued or a wait alike. A pause by the owner or by Ouroboros is not amber.
-        const amber = statusBadge.dataset.amber || '';
-        const mixed = Boolean(amber) && !['offline', 'starting', 'wait'].includes(tone);
-        trigger.dataset.wait = mixed ? '1' : '0';
-        const said = amberNote(amber === 'question' ? 'question' : 'action');
+        // The work's shape in the word's ink; while something in the room waits for the owner (a question, or an action
+        // only the owner takes) the amber dot takes its place and the word keeps its own ink: Working with a question
+        // elsewhere stays Working. A pause by the owner or by Ouroboros is not the owner's move. The room at rest says
+        // Online beside its green dot.
+        const owner = statusBadge.dataset.owner === '1';
+        const reshaped = paintStatusMark(mark, tone === 'online' && !owner ? AT_REST : markView({ mark: statusBadge.dataset.mark, owner }));
+        // The owner's move said in words too, where the word does not already say it.
+        const said = amberNote(statusBadge.dataset.amber || '');
         if (waitNote.textContent !== said) waitNote.textContent = said;
-        waitNote.hidden = !mixed;
-        if (text !== fittedWord) { fittedWord = text; fitWord(); }
+        waitNote.hidden = !said;
+        // A new word, or a mark of another width beside the same word (the owner's dot for the dots), is measured again.
+        if (text !== fittedWord || reshaped) { fittedWord = text; fitWord(); }
         if (!listed && open) close({ restoreFocus: false });
     }
 

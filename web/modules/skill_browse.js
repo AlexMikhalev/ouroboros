@@ -98,12 +98,12 @@ export function browseCardState(item, { source = null, installed = null, listed 
         if (pending.phase === 'reviewing') {
             const age = relativeAge(pending.startedAt) || 'just now';
             return {
-                status: statusHtml(`Reviewing · started ${escapeHtml(age)}`, 'warn', { work: true }),
+                status: statusHtml(`Reviewing · started ${escapeHtml(age)}`, 'muted', { work: true }),
                 action: skipReviewButtonHtml(`data-browse-action="skip" data-item="${id}"`),
                 note: 'Installed. Ouroboros reads it before it runs or gets your keys; you can leave this page.',
             };
         }
-        return { status: statusHtml('Installing…', 'warn', { work: true }), action: act('Install', 'install', 'primary').replace('<button', '<button disabled') };
+        return { status: statusHtml('Installing…', 'muted', { work: true }), action: act('Install', 'install', 'primary').replace('<button', '<button disabled') };
     }
     if (failure) {
         return {
@@ -129,9 +129,9 @@ export function browseCardState(item, { source = null, installed = null, listed 
         const update = installed.install?.update_available;
         const retryUpdate = update && installed.install?.update_rejected;
         if (model.modified && !retryUpdate) return { status: statusHtml(`Installed · modified here`, 'muted'), action: act('Details', 'open', 'ghost') };
-        if (installed.lifecycle_pending) return { status: statusHtml(escapeHtml(installed.lifecycle_kind === 'update' ? 'Updating…' : 'Working…'), 'warn', { work: true }), action: '' };
+        if (installed.lifecycle_pending) return { status: statusHtml(escapeHtml(installed.lifecycle_kind === 'update' ? 'Updating…' : 'Working…'), 'muted', { work: true }), action: '' };
         if (/Reviewing/.test(model.chip)) {
-            return { status: statusHtml('Reviewing · you can skip', 'warn', { work: true }), action: skipReviewButtonHtml(`data-browse-action="skip" data-item="${id}"`) };
+            return { status: statusHtml('Reviewing · you can skip', 'muted', { work: true }), action: skipReviewButtonHtml(`data-browse-action="skip" data-item="${id}"`) };
         }
         if (model.needs && !retryUpdate) return { status: statusHtml(`Installed ${v} · needs you`, 'warn'), action: act('Open in Installed', 'installed') };
         if (update) {

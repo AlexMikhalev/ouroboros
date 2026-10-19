@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -159,5 +159,6 @@ class UiPreferencesResponse(TypedDict):
     sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
     project_panel_width: int  # px; 0 = CSS default
     project_seen_revision: dict[str, int]  # monotonic paint ACK per active Project
+    main_seen_revision: Optional[int]  # Main's monotonic paint ACK; null until a client first sets it
     welcome: dict[str, str]  # install-wide empty-Main UI copy: mode default|hidden|custom and plain text
 

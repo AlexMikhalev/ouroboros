@@ -403,7 +403,7 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "project_seen_revision" in app
     assert "acknowledgeProjectAfterPaint" in app
     assert "inst.refreshHistory?.({ revision })" in app
-    assert "paint?.read" in app  # painted AND at the newest messages (DESIGN "Project unread dot")
+    assert "paint?.read" in app  # painted AND at the newest messages (DESIGN "Unread")
     assert "await markProjectViewed(project.id, revision)" in app
     assert "async function markProjectViewed" in app
     assert "await fetchJson('/api/ui/preferences'" in app
@@ -439,14 +439,13 @@ def test_project_activity_stays_out_of_main_static_contract():
     root = Path(__file__).resolve().parents[1]
     chat = (root / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
 
-    unread_fn = chat[
-        chat.index("function incrementUnreadIfNeeded"):
-        chat.index("onWs('typing'")
-    ]
-    project_guard = unread_fn.index("if (isKnownProjectFrame(msg)) return;")
-    increment = unread_fn.index("state.unreadCount++;")
-    assert project_guard < increment
-    assert "Project visible_revision is the sole unread authority" in unread_fn
+    # Main's number is its room revision against its read cursor, the comparison a Project row makes (owner Q1 = B,
+    # 19.10.2026); no frame of any room counts in the browser (tests/test_main_unread_counter.py: another room's
+    # message never moves Main's revision).
+    assert "incrementUnreadIfNeeded" not in chat and "unreadCount" not in chat
+    app = (root / "web" / "app.js").read_text(encoding="utf-8")
+    assert "observeMainRevision(data.main_visible_revision);" in app
+    assert "Math.max(0, revision - seen)" in app
 
     # Main has its own compact host-stamped completion row. Project progress,
     # logs and ordinary summaries never enter its live fan-out.
@@ -474,8 +473,6 @@ def test_project_activity_stays_out_of_main_static_contract():
     assert "PROJECT_ROW_TYPES.has(msg.system_type)" in fanout
     assert "appendTaskSummaryToLiveCard(msg);" in fanout
     assert "updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });" in fanout
-    assert "incrementUnreadIfNeeded(msg);" in fanout
-    assert "incrementUnreadIfNeeded();" not in chat
 
     # History replay renders the durable compact completion independently of
     # task-card reconstruction.
@@ -485,7 +482,6 @@ def test_project_activity_stays_out_of_main_static_contract():
     ]
     assert "appendTaskSummaryToLiveCard(msg" in history
     assert "PROJECT_ROW_TYPES.has(msg.system_type)" in history
-    assert "incrementUnreadIfNeeded" not in history
     # The lifecycle row points at its Project through the door, which alone decides the
     # fallback word: a missing or never-given name reads `Project`, never the raw id.
     project_answer = (root / "web" / "modules" / "project_answer.js").read_text(encoding="utf-8")

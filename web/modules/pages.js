@@ -8,6 +8,7 @@
  * gate lane walks it; index.html keeps no nav markup of its own (tests/test_pages_registry_static.py). */
 
 import { PAGE_ICONS, SHELL_ICONS } from './page_icons.js';
+import { statusMarkHtml } from './status_mark.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
 export const PAGES = Object.freeze([
@@ -34,27 +35,30 @@ export function pagesInZone(zone) {
     return PAGES.filter((page) => page.zone === zone);
 }
 
-/** One navigation row: the place's icon and its label; Main's row carries the class the shell pins. */
+/** One navigation row: the place's icon and its label. Main's row carries the class the shell pins and its room's
+ * status mark, in the Project rows' mark column, with the mark's words for readers (app.js paints both). */
 export function renderNavRow(page) {
-    const main = page.zone === 'head' ? ' nav-row-main' : '';
+    const main = page.zone === 'head';
     const icon = PAGE_ICONS[page.icon] || '';
-    return `<button class="nav-row${main}" type="button" data-nav-page="${escapeHtml(page.id)}" title="${escapeHtml(page.hint || page.label)}">`
-        + `${icon}<span class="nav-row-label">${escapeHtml(page.label)}</span></button>`;
+    const status = main ? `<span class="nav-row-words" data-i18n-skip></span><span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span>` : '';
+    return `<button class="nav-row${main ? ' nav-row-main' : ''}" type="button" data-nav-page="${escapeHtml(page.id)}" title="${escapeHtml(page.hint || page.label)}">`
+        + `${icon}<span class="nav-row-label">${escapeHtml(page.label)}</span>${status}</button>`;
 }
 
 export function renderNavRows(zone) {
     return pagesInZone(zone).map(renderNavRow).join('\n');
 }
 
-/** The Projects header of the middle zone: the toggle (icon, label, activity dots, unread count, chevron) and "+".
+/** The Projects header of the middle zone: the toggle (icon, label, chevron), "+", and the toggle's facts (the unread
+ * count and the Projects' one status mark) in Main's number and mark columns; the toggle's name carries their words.
  * The ids are the hooks app.js and its tests read. */
 export function renderProjectsHeader() {
     return `<button id="nav-projects-toggle" class="nav-section-toggle" type="button" aria-expanded="true" aria-controls="nav-projects-list">`
         + `<span class="nav-row-icon" aria-hidden="true">${PAGE_ICONS.projects}</span>`
-        + `<span class="nav-activity-label"><span class="nav-row-label">Projects</span>`
-        + `<span id="nav-projects-activity" class="nav-activity-marker chat-live-typing" hidden aria-hidden="true"><span></span><span></span><span></span></span></span>`
-        + `<span id="nav-projects-count" class="nav-row-meta"></span>`
+        + `<span class="nav-row-label">Projects</span>`
         + `<span class="nav-chevron" aria-hidden="true">${SHELL_ICONS.chevron}</span>`
         + `</button>`
-        + `<button id="nav-projects-add" class="nav-projects-add" type="button" title="New project" aria-label="New project">${SHELL_ICONS.plus}</button>`;
+        + `<button id="nav-projects-add" class="nav-projects-add" type="button" title="New project" aria-label="New project">${SHELL_ICONS.plus}</button>`
+        + `<span class="nav-projects-facts" aria-hidden="true"><span id="nav-projects-count" class="nav-row-meta"></span>`
+        + `<span class="nav-mark-slot">${statusMarkHtml('nav-mark')}</span></span>`;
 }

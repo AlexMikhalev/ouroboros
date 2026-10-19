@@ -9,23 +9,27 @@ export const SERVER_CASES = SERVER.cases;
 // Every reason sentence the server can send, by code: a counted one at 1 and at 3 ('' for an uncounted one).
 export const SERVER_REASONS = SERVER.reasons;
 
-// The mark the server's room rollup gives each activity (gateway/work_status.roll_up_room; the fixture pins it).
-const MARKS = { working: 'moving', queued: 'still', waiting: 'dot', paused: 'dot', unknown: 'ring' };
+/** The mark the server names for an activity (gateway/work_status.mark_of; the server cases pin it): work observed
+ *  running moves even in an incomplete read, other unconfirmed state is a ring. */
+export const serverMark = (activity, confirmed = true) => (activity === 'working' ? 'moving' : !confirmed ? 'ring'
+    : { queued: 'still', waiting: 'still', paused: 'pause', idle: 'none' }[activity] || 'ring');
 
 /** One room as the server rolls it up: its activity speaks, its mark follows, amber while it is the owner's turn. */
 export function room(activity, extra = {}) {
     return { activity, transition: 'none', call: '', turn: [], amber: Boolean(extra.turn?.length),
-        mark: MARKS[activity] || 'none', confirmed: activity !== 'unknown', works: [], ...extra };
+        mark: serverMark(activity, activity !== 'unknown'), confirmed: activity !== 'unknown', works: [], ...extra };
 }
 
-/** One work for one census row: its episode, members and room; what it does and offers as the test states it. */
+/** One work for one census row: its episode, members and room; what it does and offers as the test states it, and
+ *  the mark the server names for that. */
 export function work(row, extra = {}) {
     const id = String(row.activity_id);
-    return { work_id: id, room: row.chat_id ?? 1, name: '', kind: row.kind === 'managed_task' ? 'task' : 'direct',
+    const stated = { work_id: id, room: row.chat_id ?? 1, name: '', kind: row.kind === 'managed_task' ? 'task' : 'direct',
         project_id: String(row.project_id || ''), episode: { task_id: id, live: true }, activity: 'working',
         transition: 'none', call: '', because: [], turn: [], release: 'self', paused_by: null,
         members: { working: 0, waiting: 0, delegated: 0, ids: [id] }, controls: [], since: row.started_at || 0,
         confirmed: true, ...(row.client_message_id ? { client_message_id: row.client_message_id } : {}), ...extra };
+    return { mark: serverMark(stated.activity, stated.confirmed !== false), ...stated };
 }
 
 /** The work fields of one body for one chat: its works and its one room (absent while the room is idle). */

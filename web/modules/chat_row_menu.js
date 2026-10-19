@@ -169,8 +169,12 @@ export function createChatRowMenu({ feed, replies, cardOf, actionsOf, afterActio
         const owned = rightPress?.row === row ? rightPress.selected : selectedIn(row);
         rightPress = null;
         if (event.target.closest(NATIVE) || owned) return;
-        if (!open(row, { point: { x: event.clientX, y: event.clientY } })) return;
+        // Android may fire it before the long press's time: it answers that touch and lifts the row as the press
+        // would, so the touch's timer opens nothing more and the lifting finger's click is swallowed (onPointerEnd).
+        const touch = press && !press.fired && press.row === row ? press : null;
+        if (!open(row, { point: { x: event.clientX, y: event.clientY }, lift: Boolean(touch) })) return;
         event.preventDefault();
+        if (touch) { clearTimeout(touch.timer); clearTimeout(touch.holdTimer); touch.fired = true; }
         if (selectedIn(row)) doc.getSelection().removeAllRanges();
     }
 

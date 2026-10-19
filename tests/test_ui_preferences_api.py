@@ -32,6 +32,7 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
             "sidebar_width": 0,
             "project_panel_width": 0,
             "project_seen_revision": {},
+            "main_seen_revision": None,
             "welcome": {"mode": "default", "text": ""},
         }
 

@@ -118,14 +118,12 @@ test('live media and quiz-state writes use the injected content boundary', () =>
     const handlers = new Map();
     const seen = new Set();
     let mutations = 0;
-    let unread = 0;
     try {
         fx.controller.wireDeliveries({
             onWs(type, handler) { handlers.set(type, handler); },
             isMyThread: () => true,
             hideTypingIndicatorOnly() {},
             syncChatStatus() {},
-            incrementUnreadIfNeeded() { unread += 1; },
             seenMessageKeys: seen,
             rememberMessageKey(key) { seen.add(key); },
             chatMediaMessageKey: (msg) => `media:${msg.task_id}:${msg.ts}`,
@@ -146,7 +144,6 @@ test('live media and quiz-state writes use the injected content boundary', () =>
         handlers.get('quiz_state')({ quiz_id: 'q1', changed: false });
         handlers.get('quiz_state')({ quiz_id: 'q1', changed: true });
         assert.equal(mutations, 4);
-        assert.equal(unread, 2);
         assert.equal(fx.inserted.length, 1);
         assert.equal(fx.inserted[0].querySelectorAll('.chat-gallery-item').length, 2);
     } finally {
@@ -474,7 +471,7 @@ test('live gallery items adopt separate history identities and older photos do n
         const seen = new Set();
         const delivery = fx.controller.wireDeliveries({
             onWs() {}, isMyThread: () => true, hideTypingIndicatorOnly() {}, syncChatStatus() {},
-            incrementUnreadIfNeeded() {}, seenMessageKeys: seen,
+            seenMessageKeys: seen,
             rememberMessageKey: (key) => seen.add(key),
             chatMediaMessageKey: (msg) => `photo:${msg.task_id}:${msg.ts}`,
             documentMessageKey: (msg) => `file:${msg.task_id}:${msg.ts}`,

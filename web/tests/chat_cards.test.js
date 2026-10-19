@@ -278,17 +278,16 @@ test('the live card frame and its history row are one row; replay draws it befor
         });
         const handlers = {};
         const seen = new Set();
-        const unread = [];
         const delivery = media.wireDeliveries({
             onWs: (type, fn) => { handlers[type] = fn; }, isMyThread: () => true, hideTypingIndicatorOnly() {}, syncChatStatus() {},
-            incrementUnreadIfNeeded: (msg) => unread.push(msg.type), seenMessageKeys: seen, rememberMessageKey: (key) => seen.add(key),
+            seenMessageKeys: seen, rememberMessageKey: (key) => seen.add(key),
             chatMediaMessageKey: () => '', documentMessageKey: () => '', messagesRoot: () => root,
         });
         assert.equal(typeof handlers.card, 'function');
         assert.equal(typeof handlers.card_state, 'function');
         handlers.card(identity('card_r1', 'components', { row_address: 'chat:1:abc' }));
         assert.equal(root.children.length, 1);
-        assert.deepEqual(unread, ['card'], 'a new card is a message the owner has not read');
+        // A new card is a message the owner has not read: the server counts it (card_delivery.py feeds its room).
         assert.equal(root.children[0].dataset.rowAddress, 'chat:1:abc');
         assert.equal(messageRow(root.children[0]).text, 'Basic 9 · Pro 19', 'a message action reads the card\'s words');
         const row = { ...identity('card_r1', 'components'), type: undefined, msg_type: 'card', system_type: 'card', text: 'Basic 9 · Pro 19',
@@ -327,7 +326,7 @@ test('a replaced card shows its new title and words: heading, label, Copy, a mes
         const handlers = {};
         media.wireDeliveries({
             onWs: (type, fn) => { handlers[type] = fn; }, isMyThread: () => true, hideTypingIndicatorOnly() {}, syncChatStatus() {},
-            incrementUnreadIfNeeded() {}, seenMessageKeys: new Set(), rememberMessageKey() {},
+            seenMessageKeys: new Set(), rememberMessageKey() {},
             chatMediaMessageKey: () => '', documentMessageKey: () => '', messagesRoot: () => root,
         });
         handlers.card(identity('card_n1', 'components', { row_address: 'chat:1:n1' }));

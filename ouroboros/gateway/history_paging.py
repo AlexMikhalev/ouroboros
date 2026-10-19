@@ -692,7 +692,7 @@ def _stored_message(row_matches_thread, stored_chat_id, child):
 
 def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, projected_gaps=frozenset(),
                    task_result=lambda _task_id: {}):
-    """``window.latest_message`` of a recent Project read (DESIGN "Project unread dot").
+    """``window.latest_message`` of a recent Project read (DESIGN "Unread").
 
     The window is ordered and tailed by event time, but a Project message counts
     as unread when it ARRIVES: an answer the terminal outbox delivers late keeps

@@ -48,6 +48,10 @@ DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     # unknown-key 400, a stored legacy key is ignored on read and dropped on
     # the next write (``project_seen_revision`` is the replacement).
     "project_seen_revision": {},
+    # Main's read cursor, the same monotonic, server-clamped kind against the dialogue store's
+    # room revision of chat 1. None until a client first sets it to what Main holds then, as the
+    # per-window count this replaced started at zero (DESIGN "Unread").
+    "main_seen_revision": None,
     # Main's empty-state copy, a hidden install-wide preference (no Settings control):
     # never a model reply or a chat-history row.
     "welcome": {"mode": "default", "text": ""},
@@ -208,6 +212,11 @@ def _normalize_preferences(
                 except (TypeError, ValueError):
                     raise ValueError("project_seen_revision values must be integers")
             prefs["project_seen_revision"] = cleaned
+    if "main_seen_revision" in raw:
+        value = raw.get("main_seen_revision")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError("main_seen_revision must be an integer or null")
+        prefs["main_seen_revision"] = None if value is None else max(0, value)
     if "welcome" in raw:
         value = raw["welcome"]
         if not isinstance(value, dict) or set(value) != {"mode", "text"}:
@@ -227,6 +236,16 @@ def _normalize_preferences(
             raise ValueError("welcome text must be valid Unicode") from None
         prefs["welcome"] = {"mode": mode, "text": text}
     return prefs
+
+
+def main_room_revision(drive_root: Any) -> int | None:
+    """Main's room revision in the dialogue store (its standalone messages), None while unreadable."""
+    try:
+        from ouroboros import dialogue_store
+
+        return max(0, int((dialogue_store.room(drive_root, 1) or {}).get("revision") or 0))
+    except Exception:
+        return None
 
 
 def _stored_preferences(path: pathlib.Path) -> dict[str, Any]:
@@ -284,6 +303,13 @@ async def api_ui_preferences_post(request: Request) -> JSONResponse:
                     # ensure tombstones/unknown ids are not newly admitted here.
                     merged = dict(list(merged.items())[-_MAX_PROJECT_CURSORS:])
                 prefs["project_seen_revision"] = merged
+            if "main_seen_revision" in incoming:
+                requested = incoming.pop("main_seen_revision")
+                current = main_room_revision(drive_root) if requested is not None else None
+                if current is not None:
+                    # Never past what Main holds, never backwards; an unreadable store moves nothing.
+                    stored = prefs.get("main_seen_revision")
+                    prefs["main_seen_revision"] = max(int(stored or 0), min(requested, current))
             if "widget_size" in incoming:
                 # Merge by card: a write names only the cards it changes, a null value
                 # deletes one, a null map clears them all. A changed key moves last,
@@ -309,4 +335,5 @@ __all__ = [
     "DEFAULT_UI_PREFERENCES",
     "api_ui_preferences_get",
     "api_ui_preferences_post",
+    "main_room_revision",
 ]

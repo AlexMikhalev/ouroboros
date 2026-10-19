@@ -185,6 +185,25 @@ test('a long touch press opens the menu where the finger is; the tap that ends i
     } finally { f.close(); }
 });
 
+test("Android's contextmenu before the long press's time opens the menu once, and the lift presses nothing", (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const f = fixture();
+    try {
+        f.words.emit('pointerdown', { pointerType: 'touch', isPrimary: true, pointerId: 1, clientX: 30, clientY: 60 });
+        t.mock.timers.tick(300);
+        assert.equal(f.words.emit('contextmenu', { clientX: 30, clientY: 60 }).defaultPrevented, true);
+        const menu = f.openMenu();
+        assert.ok(menu, 'the early contextmenu opens it');
+        assert.equal(f.bubble.dataset.rowPress, 'lift', 'the row lifts as a long press would');
+        t.mock.timers.tick(500);
+        assert.equal(f.openMenu(), menu, 'the long press time opens no second menu');
+        f.words.emit('pointerup', { pointerType: 'touch', pointerId: 1 });
+        assert.equal(menu.children[0].emit('click', { target: menu.children[0] }).defaultPrevented, true,
+            'the lifting finger does not press the item under it');
+        assert.deepEqual(f.started, []);
+    } finally { f.close(); }
+});
+
 test('movement, a mouse, a second finger or a lift before the time is no long press', (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const f = fixture();

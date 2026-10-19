@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 import tests.test_project_unread_opening_browser as opening
-from tests.test_project_unread_read_band_browser import _seed_room, _wait_for
+from tests.test_project_unread_read_band_browser import _seed_room, _unread, _wait_for
 from tests.test_ui_smoke_playwright import direct_server_with_data as direct_server_with_data
 from tests.ui_chat_viewport_smoke import _SETTLE_RESTORE_FRAMES, _emit_ws_frame
 
@@ -130,7 +130,7 @@ class _Race:
         texts = [row.get("text") for row in self.fresh.get("messages", [])]
         assert (LATEST in texts) == (kind == "arrived"), ("only a read of the arrivals holds the reply", kind)
         room.page.evaluate(_SETTLE_RESTORE_FRAMES)
-        assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+        assert room.seen() == [] and _unread(room.row).count() == 1, room.acks
 
     def evidence(self, engine, suffix, **facts):
         name = f"unread-race-{engine}-{suffix}"
@@ -192,7 +192,7 @@ def test_a_new_offpage_reply_replaces_the_openings_frozen_target(direct_server_w
                     ("one return to the fresh snapshot, no old-chain page after it", chains)
             if kind == "named":
                 assert len(race.recent) == before_return + 1, ("one pager return to the fresh snapshot", race.history)
-            room.row.locator(".nav-unread-dot").wait_for(state="detached")
+            _unread(room.row).wait_for(state="detached")
             pages, recent = len(room.older), len(race.recent)
             # A completed opening owns no later refresh: no repeated return, old-chain walk or jump.
             opening._wheel(room, False)
@@ -248,7 +248,7 @@ def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, 
             assert room.seen() == [] and len(room.older) == pages, (room.acks, room.older)
             assert set(race.chains()) == {race.chains()[0]}, ("no page of a new chain after cancellation", race.chains())
             # A searched read names no newest message, so state refreshes re-read the unread room
-            # (DESIGN "Project unread dot"); a named or arrived one is covered and re-reads nothing.
+            # (DESIGN "Unread"); a named or arrived one is covered and re-reads nothing.
             if kind != "searched":
                 assert len(race.recent) == before_return + (stage == "pager-return"), race.history
             _emit_ws_frame(room.page, {"type": "projects_changed"})
@@ -258,7 +258,7 @@ def test_cancelling_a_rebased_opening_never_resumes_it(direct_server_with_data, 
             race.evidence(engine, f"cancel-{stage}-{move}-{kind}", pages=pages, before=top, after=after,
                           before_return=before_return, recent_reads=len(race.recent), asked=asked)
             assert len(room.older) == pages and not opening._on_screen(room.shown()), race.history
-            assert room.seen() == [] and room.row.locator(".nav-unread-dot").count() == 1, room.acks
+            assert room.seen() == [] and _unread(room.row).count() == 1, room.acks
             assert abs(after - top) <= 1, ("a later read cannot revive a cancelled opening", top, after)
             if asked:
                 assert asked["focused"] and asked["feedTop"] <= asked["top"] < asked["feedBottom"], asked

@@ -39,20 +39,26 @@ const getJson = (url) => fetchJson(url, { cache: 'no-store' });
 // Census phases that only say the task is still active.
 const ACTIVE_PHASES = new Set(['working', 'thinking', 'finalizing']);
 
-/** The shared chip for a row whose OWN census facts (its activity_id, never its root's: a
- * child must not borrow a parent's result) know its outcome; null keeps the row's own word.
- * The outcome is the status and an unfinished fact its quieter second one (DESIGN "Status and
- * chips"). A queue row passes its own wait or hold word (`queueFact`, '' for plain running),
+// A row's OWN census facts (its activity_id, never its root's: a child must not borrow a
+// parent's result) as the shared chip reads them. Activity shows no model-call telemetry, so
+// `model_activity` never reaches it.
+function ownCensusView(activity, withHold = true) {
+    const { model_activity: _telemetry, ...own } = activity;
+    if (!withHold) delete own.project_admission_hold;  // the queue line already names it
+    return { own, view: censusTaskPhase(own, null, true, waitingModel(own)) };
+}
+
+/** The shared chip for a row whose own census facts know its outcome; null keeps the row's own
+ * word. The outcome is the status and an unfinished fact its quieter second one (DESIGN "Status
+ * and chips"). A queue row passes its own wait or hold word (`queueFact`, '' for plain running),
  * which outranks a merely active census phase; membership and controls stay with the queue
- * and census. Activity shows no model-call telemetry, so `model_activity` never reaches it. */
+ * and census. */
 export function ownOutcomePhase(activity, queueFact = null) {
     const facts = activity ? censusTaskFacts(activity) : null;
     if (!facts?.outcome || !(facts.ended || facts.finalizing)) return null;
-    const { model_activity: _telemetry, ...own } = activity;
-    if (queueFact !== null) delete own.project_admission_hold;  // the queue line already names it
-    const view = censusTaskPhase(own, null, true, waitingModel(own));
+    const { own, view } = ownCensusView(activity, queueFact === null);
     return queueFact && (!view.secondary || (ACTIVE_PHASES.has(own.phase) && !view.waiting))
-        ? { ...view, secondary: queueFact, secondaryMotion: false } : view;
+        ? { ...view, secondary: queueFact } : view;
 }
 
 /** An answered root whose late work remains (its upkeep, or a review its Pause deferred) names
@@ -68,9 +74,9 @@ function lateWorkHtml(a, late) {
 }
 
 /** A census-only live root (a direct turn, or an answered root whose late work remains):
- * its phase, and the shared control — Resume only where its work's Resume control targets it
- * (`resume`, work_status.resumeTargets). `slot` marks where the caller paints a known outcome
- * (`ownOutcomePhase`). */
+ * its state in the chip's own words (never the census code), and the shared control —
+ * Resume only where its work's Resume control targets it (`resume`, work_status.resumeTargets).
+ * `slot` marks where the caller paints a known outcome (`ownOutcomePhase`). */
 export function liveActivityRowHtml(a, nowMs = Date.now(), slot = null, resume = false) {
     const names = { direct_chat: 'Direct turn', managed_task: 'Managed task' };
     const started = Number(a.started_at) || 0;
@@ -80,10 +86,11 @@ export function liveActivityRowHtml(a, nowMs = Date.now(), slot = null, resume =
     return `<div class="activity-row">
                 <div class="activity-row-main">
                     <span class="activity-name">${late ? late.name : esc(names[a.kind] || 'Live turn')}</span>
-                    <span class="activity-sub">${late ? late.sub : `${outcome ? slot(outcome) : esc(a.phase || '')}${elapsed}`}</span>
+                    <span class="activity-sub">${late ? late.sub : `${outcome ? slot(outcome)
+                        : `<span data-i18n-skip>${esc(ownCensusView(a).view.text)}</span>`}${elapsed}`}</span>
                 </div>
                 <div class="activity-row-actions">
-                    <button type="button" class="btn btn-xs btn-danger" data-act="task-control" data-id="${esc(a.activity_id || '')}" data-root="1"${a.phase === 'budget_paused' ? ' data-budget-paused="1"' : ''}${resume ? ' data-resume="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
+                    <button type="button" class="btn btn-xs btn-default" data-act="task-control" data-id="${esc(a.activity_id || '')}" data-root="1"${a.phase === 'budget_paused' ? ' data-budget-paused="1"' : ''}${resume ? ' data-resume="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
                 </div>
             </div>`;
 }
@@ -350,7 +357,7 @@ export function initActivity({ mount, ws } = {}) {
                     <span class="activity-sub">${meta}${projectWait}</span>
                 </div>
                 <div class="activity-row-actions">
-                    <button type="button" class="btn btn-xs btn-danger" data-act="task-control" data-id="${id}"${parked || resumable.has(ownId) ? ' data-budget-paused="1"' : ''}${resumable.has(ownId) ? ' data-resume="1"' : ''}${phases.has(ownId) || isRootTaskRow(t, ownId) ? ' data-root="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
+                    <button type="button" class="btn btn-xs btn-default" data-act="task-control" data-id="${id}"${parked || resumable.has(ownId) ? ' data-budget-paused="1"' : ''}${resumable.has(ownId) ? ' data-resume="1"' : ''}${phases.has(ownId) || isRootTaskRow(t, ownId) ? ' data-root="1"' : ''}>${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
                 </div>
             </div>`;
         };
