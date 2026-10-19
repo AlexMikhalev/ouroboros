@@ -235,6 +235,15 @@ def shutdown_cancel_text(intent: Dict[str, Any]) -> str:
     return ""
 
 
+def stop_notice_outcome(origin: Any) -> str:
+    """The cancel receipt's outcome words: a restore fence names its cause.
+
+    The owner did not ask for this stop, so "was stopped" alone reads like one.
+    The sentence is the card's own phrase for the same stored ``cancel_origin``.
+    """
+    return f"stopped. {CANCEL_SOURCE_PHRASES['snapshot_restore']}" if shutdown_cancel_text(origin) else "stopped"
+
+
 def _miss_lane_cancel_text(intent: Dict[str, Any]) -> str:
     """The owner sentence for a cancel settled with nothing queued or running.
 
@@ -349,7 +358,7 @@ def _register_owed_terminal_delivery(
         if stored_status == STATUS_CANCELLED:
             event = build_unreviewed_salvage_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                outcome="stopped",
+                outcome=stop_notice_outcome((stored or {}).get("cancel_origin")),
                 salvaged_text=salvage_text, preserved_path=salvage_path,
                 unreconciled_runs=list(unreconciled_runs or []),
                 settled_status=stored_status,
@@ -446,7 +455,7 @@ def _publish_cancelled_task(
             if settled_status == STATUS_CANCELLED:
                 deliver_unreviewed_salvage(
                     pathlib.Path(q.DRIVE_ROOT), task, task_id,
-                    outcome="stopped",
+                    outcome=stop_notice_outcome((stored or {}).get("cancel_origin")),
                     salvaged_text=salvage_text, preserved_path=salvage_path,
                     unreconciled_runs=list(unreconciled_runs or []),
                     settled_status=settled_status,
