@@ -768,6 +768,12 @@ for (const [chatId, asPanel] of [[1, false], [7, true]]) {
                 press(stopNow);
                 for (let i = 0; i < 10 && !fx.calls.includes('/api/tasks/p/cancel'); i += 1) await fx.settle();
                 assert.ok(fx.calls.includes('/api/tasks/p/cancel'), 'the finished card\'s Stop reaches its tree\'s door');
+                // An incomplete body that leaves the work out keeps it unconfirmed, and an unconfirmed work offers
+                // no controls anywhere (reconcileWorkState): the Stop… goes until a body lists the work again.
+                body([helper], [], false);
+                assert.equal(Boolean(stop()), false, 'an omitted, unconfirmed work offers no Stop…');
+                body([helper], [after]);
+                assert.ok(stop(), 'a body that lists the work again brings its Stop… back');
                 body([], []);
                 assert.equal(Boolean(stop()), false, 'once a complete body no longer lists the work, its Stop… goes');
             } finally {
