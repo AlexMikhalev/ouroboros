@@ -511,18 +511,28 @@ def _journal_mode(path: pathlib.Path, tier: str) -> str:
 
 
 def _set_journal_mode(conn: sqlite3.Connection, mode: str, wait_sec: float) -> str:
-    """``PRAGMA journal_mode``, waiting out contention within ``wait_sec``. Turning a rollback-journal
+    """``PRAGMA journal_mode``, waiting out contention within ``wait_sec`` in all. Turning a rollback-journal
     file into WAL takes the write lock from inside a read transaction, where SQLite skips the busy
     handler (two converters would deadlock), so a connection writing then, such as another thread's
-    first open converting the same freshly published store, would fail it at once."""
-    deadline = time.monotonic() + max(0.0, wait_sec)
+    first open converting the same freshly published store, would fail it at once. A retry's busy handler
+    gets only the time left, and the open's own busy timeout (``wait_sec``) comes back afterwards."""
+    budget = max(0.0, wait_sec)
+    deadline, bounded = time.monotonic() + budget, False
     while True:
         try:
-            return conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            actual = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0]
+            break
         except sqlite3.OperationalError as exc:
-            if not busy(exc) or time.monotonic() >= deadline:
+            if not busy(exc) or (left := deadline - time.monotonic()) <= 0:
                 raise
-            time.sleep(0.01)
+            time.sleep(min(0.01, left))
+            if (left := deadline - time.monotonic()) <= 0:
+                raise
+            conn.execute(f"PRAGMA busy_timeout = {max(1, int(left * 1000))}")
+            bounded = True
+    if bounded:
+        conn.execute(f"PRAGMA busy_timeout = {int(budget * 1000)}")
+    return actual
 
 
 def connect(path: pathlib.Path, tier: str, *, create: bool = False, wait_sec: float = 0.0,

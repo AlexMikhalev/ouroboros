@@ -196,6 +196,33 @@ def test_a_first_wal_open_waits_out_another_writer_within_its_budget(tmp_path, m
         writer.close()
 
 
+def test_a_first_wal_open_never_waits_past_its_budget(tmp_path, monkeypatch):
+    """The waits of a first WAL open add up to its budget, not more: retries that a writer refuses at
+    once, then an attempt that a remaining reader holds in SQLite's busy handler, which may wait only
+    for what is left (the connection's own busy timeout would allow the whole budget again)."""
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "PERSIST")
+    path = publish(tmp_path)
+    store.close_connections()
+    monkeypatch.setattr(store, "_journal_mode", lambda *_: "WAL")
+    reader = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM meta").fetchall()  # a reader that stays through the budget
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")  # a writer that lets go part-way through it
+    released = threading.Timer(1.2, lambda: writer.execute("ROLLBACK"))
+    released.start()
+    budget, started = 2.0, time.monotonic()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.connect(path, store.TIER_ENFORCED, wait_sec=budget)
+        assert time.monotonic() - started < budget + 0.4, "the open waited past its budget"
+    finally:
+        released.join(5)
+        writer.close()
+        reader.execute("ROLLBACK")
+        reader.close()
+
+
 def test_handoff_closes_other_threads_idle_connections_before_rename(tmp_path):
     path = publish(tmp_path)
     ready, release = threading.Event(), threading.Event()
