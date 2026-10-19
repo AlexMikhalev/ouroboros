@@ -575,6 +575,23 @@ def _answered(seat: Dict[str, Any]) -> bool:
     return str(seat.get("status") or "") in ANSWERED_STATUSES
 
 
+def counted_pending(rows: List[Dict[str, Any]], *, pending: bool = False) -> bool:
+    """Physical adviser custody survives, but never keeps the counted wave open."""
+    opened = [row for row in rows if row.get("late_result_pending") or row.get("status") == "pending"
+              or row.get("operation_state") in {"in_flight", "custody_lost", "pending_dispatch"}]
+    return any(not (row.get("additional") or (row.get("review_plan") or {}).get("additional"))
+               for row in opened) if opened else pending
+
+
+def panel_not_reached(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Terminal absences with an observed cause; seats still awaiting are not failures."""
+    return [{"seat_id": str(row.get("seat_id") or row.get("slot_id") or ""),
+             "cause": str(row.get("failure_code") or row.get("error") or row.get("reported_cause") or (row.get("intention") or {}).get("error")
+                          or row.get("operation_state") or row.get("status") or "unknown")}
+            for row in rows if row.get("status") not in {*ANSWERED_STATUSES, "answered", "unparseable", "pending", "in_flight", "pending_dispatch"}
+            and not row.get("late_result_pending") and row.get("operation_state") not in {"in_flight", "custody_lost", "pending_dispatch"}]
+
+
 def _answer(seat: Dict[str, Any], part: str) -> Dict[str, Any]:
     return dict((seat.get("answers") or {}).get(part) or {})
 
@@ -781,7 +798,8 @@ def build_rows(facts: Dict[str, Any]) -> List[Dict[str, Any]]:
     raws = [r for r in (facts.get("triad_raw") or []) if isinstance(r, dict)]
     plans = list(structured.get("rows") or []) or [
         {"slot_id": r.get("slot_id") or "", "model": r.get("model_id") or "", "route": r.get("route") or "api_chat",
-         "parts": list(r.get("parts") or (PART_CHANGE,)), "retrieves": PART_COUPLING in (r.get("parts") or ())}
+         "parts": list(r.get("parts") or (PART_CHANGE,)), "retrieves": PART_COUPLING in (r.get("parts") or ()),
+         "additional": bool(r.get("additional") or (r.get("review_plan") or {}).get("additional"))}
         for r in raws]
     rows = []
     for i, plan in enumerate(plans):
@@ -793,6 +811,8 @@ def build_rows(facts: Dict[str, Any]) -> List[Dict[str, Any]]:
         if raw is not None:
             _apply_raw(seat, raw)
         _apply_execution(seat, executions, since)
+        from ouroboros.reviewer_slot_config import review_cost_facts
+        seat.update(review_cost_facts(seat.get("usd"), route=seat["requested"]["route"], model=seat["requested"]["model"]))
         rows.append(seat)
     return rows
 
@@ -944,7 +964,7 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
     if drive_root is not None:
         _retain_wave_sources(drive_root, task_id, record_id, rows, structured)
     refusal = facts.get("dispatch_refusal")
-    pending = bool(facts.get("pending")) or any(str(s.get("status") or "") == "pending" for s in rows)
+    pending = counted_pending(rows, pending=bool(facts.get("pending")))
     assigned_rows = [seat for seat in rows if not seat.get("additional")]
     verdict = reduce_verdict(assigned_rows, gate_blocked=bool(facts.get("blocked")),
                              gate_reason=str(facts.get("block_reason") or ""), dispatch_refusal=refusal, pending=pending)
@@ -993,8 +1013,9 @@ def build_wave_record(facts: Dict[str, Any], *, surface: str, record_id: str = "
                "dispute_input": dispute_input},
         enforcement=enforcement, mode=str(facts.get("mode") or ""),
         enforcement_blocks=bool(facts.get("enforcement_blocks")),
-        panel=panel_facts(rows, composition=str(facts.get("composition") or "full_pool"),
+        panel={**panel_facts(rows, composition=str(facts.get("composition") or "full_pool"),
                           reason=str(facts.get("composition_reason") or ""), chosen_by=str(facts.get("chosen_by") or "owner")),
+               **dict(facts.get("panel") or {}), "not_reached": panel_not_reached(rows)},
         rows=rows, verdict=verdict,
         tests=dict(facts.get("tests") or {"policy": "NOT_RUN", "result": UNKNOWN}),
         preflight=dict(facts.get("preflight") or {"status": "not_performed", "record_id": ""}),
@@ -1044,6 +1065,7 @@ def settle_pending_payload(prior: Dict[str, Any], fresh: Dict[str, Any]) -> Dict
         rows.append({**row, **{key: kept[key] for key in ROW_PROVENANCE_FIELDS if key in kept},
                      "source_refs": prompt_refs + response_refs})
     settled["rows"] = rows
+    settled["panel"] = {**settled.get("panel", {}), "not_reached": panel_not_reached(rows)}
     return settled
 
 
@@ -1122,7 +1144,7 @@ def coupling_outcome(verdict: dict, rows: list) -> CouplingOutcome:
                       "coverage": seat.get("coverage"), "matrix": answer.get("coverage"),
                       "error": answer.get("error", "")})
         for finding in answer.get("findings") or []:
-            (critical if finding.get("severity") == "critical" else advisory).append(finding)
+            (critical if finding.get("severity") == "critical" and not seat.get("additional") else advisory).append(finding)
     status = str((verdict.get("per_question") or {}).get(PART_COUPLING) or "not_performed")
     return CouplingOutcome(verdict=status, status="responded" if status in (VERDICT_PASS, VERDICT_FAIL) else status,
                            blocked=status == VERDICT_FAIL, critical_findings=critical, advisory_findings=advisory, seats=seats)

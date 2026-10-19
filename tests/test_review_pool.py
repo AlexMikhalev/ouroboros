@@ -324,8 +324,8 @@ def test_a_marked_pool_a_composed_wave_and_a_malformed_catalog_never_take_the_ma
 
 def test_the_surfaces_read_the_main_seat_from_the_one_builder(clean_env):
     """Plan review and the author's ``review_change`` wave read that same one seat: the wave
-    seats it as the whole pool (both parts, counted, no composed override), and a call naming
-    only a row outside the pool is still refused — Main is the pool, not an added critic. The
+    seats it as the frozen whole pool (both parts, counted). Blocking adds Main to an
+    adviser-only request; Advisory/Cyber Pro require it to be named. The
     ``/review`` row and the empty pool's seat are one function, re-exported where it lived."""
     from ouroboros import deep_self_review
     from ouroboros.tools import plan_review_runtime
@@ -335,12 +335,23 @@ def test_the_surfaces_read_the_main_seat_from_the_one_builder(clean_env):
     clean_env.setenv(SUBAGENTS_SETTING, _roster(_row("scout", "openai/scout-model", marked=False)))
     [plan_seat] = plan_review_runtime.plan_review_slots()
     assert (plan_seat.slot_id, plan_seat.max_tokens) == ("main", plan_review_runtime.PLAN_REVIEW_MAX_TOKENS)
-    panel = compose_panel(parse_request({"root": "system_repo", "subject": "index"}), adds_only=True)
-    assert [(slot.slot_id, parts, extra) for slot, parts, extra in panel.seats] == [("main", ("change", "coupling"), False)]
-    assert panel.override is False and panel.facts["composition"] == "full_pool"
-    with pytest.raises(ReviewChangeArgumentError, match="no seat for the change question"):
-        compose_panel(parse_request({"root": "system_repo", "subject": "index", "reviewers": ["scout"]}),
-                      adds_only=False)
+    for strictness in ("blocking", "advisory", "cyber_pro"):
+        panel = compose_panel(parse_request({"root": "system_repo", "subject": "index"}),
+                              body=True, strictness=strictness)
+        assert [(slot.slot_id, parts, extra) for slot, parts, extra in panel.seats] == [("main", ("change", "coupling"), False)]
+        assert panel.override is True and panel.facts["composition"] == "full_pool"
+        assert panel.facts["pool_empty"] is True and panel.facts["main_self_review"] is True
+        request = parse_request({"root": "system_repo", "subject": "index", "reviewers": ["scout"]})
+        if strictness == "blocking":
+            widened = compose_panel(request, body=True, strictness=strictness)
+            assert widened.facts["assigned"] == ["main"] and widened.additional == ("scout",)
+            assert widened.facts["widened_from"] == ["scout"]
+        else:
+            with pytest.raises(ReviewChangeArgumentError, match="name main"):
+                compose_panel(request, body=True, strictness=strictness)
+        named = compose_panel(parse_request({"root": "system_repo", "subject": "index", "reviewers": ["main", "scout"]}),
+                              body=True, strictness=strictness)
+        assert named.facts["assigned"] == ["main"] and named.additional == ("scout",)
     assert deep_self_review.main_review_row is rsc.main_review_row
 
 
