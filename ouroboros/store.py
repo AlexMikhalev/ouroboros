@@ -355,17 +355,22 @@ class WalIndexRefused(PermissionError):
 def is_wal_index(path: Any) -> bool:
     """Whether PATH is a SQLite WAL index: its real name (a symbolic link stands for the file it
     names) ends in ``-shm``, folded as a case-insensitive volume folds it, after the name of the
-    SQLite database beside it. Every WAL connection holds locks on the index (POSIX record locks,
-    which closing any descriptor of the file drops; Windows byte-range locks, which fail a read
-    across them), and its bytes are shared memory a copy rebuilds from the log: no raw reader in
-    this process opens it, whichever process holds the database, whenever it connects. The
-    ``-wal`` log carries no lock and reads as any file does."""
+    SQLite database beside it, a base whose own real name does not end in ``-shm`` (never probed, so
+    no pair of names leads back here). Every WAL connection holds locks on the index (POSIX record
+    locks, which closing any descriptor of the file drops; Windows byte-range locks, which fail a
+    read across them), and its bytes are shared memory a copy rebuilds from the log: the store's
+    raw readers (``open_for_read`` and what reads through it, ``copy_file_bytes``) refuse it and the
+    copies and captures that apply this rule leave it out, whichever process holds the database and
+    whenever this one connects. The ``-wal`` log carries no lock and reads as any file does."""
     path = pathlib.Path(path)
-    named = path.name[-4:].casefold() == "-shm"
     if os.path.islink(path):
         path = pathlib.Path(os.path.realpath(path))
-        named = path.name[-4:].casefold() == "-shm"
-    return named and len(path.name) > 4 and is_sqlite_file(path.with_name(path.name[:-4]))
+    if len(path.name) <= 4 or path.name[-4:].casefold() != "-shm":
+        return False
+    base = path.with_name(path.name[:-4])
+    if os.path.islink(base):
+        base = pathlib.Path(os.path.realpath(base))
+    return base.name[-4:].casefold() != "-shm" and is_sqlite_file(base)
 
 
 def refuse_wal_index(path: Any) -> None:

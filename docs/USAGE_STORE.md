@@ -130,14 +130,16 @@ borrows one shared descriptor per inode that closes only when no counted
 connection has the file open, as SQLite's unix VFS defers its own closes. Under
 WAL every open connection also holds locks on the `-shm` index, so these readers
 refuse a WAL index, told by its name on every OS, before opening it
-(`store.is_wal_index`, `WalIndexRefused`; the Files panel answers 403), folder
-copies and captures leave it out as an excluded member (a copy rebuilds its own
-from the copied `-wal`, which carries no lock) and search skips SQLite's journal
-and WAL files. Under WAL a byte copy of a live store (a download, a file or
-folder copy) can hold an older state (newer commits stay in its `-wal`), be torn
-by a checkpoint running meanwhile, or fail to open when a folder copy pairs the
-file with a `-wal` taken at another moment; an exact copy comes from a stopped
-Ouroboros, whose last close checkpoints the log into the file. The connection, tier,
+(`store.is_wal_index`, `WalIndexRefused`; the Files panel answers 403); the folder
+copies, captures, delegated snapshots and artifact listings built on them leave
+it out as an excluded member, never read and with no content baseline (a copy
+rebuilds its own from the copied `-wal`, which carries no lock), and search
+skips SQLite's journal and WAL files. Under WAL a byte copy of a live store (a
+download, a file or folder copy) can hold an older state (newer commits stay in
+its `-wal`), be torn by a checkpoint running meanwhile, or fail to open when a
+folder copy pairs the file with a `-wal` taken at another moment; an exact copy
+comes from a stopped Ouroboros, whose last close checkpoints the log into the
+file. The connection, tier,
 file-identity and transaction core is `ouroboros/store.py`, shared with the
 current-facts store; `usage_store` keeps the money error vocabulary over it.
 

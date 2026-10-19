@@ -1,4 +1,4 @@
-"""A SQLite WAL index (``-shm``) is never opened by a raw reader in this process.
+"""A SQLite WAL index (``-shm``) is never opened by the readers that apply the name rule.
 
 Under WAL every open connection holds locks on the index. POSIX record locks (its read marks and
 the dead-man switch) drop when ANY descriptor of the file closes (sqlite.org/howtocorrupt.html
@@ -7,11 +7,12 @@ locks forbid and resets the log under a live read transaction, which then reads 
 later commit (reproduced on macOS with SQLite 3.53.1). Windows byte-range locks fail a read across
 them. So the rule is the name, on every OS: a file whose real name is a SQLite database's name plus
 ``-shm`` is an index, whichever process holds the database and whenever this one connects (who holds
-it when a read starts says nothing about when the read's descriptor closes). The Files panel answers
-403, the read tools and single-file copies refuse it, folder copies and captures leave it out as an
-excluded member, and a store's database is read through its borrowed descriptor, never a clone that
-opens it. The ``-wal`` log carries no lock and reads as any file does, as does a file merely named
-like a sidecar.
+it when a read starts says nothing about when the read's descriptor closes). The store's raw readers
+refuse it (the Files panel answers 403, the read tools and single-file copies refuse it); the folder
+copies, captures, delegated snapshots and artifact listings built on them leave it out as an
+excluded member, never read; a store's database is read through its borrowed descriptor, never a
+clone that opens it. The ``-wal`` log carries no lock and reads as any file does, as does a file
+merely named like a sidecar.
 """
 from __future__ import annotations
 
@@ -344,6 +345,64 @@ def test_a_directory_artifact_leaves_the_index_out_as_an_excluded_member(tmp_pat
     ledger = json.loads(open(records[0]["path"], encoding="utf-8").read())
     assert {"current.sqlite", "current.sqlite-wal"} <= {row["path"] for row in ledger["files"]}
     assert ledger["excluded"] == [{"path": "current.sqlite-shm", "reason": "SQLite WAL index"}]
+
+
+def test_a_base_linked_back_to_its_own_index_name_is_no_index_and_never_recurses(tmp_path):
+    """A regular ``b-shm`` and a link ``b`` naming it: probing ``b-shm`` led to ``b``, whose real name
+    is ``b-shm`` again, without end (a RecursionError out of every reader: the panel answered 500, the
+    capture failed, a snapshot was refused). A base whose real name ends in ``-shm`` is never probed."""
+    from ouroboros import workspace_patch_capture as capture
+    from ouroboros.gateway import files
+
+    folder, repo = tmp_path / "odd", tmp_path / "repo"
+    folder.mkdir()
+    repo.mkdir()
+    for args in (["init"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    (repo / "fix.py").write_text("def fixed():\n    return 1\n", encoding="utf-8")
+    for place in (folder, repo):
+        (place / "b-shm").write_text("notes\n", encoding="utf-8")
+        try:
+            (place / "b").symlink_to("b-shm")
+        except OSError:
+            pytest.skip("symbolic links need a privilege here")
+    assert store.is_wal_index(folder / "b-shm") is False and store.is_wal_index(folder / "b") is False
+    assert store.read_file_bytes(folder / "b-shm") == b"notes\n"
+    files._copy_path(folder, tmp_path / "odd-copy")
+    assert sorted(path.name for path in (tmp_path / "odd-copy").iterdir()) == ["b", "b-shm"]
+    _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    assert manifest["status"] == "ready_with_changes", manifest["errors"]
+
+
+def test_the_genesis_deliverable_manifest_lists_a_held_index_as_excluded(tmp_path):
+    """A genesis project folder whose app holds a WAL database: the index is listed as excluded, as a
+    directory artifact lists it, never as a read gap that makes the listing partial."""
+    from ouroboros import headless
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("print(1)\n", encoding="utf-8")
+    with _held_elsewhere(project / "app.db", _HOLDER):
+        manifest = headless._build_deliverable_manifest(project, "t1", "p1")
+    assert (manifest["complete"], manifest["gap_count"]) == (True, 0), manifest["contents"]
+    assert manifest["excluded"] == [{"rel": "app.db-shm", "reason": "SQLite WAL index"}]
+    assert {"app.py", "app.db"} <= {row["rel"] for row in manifest["contents"]}
+
+
+def test_a_child_s_artifact_listing_leaves_a_left_behind_index_out(tmp_path):
+    """A WAL-mode SQLite artifact whose opener was killed leaves its index beside it: the child's
+    listing the drive settlement copies from leaves the index out (shared memory, never read), so the
+    settlement is not retained as unreadable until someone deletes it."""
+    from ouroboros import task_custody
+
+    source = tmp_path / "artifacts"
+    source.mkdir()
+    with contextlib.closing(sqlite3.connect(source / "x.db")) as conn:
+        conn.execute("CREATE TABLE t(v)")
+    (source / "x.db-shm").write_bytes(b"\0" * 32768)  # left behind by a killed opener
+    (source / "report.txt").write_text("done\n", encoding="utf-8")
+    assert sorted(task_custody._listed(source)) == ["report.txt", "x.db"]
 
 
 def test_a_folder_copy_leaves_the_index_behind_and_the_copy_opens_whole(tmp_path, monkeypatch):

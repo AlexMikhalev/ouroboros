@@ -741,6 +741,7 @@ def _obligations(source: pathlib.Path, current: Dict[str, Any], child: Dict[str,
 def _listed(source: pathlib.Path) -> Dict[str, pathlib.Path]:
     """The regular files SOURCE holds outside its bookkeeping and input subtrees."""
     from ouroboros.artifacts import iter_artifact_tree
+    from ouroboros.store import is_wal_index  # a leftover WAL index: shared memory, never read nor copied
 
     if not (source.exists() or source.is_symlink()):
         return {}
@@ -751,7 +752,7 @@ def _listed(source: pathlib.Path) -> Dict[str, pathlib.Path]:
         for path in iter_artifact_tree(source):
             rel = path.relative_to(source).as_posix()
             if path.is_symlink() or not path.is_file() or path.name in _STORE_BOOKKEEPING \
-                    or rel.split("/", 1)[0] in _STORE_INPUT_SUBTREES:
+                    or rel.split("/", 1)[0] in _STORE_INPUT_SUBTREES or is_wal_index(path):
                 continue
             listed[rel] = path
     except OSError as exc:

@@ -746,8 +746,8 @@ def _provision_git_copy(
                 target, rel, file_outputs=reference, warnings=capture_warnings, binary_verdicts=binary_verdicts)
             if reference:
                 file_inputs.append(rel)
-            elif reason:  # a WAL index gets no content baseline: shared memory no raw reader opens
-                excluded.append({"path": rel, "reason": reason, "wal_index": True} if is_wal_index(target / rel)
+            elif reason:  # a WAL index is recorded by its code with no content baseline: shared memory, never read
+                excluded.append({"path": rel, "reason": "sqlite_wal_index"} if is_wal_index(target / rel)
                                 else {"path": rel, "reason": reason, "baseline": _side(target / rel)})
             else:
                 eligible.append(rel)
