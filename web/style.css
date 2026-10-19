@@ -1134,6 +1134,8 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     background: var(--accent-12);
 }
 
+/* A tab's count (Skills: the jobs in flight) is a neutral count pill on the shared type scale: it says how many,
+   while amber would say the owner has a move to make. */
 .app-tab-pill {
     display: inline-flex;
     align-items: center;
@@ -1142,11 +1144,13 @@ html[data-layout="docked"] .app-page-header[data-empty] {
     padding: 0 6px;
     min-width: 18px;
     height: 18px;
-    border-radius: 9px;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--status-warn-fg);
-    font-size: 11px;
-    font-family: 'JetBrains Mono', monospace;
+    border-radius: var(--pill-radius);
+    background: var(--status-neutral-bg);
+    color: var(--status-neutral-fg);
+    font-size: var(--type-meta);
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
 }
 
 .scroll-fade-y {
@@ -1875,7 +1879,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .skill-review-summary-button:hover {
-    background: rgba(245, 158, 11, 0.08);
+    background: var(--system-bubble-bg);
 }
 
 .skill-review-summary-main {
@@ -1922,7 +1926,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 .skill-review-retry {
     margin-left: 6px;
     padding: 2px 10px;
-    border: 1px solid rgba(245, 158, 11, 0.55);
+    border: 1px solid var(--system-border);
     border-radius: 6px;
     background: transparent;
     color: var(--system-sender);
@@ -1932,7 +1936,7 @@ html[data-layout="docked"] .app-page-header[data-empty] {
 }
 
 .skill-review-retry:hover {
-    background: rgba(245, 158, 11, 0.12);
+    background: var(--system-bubble-bg);
 }
 
 .chat-bubble.pending {
@@ -5675,9 +5679,10 @@ button.skills-mark { cursor: pointer; min-height: 0; }
     font-weight: 600;
 }
 .ui-chip.skills-chip { padding: 3px 10px; font-size: var(--type-meta); line-height: var(--line-meta); font-weight: 500; }
-.skills-dots { display: inline-flex; margin-right: var(--space-1); }
 .ui-status.skills-status { display: inline-flex; align-items: center; min-width: 0; font-size: var(--type-meta); line-height: var(--line-meta); }
-.skills-status[data-work]::before { display: none !important; }
+/* Live work's moving mark stands where the sentence's own dot would: one mark per place. */
+.ui-status.skills-status[data-work]::before { display: none; }
+.skills-status > .status-mark { margin-right: var(--space-1); }
 .skills-status-text { min-width: 0; overflow-wrap: anywhere; }
 .skills-skip-btn { display: inline-flex; align-items: center; gap: var(--space-1); }
 .skills-skip-glyph { display: inline-flex; color: var(--status-warn-fg); }
@@ -5737,7 +5742,7 @@ button.skills-mark { cursor: pointer; min-height: 0; }
 .skills-switch.is-locked,
 .skills-switch input:disabled { cursor: not-allowed; }
 .skills-switch.is-locked .skills-switch-track,
-.skills-switch input:disabled + .skills-switch-track { background: var(--tone-amber); }
+.skills-switch input:disabled + .skills-switch-track { background: var(--status-neutral-border); }
 .skills-switch.is-locked .skills-switch-thumb,
 .skills-switch input:disabled + .skills-switch-track .skills-switch-thumb { box-shadow: none; }
 

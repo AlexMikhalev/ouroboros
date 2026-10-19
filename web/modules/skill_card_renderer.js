@@ -59,8 +59,9 @@ function modifiedFacts(skill) {
 
 function statusBadge(status, gate = null, profile = '') {
     // Owner-attested skills are executable but the LLM review was skipped; the
-    // verdict word stays distinct from a reviewed one.
-    if (profile === 'owner_attested') return chipHtml('review skipped by you', 'warn');
+    // verdict word stays distinct from a reviewed one. It was the owner's own
+    // choice, so it is a neutral fact, not a move still waiting for him.
+    if (profile === 'owner_attested') return chipHtml('review skipped by you', 'neutral');
     // Running on its install basis with no review of these bytes: the sentence says why; «pending» would not.
     if ((status || 'pending') === 'pending' && INSTALL_ACCEPTANCE_REASONS.includes(String(gate?.blocking_reason || ''))) return '';
     const executable = gate && typeof gate.executable_review === 'boolean'
@@ -197,9 +198,11 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
     let lockReason = '';
 
     // An in-flight lifecycle job (serialized lane) takes precedence, so the card
-    // shows "Turning off…" instead of the stale persisted state.
+    // shows "Turning off…" instead of the stale persisted state. A job in flight
+    // goes on by itself: a neutral chip with the moving mark. Amber is kept for
+    // the owner's move (Needs access, Not reviewed yet, Review didn't finish).
     if (skill.lifecycle_pending) {
-        chip = chipHtml(lifecyclePendingLabel(skill.lifecycle_kind), 'warn', { work: true });
+        chip = chipHtml(lifecyclePendingLabel(skill.lifecycle_kind), 'neutral', { work: true });
     } else if (skill.lifecycle_status === 'failed') {
         chip = chipHtml(lifecycleFailedLabel(skill.lifecycle_kind), 'danger');
         needs = true;
@@ -208,18 +211,18 @@ export function installedSkillModel(skill, { reviewing = false, repairing = fals
                 note: 'Nothing was installed.', actions: smallButton('Find in Browse', name, 'find_in_browse') }));
         }
     }
-    if (repairing) chip = chipHtml('Asking Ouroboros…', 'warn', { work: true });
+    if (repairing) chip = chipHtml('Asking Ouroboros…', 'neutral', { work: true });
 
     if (skill.lifecycle_virtual) {
         return { chip, trays, needs, update: false, withdrawn: false, lockReason: '', sourceName, modified, install };
     }
 
     if (install?.pending_update) {
-        chip = chipHtml('Reviewing…', 'warn', { work: true });
+        chip = chipHtml('Reviewing…', 'neutral', { work: true });
         trays.push(trayHtml({ sentence: `Updating to ${escapeHtml(install.pending_update.version)}: it stays off until the review finishes.` }));
         lockReason = 'Can’t turn on until the review finishes.';
     } else if (!skill.lifecycle_pending && !repairing && reviewRunning) {
-        chip = chipHtml('Reviewing…', 'warn', { work: true });
+        chip = chipHtml('Reviewing…', 'neutral', { work: true });
         const started = relativeAge(reviewJob(skill)?.started_at);
         trays.push(trayHtml({
             sentence: `${started ? `Reviewing · started ${escapeHtml(started)}. ` : ''}Ouroboros reviews it before it runs or gets your keys.`,
