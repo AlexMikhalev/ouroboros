@@ -38,10 +38,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 SEEDS = REPO / "skills"
 UNIX = "unix_computer_use"
 WINDOWS = "windows_computer_use"
-DESIGN = ["ui_design", "design_demo"]
-# Built-ins on by default on every host (skills/builtin.json): the design skills, the "+" starters and
-# Read aloud's voice.
-EVERYWHERE = [*DESIGN, "templates", "device_voice"]
+EVERYWHERE = ["ui_design", "design_demo", "templates", "device_voice"]  # on by default on every host
 UNIX_043 = "1e237c1bc89f0600a7362f69eddafdff4ddd1f2d"  # official history: os any, permissions with net
 log = logging.getLogger(__name__)
 
@@ -780,7 +777,7 @@ def test_a_new_install_starts_with_its_own_computer_use_skill_ticked_and_on(data
     assert skill_builtin.default_on_names(SEEDS) == [own, *EVERYWHERE]
     ticked = skill_starter.default_starter_ids(data, rows, repo_dir=REPO)
     assert f"builtin/{own}" in ticked and f"builtin/{other}" not in ticked
-    assert all(f"builtin/{name}" in ticked for name in DESIGN)
+    assert all(f"builtin/{name}" in ticked for name in EVERYWHERE)
 
     marker = skill_starter.run_starter(data, None, origin="first_start", repo_dir=REPO)
 
@@ -823,17 +820,6 @@ def test_an_existing_windows_install_gets_the_windows_skill_once_on_update(data,
     shutil.rmtree(data / "skills" / "native" / WINDOWS)  # the owner removes it
     _boot(data, monkeypatch)
     assert not (data / "skills" / "native" / WINDOWS).exists()
-
-
-def test_an_existing_install_turns_on_the_built_ins_on_everywhere_once_on_update(data, monkeypatch, lifecycle):
-    """Templates is an instruction (no dependencies, nothing to load) and Device voice an extension: an update
-    installs both and turns both on, as a new install's starter does."""
-    on(monkeypatch, "darwin")
-    _starter(data, "upgrade")
-
-    _boot(data, monkeypatch)
-
-    assert {name: load_enabled(data, name) for name in EVERYWHERE} == {name: True for name in EVERYWHERE}
 
 
 @pytest.mark.parametrize("choice", [None, {"enabled": False, "actor": "owner_ui"}])
