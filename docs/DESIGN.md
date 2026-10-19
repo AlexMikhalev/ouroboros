@@ -418,11 +418,12 @@ exempts; it must never carry meaning a reader has to obtain.
 
 A **status hue** and a **status foreground** are different values, and the
 selected state of a control must use the foreground. Selected Advisory in the
-enforcement group read `--amber` (`#f59e0b`) over a 12% amber wash: ~2:1 on the
+enforcement group once read `--amber` (`#f59e0b`) over a 12% amber wash: ~2:1 on the
 light surface, unreadable exactly when the owner had chosen it. The rule that
 closes this: a selected control tints with the `--status-*-fg` /
 `--status-*-bg` / `--status-*-border` triple, which is defined per theme, and
-never with the raw hue token, which is not.
+never with the raw hue token, which is not. A setting value carries no status
+tone at all: Advisory now takes the shared selected tone (Status marks).
 
 The same reasoning covers images. A colour baked into a `data:` URI cannot be
 themed, because a custom property cannot be interpolated into the URI string —
@@ -659,7 +660,8 @@ channels, and nothing else draws a status dot, bar or ring.
 - **Amber is the owner's attention and nothing else:** (1) the owner's move — a
   question, or what only the owner can do: sign in, a spending limit, Resume after a
   restart, crash or Panic, grant access, a skill review that must run first, local
-  changes before an update; (2) a warning worth reading — warn toasts and sentences,
+  changes before an update, an Evolution or Consciousness pill that needs the owner
+  or was stopped by the spending limit; (2) a warning worth reading — warn toasts and sentences,
   Settings and onboarding notes, warnings inside task timelines, reviews and Logs
   events, account quota; (3) the System voice, a pale tint that is a voice, not a
   status; (4) a few data categories that are not statuses (Logs and Storage
@@ -1315,7 +1317,7 @@ Anatomy, top to bottom:
    reads `Status unavailable`, never an invented invitation. No answer-deadline
    countdown: task completion closes its mailbox, not the question's answerability.
    Pressing immediately shows `Sending…` and the brand-marked choice, keeping the
-   full form and focus; inert controls use subdued ink and submitted fields become
+   full form and focus, the head's mark neutral until the answer is confirmed; inert controls use subdued ink and submitted fields become
    read-only. No success before canonical confirmation. `Not confirmed` means unknown,
    not failed: only then show Check status, Retry same answer and Forget unconfirmed
    local answer. Recovery first reads exact-quiz truth; explicit retry sends identical
